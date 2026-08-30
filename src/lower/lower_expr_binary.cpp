@@ -257,6 +257,15 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
         }
     }
 
+    // A `+` spine of three or more operands has an intermediate per operator,
+    // and for a string chain each of those is a whole fresh copy of the prefix.
+    // `lowerAddChain` (lower_concat_chain.cpp) replaces the fold with an
+    // accumulator when it can; nullopt means it declined, and the fold below is
+    // what it declined in favour of.
+    if (bin->op == ast::BinaryOp::Add) {
+        if (auto chain = lowerAddChain(bin, ilFn)) return chain;
+    }
+
     // An operand this operator coerces on every branch may be a proven
     // typed-array element read, in which case it lowers straight to an
     // unboxed f64 (lower_typed_elem.cpp has the argument). Same evaluation,

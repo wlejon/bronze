@@ -1138,6 +1138,8 @@ private:
 
     // --- lower_expr_binary.cpp: the binary operator families ---
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);
+    // lower_concat_chain.cpp. Nullopt is "not a spine I take", never an error.
+    std::optional<Value> lowerAddChain(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerEquality(ast::BinaryOp op, Value lhs, Value rhs,
                                        il::Function& ilFn);
     // `<`, `>`, `<=`, `>=`. Which of the two algorithms ECMA-262 13.10.1 holds

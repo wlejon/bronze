@@ -63,6 +63,7 @@ bronze_add_module(runtime
         inspect.cpp
         rt_state.cpp
         rt_convert.cpp
+        rt_concat.cpp
         rt_members.cpp
         native_base.cpp
         rt_object.cpp

@@ -139,6 +139,26 @@ bool isPromotableArith(const il::Instruction& inst, const std::vector<il::Type>&
 
 namespace {
 
+// Would any of this block's guard points fall INSIDE a `+`-chain accumulator?
+//
+// A split point is the index a guard chain stands in front of, so it cuts the
+// block between `index - 1` and `index`; it cuts a chain exactly when a
+// `concat.begin` is open there. Chains nest — `a + b + (c + d + e)` lowers the
+// inner spine between the outer's `begin` and its next `append` — so the answer
+// is a depth and not a flag.
+bool splitsCutConcatChain(const il::Block& block, const std::vector<uint32_t>& splits) {
+    if (splits.empty()) return false;
+    size_t next = 0;
+    int depth = 0;
+    for (size_t i = 0; i < block.instructions.size(); ++i) {
+        while (next < splits.size() && splits[next] < i) ++next;
+        if (next < splits.size() && splits[next] == i && depth > 0) return true;
+        if (block.instructions[i].op == il::Op::ConcatBegin) ++depth;
+        if (block.instructions[i].op == il::Op::ConcatEnd) --depth;
+    }
+    return false;
+}
+
 // Union-find over value ids: the candidate closure is a connected-components
 // problem, and a refusal drops a whole component because the reason to refuse
 // (a string, a BigInt) is a fact about what the values in it can hold.
@@ -581,6 +601,18 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     for (il::BlockId b : plan.blocks) {
         mergeReadRunGuards(fn, keys, types, b, plan.candidates, plan);
     }
+
+    // Last, because the read-run merge above moves points: a split inside a
+    // `+`-chain accumulator would cut a run that has to stay whole, and there
+    // is no repair that keeps both — moving the point earlier leaves the
+    // candidates defined inside the chain unguarded, and moving it later leaves
+    // the uses before it unguarded. So the region goes.
+    for (il::BlockId b : plan.blocks) {
+        if (splitsCutConcatChain(fn.blocks[b], plan.splitsOf[b])) {
+            ++stats.refusedConcatSplit;
+            return false;
+        }
+    }
     return true;
 }
 
@@ -615,6 +647,7 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
         {"growth", {before.refusedGrowth, after.refusedGrowth}},
         {"placement", {before.refusedPlacement, after.refusedPlacement}},
         {"entrySplit", {before.refusedEntrySplit, after.refusedEntrySplit}},
+        {"concatSplit", {before.refusedConcatSplit, after.refusedConcatSplit}},
         {"ssa", {before.refusedSsa, after.refusedSsa}},
         {"machine", {before.refusedMachine, after.refusedMachine}},
         {"copyPred", {before.refusedCopyPred, after.refusedCopyPred}},
@@ -653,19 +686,20 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
     if (env == nullptr || std::strcmp(env, "1") != 0) return;
     const uint32_t refused = s.refusedHandler + s.refusedSingleEntry + s.refusedNonNumeric +
                              s.refusedTooFew + s.refusedGrowth + s.refusedPlacement +
-                             s.refusedEntrySplit + s.refusedSsa + s.refusedMachine +
-                             s.refusedCopyPred;
+                             s.refusedEntrySplit + s.refusedConcatSplit + s.refusedSsa +
+                             s.refusedMachine + s.refusedCopyPred;
     std::fprintf(stderr,
                  "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u runGuards=%u "
                  "elidedBox=%u "
                  "elidedPin=%u unboxFolded=%u promoted=%u blocks=+%u pruned=%u "
                  "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
-                 "placement %u, entrySplit %u, ssa %u, machine %u, copyPred %u)\n",
+                 "placement %u, entrySplit %u, concatSplit %u, ssa %u, machine %u, copyPred %u)\n",
                  s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
                  s.runGuards, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
                  s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
-                 s.refusedEntrySplit, s.refusedSsa, s.refusedMachine, s.refusedCopyPred);
+                 s.refusedEntrySplit, s.refusedConcatSplit, s.refusedSsa, s.refusedMachine,
+                 s.refusedCopyPred);
 }
 
 // ---------------------------------------------------------------------------

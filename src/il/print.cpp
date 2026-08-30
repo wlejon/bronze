@@ -26,6 +26,9 @@ const char* opName(Op op) {
         case Op::ConstNull: return "const.null";
         case Op::ConstBigInt: return "const.bigint";
         case Op::Add: return "add";
+        case Op::ConcatBegin: return "concat.begin";
+        case Op::ConcatAppend: return "concat.append";
+        case Op::ConcatEnd: return "concat.end";
         case Op::Sub: return "sub";
         case Op::Neg: return "neg";
         case Op::Mul: return "mul";
@@ -310,6 +313,17 @@ std::string print(const Module& module) {
                         out += "numeric.step %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                (inst.immI32 > 0 ? ", +1" : ", -1");
+                        break;
+                    // `concat.append` and `concat.end` take the default arm —
+                    // operands and nothing else. `concat.begin` carries the
+                    // remaining-operand count, which is the one thing a reader
+                    // cannot recover from the surrounding instructions.
+                    case Op::ConcatBegin:
+                        out += "concat.begin %" +
+                               std::to_string(inst.operands.size() > 0 ? inst.operands[0] : 0) +
+                               ", %" +
+                               std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
+                               ", " + std::to_string(inst.immI32);
                         break;
                     case Op::Unbox:
                         out += "unbox." + std::string(typeName(inst.type)) + " %" +

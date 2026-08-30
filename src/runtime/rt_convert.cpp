@@ -653,27 +653,37 @@ uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
     }
     Rooted<Value> aRoot{aVal};
     Rooted<Value> bRoot{bVal};
-    // Both are rooted before either conversion runs: ToPrimitive can call user
-    // code, and a collection there moves the other operand out from under any
-    // raw bits still being held.
-    aRoot.set(rtToPrimitive(aRoot, ToPrimitiveHint::Default));
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    bRoot.set(rtToPrimitive(bRoot, ToPrimitiveHint::Default));
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!rtAddToPrimitives(aRoot, bRoot)) return Value::fromUndefined().rawBits();
 
     if (aRoot.get().isString() || bRoot.get().isString()) {
         return bronze_string_concat(aRoot.get().rawBits(), bRoot.get().rawBits());
     }
+    return rtAddNonStringTail(aRoot, bRoot);
+}
+
+}  // extern "C"
+
+bool rtAddToPrimitives(Rooted<Value>& a, Rooted<Value>& b) {
+    // Both are rooted by the caller before either conversion runs: ToPrimitive
+    // can call user code, and a collection there moves the other operand out
+    // from under any raw bits still being held.
+    a.set(rtToPrimitive(a, ToPrimitiveHint::Default));
+    if (rtExceptionPending()) return false;
+    b.set(rtToPrimitive(b, ToPrimitiveHint::Default));
+    return !rtExceptionPending();
+}
+
+uint64_t rtAddNonStringTail(Rooted<Value>& a, Rooted<Value>& b) {
     // A symbol has no `+` at all: step 3 runs either ToString or ToNumeric, and
-    // 6.1.5.1 makes both a TypeError for a Symbol — so the string branch above
-    // covers `"" + sym` and this covers the rest.
+    // 6.1.5.1 makes both a TypeError for a Symbol — so the caller's string
+    // branch covers `"" + sym` and this covers the rest.
     //
     // It is raised HERE rather than left to `rtToNumber` below so that the
     // message names the operator's own step: 13.15.3 step 3 is where a Symbol
     // operand of `+` fails, before either half of the addition is attempted.
     // `undefined` goes into the caller's root slot before it tests the pending
     // cell, which is the contract every raising helper keeps.
-    if (aRoot.get().isSymbol() || bRoot.get().isSymbol()) {
+    if (a.get().isSymbol() || b.get().isSymbol()) {
         rtThrowTypeError("Cannot convert a Symbol value to a number");
         return Value::fromUndefined().rawBits();
     }
@@ -681,14 +691,14 @@ uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
     // BigInts, and this is BELOW the String branch on purpose — `"" + 1n` is
     // the string "1" and never a mixing error, because 13.15.3 decides on
     // Strings before it looks at numeric types at all.
-    if (Value bigResult; rtBigIntBinary(BigIntOp::Add, aRoot.get(), bRoot.get(), bigResult)) {
+    if (Value bigResult; rtBigIntBinary(BigIntOp::Add, a.get(), b.get(), bigResult)) {
         return bigResult.rawBits();
     }
-    return Value::fromDouble(bronze_unbox_f64(aRoot.get().rawBits()) +
-                             bronze_unbox_f64(bRoot.get().rawBits()))
+    return Value::fromDouble(bronze_unbox_f64(a.get().rawBits()) +
+                             bronze_unbox_f64(b.get().rawBits()))
         .rawBits();
 }
 
-}  // extern "C"
+Value rtPrimitiveToString(Value v) { return valueToString(v); }
 
 }  // namespace bronze::runtime

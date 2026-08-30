@@ -71,6 +71,13 @@ enum class Op : uint8_t {
     // keeps a typed f64 path from ever meeting one.
     ConstBigInt,    // a: dynamic = const.bigint <key_const_index>
     Add,        // a = add b, c        (numeric, operands same type)
+    // A `+` spine of three or more operands as an ACCUMULATOR: each IS the
+    // `add` it replaces, at the same point, so 13.15.3's order is untouched, and
+    // a String result is carried between them as ONE growable allocation sized
+    // by `immI32` on begin. See lower_concat_chain.cpp, bronze_abi.h, verifier.
+    ConcatBegin,   // a: dynamic = concat.begin b, c, <remaining>
+    ConcatAppend,  // a: dynamic = concat.append b, c
+    ConcatEnd,     // a: dynamic = concat.end b
     Sub,
     // Unary minus, which is NOT `0 - x`: IEEE-754 says 0 - 0 is +0,
     // while negation flips the sign bit, so `-0` was printing as 0.

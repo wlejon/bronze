@@ -340,6 +340,43 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_function_singleton,        BRONZE_ABI_U64,  (BRONZE_ABI_FNPTR, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_string_concat,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_dynamic_add,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* A left-associative `+` spine of three or more operands, as an\
+     * ACCUMULATOR rather than as N-1 calls to bronze_dynamic_add. Each of the\
+     * three is exactly 13.15.3 over the pair in front of it, so the chain\
+     * evaluates in the order the clause states: `begin` is the first `+`,\
+     * every `append` is the next one, and `end` converts nothing at all.\
+     *\
+     * What changes is the intermediate. `((a + b) + c) + d` over strings\
+     * allocates three flat results today and copies the whole prefix into\
+     * each one, which is quadratic in the number of operands; here `begin`\
+     * allocates ONE string with room to grow and each `append` writes its\
+     * piece into the slack. The last argument of `begin` is how many operands\
+     * are still to come, which is a compile-time fact and only a sizing hint\
+     * — a wrong one costs a reallocation, never an answer.\
+     *\
+     * The accumulator is an ordinary Tag::String heap value whose `length` is\
+     * the text written so far and whose allocation reserves more, marked in\
+     * the HEAP header's `flags` word whose every other bit a String leaves\
+     * zero. Two things follow, and both are the reason the form is this one\
+     * rather than a builder object. It is scanned, moved and read like any\
+     * other string, so generated code roots it the way it roots any Dynamic\
+     * value and no collector learns a new shape. And it is a CORRECT string\
+     * at every point in the chain, so an operand that throws half way through\
+     * leaves a value that is merely garbage rather than one that would be a\
+     * type confusion if anything found it.\
+     *\
+     * `append` mutates in place only what `begin` or a previous `append`\
+     * minted and handed it exactly once — the lowerer emits the spine so that\
+     * each accumulator has a single use, and the IL verifier rejects a shape\
+     * where it does not. The mark is the second guard rather than the first:\
+     * an `append` handed anything without it copies, so no rule about who\
+     * points at a string can be violated by mutating one. `end` clears the\
+     * mark and is the identity on the text, which is also what makes a chain\
+     * that turned out NUMERIC free — nothing was ever marked, and every step\
+     * was the addition it would have been anyway. */ \
+    X(bronze_concat_begin,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
+    X(bronze_concat_append,       BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_concat_end,          BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     /* The rest of 13.15.3 ApplyStringOrNumericBinaryOperator over BOXED\
      * operands, which `+` alone used to need. They exist because a BigInt\
      * operand makes every one of these a two-algorithm operator: ToNumeric\
@@ -694,6 +731,24 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * and arity — the same universal dispatch bronze_dynamic_call performs, so a
  * swapped-in non-function still reaches the helper's TypeError. No heap word
  * lands in the entry at all, which is what makes the form GC-free.
+ *
+ * A FUNCTION receiver takes the SLOT form too, and word 0 is then its STATICS
+ * BOX's shape rather than the receiver's — a function object has no shape word
+ * at all. The words mean exactly what they mean above: a shape, and a slot in
+ * the object that shape describes. Which object the slot is read from is
+ * decided by the arm the LIVE receiver's flags select — the receiver itself
+ * when Plain, the box at BRONZE_ABI_FN_PROPERTIES_OFFSET when Function — and
+ * never by anything stored in the entry, so the two arms share word 0 and
+ * word 2 without either misreading the other's. They cannot disagree about the
+ * answer either: a shape is a key-to-slot map and nothing else, so every
+ * object matching word 0 holds the site's key at that slot in itself. `this`
+ * stays the receiver in both cases.
+ *
+ * That argument is the SLOT form's alone. A function receiver must never take
+ * a DIRECT entry, because a DIRECT entry latched for a plain receiver was
+ * resolved off that receiver's PROTOTYPE CHAIN, whose key need not be in the
+ * shape at all — so generated code's function arm refuses a zero high half and
+ * takes the helper.
  *
  * The EXOTIC form serves the receivers whose flags are NOT Plain — an Array,
  * one of the four collections (Map/Set/WeakMap/WeakSet), a typed-array

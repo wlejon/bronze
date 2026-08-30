@@ -265,6 +265,14 @@ struct GuardRegionStats {
     // region cannot enter its own slow copy at it.
     uint32_t refusedPlacement = 0;
     uint32_t refusedEntrySplit = 0;  // an entry region wanting a split outside its header
+    // A guard point that would land inside a `+`-chain accumulator. The
+    // accumulator is a RUN and not an instruction — `concat.begin`, its
+    // appends and `concat.end` hand one builder along, and it must not leave
+    // the block it was minted in (il/verifier.cpp) — so a plan that wants to
+    // cut one is refused whole rather than repaired. The two mechanisms want
+    // opposite things from the same block, and a function that builds strings
+    // is not the numeric kernel this pass exists for.
+    uint32_t refusedConcatSplit = 0;
     uint32_t refusedSsa = 0;         // the rewrite would not have been dominance-correct
     uint32_t refusedMachine = 0;    // a generator/async resume body, refused by name
     // The region's one outside predecessor is already a copy of an earlier

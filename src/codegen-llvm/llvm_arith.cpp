@@ -44,6 +44,76 @@ llvm::Value* branchIfBothNumbers(llvm::IRBuilder<>& builder, llvm::Value* lhs, l
     return nullptr;
 }
 
+// The canonicalizing re-box every inline numeric arm ends with: `inf + -inf`
+// is NaN out of two finite-looking inputs, so the sum needs the same select
+// the Box instruction emits.
+llvm::Value* canonicalizeNumeric(llvm::IRBuilder<>& builder, llvm::Value* sum) {
+    llvm::Value* isNan = builder.CreateFCmpUNO(sum, sum);
+    return builder.CreateSelect(isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS),
+                                builder.CreateBitCast(sum, builder.getInt64Ty()));
+}
+
+// `concat.begin` / `concat.append`: the SAME number/number fast path
+// `emitDynamicAdd` has, because a `+` spine that turns out arithmetic must not
+// pay for having been spelled as a chain — no accumulator is minted on that
+// edge and every step is the fadd it always was. The slow edge is the
+// accumulator helper, which owns ToPrimitive, the builder and the TypeError
+// ladder. `remaining` is null for `append`, which takes no sizing hint.
+llvm::Value* emitConcatStep(llvm::IRBuilder<>& builder, llvm::Function* helper, llvm::Value* lhs,
+                            llvm::Value* rhs, llvm::Value* remaining) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "cat.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "cat.done", fn);
+
+    branchIfBothNumbers(builder, lhs, rhs, slowBb, "cat.fast");
+    llvm::Value* sum = builder.CreateFAdd(builder.CreateBitCast(lhs, builder.getDoubleTy()),
+                                          builder.CreateBitCast(rhs, builder.getDoubleTy()));
+    llvm::Value* fastVal = canonicalizeNumeric(builder, sum);
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal = remaining != nullptr
+                               ? builder.CreateCall(helper, {lhs, rhs, remaining})
+                               : builder.CreateCall(helper, {lhs, rhs});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 2, "cat.result");
+    result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(slowVal, slowBb);
+    return result;
+}
+
+// `concat.end`: a Number accumulator is already the value the chain produced
+// and there is nothing to seal, so one unsigned compare skips the call —
+// which is what makes the numeric spine cost exactly what a chain of `add`
+// cost. Anything else is the String accumulator this op exists to close.
+llvm::Value* emitConcatEnd(llvm::IRBuilder<>& builder, llvm::Function* helper, llvm::Value* val) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+
+    llvm::BasicBlock* sealBb = llvm::BasicBlock::Create(ctx, "cend.seal", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "cend.done", fn);
+
+    llvm::Value* isNum =
+        builder.CreateICmpULE(val, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "cend.isnum");
+    llvm::BasicBlock* entryBb = builder.GetInsertBlock();
+    builder.CreateCondBr(isNum, doneBb, sealBb);
+
+    builder.SetInsertPoint(sealBb);
+    llvm::Value* sealed = builder.CreateCall(helper, {val});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 2, "cend.result");
+    result->addIncoming(val, entryBb);
+    result->addIncoming(sealed, sealBb);
+    return result;
+}
+
 // `a + b` over boxed operands: the number/number case — the loop-carried case
 // in every allocation-free numeric loop — is an fadd and the canonicalizing
 // re-box, mirroring the fast path at the top of bronze_dynamic_add; anything
@@ -293,7 +363,8 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
     const char* op = il::opName(inst.op);
     const bool unary = inst.op == il::Op::Neg || inst.op == il::Op::ToInt32 ||
                        inst.op == il::Op::NumTruthy || inst.op == il::Op::BitNot ||
-                       inst.op == il::Op::ToNumeric || inst.op == il::Op::NumericStep;
+                       inst.op == il::Op::ToNumeric || inst.op == il::Op::NumericStep ||
+                       inst.op == il::Op::ConcatEnd;
     if (!require(inst.operands.size() >= (unary ? 1u : 2u) && inst.result != il::kNoValue,
                  (std::string("Invalid operands for ") + op).c_str())) {
         return false;
@@ -387,6 +458,12 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         // `x ^ -1` and never reaches here, so every operand this op sees is
         // one lowering could not type.
         values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_dynamic_bitnot, {lhs});
+        return true;
+    }
+    if (inst.op == il::Op::ConcatEnd) {
+        // Takes one operand like the negations below and is nothing like them,
+        // so it leaves before the arm that assumes `unary` means `neg`.
+        values_[inst.result] = emitConcatEnd(builder_, shared_.abi.bronze_concat_end, lhs);
         return true;
     }
     if (unary) {
@@ -494,6 +571,17 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
                                        : builder_.CreateSIToFP(result, builder_.getDoubleTy());
             return true;
         }
+
+        case il::Op::ConcatBegin:
+            values_[inst.result] =
+                emitConcatStep(builder_, shared_.abi.bronze_concat_begin, lhs, rhs,
+                               builder_.getInt32(static_cast<uint32_t>(inst.immI32)));
+            return true;
+
+        case il::Op::ConcatAppend:
+            values_[inst.result] = emitConcatStep(
+                builder_, shared_.abi.bronze_concat_append, lhs, rhs, /*remaining=*/nullptr);
+            return true;
 
         case il::Op::Add:
             if (inst.type == il::Type::Dynamic) {

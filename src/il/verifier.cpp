@@ -5,6 +5,94 @@
 
 namespace bronze::il {
 
+// The `+`-chain accumulator's non-observability rule (il.h, `Op::ConcatBegin`).
+//
+// A `concat.begin` or `concat.append` result is a BUILDER: an ordinary string
+// carrying room past its text, which `bronze_concat_append` writes into in
+// place. That is sound only while exactly ONE instruction holds it and that
+// instruction is the next link of the same spine — a second holder would watch
+// text appear under it, and any other consumer would be handed a string whose
+// allocation is larger than its contents without knowing it. The lowerer builds
+// the spine that way by construction, out of one AST node with one operand
+// list; this is what says so rather than trusting it, and it is the reason the
+// ops can be as cheap as they are.
+//
+// Naming a builder in a terminator's argument list counts as a use here, which
+// is what rejects one threaded through a block parameter: past that edge the
+// value has a name the spine did not give it, and nothing local can say who
+// else holds it.
+static bool verifyConcatChain(const Function& fn, DiagnosticSink& diags) {
+    auto fail = [&](const std::string& msg) {
+        diags.error(Span{}, "Function " + fn.name + ": " + msg);
+        return false;
+    };
+
+    struct Accumulator {
+        size_t blockIdx = 0;
+        size_t instIdx = 0;
+        unsigned mentions = 0;
+        unsigned links = 0;
+    };
+    std::unordered_map<ValueId, Accumulator> accs;
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        const auto& insts = fn.blocks[b].instructions;
+        for (size_t i = 0; i < insts.size(); ++i) {
+            if (insts[i].op == Op::ConcatBegin || insts[i].op == Op::ConcatAppend) {
+                accs[insts[i].result] = Accumulator{b, i, 0, 0};
+            }
+        }
+    }
+    if (accs.empty()) return true;
+
+    for (const auto& block : fn.blocks) {
+        for (const auto& inst : block.instructions) {
+            for (ValueId id : inst.operands) {
+                if (auto it = accs.find(id); it != accs.end()) ++it->second.mentions;
+            }
+        }
+    }
+
+    // Ordered walk, never an iteration over the map: a diagnostic is an output
+    // path, and a hash order in one is a compiler that stops being a function
+    // of its input.
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        const auto& insts = fn.blocks[b].instructions;
+        for (size_t i = 0; i < insts.size(); ++i) {
+            const Instruction& inst = insts[i];
+            if (inst.op != Op::ConcatAppend && inst.op != Op::ConcatEnd) continue;
+            if (inst.operands.empty()) {
+                return fail(std::string(opName(inst.op)) + " has no accumulator operand");
+            }
+            const ValueId acc = inst.operands[0];
+            auto it = accs.find(acc);
+            if (it == accs.end()) {
+                return fail(std::string(opName(inst.op)) + " reads %" + std::to_string(acc) +
+                            ", which no concat.begin or concat.append defines");
+            }
+            if (it->second.blockIdx != b || it->second.instIdx >= i) {
+                return fail(std::string(opName(inst.op)) + " reads accumulator %" +
+                            std::to_string(acc) + ", which is not defined earlier in the same "
+                            "block");
+            }
+            ++it->second.links;
+        }
+    }
+
+    for (const auto& block : fn.blocks) {
+        for (const auto& inst : block.instructions) {
+            if (inst.op != Op::ConcatBegin && inst.op != Op::ConcatAppend) continue;
+            const Accumulator& acc = accs.at(inst.result);
+            if (acc.mentions != 1 || acc.links != 1) {
+                return fail("concat accumulator %" + std::to_string(inst.result) + " is named " +
+                            std::to_string(acc.mentions) + " time(s) and consumed by a chain link " +
+                            std::to_string(acc.links) +
+                            " time(s); a builder must be used exactly once, by the next link");
+            }
+        }
+    }
+    return true;
+}
+
 bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
     if (fn.blocks.empty()) {
         diags.error(Span{}, "Function " + fn.name + " has no blocks");
@@ -363,7 +451,7 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         }
     }
 
-    return true;
+    return verifyConcatChain(fn, diags);
 }
 
 bool verify(const Module& module, DiagnosticSink& diags) {

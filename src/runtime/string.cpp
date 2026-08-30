@@ -275,13 +275,132 @@ Value StringHeader::concat(Heap& heap, Rooted<Value>& a, Rooted<Value>& b) {
     }
 }
 
+uint32_t StringHeader::capacity() const noexcept {
+    // The heap header's `size` is what the collector copies and what the heap
+    // walk steps by, so it is the only honest answer to "where does this
+    // allocation end" — and asking it here is what keeps the appender and the
+    // collector from ever disagreeing about that boundary.
+    const size_t avail = header.size - sizeof(HeapObjectHeader) - 2 * sizeof(uint32_t);
+    const size_t units = isUTF16() ? avail / sizeof(uint16_t) : avail;
+    // One unit is the terminator, which is not capacity.
+    return static_cast<uint32_t>(units - 1);
+}
+
+StringHeader* StringHeader::createBuilder(Heap& heap, bool utf16, uint32_t len, uint32_t cap) {
+    if (cap < len) cap = len;
+    const size_t unit = utf16 ? sizeof(uint16_t) : 1;
+    const size_t payload_size =
+        sizeof(uint32_t) + sizeof(uint32_t) + (static_cast<size_t>(cap) + 1) * unit;
+    HeapObjectHeader* h = heap.allocate(payload_size, Tag::String);
+    auto* s = reinterpret_cast<StringHeader*>(h);
+    s->header.flags = kBuilderFlag;
+    s->length = len;
+    s->flags = utf16 ? kUTF16Flag : 0;
+    if (utf16) {
+        s->utf16Data()[len] = 0;
+    } else {
+        s->latin1Data()[len] = '\0';
+    }
+    return s;
+}
+
+// Copy `src`'s units into `dst` starting at `at`, widening when the
+// destination is UTF-16 and the source is not. Neither allocates, so neither
+// operand can move underneath it.
+static void copyUnitsInto(StringHeader* dst, uint32_t at, const StringHeader* src) {
+    const uint32_t n = src->length;
+    if (n == 0) return;
+    if (!dst->isUTF16()) {
+        std::memcpy(dst->latin1Data() + at, src->latin1Data(), n);
+        return;
+    }
+    uint16_t* out = dst->utf16Data() + at;
+    if (src->isUTF16()) {
+        std::memcpy(out, src->utf16Data(), static_cast<size_t>(n) * sizeof(uint16_t));
+        return;
+    }
+    const unsigned char* in = reinterpret_cast<const unsigned char*>(src->latin1Data());
+    for (uint32_t i = 0; i < n; ++i) out[i] = in[i];
+}
+
+void StringHeader::startBuilder(Heap& heap, Rooted<Value>& s, uint32_t cap) {
+    const StringHeader* src = s.get().asString<StringHeader>();
+    const uint32_t len = src->length;
+    const bool utf16 = src->isUTF16();
+    if (cap < len) cap = len;
+    StringHeader* b = createBuilder(heap, utf16, len, cap);
+    // The mint allocated, so the source may have moved; the root is the only
+    // pointer to it that survived.
+    src = s.get().asString<StringHeader>();
+    copyUnitsInto(b, 0, src);
+    s.set(Value::fromString(b));
+}
+
+void StringHeader::appendToBuilder(Heap& heap, Rooted<Value>& dst, Rooted<Value>& src) {
+    StringHeader* b = dst.get().asString<StringHeader>();
+    const StringHeader* s = src.get().asString<StringHeader>();
+    const uint32_t addLen = s->length;
+    if (addLen == 0) return;
+
+    const uint32_t oldLen = b->length;
+    if (addLen > UINT32_MAX - oldLen) {
+        std::cerr << "Hard runtime error: string concatenation length overflows 2^32"
+                  << std::endl;
+        std::abort();
+    }
+    const uint32_t newLen = oldLen + addLen;
+    const bool needUTF16 = b->isUTF16() || s->isUTF16();
+
+    if (needUTF16 == b->isUTF16() && b->capacity() >= newLen) {
+        copyUnitsInto(b, oldLen, s);
+        b->length = newLen;
+        if (needUTF16) {
+            b->utf16Data()[newLen] = 0;
+        } else {
+            b->latin1Data()[newLen] = '\0';
+        }
+        // The text changed, so any hash cached over the old text is a lie.
+        // `flags` holds the hash from bit 2 up, so clearing it back to the
+        // encoding bit is what un-caches it.
+        b->flags &= kUTF16Flag;
+        return;
+    }
+
+    // No room, or a Latin-1 builder that has just met a UTF-16 piece. Either
+    // way the text moves, and the new allocation grows by half again on top of
+    // what this append needs, so a chain that keeps outrunning its hint still
+    // reallocates a logarithmic number of times rather than once per operand.
+    uint32_t want = newLen;
+    const uint32_t grown = b->capacity() + b->capacity() / 2;
+    if (grown > want) want = grown;
+    StringHeader* nb = createBuilder(heap, needUTF16, newLen, want);
+    // `createBuilder` allocated, so both operands may have moved. Nothing
+    // below allocates, so `nb` needs no root of its own.
+    b = dst.get().asString<StringHeader>();
+    s = src.get().asString<StringHeader>();
+    copyUnitsInto(nb, 0, b);
+    copyUnitsInto(nb, oldLen, s);
+    if (needUTF16) {
+        nb->utf16Data()[newLen] = 0;
+    } else {
+        nb->latin1Data()[newLen] = '\0';
+    }
+    dst.set(Value::fromString(nb));
+}
+
 StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHeader* src) {
     size_t data_bytes =
         src->isUTF16() ? static_cast<size_t>(src->length) * sizeof(uint16_t) : src->length;
     size_t total = sizeof(StringHeader) + data_bytes;
     void* mem = arena.allocate(total, alignof(StringHeader));
     std::memcpy(mem, src, total);
-    return static_cast<StringHeader*>(mem);
+    auto* out = static_cast<StringHeader*>(mem);
+    // The copy is exact-fit and immortal, so whatever slack the source had is
+    // gone and the builder mark must not survive into it: an arena string that
+    // still claimed to be an appendable builder would offer room that this
+    // allocation does not have.
+    out->sealBuilder();
+    return out;
 }
 
 StringHeader* StringHeader::createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len) {

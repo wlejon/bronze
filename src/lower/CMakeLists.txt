@@ -2,6 +2,7 @@ bronze_add_module(lower
     SOURCES lower.cpp lower_infer.cpp infer_stats.cpp lower_util.cpp lower_scope.cpp lower_stmt.cpp
             lower_class.cpp lower_control.cpp lower_expr.cpp lower_expr_assign.cpp lower_expr_binary.cpp lower_expr_cond.cpp lower_generator.cpp
             lower_update.cpp lower_private.cpp lower_typed_elem.cpp bigint_reach.cpp
+            lower_concat_chain.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_build.cpp
             guard_region_runs.cpp
             lower_object.cpp lower_call.cpp lower_pattern.cpp lower_pin.cpp lower_census.cpp

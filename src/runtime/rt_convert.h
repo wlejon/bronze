@@ -91,4 +91,24 @@ Value rtOrdinaryToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint);
 Value rtToStringValue(Rooted<Value>& v);
 Value rtToPropertyKey(Rooted<Value>& key);
 
+// ToString (7.1.17) with step 1's ToPrimitive OMITTED, for a caller that has
+// already run it. It allocates for a number and THROWS for a Symbol, so a
+// caller still roots what it holds; what it does not do is run user code, which
+// is what makes it usable after the conversion order of a clause has been
+// settled. An object argument is a caller bug, exactly as it is for the
+// `console.log` path this shares a body with.
+Value rtPrimitiveToString(Value v);
+
+// The two halves of 13.15.3 ApplyStringOrNumericBinaryOperator for `+` that
+// surround the String test, so that `bronze_dynamic_add` and the `+`-chain
+// accumulator (rt_concat.cpp) run the SAME algorithm rather than two copies of
+// it that could drift on a hint, an order, or a BigInt.
+//
+// `rtAddToPrimitives` is step 1's two ToPrimitive calls, left then right, and
+// answers false with an exception pending if either threw. `rtAddNonStringTail`
+// is step 3 once the String branch has been declined: the Symbol refusal, the
+// BigInt algorithm and the numeric sum.
+bool rtAddToPrimitives(Rooted<Value>& a, Rooted<Value>& b);
+uint64_t rtAddNonStringTail(Rooted<Value>& a, Rooted<Value>& b);
+
 }  // namespace bronze::runtime

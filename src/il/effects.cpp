@@ -112,6 +112,16 @@ bool canThrow(const Instruction& inst) {
         // address the compiler already proved in range.
         case Op::TemplateCached:
             return false;
+        // The `+`-chain accumulator. `begin` and `append` ARE 13.15.3 over a
+        // boxed pair — every reason `add` can throw, they can, ToPrimitive on a
+        // fresh operand included. `end` clears a bit and reads nothing, but it
+        // is not on the cannot-throw list above: an accumulator only exists on
+        // the boxed path, so `end` is always Dynamic and the answer below is
+        // the honest one either way. Leaving it conservative costs one pending
+        // check per chain and keeps the family reading as one thing.
+        case Op::ConcatBegin:
+        case Op::ConcatAppend:
+        case Op::ConcatEnd:
         case Op::Add:
         // The rest of the arithmetic and bitwise family, for the same reason
         // `add` is here: each is TWO operations. On machine numbers it is one
@@ -234,6 +244,13 @@ bool canCollect(const Instruction& inst) {
         // key's Value through bronze_box_str_key — so it stays a barrier.
         case Op::Box:
             return inst.boxType == Type::Str;
+        // The `+`-chain accumulator, which allocates the accumulator itself and
+        // reaches ToPrimitive on every operand after the first pair — so both
+        // reasons `add` collects are live here. `end` allocates nothing, and is
+        // grouped with the other two for the reason `canThrow` gives.
+        case Op::ConcatBegin:
+        case Op::ConcatAppend:
+        case Op::ConcatEnd:
         // Two operations under one name, exactly as `canThrow` reads them: on
         // machine numbers one instruction, on boxed operands 13.15.3 and the
         // whole ToPrimitive ladder behind it. The type is what says which.

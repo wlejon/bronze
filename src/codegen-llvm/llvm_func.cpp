@@ -678,6 +678,9 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
             return emitTerminator(inst);
 
         case il::Op::Add:
+        case il::Op::ConcatBegin:
+        case il::Op::ConcatAppend:
+        case il::Op::ConcatEnd:
         case il::Op::Sub:
         case il::Op::Neg:
         case il::Op::Mul:
