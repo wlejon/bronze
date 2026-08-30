@@ -147,6 +147,10 @@ void InferStatsCollector::recordFieldAudit(
     fieldProvenReads_ = provenReadSites;
 }
 
+void InferStatsCollector::recordModuleLiteralAccessors(std::vector<std::string> forwards) {
+    moduleLiteralForwards_ = std::move(forwards);
+}
+
 void InferStatsCollector::recordMethodParams(
     const types::InferenceResult::MethodParamReport& report) {
     methodParams_ = report;
@@ -309,6 +313,12 @@ std::string InferStatsCollector::format() const {
                 out += "\n";
             }
         }
+    }
+
+    if (!moduleLiteralForwards_.empty()) {
+        out += "\nModule-Literal Accessors: " + std::to_string(moduleLiteralForwards_.size()) +
+               " read as the property the getter reads\n";
+        for (const auto& line : moduleLiteralForwards_) out += "  " + line + "\n";
     }
 
     for (const auto& [name, mod] : modules_) {

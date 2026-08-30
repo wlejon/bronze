@@ -449,6 +449,9 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // every round and a table that filled in as it went would answer
     // differently on the probe rounds and the recording round.
     mod.fieldAudit.scan(module);
+    // Whole-program and syntactic, like the two above, and read at lowering
+    // rather than during the fixpoint: nothing it proves depends on a type.
+    result.moduleLiteralAccessors.scan(module);
     // Interprocedural identity, off behind its seam. Both halves are built
     // before any body is walked, for the same reason the class table is: the
     // flow pass reads them on every round, and a table that filled in as it went

@@ -1,0 +1,9 @@
+named before  named-original
+named hold    kept-1
+named after   named-through-alias
+inline before inline-original
+inline hold   kept-2
+inline after  inline-through-alias
+swap own      own-a
+swap new      new-b
+swap after    swapped-through-alias

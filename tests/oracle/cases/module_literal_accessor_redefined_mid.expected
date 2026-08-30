@@ -1,0 +1,6 @@
+before        srgb-linear 1000
+after         REDEF 1000
+getter calls  1001
+backing       srgb-linear
+after set     REDEF written
+restored      written 1000

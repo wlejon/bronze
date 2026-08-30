@@ -68,6 +68,12 @@ public:
     void recordFieldAudit(const types::InferenceResult::FieldAuditReport& report,
                           uint32_t provenReadSites);
 
+    // Which accessor reads on a module-scope object literal were proven to be
+    // reads of the property the getter would have read. Named one by one and
+    // not counted, because the interesting question about this proof is always
+    // WHICH property it held for.
+    void recordModuleLiteralAccessors(std::vector<std::string> forwards);
+
     void recordMethodParams(const types::InferenceResult::MethodParamReport& report);
 
     // What the constructor-parameter join proved, and what stood in its way.
@@ -93,6 +99,7 @@ private:
     std::map<std::string, uint32_t> classRefusals_;
     types::InferenceResult::FieldAuditReport fieldAudit_;
     uint32_t fieldProvenReads_ = 0;
+    std::vector<std::string> moduleLiteralForwards_;
     types::InferenceResult::MethodParamReport methodParams_;
     types::InferenceResult::CtorParamReport ctorParams_;
 };

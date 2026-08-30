@@ -1,0 +1,23 @@
+read          srgb-linear
+bracket       srgb-linear
+method this   cs=srgb-linear
+hot           1000
+after set     display-p3 display-p3
+hot after set 1000
+counted       28 calls=4
+boom          RangeError boom 3
+backed        here
+after delete  undefined
+after restore again
+alias         A A
+after redef   redefined-A redefined-A
+pick()        D
+pick(undef)   D
+pick(null)    null
+pick(value)   given
+order all     123 [a,b,c]
+order middle  927 [b]
+order last    983 [c]
+pair()        XD [x]
+pair(P,Q)     PQ []
+pair(undef,Q) XQ [x]

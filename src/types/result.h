@@ -9,6 +9,7 @@
 
 #include "ast/ast.h"
 #include "types/class_layout.h"
+#include "types/module_literal.h"
 #include "types/shape_class.h"
 #include "types/type.h"
 
@@ -68,6 +69,11 @@ struct InferenceResult {
     // construction sequence was modellable — the slot each instance field
     // lands in. See class_layout.h for the two-tier claim this carries.
     ClassLayoutTable classLayouts;
+
+    // Which accessor reads on a module-scope object literal are the same
+    // expression as a read of the property the getter would have read. See
+    // module_literal.h for the proof and everything that refuses it.
+    ModuleLiteralAccessors moduleLiteralAccessors;
 
     // Dump order: each module-level function in source order followed by the
     // functions nested inside it, then the module top level ("main") and its

@@ -12,6 +12,27 @@
 namespace bronze::lower {
 
 namespace {
+
+// `X.p` where `X` is a module-scope object literal whose accessor `p` the
+// whole-program proof in types/module_literal.h certified: the key the getter
+// would have read, so the site reads that instead of calling the accessor.
+//
+// A different KEY at the same site, and not a different site. The receiver
+// expression is untouched, evaluated once, in the same place, and the read that
+// replaces the call is the read the getter's own body performed — so `_q`
+// deleted, `_q` turned into an accessor, or `_q` answered off the prototype all
+// still answer the way the call would have answered.
+//
+// Reads only. A write through `X.p` must run the setter, and does: nothing here
+// touches the assignment path.
+const std::string* devirtualizedKey(const types::InferenceResult* inference,
+                                    const ast::Expr& receiver, const std::string& property) {
+    if (inference == nullptr) return nullptr;
+    const auto* id = dynamic_cast<const ast::Ident*>(&receiver);
+    if (id == nullptr) return nullptr;
+    return inference->moduleLiteralAccessors.backingKey(id->name, property);
+}
+
 }  // namespace
 
 std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objLit,
@@ -379,7 +400,8 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     // has no shape and no slot (lower_private.cpp).
     if (mem->isPrivate) return lowerPrivateRead(*mem, objBoxed, ilFn);
 
-    uint32_t keyIdx = getKeyConstantIndex(mem->property);
+    const std::string* forwarded = devirtualizedKey(inference_, *mem->object, mem->property);
+    uint32_t keyIdx = getKeyConstantIndex(forwarded != nullptr ? *forwarded : mem->property);
     uint32_t icIdx = icSiteCounter_++;
 
     il::ValueId res = ilFn.valueCount++;
@@ -433,7 +455,14 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* 
 
 std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idxAccess,
                                                     Value objBoxed, il::Function& ilFn) {
-    const std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess.index);
+    std::optional<uint32_t> literalKey = literalIndexKey(*idxAccess.index);
+    // `X["p"]` names the same property `X.p` does, so it takes the same
+    // forwarding; a computed index names nothing this pass can read.
+    if (const auto* keyLit = dynamic_cast<const ast::StringLit*>(idxAccess.index.get())) {
+        if (const std::string* fwd = devirtualizedKey(inference_, *idxAccess.object, keyLit->value)) {
+            literalKey = getKeyConstantIndex(*fwd);
+        }
+    }
     if (!literalKey) {
         // Computed index: a real elem.get on the index value.
         const bool native = provenArrayOrTypedArray(*idxAccess.object);

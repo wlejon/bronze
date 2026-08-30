@@ -1,0 +1,7 @@
+first read    redefined-srgb-linear
+bracket       redefined-srgb-linear
+backing       srgb-linear
+hot           1000
+after write   redefined-display-p3 display-p3
+after set     redefined-through-setter through-setter
+descriptor    function function true true
