@@ -13,6 +13,7 @@
 
 #include "codegen-llvm/llvm_static_slot.h"
 #include "codegen-llvm/llvm_prop_ic.h"
+#include "codegen-llvm/llvm_run_arms.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_alias.h"
 
@@ -800,8 +801,17 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
 
     // What this site left for anything that has to cross its join — this run's
     // own proof just below, and any OTHER live proof, in the caller.
+    //
+    // A NAMED OWN-SLOT read offers the STATIC HIT block, whose whole content is
+    // a shape compare, a GEP and a load: it allocates nothing and calls nothing,
+    // so a proof crossing this site survives on that edge and on no other. That
+    // is the same claim the run planner makes when it spans such a read
+    // (llvm_recv_proof.h), asked with the same predicate — a site the planner
+    // did not span would be handed a carry nothing is waiting for.
     if (join != nullptr) {
-        join->fastBb = proven.fastBb;
+        llvm::BasicBlock* ownSlotEdge =
+            !optIdx.has_value() && ownSlotStepEnabled() ? staticGuard.hitBb : nullptr;
+        join->fastBb = proven.fastBb != nullptr ? proven.fastBb : ownSlotEdge;
         join->doneBb = doneBb;
     }
 

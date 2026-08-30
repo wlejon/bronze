@@ -32,6 +32,18 @@
 //   arms are unconditional given the run's own proof: a GEP and a load, a GEP
 //   and a store. The third owes a test the GATE below pays for.
 //
+//   an OWN-SLOT READ — `position.x`, whose class layout proved a constant
+//   instance slot (il.h, `staticSlot`). Its proven arm is a GEP at a
+//   compile-time offset and a load, under a shape question the group asks once
+//   at its head; llvm_static_slot.h states what the published cell and the
+//   family stamp make that load stand for. This kind is here for the same
+//   reason the interleaved span is: `Matrix4.compose` writes twelve constant
+//   indices of `this.elements`, then `te[12] = position.x` three times, and a
+//   named read that ENDS the span leaves those last four stores paying a ladder
+//   each. Its receiver is proven PLAIN, and every other kind's is proven ARRAY
+//   or TYPED ARRAY, so an own-slot read and any element access in the same span
+//   are about different objects by construction.
+//
 //   a DUPLICABLE instruction — one that neither collects nor throws and whose
 //   emission is a straight line: the machine constants, f64 and i32 arithmetic,
 //   the number predicates, a non-string box, a raw or nullish-widened unbox.
@@ -105,10 +117,13 @@
 // and the span stops in front of it: the branch would have to test a proof that
 // entered the block through a phi, which is exactly the per-member shape again.
 //
-// A member whose site carries a STATIC SLOT claim is refused too. That claim
-// emits its own guard in front of the cache (llvm_static_slot.h) and so takes
-// priority over the proven element access today; a group would silently reverse
-// the two, and a reversal is not something to leave to an accident of order.
+// An ELEMENT member whose site carries a STATIC SLOT claim is refused. That
+// claim emits its own guard in front of the cache (llvm_static_slot.h) and so
+// takes priority over the proven element access today; a group would silently
+// reverse the two, and a reversal is not something to leave to an accident of
+// order. The own-slot kind above is the same rule read the other way round: a
+// site with a claim and an INDEX key stays an element access under its own
+// guard, and only a NAMED key becomes an own-slot step.
 //
 // THE SEAMS. `BRONZE_NO_RUN_ARMS=1` plans no groups at all AND puts the
 // live-root anchor pass back on its sole-predecessor rule, because the two are
@@ -120,7 +135,11 @@
 // `BRONZE_NO_RUN_ARMS_TYPED_STORES=1` keeps the spans but refuses every
 // typed-array store member, which puts the gate and everything downstream of it
 // back to the shape that stood before it: `Matrix4.toArray` cut at its first
-// store and planned no group at all.
+// store and planned no group at all. `BRONZE_NO_OWN_SLOT_STEP=1` refuses every
+// own-slot step AND the run planner's carry across such a read — one seam for
+// both halves, because a group cannot span both sides of a read the planner
+// still treats as the end of a run, and a carry with no group to spend it on is
+// register pressure paid for nothing.
 
 #include <cstddef>
 #include <cstdint>
@@ -132,21 +151,34 @@ namespace bronze::codegen_llvm {
 
 // One run a group covers, and the ladder the group emits for it at its head.
 struct RunArmProof {
-    enum class Kind : uint8_t { Read, ArrayStore, TypedStore };
+    enum class Kind : uint8_t { Read, ArrayStore, TypedStore, OwnSlot };
 
     Kind kind = Kind::Read;
     // The run this proof is, and the largest index its one length test clears —
     // both straight from the block's run plan, so the proof the group emits is
     // the proof the per-member shape would have emitted. For a TypedStore the
     // index is an OFFSET off `base`, and the one length test clears
-    // `base + maxIndex`.
+    // `base + maxIndex`. Both `0` for an OwnSlot, which is a claim about one
+    // receiver's shape and belongs to no run.
     uint32_t run = 0;
     uint32_t maxIndex = 0;
     il::ValueId receiver = il::kNoValue;
     // The f64 SSA value a TypedStore run's indices are affine over, which its
     // ladder needs in a register at the group's head. `kNoValue` for the other
-    // two kinds, whose indices are constants in the plan.
+    // kinds, whose indices are constants in the plan.
     il::ValueId base = il::kNoValue;
+    // An OwnSlot's guard, straight off the site (il.h): the module cell the
+    // IDENTITY form compares the shape against, or the class subtree the FAMILY
+    // form asks the shape's stamp about. Which of the two is `familyLo`, exactly
+    // as it is at the site (llvm_static_slot.h, `StaticSite::family`).
+    //
+    // These are the proof's IDENTITY as well as its parameters. Two fields of
+    // one object under one family stamp share a guard, because the stamp stands
+    // for that class's whole declared field list at once; two identity sites
+    // hold two cells, and each cell has to be compared for itself.
+    uint32_t cellIndex = 0;
+    uint32_t familyLo = il::Instruction::kNoFamily;
+    uint32_t familySpan = 0;
 };
 
 // One instruction of the span, in program order.
@@ -157,8 +189,12 @@ struct RunArmStep {
     uint32_t inst = 0;
     // The proof this step spends, or `kNoProof` for a duplicated non-member.
     uint32_t proof = kNoProof;
-    // A member's element index or offset; the value a store member writes.
+    // Where on the receiver this step reaches: an element index for a Read or an
+    // ArrayStore, an offset off `base` for a TypedStore, and the INSTANCE SLOT
+    // for an OwnSlot. One field because it is one question — which position of
+    // the proven receiver — and the proof beside it says in whose numbering.
     uint32_t index = 0;
+    // The value a store member writes.
     il::ValueId value = il::kNoValue;
     // Whether the GATE holds this step: it produces, directly or through other
     // gate steps, a value some typed-array store member of this span writes.
@@ -250,11 +286,50 @@ bool interleavedRunArmsEnabled();
 // (`BRONZE_NO_RUN_ARMS_TYPED_STORES=1` turns that off). Read once and cached.
 bool typedStoreRunArmsEnabled();
 
+// Whether a span may hold an own-slot read, and so whether the run planner
+// carries a proof across one (`BRONZE_NO_OWN_SLOT_STEP=1` turns both off). Read
+// once and cached.
+bool ownSlotStepEnabled();
+
+// Whether this instruction is the NAMED OWN-SLOT READ the step above is about.
+// Asked in one place because three callers have to agree exactly: the planner
+// that admits the step, the run planner that spans the instruction instead of
+// ending its runs, and llvm_prop_get.cpp, which hands the site's static hit
+// block back as the join's proof-preserving edge for the sites where no group
+// formed.
+bool ownSlotRead(const il::Module& module, const il::Instruction& inst);
+
 // Whether the fast arm may hold a COPY of this instruction: it can neither
 // collect nor throw, and its emission is a straight line with no edge out of
 // the arm. Named here rather than at the emitter because the planner and the
 // emitter must agree about it exactly — the planner decides the span and the
 // emitter duplicates whatever the planner put in it.
 bool runArmDuplicable(const il::Instruction& inst);
+
+// What the planner admitted, module-wide. A span rule is easy to believe in and
+// hard to check — a rule that admits nothing emits exactly the code it replaced
+// and every test still passes — so these count PLANNED GROUPS, which is the only
+// thing that tells "the step is correct" from "the step is ever taken".
+//
+// Process-global for the reason llvm_repr.h's counters are: one `bronze build`
+// is one module, and threading a counter through the planner to report a number
+// nothing else reads would cost more in signatures than the number is worth.
+struct RunArmStats {
+    uint32_t groups = 0;
+    uint32_t members = 0;
+    // Groups holding at least one own-slot step, and the steps themselves.
+    uint32_t ownSlotGroups = 0;
+    uint32_t ownSlotSteps = 0;
+};
+
+RunArmStats& runArmStats();
+
+// Prints the counters to stderr when `BRONZE_RUN_ARM_STATS=1`, and does nothing
+// otherwise. Called once, after the module is emitted.
+void runArmStatsReport();
+
+// Whether every group holding an own-slot step names itself as it is planned
+// (`BRONZE_RUN_ARM_STATS=2`). Read once and cached.
+bool runArmStatsVerbose();
 
 }  // namespace bronze::codegen_llvm

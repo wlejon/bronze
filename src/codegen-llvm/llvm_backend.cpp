@@ -73,6 +73,7 @@ static_assert(LLVM_VERSION_MAJOR >= 20, "Bronze LLVM backend requires LLVM 20 or
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_partition.h"
 #include "codegen-llvm/llvm_pin.h"
+#include "codegen-llvm/llvm_run_arms.h"
 #include "il/print.h"
 #include "il/verifier.h"
 #include "support/timings.h"
@@ -972,6 +973,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     // (BRONZE_REPR_CODEGEN_STATS=1; llvm_repr.h says why the count and not the
     // test suite is what shows the stage fired).
     codegen_llvm::reprStatsReport();
+    codegen_llvm::runArmStatsReport();  // Spans admitted; BRONZE_RUN_ARM_STATS=1.
     lap("ir-build");
 
     std::string errStr;

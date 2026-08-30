@@ -4,6 +4,7 @@
 #include "codegen-llvm/llvm_alias.h"
 #include "il/il.h"
 
+#include <llvm/IR/CFG.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
@@ -50,6 +51,35 @@ llvm::Value* familyInRange(llvm::IRBuilder<>& builder, const ModuleTables& table
     llvm::Value* lo = builder.CreateAdd(base, builder.getInt64(site.familyLo));
     llvm::Value* rel = builder.CreateSub(stamp, lo, p + ".static.famrel");
     return builder.CreateICmpULE(rel, builder.getInt64(site.familySpan), p + ".static.famok");
+}
+
+// The slot's address off a header the guard has already agreed is a plain
+// object's, at a compile-time constant offset.
+//
+// One body, because the hoisted proof below and the guard above have to name the
+// same eight bytes: a run-arm group spends the proof on a load this computes and
+// the group's own slow arm re-emits the site, which computes it here too.
+//
+// The overflow block is an Object-tagged allocation whose payload is a flat
+// Value array; slot 4 is its payload word 0, which is word 1 of the block
+// counting its 8-byte header — the `- 3` the cache path uses.
+llvm::Value* slotAddress(llvm::IRBuilder<>& builder, llvm::Value* hdr, uint32_t slot,
+                         const std::string& p) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    if (slot < BRONZE_ABI_OBJ_INLINE_SLOTS) {
+        return builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET + slot * 8,
+                                                  p + ".static.slotp");
+    }
+    llvm::Value* ovPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
+    llvm::Value* ov = builder.CreateAlignedLoad(i64Ty, ovPtr, llvm::Align(8), p + ".static.ov");
+    llvm::Value* ovAddr = builder.CreateAnd(ov, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* ovObj = builder.CreateIntToPtr(ovAddr, ptrTy);
+    return builder.CreateConstInBoundsGEP1_32(i64Ty, ovObj, slot - BRONZE_ABI_OBJ_INLINE_SLOTS + 1,
+                                              p + ".static.slotp");
 }
 
 }  // namespace
@@ -208,24 +238,7 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
         }
     }
 
-    llvm::Value* slotPtr = nullptr;
-    if (site.slot < BRONZE_ABI_OBJ_INLINE_SLOTS) {
-        slotPtr = builder.CreateConstInBoundsGEP1_32(
-            i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET + site.slot * 8, p + ".static.slotp");
-    } else {
-        // The overflow block is an Object-tagged allocation whose payload is a
-        // flat Value array; slot 4 is its payload word 0, which is word 1 of
-        // the block counting its 8-byte header — the `- 3` the cache path uses.
-        llvm::Value* ovPtr =
-            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
-        llvm::Value* ov =
-            builder.CreateAlignedLoad(i64Ty, ovPtr, llvm::Align(8), p + ".static.ov");
-        llvm::Value* ovAddr =
-            builder.CreateAnd(ov, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-        llvm::Value* ovObj = builder.CreateIntToPtr(ovAddr, ptrTy);
-        slotPtr = builder.CreateConstInBoundsGEP1_32(
-            i64Ty, ovObj, site.slot - BRONZE_ABI_OBJ_INLINE_SLOTS + 1, p + ".static.slotp");
-    }
+    llvm::Value* slotPtr = slotAddress(builder, hdr, site.slot, p);
 
     if (store != nullptr) {
         auto* st = builder.CreateAlignedStore(storeBits, slotPtr, llvm::Align(8));
@@ -241,6 +254,94 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     builder.SetInsertPoint(missBb);
     out.missBb = missBb;
     return out;
+}
+
+OwnSlotProof emitOwnSlotProof(llvm::IRBuilder<>& builder, const ModuleTables& tables,
+                              llvm::Value* objBits, const StaticSite& site,
+                              const std::string& tag) {
+    OwnSlotProof out;
+    if (site.none()) return out;
+    if (site.family() ? tables.familyBase == nullptr : tables.staticSlots == nullptr) return out;
+
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    // Each test reads a field the test before it proved was there, so this is a
+    // chain of blocks rather than one wide `and` — the same arrangement, and for
+    // the same reason, as the array ladder in llvm_recv_proof.cpp. Every failure
+    // edge meets the success edge at one join, because what a group branches on
+    // has to be a single i1 and not a jump the caller has to know about.
+    llvm::BasicBlock* hdrBb = llvm::BasicBlock::Create(ctx, tag + "hdr", fn);
+    llvm::BasicBlock* joinBb = llvm::BasicBlock::Create(ctx, tag + "join", fn);
+
+    llvm::BasicBlock* entryBb = builder.GetInsertBlock();
+    llvm::Value* tagBits = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(tagBits, builder.getInt64(BRONZE_ABI_TAG_OBJECT), tag + "isobj"),
+        hdrBb, joinBb);
+
+    builder.SetInsertPoint(hdrBb);
+    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, tag + "hdr");
+    llvm::Value* flags = builder.CreateAlignedLoad(
+        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+        llvm::Align(2), tag + "flags");
+    llvm::Value* isPlain =
+        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
+    llvm::Value* shape = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+        llvm::Align(8), tag + "shape");
+
+    llvm::BasicBlock* okBb = hdrBb;
+    llvm::Value* shapeOk = nullptr;
+    if (site.family()) {
+        // The family word is read THROUGH the shape pointer, and only a plain
+        // object is guaranteed to have one — hence the extra block here where
+        // the identity form can `and` its two compares together. Same split, and
+        // the same argument for it, as `emitStaticSlotGuard`'s.
+        llvm::BasicBlock* famBb = llvm::BasicBlock::Create(ctx, tag + "fam", fn);
+        builder.CreateCondBr(isPlain, famBb, joinBb);
+        builder.SetInsertPoint(famBb);
+        shapeOk = familyInRange(builder, tables, familyWord(builder, shape, tag), site, tag);
+        okBb = famBb;
+    } else {
+        llvm::Value* want =
+            builder.CreateAlignedLoad(i64Ty, cellPtr(builder, tables, site.cellIndex),
+                                      llvm::Align(8), tag + "want");
+        shapeOk = builder.CreateAnd(isPlain, builder.CreateICmpEQ(shape, want), tag + "ok");
+    }
+    builder.CreateBr(joinBb);
+
+    builder.SetInsertPoint(joinBb);
+    llvm::PHINode* okPhi = builder.CreatePHI(builder.getInt1Ty(), 3, tag + "live");
+    llvm::PHINode* hdrPhi = builder.CreatePHI(ptrTy, 3, tag + "hdrp");
+    llvm::Value* poison = llvm::PoisonValue::get(ptrTy);
+    for (llvm::BasicBlock* pred : llvm::predecessors(joinBb)) {
+        okPhi->addIncoming(pred == okBb ? shapeOk : builder.getFalse(), pred);
+        hdrPhi->addIncoming(pred == entryBb ? poison : hdr, pred);
+    }
+
+    out.ok = okPhi;
+    out.hdr = hdrPhi;
+    return out;
+}
+
+llvm::Value* emitOwnSlotLoad(llvm::IRBuilder<>& builder, const OwnSlotProof& proof, uint32_t slot,
+                             const std::string& tag) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Value* slotPtr = slotAddress(builder, proof.hdr, slot, tag);
+    // No correction and no test of any kind. The published cell — or the family
+    // stamp — stands for the key being an OWN DATA property of this shape at
+    // exactly this slot (runtime/static_shape.cpp, runtime/class_family.cpp), so
+    // the eight bytes here are the answer 10.4.2.1's ordinary [[Get]] gives.
+    auto* ld = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), tag + "val");
+    tagObjectSlotAccess(ld, ctx);
+    return ld;
 }
 
 void emitStaticSlotPublish(llvm::IRBuilder<>& builder, const AbiFns& abi,

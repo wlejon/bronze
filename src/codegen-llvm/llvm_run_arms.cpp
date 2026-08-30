@@ -1,6 +1,7 @@
 #include "codegen-llvm/llvm_run_arms.h"
 #include "il/key.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
@@ -15,6 +16,7 @@
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_prop_ic.h"
 #include "codegen-llvm/llvm_recv_proof.h"
+#include "codegen-llvm/llvm_static_slot.h"
 #include "codegen-llvm/llvm_store_proof.h"
 
 namespace bronze::codegen_llvm {
@@ -45,7 +47,50 @@ std::optional<uint32_t> arrayStoreIndexOf(const il::Module& module, const il::In
     return il::parseIndexKey(module.keyConstants[inst.keyIndex]);
 }
 
+// Two members spend ONE proof when its ladder answers for both. For the three
+// RUN kinds that is the run number the block's plan gave them; for an own-slot
+// read it is the receiver and the guard's own parameters (llvm_run_arms.h).
+bool sameProof(const RunArmProof& a, const RunArmProof& b) {
+    if (a.kind != b.kind) return false;
+    if (a.kind != RunArmProof::Kind::OwnSlot) return a.run == b.run;
+    return a.receiver == b.receiver && a.cellIndex == b.cellIndex &&
+           a.familyLo == b.familyLo && a.familySpan == b.familySpan;
+}
+
 }  // namespace
+
+bool ownSlotRead(const il::Module& module, const il::Instruction& inst) {
+    if (inst.op != il::Op::PropGet) return false;
+    if (inst.result == il::kNoValue || inst.operands.empty()) return false;
+    if (inst.staticSlot == il::Instruction::kNoStaticSlot) return false;
+    if (inst.keyIndex >= module.keyConstants.size()) return false;
+    // An INDEX key is left alone. Such a site is an element access under its own
+    // static guard already (llvm_run_arms.h), and admitting it here would make
+    // one instruction a candidate for two kinds of membership at once — the read
+    // planner's and this one's — with nothing to say which answer stands.
+    return !il::parseIndexKey(module.keyConstants[inst.keyIndex]).has_value();
+}
+
+RunArmStats& runArmStats() {
+    static RunArmStats stats;
+    return stats;
+}
+
+bool runArmStatsVerbose() {
+    static const bool on = [] {
+        const char* env = std::getenv("BRONZE_RUN_ARM_STATS");
+        return env != nullptr && std::strcmp(env, "2") == 0;
+    }();
+    return on;
+}
+
+void runArmStatsReport() {
+    const char* env = std::getenv("BRONZE_RUN_ARM_STATS");
+    if (env == nullptr || std::strcmp(env, "1") != 0) return;
+    const RunArmStats& s = runArmStats();
+    std::fprintf(stderr, "[runarm] groups=%u members=%u ownSlotGroups=%u ownSlotSteps=%u\n",
+                 s.groups, s.members, s.ownSlotGroups, s.ownSlotSteps);
+}
 
 bool runArmsDisabled() {
     static const bool off = [] {
@@ -66,6 +111,14 @@ bool interleavedRunArmsEnabled() {
 bool typedStoreRunArmsEnabled() {
     static const bool on = [] {
         const char* env = std::getenv("BRONZE_NO_RUN_ARMS_TYPED_STORES");
+        return env == nullptr || std::strcmp(env, "1") != 0;
+    }();
+    return on;
+}
+
+bool ownSlotStepEnabled() {
+    static const bool on = [] {
+        const char* env = std::getenv("BRONZE_NO_OWN_SLOT_STEP");
         return env == nullptr || std::strcmp(env, "1") != 0;
     }();
     return on;
@@ -142,6 +195,9 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
     if (runArmsDisabled() || !receiverProofEnabled()) return plan;
     const bool spans = interleavedRunArmsEnabled();
     const bool typedStores = spans && typedStoreRunArmsEnabled() && storeProofEnabled();
+    // The own-slot step exists to keep a span whole across a read that would
+    // otherwise cut it, so it is a span feature and goes with the span seam.
+    const bool ownSlots = spans && ownSlotStepEnabled();
 
     for (size_t b = 0; b < blockCount; ++b) {
         const il::Block& block = func.blocks[b];
@@ -164,6 +220,20 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
         // element the group records is the element this answer was about.
         auto memberAt = [&](size_t i, RunArmProof& out, uint32_t& index) -> bool {
             const il::Instruction& inst = block.instructions[i];
+            // The OWN-SLOT read first. A site with a static-slot claim already
+            // takes priority over the proven element access at the site itself,
+            // and `ownSlotRead` refuses the index keys where the two could
+            // overlap — so asking here settles the order rather than leaving it
+            // to which planner happened to answer.
+            if (ownSlots && ownSlotRead(module, inst)) {
+                out.kind = RunArmProof::Kind::OwnSlot;
+                out.receiver = inst.operands[0];
+                out.cellIndex = inst.staticCellIndex;
+                out.familyLo = inst.familyLo;
+                out.familySpan = inst.familySpan;
+                index = inst.staticSlot;
+                return true;
+            }
             const ReceiverRunPlan::Site read = runs.reads.at(i);
             if (read.run != ReceiverRunPlan::kNoRun) {
                 if (const std::optional<uint32_t> idx = readIndexOf(module, inst)) {
@@ -206,10 +276,53 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
             }
             return false;
         };
+        // An own-slot read may not OPEN a span, and may join one only once an
+        // element proof is in it. The step exists to keep a run whole across a
+        // read that cuts it; a span built out of own-slot reads alone replaces
+        // N independent shape questions with N questions ANDed into one, so a
+        // single miss sends every read to a slow arm that re-emits the lot.
+        // `Matrix4.compose`'s `this.elements` and `quaternion._x.._w` reads are
+        // exactly such a prefix, and admitting them costs more than the span
+        // behind them returns.
+        auto bridges = [&](const RunArmGroup& group) {
+            for (const RunArmProof& held : group.proofs) {
+                if (held.kind != RunArmProof::Kind::OwnSlot) return true;
+            }
+            return false;
+        };
+        // And only where it is the READ HALF of `element[i] = obj.field`: the
+        // next member after it, duplicable instructions skipped, is a store
+        // member that writes the value it just produced. `Matrix4.compose`'s
+        // `te[12] = position.x` and `Color.toArray`'s `array[offset] = this.r`
+        // are that shape and are the whole reason for the kind. A read that
+        // merely happens to stand inside a span pays the span's price — one more
+        // question in the group's `and`, a wider join, a longer slow copy — for
+        // a run it does not keep whole; a library whose reads are already in
+        // locals shows that price with nothing to offset it.
+        auto feedsNextStore = [&](size_t j) {
+            const il::ValueId value = block.instructions[j].result;
+            if (value == il::kNoValue) return false;
+            for (size_t k = j + 1; k < n; ++k) {
+                const il::Instruction& next = block.instructions[k];
+                RunArmProof pf;
+                uint32_t index = 0;
+                if (memberAt(k, pf, index)) {
+                    if (pf.kind == RunArmProof::Kind::ArrayStore && next.operands.size() > 1) {
+                        return next.operands[1] == value;
+                    }
+                    if (pf.kind == RunArmProof::Kind::TypedStore && next.operands.size() > 2) {
+                        return next.operands[2] == value;
+                    }
+                    return false;
+                }
+                if (!runArmDuplicable(next)) return false;
+            }
+            return false;
+        };
         auto startsSpan = [&](size_t i) {
             RunArmProof pf;
             uint32_t index = 0;
-            return memberAt(i, pf, index);
+            return memberAt(i, pf, index) && pf.kind != RunArmProof::Kind::OwnSlot;
         };
 
         size_t i = 0;
@@ -233,16 +346,22 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
                 RunArmProof pf;
                 uint32_t index = 0;
                 if (memberAt(j, pf, index)) {
-                    // A member the emitter could not turn into a bare access,
-                    // or one whose site claims a static slot: the span stops in
-                    // front of it and the check below decides whether what has
-                    // been collected so far is still a whole run.
-                    if (inst.staticSlot != il::Instruction::kNoStaticSlot) break;
+                    // An ELEMENT member whose site claims a static slot: the
+                    // span stops in front of it and the check below decides
+                    // whether what has been collected so far is still a whole
+                    // run. An own-slot step IS that claim, spent rather than
+                    // deferred to, so it is the one kind the test lets through.
+                    if (pf.kind != RunArmProof::Kind::OwnSlot &&
+                        inst.staticSlot != il::Instruction::kNoStaticSlot) {
+                        break;
+                    }
+                    if (pf.kind == RunArmProof::Kind::OwnSlot &&
+                        (!bridges(group) || !feedsNextStore(j))) {
+                        break;
+                    }
                     uint32_t at = RunArmStep::kNoProof;
                     for (size_t p = 0; p < group.proofs.size(); ++p) {
-                        if (group.proofs[p].kind == pf.kind && group.proofs[p].run == pf.run) {
-                            at = static_cast<uint32_t>(p);
-                        }
+                        if (sameProof(group.proofs[p], pf)) at = static_cast<uint32_t>(p);
                     }
                     if (at == RunArmStep::kNoProof) {
                         bool establishes = false;
@@ -255,6 +374,11 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
                                 break;
                             case RunArmProof::Kind::TypedStore:
                                 establishes = runs.stores.at(j).establishes;
+                                break;
+                            // Nobody else's to continue: the group emits this
+                            // ladder itself, out of fields the site carries.
+                            case RunArmProof::Kind::OwnSlot:
+                                establishes = true;
                                 break;
                         }
                         // A run chained in from an earlier block, or a second
@@ -285,6 +409,7 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
                     step.index = index;
                     switch (pf.kind) {
                         case RunArmProof::Kind::Read:
+                        case RunArmProof::Kind::OwnSlot:
                             group.result.push_back(inst.result);
                             break;
                         case RunArmProof::Kind::ArrayStore:
@@ -320,7 +445,12 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
             for (size_t k = group.last + 1; !refused && k < n; ++k) {
                 for (const RunArmProof& pf : group.proofs) {
                     // The three run numberings are separate namespaces, so the
-                    // comparison is inside one kind and never across them.
+                    // comparison is inside one kind and never across them. An
+                    // OwnSlot proof is no run: it is built out of fields the
+                    // site itself carries, so a matching site left outside the
+                    // span emits its own guard exactly as it does today rather
+                    // than spending one this group established.
+                    if (pf.kind == RunArmProof::Kind::OwnSlot) continue;
                     uint32_t run = ReceiverRunPlan::kNoRun;
                     switch (pf.kind) {
                         case RunArmProof::Kind::Read:
@@ -331,6 +461,8 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
                             break;
                         case RunArmProof::Kind::TypedStore:
                             run = runs.stores.at(k).run;
+                            break;
+                        case RunArmProof::Kind::OwnSlot:
                             break;
                     }
                     if (run == pf.run) refused = true;
@@ -370,8 +502,16 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
                 }
                 for (size_t k = group.steps.size(); k-- > 0;) {
                     RunArmStep& step = group.steps[k];
+                    // A READ or an OWN-SLOT read may be hoisted above the stores
+                    // between it and the gate; a store may not, and never is,
+                    // because a store defines nothing to want. The hoist is
+                    // legal for both reads by the same argument: the gate's
+                    // stores were proven to be into a TYPED ARRAY and these
+                    // receivers were proven to be an Array and a plain object,
+                    // so no load here can see one of those stores.
                     if (step.proof != RunArmStep::kNoProof &&
-                        group.proofs[step.proof].kind != RunArmProof::Kind::Read) {
+                        group.proofs[step.proof].kind != RunArmProof::Kind::Read &&
+                        group.proofs[step.proof].kind != RunArmProof::Kind::OwnSlot) {
                         continue;
                     }
                     const il::Instruction& def = block.instructions[step.inst];
@@ -383,6 +523,30 @@ RunArmPlan planRunArms(const il::Module& module, const il::Function& func) {
             }
 
             if (!refused && group.memberCount() >= 2) {
+                RunArmStats& stats = runArmStats();
+                ++stats.groups;
+                stats.members += static_cast<uint32_t>(group.memberCount());
+                uint32_t ownSlotSteps = 0;
+                for (const RunArmStep& step : group.steps) {
+                    if (step.proof != RunArmStep::kNoProof &&
+                        group.proofs[step.proof].kind == RunArmProof::Kind::OwnSlot) {
+                        ++ownSlotSteps;
+                    }
+                }
+                stats.ownSlotSteps += ownSlotSteps;
+                if (ownSlotSteps > 0) {
+                    ++stats.ownSlotGroups;
+                    // WHERE, under `BRONZE_RUN_ARM_STATS=2`. A count says the
+                    // step fired; only the site says whether it fired on the
+                    // shape the kind exists for, and there are few enough of
+                    // them that naming each one is how a measurement gets
+                    // attributed to a function rather than to a fixture.
+                    if (runArmStatsVerbose()) {
+                        std::fprintf(stderr, "[runarm] %s b%zu i%u..%u steps=%u proofs=%zu\n",
+                                     func.name.c_str(), b, group.first, group.last, ownSlotSteps,
+                                     group.proofs.size());
+                    }
+                }
                 const uint32_t id = static_cast<uint32_t>(plan.groups.size());
                 plan.startOf[plan.blockBase[b] + group.first] = id;
                 for (uint32_t k = group.first; k <= group.last; ++k) {
@@ -413,6 +577,7 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
     std::vector<ReceiverProof> reads(group.proofs.size());
     std::vector<ArrayStoreProof> arrayStores(group.proofs.size());
     std::vector<StoreProof> typedStores(group.proofs.size());
+    std::vector<OwnSlotProof> ownSlots(group.proofs.size());
     llvm::Value* ok = nullptr;
     for (size_t p = 0; p < group.proofs.size(); ++p) {
         const RunArmProof& pf = group.proofs[p];
@@ -442,6 +607,17 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
                 typedStores[p] = emitStoreProof(builder_, obj, baseDbl, pf.receiver, pf.base,
                                                 pf.run, pf.maxIndex);
                 mine = typedStores[p].ok;
+                break;
+            }
+            case RunArmProof::Kind::OwnSlot: {
+                StaticSite site;
+                site.slot = 0;  // the SLOT is per step; the guard asks nothing of it
+                site.cellIndex = pf.cellIndex;
+                site.familyLo = pf.familyLo;
+                site.familySpan = pf.familySpan;
+                ownSlots[p] = emitOwnSlotProof(builder_, shared_.tables, obj, site,
+                                               tag + "own" + std::to_string(p) + ".");
+                mine = ownSlots[p].ok;
                 break;
             }
         }
@@ -528,6 +704,10 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
             // bits, and every reload corrects them — which is sound here for the
             // reason `holeRawSafe_` names and for no weaker one.
             if (raw && slotOf_[res] != kNoSlot) holeRawSlot_[res] = 1;
+        } else if (group.proofs[step.proof].kind == RunArmProof::Kind::OwnSlot) {
+            values_[inst.result] =
+                emitOwnSlotLoad(builder_, ownSlots[step.proof], step.index,
+                                tag + "s" + std::to_string(step.index) + ".");
         } else {
             armReload(step.value, false);
             llvm::Value* val = values_[step.value];
@@ -699,6 +879,11 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
                 break;
             case RunArmProof::Kind::TypedStore:
                 storeProof_ = typedStores[p];
+                break;
+            // Nothing outlives the group. An own-slot proof is not a run, so no
+            // later site is waiting to spend it — each emits the guard it
+            // carries for itself.
+            case RunArmProof::Kind::OwnSlot:
                 break;
         }
     }

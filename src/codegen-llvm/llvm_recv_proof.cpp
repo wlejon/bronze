@@ -3,6 +3,7 @@
 
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_prop_ic.h"
+#include "codegen-llvm/llvm_run_arms.h"
 
 #include <algorithm>
 #include <cmath>
@@ -321,6 +322,25 @@ void scanRuns(const il::Module& module, const ChainView& view,
                 if (target == readRecv) commitReads();
                 if (target == storeRecv || target == storeBase) commitStores();
                 if (target == arrRecv) commitArrayStores();
+            }
+            continue;
+        }
+
+        // A NAMED OWN-SLOT READ carries every live proof the same way, and for a
+        // shorter reason: its proven arm is a shape compare, a GEP and a load,
+        // so it moves nothing and there is not even the store carry's exception
+        // to make for the read's own receiver. Whose ARM that is matters —
+        // llvm_run_arms.h spans such a read as a STEP of a group, and
+        // llvm_prop_get.cpp hands back the site's static hit block for the sites
+        // where no group formed, so the three answer one predicate.
+        //
+        // Its RESULT can still be the value a run's proof was made about, which
+        // is the one thing a load can do to a run, so that check stands.
+        if (carry && ownSlotStepEnabled() && ownSlotRead(module, inst)) {
+            if (inst.result != il::kNoValue) {
+                if (inst.result == readRecv) commitReads();
+                if (inst.result == storeRecv || inst.result == storeBase) commitStores();
+                if (inst.result == arrRecv) commitArrayStores();
             }
             continue;
         }

@@ -73,11 +73,22 @@
 // element store, which can grow the element block and therefore allocate, and
 // a run of those is the Array store planner's business already.
 //
+// WHAT A NAMED OWN-SLOT READ DOES. `Matrix4.compose` finishes with `te[12] =
+// position.x` three times, so the same rule read the other way round: a `o.name`
+// read whose class layout proved a constant instance slot (il.h, `staticSlot`)
+// is a shape compare, a GEP and a load, and a run spans it too. It is carried
+// only where llvm_run_arms.h will SPEND it — as a step of a group, which is what
+// makes the load unconditional — because a carry with no group behind it keeps
+// the proof's phis live across a read with nothing to show for the pressure.
+// `ownSlotRead` is the one predicate all three places ask.
+//
 // Seam: BRONZE_NO_RECV_PROOF=1 turns ALL THREE planners off, so every site
 // emits the ladder alone and the A/B is one environment variable;
 // BRONZE_NO_STORE_PROOF=1 turns off the typed-array store side alone,
-// BRONZE_NO_ARRAY_STORE_PROOF=1 the Array store side alone, and
-// BRONZE_NO_SLOT_STORE_CARRY=1 the named-store carry just described.
+// BRONZE_NO_ARRAY_STORE_PROOF=1 the Array store side alone,
+// BRONZE_NO_SLOT_STORE_CARRY=1 the named-store carry, and
+// BRONZE_NO_OWN_SLOT_STEP=1 the own-slot read carry with the group step it
+// exists for.
 
 #include <cstdint>
 #include <string>

@@ -3,6 +3,8 @@
 #include "codegen-llvm/llvm_abi.h"
 #include "codegen-llvm/llvm_repr.h"
 
+#include <string>
+
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
@@ -102,6 +104,40 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
                                     llvm::Value* objBits, const StaticSite& site,
                                     llvm::BasicBlock* doneBb, llvm::Value* store,
                                     ValueRepr storeRepr, const char* prefix);
+
+// THE SAME GUARD AS AN i1, hoisted away from the access it licenses.
+//
+// The guard above branches to a hit block and reads the slot there, which is
+// what a lone site wants. A RUN of reads off one receiver wants the questions
+// asked once and the answer spent per field, so that the reads between two
+// element accesses stop cutting the element run in half (llvm_run_arms.h). This
+// is that form: the identical tests, in the identical order, off the identical
+// fields, ending at a join whose `ok` a group can `and` with its other proofs.
+//
+// It is deliberately not a second opinion about the same question. What one
+// answers the other must answer, so the slot address below is the address the
+// guard computes and the two forms' shape questions are the two the guard asks.
+struct OwnSlotProof {
+    // The receiver's object header, poison on every edge where `ok` is false.
+    llvm::Value* hdr = nullptr;
+    llvm::Value* ok = nullptr;
+
+    bool live() const { return ok != nullptr; }
+};
+
+// Emits the ladder at the current insert point and leaves the builder in its
+// join. A site with no claim, or one whose table this module does not have,
+// yields a proof with a null `ok` — the caller diagnoses that rather than
+// emitting an access the guard never covered.
+OwnSlotProof emitOwnSlotProof(llvm::IRBuilder<>& builder, const ModuleTables& tables,
+                              llvm::Value* objBits, const StaticSite& site,
+                              const std::string& tag);
+
+// One field of a proven receiver: the slot's address at a compile-time constant
+// offset, and the load. No branch and no test, which is what makes it a step of
+// a run-arm group's straight-line fast arm.
+llvm::Value* emitOwnSlotLoad(llvm::IRBuilder<>& builder, const OwnSlotProof& proof, uint32_t slot,
+                             const std::string& tag);
 
 // Emits the one-shot fill reached from the ordinary sequence's slow block.
 //
