@@ -20,12 +20,16 @@ namespace bronze::codegen_llvm {
 // there now, and calls its current code/env/arity — the callee itself is
 // never cached, which is what keeps per-instance closures and host functions
 // correct on shared shapes.
+// `fnRecvHint` is `il::Instruction::icFnRecv`: lowering saw a class- or
+// function-declaration binding (or a provided global) as the receiver, so the
+// not-plain edge gets the FUNCTION-STATICS arm — the box hanging off
+// `properties` scanned at way 0, SLOT form only, `this` still the function.
 // Slow path:
 //   -> abi.bronze_call_method(thisVal, emitKeyId(...), argc, argv, icEntry)
 llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                   const AbiGlobals& globals, const ModuleTables& tables,
                                   llvm::Value* thisVal, uint32_t keyIndex, uint32_t icIndex,
-                                  uint32_t argc, llvm::Value* argv);
+                                  uint32_t argc, llvm::Value* argv, bool fnRecvHint);
 
 // Emits MethodCallSpread fallback / helper:
 llvm::Value* emitMethodCallSpreadInline(llvm::IRBuilder<>& builder, const AbiFns& abi,

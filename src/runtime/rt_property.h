@@ -125,10 +125,18 @@ void rtPrimitiveWrite(Rooted<Value>& recv, Rooted<Value>& key, const std::string
 uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                           struct InlineCacheSite* site);
 
-// THE SEAM. `BRONZE_NO_FN_STATICS_IC=1` stops the statics fill above, so that
-// one binary A/Bs it together with codegen's half of the same variable. Latched
+// THE SEAM. `BRONZE_NO_FN_STATICS_IC=1` stops the statics fills, so that one
+// binary A/Bs them together with codegen's half of the same variable. Latched
 // at heap init beside the other seams that are not in the ABI's TLS block.
 void fnStaticsIcReadSeam() noexcept;
+
+// May a shape-keyed entry describe this (function receiver, statics box) pair?
+// The refusals — intrinsic constructor, dictionary box, the seam — and why each
+// is a correctness condition are stated once, at the definition in
+// rt_prop_function.cpp. Asked by the read fill there and by the method-call
+// latch in rt_method_call.cpp; an ACCESSOR property is each caller's own gate,
+// since only the caller knows whether what it found is one.
+bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept;
 
 // ---- the property path's shared key decoding (rt_prop.cpp) ------------------
 //

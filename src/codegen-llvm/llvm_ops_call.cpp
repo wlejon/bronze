@@ -105,8 +105,9 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
     llvm::Value* argv = emitArgv(inst, 1, argc, ok);
     if (!ok) return false;
 
-    llvm::Value* res = emitMethodCallInline(
-        builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex, inst.icIndex, argc, argv);
+    llvm::Value* res =
+        emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
+                             inst.icIndex, argc, argv, inst.icFnRecv);
     if (inst.result != il::kNoValue) {
         values_[inst.result] = res;
     }
@@ -230,7 +231,7 @@ bool FunctionEmitter::emitMethodCallDirect(const il::Instruction& inst, llvm::Va
     if (!ok) return false;
     llvm::Value* missRes =
         emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
-                             inst.icIndex, argc, argv);
+                             inst.icIndex, argc, argv, inst.icFnRecv);
     llvm::BasicBlock* missEnd = builder_.GetInsertBlock();
     builder_.CreateBr(doneBb);
 

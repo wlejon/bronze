@@ -37,25 +37,28 @@
 
 namespace bronze::runtime {
 
-namespace {
+// THE SEAM, runtime half. `BRONZE_NO_FN_STATICS_IC=1` stops both fills below,
+// so that one binary A/Bs the whole mechanism: codegen's half of the same
+// variable (llvm_prop_get.cpp, llvm_method_call.cpp) stops emitting the statics
+// arms, and this stops warming entries those arms would be the only readers of.
+// Gating only codegen would leave the fill running and let a statics entry
+// evict a plain-object way, which is a difference between the arms that is not
+// the thing being measured.
+static uint32_t g_fnStaticsIcEnabled = 1u;
 
-// THE SEAM, runtime half. `BRONZE_NO_FN_STATICS_IC=1` stops the fill below, so
-// that one binary A/Bs the whole mechanism: codegen's half of the same variable
-// (llvm_prop_get.cpp) stops emitting the statics arm, and this stops warming
-// entries that arm would be the only reader of. Gating only codegen would leave
-// the fill running and let a statics entry evict a plain-object way, which is a
-// difference between the arms that is not the thing being measured.
-uint32_t g_fnStaticsIcEnabled = 1u;
+void fnStaticsIcReadSeam() noexcept {
+    const char* env = std::getenv("BRONZE_NO_FN_STATICS_IC");
+    g_fnStaticsIcEnabled = (env != nullptr && std::strcmp(env, "1") == 0) ? 0u : 1u;
+}
 
-// Teach this site that the answer for a FUNCTION receiver is an own data
-// property of the receiver's STATICS object, so the next read hits inline
-// instead of walking this whole file again.
-//
-// What goes in the entry is the statics object's shape and slot, NOT the
-// receiver's — a function has no shape of its own. Generated code holds up its
-// end by loading `properties` out of the FunctionHeader and scanning the ways
-// against THAT object's shape (llvm_prop_get.cpp), so the two sides describe
-// the same object or neither does.
+// May a shape-keyed inline-cache entry describe this (function receiver,
+// statics box) pair at all? Two fills ask it: the property READ's
+// `installStaticsCacheEntry` below, and the method call's
+// `latchFunctionStaticsMethodIc` (rt_method_call.cpp), which caches the same
+// box's shape and slot so a call's callee lookup hits where a read's does. One
+// function rather than a copy each, because every refusal here is about the
+// RECEIVER and the BOX and not about what the site goes on to do with the slot
+// — the two askers differ only in that.
 //
 // Three refusals, and each one is a correctness condition rather than a
 // heuristic:
@@ -67,32 +70,27 @@ uint32_t g_fnStaticsIcEnabled = 1u;
 //     gives C's statics the shape `{keys}`, and a first `Object.keys = 9`
 //     would give %Object%'s statics the same interned shape pointer — after
 //     which one warm site would answer 9 where the language says the builtin.
-//   - An ACCESSOR is never cached. A `static get` sees the CLASS as its
-//     receiver, not the side object the getter is stored in (which is why the
-//     read below hands `getProp` the function's own slot). Generated code's
-//     inline accessor arm would dispatch with the statics object instead, so
-//     this path stays on the helper and keeps the receiver the language's.
+//   - An ACCESSOR is never cached — the caller's own gate, since only it knows
+//     whether the property it found is one. A `static get` sees the CLASS as
+//     its receiver, not the side object the getter is stored in (which is why
+//     the read below hands `getProp` the function's own slot). Generated
+//     code's inline arms hold the box, so they would dispatch the getter with
+//     the wrong receiver; both stay on the helper instead.
 //   - A DICTIONARY shape is never cached, on the same terms as the plain-object
 //     path: its slots are not shape-indexed and its shape is private to one
 //     object, so an entry naming it goes stale on the next delete.
 //
-// Depth is 0 by construction: only an OWN property of the statics object gets
-// here. A static INHERITED through `extends` is answered further down this file
-// and fills nothing, because the entry has no way to say "own property of an
-// ancestor of the receiver's statics object" that generated code could check.
 // A statics shape and a plain object's shape are drawn from the same arena and
 // CAN be the same pointer — `rtEnsureFunctionProperties` starts the box from
 // `rtPlainObjectShape()`, the very root `{}` starts from. That collision is
 // harmless and is worth saying why: a shape IS a key-to-slot map and nothing
-// else, so a plain receiver that matches this entry finds the site's key at the
-// same slot in ITSELF, which is the answer it should have had. What the entry
-// must not do is survive into a case where the answer does NOT come from a
-// key-to-slot map, and the two gates below are exactly those cases.
-void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* propsObj,
-                              const PropertyInfo& own) {
-    if (site == nullptr || g_fnStaticsIcEnabled == 0) return;
-    if (own.accessor) return;
-    if (propsObj->shape == nullptr || propsObj->shape->isDictionary()) return;
+// else, so a plain receiver that matches such an entry finds the site's key at
+// the same slot in ITSELF, which is the answer it should have had. What an
+// entry must not do is survive into a case where the answer does NOT come from
+// a key-to-slot map, and the refusals above are exactly those cases.
+bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept {
+    if (g_fnStaticsIcEnabled == 0) return false;
+    if (box == nullptr || box->shape == nullptr || box->shape->isDictionary()) return false;
     // The intrinsic-constructor gate. `rtIntrinsicConstructorName` is true for
     // exactly the receivers `rtGlobalConstructorMember` can answer for — both
     // ask whether the FunctionHeader's code pointer is one of `kCtors` — so
@@ -100,19 +98,36 @@ void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* 
     // the box, and nothing else. It has to be the receiver test and not the
     // (receiver, key) one: the table's claim travels with the receiver, and a
     // key it declines today is one another site may ask it about.
-    if (rtIntrinsicConstructorName(fnVal) != nullptr) return;
-    if (censusFillsSuppressed()) return;
+    if (rtIntrinsicConstructorName(fnVal) != nullptr) return false;
+    return !censusFillsSuppressed();
+}
+
+namespace {
+
+// Teach this site that the answer for a FUNCTION receiver is an own data
+// property of the receiver's STATICS object, so the next read hits inline
+// instead of walking this whole file again.
+//
+// What goes in the entry is the statics object's shape and slot, NOT the
+// receiver's — a function has no shape of its own. Generated code holds up its
+// end by loading `properties` out of the FunctionHeader and scanning way 0
+// against THAT object's shape (llvm_prop_get.cpp), so the two sides describe
+// the same object or neither does.
+//
+// Depth is 0 by construction: only an OWN property of the statics object gets
+// here. A static INHERITED through `extends` is answered further down this file
+// and fills nothing, because the entry has no way to say "own property of an
+// ancestor of the receiver's statics object" that generated code could check.
+void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* propsObj,
+                              const PropertyInfo& own) {
+    if (site == nullptr || own.accessor) return;
+    if (!rtStaticsBoxCacheable(fnVal, propsObj)) return;
     if (InlineCache* into = site->slotForInstall(propsObj->shape, rtIcWayLimit())) {
         into->fill(propsObj->shape, own.slot, /*depth=*/0);
     }
 }
 
 }  // namespace
-
-void fnStaticsIcReadSeam() noexcept {
-    const char* env = std::getenv("BRONZE_NO_FN_STATICS_IC");
-    g_fnStaticsIcEnabled = (env != nullptr && std::strcmp(env, "1") == 0) ? 0u : 1u;
-}
 
 uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
                           InlineCacheSite* site) {

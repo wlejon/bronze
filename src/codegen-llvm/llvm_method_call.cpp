@@ -13,10 +13,81 @@ namespace bronze::codegen_llvm {
 
 static constexpr uint32_t kPadSlots = 16;
 
+namespace {
+
+// The (code, env, arity) triple read off a function object found in a slot,
+// and the block it was read in.
+struct SlotCallee {
+    llvm::Value* code = nullptr;
+    llvm::Value* env = nullptr;
+    llvm::Value* arity = nullptr;  // i32
+    llvm::BasicBlock* okBb = nullptr;
+};
+
+// A slot may hold ANYTHING a same-shape write put there, so the entry's claim
+// about WHERE the callee lives is never a claim about what it is: only a
+// Function heap object dispatches directly, and everything else takes the
+// helper and its TypeError — the same split `bronze_dynamic_call` performs.
+//
+// Both SLOT-form arms go through here — the receiver's own slot, and a
+// function receiver's STATICS BOX slot — because that identical re-derivation
+// is what makes caching a slot sound in either place. Leaves the builder
+// inserting in the returned block.
+SlotCallee emitSlotCallee(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
+                          llvm::Value* slotVal, llvm::BasicBlock* slowBb,
+                          const std::string& prefix) {
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::Value* vTag = builder.CreateLShr(slotVal, BRONZE_ABI_VALUE_TAG_SHIFT, prefix + ".tag");
+    llvm::Value* vIsObj =
+        builder.CreateICmpEQ(vTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), prefix + ".isobj");
+    llvm::BasicBlock* fnBb = llvm::BasicBlock::Create(ctx, prefix + ".fn", fn);
+    builder.CreateCondBr(vIsObj, fnBb, slowBb);
+
+    builder.SetInsertPoint(fnBb);
+    llvm::Value* fnAddr =
+        builder.CreateAnd(slotVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* fnPtr = builder.CreateIntToPtr(fnAddr, ptrTy, prefix + ".fnptr");
+    auto* fnFlags = builder.CreateAlignedLoad(
+        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+        llvm::Align(2), prefix + ".fnflags");
+    markInvariant(fnFlags, ctx);
+    llvm::Value* isFn = builder.CreateICmpEQ(
+        fnFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), prefix + ".isfn");
+    llvm::BasicBlock* okBb = llvm::BasicBlock::Create(ctx, prefix + ".ok", fn);
+    builder.CreateCondBr(isFn, okBb, slowBb);
+
+    builder.SetInsertPoint(okBb);
+    SlotCallee out;
+    out.okBb = okBb;
+    auto* code = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
+        llvm::Align(8), prefix + ".code");
+    markInvariant(code, ctx);
+    out.code = code;
+    auto* env = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+        llvm::Align(8), prefix + ".env");
+    markInvariant(env, ctx);
+    out.env = env;
+    auto* arity = builder.CreateAlignedLoad(
+        i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ARITY_OFFSET),
+        llvm::Align(4), prefix + ".arity");
+    markInvariant(arity, ctx);
+    out.arity = arity;
+    return out;
+}
+
+}  // namespace
+
 llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                   const AbiGlobals& globals, const ModuleTables& tables,
                                   llvm::Value* thisVal, uint32_t keyIndex, uint32_t icIndex,
-                                  uint32_t argc, llvm::Value* argv) {
+                                  uint32_t argc, llvm::Value* argv, bool fnRecvHint) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -37,6 +108,10 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, "mic.hit", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "mic.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "mic.done", fn);
+    // Created here so 2b's kind miss can name it; its body is emitted at 2c.
+    llvm::BasicBlock* fnArmBb = (!fnStaticsIcDisabled() && fnRecvHint)
+                                    ? llvm::BasicBlock::Create(ctx, "mic.fn.arm", fn)
+                                    : nullptr;
 
     // 1. Feature enable check & Object tag check
     auto* enabled = builder.CreateAlignedLoad(
@@ -80,7 +155,14 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.CreateShl(flags64, BRONZE_ABI_METHOD_IC_KIND_SHIFT),
         builder.getInt64(BRONZE_ABI_METHOD_IC_EXOTIC_BIT), "mic.exo.expect");
     llvm::Value* exoKindOk = builder.CreateICmpEQ(exoLow, exoExpect, "mic.exo.kindok");
-    builder.CreateCondBr(exoKindOk, exoticBoxBb, slowBb);
+    // A kind miss is not always the helper. Where lowering said the receiver
+    // can be a function (`il::Instruction::icFnRecv` — a class or function
+    // declaration's binding, or a provided global), the statics arm at 2c gets
+    // the edge instead; everywhere else the arm is not emitted at all, and
+    // that gate is the condition on which it is affordable rather than an
+    // optimisation of it. Skipping is always sound: it is the helper, which is
+    // the answer the arm exists to avoid asking for, never a different one.
+    builder.CreateCondBr(exoKindOk, exoticBoxBb, fnArmBb ? fnArmBb : slowBb);
 
     // The guard's second clause: load the u64 at the aux offset word 0
     // carries in its high half, then ask the question bit 1 selects.
@@ -244,41 +326,8 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* slotVal =
         builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "mic.slot.val");
 
-    // The slot may hold ANYTHING a same-shape write put there; only a Function
-    // heap object dispatches directly, everything else takes the helper and
-    // its TypeError — the same split bronze_dynamic_call performs.
-    llvm::Value* vTag = builder.CreateLShr(slotVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.slot.tag");
-    llvm::Value* vIsObj =
-        builder.CreateICmpEQ(vTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.slot.isobj");
-    llvm::BasicBlock* slotFnBb = llvm::BasicBlock::Create(ctx, "mic.slot.fn", fn);
-    builder.CreateCondBr(vIsObj, slotFnBb, slowBb);
-
-    builder.SetInsertPoint(slotFnBb);
-    llvm::Value* fnAddr =
-        builder.CreateAnd(slotVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* fnPtr = builder.CreateIntToPtr(fnAddr, ptrTy, "mic.slot.fnptr");
-    auto* fnFlags = builder.CreateAlignedLoad(
-        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
-        llvm::Align(2), "mic.slot.fnflags");
-    markInvariant(fnFlags, ctx);
-    llvm::Value* isFn = builder.CreateICmpEQ(
-        fnFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "mic.slot.isfn");
-    llvm::BasicBlock* slotOkBb = llvm::BasicBlock::Create(ctx, "mic.slot.ok", fn);
-    builder.CreateCondBr(isFn, slotOkBb, slowBb);
-
-    builder.SetInsertPoint(slotOkBb);
-    auto* slotCode = builder.CreateAlignedLoad(
-        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
-        llvm::Align(8), "mic.slot.code");
-    markInvariant(slotCode, ctx);
-    auto* slotEnv = builder.CreateAlignedLoad(
-        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
-        llvm::Align(8), "mic.slot.env");
-    markInvariant(slotEnv, ctx);
-    auto* slotArity = builder.CreateAlignedLoad(
-        i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ARITY_OFFSET),
-        llvm::Align(4), "mic.slot.arity");
-    markInvariant(slotArity, ctx);
+    SlotCallee slotCallee = emitSlotCallee(builder, ctx, fn, slotVal, slowBb, "mic.slot");
+    llvm::BasicBlock* slotOkBb = slotCallee.okBb;
     builder.CreateBr(joinBb);
 
     // The way-1 hit joins here too — its branch is created now that the join
@@ -288,18 +337,127 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     // 4c. All three ways meet with (code, env, arity) resolved.
     builder.SetInsertPoint(joinBb);
-    llvm::PHINode* codeInt = builder.CreatePHI(i64Ty, 3, "mic.codeint");
+    llvm::PHINode* codeInt = builder.CreatePHI(i64Ty, 4, "mic.codeint");
     codeInt->addIncoming(directCode, directBb);
-    codeInt->addIncoming(slotCode, slotOkBb);
+    codeInt->addIncoming(slotCallee.code, slotOkBb);
     codeInt->addIncoming(w1Code, way1HitBb);
-    llvm::PHINode* envVal = builder.CreatePHI(i64Ty, 3, "mic.env");
+    llvm::PHINode* envVal = builder.CreatePHI(i64Ty, 4, "mic.env");
     envVal->addIncoming(directEnv, directBb);
-    envVal->addIncoming(slotEnv, slotOkBb);
+    envVal->addIncoming(slotCallee.env, slotOkBb);
     envVal->addIncoming(w1Env, way1HitBb);
-    llvm::PHINode* arity = builder.CreatePHI(i32Ty, 3, "mic.arity");
+    llvm::PHINode* arity = builder.CreatePHI(i32Ty, 4, "mic.arity");
     arity->addIncoming(directArity, directBb);
-    arity->addIncoming(slotArity, slotOkBb);
+    arity->addIncoming(slotCallee.arity, slotOkBb);
     arity->addIncoming(w1Arity, way1HitBb);
+
+    // 2c. THE FUNCTION-STATICS ARM — the third exit from the not-plain edge in
+    //     2b, emitted down here only because it feeds the join's PHIs and so
+    //     needs them to exist. It is the call twin of the property read's arm
+    //     on the same edge (llvm_prop_get.cpp). A function's `static`
+    //     members live in a side object hanging off `properties`, with its own
+    //     shape and its own slots — so `Object.defineProperty(this, …)` and
+    //     `Object3D.DEFAULT_UP.clone()` are ordinary own properties of an
+    //     ordinary plain object that simply is not the receiver, and this
+    //     site's `flags == PLAIN` gate sent every such CALL to the helper
+    //     forever.
+    //
+    //     SLOT FORM ONLY, and the restriction is the arm's whole soundness
+    //     argument rather than a simplification. Word 0 here is the BOX's
+    //     shape, and a box's shape is drawn from the same arena a plain
+    //     object's is and can be the very same pointer — two classes with the
+    //     same statics, or a plain `{make: f}`. A shape is a key-to-slot map
+    //     and nothing else, so every object matching it holds THIS SITE'S key
+    //     at that slot, in itself: reading the slot off whichever object
+    //     matched is right for all of them. Reading a cached CODE POINTER off
+    //     a shape match would not be — a DIRECT entry for a plain receiver was
+    //     resolved from that receiver's prototype chain, whose key may not be
+    //     in the shape at all — so a DIRECT entry is refused here and the call
+    //     goes to the helper. Everything the callee is, is re-derived from the
+    //     slot's CURRENT value by the same `emitSlotCallee` the receiver's own
+    //     slot goes through, Function test included.
+    //
+    //     `this` is the FUNCTION — the receiver, `thisVal` — and never the
+    //     box: the box is where the method was found, which is not who it was
+    //     called on. That is the same distinction the runtime makes when it
+    //     hands `getProp` the function's own slot for a `static get`.
+    //
+    //     WAY 0 ONLY, like the read arm and for the same measured reason, and
+    //     way 1 could not hold one of these anyway: `displaceMethodWay0`
+    //     refuses to promote a SLOT entry.
+    if (fnArmBb != nullptr) {
+        builder.SetInsertPoint(fnArmBb);
+        llvm::BasicBlock* fnBoxBb = llvm::BasicBlock::Create(ctx, "mic.fn.box", fn);
+        builder.CreateCondBr(
+            builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION),
+                                 "mic.fn.isfn"),
+            fnBoxBb, slowBb);
+
+        // A function nothing has ever written a static to has no box at all
+        // (`properties` stays undefined until one is written), which is the
+        // miss the helper already answers.
+        builder.SetInsertPoint(fnBoxBb);
+        llvm::Value* boxVal = builder.CreateAlignedLoad(
+            i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_FN_PROPERTIES_OFFSET),
+            llvm::Align(8), "mic.fn.props");
+        llvm::Value* propsTag = builder.CreateLShr(boxVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::BasicBlock* fnShapeBb = llvm::BasicBlock::Create(ctx, "mic.fn.shape", fn);
+        builder.CreateCondBr(
+            builder.CreateICmpEQ(propsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), fnShapeBb,
+            slowBb);
+
+        builder.SetInsertPoint(fnShapeBb);
+        llvm::Value* boxAddr =
+            builder.CreateAnd(boxVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* boxHdr = builder.CreateIntToPtr(boxAddr, ptrTy, "mic.fn.box.hdr");
+        // The box's OWN flags, not a forced constant: the plain-object gate is
+        // the same test here it is everywhere else, and a box that is somehow
+        // not plain fails it and takes the helper.
+        llvm::Value* boxFlags = builder.CreateAlignedLoad(
+            i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, boxHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+            llvm::Align(2), "mic.fn.box.flags");
+        llvm::Value* boxShape = builder.CreateAlignedLoad(
+            ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, boxHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+            llvm::Align(8), "mic.fn.box.shape");
+        // `exoWord0` is word 0 already loaded on this edge. An EXOTIC entry
+        // carries the sentinel bit and a never-latched one is zero; a real
+        // shape is an 8-byte-aligned arena allocation, so neither can compare
+        // equal to a live box's shape and no extra form test is needed here.
+        llvm::Value* way0Shape = builder.CreateIntToPtr(exoWord0, ptrTy, "mic.fn.way0");
+        llvm::BasicBlock* fnFormBb = llvm::BasicBlock::Create(ctx, "mic.fn.form", fn);
+        builder.CreateCondBr(
+            builder.CreateAnd(
+                builder.CreateICmpEQ(boxFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN),
+                                     "mic.fn.box.isplain"),
+                builder.CreateICmpEQ(boxShape, way0Shape, "mic.fn.shapematch"),
+                "mic.fn.way0.ok"),
+            fnFormBb, slowBb);
+
+        builder.SetInsertPoint(fnFormBb);
+        llvm::Value* fnArityWord = builder.CreateAlignedLoad(
+            i64Ty,
+            builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_ARITY_WORD),
+            llvm::Align(8), "mic.fn.arityword");
+        llvm::Value* fnFormBits =
+            builder.CreateLShr(fnArityWord, BRONZE_ABI_METHOD_IC_SLOT_SHIFT, "mic.fn.formbits");
+        llvm::BasicBlock* fnLoadBb = llvm::BasicBlock::Create(ctx, "mic.fn.load", fn);
+        builder.CreateCondBr(
+            builder.CreateICmpNE(fnFormBits, builder.getInt64(0), "mic.fn.isslotform"), fnLoadBb,
+            slowBb);
+
+        builder.SetInsertPoint(fnLoadBb);
+        llvm::Value* fnSlotIdx = builder.CreateTrunc(
+            builder.CreateSub(fnFormBits, builder.getInt64(1)), i32Ty, "mic.fn.slotidx");
+        llvm::BasicBlock* fnSlotDoneBb = llvm::BasicBlock::Create(ctx, "mic.fn.slot.done", fn);
+        llvm::Value* fnSlotVal = emitObjectSlotLoad(builder, ctx, fn, boxHdr, fnSlotIdx, slowBb,
+                                                    fnSlotDoneBb, "mic.fn.slot");
+        SlotCallee fnCallee = emitSlotCallee(builder, ctx, fn, fnSlotVal, slowBb, "mic.fn.callee");
+        codeInt->addIncoming(fnCallee.code, fnCallee.okBb);
+        envVal->addIncoming(fnCallee.env, fnCallee.okBb);
+        arity->addIncoming(fnCallee.arity, fnCallee.okBb);
+        builder.CreateBr(joinBb);
+    }
+
+    builder.SetInsertPoint(joinBb);
     llvm::Value* codePtr = builder.CreateIntToPtr(codeInt, ptrTy, "mic.codeptr");
 
     llvm::Value* directArityOk =
