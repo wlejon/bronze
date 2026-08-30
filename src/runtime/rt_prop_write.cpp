@@ -32,6 +32,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/accessor.h"
 #include "runtime/array.h"
+#include "runtime/elem_ic.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -670,6 +671,30 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         }
     }
 
+    // The computed-STORE cache (elem_ic.h). Asked here — after the array and
+    // typed-array fast paths, before the receiver-kind ladder — because a
+    // non-null entry proves the receiver PLAIN and the key a name, which is
+    // every arm of that ladder answered at once. `elemSetCacheEntryFor`
+    // guarantees the entry is about THIS (shape, key) pair, so `describesOwn`
+    // has only the shape left to settle and a hit is the slot and nothing else:
+    // no key stringification, no `Rooted`, no `Shape::lookupProperty` walk.
+    //
+    // Nothing this skips is owed. A refusal a plain receiver can raise —
+    // frozen, sealed, non-writable, a String exotic's own index or `length` —
+    // is either dictionary-mode (which the probe refuses outright) or a key
+    // `setProp` was never allowed to reach, and `setProp` is the ONLY thing
+    // that fills an entry. An accessor fills as an accessor, which
+    // `describesOwn` refuses, so a setter still runs below.
+    //
+    // The entry outlives the allocations further down: it lives in a per-thread
+    // table and holds only arena pointers, so no collection can move it or what
+    // it names.
+    ElemSetCacheEntry* setEntry = elemSetCacheEntryFor(objVal, Value(idxBits));
+    if (setEntry && setEntry->ic.describesOwn(objVal.asObject<ObjectHeader>()->shape)) {
+        objVal.asObject<ObjectHeader>()->setSlot(setEntry->ic.cached_slot, Value(valBits));
+        return;
+    }
+
     if (Value(idxBits).isSymbol()) {
         if (objVal.isNull() || objVal.isUndefined()) {
             rtThrowTypeError("Cannot set properties of " +
@@ -865,17 +890,29 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         Rooted<Value> objRoot{objVal};
         Rooted<Value> val{Value(valBits)};
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-        const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
         // `s[0] = "z"`, the spelling this bug actually arrives in. Same answer
         // as `bronze_prop_set`'s, for the reason the two TypeErrors above are
-        // the same: one operation, two spellings.
-        if (stringExoticRefusesWrite(objRoot.get(), keyText, strict)) return;
+        // the same: one operation, two spellings. Asked of the WRAPPER first,
+        // which is one flag test, so the key's `std::string` is built only for
+        // the receiver that can actually refuse — this is the miss path of
+        // every computed store, and it used to copy the key on all of them.
+        if (Value stringData; rtStringWrapperData(objRoot.get(), stringData)) {
+            if (rtStringDataWriteRefused(stringData,
+                                         rtUtf8Chars(key.get().asString<StringHeader>()), strict)) {
+                return;
+            }
+        }
         SetRefusal refusal = SetRefusal::None;
         objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
-                                                        /*ic=*/nullptr, /*enumerable=*/true,
+                                                        setEntry ? &setEntry->ic : nullptr,
+                                                        /*enumerable=*/true,
                                                         /*defineOwn=*/false,
                                                         /*receiver=*/nullptr, &refusal);
-        rtReportSetRefusal(refusal, strict, keyText);
+        // Likewise: the key text is what the message quotes, and there is no
+        // message unless the write was refused.
+        if (refusal != SetRefusal::None) {
+            rtReportSetRefusal(refusal, strict, rtUtf8Chars(key.get().asString<StringHeader>()));
+        }
         return;
     }
     if (rtIsMapLike(objVal)) {

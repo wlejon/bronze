@@ -171,6 +171,88 @@ bool elemKeyIcEnabled() noexcept;
 // and stay latched.
 void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept;
 
+// ---------------------------------------------------------------------------
+// The cache a COMPUTED WRITE consults — `o[k] = v`.
+//
+// Why a SECOND table and not the one above. The read table's entries are what
+// the inline read arm in codegen-llvm consumes, and a write fills an entry by
+// different rules: `setProp` records the shape AFTER a transition add, and an
+// inherited setter at depth > 0. `InlineCache::describesOwn` already says in
+// so many words that "set sites and get sites never share a table entry" —
+// that is the discipline the named property sites keep, and a computed access
+// has no reason to be the one place it is broken. Keeping them apart also
+// keeps the two measurable alone: neither seam moves the other's numbers, and
+// neither one's working set evicts the other's.
+//
+// The asymmetry this exists for, measured on three.js `BoxGeometry.buildPlane`
+// (`vector[u] = x`, where `u` is a plain string parameter — a genuinely
+// computed store, correctly lowered). Four spellings of one property access:
+// a named store 1.24 ns, a named read 1.40 ns, a computed READ 4.11 ns
+// (the table above), and a computed STORE 31.5 ns — the one of the four with
+// no cache at all, paying a full `Shape::lookupProperty` walk and a
+// `std::string` key copy on every store.
+//
+// GC: an entry holds a `Shape*` and an ARENA-interned `StringHeader*`, both
+// immortal and non-moving, plus integers. Nothing movable, so this table is
+// never scanned and needs no post-collection sweep — the read table's ident
+// latch is what forced one there, and this table has no inline arm to latch
+// for.
+struct ElemSetCacheEntry {
+    // What `ObjectHeader::setProp` hits and fills, in the representation it
+    // already speaks: the same struct a named set SITE hands it, so no rule
+    // about when a write may be cached is restated here. Every fill is
+    // `setProp`'s own, under `setProp`'s own conditions.
+    InlineCache ic;
+    uint64_t witness = 0;
+    // The ARENA copy of the key this entry is about, so it is immortal. Null
+    // when the entry is empty — and also for a NUMBER or BOOLEAN key, whose
+    // witness is its whole identity and which therefore needs no copy to
+    // compare against. That is what keeps the probe allocation-free: the only
+    // way to reach a string for a number key is `rtElemKeyAsString`, which
+    // allocates on the GC heap under a caller holding a raw receiver.
+    StringHeader* key = nullptr;
+    ElemKeyKind kind = ElemKeyKind::Empty;
+};
+
+// Smaller than the read table on purpose: a program reads far more computed
+// keys than it writes, and three.js's whole computed-store working set is the
+// three `Vector3` components against a handful of shapes.
+inline constexpr uint32_t kElemSetCacheEntries = 1024;
+static_assert((kElemSetCacheEntries & (kElemSetCacheEntries - 1)) == 0,
+              "bucket masking needs a power of two");
+
+// The entry that speaks for `(objVal's shape, key)`, or null when this pair is
+// one the table does not cache — a non-plain receiver, a dictionary, a shapeless
+// object, a symbol or object key, or a spent key budget.
+//
+// The returned entry is GUARANTEED to be about this exact pair. An entry found
+// describing a DIFFERENT pair is re-pointed at this one and its `ic` cleared in
+// the same breath, so a caller may hand `&entry->ic` straight to `setProp` and
+// a hit there can only ever name this key's slot. That clearing is the whole
+// soundness argument: `describesOwn` asks about the SHAPE alone, because a
+// named site's key is a constant it need not re-ask about — so the key half of
+// the question has to be answered here, before the pointer is handed over, and
+// an entry left pointing at another key would write this value into that key's
+// slot.
+//
+// Never allocates on the heap and never runs user code, so the caller may hold
+// a raw receiver across it.
+ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key);
+
+// BRONZE_NO_ELEM_SET_IC=1. With it off, `elemSetCacheEntryFor` refuses every
+// pair, so every computed store falls back to the uncached `setProp` walk it
+// always took and one binary A/Bs the mechanism against its own absence.
+bool elemSetCacheEnabled() noexcept;
+
+// The flag lives here rather than in the per-thread ABI block because no
+// generated code consults it: this cache has no inline arm, only a runtime one.
+// `elemSetCacheReadSeam` reads the environment and is called from Heap's
+// constructor, so this seam is settled at the same per-thread first touch as
+// every other BRONZE_NO_*; the setter is what a test uses to ask about the
+// mechanism regardless of the ambient setting.
+void elemSetCacheReadSeam() noexcept;
+void elemSetCacheSetEnabled(bool on) noexcept;
+
 // The arena copy of `live` this table will key an entry on, or null when the
 // key budget is spent.
 //

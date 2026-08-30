@@ -218,6 +218,10 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->elem_ic_enabled = 0;
     }
 
+    // BRONZE_NO_ELEM_SET_IC, read by elem_ic.cpp because its flag is not in the
+    // ABI block, but read HERE so every seam is settled at one first touch.
+    runtime::elemSetCacheReadSeam();
+
     const char* env_no_callout = std::getenv("BRONZE_NO_DIRECT_CALLOUT");
     if (env_no_callout && std::strcmp(env_no_callout, "1") == 0) {
         tls->direct_callout_enabled = 0;

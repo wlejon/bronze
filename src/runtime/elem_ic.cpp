@@ -1,6 +1,7 @@
 #include "runtime/elem_ic.h"
 
 #include <bit>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -60,9 +61,9 @@ uint64_t mix64(uint64_t x) noexcept {
     return x ^ (x >> 31);
 }
 
-uint32_t bucketOf(const Shape* shape, uint64_t witness) noexcept {
+uint32_t bucketOf(const Shape* shape, uint64_t witness, uint32_t entries) noexcept {
     const uint64_t h = mix64(reinterpret_cast<uintptr_t>(shape) ^ mix64(witness));
-    return static_cast<uint32_t>(h) & (kElemCacheEntries - 1);
+    return static_cast<uint32_t>(h) & (entries - 1);
 }
 
 // The key's witness, or Empty for a kind this table does not speak for.
@@ -95,10 +96,20 @@ ElemKeyKind witnessFor(Value key, uint64_t& out) noexcept {
 // Does this entry speak for this key? The shape half is asked separately, by
 // `InlineCache::describes`, because that is the question the property path
 // already owns.
-bool keyMatches(const ElemCacheEntry& e, ElemKeyKind kind, uint64_t witness,
-                Value key) noexcept {
-    if (e.kind != kind || e.witness != witness || !e.key) return false;
+//
+// A template over the two entry types rather than two copies: the read table's
+// entry carries an ident latch the write table has no use for, but the KEY
+// question is the same question, and the one thing worse than two tables is
+// two opinions about what a key is.
+template <typename Entry>
+bool keyMatches(const Entry& e, ElemKeyKind kind, uint64_t witness, Value key) noexcept {
+    // An EMPTY entry is caught by the kind, which no live probe ever carries;
+    // and for a NUMBER or BOOLEAN key the witness is not a filter but the whole
+    // identity — the raw bits of the double, or 0/1 — so kind and witness
+    // together settle it with nothing left to compare.
+    if (e.kind != kind || e.witness != witness) return false;
     if (kind != ElemKeyKind::String) return true;
+    if (!e.key) return false;
     // The hash agreed; the content decides. `e.key` is the arena copy, which
     // cannot move under the comparison, and the incoming string is the one the
     // caller still holds — no allocation happens between the two reads.
@@ -216,7 +227,7 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
         return probe;
     }
 
-    ElemCacheEntry& e = g_elemCache[bucketOf(shape, witness)];
+    ElemCacheEntry& e = g_elemCache[bucketOf(shape, witness, kElemCacheEntries)];
     probe.entry = &e;
     probe.witness = witness;
     probe.kind = kind;
@@ -332,6 +343,112 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
         (probe.kind == ElemKeyKind::String && elemKeyIcEnabled())
             ? Value::fromString(liveKey).rawBits()
             : 0;
+}
+
+namespace {
+
+// Per thread and direct-mapped, for the read table's reasons: a Shape is
+// process-wide but an entry's validity is asked against the per-thread proto
+// epoch, and a collision costs a fill rather than a wrong answer.
+thread_local ElemSetCacheEntry g_elemSetCache[kElemSetCacheEntries];
+
+thread_local uint8_t g_elemSetIcEnabled = 1;
+
+}  // namespace
+
+bool elemSetCacheEnabled() noexcept {
+    return g_elemSetIcEnabled != 0;
+}
+
+void elemSetCacheSetEnabled(bool on) noexcept {
+    g_elemSetIcEnabled = on ? 1u : 0u;
+}
+
+void elemSetCacheReadSeam() noexcept {
+    const char* env = std::getenv("BRONZE_NO_ELEM_SET_IC");
+    elemSetCacheSetEnabled(!(env && std::strcmp(env, "1") == 0));
+}
+
+ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
+    if (!elemSetCacheEnabled()) {
+        recordElemIcMiss("set_seam_disabled", objVal.rawBits(), key.rawBits());
+        return nullptr;
+    }
+    // PLAIN receivers only, and for the read table's reason rather than a
+    // narrower one: every other kind answers a computed store from somewhere
+    // that is not the shape walk — an element block, a typed view's window, a
+    // function's statics side object, a Map's property table, a proxy trap —
+    // and a slot number cached against one of those names nothing. The
+    // three.js and pixi computed stores this was built for are all plain.
+    if (!objVal.isObject()) {
+        recordElemIcMiss("set_receiver_not_object", objVal.rawBits(), key.rawBits());
+        return nullptr;
+    }
+    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        recordElemIcMiss("set_receiver_kind_not_plain", objVal.rawBits(), key.rawBits());
+        return nullptr;
+    }
+    Shape* shape = objVal.asObject<ObjectHeader>()->shape;
+    if (!shape) {
+        recordElemIcMiss("set_receiver_no_shape", objVal.rawBits(), key.rawBits());
+        return nullptr;
+    }
+    // A dictionary's properties are not in the shape, so a slot number cached
+    // against one names nothing — and it is also where `Object.freeze`,
+    // `Object.preventExtensions` and a non-writable `defineProperty` put an
+    // object, which is what keeps every refusal `setProp` owes off this path
+    // without this table having to know any of them by name.
+    if (shape->dict) {
+        recordElemIcMiss("set_receiver_dictionary", objVal.rawBits(), key.rawBits());
+        return nullptr;
+    }
+
+    uint64_t witness = 0;
+    const ElemKeyKind kind = witnessFor(key, witness);
+    if (kind == ElemKeyKind::Empty) {
+        recordElemIcMiss("set_key_kind_uncacheable", objVal.rawBits(), key.rawBits());
+        return nullptr;
+    }
+
+    ElemSetCacheEntry& e = g_elemSetCache[bucketOf(shape, witness, kElemSetCacheEntries)];
+    if (keyMatches(e, kind, witness, key)) return &e;
+
+    recordElemIcMiss(e.kind == ElemKeyKind::Empty       ? "set_entry_empty"
+                     : e.ic.cached_shape == shape ? "set_entry_same_shape_other_key"
+                                                  : "set_entry_other_pair_collision",
+                     objVal.rawBits(), key.rawBits());
+
+    // Re-point the entry at THIS pair. A STRING key has to become immortal
+    // before an entry can name it, because the entry outlives the live string
+    // and the hash only filters — the content comparison on the next probe
+    // needs a copy that cannot move under it. A program that computes a fresh
+    // key per store spends the shared budget and then stops being cached.
+    //
+    // A NUMBER or BOOLEAN key needs no copy at all: its witness IS its
+    // identity, so the entry keeps a null `key`. That is not a saving but a
+    // requirement — the only way to reach a string for such a key is
+    // `rtElemKeyAsString`, which allocates on the GC heap, and this function's
+    // callers hold a RAW receiver across it.
+    StringHeader* interned = nullptr;
+    if (kind == ElemKeyKind::String) {
+        interned = elemCacheInternKey(key.asString<StringHeader>());
+        if (!interned) {
+            recordElemIcMiss("set_key_budget_spent", objVal.rawBits(), key.rawBits());
+            return nullptr;
+        }
+    }
+    // Cleared in the same breath as the key is rewritten, and this is the line
+    // the whole mechanism stands on: `setProp` asks `describesOwn`, which is a
+    // question about the SHAPE only, so an `ic` left describing the previous
+    // key would answer yes for a receiver of that shape and store this value in
+    // that key's slot. `setProp` will fill it again for this pair, under its
+    // own rules, before anything reads it.
+    e.ic = InlineCache{};
+    e.witness = witness;
+    e.kind = kind;
+    e.key = interned;
+    return &e;
 }
 
 }  // namespace bronze::runtime

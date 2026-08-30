@@ -1,0 +1,23 @@
+key varies per call: 30/31/32
+shape varies per call: 3/9
+two keys one shape: 5/500
+transition add: 0,1,2,3,4
+own setter runs every time: 0,1,2,3,4
+inherited setter: 6
+proto setter appears: 0,1,2,3,4|70
+freeze after warm: 4,4
+freeze after warm strict: TypeError, a=2
+sealed: 2/undefined
+preventExtensions: undefined
+inherited nonwritable: 0,1,2,3|1
+inherited nonwritable strict: TypeError
+String wrapper index: a/3
+String wrapper name: 3/a
+array name key: 3/3/1
+proxy set trap: q=0,q=1,q=2/2
+number key: 3/3
+boolean key: T/F
+symbol key: 5/undefined
+object key toString: 2/3
+delete then store: 42/undefined/8
+proto swap: 9/second

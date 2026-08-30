@@ -17,6 +17,7 @@
 #include <doctest/doctest.h>
 
 #include <string>
+#include <vector>
 
 #include "abi/bronze_abi.h"
 #include "runtime/elem_ic.h"
@@ -409,4 +410,211 @@ TEST_CASE("BRONZE_NO_ELEM_IC turns the table off without changing an answer") {
     CHECK(warm(obj, str("seam")).asNumber() == 11.0);
     Rooted<Value> k2{str("seam")};
     CHECK(elemCacheProbe(obj.get(), k2.get()).hit);
+}
+
+// ---------------------------------------------------------------------------
+// The computed-STORE cache. Same division of labour as above: the oracle case
+// pins the ANSWERS a program can see, and these ask the table whether the
+// answer came from it — a store cache that never hits writes every value to
+// the right place and would pass the oracle case unchanged.
+
+namespace {
+
+struct SetSeamOn {
+    SetSeamOn() {
+        (void)rtHeap();
+        saved = elemSetCacheEnabled();
+        elemSetCacheSetEnabled(true);
+    }
+    ~SetSeamOn() { elemSetCacheSetEnabled(saved); }
+
+private:
+    bool saved = true;
+};
+
+// `o[k] = v` as generated code reaches it.
+void elemSet(Rooted<Value>& obj, Value key, Value val) {
+    Rooted<Value> k{key};
+    Rooted<Value> v{val};
+    bronze_elem_set(obj.get().rawBits(), k.get().rawBits(), v.get().rawBits(), /*strict=*/false);
+}
+
+void warmSet(Rooted<Value>& obj, Value key, Value val, int times = 4) {
+    for (int i = 0; i < times; ++i) elemSet(obj, key, val);
+}
+
+// The slot the receiver's shape says this name lives in, which is what a
+// correct entry must be naming.
+uint32_t slotOf(Rooted<Value>& obj, const char* name) {
+    Rooted<Value> key{str(name)};
+    PropertyInfo info;
+    Shape* shape = obj.get().asObject<ObjectHeader>()->shape;
+    REQUIRE(shape != nullptr);
+    REQUIRE(shape->lookupProperty(PropertyKey::fromValue(key.get()), info));
+    return info.slot;
+}
+
+}  // namespace
+
+TEST_CASE("a warm computed store is answered by the store cache and not by the walk") {
+    ShadowStackFrame frame;
+    SetSeamOn seam;
+
+    Rooted<Value> obj{plainObject()};
+    put(obj, "x", Value::fromDouble(0.0));
+    put(obj, "y", Value::fromDouble(0.0));
+
+    warmSet(obj, str("x"), Value::fromDouble(5.0));
+    CHECK(elemGet(obj, str("x")).asNumber() == 5.0);
+
+    // The entry the helper consults, asked the same way the helper asks it: a
+    // hit here is proof the store took the slot write and not the walk.
+    Rooted<Value> key{str("x")};
+    ElemSetCacheEntry* entry = elemSetCacheEntryFor(obj.get(), key.get());
+    REQUIRE(entry != nullptr);
+    CHECK(entry->kind == ElemKeyKind::String);
+    CHECK(entry->ic.describesOwn(obj.get().asObject<ObjectHeader>()->shape));
+    CHECK(entry->ic.cached_slot == slotOf(obj, "x"));
+
+    // An equal string built somewhere else reaches the same entry: the witness
+    // is a hash and the identity is the CONTENT.
+    Rooted<Value> rebuilt{str("x")};
+    CHECK(rebuilt.get().rawBits() != key.get().rawBits());
+    CHECK(elemSetCacheEntryFor(obj.get(), rebuilt.get()) == entry);
+}
+
+TEST_CASE("a store entry is about one KEY, not merely one shape") {
+    ShadowStackFrame frame;
+    SetSeamOn seam;
+
+    // One shape, two keys — the case a named set SITE never has to think
+    // about, because its key is a constant the compiler baked in. An entry
+    // keyed on the shape alone would send `beta`'s value to alpha's slot.
+    Rooted<Value> obj{plainObject()};
+    put(obj, "alpha", Value::fromDouble(0.0));
+    put(obj, "beta", Value::fromDouble(0.0));
+
+    warmSet(obj, str("alpha"), Value::fromDouble(10.0));
+    warmSet(obj, str("beta"), Value::fromDouble(20.0));
+
+    CHECK(elemGet(obj, str("alpha")).asNumber() == 10.0);
+    CHECK(elemGet(obj, str("beta")).asNumber() == 20.0);
+
+    Rooted<Value> ka{str("alpha")};
+    Rooted<Value> kb{str("beta")};
+    ElemSetCacheEntry* ea = elemSetCacheEntryFor(obj.get(), ka.get());
+    ElemSetCacheEntry* eb = elemSetCacheEntryFor(obj.get(), kb.get());
+    REQUIRE(ea != nullptr);
+    REQUIRE(eb != nullptr);
+    CHECK(ea != eb);
+    CHECK(ea->ic.cached_slot == slotOf(obj, "alpha"));
+    CHECK(eb->ic.cached_slot == slotOf(obj, "beta"));
+}
+
+TEST_CASE("an evicted store entry forgets the slot it used to name") {
+    ShadowStackFrame frame;
+    SetSeamOn seam;
+
+    // The table is direct-mapped, so a collision re-points an entry from one
+    // pair to another — and the re-point MUST clear the entry's answer.
+    // `describesOwn` asks about the SHAPE alone (a named site's key is a
+    // constant it need not re-ask about), so an `ic` left describing the
+    // previous key answers yes for the new one and sends the value to the
+    // wrong slot.
+    //
+    // ONE object with many keys, and not many objects with one key each: two
+    // pairs that differ in their SHAPE are caught by `describesOwn` whatever
+    // the entry holds, so only two keys on ONE shape can expose a missing
+    // clear. 300 keys in 1,024 buckets collide many times over, and nothing
+    // here can choose which two — so every key is checked instead.
+    constexpr int kKeys = 300;
+    Rooted<Value> obj{plainObject()};
+    for (int i = 0; i < kKeys; ++i) {
+        put(obj, ("k" + std::to_string(i)).c_str(), Value::fromDouble(0.0));
+    }
+    // Every store now happens against the SAME final shape, which is the
+    // condition that makes a stale entry answer.
+    for (int round = 0; round < 3; ++round) {
+        for (int i = 0; i < kKeys; ++i) {
+            elemSet(obj, str(("k" + std::to_string(i)).c_str()),
+                    Value::fromDouble(i * 2 + round));
+        }
+    }
+    for (int i = 0; i < kKeys; ++i) {
+        CHECK(elemGet(obj, str(("k" + std::to_string(i)).c_str())).asNumber() == i * 2 + 2);
+    }
+}
+
+TEST_CASE("a store entry survives collections, because it holds nothing the collector moves") {
+    ShadowStackFrame frame;
+    SetSeamOn seam;
+
+    Rooted<Value> obj{plainObject()};
+    put(obj, "z", Value::fromDouble(0.0));
+    warmSet(obj, str("z"), Value::fromDouble(1.0));
+
+    rtHeap().collect();
+    rtHeap().collect();
+
+    // The entry holds a Shape*, an arena StringHeader* and integers. Module BSS
+    // is not a root, so an entry that held a `Value` would dangle at the first
+    // flip — this asserts it still names the same slot instead.
+    Rooted<Value> key{str("z")};
+    ElemSetCacheEntry* entry = elemSetCacheEntryFor(obj.get(), key.get());
+    REQUIRE(entry != nullptr);
+    CHECK(entry->ic.describesOwn(obj.get().asObject<ObjectHeader>()->shape));
+    CHECK(entry->ic.cached_slot == slotOf(obj, "z"));
+
+    elemSet(obj, str("z"), Value::fromDouble(2.0));
+    CHECK(elemGet(obj, str("z")).asNumber() == 2.0);
+}
+
+TEST_CASE("a number key is cached for a store without materialising the key") {
+    ShadowStackFrame frame;
+    SetSeamOn seam;
+
+    Rooted<Value> obj{plainObject()};
+    put(obj, "2960", Value::fromDouble(0.0));
+    warmSet(obj, Value::fromDouble(2960.0), Value::fromDouble(4.0));
+    CHECK(elemGet(obj, str("2960")).asNumber() == 4.0);
+
+    ElemSetCacheEntry* entry = elemSetCacheEntryFor(obj.get(), Value::fromDouble(2960.0));
+    REQUIRE(entry != nullptr);
+    CHECK(entry->kind == ElemKeyKind::Number);
+    CHECK(entry->witness == Value::fromDouble(2960.0).rawBits());
+    // No arena copy: a number's witness is its whole identity, and reaching a
+    // string for it would mean allocating on the GC heap under a raw receiver.
+    CHECK(entry->key == nullptr);
+    CHECK(entry->ic.describesOwn(obj.get().asObject<ObjectHeader>()->shape));
+}
+
+TEST_CASE("a symbol key is offered no store entry") {
+    ShadowStackFrame frame;
+    SetSeamOn seam;
+
+    Rooted<Value> obj{plainObject()};
+    Rooted<Value> desc{str("s")};
+    Rooted<Value> sym{rtMakeSymbol(desc.get())};
+    CHECK(elemSetCacheEntryFor(obj.get(), sym.get()) == nullptr);
+}
+
+TEST_CASE("BRONZE_NO_ELEM_SET_IC turns the store table off without changing an answer") {
+    ShadowStackFrame frame;
+    SetSeamOn seam;
+
+    Rooted<Value> obj{plainObject()};
+    put(obj, "seam", Value::fromDouble(0.0));
+    warmSet(obj, str("seam"), Value::fromDouble(11.0));
+    Rooted<Value> k{str("seam")};
+    CHECK(elemSetCacheEntryFor(obj.get(), k.get()) != nullptr);
+
+    elemSetCacheSetEnabled(false);
+    CHECK_FALSE(elemSetCacheEnabled());
+    Rooted<Value> k2{str("seam")};
+    // No entry offered means no hit and no fill, so the seam is the whole
+    // mechanism and not a slower road to the same table.
+    CHECK(elemSetCacheEntryFor(obj.get(), k2.get()) == nullptr);
+    // The store is unchanged; only where the slot number came from changed.
+    elemSet(obj, str("seam"), Value::fromDouble(12.0));
+    CHECK(elemGet(obj, str("seam")).asNumber() == 12.0);
 }
