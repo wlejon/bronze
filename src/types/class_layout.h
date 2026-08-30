@@ -154,6 +154,14 @@ public:
     // remaining condition is program-wide and lives in `FieldAudit`.
     bool fieldValueCandidate(ShapeClassId id, const std::string& field) const;
 
+    // Which of `fieldValueCandidate`'s four conditions failed, named, or the
+    // empty string when none did. A count of refusals says how big the pile is
+    // and nothing about what is in it; the four conditions are removed by four
+    // different pieces of work, and a report that cannot tell them apart cannot
+    // rank them. Returned as a short constant string so the caller can key a
+    // histogram on it without formatting.
+    std::string fieldValueRefusal(ShapeClassId id, const std::string& field) const;
+
     // Whether any class in the program extends this one. A `this` receiver of
     // an extended class is shape-polymorphic; see `ClassLayout::extended`.
     bool isExtended(ShapeClassId id) const;

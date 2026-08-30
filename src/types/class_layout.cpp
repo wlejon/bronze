@@ -884,6 +884,28 @@ bool ClassLayoutTable::fieldValueCandidate(ShapeClassId id, const std::string& f
     return true;
 }
 
+std::string ClassLayoutTable::fieldValueRefusal(ShapeClassId id, const std::string& field) const {
+    const ClassLayout* cl = byShapeClass(id);
+    if (cl == nullptr) return "the shape class is not a declared class";
+    if (!cl->layoutProven) {
+        return cl->refusal.empty() ? std::string("layout unproven") : "layout: " + cl->refusal;
+    }
+    if (std::find(cl->fields.begin(), cl->fields.end(), field) == cl->fields.end()) {
+        return "not installed by the construction sequence";
+    }
+    for (const ClassLayout* walk = cl; walk != nullptr;) {
+        if (std::find(walk->accessorNames.begin(), walk->accessorNames.end(), field) !=
+            walk->accessorNames.end()) {
+            return "an accessor of that name on the prototype chain";
+        }
+        if (walk->superName.empty()) break;
+        const ClassLayout* base = byName(walk->superName);
+        if (base == walk) break;
+        walk = base;
+    }
+    return {};
+}
+
 bool ClassLayoutTable::isExtended(ShapeClassId id) const {
     const ClassLayout* cl = byShapeClass(id);
     return cl != nullptr && cl->extended;

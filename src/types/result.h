@@ -146,6 +146,12 @@ struct InferenceResult {
         uint32_t refusedNotBuiltHere = 0;
         uint32_t refusedByClass = 0;
         uint32_t refusedByAudit = 0;
+        // The `refusedByClass` pile, per SITE POPULATION rather than as a total:
+        // "<class>.<field>: <reason>" -> how many read sites it refused. A total
+        // says how much is left and nothing about what to do next, and the four
+        // conditions behind it are removed by four unrelated pieces of work.
+        // Ordered, because it reaches an output path.
+        std::map<std::string, uint32_t> classRefusedSites;
         // `o[k] = v` and `delete o[k]`: how many the program contains, how many
         // the flow pass could not prove harmless, and what those ones' KEYS were
         // typed. One global refusal decides the whole audit, so this is the row

@@ -1,0 +1,12 @@
+plain|10,1,20,2,30
+shrink|100,99,300,400
+grow|44|100,7,300,3,39
+redefined|1,55,1,3
+proxy|9,10,8,20|a.b
+threw|RangeError|11,1,2,3
+grew-shape|1,1,2,3
+self|100,undefined,7,400|5
+primitive|7,3,9
+compose|1,2,3,0,4,5,6,0,7,8,9,0,10,20,30,1
+compose-cut|16|4,undefined,undefined,20,30,1
+typed|0.5,0.25,0.125,1.5,2.25,4.125

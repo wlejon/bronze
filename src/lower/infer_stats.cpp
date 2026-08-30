@@ -260,6 +260,13 @@ std::string InferStatsCollector::format() const {
                std::to_string(fa.refusedNotBuiltHere) + " receiver not built here, " +
                std::to_string(fa.refusedByClass) + " class layout, " +
                std::to_string(fa.refusedByAudit) + " write audit\n";
+        if (!fa.classRefusedSites.empty()) {
+            out += "  class-layout refusals by site (" +
+                   std::to_string(fa.classRefusedSites.size()) + " distinct):\n";
+            for (const auto& entry : sortedReasons(fa.classRefusedSites)) {
+                out += "    " + entry.reason + ": " + std::to_string(entry.count) + " sites\n";
+            }
+        }
         if (!fa.cleanNames.empty()) {
             out += "  clean names (" + std::to_string(fa.cleanNames.size()) + "): ";
             for (size_t i = 0; i < fa.cleanNames.size(); ++i) {

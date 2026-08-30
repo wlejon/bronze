@@ -37,6 +37,20 @@ bool isNonClassExpr(const ast::Expr* e) {
            dynamic_cast<const ast::BoolLit*>(e) || dynamic_cast<const ast::RegExpLit*>(e);
 }
 
+// How one class-layout refusal of a number field read is named in the report:
+// the receiver, the property, and which condition failed. The receiver is the
+// declared class name when there is one and the shape's own rendering when
+// there is not, because a refusal on an object literal is a different piece of
+// work from one on a class and the report has to be able to say which.
+std::string classRefusalKey(const InferenceResult& result, ShapeClassId cls,
+                            const std::string& field) {
+    const ClassLayout* cl = result.classLayouts.byShapeClass(cls);
+    const std::string receiver =
+        cl != nullptr ? cl->name : result.shapes.describe(cls);
+    return receiver + "." + field + ": " +
+           result.classLayouts.fieldValueRefusal(cls, field);
+}
+
 }  // namespace
 
 // ---- expressions -------------------------------------------------------
@@ -229,7 +243,11 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                 return Type::dynamic();
             }
             if (!mod_.result->classLayouts.fieldValueCandidate(base.shapeClass(), m->property)) {
-                if (record_) ++mod_.result->fieldAudit.refusedByClass;
+                if (record_) {
+                    ++mod_.result->fieldAudit.refusedByClass;
+                    ++mod_.result->fieldAudit.classRefusedSites[classRefusalKey(
+                        *mod_.result, base.shapeClass(), m->property)];
+                }
                 return Type::dynamic();
             }
             if (!mod_.fieldAudit.numberClean(m->property)) {

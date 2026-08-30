@@ -158,6 +158,25 @@ TEST_CASE("an accessor refuses the field read on classes with the accessor") {
     CHECK(r.fieldAudit.namesClean == 1);
     CHECK(r.fieldAudit.refusedByClass >= 1);
     CHECK(r.provenFieldReads.size() == 1);
+    // The counter says how many; this says which, and by which of the four
+    // conditions — the accessor one here, named on the class that declares it.
+    CHECK(r.fieldAudit.classRefusedSites.count(
+              "Derived.x: an accessor of that name on the prototype chain") == 1);
+}
+
+TEST_CASE("a field a method installs is refused by name, not by the accessor reason") {
+    const auto inferred = infer(
+        "class L {\n"
+        "  constructor() { this.x = 0; }\n"
+        "  late() { this.y = 1; }\n"
+        "}\n"
+        "function make(n) { const l = new L(); l.late(); l.y = n; return l; }\n"
+        "function read(l) { let s = l.y; for (let i = 0; i < 2; i++) s = l.y; return s; }\n"
+        "console.log(read(make(1)));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.refusedByClass >= 1);
+    CHECK(r.fieldAudit.classRefusedSites.count(
+              "L.y: not installed by the construction sequence") == 1);
 }
 
 TEST_CASE("a numeric compound assignment preserves the field's proof") {
