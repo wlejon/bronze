@@ -1,6 +1,13 @@
 #pragma once
 
+// The plain data types the lowering units share: one per mechanism, each named
+// for the thing it holds. They live here rather than nested in `Lowerer`
+// because a struct with no behaviour is not part of the pass's interface, and
+// because a header of members-only declarations is the one seam a single class
+// can be split along.
+
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -169,6 +176,99 @@ struct GeneratorContext {
     static constexpr double kModeReturn = 1.0;
     static constexpr double kModeThrow = 2.0;
     std::vector<il::BlockId> resumeBlocks;
+};
+
+// What `planClosureParamNumbers` proved for ONE function body, keyed by the
+// declaration node. A nested declaration appears in exactly one enclosing
+// statement list, so a frame holds one entry per function.
+using ProvenParamPlan = std::unordered_map<const ast::FunctionDecl*, std::vector<bool>>;
+
+// One loop variable and the type every block parameter standing for it takes —
+// header, exit, and the update/condition join alike, because the analysis
+// proves one type covering all of them.
+struct LoopParam {
+    std::string name;
+    il::Type type = il::Type::Dynamic;
+};
+
+// How a pattern's names reach their bindings. A declaration MAKES them and an
+// assignment writes ones that already exist, which is the only difference
+// between the two forms once the pattern itself is walked.
+struct PatternTarget {
+    bool declare = true;
+    bool isConst = false;
+    bool isLet = true;
+    bool isVar = false;
+};
+
+// A property reference used as a destructuring target, held open across the
+// element read. 13.15.5.2 evaluates the reference BEFORE the source element
+// it will receive, so `[o[i()]] = xs` calls `i` before the iterator steps —
+// which means the base and the key have to be lowered at one point and the
+// store emitted at another.
+struct PatternRef {
+    LowererValue object{il::kNoValue, il::Type::Dynamic};
+    // Exactly one of these: a constant key index, or a computed key value.
+    uint32_t keyIndex = 0;
+    bool hasKeyIndex = false;
+    LowererValue index{il::kNoValue, il::Type::Dynamic};
+    // `({ a: this.#x } = v)` — a PRIVATE member as the target. Not a key of
+    // any kind: the store is a private-element write, so the node that
+    // names the element is carried here and `keyIndex` means nothing. Held
+    // as a pointer to the AST rather than a resolved element because the
+    // kind dispatch (field / method / accessor) belongs to one place, and
+    // that place is `lowerPrivateWrite`.
+    const ast::MemberAccess* privateTarget = nullptr;
+    // The RECEIVER as the source wrote it, kept so that a destructuring
+    // store into a pinned field can ask the same question an ordinary
+    // assignment asks (lower_pin.cpp). Null when the target is private.
+    const ast::Expr* receiverExpr = nullptr;
+    // The property as the source spells it, for the same reason. Empty
+    // where the key is computed, which no pin can name.
+    std::string keyName;
+};
+
+// How one private name is stored, which is fixed by its declaration and so
+// is a compile-time fact at every access: a field's value is per object, a
+// method's is one closure shared by every object that carries the brand,
+// and an accessor's is a pair of them. `private.get` therefore answers only
+// the storage question — the kind dispatch 6.2.12.2 writes as a run-time
+// step is resolved here instead.
+enum class PrivateKind { Field, Method, Accessor };
+
+struct PrivateElement {
+    std::string name;  // `#x`, the `#` kept
+    PrivateKind kind = PrivateKind::Field;
+    bool isStatic = false;
+    bool hasGetter = false;
+    bool hasSetter = false;
+};
+
+// One short-circuit edge out of an optional chain: where it leaves from, and
+// what every binding held there. The chain's join takes a parameter for the
+// result and one per binding the edges disagree about, so the edges have to be
+// COLLECTED before the join's parameters can be sized — which is why the jumps
+// are emitted at the end rather than as each link is lowered.
+struct ChainExit {
+    size_t blockIdx = 0;
+    il::ValueId result = il::kNoValue;  // kNoValue: this edge yields undefined
+    VarStateMap state;
+};
+
+// What a SHORT-CIRCUITED chain produces. `undefined` for a read, which is
+// 13.3.9's answer — and `true` for `delete`, because 13.5.1.2 asks whether
+// the operand produced a Reference Record and a chain that stopped early
+// produced none.
+enum class ChainMiss { Undefined, True };
+
+// What `this` and the parameters mean while a certified module-literal method's
+// body is being emitted at its call site. `receiver` is the value the SITE read
+// for the binding, so the dead-zone check that read carries is the one the body
+// runs under.
+struct InlineFrame {
+    const std::string* binding = nullptr;
+    LowererValue receiver;
+    std::map<std::string, LowererValue> params;
 };
 
 }  // namespace bronze::lower

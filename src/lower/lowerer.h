@@ -11,6 +11,7 @@
 
 #include "ast/ast.h"
 #include "lower/bigint_reach.h"
+#include "lower/direct_method_table.h"
 #include "ast/clone.h"
 #include "il/il.h"
 #include "lower/infer_stats.h"
@@ -44,6 +45,15 @@ public:
     using ExprJoin = lower::ExprJoin;
     using StaticSlotSite = lower::StaticSlotSite;
     using GeneratorContext = lower::GeneratorContext;
+    using ProvenParamPlan = lower::ProvenParamPlan;
+    using LoopParam = lower::LoopParam;
+    using PatternTarget = lower::PatternTarget;
+    using PatternRef = lower::PatternRef;
+    using PrivateKind = lower::PrivateKind;
+    using PrivateElement = lower::PrivateElement;
+    using ChainExit = lower::ChainExit;
+    using ChainMiss = lower::ChainMiss;
+    using InlineFrame = lower::InlineFrame;
 
     // `inference` may be null: that is the no-inference mode, and it
     // reproduces the pre-inference calling convention exactly (see lower.h).
@@ -106,43 +116,15 @@ private:
     std::vector<std::string> keyStrings_;
     uint32_t icSiteCounter_ = 0;
 
-    // --- the direct method-call edge (il.h `directTarget`) ----------------
-    // Naming a method-call site's callee is a two-sided fact and the two sides
-    // are lowered in the wrong order: a top-level function's body is lowered
-    // BEFORE `main`, and a class body is evaluated INSIDE `main`. So
-    // `c.multiplyMatrices(a, b)` in `run` is lowered while
-    // `Matrix4.prototype.multiplyMatrices` is not yet a function in the module
-    // at all. Both sides therefore record what they know, keyed on names, and
-    // `resolveDirectMethodTargets` matches them once the module is whole.
-    //
-    // Keyed on the site's IC INDEX rather than on a (function, block,
-    // instruction) triple: the index is already unique across the module and
-    // already on the instruction, so the resolver needs no second numbering to
-    // stay in step with.
-    struct MethodCallSite {
-        // The class lowering believes the receiver has, or empty. The nearest
-        // declaration at or above it is the callee; a subclass override below
-        // it is exactly what the backend's code-pointer compare rejects.
-        std::string receiverClass;
-        std::string method;
-    };
-    std::unordered_map<uint32_t, MethodCallSite> methodCallSites_;
-    // class name -> method name -> module function index, for the ordinary
-    // instance methods (not static, not private, not an accessor, and not a
-    // computed key: none of those is reachable as `recv.<name>`).
-    std::unordered_map<std::string, std::unordered_map<std::string, uint32_t>> classMethods_;
-    // class name -> the name it extends, so the resolver can walk to the
-    // nearest declaration without asking inference a second time.
-    std::unordered_map<std::string, std::string> classSuper_;
+    // --- the direct method-call edge (direct_method_table.h) --------------
+    DirectMethodTable directMethods_;
     // The module function `lowerClosure` last appended. Valid only immediately
     // after a successful call; `lowerClass` is the one reader.
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
+    // The table's site half, with the receiver's class resolved out of
+    // inference here — which is the one thing the table itself cannot do.
     void recordMethodCallSite(const il::Instruction& inst, const ast::Expr& receiver,
                               const std::string& method);
-    void recordClassMethod(const std::string& className, const std::string& superName,
-                           const std::string& method, uint32_t fnIndex);
-    void recordClassSuper(const std::string& className, const std::string& superName);
-    void resolveDirectMethodTargets();
 
     // One per site that took the static-slot form. Separate from
     // `icSiteCounter_` so the cell array is proportional to what actually
@@ -337,10 +319,6 @@ private:
     // was and its conversion is the checked unbox.
     bool unboxedFieldsDisabled_ = false;
     static bool unboxedFieldSeamDisabled();
-    // What `planClosureParamNumbers` proved for ONE function body, keyed by the
-    // declaration node. A nested declaration appears in exactly one enclosing
-    // statement list, so a frame holds one entry per function.
-    using ProvenParamPlan = std::unordered_map<const ast::FunctionDecl*, std::vector<bool>>;
     // One frame per function body being lowered, innermost last, opened and
     // closed by `lowerFunctionBody`.
     //
@@ -784,16 +762,7 @@ private:
     std::optional<Value> lowerNamedEvaluation(const ast::Expr& expr, const std::string& name,
                                               il::Function& ilFn);
 
-    // --- lower_pattern.cpp: binding patterns, defaults, spread -- How a
-    // pattern's names reach their bindings. A declaration MAKES them and an
-    // assignment writes ones that already exist, which is the only difference
-    // between the two forms once the pattern itself is walked.
-    struct PatternTarget {
-        bool declare = true;
-        bool isConst = false;
-        bool isLet = true;
-        bool isVar = false;
-    };
+    // --- lower_pattern.cpp: binding patterns, defaults, spread ------------
     bool lowerPattern(const ast::BindingPattern& pattern, Value source,
                       const PatternTarget& target, il::Function& ilFn);
     bool lowerArrayPattern(const ast::BindingPattern& pattern, Value source,
@@ -802,32 +771,6 @@ private:
                             const PatternTarget& target, il::Function& ilFn);
     bool bindPatternName(const std::string& name, Value value, const PatternTarget& target,
                          Span span, il::Function& ilFn);
-    // A property reference used as a destructuring target, held open across the
-    // element read. 13.15.5.2 evaluates the reference BEFORE the source element
-    // it will receive, so `[o[i()]] = xs` calls `i` before the iterator steps —
-    // which means the base and the key have to be lowered at one point and the
-    // store emitted at another.
-    struct PatternRef {
-        Value object{il::kNoValue, il::Type::Dynamic};
-        // Exactly one of these: a constant key index, or a computed key value.
-        uint32_t keyIndex = 0;
-        bool hasKeyIndex = false;
-        Value index{il::kNoValue, il::Type::Dynamic};
-        // `({ a: this.#x } = v)` — a PRIVATE member as the target. Not a key of
-        // any kind: the store is a private-element write, so the node that
-        // names the element is carried here and `keyIndex` means nothing. Held
-        // as a pointer to the AST rather than a resolved element because the
-        // kind dispatch (field / method / accessor) belongs to one place, and
-        // that place is `lowerPrivateWrite`.
-        const ast::MemberAccess* privateTarget = nullptr;
-        // The RECEIVER as the source wrote it, kept so that a destructuring
-        // store into a pinned field can ask the same question an ordinary
-        // assignment asks (lower_pin.cpp). Null when the target is private.
-        const ast::Expr* receiverExpr = nullptr;
-        // The property as the source spells it, for the same reason. Empty
-        // where the key is computed, which no pin can name.
-        std::string keyName;
-    };
     std::optional<PatternRef> evalPatternRef(const ast::Expr& target, il::Function& ilFn);
     bool storePatternRef(const PatternRef& ref, Value value, il::Function& ilFn);
     // `current === undefined ? <default>: current`, as a real branch rather
@@ -877,20 +820,6 @@ private:
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
 
     // --- lower_private.cpp: private class elements ------------------------
-    // How one private name is stored, which is fixed by its declaration and so
-    // is a compile-time fact at every access: a field's value is per object, a
-    // method's is one closure shared by every object that carries the brand,
-    // and an accessor's is a pair of them. `private.get` therefore answers only
-    // the storage question — the kind dispatch 6.2.12.2 writes as a run-time
-    // step is resolved here instead.
-    enum class PrivateKind { Field, Method, Accessor };
-    struct PrivateElement {
-        std::string name;  // `#x`, the `#` kept
-        PrivateKind kind = PrivateKind::Field;
-        bool isStatic = false;
-        bool hasGetter = false;
-        bool hasSetter = false;
-    };
     // The private names of each class body being lowered, innermost last. A
     // mention resolves against it exactly as the parser resolved the reference:
     // innermost class first, so a nested class shadows an outer name it repeats
@@ -971,14 +900,7 @@ private:
     std::optional<Value> lowerThisValue(Span span, il::Function& ilFn);
     bool lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn);
 
-    // --- lower_control.cpp: control flow, block-argument SSA - One loop
-    // variable and the type every block parameter standing for it takes —
-    // header, exit, and the update/condition join alike, because the analysis
-    // proves one type covering all of them.
-    struct LoopParam {
-        std::string name;
-        il::Type type = il::Type::Dynamic;
-    };
+    // --- lower_control.cpp: control flow, block-argument SSA --------------
     std::vector<il::ValueId> collectEdgeArgs(const std::vector<std::string>& vars,
                                              il::BlockId target, il::Function& ilFn);
     std::vector<std::string> getActiveVarsInDeclOrder() const;
@@ -1089,22 +1011,7 @@ private:
     std::optional<Value> lowerLogical(const ast::Binary* bin, il::Function& ilFn);
     std::optional<Value> lowerNullish(const ast::Binary* bin, il::Function& ilFn);
 
-    // --- lower_expr_chain.cpp: optional chains ------ One short-circuit edge
-    // out of a chain: where it leaves from, and what every binding held there.
-    // The chain's join takes a parameter for the result and one per binding the
-    // edges disagree about, so the edges have to be COLLECTED before the join's
-    // parameters can be sized — which is why the jumps are emitted at the end
-    // rather than as each link is lowered.
-    struct ChainExit {
-        size_t blockIdx = 0;
-        il::ValueId result = il::kNoValue;  // kNoValue: this edge yields undefined
-        VarStateMap state;
-    };
-    // What a SHORT-CIRCUITED chain produces. `undefined` for a read, which is
-    // 13.3.9's answer — and `true` for `delete`, because 13.5.1.2 asks whether
-    // the operand produced a Reference Record and a chain that stopped early
-    // produced none.
-    enum class ChainMiss { Undefined, True };
+    // --- lower_expr_chain.cpp: optional chains ----------------------------
     std::optional<Value> lowerOptionalChain(const ast::Expr& expr, il::Function& ilFn);
     // The optional chain's n-way join around whatever `body` lowers. Two
     // callers, differing only in `miss`.
@@ -1200,14 +1107,6 @@ private:
                                    bool onSpine = false);
 
     // --- lower_module_inline.cpp: running a certified literal's body here ---
-    // What `this` and the parameters mean while one such body is being
-    // emitted. `receiver` is the value the SITE read for the binding, so the
-    // dead-zone check that read carries is the one the body runs under.
-    struct InlineFrame {
-        const std::string* binding = nullptr;
-        Value receiver;
-        std::map<std::string, Value> params;
-    };
     // True when the site is one this takes, and `out` is then its result.
     // False leaves nothing emitted and the caller lowers the call it always
     // lowered.

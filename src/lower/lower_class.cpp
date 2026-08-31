@@ -54,7 +54,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // base's — and a site calling one of those is exactly the site that needs
     // the walk. Recording the link only alongside a method would lose the edge
     // for a subclass that adds fields and nothing else.
-    recordClassSuper(name, superName);
+    directMethods_.recordClassSuper(name, superName);
 
     // The private names this class declares, and the record that holds them.
     // Opened BEFORE the heritage is read, which is 15.7.14's order (the class's
@@ -253,12 +253,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             continue;
         }
 
-        // The definition half of the direct method-call edge (lowerer.h,
-        // `methodCallSites_`). Instance methods only: a static one is not
+        // The definition half of the direct method-call edge
+        // (direct_method_table.h). Instance methods only: a static one is not
         // reached as `recv.<name>`, and the accessor, private and computed-key
         // forms have all `continue`d above.
         if (!m.isStatic) {
-            recordClassMethod(name, superName, m.name, lastClosureFnIndex_);
+            directMethods_.recordClassMethod(name, superName, m.name, lastClosureFnIndex_);
         }
 
         il::Instruction setInst;

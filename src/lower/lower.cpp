@@ -279,8 +279,8 @@ std::optional<il::Module> Lowerer::lower() {
     ilModule_.staticSiteCount = staticSiteCounter_;
     // The one pass that needs the module WHOLE: a method-call site and the
     // class body that answers it are lowered in the opposite order to the one
-    // resolution wants (lowerer.h, `methodCallSites_`).
-    resolveDirectMethodTargets();
+    // resolution wants (direct_method_table.h).
+    directMethods_.resolve(ilModule_);
     reportClassLayouts();
     // Every file, whole, in SourceSet order — the order `Span::file` indexes.
     // Files a function was never lowered from are carried too: the alternative

@@ -1,11 +1,13 @@
 bronze_add_module(lower
-    SOURCES lower.cpp lower_infer.cpp infer_stats.cpp lower_util.cpp lower_scope.cpp lower_stmt.cpp
+    SOURCES lower.cpp lower_infer.cpp infer_stats.cpp lower_util.cpp lower_stmt.cpp
+            lower_scope.cpp lower_closure.cpp lower_env_slot_number.cpp
+            lower_static_call_plan.cpp lower_closure_param_proof.cpp
             lower_class.cpp lower_control.cpp lower_expr.cpp lower_expr_assign.cpp lower_expr_binary.cpp lower_expr_cond.cpp lower_generator.cpp
             lower_update.cpp lower_private.cpp lower_typed_elem.cpp bigint_reach.cpp
             lower_concat_chain.cpp lower_define_props.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_build.cpp
             guard_region_runs.cpp
-            lower_object.cpp lower_call.cpp lower_module_inline.cpp
+            lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp
             lower_pattern.cpp lower_pin.cpp lower_census.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
             lower_try.cpp lower_unresolved.cpp lower_yield_star.cpp lower_async.cpp

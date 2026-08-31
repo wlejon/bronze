@@ -1,5 +1,5 @@
-// The direct method-call edge (`src/lower/lower_infer.cpp`
-// `resolveDirectMethodTargets`): which `method.call` sites name the function
+// The direct method-call edge (`src/lower/direct_method_table.cpp`,
+// `DirectMethodTable::resolve`): which `method.call` sites name the function
 // they will reach, and therefore which ones the backend may emit a real call
 // to instead of an indirect one through the cache.
 //

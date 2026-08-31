@@ -135,7 +135,7 @@ bool FunctionEmitter::emitMethodCallDirect(const il::Instruction& inst, llvm::Va
     llvm::Function* wrapper = shared_.wrappers[inst.directTarget];
     // A method is reached through a receiver, so `__this` must be a parameter
     // the convention carries; lowering refuses the rest and `arguments` forms
-    // (lower_infer.cpp, `resolveDirectMethodTargets`) and this re-states the
+    // (direct_method_table.cpp, `DirectMethodTable::resolve`) and this re-states the
     // one fact the emitted call would otherwise get silently wrong.
     if (!callee.needsThis || callee.needsArguments || callee.hasRestParam) return false;
 
