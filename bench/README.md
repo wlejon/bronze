@@ -159,9 +159,9 @@ invokes node.
 
 | fixture | objects | bronze default | cross-seed spread | node | vs node |
 |---|---:|---:|---:|---:|---:|
-| `three_math` | 3 | **11.41** | 1.00 (8.5%) | 8.80 | 0.77× |
-| `mesh_churn_2k` | 10 | **35.50** | 1.10 (3.1%) | 32.33 | 0.91× |
-| `instanced_mesh_churn` | 16 | **38.55** | 2.95 (7.6%) | 33.61 | 0.87× |
+| `three_math` | 3 | **11.41** | 0.40 (3.5%) | 8.80 | 0.77× |
+| `mesh_churn_2k` | 10 | **33.47** | 0.45 (1.4%) | 32.33 | 0.97× |
+| `instanced_mesh_churn` | 16 | **37.70** | 3.48 (8.9%) | 33.61 | 0.89× |
 
 **The spread column is the point of the table.** A large fixture is emitted as
 several partition objects, and the order they are handed to the linker decides
@@ -171,7 +171,7 @@ same symbols, same program — and across twenty-five orders of the same
 40.9 ms under the worst, a 9.9% band that reproduces: the same seed comes out in
 the same place in the ranking on every repeat of the sweep, so this is
 placement, not noise, and no number of extra rounds averages it away.
-`mesh_churn_2k`, with ten objects instead of sixteen, sits in a 3% band;
+`mesh_churn_2k`, with ten objects instead of sixteen, sits inside a 2% band;
 `three_math` has only three objects and therefore only six orders to draw from
 at all.
 
@@ -202,13 +202,30 @@ objects are byte-identical under it, only the sequence changes. On
 sweeps against the old order's 40.95 and 40.56, and `mesh_churn_2k` and
 `three_math` move by less than their own noise.
 
-That is most of the fixture's distance from the fast edge, not all of it: a
-profile-fed order — the hot partitions first, in the order the sampler ranks
-them — reaches 36.7–37.1 over four sweeps, better than any of the twenty-five
-seeded orders. That gap is what a static rank cannot see. Nothing in a
-partition's static shape says it is hot: the packer balances the bins to within
+That is most of the fixture's distance from the fast edge, not all of it. ONE
+hot-partitions-first order — the seven bins that carry samples ahead of the nine
+that carry none — reaches 36.7–37.0 across four readings, better than any of the
+twenty-five seeded orders and better than the shipped one by more than a
+millisecond. **That order is not reachable from a profile, and the difference
+between those two sentences is the whole finding.** Seven hot-first orders built
+from the same profile — same hot set, same cold tail, differing only in how the
+hot bins are SEQUENCED among themselves — read 37.02, 38.09, 38.64, 38.85,
+39.53, 39.67 and 40.96, against a shipped order reading 37.98–38.19 in the same
+sessions. The hot-first family is a four-millisecond distribution whose centre
+is WORSE than what ships; the good order is one of its seven members, not a
+property it has. And the one ranking a sampler can actually justify — hot bins
+in descending sample count — is one of the bad members, 38.6–38.9 over three
+sweeps. Two bins the profile separates by a single sample out of 435 read
+0.68 ms apart depending on which goes first, and re-ordering the nine cold bins,
+which is most of the image, is worth about 0.2 ms — the same as two
+byte-identical links of one order. So the residue is real, it is reproducible,
+and it is not heat: what decides it is which hot bodies collide in the cache,
+which a per-function sample count cannot see and a per-bin rank cannot express.
+
+The static side cannot see it either, for a different reason. Nothing in a
+partition's shape says it is hot: the packer balances the bins to within
 3% of each other on instruction count, and this fixture's hot frames land in
-eight of the sixteen, spread across the whole size spectrum. Two are not even
+seven of the sixteen, spread across the whole size spectrum. Two are not even
 reachable in the module's direct-call graph — the calls into `Euler.set` and
 `Quaternion.setFromEuler` go through an inline cache, and they carry 11.6% of
 the samples. Weighing the affinity edges by the referenced body's size, or by
@@ -286,8 +303,8 @@ column is not directly comparable to the default arm's — the decision rule use
 the wider of the two, which is the default arm's in every row here. And the
 `bronze default` column above was re-read in these same sweeps rather than
 copied from the table further up, so each row's delta is internal to one
-session; `mesh_churn_2k` in particular read 33.5 here against the 35.50 that
-table reports.
+session, and a cell here will not match that table's to the tenth even when
+both are right.
 
 ### Older rows, not re-taken under layout control
 
