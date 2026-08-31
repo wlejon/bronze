@@ -15,6 +15,8 @@ bronze_add_module(runtime
         value.cpp
         tls_block.cpp
         heap.cpp
+        heap_collect.cpp
+        heap_verify.cpp
         gc.cpp
         env.cpp
         string.cpp
