@@ -146,33 +146,79 @@ rounds, medians.
 ## Where bronze stands
 
 The three library-scale rows, taken under layout control with
-`bench/tools/layout_sweep.py` — nine link orders per fixture (the default order
-plus eight seeds), three independently-created copies of each, medians per
-seed. **Compute region only — no process startup in any cell.** The checksum
-was identical on every run of every column, which is the acceptance condition:
-a difference in a checksum is a miscompile, and a comparison that does not
-check them is not a measurement. The node column is the pinned baseline from
-`node_baselines.json`; nothing here invokes node.
+`bench/tools/layout_sweep.py` — nine link orders per fixture (the order bronze
+ships plus eight seeds), three independently-created copies of each, medians per
+seed. The bronze column is the SHIPPED order's median, not a pooled one, because
+that order is now chosen rather than arbitrary (below); the spread beside it is
+how far the same objects read under the eight permutations. **Compute region
+only — no process startup in any cell.** The checksum was identical on every run
+of every column, which is the acceptance condition: a difference in a checksum
+is a miscompile, and a comparison that does not check them is not a measurement.
+The node column is the pinned baseline from `node_baselines.json`; nothing here
+invokes node.
 
-| fixture | objects | bronze pooled | cross-seed spread | node | vs node |
+| fixture | objects | bronze default | cross-seed spread | node | vs node |
 |---|---:|---:|---:|---:|---:|
-| `three_math` | 3 | **12.00** | 0.61 (5.1%) | 8.80 | 0.73× |
-| `mesh_churn_2k` | 10 | **34.39** | 0.65 (1.9%) | 32.33 | 0.94× |
-| `instanced_mesh_churn` | 16 | **42.71** | 2.82 (6.6%) | 33.61 | 0.79× |
+| `three_math` | 3 | **11.41** | 1.00 (8.5%) | 8.80 | 0.77× |
+| `mesh_churn_2k` | 10 | **35.50** | 1.10 (3.1%) | 32.33 | 0.91× |
+| `instanced_mesh_churn` | 16 | **38.55** | 2.95 (7.6%) | 33.61 | 0.87× |
 
 **The spread column is the point of the table.** A large fixture is emitted as
 several partition objects, and the order they are handed to the linker decides
 where every function lands in the image. Nothing else changes — same objects,
-same symbols, same program — and `instanced_mesh_churn` still reads 41.4 ms
-under one order and 44.2 ms under another, a 6.6% band that reproduces: the
-same seed comes out in the same place in the ranking on every repeat of the
-sweep, so this is placement, not noise, and no number of extra rounds averages
-it away. `mesh_churn_2k`, with ten objects instead of sixteen, sits in a 1.9%
-band; `three_math` has only three objects and therefore only six orders to
-draw from at all.
+same symbols, same program — and across twenty-five orders of the same
+`instanced_mesh_churn` objects the region read 37.1 ms under the best and
+40.9 ms under the worst, a 9.9% band that reproduces: the same seed comes out in
+the same place in the ranking on every repeat of the sweep, so this is
+placement, not noise, and no number of extra rounds averages it away.
+`mesh_churn_2k`, with ten objects instead of sixteen, sits in a 3% band;
+`three_math` has only three objects and therefore only six orders to draw from
+at all.
 
-That band is wider than most of the deltas this suite is asked to adjudicate,
-which is why the protocol changed. An A/B that links each arm once compares one
+**What the band is made of, and what bronze now does about it.** Re-linking the
+same sixteen `instanced_mesh_churn` objects in orders chosen by hand rather than
+by seed says where the band comes from. Swapping two objects that hold no code
+the fixture executes moves the region by 0.1–0.4 ms, which is the 0.17 ms two
+byte-identical links of one order read apart — so nothing global (alignment,
+image size, how far the code sits from the runtime) is doing this. Moving the
+partitions that DO hold the hot frames toward the front, most-used first, moves
+it by 3.8 ms, and monotonically: the hot loop's partition alone is worth 1.8 ms,
+the top two 2.7, the top four 3.4, all eight 3.8. The band is one thing —
+whether the partitions that call each other end up near each other — and the
+order bronze shipped before was the packer's, which sorts bins by SIZE. That is
+the arrangement that reliably scatters a working set, because a loop and the
+small leaf bodies it calls have nothing in common except the call edge, and it
+measured at the 96th percentile of the twenty-five-order distribution: nearly
+the worst order available.
+
+So the order is now decided instead of inherited (`src/codegen-llvm/llvm_partition.h`,
+`partitionUsesLinkOrderPolicy`): start at the partition that owns the entry
+point, then repeatedly hand over whichever partition is most tightly tied by
+symbol references to the one just handed over. It is static, it reads nothing
+but the module, and the same input gives the same order and the same bytes.
+`BRONZE_NO_LINK_POLICY=1` restores the old order and is the A/B seam — the
+objects are byte-identical under it, only the sequence changes. On
+`instanced_mesh_churn` the shipped order reads 38.18 and 38.91 ms across two
+sweeps against the old order's 40.95 and 40.56, and `mesh_churn_2k` and
+`three_math` move by less than their own noise.
+
+That is most of the fixture's distance from the fast edge, not all of it: a
+profile-fed order — the hot partitions first, in the order the sampler ranks
+them — reaches 36.7–37.1 over four sweeps, better than any of the twenty-five
+seeded orders. That gap is what a static rank cannot see. Nothing in a
+partition's static shape says it is hot: the packer balances the bins to within
+3% of each other on instruction count, and this fixture's hot frames land in
+eight of the sixteen, spread across the whole size spectrum. Two are not even
+reachable in the module's direct-call graph — the calls into `Euler.set` and
+`Quaternion.setFromEuler` go through an inline cache, and they carry 11.6% of
+the samples. Weighing the affinity edges by the referenced body's size, or by
+the smaller of the two bodies, was tried and measured a millisecond WORSE than
+counting them; the bins are balanced, so any size-scaled reading is dominated by
+how much code a bin holds, which is the same for all of them.
+
+Choosing the order narrows nothing: the band a seed can still reach is as wide
+as it was, and it is wider than most of the deltas this suite is asked to
+adjudicate, which is why the protocol changed. An A/B that links each arm once compares one
 arbitrary draw against another and reports the difference as a result: editing
 four NEVER-EXECUTED lines of the vendored three.js bundle — three parameter
 defaults on `Color` methods this fixture never calls and one comparison inside

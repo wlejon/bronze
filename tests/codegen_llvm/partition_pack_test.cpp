@@ -51,6 +51,14 @@ llvm::Function* sizedFn(llvm::Module& m, llvm::StringRef name, unsigned insts) {
     return fn;
 }
 
+// An ordinary call: a reference from one body to another that the packer has no
+// reason to keep in one bin, which is what the link order is about.
+void plainCall(llvm::Function* caller, llvm::Function* callee) {
+    llvm::BasicBlock& entry = caller->getEntryBlock();
+    llvm::IRBuilder<> b(&entry, entry.begin());
+    b.CreateCall(callee, {caller->getArg(0)});
+}
+
 // A direct method edge as the backend leaves one: the metadata
 // markDirectMethodInlining reads and the `alwaysinline` it spends.
 void directCall(llvm::Function* caller, llvm::Function* callee) {
@@ -190,6 +198,79 @@ TEST_CASE("growing the dominant function does not re-seat the rest of the module
         CHECK(l * 4 * 5 >= total * 4);      // >= 0.8 x mean
         CHECK(l * 4 * 5 <= total * 6);      // <= 1.2 x mean
     }
+}
+
+namespace {
+
+// Four definitions of nearly equal size, one per bin, one reference between two
+// of them, and the entry among them — the smallest module that can say anything
+// about the order the objects go to the linker in.
+Graph buildChain(llvm::LLVMContext& ctx) {
+    Graph g;
+    g.m = std::make_unique<llvm::Module>("xpart_link_order", ctx);
+    // Sizes far enough apart that the call below cannot re-order them, so which
+    // bin each lands in is a property of the sizes alone.
+    sizedFn(*g.m, "bronze_main", 1000);
+    llvm::Function* alpha = sizedFn(*g.m, "alpha", 990);
+    sizedFn(*g.m, "beta", 980);
+    llvm::Function* gamma = sizedFn(*g.m, "gamma", 970);
+    plainCall(gamma, alpha);
+    g.names = {"bronze_main", "alpha", "beta", "gamma"};
+    return g;
+}
+
+}  // namespace
+
+TEST_CASE("the link order starts at the entry and keeps a reference adjacent") {
+    llvm::LLVMContext ctx;
+    const Graph g = buildChain(ctx);
+    const codegen_llvm::PartitionPlan plan = codegen_llvm::planPartitions(*g.m, 4);
+
+    // A permutation of the bins, always: the caller indexes the emitted paths
+    // with it, so a repeat or a gap would drop or duplicate an object.
+    REQUIRE(plan.linkOrder.size() == 4);
+    std::vector<bool> seen(4, false);
+    for (const unsigned bin : plan.linkOrder) {
+        REQUIRE(bin < 4);
+        CHECK(!seen[bin]);
+        seen[bin] = true;
+    }
+
+    // The same module twice gives the same order — the objects are byte-stable
+    // and so is the sequence they are handed over in.
+    const codegen_llvm::PartitionPlan again = codegen_llvm::planPartitions(*g.m, 4);
+    CHECK(again.linkOrder == plan.linkOrder);
+
+    if (!codegen_llvm::partitionUsesLinkOrderPolicy()) {
+        // The A/B seam column: the identity, which is the order emission has
+        // always used and the one every measurement of the policy is against.
+        for (unsigned i = 0; i < 4; ++i) CHECK(plan.linkOrder[i] == i);
+        return;
+    }
+
+    // Four bins, four definitions: if the packer put two together there is no
+    // adjacency left to state.
+    const unsigned entry = binOfName(plan, "bronze_main");
+    const unsigned alpha = binOfName(plan, "alpha");
+    const unsigned gamma = binOfName(plan, "gamma");
+    const unsigned beta = binOfName(plan, "beta");
+    REQUIRE(entry != alpha);
+    REQUIRE(alpha != gamma);
+    REQUIRE(beta != alpha);
+    REQUIRE(beta != gamma);
+
+    // The image opens with the code the program is entered through.
+    CHECK(plan.linkOrder[0] == entry);
+
+    // And the one pair of bins that name each other comes out adjacent, which
+    // is the whole of what the policy promises: `gamma` calls `alpha`, nothing
+    // else references anything, so no other pair has a claim on adjacency.
+    size_t atAlpha = 0, atGamma = 0;
+    for (size_t k = 0; k < plan.linkOrder.size(); ++k) {
+        if (plan.linkOrder[k] == alpha) atAlpha = k;
+        if (plan.linkOrder[k] == gamma) atGamma = k;
+    }
+    CHECK((atAlpha > atGamma ? atAlpha - atGamma : atGamma - atAlpha) == 1);
 }
 
 TEST_CASE("the partition trace is stable and sorted by name") {

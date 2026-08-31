@@ -19,7 +19,9 @@
 // and measuring the same arm under several seeds turns layout from a hidden
 // bias into a spread that can be printed next to the delta. Nothing else about
 // the build changes: same objects, same symbols, same program, and with no
-// seed set the linker is handed exactly the order the backend emitted.
+// seed set the linker is handed exactly the order the backend chose — which is
+// the affinity order the partition plan decides, not the bin numbering
+// (codegen-llvm/llvm_partition.h).
 //
 // `--keep-objs` is the other half. A seed costs a LINK, not a compile, only if
 // the objects outlive the build that made them; without it a per-seed sweep of
@@ -48,9 +50,10 @@ void setKeptObjectDir(const std::string& dir);
 const std::string& keptObjectDir();
 
 // Copies `objPaths` into `keptObjectDir()`, renamed so that lexicographic
-// order is emission order — that is what lets `linkFromObjectDir` recover the
-// unpermuted order from the directory alone. Returns a diagnostic, empty on
-// success.
+// order is the order they arrived in — that is what lets `linkFromObjectDir`
+// recover the unpermuted order from the directory alone, and it is why a
+// relink of a kept directory reproduces the build's own layout rather than an
+// arbitrary one. Returns a diagnostic, empty on success.
 std::string retainObjects(const std::vector<std::string>& objPaths);
 
 // Links an executable from a directory `retainObjects` filled, under whatever

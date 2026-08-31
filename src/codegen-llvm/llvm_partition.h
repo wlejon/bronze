@@ -44,6 +44,10 @@ struct PartitionPlan {
     // What `BRONZE_XPART_PAD` actually added, which is nothing unless the pad
     // is at most a hundredth of the module — see partitionPadInsts.
     size_t padApplied = 0;
+    // The sequence the partition objects are handed to the linker in:
+    // `linkOrder[k]` is the bin whose object goes k-th. A permutation of
+    // [0, parts), and the identity when the policy is off.
+    std::vector<unsigned> linkOrder;
 };
 
 // How many IR instructions an out-of-bin body may hold and still be kept.
@@ -69,6 +73,23 @@ unsigned crossPartitionInlineDepth();
 // affinity packer below. `BRONZE_XPART_LEGACY=1` is the A/B seam for the
 // change; one binary answers both.
 bool partitionUsesLegacyPacker();
+
+// Whether `PartitionPlan::linkOrder` is the affinity chain or the identity.
+// `BRONZE_NO_LINK_POLICY=1` leaves it the identity — bin i is the i-th object,
+// which is the order emission has always used — and is the A/B seam for the
+// policy. Either way the objects are byte-identical: this decides only the
+// sequence they are handed over in.
+//
+// The order is worth deciding because the linker lays the image out in it, and
+// on a sixteen-partition fixture that placement is worth ten percent of the
+// compute region. The default order — bin 0 first — is the packer's, and the
+// packer orders clusters by SIZE, which is the one arrangement that reliably
+// SCATTERS a working set: a loop and the small leaf bodies it calls have
+// nothing in common except the call edge, so they land at opposite ends of a
+// size-sorted image. Every arrangement that brings them back together is
+// faster, and re-linking the same objects under a different order is what
+// measured that (bench/README.md, "Where bronze stands").
+bool partitionUsesLinkOrderPolicy();
 
 // A measurement instrument, not a codegen knob: `BRONZE_XPART_PAD=<n>` adds n
 // to the RECORDED size of the definition the packer places first — the biggest
@@ -115,7 +136,20 @@ std::string describePartition(const llvm::Module& m, const PartitionPlan& plan);
 // function of the module — sizes with a name tie-break, clusters built in name
 // order — with no hash-map iteration order and no timing anywhere in it, so
 // the oracle's byte-for-byte objects hold.
-PartitionPlan planPartitions(const llvm::Module& m, unsigned parts);
+//
+// `entrySymbol` names the program's entry, which is where the link order's
+// affinity chain starts: the image opens with the code the program enters
+// through and follows the references outward from there.
+PartitionPlan planPartitions(const llvm::Module& m, unsigned parts,
+                             const std::string& entrySymbol = "bronze_main");
+
+// The emitted objects in the order the linker should be handed them. `paths` is
+// indexed by BIN — worker i wrote paths[i] — and the plan's order is not the bin
+// numbering. Nothing about the objects changes here: the same files, from the
+// same workers, in a different sequence, which is also the sequence
+// `--keep-objs` records and `bronze link` then replays.
+std::vector<std::string> orderPartitionPaths(const PartitionPlan& plan,
+                                             const std::vector<std::string>& paths);
 
 // What one worker's partition cost, for the `--timings` report.
 struct PartitionStats {

@@ -571,6 +571,7 @@ void promoteLocalsForSplit(llvm::Module& m) {
 // its own LLVMContext, handed over as bitcode because a worker may not touch
 // the shared context. `emittedPaths` records what was actually written.
 bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bool pic,
+                     const std::string& entrySymbol,
                      std::vector<std::string>* emittedPaths, DiagnosticSink& diags) {
     std::call_once(nativeTargetOnce, [] {
         llvm::InitializeNativeTarget();
@@ -682,8 +683,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
     // unique external name, and each worker re-finds its bin in a parsed copy
     // of the module rather than in this one — a worker may not touch the
     // shared LLVMContext, so bitcode is the handoff.
-    const codegen_llvm::PartitionPlan plan =
-        codegen_llvm::planPartitions(llvmModule, parts);
+    const auto plan = codegen_llvm::planPartitions(llvmModule, parts, entrySymbol);
 
     // ONE serialization of the whole module is the only serial work between
     // the plan and the workers. (Its predecessor cloned and serialized a
@@ -765,7 +765,7 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
         ok = false;
     }
     if (!ok) return false;
-    *emittedPaths = std::move(paths);
+    *emittedPaths = codegen_llvm::orderPartitionPaths(plan, paths);
     return true;
 }
 
@@ -988,7 +988,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
     }
     lap("llvm-verify");
 
-    bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_,
+    bool ok = writeObjectFile(*llvmModule, outputPath, /*pic=*/sharedRuntime_, entrySymbol_,
                               emittedPathsOut_, diags);
     // Every stage R3 region the module got, once every partition's pipeline has
     // joined (BRONZE_ENV_PROMOTION_STATS=1).

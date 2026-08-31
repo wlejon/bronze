@@ -2,14 +2,19 @@
 
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/Attributes.h>
+#include <llvm/IR/Constant.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalValue.h>
+#include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/InstrTypes.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/Error.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -204,6 +209,11 @@ bool partitionUsesLegacyPacker() {
     return legacy;
 }
 
+bool partitionUsesLinkOrderPolicy() {
+    static const bool off = envIsOne("BRONZE_NO_LINK_POLICY");
+    return !off;
+}
+
 unsigned partitionPadInsts() {
     static const unsigned pad = [] {
         if (const char* env = std::getenv("BRONZE_XPART_PAD")) {
@@ -342,9 +352,134 @@ void packAffinity(const std::vector<Def>& defs, unsigned parts,
     }
 }
 
+// Every global value one Constant operand names, once each. A body reaches a
+// definition through constant EXPRESSIONS as often as it names one directly — a
+// GEP into a table, a bitcast of a function pointer — so the walk goes through
+// the constant rather than stopping at the operand. A global's own initializer
+// is not followed: that reference belongs to whoever owns the global.
+void collectGlobalRefs(const llvm::Constant* c,
+                       llvm::SmallPtrSetImpl<const llvm::Constant*>& seen,
+                       llvm::SmallVectorImpl<const llvm::GlobalValue*>& out) {
+    if (c == nullptr || !seen.insert(c).second) return;
+    if (const auto* gv = llvm::dyn_cast<llvm::GlobalValue>(c)) {
+        out.push_back(gv);
+        return;
+    }
+    for (const llvm::Use& op : c->operands()) {
+        collectGlobalRefs(llvm::dyn_cast<llvm::Constant>(op.get()), seen, out);
+    }
+}
+
+// How tightly each pair of bins is tied together: how many distinct definitions
+// of one the bodies of the other name. Row-major `parts x parts`, and read
+// SYMMETRICALLY by the chain below, because the linker lays out one sequence
+// and a reference spans the same distance whichever end names the other.
+//
+// Non-function definitions all belong to bin 0 (llvm_backend.cpp emits them
+// there), so a body's references to the module's data are edges to bin 0.
+//
+// A COUNT of distinct definitions, deliberately, and two richer readings were
+// measured against it and lost. Weighing an edge by the callee's size, or by
+// the smaller of the two bodies, both sound better — a hot loop naming one
+// 20k-instruction leaf has more to gain than from a hundred wrappers — and both
+// produced orders a millisecond slower on the fixture that motivated this. The
+// bins are balanced by instruction count, so any size-scaled reading is
+// dominated by how much total code a bin holds, which is the same for all of
+// them, and the arrangement it lands on is a coin toss.
+std::vector<uint64_t> binAffinity(const llvm::Module& m, const PartitionPlan& plan,
+                                  unsigned parts) {
+    std::vector<uint64_t> weight(static_cast<size_t>(parts) * parts, 0);
+    auto binOfRef = [&](const llvm::GlobalValue* gv) -> int {
+        if (const auto* fn = llvm::dyn_cast<llvm::Function>(gv)) {
+            if (fn->isDeclaration()) return -1;
+            const auto at = plan.binOf.find(fn->getName().str());
+            return at == plan.binOf.end() || at->second >= parts ? -1
+                                                                 : static_cast<int>(at->second);
+        }
+        const auto* var = llvm::dyn_cast<llvm::GlobalVariable>(gv);
+        return var != nullptr && var->hasInitializer() ? 0 : -1;
+    };
+
+    for (const llvm::Function& f : m) {
+        if (f.isDeclaration()) continue;
+        const auto home = plan.binOf.find(f.getName().str());
+        if (home == plan.binOf.end() || home->second >= parts) continue;
+        const unsigned i = home->second;
+        // Distinct definitions, not references to them: a loop that calls one
+        // leaf a thousand times is one tie, the same as a loop that calls it
+        // once. What the order can buy is the leaf being NEARBY, and that is
+        // bought once.
+        llvm::SmallPtrSet<const llvm::Constant*, 32> walked;
+        llvm::SmallPtrSet<const llvm::GlobalValue*, 32> counted;
+        llvm::SmallVector<const llvm::GlobalValue*, 8> refs;
+        for (const llvm::BasicBlock& bb : f) {
+            for (const llvm::Instruction& inst : bb) {
+                for (const llvm::Use& op : inst.operands()) {
+                    refs.clear();
+                    collectGlobalRefs(llvm::dyn_cast<llvm::Constant>(op.get()), walked, refs);
+                    for (const llvm::GlobalValue* gv : refs) {
+                        const int j = binOfRef(gv);
+                        if (j < 0 || static_cast<unsigned>(j) == i) continue;
+                        if (!counted.insert(gv).second) continue;
+                        ++weight[static_cast<size_t>(i) * parts + static_cast<unsigned>(j)];
+                    }
+                }
+            }
+        }
+    }
+    return weight;
+}
+
+// The order the objects go to the linker in: start at the bin that owns the
+// entry point, then repeatedly append whichever unplaced bin is most tightly
+// tied to everything placed so far.
+//
+// A chain rather than a sort, because the property worth having is ADJACENCY
+// and a sort has no way to express it: what makes an image fast is that the
+// bins which name each other end up near each other, and only a walk that asks
+// "what belongs next" can arrange that. Greedy rather than an optimal linear
+// arrangement because the latter is NP-hard and this one is sixteen bins deep.
+//
+// Tied to the LAST bin placed rather than to the whole placed prefix, which was
+// also measured: accumulating the pull of everything placed so far sums fifteen
+// bins' worth of ties into every candidate, and since the bins are balanced
+// those sums are nearly equal — the ranking stops being about affinity at all.
+// One step back keeps the question local, which is the question a linear
+// arrangement actually asks.
+std::vector<unsigned> chainByAffinity(const std::vector<uint64_t>& weight, unsigned parts,
+                                      unsigned root) {
+    std::vector<unsigned> order;
+    order.reserve(parts);
+    std::vector<bool> placed(parts, false);
+    unsigned at = root;
+    order.push_back(at);
+    placed[at] = true;
+    for (unsigned n = 1; n < parts; ++n) {
+        unsigned best = parts;
+        uint64_t bestTie = 0;
+        for (unsigned j = 0; j < parts; ++j) {
+            if (placed[j]) continue;
+            const uint64_t tie = weight[static_cast<size_t>(at) * parts + j] +
+                                 weight[static_cast<size_t>(j) * parts + at];
+            // Strictly greater, so an equal tie keeps the LOWER bin index and
+            // the order is a function of the module rather than of the loop
+            // that walked it.
+            if (best == parts || tie > bestTie) {
+                best = j;
+                bestTie = tie;
+            }
+        }
+        order.push_back(best);
+        placed[best] = true;
+        at = best;
+    }
+    return order;
+}
+
 }  // namespace
 
-PartitionPlan planPartitions(const llvm::Module& m, unsigned parts) {
+PartitionPlan planPartitions(const llvm::Module& m, unsigned parts,
+                             const std::string& entrySymbol) {
     PartitionPlan plan;
     plan.keepBodies.resize(parts);
     if (parts == 0) return plan;
@@ -374,6 +509,21 @@ PartitionPlan planPartitions(const llvm::Module& m, unsigned parts) {
         packAffinity(defs, parts, calleesOf, cap, plan, binOfFn);
     }
     for (const Def& d : defs) plan.binOf.emplace(d.fn->getName().str(), binOfFn.lookup(d.fn));
+
+    plan.linkOrder.resize(parts);
+    for (unsigned i = 0; i < parts; ++i) plan.linkOrder[i] = i;
+    if (parts >= 2 && partitionUsesLinkOrderPolicy()) {
+        // A module with no entry of that name — a partitioned `--emit-obj` for
+        // a host that supplies its own — starts the chain at bin 0, which is
+        // where the packer put the largest clusters.
+        unsigned root = 0;
+        if (const llvm::Function* entry = m.getFunction(entrySymbol);
+            entry != nullptr && !entry->isDeclaration()) {
+            const auto at = plan.binOf.find(entry->getName().str());
+            if (at != plan.binOf.end() && at->second < parts) root = at->second;
+        }
+        plan.linkOrder = chainByAffinity(binAffinity(m, plan, parts), parts, root);
+    }
 
     if (cap == 0 || parts < 2) {
         if (envIsOne("BRONZE_XPART_TRACE")) {
@@ -418,6 +568,17 @@ PartitionPlan planPartitions(const llvm::Module& m, unsigned parts) {
     return plan;
 }
 
+std::vector<std::string> orderPartitionPaths(const PartitionPlan& plan,
+                                             const std::vector<std::string>& paths) {
+    // A plan made for a different set of objects has nothing to say about
+    // these, and handing back a short list would silently drop one.
+    if (plan.linkOrder.size() != paths.size()) return paths;
+    std::vector<std::string> ordered;
+    ordered.reserve(paths.size());
+    for (const unsigned bin : plan.linkOrder) ordered.push_back(paths[bin]);
+    return ordered;
+}
+
 std::string describePartition(const llvm::Module& m, const PartitionPlan& plan) {
     // Sizes as the module has them, not as the pad seam reports them: a trace
     // that echoed the pad back would hide the very thing it is read for.
@@ -444,7 +605,11 @@ std::string describePartition(const llvm::Module& m, const PartitionPlan& plan) 
     out += " parts=" + std::to_string(parts) + " fns=" + std::to_string(rows.size()) +
            " pad=" + std::to_string(plan.padApplied) +
            " clusters=" + std::to_string(plan.clusters) +
-           " largest_cluster=" + std::to_string(plan.largestCluster) + "\n";
+           " largest_cluster=" + std::to_string(plan.largestCluster) + " link_order=";
+    for (size_t k = 0; k < plan.linkOrder.size(); ++k) {
+        out += (k ? "," : "") + std::to_string(plan.linkOrder[k]);
+    }
+    out += "\n";
     for (unsigned b = 0; b < parts; ++b) {
         out += "xpart: bin " + std::to_string(b) + " insts=" + std::to_string(load[b]) +
                " fns=" + std::to_string(count[b]) +

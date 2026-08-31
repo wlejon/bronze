@@ -28,8 +28,9 @@ uint64_t nextRandom(uint64_t& state) {
     return z ^ (z >> 31);
 }
 
-// The objects a `--keep-objs` directory holds, in emission order. Emission
-// order is lexicographic order because `retainObjects` renamed them that way.
+// The objects a `--keep-objs` directory holds, in the order the build handed
+// them to the linker — which is lexicographic order, because `retainObjects`
+// renamed them that way.
 std::vector<std::string> objectsIn(const std::filesystem::path& dir, std::error_code& ec) {
     std::vector<std::string> found;
     for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
