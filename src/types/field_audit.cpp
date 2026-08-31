@@ -91,96 +91,69 @@ bool isProvablyNumericKeyExpr(const ast::Expr* e) {
     return false;
 }
 
+// Whether the FORM of this expression guarantees a Number — asked of a write
+// whose value the flow pass could only type `Dynamic`, or never reached at all.
+// A `true` here is spent as a SOUNDNESS PROOF: it withdraws the refusal that
+// would otherwise make the written name un-clean, the name's field keeps its
+// primitive claim, and the read of that field lowers to `unbox.f64 ..., raw` —
+// an unchecked reinterpretation of whatever bits the slot holds.
+//
+// So every clause is a fact about the LANGUAGE, never about the program:
+// `a * b` evaluates to a Number whichever bindings a and b are, and that is the
+// entire admissible form of argument. `Math.random()` does not qualify, because
+// `Math` is an identifier and an identifier is a binding this function cannot
+// resolve; where the binding really is the builtin, the flow pass has already
+// typed the call `number` and the caller never asks here.
+//
+// This is stated so flatly because the function used to answer from SPELLINGS —
+// a list of identifier names (`x`, `scalar`, `qbw`), one of property names, one
+// of method names (`dot`, `lengthSq`), one of function names (`lerp`, `clamp`).
+// Those describe three.js's naming conventions and nothing else. A class whose
+// `x` is written from a parameter one call site passes a string to kept the
+// primitive claim on the strength of the letter, stored the string, and read it
+// back as a raw double: `b.set('a', 1, 2); b.sum()` answered `NaN` where the
+// language says `a12`.
+//
+// `+` is deliberately not with the other arithmetic operators: it concatenates
+// as soon as either side is a string, so it needs BOTH sides proven where the
+// others need neither.
 bool isProvablyNumericValExpr(const ast::Expr* e, const std::map<std::string, std::string>& names) {
     if (e == nullptr) return false;
-    if (isProvablyNumericKeyExpr(e)) return true;
-    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
-        static const char* kNumericIdents[] = {
-            "Infinity", "NaN", "x", "y", "z", "w", "_x", "_y", "_z", "_w",
-            "sx", "sy", "sz", "sw", "s", "scalar", "value",
-            "r", "g", "b", "a", "u", "t", "dt",
-            "length", "distance", "radius", "theta", "phi", "alpha", "beta", "gamma",
-            "min", "max", "minVal", "maxVal", "minX", "minY", "minZ", "maxX", "maxY", "maxZ",
-            "offset", "index", "step", "count", "headWidth", "headLength",
-            "ratio", "ratioA", "ratioB", "invSize", "halfWidth", "halfHeight",
-            "m11", "m12", "m13", "m14", "m21", "m22", "m23", "m24",
-            "m31", "m32", "m33", "m34", "m41", "m42", "m43", "m44",
-            "c1", "c2", "c3", "s1", "s2", "s3", "qw", "qx", "qy", "qz",
-            "vx", "vy", "vz", "tx", "ty", "tz", "qax", "qay", "qaz", "qaw",
-            "qbx", "qby", "qbz", "qbw"
-        };
-        for (const char* nid : kNumericIdents) {
-            if (id->name == nid) return true;
-        }
-        return false;
-    }
-    if (const auto* b = dynamic_cast<const ast::Binary*>(e)) {
-        if (ast::isAssignOp(b->op)) {
-            return isProvablyNumericValExpr(b->rhs.get(), names);
-        }
-        if (b->op == ast::BinaryOp::Add) {
-            return (isProvablyNumericValExpr(b->lhs.get(), names) && isProvablyNumericValExpr(b->rhs.get(), names)) ||
-                   isProvablyNumericKeyExpr(b->lhs.get()) || isProvablyNumericKeyExpr(b->rhs.get());
-        }
-        if (b->op == ast::BinaryOp::Sub || b->op == ast::BinaryOp::Mul ||
-            b->op == ast::BinaryOp::Div || b->op == ast::BinaryOp::Mod ||
-            b->op == ast::BinaryOp::BitAnd || b->op == ast::BinaryOp::BitOr ||
-            b->op == ast::BinaryOp::BitXor || b->op == ast::BinaryOp::Shl ||
-            b->op == ast::BinaryOp::Shr || b->op == ast::BinaryOp::UShr ||
-            b->op == ast::BinaryOp::Exp) {
-            return true;
-        }
-    }
+    if (dynamic_cast<const ast::NumberLit*>(e)) return true;
     if (const auto* u = dynamic_cast<const ast::Unary*>(e)) {
-        if (u->op == ast::UnaryOp::Posate || u->op == ast::UnaryOp::Negate ||
-            u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
-            u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
-            u->op == ast::UnaryOp::PostDec) {
-            return true;
-        }
+        return u->op == ast::UnaryOp::Posate || u->op == ast::UnaryOp::Negate ||
+               u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
+               u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
+               u->op == ast::UnaryOp::PostDec;
     }
     if (const auto* t = dynamic_cast<const ast::Ternary*>(e)) {
-        return isProvablyNumericValExpr(t->thenExpr.get(), names) && isProvablyNumericValExpr(t->elseExpr.get(), names);
+        return isProvablyNumericValExpr(t->thenExpr.get(), names) &&
+               isProvablyNumericValExpr(t->elseExpr.get(), names);
     }
-    if (const auto* m = dynamic_cast<const ast::MemberAccess*>(e)) {
-        static const char* kNumericProps[] = {
-            "x", "y", "z", "w", "_x", "_y", "_z", "_w", "r", "g", "b", "a"
-        };
-        for (const char* np : kNumericProps) {
-            if (m->property == np) return true;
+    if (const auto* b = dynamic_cast<const ast::Binary*>(e)) {
+        // A plain assignment yields its right-hand side; a compound one yields
+        // what its base operator produced, so both reduce to the same question.
+        if (b->op == ast::BinaryOp::Assign) return isProvablyNumericValExpr(b->rhs.get(), names);
+        const ast::BinaryOp base = ast::compoundAssignBase(b->op);
+        if (base == ast::BinaryOp::Add) {
+            return isProvablyNumericValExpr(b->lhs.get(), names) &&
+                   isProvablyNumericValExpr(b->rhs.get(), names);
         }
-        const auto it = names.find(m->property);
-        if (it != names.end() && it->second.empty()) return true;
-    }
-    if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(e)) {
-        return isArrayReceiverExpr(ix->object.get()) || dynamic_cast<const ast::IndexAccess*>(ix->object.get()) != nullptr ||
-               dynamic_cast<const ast::MemberAccess*>(ix->object.get()) != nullptr;
-    }
-    if (const auto* c = dynamic_cast<const ast::Call*>(e)) {
-        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
-            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
-                if (id->name == "Math") return true;
-            }
-            static const char* kNumericMethods[] = {
-                "getX", "getY", "getZ", "getW", "dot", "length", "lengthSq",
-                "distanceTo", "distanceToSquared", "angleTo", "manhattanDistanceTo",
-                "manhattanLength", "determinant", "aspect", "getComponent",
-                "random", "cos", "sin", "tan", "sqrt", "atan2", "asin", "acos",
-                "floor", "ceil", "round", "trunc", "abs", "min", "max", "exp", "log", "pow"
-            };
-            for (const char* nm : kNumericMethods) {
-                if (m->property == nm) return true;
-            }
-        }
-        if (const auto* id = dynamic_cast<const ast::Ident*>(c->callee.get())) {
-            static const char* kNumericFuncs[] = {
-                "parseInt", "parseFloat", "Number", "clamp", "degToRad", "radToDeg",
-                "lerp", "smoothstep", "smootherstep", "randFloat", "randFloatSpread",
-                "randInt", "zOrder", "euclideanModulo", "pingpong"
-            };
-            for (const char* nf : kNumericFuncs) {
-                if (id->name == nf) return true;
-            }
+        switch (base) {
+            case ast::BinaryOp::Sub:
+            case ast::BinaryOp::Mul:
+            case ast::BinaryOp::Div:
+            case ast::BinaryOp::Mod:
+            case ast::BinaryOp::BitAnd:
+            case ast::BinaryOp::BitOr:
+            case ast::BinaryOp::BitXor:
+            case ast::BinaryOp::Shl:
+            case ast::BinaryOp::Shr:
+            case ast::BinaryOp::UShr:
+            case ast::BinaryOp::Exp:
+                return true;
+            default:
+                return false;
         }
     }
     return false;
