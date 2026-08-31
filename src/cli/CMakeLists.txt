@@ -1,4 +1,4 @@
-add_library(bronze_cli STATIC driver.cpp link.cpp)
+add_library(bronze_cli STATIC driver.cpp link.cpp link_order.cpp)
 add_library(bronze::cli ALIAS bronze_cli)
 target_include_directories(bronze_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
@@ -30,7 +30,8 @@ if(BRONZE_BUILD_TESTS)
                                    ../../tests/cli/pin_barrier_test.cpp
                                    ../../tests/cli/pin_census_test.cpp
                                    ../../tests/cli/numeric_arith_boundary_test.cpp
-                                   ../../tests/cli/lowering_determinism_test.cpp)
+                                   ../../tests/cli/lowering_determinism_test.cpp
+                                   ../../tests/cli/link_order_test.cpp)
     target_link_libraries(bronze_cli_tests PRIVATE bronze::cli doctest::doctest)
     # The determinism test needs a graph big enough for the hazard to have room
     # to happen in, and the vendored three.js one is already in the tree.

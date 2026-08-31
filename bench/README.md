@@ -145,19 +145,58 @@ rounds, medians.
 
 ## Where bronze stands
 
-Measured 2026-08-27 at `8db7d05` + this change, one idle box, one interleaved
-session, 51 rounds, medians, `bench/tools/interleave.py`. **Compute region only
-— no process startup in any cell.** `pins` is a manifest written by
-`bronze build --census` on the fixture itself, not a hand-authored one. Every
-checksum is identical across all three columns of every row, which is the
-acceptance condition: a difference in a checksum is a miscompile, and a
-comparison that does not check them is not a measurement.
+The three library-scale rows, taken under layout control with
+`bench/tools/layout_sweep.py` — nine link orders per fixture (the default order
+plus eight seeds), three independently-created copies of each, medians per
+seed. **Compute region only — no process startup in any cell.** The checksum
+was identical on every run of every column, which is the acceptance condition:
+a difference in a checksum is a miscompile, and a comparison that does not
+check them is not a measurement. The node column is the pinned baseline from
+`node_baselines.json`; nothing here invokes node.
 
-The **bronze default** column predates the change that made `*`, `-`, `/` and
-`%` over unproven operands produce an f64 in a standalone build rather than a
-boxed value. Every row built out of real library code moved with it, so those
-cells are a record of that session and not of today's default; re-take the
-whole table with `interleave.py` before quoting a number from it.
+| fixture | objects | bronze pooled | cross-seed spread | node | vs node |
+|---|---:|---:|---:|---:|---:|
+| `three_math` | 3 | **12.00** | 0.61 (5.1%) | 8.80 | 0.73× |
+| `mesh_churn_2k` | 10 | **34.39** | 0.65 (1.9%) | 32.33 | 0.94× |
+| `instanced_mesh_churn` | 16 | **42.71** | 2.82 (6.6%) | 33.61 | 0.79× |
+
+**The spread column is the point of the table.** A large fixture is emitted as
+several partition objects, and the order they are handed to the linker decides
+where every function lands in the image. Nothing else changes — same objects,
+same symbols, same program — and `instanced_mesh_churn` still reads 41.4 ms
+under one order and 44.2 ms under another, a 6.6% band that reproduces: the
+same seed comes out in the same place in the ranking on every repeat of the
+sweep, so this is placement, not noise, and no number of extra rounds averages
+it away. `mesh_churn_2k`, with ten objects instead of sixteen, sits in a 1.9%
+band; `three_math` has only three objects and therefore only six orders to
+draw from at all.
+
+That band is wider than most of the deltas this suite is asked to adjudicate,
+which is why the protocol changed. An A/B that links each arm once compares one
+arbitrary draw against another and reports the difference as a result: editing
+four NEVER-EXECUTED lines of the vendored three.js bundle — three parameter
+defaults on `Color` methods this fixture never calls and one comparison inside
+`WebGLRenderer` — measured **+5.0%** on `instanced_mesh_churn` that way, and
+**+0.9%, inside the bar,** across nine orders. So:
+
+> **An arm-vs-arm delta is CLAIMABLE only if it exceeds the wider of the two
+> arms' cross-seed spreads.** `layout_sweep.py` prints that rule and applies it.
+
+A per-seed point costs a LINK, not a compile: `bronze build --keep-objs <dir>`
+leaves the partition objects behind and `bronze link <dir> --link-seed <n>`
+relinks them under a deterministic permutation. On the `instanced_mesh_churn`
+graph that is ~0.3 s of link against ~90 s of object emission, which is what
+makes nine layouts per arm affordable.
+
+### Older rows, not re-taken under layout control
+
+Measured 2026-08-27 at `8db7d05`, 51 rounds, `bench/tools/interleave.py`, one
+link order per column. The **bronze default** column predates the change that
+made `*`, `-`, `/` and `%` over unproven operands produce an f64 in a
+standalone build rather than a boxed value, and the three library rows above
+have since moved by more than half. Treat every cell below as a record of that
+session: re-take it with `layout_sweep.py` before quoting a number, and read
+any delta narrower than a few percent as unresolved rather than real.
 
 | fixture | bronze default | bronze `--pins` | node | best vs node |
 |---|---:|---:|---:|---:|
@@ -210,6 +249,35 @@ Three things this table says that the previous protocol hid:
   element path is what is left behind.
 
 ## Reproducing
+
+For anything built out of a library — the three rows in the table above, and
+any A/B whose expected delta is smaller than about 10% — use the layout sweep,
+because a single link order is one draw of a distribution several percent wide:
+
+```sh
+# 1. compile each arm ONCE; the objects, not the exe, are the artefact
+bronze build bench/instanced_mesh_churn.js -o /tmp/base.exe --keep-objs /tmp/objs/base
+bronze build path/to/edited/entry.js      -o /tmp/edit.exe --keep-objs /tmp/objs/edit
+
+# 2. a spec naming the object directories, the seeds, and the rounds
+#    (`null` in "seeds" is the default order, so the table shows where
+#    today's number sits in the distribution as well as how wide it is)
+cat > sweep.json <<'JSON'
+{"region": "instanced_mesh_churn",
+ "seeds": [null, 1, 2, 3, 4, 5, 6, 7, 8], "rounds": 11, "copies": 3,
+ "bronze": "<abs-path>/bronze.exe", "launcher": ["<abs-path>/dev.cmd"],
+ "stage": "/tmp/stage",
+ "arms": [{"name": "base", "objs": "/tmp/objs/base"},
+          {"name": "edit", "objs": "/tmp/objs/edit"}]}
+JSON
+
+# 3. link every (arm, seed), run them interleaved, apply the decision rule
+python bench/tools/layout_sweep.py sweep.json
+```
+
+For a kernel that compiles to one object there is no order to permute, and
+`interleave.py` is still the instrument — it is also the only one that can take
+a node column:
 
 ```sh
 # 1. build the columns you want to compare

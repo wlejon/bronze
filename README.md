@@ -64,6 +64,11 @@ bronze build <entry.js> -o <obj> \
              --host-globals <manifest>    compile to an object for a host build
 bronze build <entry.js> -o <lib> \
              --emit-shared                compile a module a host loads at run time
+bronze build <entry.js> -o <exe> \
+             --keep-objs <dir>            keep the partition objects behind
+bronze link  <dir> -o <exe> \
+             --link-seed <n>              relink those objects in a seeded
+                                          order, without recompiling
 bronze types <entry.js>                   show what inference proved
 bronze il    <entry.js>                   dump the typed IL
 bronze lex / bronze parse                 earlier pipeline stages

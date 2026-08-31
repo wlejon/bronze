@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "cli/link_order.h"
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -368,10 +370,16 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
     // Every command below wraps `objPath` in exactly one pair of quotes, so
     // joining the list with `" "` splices N quoted paths into that pair and
     // no command line needs to know how many objects there are.
+    //
+    // The order is `orderForLink`'s rather than the caller's because the
+    // linker lays the image out in the order it is given the objects, and that
+    // layout is a measurable variable the harness needs to be able to move
+    // (link_order.h). With no seed set it IS the caller's order, unchanged.
+    const std::vector<std::string> ordered = orderForLink(objPaths);
     std::string objPath;
-    for (size_t i = 0; i < objPaths.size(); ++i) {
+    for (size_t i = 0; i < ordered.size(); ++i) {
         if (i) objPath += "\" \"";
-        objPath += objPaths[i];
+        objPath += ordered[i];
     }
     auto rtLib = findRuntimeLib();
     auto rtCpp = findRuntimeCpp();

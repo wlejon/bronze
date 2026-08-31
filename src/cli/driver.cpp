@@ -15,6 +15,7 @@
 
 #include "ast/dump.h"
 #include "cli/link.h"
+#include "cli/link_order.h"
 #include "codegen/backend.h"
 #if BRONZE_WITH_LLVM
 #include "codegen-llvm/llvm_backend.h"
@@ -80,6 +81,8 @@ constexpr const char* kUsage =
     "  bronze types <file>                 Infer types and print the canonical type dump\n"
     "  bronze il <file>                    Lower to IL and print canonical IL dump\n"
     "  bronze build <file> -o <output>     Compile JS source to native executable\n"
+    "  bronze link <objdir> -o <output>    Link an executable from the objects a\n"
+    "                                      `build --keep-objs <objdir>` left behind\n"
     "  bronze version                      Print version\n"
     "\n"
     "Options (types, il, build):\n"
@@ -210,6 +213,23 @@ constexpr const char* kUsage =
     "                                      runtime in the process means one heap, so\n"
     "                                      a missing shared runtime is an error and\n"
     "                                      never a fall back to the static one.\n"
+    "\n"
+    "Options (build, link):\n"
+    "  --link-seed <n>                     Permute the order the partition objects\n"
+    "                                      are handed to the linker in: same seed,\n"
+    "                                      same order, every run. Layout only — same\n"
+    "                                      objects, same symbols, same program — and\n"
+    "                                      with no seed, the order the backend\n"
+    "                                      emitted. It lets a measurement VARY binary\n"
+    "                                      layout across seeds and report the spread\n"
+    "                                      beside the delta, instead of pinning one\n"
+    "                                      arbitrary layout per arm and reading its\n"
+    "                                      bias as a result.\n"
+    "  --keep-objs <dir>                   (build) Leave the partition objects in\n"
+    "                                      <dir>, named so lexicographic order is\n"
+    "                                      emission order. `bronze link <dir>` then\n"
+    "                                      relinks them under another --link-seed in\n"
+    "                                      seconds instead of recompiling.\n"
     "\n"
     "TS annotations are untrusted hints. One that inference does not prove is\n"
     "discarded with a warning and the value stays dynamic.\n";
@@ -635,6 +655,18 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
+    // Before the link, not after: a link that fails is exactly when the
+    // objects are worth having, and the retention is a property of the
+    // EMISSION rather than of what was done with it.
+    if (!keptObjectDir().empty()) {
+        const std::string retainErr = retainObjects(objPaths);
+        if (!retainErr.empty()) {
+            if (errOut) *errOut = retainErr;
+            else std::fputs(retainErr.c_str(), stderr);
+            return 1;
+        }
+    }
+
     bool linked = emitShared ? linkSharedModule(objPaths, outputPath, diags)
                              : linkExecutable(objPaths, outputPath, diags);
     timer.mark("link");
@@ -688,6 +720,8 @@ int runDriver(int argc, char** argv) {
 #endif
         return 0;
     }
+
+    if (command == "link") return runLink(argc, argv);
 
     if (command == "lex" || command == "parse") {
         if (argc < 3) return fail("error: missing <file>\n");
@@ -850,10 +884,13 @@ int runDriver(int argc, char** argv) {
         std::string pinsPath;
         std::string censusOutPath;
         bool pinsAllowObserved = false;
+        std::string linkFlagError;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
-            if (arg == "--no-infer") {
+            if (consumeLinkMeasurementFlag(arg, i, argc, argv, linkFlagError)) {
+                if (!linkFlagError.empty()) return fail(linkFlagError);
+            } else if (arg == "--no-infer") {
                 infer = false;
             } else if (arg == "--no-fn-source") {
                 retainFnSource = false;
