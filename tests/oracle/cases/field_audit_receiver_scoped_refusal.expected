@@ -1,0 +1,7 @@
+V3 clobbered=hi1 (string)
+C3 intact=5 (number)
+elem0=clobbered (string)
+elem1=10 (number)
+dual.y=K0 (string)
+dual[0]=K1 (string)
+dual.sum=0K0 (string)

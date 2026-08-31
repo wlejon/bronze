@@ -52,7 +52,7 @@ TEST_CASE("the audit's unit is the property name, not the class") {
     CHECK(r.provenFieldReads.empty());
 }
 
-TEST_CASE("one computed write with unknown key and unknown value stands every name down") {
+TEST_CASE("one computed write with unknown key and unknown value stands its class down") {
     const auto inferred = infer(
         "class V { constructor() { this.x = 0; } }\n"
         "function make(n) { const v = new V(); v.x = n; return v; }\n"
@@ -62,13 +62,85 @@ TEST_CASE("one computed write with unknown key and unknown value stands every na
         "poke(v, 'x', 'hi');\n"
         "console.log(read(v));\n");
     const auto& r = *inferred.result;
-    CHECK(r.fieldAudit.namesClean == 0);
-    CHECK(r.fieldAudit.namesLocallyClean == 1);
-    CHECK(r.fieldAudit.globalRefusals.size() == 1);
+    // The obligation, unchanged: `read` may not spend a Number claim on a slot
+    // this write can put a string in. What carries it is the receiver — `poke`
+    // is called once, with an object `make` was watched building, so the write
+    // is proven to reach V and proven not to reach anything else.
+    CHECK(r.provenFieldReads.empty());
     CHECK(r.fieldAudit.computedSites >= 1);
     CHECK(r.fieldAudit.computedRefuted >= 1);
     CHECK(r.fieldAudit.residue.size() >= 1);
+    CHECK(r.fieldAudit.classScopedRefusals.size() == 1);
+    CHECK(r.fieldAudit.classScopedRefusals[0].cls == "V{x}");
+    CHECK(r.fieldAudit.globalRefusals.empty());
+    CHECK(r.fieldAudit.namesLocallyClean == 1);
+}
+
+// ---- how far an unanalyzable computed write's refusal reaches ---------------
+
+TEST_CASE("a computed write through a watched receiver refuses that class alone") {
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "class W { constructor() { this.x = 0; } }\n"
+        "function readV(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "function readW(w) { let s = w.x; for (let i = 0; i < 2; i++) s = w.x; return s; }\n"
+        "const kk = ['x'][0];\n"
+        "const v = new V();\n"
+        "v[kk] = 'hi';\n"
+        "const w = new W();\n"
+        "w.x = 3;\n"
+        "console.log(readV(v));\n"
+        "console.log(readW(w));\n");
+    const auto& r = *inferred.result;
+    // Not a program-wide answer, and `x` carries no refusal of its own: what
+    // stands V's reads down is the class the write was proven to reach.
+    CHECK(r.fieldAudit.globalRefusals.empty());
+    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.fieldAudit.classScopedRefusals.size() == 1);
+    CHECK(r.fieldAudit.classScopedRefusals[0].cls == "V{x}");
+    // W's three reads keep the claim; V's do not.
+    CHECK(r.fieldAudit.refusedByAudit >= 3);
+    CHECK(r.provenFieldReads.size() >= 3);
+}
+
+TEST_CASE("a computed write's refusal follows the receiver's extends family") {
+    const auto inferred = infer(
+        "class Base {\n"
+        "  constructor() { this.x = 0; }\n"
+        "  sum() { let s = this.x; for (let i = 0; i < 2; i++) s = this.x; return s; }\n"
+        "}\n"
+        "class Derived extends Base { constructor() { super(); this.z = 1; } }\n"
+        "const kk = ['x'][0];\n"
+        "const d = new Derived();\n"
+        "d[kk] = 'hi';\n"
+        "console.log(d.sum());\n");
+    const auto& r = *inferred.result;
+    // The write reached a Derived. `sum` runs with `this` typed Base, and a
+    // Base-typed receiver is exactly what a Derived arrives as, so the refusal
+    // has to cover the read too — the layouts nest and the intervals overlap.
+    CHECK(r.fieldAudit.globalRefusals.empty());
+    CHECK(r.fieldAudit.classScopedRefusals.size() == 1);
     CHECK(r.provenFieldReads.empty());
+    CHECK(r.fieldAudit.refusedByAudit >= 1);
+}
+
+TEST_CASE("a computed write through a receiver typed as an array costs no class") {
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "function read(v) { let s = v.x; for (let i = 0; i < 2; i++) s = v.x; return s; }\n"
+        "const kk = ['x'][0];\n"
+        "const arr = [1, 2, 3];\n"
+        "arr[kk] = 'hi';\n"
+        "const v = new V();\n"
+        "v.x = 2;\n"
+        "console.log(read(v));\n");
+    const auto& r = *inferred.result;
+    // An array is not an instance of any declared class, so the write reaches
+    // nothing a layout answers for. `x` is not a name a numeric key could be.
+    CHECK(r.fieldAudit.globalRefusals.empty());
+    CHECK(r.fieldAudit.classScopedRefusals.empty());
+    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.provenFieldReads.size() >= 3);
 }
 
 TEST_CASE("a computed write with a number key cannot name a non-numeric field") {

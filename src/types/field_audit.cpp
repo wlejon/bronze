@@ -1,8 +1,8 @@
 #include "types/field_audit.h"
 
 #include <algorithm>
-#include <cstring>
 
+#include "types/class_layout.h"
 #include "types/literal_scan.h"
 #include "types/walk.h"
 
@@ -38,9 +38,29 @@ const ast::StringLit* asStringLit(const ast::Expr* e) {
     return dynamic_cast<const ast::StringLit*>(e);
 }
 
-}  // namespace
+// Whether the two classes are the same one or one extends the other, decided
+// on the preorder intervals `ClassLayout::familyIndex` numbers: a subclass's
+// interval is nested inside its base's, so two nodes of the forest overlap
+// exactly when one is an ancestor of the other. That is the whole reachability
+// question a receiver-scoped refusal has to answer — see `FieldAudit::settle`.
+bool familiesMeet(const ClassLayout& a, const ClassLayout& b) {
+    return a.familyIndex <= b.familyIndex + b.familySpan &&
+           b.familyIndex <= a.familyIndex + a.familySpan;
+}
 
-bool isArrayReceiverExpr(const ast::Expr* e);
+// How a receiver the flow pass could not type is WRITTEN. Reported, never
+// decided on — see `residue`.
+const char* receiverForm(const ast::Expr* e) {
+    if (e == nullptr) return "absent";
+    if (dynamic_cast<const ast::ThisExpr*>(e)) return "this";
+    if (dynamic_cast<const ast::MemberAccess*>(e)) return "a property read";
+    if (dynamic_cast<const ast::IndexAccess*>(e)) return "an element read";
+    if (dynamic_cast<const ast::Call*>(e)) return "a call's result";
+    if (dynamic_cast<const ast::Ident*>(e)) return "a binding";
+    return "another expression";
+}
+
+}  // namespace
 
 bool builtinOwnedName(const std::string& name) {
     for (const char* n : kBuiltinNames) {
@@ -154,69 +174,6 @@ bool isProvablyNumericValExpr(const ast::Expr* e, const std::map<std::string, st
                 return true;
             default:
                 return false;
-        }
-    }
-    return false;
-}
-
-bool isArrayReceiverExpr(const ast::Expr* e) {
-    if (e == nullptr) return false;
-    if (dynamic_cast<const ast::ArrayLit*>(e)) return true;
-    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
-        static const char* kArrayIdents[] = {
-            "array", "dst", "src", "elements", "te", "target", "out",
-            "e", "me", "ae", "be", "pe", "se", "de", "src0", "src1", "dst0", "dst1",
-            "positions", "normals", "uvs", "colors", "indices", "vertices",
-            "morphAttributes", "morphTargetInfluences", "morphTargetDictionary",
-            "data", "buffer", "list", "stack", "queue", "nodes", "items",
-            "cache", "bindings", "actions", "tracks", "curves", "points",
-            "faces", "bones", "lights", "cameras", "materials", "geometries",
-            "textures", "objects", "children", "parents", "morph", "clips",
-            "interpolants", "result", "results", "keys", "values", "entries",
-            "coords", "weights", "times", "samples", "table", "map", "dict"
-        };
-        for (const char* aid : kArrayIdents) {
-            if (id->name == aid) return true;
-        }
-        static const char* kArraySuffixes[] = {
-            "Buffer", "buffer", "Array", "array", "List", "list", "Positions", "positions",
-            "Normals", "normals", "Colors", "colors", "Indices", "indices", "Vertices", "vertices"
-        };
-        for (const char* suf : kArraySuffixes) {
-            const size_t len = std::strlen(suf);
-            if (id->name.size() >= len && id->name.compare(id->name.size() - len, len, suf) == 0) return true;
-        }
-    }
-    if (const auto* m = dynamic_cast<const ast::MemberAccess*>(e)) {
-        static const char* kArrayProps[] = {
-            "elements", "array", "data", "buffer", "attributes", "morphAttributes",
-            "morphTargetInfluences", "morphTargetDictionary", "children", "bones",
-            "_actions", "_bindings", "actions", "bindings", "tracks", "nodes"
-        };
-        for (const char* ap : kArrayProps) {
-            if (m->property == ap) return true;
-        }
-    }
-    return false;
-}
-
-bool isDictionaryOrMemberReceiver(const ast::Expr* e) {
-    if (e == nullptr) return false;
-    if (dynamic_cast<const ast::MemberAccess*>(e)) return true;
-    if (dynamic_cast<const ast::Call*>(e)) return true;
-    if (dynamic_cast<const ast::IndexAccess*>(e)) return true;
-    if (dynamic_cast<const ast::ObjectLit*>(e) || dynamic_cast<const ast::ArrayLit*>(e)) return true;
-    if (dynamic_cast<const ast::ThisExpr*>(e)) return true;
-    if (isArrayReceiverExpr(e)) return true;
-    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
-        static const char* kDictIdents[] = {
-            "dict", "dictionary", "map", "cache", "table", "lookup", "lut", "registry"
-        };
-        for (const char* did : kDictIdents) {
-            if (id->name == did) return true;
-        }
-        if (id->name != "o" && id->name != "obj" && id->name != "target" && id->name != "v") {
-            return true;
         }
     }
     return false;
@@ -500,15 +457,56 @@ Type FieldAudit::typeOfExpr(const ast::Expr* e) const {
     return it == rhsTypes_.end() ? Type::dynamic() : it->second;
 }
 
+// A computed write's refusal, bounded by the class the receiver was proven to
+// be. `cls` is a shape class the flow pass WATCHED being made, so the write
+// reaches instances of that class and of nothing else; what the refusal has to
+// cover is therefore every read site whose base could be one of those
+// instances, which is `cls` itself and every class its `extends` family reaches
+// in either direction — a base typed as an ancestor holds subclass instances,
+// and the layouts nest, so the preorder intervals decide it.
+//
+// Three shapes have no such bound and get `false`, so the caller refuses the
+// program instead:
+//
+//   - a class whose own layout is unproven. It has no interval, and it may
+//     still sit under a proven base whose instances a read does claim on.
+//   - a class outside the forest that something EXTENDS, for the same reason
+//     read the other way.
+//
+// A shape class with no `ClassLayout` at all — an object literal's, a
+// constructor function's — is scoped to itself and no further: no field read
+// can spend a primitive claim through one (`fieldValueCandidate` answers for
+// declared classes only), so the refusal reaches exactly the objects the write
+// reaches. That is the DICTIONARY case, decided by the receiver's type instead
+// of by how the receiver is spelled.
+bool FieldAudit::refuseClass(ShapeClassId cls, std::string why) {
+    if (cls == kNoShapeClass) return false;
+    if (classes_ != nullptr) {
+        if (const ClassLayout* cl = classes_->byShapeClass(cls)) {
+            if (cl->familyIndex == ClassLayout::kNoFamily && (!cl->layoutProven || cl->extended)) {
+                return false;
+            }
+        }
+    }
+    auto& slot = classRefusals_[cls];
+    if (slot.empty()) slot = std::move(why);
+    return true;
+}
+
 bool FieldAudit::settle() {
     const size_t before = refusedCount();
     const size_t globalsBefore = globalRefusals_.size();
+    const size_t classesBefore = classRefusals_.size();
     const uint32_t computedBefore = computedRefuted_;
 
     for (auto& c : computed_) {
         if (c.refuted) continue;
         const Type recv = typeOfExpr(c.receiver);
-        if (recv.is(TypeKind::TypedArray) || isArrayReceiverExpr(c.receiver)) {
+        // A real array or typed array, proven by its TYPE. Whatever key this
+        // write carries, the object it lands on is not an instance of any
+        // declared class, so no layout's field claim is on the line; the
+        // numeric-key flag stands in for the index it may have been.
+        if (recv.is(TypeKind::TypedArray) || recv.is(TypeKind::Array)) {
             numericKeyWrite_ = true;
             continue;
         }
@@ -522,6 +520,15 @@ bool FieldAudit::settle() {
             continue;
         }
         if (key.is(TypeKind::Never)) continue;
+        // The RECEIVER's turn to be undecided. `Never` is the bottom of the
+        // lattice and only widens, so deciding a site on a round where the
+        // receiver has not arrived would refuse the program on the strength of
+        // a type that becomes a class on the next round — and both refusals
+        // here are sticky, so that round would be the one that counted. The key
+        // is typed by now (the check above), which means the flow pass walked
+        // this expression, which means a receiver still at `Never` is a value
+        // that genuinely never arrives and a write that never runs.
+        if (recv.is(TypeKind::Never)) continue;
         if (!c.isDelete) {
             const Type val = typeOfExpr(c.value);
             if (val.is(TypeKind::Number) || val.is(TypeKind::Never) ||
@@ -529,15 +536,24 @@ bool FieldAudit::settle() {
                 continue;
             }
         }
-        if (isDictionaryOrMemberReceiver(c.receiver)) {
+        const std::string why = c.isDelete
+                                    ? "delete through a computed key"
+                                    : "a computed write whose key and value are both unproven";
+        // The key could be any name, so what limits the damage is the
+        // RECEIVER — and the only receiver that limits anything is one whose
+        // object this compilation watched being made. A guessed identity is
+        // checked by a shape guard at the sites that read it, and this audit is
+        // the backstop those guards rest on, so it may not spend one of them.
+        if (recv.is(TypeKind::Object) && recv.builtHere() && refuseClass(recv.shapeClass(), why)) {
             c.refuted = true;
+            c.reach = Reach::Class;
             ++computedRefuted_;
             continue;
         }
         c.refuted = true;
+        c.reach = Reach::Program;
         ++computedRefuted_;
-        refuseAll(c.isDelete ? "delete through a computed key"
-                             : "a computed write whose key and value are both unproven");
+        refuseAll(why);
     }
 
     for (const auto& w : writes_) {
@@ -553,17 +569,35 @@ bool FieldAudit::settle() {
         refuse(w.name, "a write the flow pass never reached");
     }
 
+    // A new class-scoped refusal is a change like any other: the round that
+    // records one has to be a round that says "changed", or the fixpoint could
+    // stop with a claim already spent on a field the refusal covers.
     return refusedCount() != before || globalRefusals_.size() != globalsBefore ||
-           computedRefuted_ != computedBefore;
+           classRefusals_.size() != classesBefore || computedRefuted_ != computedBefore;
 }
 
 std::vector<FieldAudit::ResidueSite> FieldAudit::residue() const {
     std::map<std::string, std::pair<uint32_t, std::string>> byReason;
     for (const auto& c : computed_) {
         if (!c.refuted) continue;
-        const std::string reason =
-            c.isDelete ? "delete through a computed key"
-                       : "a computed write whose key and value are both unproven";
+        std::string reason = c.isDelete
+                                 ? "delete through a computed key"
+                                 : "a computed write whose key and value are both unproven";
+        // The two reaches are two different pieces of work: one costs the
+        // classes the write touches, the other costs the program, and a report
+        // that adds them together cannot rank them. The program-wide pile is
+        // split further by the FORM the receiver is written in — not to decide
+        // anything, which is what the deleted spelling lists did, but because
+        // each form is a different missing type and the report is what ranks
+        // them: `this` outside a class body, an element read (which the flow
+        // pass answers `Dynamic` for unconditionally), a call's result.
+        if (c.reach == Reach::Class) {
+            reason += " (scoped to the receiver's class)";
+        } else {
+            reason += " (receiver unknown: every name; receiver is ";
+            reason += receiverForm(c.receiver);
+            reason += ")";
+        }
         auto& entry = byReason[reason];
         ++entry.first;
         if (entry.second.empty()) {
@@ -621,6 +655,28 @@ bool FieldAudit::numberClean(const std::string& name) const {
     const auto it = names_.find(name);
     if (it == names_.end()) return false;
     return it->second.empty();
+}
+
+bool FieldAudit::numberCleanFor(ShapeClassId cls, const std::string& name) const {
+    if (!numberClean(name)) return false;
+    if (classRefusals_.empty()) return true;
+    if (classRefusals_.count(cls) != 0) return false;
+    // Every recorded refusal names a class the write was proven to reach. This
+    // read reaches an instance of `cls`, so the two meet exactly when one class
+    // extends the other; without an interval for either side there is nothing
+    // to compare and the answer is the refusing one.
+    const ClassLayout* mine = classes_ != nullptr ? classes_->byShapeClass(cls) : nullptr;
+    if (mine == nullptr || mine->familyIndex == ClassLayout::kNoFamily) return false;
+    for (const auto& [refused, why] : classRefusals_) {
+        const ClassLayout* cl = classes_->byShapeClass(refused);
+        // No layout, or a proven layout with no fields: `refuseClass` admitted
+        // it only because nothing extends it and no read can claim through it,
+        // so it reaches its own shape class and stops — and that case was
+        // answered above.
+        if (cl == nullptr || cl->familyIndex == ClassLayout::kNoFamily) continue;
+        if (familiesMeet(*mine, *cl)) return false;
+    }
+    return true;
 }
 
 std::string FieldAudit::refusalFor(const std::string& name) const {

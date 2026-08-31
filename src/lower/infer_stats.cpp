@@ -298,6 +298,13 @@ std::string InferStatsCollector::format() const {
                        std::to_string(entry.count) + "\n";
             }
         }
+        if (!fa.classScopedRefusals.empty()) {
+            out += "  every field refused on " +
+                   std::to_string(fa.classScopedRefusals.size()) + " class(es):\n";
+            for (const auto& r : fa.classScopedRefusals) {
+                out += "    " + r.cls + ": " + r.why + "\n";
+            }
+        }
         for (const auto& entry : sortedReasons(fa.globalRefusals)) {
             out += "  EVERY name refused, " + entry.reason + ": " +
                    std::to_string(entry.count) + " sites\n";

@@ -448,6 +448,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // The write audit's syntactic half, for the same reason: it is read on
     // every round and a table that filled in as it went would answer
     // differently on the probe rounds and the recording round.
+    mod.fieldAudit.bindClasses(result.classLayouts);
     mod.fieldAudit.scan(module);
     // Whole-program and syntactic, like the two above, and read at lowering
     // rather than during the fixpoint: nothing it proves depends on a type.
@@ -666,6 +667,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     result.fieldAudit.namesClean = mod.fieldAudit.cleanCount();
     result.fieldAudit.namesLocallyClean = mod.fieldAudit.locallyCleanCount();
     result.fieldAudit.globalRefusals = mod.fieldAudit.globalRefusals();
+    for (const auto& [cls, why] : mod.fieldAudit.classRefusals()) {
+        result.fieldAudit.classScopedRefusals.push_back(
+            InferenceResult::FieldAuditReport::ClassRefusal{result.shapes.describe(cls), why});
+    }
     result.fieldAudit.computedSites = mod.fieldAudit.computedSiteCount();
     result.fieldAudit.computedRefuted = mod.fieldAudit.computedRefutedCount();
     result.fieldAudit.computedKeyTypes = mod.fieldAudit.computedKeyTypes();

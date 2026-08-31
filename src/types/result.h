@@ -156,6 +156,16 @@ struct InferenceResult {
         uint32_t namesLocallyClean = 0;
         std::vector<std::string> cleanNames;
         std::map<std::string, uint32_t> globalRefusals;  // reason -> sites
+        // A computed write whose receiver the flow pass watched being made
+        // refuses the fields of THAT class's `extends` family and of nothing
+        // else. One row per class the audit had to stand down, in shape-class
+        // order, so the report says which classes a site cost rather than only
+        // that some site cost something.
+        struct ClassRefusal {
+            std::string cls;
+            std::string why;
+        };
+        std::vector<ClassRefusal> classScopedRefusals;
         std::map<std::string, uint32_t> refusals;  // reason -> names refused for it
         // The read-site population, so the report can say what the audit moved
         // rather than only what it certified. Every property read whose base

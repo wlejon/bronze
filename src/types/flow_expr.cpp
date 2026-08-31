@@ -225,7 +225,8 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                 return base.identityOnly() ? Type::objectIdentityOnly(field.shapeClass())
                                            : Type::objectNotBuiltHere(field.shapeClass());
             }
-            if (field.is(TypeKind::Dynamic) && mod_.fieldAudit.numberClean(m->property)) {
+            if (field.is(TypeKind::Dynamic) &&
+                mod_.fieldAudit.numberCleanFor(base.shapeClass(), m->property)) {
                 field = Type::number();
             }
             // A PRIMITIVE is a different kind of claim and takes two proofs.
@@ -275,7 +276,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                 }
                 return Type::dynamic();
             }
-            if (!mod_.fieldAudit.numberClean(m->property)) {
+            if (!mod_.fieldAudit.numberCleanFor(base.shapeClass(), m->property)) {
                 if (record_) ++mod_.result->fieldAudit.refusedByAudit;
                 return Type::dynamic();
             }
