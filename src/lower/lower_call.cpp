@@ -397,7 +397,6 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             inst.keyIndex = keyIdx;
             inst.icIndex = icIdx;
             const bool mono = monomorphicPropSite(*mem->object);
-            recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             recordCall(call->span.file, false, "callee is method / property access");
             inst.icMonomorphic = mono;
             inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);

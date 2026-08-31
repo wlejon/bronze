@@ -42,16 +42,19 @@ std::string formatPct(uint32_t num, uint32_t denom) {
     return std::to_string(pct10 / 10) + "." + std::to_string(pct10 % 10) + "%";
 }
 
-void formatCategory(std::string& out, const char* name, const CategoryStats& stats) {
+void formatCategory(std::string& out, const char* name, const char* nativeLabel,
+                    const CategoryStats& stats) {
     out += "  ";
     out += name;
     out += ":\n";
-    out += "    native: " + std::to_string(stats.nativeCount) + "\n";
-    if (stats.staticSlotCount != 0) {
-        out += "    of which static-slot: " + std::to_string(stats.staticSlotCount) + "\n";
-    }
+    out += "    ";
+    out += nativeLabel;
+    out += ": " + std::to_string(stats.nativeCount) + "\n";
     if (stats.familySlotCount != 0) {
         out += "    of which family-guarded: " + std::to_string(stats.familySlotCount) + "\n";
+    }
+    if (stats.monoOnlyCount != 0) {
+        out += "    mono (annotation only): " + std::to_string(stats.monoOnlyCount) + "\n";
     }
     out += "    dynamic: " + std::to_string(stats.dynamicCount) + "\n";
     if (!stats.bailReasons.empty()) {
@@ -87,21 +90,22 @@ ModuleInferStats& InferStatsCollector::getOrCreateModule(uint16_t fileId) {
     return it->second;
 }
 
-void InferStatsCollector::recordStaticSlot(uint16_t fileId, bool family) {
-    auto& props = getOrCreateModule(fileId).propertyAccesses;
-    ++props.staticSlotCount;
-    if (family) ++props.familySlotCount;
-}
-
-void InferStatsCollector::recordPropertyAccess(uint16_t fileId, bool isNative,
+void InferStatsCollector::recordPropertyAccess(uint16_t fileId, PropSiteVerdict verdict,
                                                const std::string& bailReason) {
-    auto& mod = getOrCreateModule(fileId);
-    if (isNative) {
-        ++mod.propertyAccesses.nativeCount;
+    auto& props = getOrCreateModule(fileId).propertyAccesses;
+    // Three disjoint columns, ranked by what the site's own code does: a
+    // stamped slot is a guard the backend emits, the identity annotation on
+    // its own is not, and a site with neither takes the inline cache and is
+    // asked why.
+    if (verdict.emittedClaim) {
+        ++props.nativeCount;
+        if (verdict.familyGuard) ++props.familySlotCount;
+    } else if (verdict.monomorphic) {
+        ++props.monoOnlyCount;
     } else {
-        ++mod.propertyAccesses.dynamicCount;
+        ++props.dynamicCount;
         if (!bailReason.empty()) {
-            ++mod.propertyAccesses.bailReasons[bailReason];
+            ++props.bailReasons[bailReason];
         }
     }
 }
@@ -351,12 +355,15 @@ std::string InferStatsCollector::format() const {
 
     for (const auto& [name, mod] : modules_) {
         out += "\nModule: " + name + "\n";
-        formatCategory(out, "Property Accesses", mod.propertyAccesses);
-        formatCategory(out, "Calls", mod.calls);
-        formatCategory(out, "Element Operations", mod.elementOps);
+        // Only the property census separates the emitted claim from the
+        // annotation; a native call is a direct edge and a native element op a
+        // proven receiver, and neither has an annotation-only form.
+        formatCategory(out, "Property Accesses", "native (emitted claim)", mod.propertyAccesses);
+        formatCategory(out, "Calls", "native", mod.calls);
+        formatCategory(out, "Element Operations", "native", mod.elementOps);
 
         totalProps.nativeCount += mod.propertyAccesses.nativeCount;
-        totalProps.staticSlotCount += mod.propertyAccesses.staticSlotCount;
+        totalProps.monoOnlyCount += mod.propertyAccesses.monoOnlyCount;
         totalProps.familySlotCount += mod.propertyAccesses.familySlotCount;
         totalProps.dynamicCount += mod.propertyAccesses.dynamicCount;
         totalCalls.nativeCount += mod.calls.nativeCount;
@@ -366,8 +373,9 @@ std::string InferStatsCollector::format() const {
     }
 
     out += "\nTotal:\n";
-    out += "  Property Accesses: " + std::to_string(totalProps.nativeCount) + " native, " +
-           std::to_string(totalProps.dynamicCount) + " dynamic (" +
+    out += "  Property Accesses: " + std::to_string(totalProps.nativeCount) +
+           " native (emitted claim), " + std::to_string(totalProps.monoOnlyCount) +
+           " mono (annotation only), " + std::to_string(totalProps.dynamicCount) + " dynamic (" +
            formatPct(totalProps.nativeCount, totalProps.total()) + " native)\n";
     out += "  Calls:             " + std::to_string(totalCalls.nativeCount) + " native, " +
            std::to_string(totalCalls.dynamicCount) + " dynamic (" +

@@ -840,18 +840,29 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
 }
 
 void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) {
-    if (inst.keyIndex >= keyStrings_.size()) return;
-    const auto site = claimStaticSlot(receiver, keyStrings_[inst.keyIndex],
-                                      inst.op == il::Op::PropSet);
-    if (!site) return;
-    inst.staticSlot = site->slot;
-    inst.staticCellIndex = site->cellIndex;
-    inst.familyLo = site->familyLo;
-    inst.familySpan = site->familySpan;
-    if (stats_) {
-        stats_->recordStaticSlot(receiver.span.file,
-                                site->familyLo != il::Instruction::kNoFamily);
+    PropSiteVerdict verdict;
+    verdict.monomorphic = inst.icMonomorphic;
+    if (inst.keyIndex < keyStrings_.size()) {
+        if (const auto site = claimStaticSlot(receiver, keyStrings_[inst.keyIndex],
+                                              inst.op == il::Op::PropSet)) {
+            inst.staticSlot = site->slot;
+            inst.staticCellIndex = site->cellIndex;
+            inst.familyLo = site->familyLo;
+            inst.familySpan = site->familySpan;
+            verdict.emittedClaim = true;
+            verdict.familyGuard = site->familyLo != il::Instruction::kNoFamily;
+        }
     }
+    // The census entry for this site, written HERE and not at the call: this is
+    // the one point that holds both facts at once — what inference annotated,
+    // and whether the stamp left the backend anything to emit — and only the
+    // pair of them says which column the site belongs in (infer_stats.h). A
+    // site that bailed is asked WHY here for the same reason: a stamped site
+    // did not bail, whatever the annotation says.
+    recordPropertySite(receiver.span.file, verdict,
+                       verdict.emittedClaim || verdict.monomorphic
+                           ? std::string()
+                           : propBailReason(receiver));
 }
 
 // --- the direct method-call edge -----------------------------------------
@@ -897,9 +908,9 @@ void Lowerer::reportClassLayouts() {
     stats_->recordCtorParams(inference_->ctorParams);
 }
 
-void Lowerer::recordPropertyAccess(uint16_t fileId, bool isNative,
-                                   const std::string& bailReason) {
-    if (stats_) stats_->recordPropertyAccess(fileId, isNative, bailReason);
+void Lowerer::recordPropertySite(uint16_t fileId, PropSiteVerdict verdict,
+                                 const std::string& bailReason) {
+    if (stats_) stats_->recordPropertyAccess(fileId, verdict, bailReason);
 }
 
 void Lowerer::recordCall(uint16_t fileId, bool isNative,

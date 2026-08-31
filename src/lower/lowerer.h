@@ -370,10 +370,11 @@ private:
     // cell, so it is called exactly once per site.
     std::optional<StaticSlotSite> claimStaticSlot(const ast::Expr& receiver,
                                                   const std::string& key, bool forWrite);
-    // Stamps a PropGet/PropSet whose `keyIndex` is already set. The key is read
-    // back out of the module's constant table rather than passed, so the
-    // fourteen call sites all say the same short thing and none of them can
-    // stamp a slot for a key the instruction is not actually using.
+    // Stamps a PropGet/PropSet whose `keyIndex` and `icMonomorphic` are set,
+    // and writes the site's census entry, which needs both (infer_stats.h). The
+    // key is read back out of the module's constant table rather than passed,
+    // so the fourteen call sites all say the same short thing and none of them
+    // can stamp a slot for a key the instruction is not actually using.
     void stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver);
     // The class-layout verdicts, forwarded to --infer-stats once per module.
     void reportClassLayouts();
@@ -394,7 +395,11 @@ private:
                          types::Type proven);
 
     std::string propBailReason(const ast::Expr& expr) const;
-    void recordPropertyAccess(uint16_t fileId, bool isNative, const std::string& bailReason = "");
+    // One property site's census entry. stampStaticSlot writes it for every
+    // site it stamps; this is called directly only for the destructuring read,
+    // which is never stamped and claims nothing by construction.
+    void recordPropertySite(uint16_t fileId, PropSiteVerdict verdict,
+                            const std::string& bailReason = "");
     void recordCall(uint16_t fileId, bool isNative, const std::string& bailReason = "");
     void recordElementOp(uint16_t fileId, bool isNative, const std::string& bailReason = "");
 

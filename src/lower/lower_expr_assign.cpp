@@ -41,7 +41,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             getInst.keyIndex = keyIdx;
             getInst.icIndex = icSiteCounter_++;
             const bool mono = monomorphicPropSite(*mem->object);
-            recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             getInst.icMonomorphic = mono;
             getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             stampStaticSlot(getInst, *mem->object);
@@ -143,7 +142,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             getInst.keyIndex = keyIdx;
             getInst.icIndex = icSiteCounter_++;
             const bool mono = monomorphicPropSite(*mem->object);
-            recordPropertyAccess(mem->span.file, mono, mono ? "" : propBailReason(*mem->object));
             getInst.icMonomorphic = mono;
             getInst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
             stampStaticSlot(getInst, *mem->object);
@@ -167,7 +165,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         inst.keyIndex = keyIdx;
         inst.icIndex = icSiteCounter_++;
         const bool monoSet = monomorphicPropSite(*mem->object);
-        recordPropertyAccess(mem->span.file, monoSet, monoSet ? "" : propBailReason(*mem->object));
         inst.icMonomorphic = monoSet;
         stampStaticSlot(inst, *mem->object);
         // The reference this write goes through is strict exactly when the
@@ -215,7 +212,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.keyIndex = *literalKey;
                 getInst.icIndex = icSiteCounter_++;
                 const bool mono = monomorphicPropSite(*idxAccess->object);
-                recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
                 getInst.icMonomorphic = mono;
                 getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
                 stampStaticSlot(getInst, *idxAccess->object);
@@ -259,7 +255,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             il::Instruction setInst;
             if (literalKey) {
                 const bool mono = monomorphicPropSite(*idxAccess->object);
-                recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
                 setInst.op = il::Op::PropSet;
                 setInst.operands = {objBoxed.id, storedBoxed.id};
                 setInst.keyIndex = *literalKey;
@@ -337,7 +332,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                 getInst.keyIndex = *literalKey;
                 getInst.icIndex = icSiteCounter_++;
                 const bool mono = monomorphicPropSite(*idxAccess->object);
-                recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
                 getInst.icMonomorphic = mono;
                 getInst.icFnRecv = functionBindingReceiver(*idxAccess->object, *literalKey);
                 stampStaticSlot(getInst, *idxAccess->object);
@@ -366,7 +360,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         il::Instruction setInst;
         if (literalKey) {
             const bool mono = monomorphicPropSite(*idxAccess->object);
-            recordPropertyAccess(idxAccess->span.file, mono, mono ? "" : propBailReason(*idxAccess->object));
             setInst.op = il::Op::PropSet;
             setInst.operands = {objBoxed.id, storedBoxed.id};
             setInst.keyIndex = *literalKey;

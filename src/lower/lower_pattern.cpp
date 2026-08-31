@@ -394,7 +394,7 @@ bool Lowerer::lowerObjectPattern(const ast::BindingPattern& pattern, Value sourc
             readInst.operands = {source.id, keyBoxed.id};
             if (hasRest) emitContainerOp(il::Op::ArrayAppend, excluded, keyBoxed, ilFn);
         } else {
-            recordPropertyAccess(elem.span.file, false, "destructuring read");
+            recordPropertySite(elem.span.file, PropSiteVerdict{}, "destructuring read");
             readInst.op = il::Op::PropGet;
             readInst.operands = {source.id};
             readInst.keyIndex = getKeyConstantIndex(elem.key);

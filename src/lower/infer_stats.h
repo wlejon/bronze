@@ -11,15 +11,19 @@
 namespace bronze::lower {
 
 struct CategoryStats {
+    // Sites whose EMITTED code carries a claim: for a property access, one
+    // stamped with a slot, which compiles to a guarded constant-offset access.
     uint32_t nativeCount = 0;
+    // Property sites inference called monomorphic and nothing was emitted for.
+    // Counted apart from `nativeCount` because the annotation changes no
+    // instruction — both llvm_prop_get.cpp and llvm_prop_set.cpp cast it to
+    // void — so folding the two together lets this census move by tens of
+    // sites while the objects it is describing are byte-identical, which is
+    // exactly the reading that misranks a lever. Property accesses only; the
+    // other categories have no such annotation and leave it zero.
+    uint32_t monoOnlyCount = 0;
     uint32_t dynamicCount = 0;
-    // Of `nativeCount`, how many carried the stronger LAYOUT proof and compiled
-    // to a constant-offset access. Reported separately because the two are
-    // different claims with different consequences: an identity proof is
-    // counted by the backend's cache, a layout proof changes what the backend
-    // emits (property accesses only; the other categories leave it zero).
-    uint32_t staticSlotCount = 0;
-    // Of `staticSlotCount`, how many guard on a layout FAMILY rather than on
+    // Of `nativeCount`, how many guard on a layout FAMILY rather than on
     // one shape's identity. Reported separately because the two are different
     // claims about the same slot: an identity site serves the one shape it
     // pinned, a family site serves every proven subclass of the class its
@@ -29,7 +33,21 @@ struct CategoryStats {
     // Bail reason -> occurrences count
     std::map<std::string, uint32_t> bailReasons;
 
-    uint32_t total() const { return nativeCount + dynamicCount; }
+    uint32_t total() const { return nativeCount + monoOnlyCount + dynamicCount; }
+};
+
+// What one property site turned out to be, written in one place because the
+// three facts are decided at different points in lowering it and only their
+// combination says which column the site belongs in.
+struct PropSiteVerdict {
+    // The stamping step claimed a slot for this site, so its emitted code
+    // guards a layout and loads at a constant offset (llvm_static_slot.h).
+    bool emittedClaim = false;
+    // That guard admits a class FAMILY rather than one shape's identity.
+    bool familyGuard = false;
+    // Inference proved the receiver's identity. On its own this reaches the IL
+    // text and this census and nothing else — see `monoOnlyCount`.
+    bool monomorphic = false;
 };
 
 struct ModuleInferStats {
@@ -45,12 +63,8 @@ public:
 
     void setSourceSet(const SourceSet* sources) { sources_ = sources; }
 
-    void recordPropertyAccess(uint16_t fileId, bool isNative, const std::string& bailReason = "");
-    // A site that took the constant-offset form. Always a subset of the native
-    // ones (a layout proof implies the identity proof), and recorded from the
-    // stamping step rather than passed to the call above, because the two
-    // decisions are made at different points in lowering a site.
-    void recordStaticSlot(uint16_t fileId, bool family);
+    void recordPropertyAccess(uint16_t fileId, PropSiteVerdict verdict,
+                              const std::string& bailReason = "");
     void recordCall(uint16_t fileId, bool isNative, const std::string& bailReason = "");
     void recordElementOp(uint16_t fileId, bool isNative, const std::string& bailReason = "");
 
