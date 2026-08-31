@@ -251,6 +251,47 @@ relinks them under a deterministic permutation. On the `instanced_mesh_churn`
 graph that is ~0.3 s of link against ~90 s of object emission, which is what
 makes nine layouts per arm affordable.
 
+### Function alignment does not narrow the band
+
+If the band is hot bodies colliding in a set-associative instruction cache,
+then aligning every emitted function quantizes where a body can start, and a
+coarser quantum could plausibly leave fewer distinct collision patterns to draw
+from — a NARROWER band at some cost to the mean. That would be worth having
+even at a worse centre: an A/B could be adjudicated under alignment, at a
+tighter bar, and shipped without it. `BRONZE_XALIGN=<n>` is the seam that asks
+(src/codegen-llvm/llvm_emit.h); the answer is no.
+
+Same objects per arm, nine link orders, three copies, eleven rounds, the whole
+sweep repeated to see which numbers reproduce:
+
+| fixture | arm | spread run 1 | spread run 2 | centre (mean of per-seed medians) |
+|---|---|---:|---:|---:|
+| `instanced_mesh_churn` | default | 3.17 (8.1%) | 2.79 (7.1%) | 39.04 / 39.04 |
+| | `=16` | 2.87 (7.3%) | 2.87 (7.4%) | 39.13 / 39.05 |
+| | `=32` | 3.50 (8.8%) | 3.50 (8.9%) | 39.53 / 39.27 |
+| | `=64` | 2.48 (6.3%) | 2.79 (7.1%) | 39.40 / 39.36 |
+| | `=128` | 4.19 (10.7%) | 4.45 (11.4%) | 39.07 / 38.95 |
+| `mesh_churn_2k` | default | 0.51 (1.5%) | — | 34.65 |
+| | `=64` | 1.09 (3.2%) | — | 34.54 |
+| `three_math` | default | 0.40 (3.5%) | — | 11.42 |
+| | `=64` | 0.60 (5.3%) | — | 11.30 |
+
+No alignment narrows anything. 64 read narrower than the default once on
+`instanced_mesh_churn` and landed on top of it when the sweep was repeated, and
+on both smaller fixtures it WIDENED the band — two-fold on `mesh_churn_2k`,
+which is the precision fixture. 128 is reproducibly the worst of the five. No
+centre moved by more than 1.3% and none of the twenty pairings cleared its own
+bar, so the coarse alignments are not paying for their padding either.
+
+**`BRONZE_XALIGN=16` is the negative control, for free.** LLVM already gives an
+x86-64 function 16-byte alignment, so asking for 16 produces objects
+BYTE-IDENTICAL to the default's — a sweep arm that is the same program down to
+the bytes, which is what calibrates how much of a spread difference is the
+spread statistic's own noise. It is a lot: the identical arms' per-seed medians
+sit up to 1.0 ms apart on `instanced_mesh_churn` and their spreads differ by
+0.3. So a compression smaller than about half a millisecond there is not
+measurable at all, and the 9–12% band stands.
+
 ### The `--pins` opt-in, under the same layout control
 
 `--pins` is not a tuning flag and is not on by default: a manifest is a set of

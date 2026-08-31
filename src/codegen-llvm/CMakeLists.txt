@@ -40,6 +40,7 @@ bronze_add_module(codegen_llvm
         llvm_partition.cpp
         llvm_pin.cpp
         llvm_repr.cpp
+        llvm_emit.cpp
         llvm_backend.cpp
     DEPS
         abi
@@ -58,6 +59,7 @@ bronze_add_module(codegen_llvm
         ../../tests/codegen_llvm/hole_raw_test.cpp
         ../../tests/codegen_llvm/env_promotion_test.cpp
         ../../tests/codegen_llvm/partition_pack_test.cpp
+        ../../tests/codegen_llvm/function_align_test.cpp
 )
 
 target_include_directories(bronze_codegen_llvm SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
