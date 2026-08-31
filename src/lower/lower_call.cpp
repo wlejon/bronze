@@ -253,6 +253,13 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         // thirty-six field reads (lower_define_props.cpp). Nullopt is "not a
         // call it takes", and the general lowering below is what it falls to.
         if (auto defined = lowerDefinePropertiesLiteral(call, *mem, ilFn)) return defined;
+
+        // A method of a certified module-scope object literal, whose body the
+        // site runs instead of calling (lower_module_inline.cpp). Asked before
+        // the receiver is lowered, because the inline lowers it itself — once,
+        // where the call would have.
+        std::optional<Value> inlined;
+        if (tryLowerModuleLiteralInline(*call, *mem, onSpine, ilFn, inlined)) return inlined;
     }
 
     // `Math.sqrt(x)` and its bit-exact siblings on the PROVEN pristine

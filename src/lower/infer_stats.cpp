@@ -151,6 +151,12 @@ void InferStatsCollector::recordModuleLiteralAccessors(std::vector<std::string> 
     moduleLiteralForwards_ = std::move(forwards);
 }
 
+void InferStatsCollector::recordModuleLiteralInlines(
+    std::vector<std::string> shapes, const std::map<std::string, uint32_t>& sites) {
+    moduleLiteralInlines_ = std::move(shapes);
+    moduleLiteralInlineSites_ = sites;
+}
+
 void InferStatsCollector::recordMethodParams(
     const types::InferenceResult::MethodParamReport& report) {
     methodParams_ = report;
@@ -319,6 +325,21 @@ std::string InferStatsCollector::format() const {
         out += "\nModule-Literal Accessors: " + std::to_string(moduleLiteralForwards_.size()) +
                " read as the property the getter reads\n";
         for (const auto& line : moduleLiteralForwards_) out += "  " + line + "\n";
+    }
+
+    if (!moduleLiteralInlines_.empty()) {
+        uint32_t sites = 0;
+        for (const auto& [name, count] : moduleLiteralInlineSites_) sites += count;
+        out += "\nModule-Literal Inlines: " + std::to_string(moduleLiteralInlines_.size()) +
+               " methods a call site may run, " + std::to_string(sites) + " sites ran one\n";
+        for (const auto& line : moduleLiteralInlines_) {
+            const size_t colon = line.find(':');
+            const std::string name = colon == std::string::npos ? line : line.substr(0, colon);
+            const auto at = moduleLiteralInlineSites_.find(name);
+            out += "  " + line + " (" +
+                   std::to_string(at == moduleLiteralInlineSites_.end() ? 0 : at->second) +
+                   " sites)\n";
+        }
     }
 
     for (const auto& [name, mod] : modules_) {

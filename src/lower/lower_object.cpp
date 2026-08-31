@@ -30,7 +30,7 @@ const std::string* devirtualizedKey(const types::InferenceResult* inference,
     if (inference == nullptr) return nullptr;
     const auto* id = dynamic_cast<const ast::Ident*>(&receiver);
     if (id == nullptr) return nullptr;
-    return inference->moduleLiteralAccessors.backingKey(id->name, property);
+    return inference->moduleLiterals.backingKey(id->name, property);
 }
 
 }  // namespace

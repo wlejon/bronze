@@ -1,0 +1,14 @@
+bracket fast  c
+bracket slow  c|x>B
+chain hit     zero
+chain miss    other
+chain deep    4
+chain arg     took:c|x>B
+detached      TypeError
+via call      c|x>B
+via apply     c
+new typeof    object
+new instance  false
+new key       zero
+still fast    c
+still slow    c|x>B

@@ -375,13 +375,186 @@ bool calledMembersAreOwnFunctions(const ReferenceScan& refs, const std::string& 
     return true;
 }
 
+// Everything the inlinable-body question depends on, gathered once per
+// literal so the recursive check below asks it rather than rediscovering it.
+struct InlineContext {
+    const std::map<std::string, Entry>* entries = nullptr;
+    const ReferenceScan* refs = nullptr;
+    const std::set<std::string>* thisAssigned = nullptr;
+    const std::string* binding = nullptr;
+    std::set<std::string> params;
+};
+
+// A key this literal defines as a DATA property, so `this.<key>` is one own-slot
+// read: no accessor of its own to run, no prototype to walk, and therefore
+// nothing a second read could observe. That last part is what a guard needs,
+// since a site that falls through to the real call evaluates the guard twice.
+// Which of the two kinds the key is cannot have changed underneath: every
+// redefiner takes the object as an argument and the escape rule refuses that,
+// an assignment through `X.k` or `this.k` writes a data property and leaves it
+// one, and `delete` is refused by name.
+bool ownDataKey(const InlineContext& ctx, const std::string& key) {
+    const auto it = ctx.entries->find(key);
+    return it != ctx.entries->end() && it->second.data;
+}
+
+// A member that is still the function the literal wrote there. It reads like
+// the certification's own rule for called members and is asked separately
+// because `this.m(...)` inside the literal never reached that rule: its
+// receiver is `this`, not the binding, so the reference scan never counted it
+// as a call ON the binding at all — and a literal whose method quietly replaces
+// a sibling with `this.m = f` stays certified.
+bool ownUnreplacedMethod(const InlineContext& ctx, const std::string& key) {
+    const auto it = ctx.entries->find(key);
+    if (it == ctx.entries->end() || !it->second.data) return false;
+    if (dynamic_cast<const ast::FunctionExpr*>(it->second.value) == nullptr) return false;
+    if (ctx.thisAssigned->count(key) != 0) return false;
+    const auto assigned = ctx.refs->assignedMembers.find(*ctx.binding);
+    if (assigned != ctx.refs->assignedMembers.end() && assigned->second.count(key) != 0) {
+        return false;
+    }
+    return ctx.refs->deletedKeys.count(key) == 0;
+}
+
+// Is this expression one a CALL SITE can evaluate in place of the body that
+// wrote it? `repeatable` asks the stronger question a guard condition has to
+// answer: a site whose guards all say no goes on to make the real call, which
+// evaluates those same conditions again, so a condition may run no user code
+// at all. Everything else here is evaluated at most once on the path that
+// reaches it, and may call.
+bool inlineExpr(const ast::Expr& e, const InlineContext& ctx, bool repeatable) {
+    if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+        // A free identifier names a binding in the LITERAL's scope, and the
+        // call site is not in that scope. Only the parameters, which the site
+        // has already evaluated into values, resolve here.
+        return ctx.params.count(id->name) != 0;
+    }
+    if (dynamic_cast<const ast::NumberLit*>(&e) != nullptr ||
+        dynamic_cast<const ast::StringLit*>(&e) != nullptr ||
+        dynamic_cast<const ast::BoolLit*>(&e) != nullptr ||
+        dynamic_cast<const ast::NullLit*>(&e) != nullptr ||
+        dynamic_cast<const ast::UndefinedLit*>(&e) != nullptr) {
+        return true;
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&e)) {
+        if (mem->optional || mem->isPrivate) return false;
+        if (dynamic_cast<const ast::ThisExpr*>(mem->object.get()) == nullptr) return false;
+        return ownDataKey(ctx, mem->property);
+    }
+    if (const auto* un = dynamic_cast<const ast::Unary*>(&e)) {
+        // ToBoolean and `typeof` read a value and call nothing. `-x` and `~x`
+        // reach ToNumeric, which reaches `valueOf`.
+        if (un->op != ast::UnaryOp::Not && un->op != ast::UnaryOp::TypeOf) return false;
+        return inlineExpr(*un->operand, ctx, repeatable);
+    }
+    if (const auto* bin = dynamic_cast<const ast::Binary*>(&e)) {
+        switch (bin->op) {
+            // Strict equality compares without converting, and the two logical
+            // operators only ask ToBoolean. `==` is absent for the reason `-x`
+            // is: abstract equality can reach a `valueOf`.
+            case ast::BinaryOp::StrictEq:
+            case ast::BinaryOp::StrictNe:
+            case ast::BinaryOp::LogicalAnd:
+            case ast::BinaryOp::LogicalOr:
+                break;
+            default:
+                return false;
+        }
+        return inlineExpr(*bin->lhs, ctx, repeatable) && inlineExpr(*bin->rhs, ctx, repeatable);
+    }
+    if (const auto* tern = dynamic_cast<const ast::Ternary*>(&e)) {
+        return inlineExpr(*tern->condition, ctx, repeatable) &&
+               inlineExpr(*tern->thenExpr, ctx, repeatable) &&
+               inlineExpr(*tern->elseExpr, ctx, repeatable);
+    }
+    if (const auto* call = dynamic_cast<const ast::Call*>(&e)) {
+        if (repeatable || call->optional) return false;
+        const auto* callee = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
+        if (callee == nullptr || callee->optional || callee->isPrivate) return false;
+        if (dynamic_cast<const ast::ThisExpr*>(callee->object.get()) == nullptr) return false;
+        // The site holds the same object this body's `this` would be, so the
+        // call it makes is the call this body would have made. Proving the
+        // member is still the literal's own function is what lets the site
+        // consider running that body instead.
+        if (!ownUnreplacedMethod(ctx, callee->property)) return false;
+        for (const auto& arg : call->args) {
+            if (dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) return false;
+            if (!inlineExpr(*arg, ctx, repeatable)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// `if (c) return e;` with no else, in either spelling the parser produces.
+const ast::ReturnStmt* soleReturn(const std::vector<ast::StmtPtr>& body) {
+    if (body.size() != 1) return nullptr;
+    if (const auto* block = dynamic_cast<const ast::BlockStmt*>(body.front().get())) {
+        if (block->stmts.size() != 1) return nullptr;
+        return dynamic_cast<const ast::ReturnStmt*>(block->stmts.front().get());
+    }
+    return dynamic_cast<const ast::ReturnStmt*>(body.front().get());
+}
+
+// A parameter list a site can bind positionally, with nothing between the
+// argument and the binding. A default, a rest and a pattern are each code of
+// their own, and code needs the frame the inline is removing.
+bool inlineParams(const ast::FunctionExpr& fn, std::vector<std::string>& names) {
+    for (const auto& p : fn.params) {
+        if (p.isRest || p.defaultValue != nullptr || p.pattern != nullptr || p.name.empty()) {
+            return false;
+        }
+        for (const auto& seen : names) {
+            if (seen == p.name) return false;
+        }
+        names.push_back(p.name);
+    }
+    return true;
+}
+
+bool inlineShape(const ast::FunctionExpr& fn, const InlineContext& ctx,
+                 ModuleLiteralInline& out) {
+    size_t i = 0;
+    for (; i < fn.body.size(); ++i) {
+        const auto* ifs = dynamic_cast<const ast::IfStmt*>(fn.body[i].get());
+        if (ifs == nullptr || !ifs->elseBody.empty()) break;
+        const ast::ReturnStmt* ret = soleReturn(ifs->thenBody);
+        if (ret == nullptr) break;
+        if (!inlineExpr(*ifs->condition, ctx, /*repeatable=*/true)) break;
+        if (ret->value != nullptr && !inlineExpr(*ret->value, ctx, /*repeatable=*/false)) break;
+        out.guards.push_back({ifs->condition.get(), ret->value.get()});
+    }
+    // Nothing left after the guards, or a bare `return;`: the body answers
+    // `undefined`, which is what a site with no tail produces.
+    if (i == fn.body.size()) return true;
+    if (i + 1 == fn.body.size()) {
+        if (const auto* ret = dynamic_cast<const ast::ReturnStmt*>(fn.body[i].get())) {
+            if (ret->value == nullptr) return true;
+            if (inlineExpr(*ret->value, ctx, /*repeatable=*/false)) {
+                out.tail = ret->value.get();
+                return true;
+            }
+        }
+    }
+    out.tailIsCall = true;
+    // The guards are the whole of what a partial inline saves. With none of
+    // them the site would evaluate nothing and then make the call it was
+    // always going to make, which is the call it already makes today.
+    return !out.guards.empty();
+}
+
 }  // namespace
 
 bool moduleLiteralDevirtDisabled() {
     return std::getenv("BRONZE_NO_MODULE_LITERAL_DEVIRT") != nullptr;
 }
 
-void ModuleLiteralAccessors::scan(const ast::Module& module) {
+bool moduleLiteralInlineDisabled() {
+    return moduleLiteralDevirtDisabled() ||
+           std::getenv("BRONZE_NO_MODULE_LITERAL_INLINE") != nullptr;
+}
+
+void ModuleLiteralFacts::scan(const ast::Module& module) {
     if (moduleLiteralDevirtDisabled()) return;
 
     ReferenceScan refs;
@@ -439,11 +612,36 @@ void ModuleLiteralAccessors::scan(const ast::Module& module) {
             if (refs.deletedKeys.count(key) != 0) continue;
             forward_[decl->name][key] = *backing;
         }
+
+        if (moduleLiteralInlineDisabled()) continue;
+
+        InlineContext ctx;
+        ctx.entries = &entries;
+        ctx.refs = &refs;
+        ctx.thisAssigned = &inner.thisAssignedMembers;
+        ctx.binding = &decl->name;
+        for (const auto& [key, entry] : entries) {
+            if (!ownUnreplacedMethod(ctx, key)) continue;
+            const auto* fn = dynamic_cast<const ast::FunctionExpr*>(entry.value);
+            // An arrow's `this` is the module's and not the object's; a
+            // generator's and an async function's body does not run to
+            // completion at the call at all.
+            if (fn->isArrow || fn->isAsync || fn->isGenerator) continue;
+            if (fn->kind == ast::FunctionKind::Accessor) continue;
+
+            ModuleLiteralInline shape;
+            shape.fn = fn;
+            if (!inlineParams(*fn, shape.params)) continue;
+            ctx.params.clear();
+            ctx.params.insert(shape.params.begin(), shape.params.end());
+            if (!inlineShape(*fn, ctx, shape)) continue;
+            inline_[decl->name][key] = std::move(shape);
+        }
     }
 }
 
-const std::string* ModuleLiteralAccessors::backingKey(const std::string& binding,
-                                                      const std::string& name) const {
+const std::string* ModuleLiteralFacts::backingKey(const std::string& binding,
+                                                  const std::string& name) const {
     const auto b = forward_.find(binding);
     if (b == forward_.end()) return nullptr;
     const auto p = b->second.find(name);
@@ -451,11 +649,36 @@ const std::string* ModuleLiteralAccessors::backingKey(const std::string& binding
     return &p->second;
 }
 
-std::vector<std::string> ModuleLiteralAccessors::report() const {
+const ModuleLiteralInline* ModuleLiteralFacts::inlinableMethod(const std::string& binding,
+                                                               const std::string& name) const {
+    const auto b = inline_.find(binding);
+    if (b == inline_.end()) return nullptr;
+    const auto m = b->second.find(name);
+    if (m == b->second.end()) return nullptr;
+    return &m->second;
+}
+
+std::vector<std::string> ModuleLiteralFacts::report() const {
     std::vector<std::string> lines;
     for (const auto& [binding, props] : forward_) {
         for (const auto& [name, backing] : props) {
             lines.push_back(binding + "." + name + " -> " + backing);
+        }
+    }
+    return lines;
+}
+
+std::vector<std::string> ModuleLiteralFacts::inlineReport() const {
+    std::vector<std::string> lines;
+    for (const auto& [binding, methods] : inline_) {
+        for (const auto& [name, shape] : methods) {
+            std::string line = binding + "." + name + ": " +
+                               std::to_string(shape.guards.size()) +
+                               (shape.guards.size() == 1 ? " guard, " : " guards, ");
+            line += shape.tail != nullptr ? "then the rest of the body"
+                    : shape.tailIsCall    ? "then the call"
+                                          : "then undefined";
+            lines.push_back(line);
         }
     }
     return lines;

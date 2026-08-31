@@ -70,10 +70,12 @@ struct InferenceResult {
     // lands in. See class_layout.h for the two-tier claim this carries.
     ClassLayoutTable classLayouts;
 
-    // Which accessor reads on a module-scope object literal are the same
-    // expression as a read of the property the getter would have read. See
-    // module_literal.h for the proof and everything that refuses it.
-    ModuleLiteralAccessors moduleLiteralAccessors;
+    // What a module-scope object literal is proven to be, and what that buys:
+    // which accessor reads are the same expression as a read of the property
+    // the getter would have read, and which method bodies a call site may run
+    // in place of calling. See module_literal.h for the proof and everything
+    // that refuses it.
+    ModuleLiteralFacts moduleLiterals;
 
     // Dump order: each module-level function in source order followed by the
     // functions nested inside it, then the module top level ("main") and its

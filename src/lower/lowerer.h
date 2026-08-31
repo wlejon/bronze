@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -1197,6 +1198,44 @@ private:
                                        il::Function& ilFn);
     std::optional<Value> lowerCall(const ast::Call* call, il::Function& ilFn,
                                    bool onSpine = false);
+
+    // --- lower_module_inline.cpp: running a certified literal's body here ---
+    // What `this` and the parameters mean while one such body is being
+    // emitted. `receiver` is the value the SITE read for the binding, so the
+    // dead-zone check that read carries is the one the body runs under.
+    struct InlineFrame {
+        const std::string* binding = nullptr;
+        Value receiver;
+        std::map<std::string, Value> params;
+    };
+    // True when the site is one this takes, and `out` is then its result.
+    // False leaves nothing emitted and the caller lowers the call it always
+    // lowered.
+    bool tryLowerModuleLiteralInline(const ast::Call& call, const ast::MemberAccess& mem,
+                                     bool onSpine, il::Function& ilFn, std::optional<Value>& out);
+    std::optional<Value> emitInlinedMethod(const std::string& binding, const std::string& key,
+                                           const types::ModuleLiteralInline& method,
+                                           Value receiver, const std::vector<Value>& args,
+                                           il::Function& ilFn);
+    std::optional<Value> emitInlineGuard(const types::ModuleLiteralInline& method, size_t guard,
+                                         const std::string& key, const InlineFrame& frame,
+                                         const std::vector<Value>& args, il::Function& ilFn);
+    std::optional<Value> emitInlineExpr(const ast::Expr& expr, const InlineFrame& frame,
+                                        il::Function& ilFn);
+    Value emitInlinePropGet(Value receiver, const std::string& key, il::Function& ilFn);
+    Value emitInlineMethodCall(Value receiver, const std::string& key,
+                               const std::vector<Value>& args, il::Function& ilFn);
+    // The two-armed join a guard and a logical operator both need: `cond`
+    // chooses an arm, each arm produces a value, and the block after holds one.
+    std::optional<Value> emitInlineSelect(Value cond,
+                                          const std::function<std::optional<Value>()>& thenArm,
+                                          const std::function<std::optional<Value>()>& elseArm,
+                                          il::Function& ilFn);
+    // Which (binding, method) pairs are already being emitted, so a body that
+    // reaches itself — directly or around a ring of siblings — makes the call
+    // it would have made instead of unfolding forever.
+    std::vector<std::pair<std::string, std::string>> inlineStack_;
+    std::map<std::string, uint32_t> inlinedLiteralSites_;
 };
 
 // The BRONZE_ABI_FN_FLAG_* byte for a function the source wrote, from the three

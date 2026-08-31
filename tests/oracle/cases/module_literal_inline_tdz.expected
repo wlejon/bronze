@@ -1,0 +1,6 @@
+early fn      ReferenceError
+early method  ReferenceError
+late fn       5
+late method   5
+late other    other
+hot           1000

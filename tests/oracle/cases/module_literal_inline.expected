@@ -1,0 +1,46 @@
+self identity true
+self tag      self
+self named    self
+same space    c
+to working    c|srgb>linear
+from working  c|linear>srgb
+empty target  c
+empty source  c
+missing arg   c
+disabled      c
+re-enabled    c|a>b
+order fast    c [v,f]
+order slow    c|srgb>linear [v,f]
+order extra   c [v,f,x]
+hot fast      1000
+hot slow      1000
+args guard    10
+args slow     16
+args one      14
+chain x       first
+chain mode    second
+chain empty   third
+chain other   fallthrough
+chain none    third
+chain moved   second
+chain b now   fallthrough
+typed string  s
+typed undef   none
+typed number  other
+typed null    other
+logic a       A
+logic b       b-or-on
+logic off     none
+logic off b   b-or-on
+quiet return  undefined
+quiet fall    undefined
+half before   original
+half arm      armed
+half after    installed
+escape before one
+escape after  replaced
+watched yes   yes
+watched no    no reads=1
+ring a        a
+ring b        b
+recursive     stop

@@ -74,6 +74,14 @@ public:
     // WHICH property it held for.
     void recordModuleLiteralAccessors(std::vector<std::string> forwards);
 
+    // Which methods of a module-scope object literal a call site may run
+    // instead of calling, and how many sites took each one. Both halves,
+    // because they answer different questions: the shapes say what the
+    // whole-program proof held for, and the counts say whether any call site
+    // in this program was in a position to spend it.
+    void recordModuleLiteralInlines(std::vector<std::string> shapes,
+                                    const std::map<std::string, uint32_t>& sites);
+
     void recordMethodParams(const types::InferenceResult::MethodParamReport& report);
 
     // What the constructor-parameter join proved, and what stood in its way.
@@ -100,6 +108,8 @@ private:
     types::InferenceResult::FieldAuditReport fieldAudit_;
     uint32_t fieldProvenReads_ = 0;
     std::vector<std::string> moduleLiteralForwards_;
+    std::vector<std::string> moduleLiteralInlines_;
+    std::map<std::string, uint32_t> moduleLiteralInlineSites_;
     types::InferenceResult::MethodParamReport methodParams_;
     types::InferenceResult::CtorParamReport ctorParams_;
 };

@@ -5,7 +5,8 @@ bronze_add_module(lower
             lower_concat_chain.cpp lower_define_props.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_build.cpp
             guard_region_runs.cpp
-            lower_object.cpp lower_call.cpp lower_pattern.cpp lower_pin.cpp lower_census.cpp
+            lower_object.cpp lower_call.cpp lower_module_inline.cpp
+            lower_pattern.cpp lower_pin.cpp lower_census.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
             lower_try.cpp lower_unresolved.cpp lower_yield_star.cpp lower_async.cpp
     DEPS ast il support types
