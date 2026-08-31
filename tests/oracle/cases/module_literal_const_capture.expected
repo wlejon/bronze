@@ -1,0 +1,10 @@
+closure       srgb-linear
+both          srgb-linear|srgb-linear|srgb-linear
+identity      true
+method deflt  lit:srgb-linear:4
+method arg    lit:display-p3:4
+nested arrow  srgb-linear#false
+hoisted       srgb-linear~4
+kinds         4 false null undefined
+kind types    number boolean object undefined
+hot           4000
