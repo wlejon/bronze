@@ -1,0 +1,5 @@
+initial       a a | a a
+after set     b! b! | a a
+hot           500 500
+set from self b!! b!!
+assign value  c c!

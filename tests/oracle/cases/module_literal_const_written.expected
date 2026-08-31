@@ -1,0 +1,6 @@
+before        first first first
+hot before    500
+after         second second second
+hot after     500
+other         changed second
+compound      second! second!

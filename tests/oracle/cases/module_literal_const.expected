@@ -1,0 +1,22 @@
+accessor      srgb-linear
+bracket       srgb-linear
+backing       srgb-linear
+through this  cs=srgb-linear
+identity      true true
+hot           1000
+default       red/srgb-linear red/display-p3
+default undef red/srgb-linear
+number        3 6 6
+number type   number
+boolean       true boolean y
+null          null object true
+undefined     undefined undefined true
+hot number    4000
+desc data     srgb-linear w=true e=true c=true
+desc accessor get=function set=function e=true c=true
+desc halves   value=false writable=false
+desc get call srgb-linear
+keys          _base,size,base
+in            true true false
+json          {"_base":"srgb-linear","size":3,"base":"srgb-linear"}
+mirror read   srgb-linear srgb-linear 3

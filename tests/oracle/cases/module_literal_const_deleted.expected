@@ -1,0 +1,7 @@
+before        5 5 5
+hot before    500
+delete        true
+after         undefined undefined undefined
+hot after     500
+delete again  true undefined
+shadow        kept kept kept
