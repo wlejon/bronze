@@ -234,6 +234,61 @@ relinks them under a deterministic permutation. On the `instanced_mesh_churn`
 graph that is ~0.3 s of link against ~90 s of object emission, which is what
 makes nine layouts per arm affordable.
 
+### The `--pins` opt-in, under the same layout control
+
+`--pins` is not a tuning flag and is not on by default: a manifest is a set of
+DECLARATIONS about a program's fields, parameters and returns that inference is
+told to believe, and a pinned array's elements compile to raw f64 loads and
+stores with no guard at all. It is enforced rather than assumed — a store,
+argument or return that violates an entry throws a catchable `TypeError` naming
+the manifest line (`src/types/pins.h`, `tests/cli/pin_barrier_test.cpp`), so a
+manifest that is wrong about a path diagnoses instead of corrupting. Nobody has
+to write one by hand: `bronze build --census <out.pins>` instruments the
+program, a representative run joins what it observed, and the entries that were
+monomorphic become the file (`docs/pin-census.md`).
+
+Each fixture below was censused from itself, the `@observed` entries dropped
+(what a default build accepts), and the resulting manifest swept against the
+same objects' unpinned twin — nine link orders each, three copies, the decision
+rule above.
+
+| fixture | census entries (safe / all) | bronze default | pinned | pinned spread | node | pinned vs node | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `three_math` | 34 / 37 | 11.30 | **7.56** | 0.16 (2.1%) | 8.80 | **1.16×** | CLAIMABLE, −33% |
+| `mesh_churn_2k` | 80 / 100 | 33.49 | 33.84 | 0.75 (2.2%) | 32.33 | 0.96× | not claimable (+1.0%, bar 0.80) |
+| `instanced_mesh_churn` | 72 / 155 | 38.36 | 38.74 | 4.84 (12.6%) | 33.61 | 0.87× | not claimable (+1.0% / −1.6%, bar 4.84) |
+
+**`three_math` under pins is the one row in this suite where bronze beats node
+on a library-scale region.** 7.56 ms against node's pinned 8.80, and the margin
+is not a layout draw: it is 1.24 ms against a 0.39 ms cross-seed spread on the
+wider arm, and the pinned arm's WORST of nine orders (7.64) still beats node by
+more than a millisecond. What buys it is one entry. Unpinned, `Matrix4.invert`
+and `Matrix4.multiplyMatrices` carry 18% of the profile's samples between them;
+under `Matrix4.elements: numeric-elements` neither has a self-sample left,
+because every `te[k]` in them became a raw f64 load. The bill that remains is
+ucrtbase's `sin`/`cos`/`fmod`/`remainder` at ~28% of samples — the trig
+reduction chunk 31 refused to fake — and the fused loop body at 29%.
+
+**And it buys nothing on the other two.** Both deltas are inside their own
+arms' layout spread, which is what a re-take under layout control was for: the
+older table below records `--pins` at −3.4% on `mesh_churn_2k` and −0.2% on
+`instanced_mesh_churn` from single-link A/Bs, and neither survives nine orders.
+The census explains the asymmetry rather than excusing it — on
+`instanced_mesh_churn` 83 of 155 entries are `@observed` (some store to a field
+of that name goes through a receiver the compiler cannot type) and are dropped,
+and what survives is `Material`/`Texture` scalars written once at setup, not
+anything the hot loop reads.
+
+Two caveats on the table. A pinned build can emit FEWER partition objects than
+its default twin (`three_math`: two against three, `mesh_churn_2k`: nine against
+ten), so the pinned arm draws from a smaller set of link orders and its spread
+column is not directly comparable to the default arm's — the decision rule uses
+the wider of the two, which is the default arm's in every row here. And the
+`bronze default` column above was re-read in these same sweeps rather than
+copied from the table further up, so each row's delta is internal to one
+session; `mesh_churn_2k` in particular read 33.5 here against the 35.50 that
+table reports.
+
 ### Older rows, not re-taken under layout control
 
 Measured 2026-08-27 at `8db7d05`, 51 rounds, `bench/tools/interleave.py`, one
