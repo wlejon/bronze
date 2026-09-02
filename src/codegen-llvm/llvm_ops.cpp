@@ -380,7 +380,10 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!needs(1, false, "Invalid operands for DynamicImport")) return false;
             llvm::Value* spec = operand(inst, 0, "Undefined operand in DynamicImport instruction");
             if (!spec) return false;
-            callWith(abi.bronze_dynamic_import, {spec});
+            // The second argument is the importing module's URL key: the
+            // base a host resolves a relative specifier against.
+            callWith(abi.bronze_dynamic_import,
+                     {spec, emitKeyId(builder_, shared_.tables, inst.keyIndex)});
             return true;
         }
         case il::Op::CreateAsyncMachine: {

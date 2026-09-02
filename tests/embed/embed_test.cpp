@@ -20,6 +20,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/promise.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
@@ -1024,6 +1025,57 @@ TEST_CASE("the eval global defers to the host's hook, and refuses without one") 
         std::vector<embed::Value> args{embed::fromUtf8("2 + 2")};
         embed::CallResult r = embed::call(evalFn.get(), embed::undefined(), args);
         CHECK(r.thrown);
+    }
+}
+
+TEST_CASE("an unfollowed import() defers to the host's hook, and rejects without one") {
+    // The third seam (embed.h setDynamicImportHook). `bronze_dynamic_import`
+    // is what generated code calls for an `import()` the module graph did
+    // not answer at compile time; it is handed the specifier value and the
+    // importer's URL key, the same key `import.meta` reads. A raw bronze_*
+    // helper is entered the way generated code enters one: under a frame.
+    ShadowStackFrame frame;
+    const uint32_t referrer = bronze_register_key_string("file:///app/src/main.js");
+
+    // Without a hook: a REJECTED promise — never a throw, the program is
+    // awaiting — whose reason is a TypeError instance.
+    {
+        embed::Persistent spec{embed::fromUtf8("../plugins/extra.js")};
+        embed::Persistent p{Value::fromRawBits(bronze_dynamic_import(spec.get().rawBits(), referrer))};
+        REQUIRE(embed::isPromise(p.get()));
+        CHECK(runtime::rtPromiseStateOf(p.get()) == runtime::PromiseState::Rejected);
+        embed::Persistent reason{runtime::rtPromiseResultOf(p.get())};
+        CHECK(embed::isObject(reason.get()));
+        CHECK(embed::toUtf8(embed::getProperty(reason.get(), "message")) ==
+              "Cannot resolve module");
+    }
+
+    // With a hook: it sees the specifier unconverted and the importer's URL,
+    // and its answer is the call's value, uninspected.
+    std::string seenSpecifier;
+    std::string seenReferrer;
+    embed::setDynamicImportHook(
+        [&](embed::Value specifier, const std::string& referrerUrl) -> embed::Value {
+            seenSpecifier = embed::toUtf8(specifier);
+            seenReferrer = referrerUrl;
+            return embed::fromDouble(7.0);
+        });
+    {
+        embed::Persistent spec{embed::fromUtf8("../plugins/extra.js")};
+        embed::Value answer =
+            Value::fromRawBits(bronze_dynamic_import(spec.get().rawBits(), referrer));
+        CHECK(answer.asNumber() == 7.0);
+        CHECK(seenSpecifier == "../plugins/extra.js");
+        CHECK(seenReferrer == "file:///app/src/main.js");
+    }
+
+    // Cleared, the rejection is back.
+    embed::setDynamicImportHook({});
+    {
+        embed::Persistent spec{embed::fromUtf8("x.js")};
+        embed::Persistent p{Value::fromRawBits(bronze_dynamic_import(spec.get().rawBits(), referrer))};
+        REQUIRE(embed::isPromise(p.get()));
+        CHECK(runtime::rtPromiseStateOf(p.get()) == runtime::PromiseState::Rejected);
     }
 }
 

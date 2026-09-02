@@ -29,6 +29,15 @@ namespace bronze::modules {
 bool requireExistingFile(const std::filesystem::path& path, const std::string& what, Span span,
                          DiagnosticSink& diags);
 
+// Whether a file NAME is one bronze reads as a module: `.js`, `.mjs`, or the
+// TypeScript spellings `.ts` and `.mts`, whose annotations the parser takes as
+// hints. The one reading of that list, shared by `requireExistingFile` (which
+// refuses a resolved path that is not one — a `.gitignore` named by an import
+// must fail as an import, not as a parse of its bytes) and by the
+// template-literal glob (whose tail must end in one, or the interpolation is
+// bounded by nothing).
+bool isModuleFileName(const std::string& name);
+
 // A BARE specifier — `lib`, `lib/sub.js`, `@scope/pkg` — to a file, by walking
 // `node_modules` upward from the importing file and reading the package's
 // `package.json`. False on a diagnosed error, and every step that could pick a

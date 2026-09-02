@@ -356,6 +356,23 @@ BRONZE_EMBED_API void setDynamicFunctionHook(DynamicFunctionHook hook);
 using DynamicEvalHook = runtime::DynamicEvalHost;
 BRONZE_EMBED_API void setDynamicEvalHook(DynamicEvalHook hook);
 
+// ---- import(), answered by the host -----------------------------------------
+//
+// The third seam. bronze follows every `import()` it can read at compile time
+// — a string literal, or a template literal with a static head and a tail
+// ending in a module extension, which it globs — and those calls resolve to
+// compiled namespaces without ever reaching the runtime. A specifier it could
+// not read (a variable; `../../${path}`) is warned about at compile time and
+// arrives here at run time, where a standalone program rejects it with a
+// TypeError. A host that can load modules itself installs a hook and is
+// handed the specifier value (a ROOTED slot, unconverted) and the importing
+// module's URL — its `import.meta.url` text, the base a relative specifier is
+// resolved against. The hook's answer is returned uninspected; the program is
+// awaiting it, so return a promise. Throwing works the way it does from a
+// NativeFn.
+using DynamicImportHook = runtime::DynamicImportHost;
+BRONZE_EMBED_API void setDynamicImportHook(DynamicImportHook hook);
+
 // ---- persistent handles (embed_handle.cpp) ---------------------------------
 
 // A heap-safe root the host may hold across frames and collections: the

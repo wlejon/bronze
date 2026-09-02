@@ -363,6 +363,14 @@ void rtSetDynamicEvalHost(DynamicEvalHost host) { g_dynamicEvalHost = std::move(
 
 const DynamicEvalHost& rtDynamicEvalHost() { return g_dynamicEvalHost; }
 
+// The host's `import()`, if it has one — the seam for the specifier the module
+// graph could not read at compile time.
+static thread_local DynamicImportHost g_dynamicImportHost;
+
+void rtSetDynamicImportHost(DynamicImportHost host) { g_dynamicImportHost = std::move(host); }
+
+const DynamicImportHost& rtDynamicImportHost() { return g_dynamicImportHost; }
+
 // 10.2.9 and 10.2.10, as the one place a function object's two own data
 // properties are filled in. `BRONZE_ABI_FN_NAME_NONE` leaves both absent, which
 // is what a native builtin gets — the header's comment says why that is not the

@@ -633,11 +633,19 @@ std::string print(const Module& module) {
                         out += "create.object";
                         break;
                     case Op::ModuleNamespace:
+                    case Op::DynamicImport:
+                        out += "dynamic_import %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", \"" +
+                               (inst.keyIndex < module.keyConstants.size()
+                                    ? module.keyConstants[inst.keyIndex]
+                                    : std::string("?")) +
+                               "\"";
+                        break;
                     case Op::CreateGeneratorObject:
                     case Op::CreateAsyncGeneratorObject:
                     case Op::CreateAsyncMachine:
                     case Op::AsyncStart:
-                    case Op::DynamicImport:
                     case Op::ForInKeys:
                     case Op::IterOpen:
                     case Op::AsyncIterOpen:

@@ -264,7 +264,7 @@ enum class Op : uint8_t {
     CreateAsyncMachine, // a = create.async_machine b     (b = resume closure)
     AsyncStart,         // a = async.start b              (b = machine; a = promise)
     AsyncAwait,         // async.await machine, value     (no result; subscribes)
-    DynamicImport,      // a = dynamic_import specifier
+    DynamicImport,      // a = dynamic_import specifier, <url_const_index of the importer>
     // A MODULE NAMESPACE EXOTIC OBJECT (ECMA-262 10.4.6), built from the object
     // of getters the operand holds. Its own op for the reason
     // `create.generator_object` is one: what it produces is not an object

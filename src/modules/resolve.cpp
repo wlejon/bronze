@@ -67,10 +67,29 @@ std::vector<std::filesystem::path> nearMisses(const std::filesystem::path& path)
 
 }  // namespace
 
+bool isModuleFileName(const std::string& name) {
+    static const char* const kExtensions[] = {".js", ".mjs", ".ts", ".mts"};
+    for (const char* ext : kExtensions) {
+        const size_t n = std::char_traits<char>::length(ext);
+        // `>=`, not `>`: a glob tail is often the bare extension.
+        if (name.size() >= n && name.compare(name.size() - n, n, ext) == 0) return true;
+    }
+    return false;
+}
+
 bool requireExistingFile(const std::filesystem::path& path, const std::string& what, Span span,
                          DiagnosticSink& diags) {
     std::error_code ec;
-    if (std::filesystem::is_regular_file(path, ec)) return true;
+    if (std::filesystem::is_regular_file(path, ec)) {
+        if (isModuleFileName(path.filename().generic_string())) return true;
+        // A real file that is not a module. Refused HERE, at the import that
+        // named it, because the alternative is to lex it — and a parse error
+        // inside a `.gitignore` names the wrong file entirely.
+        diags.error(span, "cannot resolve " + what + ": " + path.string() +
+                              " is not a JavaScript module (bronze reads .js, .mjs, .ts and "
+                              ".mts files)");
+        return false;
+    }
 
     std::string message = "cannot resolve " + what + ": " + path.string() + " is no file";
     const std::vector<std::filesystem::path> misses = nearMisses(path);

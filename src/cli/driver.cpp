@@ -358,6 +358,9 @@ int runTypes(const std::string& sourcePath, std::string* outString,
         return 1;
     }
 
+    // The loader's warnings — a dynamic import() it did not follow, a dropped
+    // annotation — are as much this command's answer as the types are.
+    reportWarnings(diags, sources);
     std::string printed = types::dump(*inferred);
     if (outString) {
         *outString = printed;

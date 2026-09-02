@@ -106,4 +106,27 @@ void rtSetDynamicEvalHost(DynamicEvalHost host);
 // is the signal to refuse.
 const DynamicEvalHost& rtDynamicEvalHost();
 
+// ---- import(), delegated ----------------------------------------------------
+//
+// The module graph answers every `import()` whose specifier it could read at
+// compile time — a string literal, or a template literal it could glob — and
+// those calls never reach the runtime. What does reach it is the rest: a
+// specifier that was a variable, or a template bounded by nothing. A
+// standalone program has no answer for those and the call rejects; a host that
+// can load a module at run time may install one here and is handed the
+// specifier (a ROOTED slot, current across anything the host allocates,
+// unconverted — ToString is the host's) and the importing module's URL, the
+// same text its `import.meta.url` reads, which is what a relative specifier is
+// resolved against. What the host returns is the call's value, uninspected;
+// the program is awaiting it, so a promise is the honest shape.
+using DynamicImportHost = std::function<Value(Value specifier, const std::string& referrerUrl)>;
+
+// Install (or clear, with an empty function) the host's answer. Process-wide
+// and set once at startup, like the host globals beside it.
+void rtSetDynamicImportHost(DynamicImportHost host);
+
+// The installed answer, or an empty std::function when there is none — which
+// is the signal to reject.
+const DynamicImportHost& rtDynamicImportHost();
+
 }  // namespace bronze::runtime

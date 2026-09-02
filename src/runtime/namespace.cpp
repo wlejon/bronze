@@ -27,6 +27,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/host_globals.h"
 #include "runtime/object.h"
 #include "runtime/promise.h"
 #include "runtime/rt_convert.h"
@@ -269,11 +270,18 @@ uint64_t bronze_import_meta(uint32_t urlKeyIndex) {
     return meta.get().rawBits();
 }
 
-uint64_t bronze_dynamic_import(uint64_t specifierBits) {
-    (void)specifierBits;
+// The `import()` the module graph did NOT answer: a specifier that was no
+// constant at compile time (host_globals.h DynamicImportHost says what the
+// host may do with it). Without a host the call rejects — never throws, since
+// the caller is awaiting a promise — with a TypeError whose text is the same
+// one the graph's own lookup tables use for a miss.
+uint64_t bronze_dynamic_import(uint64_t specifierBits, uint32_t referrerKey) {
+    Rooted<Value> specifier{Value::fromRawBits(specifierBits)};
+    if (const DynamicImportHost& host = rtDynamicImportHost()) {
+        return host(specifier.get(), rtKeyString(referrerKey)).rawBits();
+    }
     Rooted<Value> promise{rtNewPromise()};
-    Rooted<Value> err{Value::fromString(StringHeader::createFromUTF8(
-        rtHeap(), "TypeError: Cannot resolve module"))};
+    Rooted<Value> err{rtNewErrorValue(ErrorKind::TypeError, "Cannot resolve module")};
     rtRejectPromise(promise, err);
     return promise.get().rawBits();
 }

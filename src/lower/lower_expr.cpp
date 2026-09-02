@@ -443,6 +443,9 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         inst.type = il::Type::Dynamic;
         inst.result = res;
         inst.operands = {specVal.id};
+        // The importer's URL, the same key `import.meta` reads: the runtime
+        // hands it to the host as the base for a relative specifier.
+        inst.keyIndex = getKeyConstantIndex(moduleUrl(di->span.file));
         emitInst(ilFn, inst);
         return Value{res, il::Type::Dynamic};
     }

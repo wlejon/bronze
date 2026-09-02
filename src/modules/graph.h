@@ -77,9 +77,11 @@ bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink&
 
 // The head/tail of a template-literal specifier, or false when the template is
 // not one this compiler can turn into a glob: no interpolation at all (then it
-// is just a string), a head that does not start a relative path, or a tail
-// carrying a path separator. Shared by the loader, which globs with it, and the
-// linker, which builds the lookup table from the same reading.
+// is just a string), a head that names no directory, a tail carrying a path
+// separator, or a tail that does not end in a module extension (then the
+// interpolation is bounded by nothing, and the call is the runtime's). Shared
+// by the loader, which globs with it, and the linker, which builds the lookup
+// table from the same reading.
 bool dynamicImportPattern(const ast::TemplateLit& tpl, std::string& head, std::string& tail);
 
 // Links the loaded graph into `out`: export tables, import bindings, the

@@ -753,4 +753,92 @@ TEST_CASE("loadProgram with importMapPath integrates resolution end-to-end") {
     CHECK(contains(dump, "(function mod2.orbit"));
 }
 
+TEST_CASE("a specifier naming a directory is refused at the import that wrote it") {
+    Sandbox box("dir_specifier");
+    box.write("lib/inner.js", "export const x = 1;\n");
+    std::string entry = box.write("main.js",
+                                  "const p = 1;\n"
+                                  "async function go() { return import('./lib'); }\n"
+                                  "go();\n");
+    Loaded r = load(entry);
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "main.js:2:"));
+    CHECK(contains(r.errors, "cannot resolve module specifier \"./lib\""));
+    CHECK(contains(r.errors, "is no file"));
+}
+
+TEST_CASE("a specifier naming a file that is not a module is refused, not parsed") {
+    // The failure that motivated this: a `.gitignore` reached through an
+    // import produced `.gitignore:1:5: error: expected expression`, a parse
+    // error inside a file that was never JavaScript. The error belongs to the
+    // import, and names the importer and the specifier.
+    Sandbox box("non_module_file");
+    box.write(".gitignore", "*.log\nshots/\n");
+    std::string entry = box.write("main.js", "import './.gitignore';\n");
+    Loaded r = load(entry);
+    CHECK_FALSE(r.ok);
+    CHECK(contains(r.errors, "main.js:1:"));
+    CHECK(contains(r.errors, "cannot resolve module specifier \"./.gitignore\""));
+    CHECK(contains(r.errors, "is not a JavaScript module"));
+    CHECK_FALSE(contains(r.errors, "expected expression"));
+    CHECK_FALSE(contains(r.errors, ".gitignore:1:"));
+}
+
+TEST_CASE("an unbounded template import() is not followed, and warns at the site") {
+    // `../${path}`: the interpolation is followed by no module extension, so
+    // it is bounded by nothing — it may carry a path of its own — and a glob
+    // over the head's directory would take everything in it, a `.gitignore`
+    // included. The call is left to the runtime; nothing is read.
+    Sandbox box("unbounded_pattern");
+    box.write(".gitignore", "*.log\n");
+    box.write("notes.txt", "not javascript\n");
+    box.write("sub/a.js", "export const a = 'A';\n");
+    std::string entry = box.write("sub/main.js",
+                                  "export async function boot(cfg) {\n"
+                                  "    if (cfg.boot) await import(`../${cfg.boot}`);\n"
+                                  "}\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.errors, "main.js:2:"));
+    CHECK(contains(r.errors, "warning: dynamic import() of `../${...}` is not followed"));
+    CHECK(contains(r.errors, "does not end in a module extension"));
+    CHECK_FALSE(contains(r.errors, "error:"));
+    // Not followed means not in the graph: no second module, no `a`.
+    CHECK_FALSE(contains(r.dump, "mod1."));
+    CHECK(contains(r.dump, "(dynamic-import"));
+}
+
+TEST_CASE("a variable import() specifier is not followed, and warns at the site") {
+    Sandbox box("variable_specifier");
+    box.write("plugin.js", "export const p = 1;\n");
+    std::string entry = box.write("main.js",
+                                  "const name = './plugin.js';\n"
+                                  "import(name);\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.errors, "main.js:2:"));
+    CHECK(contains(r.errors, "warning: dynamic import() with a non-constant specifier is not "
+                             "followed"));
+    CHECK_FALSE(contains(r.dump, "mod1."));
+}
+
+TEST_CASE("a template import() bounded by a module extension is still globbed") {
+    // The pattern the glob exists for — and the counterpart of the unbounded
+    // case above: with `.js` after the interpolation the directory's modules
+    // join the graph, its other files do not, and there is nothing to warn
+    // about.
+    Sandbox box("bounded_pattern");
+    box.write("panels/P.Box.js", "export const label = 'box';\n");
+    box.write("panels/P.Sphere.js", "export const label = 'sphere';\n");
+    box.write("panels/README.txt", "not a module\n");
+    std::string entry = box.write("main.js",
+                                  "export function load(t) { return import(`./panels/P.${t}.js`); }\n");
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK_FALSE(contains(r.errors, "warning:"));
+    CHECK(contains(r.dump, "mod1.label"));
+    CHECK(contains(r.dump, "mod2.label"));
+    CHECK_FALSE(contains(r.dump, "README"));
+}
+
 

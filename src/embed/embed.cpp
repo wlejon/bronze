@@ -64,6 +64,10 @@ void setDynamicEvalHook(DynamicEvalHook hook) {
     runtime::rtSetDynamicEvalHost(std::move(hook));
 }
 
+void setDynamicImportHook(DynamicImportHook hook) {
+    runtime::rtSetDynamicImportHost(std::move(hook));
+}
+
 // ---- calling into compiled code --------------------------------------------
 
 CallResult call(Value fn, Value thisValue, std::span<const Value> args) {

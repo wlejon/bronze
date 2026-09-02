@@ -22,13 +22,19 @@ namespace bronze::modules {
 // because a second `${}` is a second wildcard and one glob cannot say where the
 // first ends.
 //
-// Two rules, both about reach rather than taste: the head must contain a `/`,
-// so the pattern names a directory it can enumerate; and the tail may not,
-// which together with the head's last `/` pins the interpolation inside a
-// single FILENAME. `${x}` filling in `../../etc/passwd` therefore matches
-// nothing — it would have to be the name of a file in that one directory.
-// Backslashes are refused outright on both sides: a specifier is a URL path,
-// and the one place a `\` could appear is a Windows path that leaked in.
+// Three rules, all about reach rather than taste: the head must contain a `/`,
+// so the pattern names a directory it can enumerate; the tail may not, which
+// together with the head's last `/` pins the interpolation inside a single
+// FILENAME; and the tail must end in a module extension, so that filename is
+// a module's and the interpolation is its STEM. `${x}` filling in
+// `../../etc/passwd` therefore matches nothing — it would have to be the name
+// of a file in that one directory. Without the third rule `../../${x}` is a
+// glob over everything in a directory — a `.gitignore` included — for an
+// interpolation that may well carry a path of its own; that pattern is not a
+// bounded set of files, and refusing it here is what routes the call to the
+// runtime instead (loadDependencies warns at the site). Backslashes are
+// refused outright on both sides: a specifier is a URL path, and the one place
+// a `\` could appear is a Windows path that leaked in.
 bool dynamicImportPattern(const ast::TemplateLit& tpl, std::string& head, std::string& tail) {
     if (tpl.exprs.size() != 1 || tpl.quasis.size() != 2) return false;
     head = tpl.quasis[0];
@@ -36,7 +42,35 @@ bool dynamicImportPattern(const ast::TemplateLit& tpl, std::string& head, std::s
     if (head.find('/') == std::string::npos) return false;
     if (head.find('\\') != std::string::npos) return false;
     if (tail.find('/') != std::string::npos || tail.find('\\') != std::string::npos) return false;
+    if (!isModuleFileName(tail)) return false;
     return true;
+}
+
+// What the loader says at a dynamic `import()` it will not follow. The text
+// names the shape it saw, because the fix differs: a template can be made
+// globbable by ending it in a module extension, an identifier cannot.
+std::string unfollowedImportMessage(const ast::Expr& specifier) {
+    std::string what;
+    if (const auto* t = dynamic_cast<const ast::TemplateLit*>(&specifier)) {
+        std::string text;
+        for (size_t i = 0; i < t->quasis.size(); ++i) {
+            if (i > 0) text += "${...}";
+            text += t->quasis[i];
+        }
+        what = "dynamic import() of `" + text + "` is not followed at compile time";
+        if (t->exprs.size() == 1 && t->quasis.size() == 2 &&
+            t->quasis[0].find('/') != std::string::npos && !isModuleFileName(t->quasis[1])) {
+            what += ": the text after the interpolation does not end in a module extension "
+                    "(.js, .mjs, .ts, .mts), so the pattern names no bounded set of files";
+        } else {
+            what += ": only a template with one interpolation, a head naming a directory "
+                    "and a tail ending in a module extension can be globbed";
+        }
+    } else {
+        what = "dynamic import() with a non-constant specifier is not followed at compile time";
+    }
+    return what + "; no module joins the graph for it, and at run time the call is answered "
+                  "by the host's dynamic-import hook or rejected with \"Cannot resolve module\"";
 }
 
 namespace {
@@ -64,6 +98,9 @@ public:
     std::vector<std::pair<std::string, Span>> list;
     // Template-literal specifiers, head and tail, in source order.
     std::vector<DynamicImportPattern> patterns;
+    // The calls neither list above will answer — a non-constant specifier
+    // the graph cannot follow — with the warning each one earns.
+    std::vector<std::pair<std::string, Span>> unfollowed;
 
     void scan(const ast::Node* n) {
         if (n) n->accept(*this);
@@ -122,11 +159,14 @@ public:
     void visit(const ast::DynamicImportExpr& di) override {
         if (const auto* s = dynamic_cast<const ast::StringLit*>(di.specifier.get())) {
             list.emplace_back(s->value, di.span);
-        } else if (const auto* t = dynamic_cast<const ast::TemplateLit*>(di.specifier.get())) {
+        } else {
             DynamicImportPattern p;
-            if (dynamicImportPattern(*t, p.head, p.tail)) {
+            const auto* t = dynamic_cast<const ast::TemplateLit*>(di.specifier.get());
+            if (t && dynamicImportPattern(*t, p.head, p.tail)) {
                 p.span = di.span;
                 patterns.push_back(std::move(p));
+            } else if (di.specifier) {
+                unfollowed.emplace_back(unfollowedImportMessage(*di.specifier), di.span);
             }
         }
         scan(di.specifier.get());
@@ -367,6 +407,12 @@ private:
         for (auto& pattern : finder.patterns) {
             if (!followPattern(file, pattern)) return false;
         }
+        // A warning and not an error: the program is complete without these
+        // modules, exactly as it is on the web until the string arrives. What
+        // the author needs to know is that nothing was compiled for the call.
+        for (const auto& item : finder.unfollowed) {
+            diags_.warning(item.second, item.first);
+        }
         return true;
     }
 
@@ -385,7 +431,16 @@ private:
         const std::string namePrefix = pattern.head.substr(slash + 1);
 
         std::filesystem::path dir;
-        if (!resolveSpecifierDirectory(dirSpec, file.path, options_.moduleRoots, dir)) return true;
+        if (!resolveSpecifierDirectory(dirSpec, file.path, options_.moduleRoots, dir)) {
+            // No such directory is the same answer as an empty one: the
+            // pattern still gets its (empty) table, so every string the call
+            // computes is a MISS in it — named in the rejection — rather than
+            // a call the runtime, and a host hook, would be asked to answer.
+            // The set was bounded at compile time; nothing on disk later can
+            // widen it.
+            file.dynPatterns.push_back(std::move(pattern));
+            return true;
+        }
 
         std::error_code ec;
         std::vector<std::string> names;
