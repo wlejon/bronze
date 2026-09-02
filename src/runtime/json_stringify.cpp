@@ -26,6 +26,7 @@
 #include "runtime/number_format.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/string.h"
@@ -39,9 +40,9 @@ namespace {
 
 using Units = std::vector<uint16_t>;
 
-bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-}
+// 7.2.3 IsCallable over the whole value model — a Proxy over a function is
+// callable too, as a toJSON, as a replacer, and as the value step 3 omits.
+bool isCallable(Value v) { return rtIsCallableValue(v); }
 
 bool isArray(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
@@ -158,7 +159,11 @@ void joinPartial(const std::vector<Units>& partial, const Units& indent, const U
 
 // 25.5.2.5 SerializeJSONArray. `undefined`, a function and a hole all become
 // `null` here — an array's shape is its length, so there is nothing to omit.
-bool serializeArray(State& state, Rooted<Value>& value, Units& out) {
+// 25.5.2.5 SerializeJSONArray. `length` is passed in rather than read here
+// because the value is not always an ArrayHeader: a Proxy over an array
+// serializes as an array (step 4 of SerializeJSONProperty asks IsArray, which
+// sees through proxies) and its length is whatever its `get` trap answers.
+bool serializeArray(State& state, Rooted<Value>& value, uint32_t length, Units& out) {
     if (alreadyOnStack(state, value.get())) {
         rtThrowTypeError("Converting circular structure to JSON");
         return false;
@@ -169,7 +174,6 @@ bool serializeArray(State& state, Rooted<Value>& value, Units& out) {
 
     std::vector<Units> partial;
     bool failed = false;
-    const uint32_t length = value.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < length; ++i) {
         Units key;
         appendAscii(key, std::to_string(i));
@@ -243,6 +247,38 @@ bool serializeObject(State& state, Rooted<Value>& value, Units& out) {
     state.stack.pop_back();
     state.indent = stepback;
     return !failed;
+}
+
+// A Proxy. 25.5.2.3 step 4 asks IsArray (7.2.2), which walks the proxy's
+// target chain — a proxy over an array IS an array to JSON, and a revoked
+// one in that chain is a TypeError — and everything after that goes through
+// the proxy's own traps: `bronze_object_keys` (ownKeys +
+// getOwnPropertyDescriptor) and `bronze_elem_get` (get) already do, so the
+// object walk needs no proxy-specific code, and the array walk only needs
+// `length` read the same way.
+bool serializeProxy(State& state, Rooted<Value>& value, Units& out) {
+    Value target = value.get();
+    while (target.isObject() && target.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        const ProxyHeader* proxy = target.asObject<ProxyHeader>();
+        if (proxy->revoked()) {
+            rtThrowTypeError("Cannot perform 'IsArray' on a proxy that has been revoked");
+            return false;
+        }
+        target = proxy->target;
+    }
+    if (!isArray(target)) return serializeObject(state, value, out);
+
+    Rooted<Value> lengthKey{rtMakeString("length")};
+    Rooted<Value> lengthValue{
+        Value(bronze_elem_get(value.get().rawBits(), lengthKey.get().rawBits()))};
+    if (rtExceptionPending()) return false;
+    // 7.1.20 ToLength, capped where the loop's index is: a trap answering
+    // more than that is asking for a string no heap could hold anyway.
+    const double n = rtToNumber(lengthValue.get());
+    if (rtExceptionPending()) return false;
+    uint32_t length = 0;
+    if (n > 0) length = n >= 4294967295.0 ? 4294967295u : static_cast<uint32_t>(n);
+    return serializeArray(state, value, length, out);
 }
 
 // 25.5.2.3 SerializeJSONProperty. False means "undefined" — the caller decides
@@ -325,7 +361,9 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
         return true;
     }
     if (v.isObject() && !isCallable(v)) {
-        if (isArray(v)) return serializeArray(state, value, out);
+        if (isArray(v)) {
+            return serializeArray(state, value, v.asObject<ArrayHeader>()->length, out);
+        }
         // Which kind this is decides between two different right answers, so
         // the question is asked as a list and not as "is it plain". 25.5.2.4
         // asks for EnumerableOwnPropertyNames; `{}` is the answer only for a
@@ -368,6 +406,12 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             case HeapKind::FinalizationRegistry:
                 appendAscii(out, "{}");
                 return true;
+            // A Proxy is whatever its target chain says it is, read through
+            // its traps — never `{}` and never a fatal: a proxy is an
+            // ordinary value a program hands to JSON.stringify all the time
+            // (a reactive store, a logging wrapper).
+            case ProxyHeader::kFlags:
+                return serializeProxy(state, value, out);
             // An iteration record and an environment are bronze's own, and a
             // program has no expression that hands one to JSON.stringify.
             // Reaching here means the value came from somewhere this list has
