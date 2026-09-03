@@ -82,8 +82,18 @@ public:
         if (!ptr_ || !other.ptr_) return false;
         if (ptr_ == other.ptr_) return true;
         if (!isString() || !other.isString()) return false;
-        return reinterpret_cast<const StringHeader*>(ptr_)->equals(
-            *reinterpret_cast<const StringHeader*>(other.ptr_));
+        const auto& a = *reinterpret_cast<const StringHeader*>(ptr_);
+        const auto& b = *reinterpret_cast<const StringHeader*>(other.ptr_);
+        // A shape's keys and a program's key constants have all been hashed
+        // (the dictionary and the IC hash them), so on a transition scan the
+        // cached hashes are there to disagree before the content is read.
+        // Neither hash is COMPUTED here: an uncached one costs a pass over
+        // the string, which is what the compare costs anyway.
+        if ((a.flags & b.flags & StringHeader::kHasHashFlag) != 0 &&
+            (a.flags & 0xFFFFFFFCU) != (b.flags & 0xFFFFFFFCU)) {
+            return false;
+        }
+        return a.equals(b);
     }
 
 private:

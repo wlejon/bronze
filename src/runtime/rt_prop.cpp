@@ -274,6 +274,40 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
                 }
             }
         }
+    } else if (objVal.isString()) {
+        // A STRING receiver, which generated code's inline IC can never hit
+        // (it guards on an object's shape word, and a string has none), so
+        // every `s.length` and every `s.charCodeAt` of a string-walking loop
+        // arrives here. Before this branch each one took the by-name path:
+        // `String.prototype` walked by `Shape::lookupProperty`, a content
+        // compare per key on the way — ~400 ns a read, 120x node on a seeded
+        // hash. 10.4.3.4's own `length` is answered from the header, and a
+        // method is answered from the site's cache of `String.prototype`'s
+        // shape, which `stringMember`'s walk filled on the first miss: the
+        // receiver is not the holder, so the entry is read against the
+        // intrinsic's shape instead of the receiver's, at depth 0 only (the
+        // intrinsic's own members; anything deeper takes the walk).
+        const KeyInfo& ki = rtKeyInfo(keyIndex);
+        if (ki.isLength) {
+            return Value::fromDouble(objVal.asString<StringHeader>()->getLength()).rawBits();
+        }
+        if (!ki.isElemIndex && site && site->ways[0].isRealShape()) {
+            // The filled way is usually the intrinsic's own, but a site that
+            // saw a plain object first may meet its first string before any
+            // string walk built `String.prototype` — and building it
+            // allocates, so the receiver (a movable heap string) is rooted
+            // across the fetch and re-read after it.
+            Rooted<Value> self{objVal};
+            const Value proto = rtStringPrototype();
+            objVal = self.get();
+            if (proto.isObject()) {
+                auto* holder = proto.asObject<ObjectHeader>();
+                InlineCache* hit = site->find(holder->shape, rtIcWayLimit());
+                if (hit && hit->describesOwn(holder->shape)) {
+                    return holder->getSlot(hit->cached_slot).rawBits();
+                }
+            }
+        }
     }
 
     return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site, keyIndex);

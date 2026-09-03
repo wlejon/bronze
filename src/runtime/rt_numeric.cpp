@@ -38,6 +38,12 @@ namespace {
 // False leaves an exception pending: a Symbol operand, or a user `valueOf`
 // that threw.
 bool toNumeric(Value v, Value& out) {
+    // 7.1.3 step 1 on a Number is the identity, and a Number is what a
+    // dynamic operand usually holds: no root, no ToPrimitive walk.
+    if (v.isNumber()) {
+        out = v;
+        return true;
+    }
     Rooted<Value> input{v};
     Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
     if (rtExceptionPending()) return false;

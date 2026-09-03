@@ -51,13 +51,7 @@ bool isCallable(Value v) {
 // GeneratorYield takes the iterator result and hands it on unchanged), so
 // building a second one would be observable as a different object.
 Value cursorResult(Rooted<Value>& value, bool done) {
-    Rooted<Value> out{Value(bronze_create_object())};
-    Rooted<Value> vk{rtMakeString("value")};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), vk, value);
-    Rooted<Value> dk{rtMakeString("done")};
-    Rooted<Value> dv{Value::fromBool(done)};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), dk, dv);
-    return out.get();
+    return rtCreateIterResult(value, done);
 }
 
 // 7.3.11 GetMethod: `undefined` and `null` both answer "no method", anything
@@ -132,7 +126,9 @@ Value delegateNext(Rooted<Value>& recRoot, Rooted<Value>& sent) {
 // close.
 Value delegateThrow(Rooted<Value>& recRoot, Rooted<Value>& sent) {
     IterRecordHeader* rec = recordOf(recRoot.get());
-    const bool protocol = rec->kindOf() == IterRecordHeader::Protocol;
+    // Every kind from Protocol up holds an iterator OBJECT in `target`, and a
+    // built-in one may have been given a `return` or `throw` after the open.
+    const bool protocol = rec->kindOf() >= IterRecordHeader::Protocol;
     Rooted<Value> iterObj{protocol ? rec->target : Value::fromUndefined()};
     Rooted<Value> thrower{protocol ? getMethod(iterObj, "throw") : Value::fromUndefined()};
     if (rtExceptionPending()) return Value::fromUndefined();
@@ -156,7 +152,9 @@ Value delegateThrow(Rooted<Value>& recRoot, Rooted<Value>& sent) {
 // throws.
 Value delegateReturn(Rooted<Value>& recRoot, Rooted<Value>& sent) {
     IterRecordHeader* rec = recordOf(recRoot.get());
-    const bool protocol = rec->kindOf() == IterRecordHeader::Protocol;
+    // Every kind from Protocol up holds an iterator OBJECT in `target`, and a
+    // built-in one may have been given a `return` or `throw` after the open.
+    const bool protocol = rec->kindOf() >= IterRecordHeader::Protocol;
     Rooted<Value> iterObj{protocol ? rec->target : Value::fromUndefined()};
     Rooted<Value> returner{protocol ? getMethod(iterObj, "return") : Value::fromUndefined()};
     if (rtExceptionPending()) return Value::fromUndefined();

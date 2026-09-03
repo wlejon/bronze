@@ -341,7 +341,42 @@ llvm::Value* emitStrictEq(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "seq.isstr");
     llvm::Value* isBig =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_BIGINT), "seq.isbig");
-    builder.CreateCondBr(builder.CreateOr(isStr, isBig, "seq.byvalue"), slowBb, doneBb);
+    llvm::BasicBlock* strBb = llvm::BasicBlock::Create(ctx, "seq.str", fn);
+    llvm::BasicBlock* strLenBb = llvm::BasicBlock::Create(ctx, "seq.strlen", fn);
+    builder.CreateCondBr(isStr, strBb, strLenBb);
+
+    // Arm 3, a String on the left: the helper's first two answers are made
+    // here. A right operand that is not a string is false (7.2.15 step 1),
+    // and two strings of different lengths are false (`StringHeader::equals`
+    // opens on that compare; every string is flat, so the header's length is
+    // the whole answer). Only two strings of one length reach the content
+    // compare — which is what `unit.kind === 'titan'` on a miss usually is
+    // not.
+    builder.SetInsertPoint(strBb);
+    llvm::Value* rtag = builder.CreateLShr(rhs, BRONZE_ABI_VALUE_TAG_SHIFT, "seq.rtag");
+    llvm::Value* rIsStr =
+        builder.CreateICmpEQ(rtag, builder.getInt64(BRONZE_ABI_TAG_STRING), "seq.risstr");
+    llvm::BasicBlock* bothStrBb = llvm::BasicBlock::Create(ctx, "seq.bothstr", fn);
+    builder.CreateCondBr(rIsStr, bothStrBb, doneBb);
+
+    builder.SetInsertPoint(bothStrBb);
+    llvm::Type* i8Ty = builder.getInt8Ty();
+    llvm::Type* i32Ty = builder.getInt32Ty();
+    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    auto lengthOf = [&](llvm::Value* bits, const char* name) {
+        llvm::Value* addr =
+            builder.CreateAnd(bits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy);
+        llvm::Value* lenPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_STRING_LENGTH_OFFSET);
+        return builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), name);
+    };
+    llvm::Value* sameLen =
+        builder.CreateICmpEQ(lengthOf(lhs, "seq.llen"), lengthOf(rhs, "seq.rlen"), "seq.samelen");
+    builder.CreateCondBr(sameLen, slowBb, doneBb);
+
+    builder.SetInsertPoint(strLenBb);
+    builder.CreateCondBr(isBig, slowBb, doneBb);
 
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(abi.bronze_strict_eq, {lhs, rhs}, "seq.slowres");
@@ -349,10 +384,12 @@ llvm::Value* emitStrictEq(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 4, "seq.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 6, "seq.result");
     result->addIncoming(numVal, numEndBb);
     result->addIncoming(builder.getTrue(), nonNumBb);
-    result->addIncoming(builder.getFalse(), differBb);
+    result->addIncoming(builder.getFalse(), strBb);
+    result->addIncoming(builder.getFalse(), bothStrBb);
+    result->addIncoming(builder.getFalse(), strLenBb);
     result->addIncoming(slowVal, slowEndBb);
     return result;
 }
@@ -529,8 +566,14 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         case il::Op::UShr: {
             if (inst.type == il::Type::Dynamic) {
                 // Boxed operands, so the int32 conversion has not happened and
-                // must not: on a BigInt pair the operator is defined over the
-                // whole values, and ToInt32 would silently truncate them.
+                // must not blindly: on a BigInt pair the operator is defined
+                // over the whole values, and ToInt32 would silently truncate
+                // them. Two NUMBERS, though, are exactly the typed case below
+                // — 6.1.6.1.17-22 are ToInt32 on each and the i32 operation —
+                // and a dynamic slot holding a number is what a seeded
+                // hash or a PRNG's `x ^ (x << 13)` is on every step, so that
+                // pair is taken inline and everything else keeps the helper
+                // (whose ToNumeric can run user code and raise).
                 llvm::Function* helper =
                     inst.op == il::Op::BitAnd   ? shared_.abi.bronze_dynamic_bitand
                     : inst.op == il::Op::BitOr  ? shared_.abi.bronze_dynamic_bitor
@@ -538,7 +581,55 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
                     : inst.op == il::Op::Shl    ? shared_.abi.bronze_dynamic_shl
                     : inst.op == il::Op::Shr    ? shared_.abi.bronze_dynamic_shr
                                                 : shared_.abi.bronze_dynamic_ushr;
-                values_[inst.result] = builder_.CreateCall(helper, {lhs, rhs});
+                llvm::LLVMContext& ctx = builder_.getContext();
+                llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+                llvm::Type* dblTy = builder_.getDoubleTy();
+                llvm::Type* i64Ty = builder_.getInt64Ty();
+                llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "dbit.num", fn);
+                llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "dbit.slow", fn);
+                llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "dbit.done", fn);
+                llvm::Value* lhsNum = builder_.CreateICmpULE(
+                    lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.lnum");
+                llvm::Value* rhsNum = builder_.CreateICmpULE(
+                    rhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.rnum");
+                builder_.CreateCondBr(builder_.CreateAnd(lhsNum, rhsNum, "dbit.bothnum"), numBb,
+                                      slowBb);
+
+                builder_.SetInsertPoint(numBb);
+                llvm::Value* li = emitToInt32F64(builder_, shared_.abi,
+                                                 builder_.CreateBitCast(lhs, dblTy));
+                llvm::Value* ri = emitToInt32F64(builder_, shared_.abi,
+                                                 builder_.CreateBitCast(rhs, dblTy));
+                llvm::Value* bits = nullptr;
+                switch (inst.op) {
+                    case il::Op::BitAnd: bits = builder_.CreateAnd(li, ri); break;
+                    case il::Op::BitOr: bits = builder_.CreateOr(li, ri); break;
+                    case il::Op::BitXor: bits = builder_.CreateXor(li, ri); break;
+                    default: {
+                        llvm::Value* count = builder_.CreateAnd(ri, builder_.getInt32(31));
+                        bits = inst.op == il::Op::Shl   ? builder_.CreateShl(li, count)
+                               : inst.op == il::Op::Shr ? builder_.CreateAShr(li, count)
+                                                        : builder_.CreateLShr(li, count);
+                        break;
+                    }
+                }
+                llvm::Value* fastDbl = inst.op == il::Op::UShr
+                                           ? builder_.CreateUIToFP(bits, dblTy)
+                                           : builder_.CreateSIToFP(bits, dblTy);
+                llvm::Value* fastVal = builder_.CreateBitCast(fastDbl, i64Ty, "dbit.fast");
+                llvm::BasicBlock* numEndBb = builder_.GetInsertBlock();
+                builder_.CreateBr(doneBb);
+
+                builder_.SetInsertPoint(slowBb);
+                llvm::Value* slowVal = builder_.CreateCall(helper, {lhs, rhs}, "dbit.slowres");
+                llvm::BasicBlock* slowEndBb = builder_.GetInsertBlock();
+                builder_.CreateBr(doneBb);
+
+                builder_.SetInsertPoint(doneBb);
+                llvm::PHINode* result = builder_.CreatePHI(i64Ty, 2, "dbit.result");
+                result->addIncoming(fastVal, numEndBb);
+                result->addIncoming(slowVal, slowEndBb);
+                values_[inst.result] = result;
                 return true;
             }
             if (!require(lhs->getType()->isIntegerTy(32) && rhs->getType()->isIntegerTy(32),

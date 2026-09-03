@@ -423,7 +423,16 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
         }
         case il::Op::CreateArray:
             if (inst.result != il::kNoValue) {
-                callWith(abi.bronze_create_array, {builder_.getInt32(inst.immI32)});
+                // A small literal — the `[x, z]` tuple a geometry helper
+                // returns, the `[a, b, c]` a table row is — is bump-allocated
+                // inline (llvm_construct.h); its HOLE fill is `capacity`
+                // stores, which is why the size is bounded here.
+                if (inst.immI32 >= 0 && inst.immI32 <= 8) {
+                    values_[inst.result] = emitCreateArrayInline(
+                        builder_, abi, globals_, static_cast<uint32_t>(inst.immI32));
+                } else {
+                    callWith(abi.bronze_create_array, {builder_.getInt32(inst.immI32)});
+                }
             }
             return true;
         case il::Op::ObjectKeys: {
@@ -636,18 +645,40 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!needs(1, false, "Invalid operands for IterClose")) return false;
             llvm::Value* rec = operand(inst, 0, "Undefined record in IterClose instruction");
             if (!rec) return false;
-            llvm::Function* closeFn = inst.op == il::Op::AsyncIterClose
-                                          ? abi.bronze_async_iter_close
-                                          : abi.bronze_iter_close;
-            builder_.CreateCall(closeFn, {rec, builder_.getInt1(inst.immI32 != 0)});
+            if (inst.op == il::Op::AsyncIterClose) {
+                builder_.CreateCall(abi.bronze_async_iter_close,
+                                    {rec, builder_.getInt1(inst.immI32 != 0)});
+            } else {
+                emitIterClose(builder_, abi, rec, inst.immI32 != 0);
+            }
             return true;
         }
         case il::Op::PatternCheck: {
             if (!needs(1, true, "Invalid operands for PatternCheck")) return false;
             llvm::Value* src = operand(inst, 0, "Undefined source in PatternCheck instruction");
             if (!src) return false;
-            callWith(abi.bronze_pattern_check,
-                     {src, builder_.getInt32(static_cast<uint32_t>(inst.immI32))});
+            // The helper does one thing: raise for `null` or `undefined`. It
+            // answers its operand unchanged otherwise (rt_spread.cpp), so the
+            // tag test is made here and the call is the raising path alone.
+            // The result is the source in both arms — on the raising one the
+            // pending-cell test that follows is what leaves the function.
+            llvm::LLVMContext& ctx = builder_.getContext();
+            llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+            llvm::BasicBlock* raiseBb = llvm::BasicBlock::Create(ctx, "pc.raise", fn);
+            llvm::BasicBlock* okBb = llvm::BasicBlock::Create(ctx, "pc.ok", fn);
+            llvm::Value* tag = builder_.CreateLShr(src, BRONZE_ABI_VALUE_TAG_SHIFT, "pc.tag");
+            llvm::Value* isUndef =
+                builder_.CreateICmpEQ(tag, builder_.getInt64(BRONZE_ABI_TAG_UNDEFINED));
+            llvm::Value* isNull =
+                builder_.CreateICmpEQ(tag, builder_.getInt64(BRONZE_ABI_TAG_NULL));
+            builder_.CreateCondBr(builder_.CreateOr(isUndef, isNull, "pc.nullish"), raiseBb,
+                                  okBb);
+            builder_.SetInsertPoint(raiseBb);
+            builder_.CreateCall(abi.bronze_pattern_check,
+                                {src, builder_.getInt32(static_cast<uint32_t>(inst.immI32))});
+            builder_.CreateBr(okBb);
+            builder_.SetInsertPoint(okBb);
+            values_[inst.result] = src;
             return true;
         }
         case il::Op::ArrayAppend:

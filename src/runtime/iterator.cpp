@@ -52,6 +52,14 @@ static_assert(offsetof(IterRecordHeader, kind) == BRONZE_ABI_ITER_KIND_OFFSET);
 static_assert(offsetof(IterRecordHeader, done) == BRONZE_ABI_ITER_DONE_OFFSET);
 static_assert(sizeof(IterRecordHeader) == BRONZE_ABI_ITER_RECORD_BYTES);
 static_assert(IterRecordHeader::kFlags == BRONZE_ABI_OBJ_FLAGS_ITERATOR);
+// The inline `iter.close` skips every kind below Protocol as a double
+// compare, so the kinds that own their cursor must all sit below it and the
+// kinds holding an iterator object all at or above it.
+static_assert(IterRecordHeader::SetValues < IterRecordHeader::Protocol);
+static_assert(IterRecordHeader::MapIterator > IterRecordHeader::Protocol);
+static_assert(IterRecordHeader::ArrayIterator > IterRecordHeader::Protocol);
+static_assert(IterRecordHeader::Protocol == 5);
+static_assert(BRONZE_ABI_ITER_KIND_OWNED_LIMIT_BITS == 0x4014000000000000ull);  // 5.0
 
 IterRecordHeader* IterRecordHeader::create(Heap& heap, uint32_t kind) {
     HeapObjectHeader* raw =
@@ -136,6 +144,37 @@ Value iteratorMethodOf(Value v) {
     Rooted<Value> objRoot{v};
     Rooted<Value> keyRoot{rtIteratorKey()};
     return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
+}
+
+// Is `v` a built-in iterator object of `kind` whose protocol is still the
+// intrinsic one — its own `next` the native `nextCode` was installed as, and
+// its `[Symbol.iterator]` resolving to %IteratorPrototype%'s self-hook? Then
+// 7.4.2 on it would call the hook (which answers `v`), read `next` (which is
+// `nextCode`), and every step would be `nextCode` on `v`: exactly what the
+// MapIterator / ArrayIterator record kinds do without the call and the result
+// object. Both halves are asked, because either is a program's to replace.
+//
+// `v` is rooted by the caller: `iteratorMethodOf` walks a prototype chain and
+// nothing in that walk allocates for a plain object, but the rule is the
+// caller's root and not this function's luck.
+uint64_t iteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*);
+
+bool pristineBuiltinIterator(Value v, IteratorProto kind, bronze_fn_code nextCode) {
+    if (!rtIsIteratorObject(v, kind)) return false;
+    auto* obj = v.asObject<ObjectHeader>();
+    PropertyInfo info;
+    if (!obj->shape || !obj->shape->lookupProperty(PropertyKey::forString(keyNext()), info)) {
+        return false;
+    }
+    if (info.accessor) return false;
+    const Value next = obj->getSlot(info.slot);
+    if (!next.isObject() || next.asObject<HeapObjectHeader>()->flags != HeapKind::Function ||
+        next.asObject<FunctionHeader>()->code != nextCode) {
+        return false;
+    }
+    const Value hook = iteratorMethodOf(v);
+    return hook.isObject() && hook.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+           hook.asObject<FunctionHeader>()->code == iteratorProtoSelf;
 }
 
 // Everything 7.4.2 GetIterator does, into an already-created record.
@@ -377,6 +416,30 @@ Shape* iteratorObjectShape(IteratorProto kind) {
 
 }  // namespace
 
+Value rtCreateIterResult(Rooted<Value>& value, bool done) {
+    // The one shape: the plain root, then `value`, then `done` — the same two
+    // edges a `{ value, done }` literal takes, so a program comparing the two
+    // sees one layout. Boxed slots deliberately: a result's `value` is anything.
+    static thread_local Shape* shape = nullptr;
+    if (shape == nullptr) {
+        uint32_t slot = 0;
+        Shape* s = rtPlainObjectShape()->addPropertyKey(
+            rtArena(), PropertyKey::forString(keyValue()), slot, /*is_enumerable=*/true,
+            /*is_accessor=*/false, /*is_writable=*/true, /*is_configurable=*/true,
+            SlotRepr::Boxed);
+        s = s->addPropertyKey(rtArena(), PropertyKey::forString(keyDone()), slot,
+                              /*is_enumerable=*/true, /*is_accessor=*/false,
+                              /*is_writable=*/true, /*is_configurable=*/true, SlotRepr::Boxed);
+        shape = s;
+    }
+    ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), shape);
+    obj->header.flags = HeapKind::Plain;
+    static_assert(ObjectHeader::kInlineSlots >= 2, "a result's two slots are inline");
+    obj->setSlot(0, value.get());
+    obj->setSlot(1, Value::fromBool(done));
+    return Value::fromObject(obj);
+}
+
 Value rtNewIteratorObject(IteratorProto kind) {
     const uint32_t slots = kInternalSlots[static_cast<uint32_t>(kind)];
     ObjectHeader* obj = ObjectHeader::createWithInternalSlots(rtHeap(), rtArena(),
@@ -437,6 +500,22 @@ Value rtOpenIterator(Value source) {
             case TypedArrayHeader::kFlags: kind = IterRecordHeader::TypedArray; break;
             case MapHeader::kMapFlags: kind = IterRecordHeader::MapEntries; break;
             case MapHeader::kSetFlags: kind = IterRecordHeader::SetValues; break;
+            case BRONZE_ABI_OBJ_FLAGS_PLAIN:
+                // `for (const u of map.values())`, `Array.from(set.keys())`,
+                // `[...arr.entries()]`: the value is already an iterator, and
+                // when it is one of the runtime's own with its protocol
+                // intact, the record steps its slots directly (iterator.h,
+                // MapIterator). Not gated on the iter-fast seam, which is the
+                // CODEGEN seam: with it off the helper still takes this walk,
+                // and BRONZE_NO_ITER_FAST measures the inline arms alone.
+                if (pristineBuiltinIterator(source, IteratorProto::Map, rtMapIteratorNextCode()) ||
+                    pristineBuiltinIterator(source, IteratorProto::Set, rtMapIteratorNextCode())) {
+                    kind = IterRecordHeader::MapIterator;
+                } else if (pristineBuiltinIterator(source, IteratorProto::Array,
+                                                   rtArrayIteratorNextCode())) {
+                    kind = IterRecordHeader::ArrayIterator;
+                }
+                break;
             default: break;
         }
     }
@@ -546,6 +625,26 @@ bool bronze_iter_step(uint64_t recBits) {
         return true;
     }
 
+    if (kind == IterRecordHeader::MapIterator || kind == IterRecordHeader::ArrayIterator) {
+        // The object's own `next`, inlined: the slots move exactly as it would
+        // move them, and only the `{value, done}` is not built. The step can
+        // allocate (an entries pair), so the record is re-derived after it and
+        // the produced value is stored before anything else can.
+        Rooted<Value> it{rec->target};
+        Value produced = Value::fromUndefined();
+        const bool stepped = kind == IterRecordHeader::MapIterator
+                                 ? rtMapIteratorStep(it, produced)
+                                 : rtArrayIteratorStep(it, produced);
+        rec = recRoot.get().asObject<IterRecordHeader>();
+        if (!stepped) {
+            rec->done = Value::fromBool(true);
+            rec->current = Value::fromUndefined();
+            return false;
+        }
+        rec->current = produced;
+        return true;
+    }
+
     if (kind != IterRecordHeader::Protocol) {
         const bool stepped = stepFast(rec);
         rec = recRoot.get().asObject<IterRecordHeader>();
@@ -609,7 +708,11 @@ void bronze_iter_close(uint64_t recBits, bool suppress) {
     }
     Rooted<Value> recRoot{recVal};
     auto* rec = recRoot.get().asObject<IterRecordHeader>();
-    if (rec->kindOf() != IterRecordHeader::Protocol || rec->done.asBool()) return;
+    // Below Protocol the record owns the cursor and there is no object a
+    // `return` could be found on; at and above it `target` IS an iterator
+    // object, and 7.4.9 asks it — a built-in one included, since a program may
+    // have given it a `return` after the open read its `next`.
+    if (rec->kindOf() < IterRecordHeader::Protocol || rec->done.asBool()) return;
     rec->done = Value::fromBool(true);
 
     Rooted<Value> iterObj{rec->target};

@@ -68,6 +68,44 @@ void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
 // Loads, compares and stores only — no allocation, like the caller. Answers
 // whether it installed, so a Function receiver it declines can be offered to
 // the statics latch below.
+// The PRIMITIVE-receiver latch (bronze_abi.h's method-site contract, the
+// primitive form): a STRING `this` whose method was read off
+// `String.prototype`'s own slots. The probe is the scratch site the read
+// filled, and it is what proves where the answer came from — its shape is
+// the intrinsic's, at depth 0, a data slot, and that slot holds the callee.
+// The entry is the SLOT form against the INTRINSIC: the env word names the
+// holder (it is a collector-forwarded cell, and a slot hit never reads it as
+// an env), the aux word pins the holder's shape, and the hit reads the
+// slot's live value — so `String.prototype.charCodeAt = f`, which overwrites
+// a slot without moving the shape, is seen on the next call. Loads, compares
+// and stores only: the probe being real means the intrinsic was built by the
+// walk that filled it, so `rtStringPrototype` here is a fetch and not a build.
+bool latchPrimitiveMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal,
+                            const InlineCache& probe) {
+    if (!rtExoticMethodIcEnabled()) return false;
+    if (!thisVal.isString()) return false;
+    if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent() || probe.realDepth() != 0) {
+        return false;
+    }
+    if (fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return false;
+    const Value proto = rtStringPrototype();
+    if (!proto.isObject()) return false;
+    const auto* holder = proto.asObject<ObjectHeader>();
+    if (probe.cached_shape != holder->shape) return false;
+    if (holder->getSlot(probe.cached_slot).rawBits() != fnVal.rawBits()) return false;
+    const uint64_t newWord0 =
+        (static_cast<uint64_t>(BRONZE_ABI_TAG_STRING) << BRONZE_ABI_METHOD_IC_KIND_SHIFT) |
+        BRONZE_ABI_METHOD_IC_EXOTIC_BIT;
+    displaceMethodWay0(icEntry, newWord0);
+    icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(holder->shape);
+    icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
+    icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] =
+        (static_cast<uint64_t>(probe.cached_slot) + 1) << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
+    icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = proto.rawBits();
+    icEntry[0] = newWord0;
+    return true;
+}
+
 bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Value fnVal,
                          const FunctionHeader* fn, const InlineCache& probe, uint32_t keyIndex) {
     if (!rtExoticMethodIcEnabled()) return false;
@@ -241,7 +279,11 @@ bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value call
 void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCache& probe,
                    uint32_t keyIndex) {
     if (!icEntry || rtTls()->method_call_ic_enabled == 0) return;
-    if (!thisVal.isObject() || !fnVal.isObject()) return;
+    if (!fnVal.isObject()) return;
+    if (!thisVal.isObject()) {
+        latchPrimitiveMethodIc(icEntry, thisVal, fnVal, probe);
+        return;
+    }
     auto* objHdr = thisVal.asObject<HeapObjectHeader>();
     auto* fnHdr = fnVal.asObject<HeapObjectHeader>();
     if (fnHdr->flags != HeapKind::Function) return;

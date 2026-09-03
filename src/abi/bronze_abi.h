@@ -878,7 +878,38 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * documents above). Word 9 is an env argument exactly as word 3 is, and
  * bronze_register_method_ic_cells registers BOTH as value cells — which is
  * why this contract change moves the fingerprint: an old runtime would leave
- * way 1's env word dangling at the first flip. */
+ * way 1's env word dangling at the first flip.
+ *
+ * ---- the PRIMITIVE form: a STRING receiver ---------------------------------
+ *
+ * `s.charCodeAt(i)` in a string-walking loop has no shape word to guard on
+ * at all — the receiver is a NaN-boxed string, not an object — so the site
+ * missed to the helper on every call, and the helper walked `String.prototype`
+ * by name each time. The form is the EXOTIC encoding with the receiver's
+ * VALUE TAG in the kind field:
+ *
+ *      (tag << BRONZE_ABI_METHOD_IC_KIND_SHIFT) | BRONZE_ABI_METHOD_IC_EXOTIC_BIT
+ *
+ * A tag is 0xFFF0 or above and a HeapObjectHeader kind is a small integer,
+ * so the two can never be confused in the same field: the object arm
+ * compares against the live receiver's flags and the primitive arm against
+ * the live receiver's tag, and neither can match the other's word.
+ *
+ * It is a SLOT-form entry whose slot lives in `String.prototype` rather than
+ * in the receiver — the intrinsic is an ordinary object a program may
+ * decorate, and `String.prototype.charCodeAt = f` overwrites a slot in
+ * place without moving its shape, which is exactly the write a cached code
+ * pointer cannot see. So word BRONZE_ABI_METHOD_IC_ENV_WORD holds the
+ * intrinsic itself (a heap Value, in the one word of the entry the collector
+ * forwards), word BRONZE_ABI_METHOD_IC_AUX_WORD holds the intrinsic's Shape*
+ * at latch time, and word 2 carries the slot index plus one in its high half
+ * as every SLOT entry does. The hit re-reads the intrinsic's shape against
+ * the aux word — a delete, an accessor install or a dictionary flip changes
+ * it — and then reads the slot's CURRENT value and dispatches on that
+ * function, Function test included, through the same path the receiver's own
+ * slot takes. `this` is the string itself, exactly as the helper passes it.
+ * The env word is never an env here: a SLOT hit derives the callee's env
+ * from the function it finds, so the word is free to name the holder. */
 #define BRONZE_ABI_METHOD_IC_CODE_WORD   1
 #define BRONZE_ABI_METHOD_IC_ARITY_WORD  2
 #define BRONZE_ABI_METHOD_IC_ENV_WORD    3
@@ -956,6 +987,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * `h & ~3u`, so masking the flags word with the same mask recovers exactly
  * what witnessFor stored). runtime/elem_ic.cpp static_asserts all four
  * against the real struct. */
+#define BRONZE_ABI_STRING_LENGTH_OFFSET  8 /* StringHeader::length (uint32, code units) */
 #define BRONZE_ABI_STRING_FLAGS_OFFSET  12 /* StringHeader::flags (uint32) */
 #define BRONZE_ABI_STRING_HASHED_BIT     2 /* StringHeader::kHasHashFlag */
 #define BRONZE_ABI_STRING_HASH_MASK     0xFFFFFFFCu
@@ -1019,6 +1051,15 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_ARRAY_HEAD_OFFSET     16
 #define BRONZE_ABI_ARRAY_ELEMS_OFFSET    24
 #define BRONZE_ABI_ARRAY_PROPS_OFFSET    32
+/* The whole ArrayHeader, header word included, and the elements block it
+ * points at: a heap object of BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK kind whose
+ * payload is `capacity` Values, HOLE-filled past `length`. An array literal of
+ * a few elements is both objects bump-allocated from the inline window by
+ * generated code (llvm_construct.cpp), laid out exactly as bronze_create_array
+ * lays them out — including its capacity floor. */
+#define BRONZE_ABI_ARRAY_HEADER_BYTES    40
+#define BRONZE_ABI_ARRAY_MIN_CAPACITY    4
+#define BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK 19
 
 /* Environment records (runtime/env.h EnvHeader): the parent link, then the
  * slot array. Generated code inlines captured-variable reads and writes —

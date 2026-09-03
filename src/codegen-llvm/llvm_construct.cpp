@@ -293,4 +293,93 @@ llvm::Value* emitCreateObjectInline(llvm::IRBuilder<>& builder, const AbiFns& ab
     return result;
 }
 
+llvm::Value* emitCreateArrayInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                   const AbiGlobals& globals, uint32_t length) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    const uint32_t cap =
+        length < BRONZE_ABI_ARRAY_MIN_CAPACITY ? BRONZE_ABI_ARRAY_MIN_CAPACITY : length;
+    const uint64_t blockBytes = BRONZE_ABI_HDR_BYTES + static_cast<uint64_t>(cap) * 8;
+    const uint64_t totalBytes = BRONZE_ABI_ARRAY_HEADER_BYTES + blockBytes;
+
+    llvm::BasicBlock* buildBb = llvm::BasicBlock::Create(ctx, "arr.build", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "arr.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "arr.done", fn);
+
+    llvm::Value* cursor = builder.CreateAlignedLoad(i64Ty, globals.bronze_alloc_cursor,
+                                                    llvm::Align(8), "arr.cursor");
+    llvm::Value* limit = builder.CreateAlignedLoad(i64Ty, globals.bronze_alloc_limit,
+                                                   llvm::Align(8), "arr.limit");
+    llvm::Value* headroom = builder.CreateSub(limit, cursor, "arr.headroom");
+    llvm::Value* fits =
+        builder.CreateICmpUGE(headroom, builder.getInt64(totalBytes), "arr.fits");
+    auto* brFits = builder.CreateCondBr(fits, buildBb, slowBb);
+    brFits->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(buildBb);
+    builder.CreateAlignedStore(builder.CreateAdd(cursor, builder.getInt64(totalBytes)),
+                               globals.bronze_alloc_cursor, llvm::Align(8));
+    llvm::Value* arrPtr = builder.CreateIntToPtr(cursor, ptrTy, "arr.ptr");
+    llvm::Value* blockAddr =
+        builder.CreateAdd(cursor, builder.getInt64(BRONZE_ABI_ARRAY_HEADER_BYTES), "arr.blockaddr");
+    llvm::Value* blockPtr = builder.CreateIntToPtr(blockAddr, ptrTy, "arr.block");
+    const uint64_t objTag = static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT);
+
+    // The ArrayHeader: {tag, flags=Array, size} then length, capacity,
+    // head_offset, reserved, elements, properties.
+    constexpr uint64_t kArrayHeaderWord =
+        static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT) |
+        (static_cast<uint64_t>(BRONZE_ABI_OBJ_FLAGS_ARRAY) << 16) |
+        (static_cast<uint64_t>(BRONZE_ABI_ARRAY_HEADER_BYTES) << 32);
+    builder.CreateAlignedStore(builder.getInt64(kArrayHeaderWord), arrPtr, llvm::Align(8));
+    auto storeAt = [&](llvm::Value* base, unsigned byteOffset, llvm::Value* word) {
+        builder.CreateAlignedStore(
+            word, builder.CreateConstInBoundsGEP1_32(i8Ty, base, byteOffset), llvm::Align(8));
+    };
+    builder.CreateAlignedStore(
+        llvm::ConstantInt::get(i32Ty, length),
+        builder.CreateConstInBoundsGEP1_32(i8Ty, arrPtr, BRONZE_ABI_ARRAY_LENGTH_OFFSET),
+        llvm::Align(4));
+    builder.CreateAlignedStore(
+        llvm::ConstantInt::get(i32Ty, cap),
+        builder.CreateConstInBoundsGEP1_32(i8Ty, arrPtr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET),
+        llvm::Align(4));
+    storeAt(arrPtr, BRONZE_ABI_ARRAY_HEAD_OFFSET, builder.getInt64(0));
+    storeAt(arrPtr, BRONZE_ABI_ARRAY_ELEMS_OFFSET,
+            builder.CreateOr(blockAddr, builder.getInt64(objTag << BRONZE_ABI_VALUE_TAG_SHIFT),
+                             "arr.elemsval"));
+    storeAt(arrPtr, BRONZE_ABI_ARRAY_PROPS_OFFSET, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS));
+
+    // The elements block: {tag, flags=ValueBlock, size} then `cap` HOLEs.
+    // Every slot is a HOLE and not left to whatever the window held, because
+    // the collector parses the block as Values the moment it exists.
+    const uint64_t blockHeaderWord =
+        objTag | (static_cast<uint64_t>(BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK) << 16) |
+        (blockBytes << 32);
+    builder.CreateAlignedStore(builder.getInt64(blockHeaderWord), blockPtr, llvm::Align(8));
+    for (uint32_t i = 0; i < cap; ++i) {
+        storeAt(blockPtr, BRONZE_ABI_HDR_BYTES + i * 8, builder.getInt64(BRONZE_ABI_HOLE_BITS));
+    }
+    llvm::Value* fastVal = builder.CreateOr(
+        cursor, builder.getInt64(objTag << BRONZE_ABI_VALUE_TAG_SHIFT), "arr.fastval");
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowVal =
+        builder.CreateCall(abi.bronze_create_array, {builder.getInt32(length)}, "arr.slowval");
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "arr.result");
+    result->addIncoming(fastVal, buildBb);
+    result->addIncoming(slowVal, slowBb);
+    return result;
+}
+
 }  // namespace bronze::codegen_llvm

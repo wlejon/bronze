@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/string.h"
@@ -50,6 +51,17 @@ struct IterRecordHeader {
         MapEntries = 3,
         SetValues = 4,
         Protocol = 5,
+        // A built-in iterator OBJECT — what `map.values()`, `set.keys()`,
+        // `arr.entries()` return — whose `next` and whose `[Symbol.iterator]`
+        // are still the intrinsics. `target` is the object itself, and a step
+        // reads and writes its internal slots exactly as its `next` would,
+        // minus the `{value, done}` object and the call: the object is left as
+        // far along as the protocol would have left it, so `it.next()` after a
+        // `break` continues where the loop stopped. Closing one still asks the
+        // object for a `return` method, because a program may have given it
+        // one after the open.
+        MapIterator = 6,
+        ArrayIterator = 7,
     };
 
     static IterRecordHeader* create(Heap& heap, uint32_t kind);
@@ -66,6 +78,24 @@ namespace bronze::runtime {
 // 4 defines for a value with no @@iterator method, so the caller must test
 // the pending cell.
 Value rtOpenIterator(Value source);
+
+// 7.4.1 CreateIterResultObject: `{ value, done }`, in that order, as one
+// object of ONE shape for every built-in iterator in the runtime. The shape is
+// minted once per thread; a result is then an allocation and two slot stores,
+// where building it by name paid a transition scan and an arena copy of both
+// keys per object — per element of every `for-of` over a Map.
+Value rtCreateIterResult(Rooted<Value>& value, bool done);
+
+// The step of a built-in iterator object, minus the result object: what its
+// `next` does to its internal slots, with the produced value handed back raw.
+// False is exhaustion, with the iterator latched exactly as `next` latches it.
+// Implemented beside each `next` (builtin_map.cpp, builtin_array_iterator.cpp)
+// so the two cannot drift; the code pointer is what `rtOpenIterator` compares
+// an object's own `next` against before it trusts the step.
+bool rtMapIteratorStep(Rooted<Value>& it, Value& produced);
+bool rtArrayIteratorStep(Rooted<Value>& it, Value& produced);
+bronze_fn_code rtMapIteratorNextCode();
+bronze_fn_code rtArrayIteratorNextCode();
 Value rtOpenAsyncIterator(Value source);
 
 // The kind of a value, for that TypeError. `rt_object.cpp` answers the same

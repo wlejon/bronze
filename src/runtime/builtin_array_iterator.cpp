@@ -53,17 +53,7 @@ void writeSlot(Rooted<Value>& obj, uint32_t slot, Value val) {
     obj.get().asObject<ObjectHeader>()->setInternalSlot(slot, val);
 }
 
-// 7.4.1 CreateIterResultObject, in the field order the spec writes it.
-Value iterResult(Rooted<Value>& value, bool done) {
-    Rooted<Value> out{Value(bronze_create_object())};
-    Rooted<Value> vk{rtMakeString("value")};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), vk, value);
-    Rooted<Value> dk{rtMakeString("done")};
-    Rooted<Value> dv{Value::fromBool(done)};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), dk, dv);
-    return out.get();
-}
-
+// 23.1.5.2.1 step 15's `[index, element]` pair.
 Value makePair(Rooted<Value>& a, Rooted<Value>& b) {
     Rooted<Value> pair{Value(bronze_create_array(2))};
     pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 0, a);
@@ -78,33 +68,10 @@ uint64_t arrayIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     if (!rtIsIteratorObject(self.get(), IteratorProto::Array)) {
         return rtThrowTypeError("next called on an incompatible receiver").rawBits();
     }
-    Rooted<Value> target{readSlot(self, ArrayIteratorSlot::IteratedArrayLike)};
-    Rooted<Value> none;
-    // The prototype is shared with a typed array's iterator (23.2.5.2), so a
-    // detached `next` moved between the two kinds lands here with the other
-    // kind's target — exhausted, not crashed, exactly as taIterNext answers
-    // an array-backed receiver.
-    if (!isArray(target.get())) return iterResult(none, true).rawBits();
-    const auto at = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::NextIndex).asNumber());
-    if (at >= target.get().asObject<ArrayHeader>()->length) return iterResult(none, true).rawBits();
-    const auto kind = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::Kind).asNumber());
-
-    writeSlot(self, ArrayIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
-    Rooted<Value> produced;
-    if (kind == Keys) {
-        produced.set(Value::fromDouble(static_cast<double>(at)));
-    } else {
-        // 23.1.5.2.1 reads with Get, so a HOLE iterates as `undefined` rather
-        // than being skipped — the same rule the for-of cursor follows.
-        Rooted<Value> elem{target.get().asObject<ArrayHeader>()->getElem(at)};
-        if (kind == Values) {
-            produced.set(elem.get());
-        } else {
-            Rooted<Value> index{Value::fromDouble(static_cast<double>(at))};
-            produced.set(makePair(index, elem));
-        }
-    }
-    return iterResult(produced, false).rawBits();
+    Value out = Value::fromUndefined();
+    const bool more = rtArrayIteratorStep(self, out);
+    Rooted<Value> produced{out};
+    return rtCreateIterResult(produced, !more).rawBits();
 }
 
 // 23.1.5.1 CreateArrayIterator. The `next` is an own property of the iterator
@@ -130,6 +97,40 @@ uint64_t makeArrayIterator(uint64_t thisBits, uint32_t kind, const char* method)
 }
 
 }  // namespace
+
+// 23.1.5.2.1 %ArrayIteratorPrototype%.next steps 4-15, without the result
+// object: what `for (const [i, v] of a.entries())` steps through once
+// `rtOpenIterator` has seen the object's own `next` is still `arrayIterNext`.
+// The brand check is the caller's.
+bool rtArrayIteratorStep(Rooted<Value>& self, Value& produced) {
+    Rooted<Value> target{readSlot(self, ArrayIteratorSlot::IteratedArrayLike)};
+    // The prototype is shared with a typed array's iterator (23.2.5.2), so a
+    // detached `next` moved between the two kinds lands here with the other
+    // kind's target — exhausted, not crashed, exactly as taIterNext answers
+    // an array-backed receiver.
+    if (!isArray(target.get())) return false;
+    const auto at = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::NextIndex).asNumber());
+    if (at >= target.get().asObject<ArrayHeader>()->length) return false;
+    const auto kind = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::Kind).asNumber());
+
+    writeSlot(self, ArrayIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
+    if (kind == Keys) {
+        produced = Value::fromDouble(static_cast<double>(at));
+        return true;
+    }
+    // 23.1.5.2.1 reads with Get, so a HOLE iterates as `undefined` rather
+    // than being skipped — the same rule the for-of cursor follows.
+    Rooted<Value> elem{target.get().asObject<ArrayHeader>()->getElem(at)};
+    if (kind == Values) {
+        produced = elem.get();
+    } else {
+        Rooted<Value> index{Value::fromDouble(static_cast<double>(at))};
+        produced = makePair(index, elem);
+    }
+    return true;
+}
+
+bronze_fn_code rtArrayIteratorNextCode() { return arrayIterNext; }
 
 uint64_t rtArrayValuesBuiltin(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return makeArrayIterator(thisBits, Values, "values");

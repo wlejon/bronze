@@ -60,4 +60,13 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
 // falls back to it rather than restating it.
 llvm::Value* emitIterValue(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* recBits);
 
+// Emits `iter.close`. A record whose kind is below `Protocol` — an array, a
+// string, a typed array, a Map or Set walked by cursor — has nothing to close
+// (runtime/iterator.cpp's `bronze_iter_close` returns on that test before it
+// touches anything), and every array destructuring pays one of these, so the
+// test is made inline and the helper is called only for a record that holds an
+// iterator object. Same seam as the step.
+void emitIterClose(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* recBits,
+                   bool suppress);
+
 }  // namespace bronze::codegen_llvm

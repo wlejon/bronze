@@ -77,17 +77,6 @@ Value makePair(Rooted<Value>& a, Rooted<Value>& b) {
     return pair.get();
 }
 
-// 7.4.1 CreateIterResultObject, in the field order the spec writes it.
-Value iterResult(Rooted<Value>& value, bool done) {
-    Rooted<Value> out{Value(bronze_create_object())};
-    Rooted<Value> vk{rtMakeString("value")};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), vk, value);
-    Rooted<Value> dk{rtMakeString("done")};
-    Rooted<Value> dv{Value::fromBool(done)};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), dk, dv);
-    return out.get();
-}
-
 uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};
     // 24.1.5.1 step 3: a receiver without the internal slots is a TypeError,
@@ -99,38 +88,10 @@ uint64_t mapIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         !rtIsIteratorObject(self.get(), IteratorProto::Set)) {
         return rtThrowTypeError("next called on an incompatible receiver").rawBits();
     }
-    Rooted<Value> target{readSlot(self, MapIteratorSlot::IteratedMap)};
-    if (!isMapLike(target.get())) {
-        Rooted<Value> none;
-        return iterResult(none, true).rawBits();
-    }
-    const auto kind = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::Kind).asNumber());
-    uint32_t at = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::NextIndex).asNumber());
-
-    auto* map = target.get().asObject<MapHeader>();
-    while (at < map->used() && !map->liveAt(at)) ++at;
-    if (at >= map->used()) {
-        Rooted<Value> none;
-        // The cursor is left past the end, so a live iterator over a map that
-        // grows after it finished does NOT resume — 24.1.5.1 step 4.c sets
-        // [[Map]] to undefined once, and this is that latch.
-        writeSlot(self, MapIteratorSlot::IteratedMap, Value::fromUndefined());
-        return iterResult(none, true).rawBits();
-    }
-    Rooted<Value> k{map->keyAt(at)};
-    Rooted<Value> v{map->valueAt(at)};
-    writeSlot(self, MapIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
-
-    Rooted<Value> produced;
-    if (kind == Keys) {
-        produced.set(k.get());
-    } else if (kind == Values) {
-        produced.set(isSet(target.get()) ? k.get() : v.get());
-    } else {
-        Rooted<Value> second{isSet(target.get()) ? k.get() : v.get()};
-        produced.set(makePair(k, second));
-    }
-    return iterResult(produced, false).rawBits();
+    Value out = Value::fromUndefined();
+    const bool more = rtMapIteratorStep(self, out);
+    Rooted<Value> produced{out};
+    return rtCreateIterResult(produced, !more).rawBits();
 }
 
 Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
@@ -376,6 +337,43 @@ const char* const kSetUnimplemented[] = {
 };
 
 }  // namespace
+
+// 24.1.5.1 %MapIteratorPrototype%.next steps 4-12, without the result object.
+// `for-of` over `map.values()` steps through here (iterator.cpp's MapIterator
+// kind) after `rtOpenIterator` has checked the object's own `next` is still
+// `mapIterNext`, so the brand check is the caller's; a foreign receiver never
+// arrives.
+bool rtMapIteratorStep(Rooted<Value>& self, Value& produced) {
+    Rooted<Value> target{readSlot(self, MapIteratorSlot::IteratedMap)};
+    if (!isMapLike(target.get())) return false;
+    const auto kind = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::Kind).asNumber());
+    uint32_t at = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::NextIndex).asNumber());
+
+    auto* map = target.get().asObject<MapHeader>();
+    while (at < map->used() && !map->liveAt(at)) ++at;
+    if (at >= map->used()) {
+        // The cursor is left past the end, so a live iterator over a map that
+        // grows after it finished does NOT resume — 24.1.5.1 step 4.c sets
+        // [[Map]] to undefined once, and this is that latch.
+        writeSlot(self, MapIteratorSlot::IteratedMap, Value::fromUndefined());
+        return false;
+    }
+    Rooted<Value> k{map->keyAt(at)};
+    Rooted<Value> v{map->valueAt(at)};
+    writeSlot(self, MapIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
+
+    if (kind == Keys) {
+        produced = k.get();
+    } else if (kind == Values) {
+        produced = isSet(target.get()) ? k.get() : v.get();
+    } else {
+        Rooted<Value> second{isSet(target.get()) ? k.get() : v.get()};
+        produced = makePair(k, second);
+    }
+    return true;
+}
+
+bronze_fn_code rtMapIteratorNextCode() { return mapIterNext; }
 
 Value rtMapConstructor(const std::string& name) {
     if (name == "Map") return rtNativeFunction(mapConstructor, 0);

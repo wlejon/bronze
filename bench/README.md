@@ -83,6 +83,11 @@ millisecond total, because a total says nothing without the count beside it.
 | `env_slot_kernel_registers.js` | The same arithmetic and the same checksum with nothing captured, so the state lands in SSA registers. The control that separates "a slot access costs something" from "the state being in memory costs something" |
 | `nullish_pin_kernel.js` | `number-or-nullish` fields through a hot `step`, including an alternating-instance loop so neither arm is the only one the predictor learns. Needs `--pins bench/pins/nullish-kernel.pins` |
 | `call_chain_kernel.js` | A chained typed call edge against the same arithmetic inlined, timed as two regions, because the RATIO between them is the measurement. Needs `--pins bench/pins/call-chain-kernel.pins` |
+| `map_iter_forof.js` | `for-of` over `map.values()` / `keys()` / `entries()` and `Array.from(map.values()).filter(...)` — the iterator OBJECT walks a game sim's unit table takes every tick — against the `for (const [k, v] of map)` cursor walk as the control |
+| `array_destructure.js` | `const [x, z] = cellCenter(...)` tuples — pattern check, open, two steps, close over a two-element literal — against reading `p[0]`/`p[1]` off the same tuple |
+| `dynamic_bitwise.js` | `^ << >>> &` over DYNAMIC operands: a seeded string hash (`charCodeAt` + `Math.imul`) and an xorshift PRNG whose state is a captured `let`, against the same generator on a local the inferencer pins |
+| `string_strict_eq.js` | `===` with an un-interned string on the left (`u.order === 'move'` dispatch, a non-string on the right), against the same dispatch over small integers |
+| `string_key_build.js` | Keys built by concatenation and used at once — `cells.get(x + ',' + y)`, `seen[id + ':' + cell]` — against the same grid addressed by `x * 4096 + y` |
 
 ### 2. Render Scene Benchmarks (Bro Host Execution)
 

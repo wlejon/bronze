@@ -91,6 +91,13 @@ typedef struct bronze_tls_block {
 
 #define BRONZE_ABI_ITER_KIND_ARRAY_BITS       0x0000000000000000ull
 #define BRONZE_ABI_ITER_KIND_TYPED_ARRAY_BITS 0x4000000000000000ull
+/* The kinds BELOW this double (5.0: Kind::Protocol) walk a value the runtime
+ * owns a cursor into — an array, a string, a typed array, a Map, a Set — and
+ * have no iterator object a `return` method could hang off, so closing one is
+ * a no-op the inline `iter.close` skips without a call. Every kind at or above
+ * it holds an ITERATOR OBJECT in `target` and closes through the helper.
+ * Pinned against IterRecordHeader::Kind in runtime/iterator.cpp. */
+#define BRONZE_ABI_ITER_KIND_OWNED_LIMIT_BITS 0x4014000000000000ull
 
 /* Total bytes of one iteration record — header plus its six Value fields —
  * which is what the inline `iter.open` fast path bump-allocates from the

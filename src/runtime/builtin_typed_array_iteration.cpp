@@ -2,6 +2,7 @@
 
 #include "runtime/bigint.h"
 #include "runtime/builtin_typed_array_internal.h"
+#include "runtime/iterator.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_receivers.h"
@@ -22,15 +23,7 @@ void writeSlot(Rooted<Value>& obj, uint32_t slot, Value val) {
     obj.get().asObject<ObjectHeader>()->setInternalSlot(slot, val);
 }
 
-Value iterResult(Rooted<Value>& value, bool done) {
-    Rooted<Value> out{Value(bronze_create_object())};
-    Rooted<Value> vk{rtMakeString("value")};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), vk, value);
-    Rooted<Value> dk{rtMakeString("done")};
-    Rooted<Value> dv{Value::fromBool(done)};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), dk, dv);
-    return out.get();
-}
+Value iterResult(Rooted<Value>& value, bool done) { return rtCreateIterResult(value, done); }
 
 Value makePair(Rooted<Value>& a, Rooted<Value>& b) {
     Rooted<Value> pair{Value(bronze_create_array(2))};

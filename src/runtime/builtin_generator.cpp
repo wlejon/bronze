@@ -60,15 +60,7 @@ void setState(Rooted<Value>& gen, uint32_t state) {
 
 // 7.4.1 CreateIterResultObject, in the field order the spec writes it —
 // `value` then `done`, which is the order `Object.keys` of one reports.
-Value iterResult(Rooted<Value>& value, bool done) {
-    Rooted<Value> out{Value(bronze_create_object())};
-    Rooted<Value> vk{rtMakeString("value")};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), vk, value);
-    Rooted<Value> dk{rtMakeString("done")};
-    Rooted<Value> dv{Value::fromBool(done)};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), dk, dv);
-    return out.get();
-}
+Value iterResult(Rooted<Value>& value, bool done) { return rtCreateIterResult(value, done); }
 
 // The `done` of the result the resume function built. It is an ordinary object
 // this compilation's own code created two lines ago, so the read is a plain

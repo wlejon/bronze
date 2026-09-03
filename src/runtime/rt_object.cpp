@@ -309,7 +309,10 @@ uint64_t bronze_create_object() {
 
 uint64_t bronze_create_array(uint32_t length) {
     recordHelperCall("bronze_create_array");
-    uint32_t cap = (length < 4) ? 4 : length;
+    // The floor is ABI: generated code's inline literal (llvm_construct.cpp)
+    // allocates the same capacity, so an array is the same object whichever
+    // path made it.
+    uint32_t cap = (length < BRONZE_ABI_ARRAY_MIN_CAPACITY) ? BRONZE_ABI_ARRAY_MIN_CAPACITY : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);
     arr->length = length;
     return Value::fromObject(arr).rawBits();

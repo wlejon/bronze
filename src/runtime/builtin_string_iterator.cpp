@@ -49,15 +49,7 @@ void writeSlot(Rooted<Value>& obj, uint32_t slot, Value val) {
     obj.get().asObject<ObjectHeader>()->setInternalSlot(slot, val);
 }
 
-Value iterResult(Rooted<Value>& value, bool done) {
-    Rooted<Value> out{Value(bronze_create_object())};
-    Rooted<Value> vk{rtMakeString("value")};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), vk, value);
-    Rooted<Value> dk{rtMakeString("done")};
-    Rooted<Value> dv{Value::fromBool(done)};
-    out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), dk, dv);
-    return out.get();
-}
+Value iterResult(Rooted<Value>& value, bool done) { return rtCreateIterResult(value, done); }
 
 uint64_t stringIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};

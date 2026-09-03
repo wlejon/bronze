@@ -86,11 +86,37 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         proven = emitProvenElementRead(builder, *proof, *optIdx, doneBb, holeRawSlot);
     }
 
-    // 1. Is the receiver an object?
+    // 1. Is the receiver an object? A `length` site gives a STRING receiver
+    //    its own arm first: 10.4.3.4's own `length` is the header's code-unit
+    //    count, and `for (i < s.length)` over a string reads it per step.
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.isobj");
-    builder.CreateCondBr(isObject, checkBb, slowBb);
+    llvm::BasicBlock* strLenBb = nullptr;
+    llvm::Value* strLenVal = nullptr;
+    if (keyStr == "length") {
+        llvm::BasicBlock* strCheckBb = llvm::BasicBlock::Create(ctx, "ic.str.check", fn);
+        strLenBb = llvm::BasicBlock::Create(ctx, "ic.str.len", fn);
+        builder.CreateCondBr(isObject, checkBb, strCheckBb);
+
+        builder.SetInsertPoint(strCheckBb);
+        llvm::Value* isStr =
+            builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "ic.isstr");
+        builder.CreateCondBr(isStr, strLenBb, slowBb);
+
+        builder.SetInsertPoint(strLenBb);
+        llvm::Value* strAddr =
+            builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* strHdr = builder.CreateIntToPtr(strAddr, ptrTy, "ic.str.hdr");
+        llvm::Value* strLenPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, strHdr, BRONZE_ABI_STRING_LENGTH_OFFSET);
+        auto* strLen = builder.CreateAlignedLoad(i32Ty, strLenPtr, llvm::Align(4), "str.len");
+        llvm::Value* strLenDbl = builder.CreateUIToFP(strLen, dblTy, "str.len.dbl");
+        strLenVal = builder.CreateBitCast(strLenDbl, i64Ty, "str.len.bits");
+        builder.CreateBr(doneBb);
+    } else {
+        builder.CreateCondBr(isObject, checkBb, slowBb);
+    }
 
     // 2. Load flags from header
     builder.SetInsertPoint(checkBb);
@@ -785,6 +811,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), absentHitBb);
     if (arrLenBb) result->addIncoming(arrLenVal, arrLenBb);
     if (taLenBb) result->addIncoming(taLenVal, taLenBb);
+    if (strLenBb) result->addIncoming(strLenVal, strLenBb);
     if (arrUndefBb) result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
     if (arrPayloadBb) result->addIncoming(arrPayloadVal, arrPayloadBb);
     if (arrMethodHitBb) result->addIncoming(arrMethodVal, arrMethodHitBb);

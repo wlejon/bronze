@@ -321,6 +321,42 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     return result;
 }
 
+void emitIterClose(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* recBits,
+                   bool suppress) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done", fn);
+
+    llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "ic.seam", fn);
+    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb);
+    builder.SetInsertPoint(seamBb);
+
+    // The open's classification, once more. A kind below `Protocol` owns its
+    // cursor and has no iterator object to hand a `return` — the helper's
+    // first line is `if (kind < Protocol) return;` — so the record is simply
+    // left behind. Kinds are small non-negative doubles, whose IEEE bits
+    // order exactly as the unsigned integers they are, so "< 5.0" is one
+    // unsigned compare against the 5.0 bit pattern.
+    llvm::Value* rec = emitRecordPtr(builder, recBits, slowBb, "ic.");
+    llvm::Value* kindPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, rec, BRONZE_ABI_ITER_KIND_OFFSET);
+    llvm::Value* kind = builder.CreateAlignedLoad(i64Ty, kindPtr, llvm::Align(8), "ic.kind");
+    builder.CreateCondBr(
+        builder.CreateICmpULT(kind, builder.getInt64(BRONZE_ABI_ITER_KIND_OWNED_LIMIT_BITS),
+                              "ic.owned"),
+        doneBb, slowBb);
+
+    builder.SetInsertPoint(slowBb);
+    builder.CreateCall(abi.bronze_iter_close, {recBits, builder.getInt1(suppress)});
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+}
+
 llvm::Value* emitIterValue(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* recBits) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();

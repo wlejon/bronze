@@ -1,5 +1,9 @@
 #include "runtime/array.h"
 
+#include <cstddef>
+
+#include "abi/bronze_abi.h"
+
 #include "runtime/fatal.h"
 #include "runtime/object.h"
 #include "runtime/rt_state.h"
@@ -12,6 +16,17 @@ namespace {
 // the live prefix across. Allocation can collect and move both the array
 // and its old block, so everything is re-derived through the root after
 // the allocation.
+// What generated code's inline array literal (llvm_construct.cpp) writes has
+// to be exactly what `ArrayHeader::create` + `setCapacity` write.
+static_assert(sizeof(ArrayHeader) == BRONZE_ABI_ARRAY_HEADER_BYTES);
+static_assert(offsetof(ArrayHeader, length) == BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+static_assert(offsetof(ArrayHeader, capacity) == BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+static_assert(offsetof(ArrayHeader, head_offset) == BRONZE_ABI_ARRAY_HEAD_OFFSET);
+static_assert(offsetof(ArrayHeader, elements) == BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+static_assert(offsetof(ArrayHeader, properties) == BRONZE_ABI_ARRAY_PROPS_OFFSET);
+static_assert(HeapKind::ValueBlock == BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK);
+static_assert(HeapKind::Array == BRONZE_ABI_OBJ_FLAGS_ARRAY);
+
 void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
     HeapObjectHeader* block = heap.allocate(new_capacity * sizeof(Value), Tag::Object);
     // Not the zero `Heap::allocate` leaves behind, which reads as

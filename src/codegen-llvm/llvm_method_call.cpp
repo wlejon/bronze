@@ -122,14 +122,73 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* tag = builder.CreateLShr(thisVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.tag");
     llvm::Value* isObj =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.isobj");
-    llvm::Value* checkOk = builder.CreateAnd(isEnabled, isObj, "mic.checkok");
-    auto* brCheck = builder.CreateCondBr(checkOk, plainBb, slowBb);
+    // The header pointer is formed here, above the object test, because the
+    // hit dispatch below is shared by every arm and its SLOT form reads
+    // through it: a value that is not an object never reaches that form (a
+    // primitive entry is always DIRECT), and forming the pointer is a mask
+    // and no load.
+    llvm::Value* addr = builder.CreateAnd(thisVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "mic.hdr");
+    llvm::BasicBlock* tagBb = llvm::BasicBlock::Create(ctx, "mic.tag.split", fn);
+    llvm::BasicBlock* primBb = llvm::BasicBlock::Create(ctx, "mic.prim", fn);
+    builder.CreateCondBr(isEnabled, tagBb, slowBb);
+    builder.SetInsertPoint(tagBb);
+    auto* brCheck = builder.CreateCondBr(isObj, plainBb, primBb);
     brCheck->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // 1b. A PRIMITIVE receiver — a string, for `s.charCodeAt(i)` — takes the
+    // primitive form (bronze_abi.h's method-site contract): word 0 must be
+    // the receiver's own TAG in the kind field under the exotic bit; the env
+    // word then names the HOLDER (`String.prototype`, a forwarded cell) whose
+    // shape must still be the aux word's. A hit is the SLOT dispatch below
+    // with the holder as the slot's base and the string itself as `this`,
+    // so the slot's current value — and not a cached code pointer — is what
+    // gets called: `String.prototype.charCodeAt = f` moves no shape.
+    builder.SetInsertPoint(primBb);
+    llvm::Value* primWord0 =
+        builder.CreateAlignedLoad(i64Ty, entry, llvm::Align(8), "mic.prim.word0");
+    llvm::Value* primLow = builder.CreateAnd(
+        primWord0, builder.getInt64(0xFFFFFFFFull & ~BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT),
+        "mic.prim.low");
+    llvm::Value* primExpect = builder.CreateOr(
+        builder.CreateShl(tag, BRONZE_ABI_METHOD_IC_KIND_SHIFT),
+        builder.getInt64(BRONZE_ABI_METHOD_IC_EXOTIC_BIT), "mic.prim.expect");
+    llvm::BasicBlock* primHolderBb = llvm::BasicBlock::Create(ctx, "mic.prim.holder", fn);
+    builder.CreateCondBr(builder.CreateICmpEQ(primLow, primExpect, "mic.prim.kindok"),
+                         primHolderBb, slowBb);
+
+    builder.SetInsertPoint(primHolderBb);
+    llvm::Value* holderBits = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_ENV_WORD),
+        llvm::Align(8), "mic.prim.holderbits");
+    llvm::Value* holderTag =
+        builder.CreateLShr(holderBits, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.prim.holdertag");
+    llvm::BasicBlock* primShapeBb = llvm::BasicBlock::Create(ctx, "mic.prim.shape", fn);
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(holderTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT),
+                             "mic.prim.holderisobj"),
+        primShapeBb, slowBb);
+
+    builder.SetInsertPoint(primShapeBb);
+    llvm::Value* holderAddr =
+        builder.CreateAnd(holderBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* holderHdr = builder.CreateIntToPtr(holderAddr, ptrTy, "mic.prim.holder");
+    llvm::Value* holderShape = builder.CreateAlignedLoad(
+        ptrTy,
+        builder.CreateConstInBoundsGEP1_32(i8Ty, holderHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+        llvm::Align(8), "mic.prim.holdershape");
+    llvm::Value* latchedShapeInt = builder.CreateAlignedLoad(
+        i64Ty,
+        builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_AUX_WORD),
+        llvm::Align(8), "mic.prim.latchedshape");
+    llvm::Value* latchedShape =
+        builder.CreateIntToPtr(latchedShapeInt, ptrTy, "mic.prim.latchedshapeptr");
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(holderShape, latchedShape, "mic.prim.shapeok"), hitBb, slowBb);
 
     // 2. Plain Object check (flags == BRONZE_ABI_OBJ_FLAGS_PLAIN)
     builder.SetInsertPoint(plainBb);
-    llvm::Value* addr = builder.CreateAnd(thisVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "mic.hdr");
     auto* flags = builder.CreateAlignedLoad(
         i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
         llvm::Align(2), "mic.flags");
@@ -258,6 +317,15 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     // index plus one: the callee lives in that slot NOW, so code, env and
     // arity are all read from the function object found there, never cached.
     builder.SetInsertPoint(hitBb);
+    // The object the SLOT form reads its slot from: the receiver for every
+    // object arm, and the HOLDER (`String.prototype`) for the primitive one —
+    // the one arm whose slot is not in the receiver, because the receiver has
+    // no slots at all.
+    llvm::PHINode* base = builder.CreatePHI(ptrTy, 4, "mic.base");
+    base->addIncoming(hdr, shapeBb);
+    base->addIncoming(hdr, exoCodeBb);
+    base->addIncoming(hdr, exoBoxChkBb);
+    base->addIncoming(holderHdr, primShapeBb);
     llvm::Value* arityWord = builder.CreateAlignedLoad(
         i64Ty,
         builder.CreateConstInBoundsGEP1_32(i64Ty, entry, BRONZE_ABI_METHOD_IC_ARITY_WORD),
@@ -299,7 +367,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     builder.SetInsertPoint(slotInlBb);
     llvm::Value* inlBase =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+        builder.CreateConstInBoundsGEP1_32(i8Ty, base, BRONZE_ABI_OBJ_SLOTS_OFFSET);
     llvm::Value* inlPtr = builder.CreateGEP(i64Ty, inlBase, slotIdx, "mic.slot.inlptr");
     builder.CreateBr(slotLoadBb);
 
@@ -308,7 +376,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     // cached index (ObjectHeader::getSlot states the invariant).
     builder.SetInsertPoint(slotOvBb);
     llvm::Value* ovBits = builder.CreateAlignedLoad(
-        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET),
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, base, BRONZE_ABI_OBJ_OVERFLOW_OFFSET),
         llvm::Align(8), "mic.slot.ovbits");
     llvm::Value* ovAddr =
         builder.CreateAnd(ovBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));

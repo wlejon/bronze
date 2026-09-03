@@ -47,4 +47,13 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 llvm::Value* emitCreateObjectInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                      const AbiGlobals& globals);
 
+// The same for an array literal of `length` elements: the ArrayHeader and its
+// elements block (capacity max(length, the runtime's floor), HOLE-filled) are
+// two adjacent bump allocations from the window, laid out as
+// bronze_create_array lays them out; the helper is the window-miss edge. The
+// caller keeps literals small — a `[x, z]` tuple, a `[a, b, c]` triple — so
+// the HOLE fill stays a handful of stores.
+llvm::Value* emitCreateArrayInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                   const AbiGlobals& globals, uint32_t length);
+
 }  // namespace bronze::codegen_llvm
