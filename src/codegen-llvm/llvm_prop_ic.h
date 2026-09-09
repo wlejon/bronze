@@ -92,7 +92,7 @@ ProtoWalkResult emitProtoChainWalk(llvm::IRBuilder<>& builder, llvm::LLVMContext
                                    llvm::Function* fn, llvm::Value* startShape,
                                    llvm::Value* depth, llvm::BasicBlock* entryBb,
                                    llvm::BasicBlock* slowBb, llvm::BasicBlock* successBb,
-                                   const std::string& prefix);
+                                   const std::string& prefix, bool monomorphic = false);
 
 // Loads a slot value from holderHdr at slot32 (inline if < 4, overflow if >= 4).
 // If overflow is required and not present/not an object, branches to slowBb.

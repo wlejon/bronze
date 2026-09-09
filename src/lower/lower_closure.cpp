@@ -199,6 +199,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerHandler = currentHandler_;
     currentHandler_ = il::kNoBlock;
     auto outerEnvValue = currentEnvValue_;
+    auto outerEntryEnvValue = entryEnvValue_;
+    auto outerImmutableEnvCache = std::move(immutableEnvCache_);
     auto outerThisValue = currentThisValue_;
     auto outerIsArrow = currentFunctionIsArrow_;
     currentFunctionIsArrow_ = isArrow;
@@ -263,6 +265,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     cleanupStack_ = outerCleanupStack;
     currentHandler_ = outerHandler;
     currentEnvValue_ = outerEnvValue;
+    entryEnvValue_ = outerEntryEnvValue;
+    immutableEnvCache_ = std::move(outerImmutableEnvCache);
     currentThisValue_ = outerThisValue;
     currentFunctionIsArrow_ = outerIsArrow;
     functionEnvBase_ = outerEnvBase;

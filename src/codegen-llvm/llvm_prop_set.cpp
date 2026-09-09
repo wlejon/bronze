@@ -228,7 +228,8 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
 
     builder.SetInsertPoint(setAccProtoEntryBb);
     ProtoWalkResult setAccWalk = emitProtoChainWalk(
-        builder, ctx, fn, shape, realDepth, setAccProtoEntryBb, slowBb, setAccDispatchBb, "ic.set.acc");
+        builder, ctx, fn, shape, realDepth, setAccProtoEntryBb, slowBb, setAccDispatchBb, "ic.set.acc",
+        monomorphic);
 
     // Dispatch setter
     builder.SetInsertPoint(setAccDispatchBb);

@@ -162,6 +162,11 @@ private:
     std::vector<il::ValueId> savedEnvValues_;
     std::vector<bool> scopeHasEnv_;
     il::ValueId currentEnvValue_ = il::kNoValue;
+    il::ValueId entryEnvValue_ = il::kNoValue;
+    // Lowered immutable environment bindings for the current function, keyed by
+    // ((uint64_t)depth << 32) | index. Hoisted to block 0 on first read and reused.
+    std::unordered_map<uint64_t, Value> immutableEnvCache_;
+    bool inUserFunction_ = false;
     // The record innermost right here, as a value usable in the block being
     // emitted into. `currentEnvValue_` itself outside a generator, where a
     // record's defining instruction dominates every use of it; inside one, a

@@ -120,7 +120,7 @@ bool isAllocatingHelper(llvm::StringRef name) {
 // absent: `bronze_env_get`, `bronze_env_get_tdz` and `bronze_env_set` are a slot
 // access by definition. `bronze_env_access_failed` needs no entry — it is
 // `noreturn`, which is answered before this list is consulted.
-constexpr std::array<std::string_view, 50> kEnvBlindHelpers{
+constexpr std::array<std::string_view, 52> kEnvBlindHelpers{
     "bronze_box_f64",
     "bronze_box_str_key",
     "bronze_create_array",
@@ -164,6 +164,8 @@ constexpr std::array<std::string_view, 50> kEnvBlindHelpers{
     "bronze_math_sin_f64",
     "bronze_math_sqrt",
     "bronze_pattern_check",
+    "bronze_prop_get",
+    "bronze_prop_set",
     "bronze_strict_eq",
     "bronze_string_concat",
     "bronze_to_int32_f64",

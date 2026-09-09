@@ -198,20 +198,46 @@ bool Lowerer::envSlotIsF64(uint32_t depth, uint32_t index) const {
 Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn) {
     const bool lexical = envSlotIsLexical(depth, index) && !envSlotDefiniteInit(depth, index);
     const SlotImmutability imm = envSlotImmutability(depth, index);
+    const bool isImmutable =
+        !lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent);
+    const bool isModuleImmutable =
+        inUserFunction_ && !ilFn.needsEnv &&
+        isImmutable && moduleEnvScope_ != SIZE_MAX &&
+        depth < envScopes_.size() && (envScopes_.size() - 1 - depth == moduleEnvScope_) &&
+        entryEnvValue_ != il::kNoValue;
+    if (isModuleImmutable) {
+        const uint64_t key = (static_cast<uint64_t>(depth) << 32) | index;
+        auto it = immutableEnvCache_.find(key);
+        if (it != immutableEnvCache_.end()) {
+            return it->second;
+        }
+    }
+
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = lexical ? il::Op::EnvGetTdz : il::Op::EnvGet;
     inst.type = il::Type::Dynamic;
     inst.result = res;
-    inst.operands = {currentEnv(ilFn)};
-    inst.envDepth = depth;
+    inst.operands = {isModuleImmutable ? entryEnvValue_ : currentEnv(ilFn)};
+    inst.envDepth = isModuleImmutable ? 0 : depth;
     inst.envIndex = index;
-    inst.envImmutable = !lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent);
+    inst.envImmutable = isImmutable;
     if (lexical) {
         inst.keyIndex =
             getKeyConstantIndex(envScopes_[envScopes_.size() - 1 - depth].slotNames[index]);
     }
-    emitInst(ilFn, inst);
+
+    if (isModuleImmutable && currentBlockIdx_ != 0 && !ilFn.blocks.empty()) {
+        auto& b0 = ilFn.blocks[0];
+        if (!b0.instructions.empty() && il::isTerminator(b0.instructions.back().op)) {
+            b0.instructions.insert(b0.instructions.end() - 1, inst);
+        } else {
+            b0.instructions.push_back(inst);
+        }
+    } else {
+        emitInst(ilFn, inst);
+    }
+
     // A slot the number proof claimed (lower_env_slot_number.cpp): the load is
     // the one it always was and the
     // value that comes back is a double by bitcast. Unboxed HERE and not only
@@ -224,8 +250,34 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
     //
     // After the instruction, never folded into it: the TDZ form throws, and the
     // marker is not a double.
-    if (envSlotIsF64(depth, index)) return emitRawUnbox(Value{res, il::Type::Dynamic}, ilFn);
-    return Value{res, il::Type::Dynamic};
+    Value val{res, il::Type::Dynamic};
+    if (envSlotIsF64(depth, index)) {
+        if (isModuleImmutable && currentBlockIdx_ != 0 && !ilFn.blocks.empty()) {
+            il::ValueId unboxRes = ilFn.valueCount++;
+            il::Instruction unboxInst;
+            unboxInst.op = il::Op::Unbox;
+            unboxInst.type = il::Type::F64;
+            unboxInst.rawUnbox = true;
+            unboxInst.result = unboxRes;
+            unboxInst.operands = {res};
+            auto& b0 = ilFn.blocks[0];
+            if (!b0.instructions.empty() && il::isTerminator(b0.instructions.back().op)) {
+                b0.instructions.insert(b0.instructions.end() - 1, unboxInst);
+            } else {
+                b0.instructions.push_back(unboxInst);
+            }
+            val = Value{unboxRes, il::Type::F64};
+        } else {
+            val = emitRawUnbox(val, ilFn);
+        }
+    }
+
+    if (isModuleImmutable) {
+        const uint64_t key = (static_cast<uint64_t>(depth) << 32) | index;
+        immutableEnvCache_[key] = val;
+    }
+
+    return val;
 }
 
 void Lowerer::openLexicalBindings(size_t scopeIndex,

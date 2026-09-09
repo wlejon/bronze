@@ -101,12 +101,12 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
 
     llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "ic.check", fn);
     llvm::BasicBlock* plainCheckBb = llvm::BasicBlock::Create(ctx, "ic.plain", fn);
-    llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, "ic.hit", fn);
-    llvm::BasicBlock* inlineHitBb = llvm::BasicBlock::Create(ctx, "ic.inline", fn);
-    llvm::BasicBlock* overflowHitBb = llvm::BasicBlock::Create(ctx, "ic.overflow", fn);
-    llvm::BasicBlock* overflowAccessBb = llvm::BasicBlock::Create(ctx, "ic.overflow.access", fn);
-    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow", fn);
-    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow");
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done");
+    llvm::BasicBlock* inlineHitBb = nullptr;
+    llvm::BasicBlock* overflowAccessBb = nullptr;
+    llvm::LoadInst* inlineVal = nullptr;
+    llvm::LoadInst* overflowValLoaded = nullptr;
 
     // 0. The static-slot fast path, in front of everything. Emits nothing when
     //    the site has no proven layout, and leaves the builder where it was.
@@ -119,7 +119,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.isobj");
-    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1024, 1);
     llvm::MDNode* unlikelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
     llvm::BasicBlock* strLenBb = nullptr;
     llvm::Value* strLenVal = nullptr;
@@ -312,9 +312,51 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // accessor flag and an absent entry the absent flag, so neither can be
     // mistaken for depth 0 — the flags are what make this a three-way split on
     // a single loaded word rather than three separate tests.
+    llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, "ic.hit", fn);
     llvm::BasicBlock* nonZeroDepthBb = llvm::BasicBlock::Create(ctx, "ic.get.depth.nonzero", fn);
+    llvm::MDNode* depthZeroWeights = llvm::MDBuilder(ctx).createBranchWeights(1024, 1);
     builder.CreateCondBr(builder.CreateICmpEQ(depth, builder.getInt64(0), "ic.get.depthzero"),
-                         hitBb, nonZeroDepthBb, likelyBranch);
+                         hitBb, nonZeroDepthBb, depthZeroWeights);
+
+    // 4. Hit: inline slot or overflow slot
+    builder.SetInsertPoint(hitBb);
+    inlineHitBb = llvm::BasicBlock::Create(ctx, "ic.inline", fn);
+    llvm::BasicBlock* overflowHitBb = llvm::BasicBlock::Create(ctx, "ic.overflow", fn);
+    overflowAccessBb = llvm::BasicBlock::Create(ctx, "ic.overflow.access", fn);
+
+    llvm::Value* slot32 = builder.CreateTrunc(slotWord, i32Ty, "ic.slot32");
+    llvm::Value* isInline =
+        builder.CreateICmpULT(slot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
+    builder.CreateCondBr(isInline, inlineHitBb, overflowHitBb, likelyBranch);
+
+    builder.SetInsertPoint(inlineHitBb);
+    llvm::Value* slotsBase =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+    llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
+    inlineVal = builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), "ic.inline.val");
+    tagObjectSlotAccess(inlineVal, ctx);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(overflowHitBb);
+    llvm::Value* overflowPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                                 BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
+    llvm::Value* overflowVal =
+        builder.CreateAlignedLoad(i64Ty, overflowPtr, llvm::Align(8), "ic.overflow");
+    llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* overflowIsObj =
+        builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    builder.CreateCondBr(overflowIsObj, overflowAccessBb, slowBb, likelyBranch);
+
+    builder.SetInsertPoint(overflowAccessBb);
+    llvm::Value* overflowAddr =
+        builder.CreateAnd(overflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
+    llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
+    llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
+    overflowValLoaded =
+        builder.CreateAlignedLoad(i64Ty, overflowSlotPtr, llvm::Align(8), "ic.overflow.val");
+    tagObjectSlotAccess(overflowValLoaded, ctx);
+    builder.CreateBr(doneBb);
 
     // 3a. The ABSENT answer: the key is on neither the receiver nor its chain.
     // The shape match above covers every own add; this epoch check covers every
@@ -385,7 +427,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
 
     builder.SetInsertPoint(getAccProtoEntryBb);
     ProtoWalkResult getAccWalk = emitProtoChainWalk(
-        builder, ctx, fn, shape, realDepth, getAccProtoEntryBb, slowBb, getAccDispatchBb, "ic.get.acc");
+        builder, ctx, fn, shape, realDepth, getAccProtoEntryBb, slowBb, getAccDispatchBb, "ic.get.acc",
+        monomorphic);
 
     // Dispatch getter
     builder.SetInsertPoint(getAccDispatchBb);
@@ -469,7 +512,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.SetInsertPoint(protoEntryBb);
     llvm::BasicBlock* protoResBb = llvm::BasicBlock::Create(ctx, "ic.proto.res", fn);
     ProtoWalkResult protoWalk = emitProtoChainWalk(
-        builder, ctx, fn, shape, depth, protoEntryBb, slowBb, protoResBb, "ic.proto");
+        builder, ctx, fn, shape, depth, protoEntryBb, slowBb, protoResBb, "ic.proto",
+        monomorphic);
 
     builder.SetInsertPoint(protoResBb);
     llvm::Value* isProtoInline = builder.CreateICmpULT(
@@ -495,41 +539,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.SetInsertPoint(protoLoadSuccessBb);
     builder.CreateBr(doneBb);
 
-    // 4. Hit: inline slot or overflow slot
-    builder.SetInsertPoint(hitBb);
-    llvm::Value* slot32 = builder.CreateTrunc(slotWord, i32Ty, "ic.slot32");
-    llvm::Value* isInline =
-        builder.CreateICmpULT(slot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
-    builder.CreateCondBr(isInline, inlineHitBb, overflowHitBb, likelyBranch);
 
-    builder.SetInsertPoint(inlineHitBb);
-    llvm::Value* slotsBase =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
-    llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
-    auto* inlineVal = builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), "ic.inline.val");
-    tagObjectSlotAccess(inlineVal, ctx);
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(overflowHitBb);
-    llvm::Value* overflowPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                                 BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
-    llvm::Value* overflowVal =
-        builder.CreateAlignedLoad(i64Ty, overflowPtr, llvm::Align(8), "ic.overflow");
-    llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* overflowIsObj =
-        builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(overflowIsObj, overflowAccessBb, slowBb, likelyBranch);
-
-    builder.SetInsertPoint(overflowAccessBb);
-    llvm::Value* overflowAddr =
-        builder.CreateAnd(overflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
-    llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
-    llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
-    auto* overflowValLoaded =
-        builder.CreateAlignedLoad(i64Ty, overflowSlotPtr, llvm::Align(8), "ic.overflow.val");
-    tagObjectSlotAccess(overflowValLoaded, ctx);
-    builder.CreateBr(doneBb);
 
     // 4b. The function-statics arm's own scan and slot load.
     //
@@ -638,14 +648,16 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     //    property may not be installed yet (a constructor's own `this.x = ...`
     //    reaches the write twin of this), and publishing before the helper had
     //    run would pin the pre-transition shape.
-    llvm::BasicBlock* slowDoneBb = llvm::BasicBlock::Create(ctx, "ic.slow.done", fn);
+    fn->insert(fn->end(), slowBb);
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = emitPropGetCall(builder, abi, entry, objBits, tables, keyIndex);
+    llvm::BasicBlock* slowDoneBb = llvm::BasicBlock::Create(ctx, "ic.slow.done", fn);
     emitStaticSlotPublish(builder, abi, tables, objBits, objSlot, keyIndex, site,
                           /*forWrite=*/false, slowDoneBb, "get");
     builder.SetInsertPoint(slowDoneBb);
     builder.CreateBr(doneBb);
 
+    fn->insert(fn->end(), doneBb);
     builder.SetInsertPoint(doneBb);
     // inlineHitBb, overflowAccessBb, slowBb, protoInlineBb, protoLoadSuccessBb, getCallBb,
     // getUndefBb, absentHitBb

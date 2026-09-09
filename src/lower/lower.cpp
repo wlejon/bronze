@@ -211,6 +211,8 @@ std::optional<il::Module> Lowerer::lower() {
         jumpStack_.clear();
         scopeHasEnv_.clear();
         currentEnvValue_ = il::kNoValue;
+        entryEnvValue_ = il::kNoValue;
+        immutableEnvCache_.clear();
         currentThisValue_ = il::kNoValue;
         currentFunctionIsArrow_ = false;
         // `main` is the Script's own code, so it takes the Script's mode.
@@ -624,9 +626,11 @@ bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLeve
         currentThisValue_ = il::kNoValue;
         functionEnvBase_ = 0;
         functionEnvScope_ = moduleEnvScope_;
+        immutableEnvCache_.clear();
         // The module record, loaded the way every module function loads it.
         currentEnvValue_ =
             moduleEnvScope_ != SIZE_MAX ? emitModuleEnvGet(segFn) : il::kNoValue;
+        entryEnvValue_ = currentEnvValue_;
 
         while (stmtIdx < topLevelStmts.size()) {
             if (!lowerStmt(*topLevelStmts[stmtIdx], segFn)) return false;
@@ -680,6 +684,7 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
         emitEnvCreate(static_cast<uint32_t>(moduleEnvSlots_.size()), mainFn);
     savedEnvValues_.push_back(currentEnvValue_);
     currentEnvValue_ = envScopes_[moduleEnvScope_].envValue;
+    entryEnvValue_ = currentEnvValue_;
     functionEnvScope_ = moduleEnvScope_;
     emitModuleEnvSet(currentEnvValue_, mainFn);
     // Ahead of every top-level statement, and ahead of the hoisted closures
@@ -727,9 +732,12 @@ bool Lowerer::referencesModuleEnv(const std::vector<ast::Param>& params,
 bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
                                 bool isGenerator, bool isAsync) {
+    bool oldUserFn = inUserFunction_;
+    inUserFunction_ = true;
     provenClosureParams_.emplace_back();
     const bool ok = lowerBodyWithPlan(params, body, ilFn, isGenerator, isAsync);
     provenClosureParams_.pop_back();
+    inUserFunction_ = oldUserFn;
     return ok;
 }
 
@@ -756,6 +764,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     varDeclCounter_ = 0;
     jumpStack_.clear();
     scopeHasEnv_.clear();
+    immutableEnvCache_.clear();
     functionVarNames_ = ast::getHoistedVarDeclarations(body);
 
     // Synthetic parameters lead: [__env?][__this?] then source params.
@@ -772,6 +781,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
         currentEnvValue_ =
             referencesModuleEnv(params, body) ? emitModuleEnvGet(ilFn) : il::kNoValue;
     }
+    entryEnvValue_ = currentEnvValue_;
     currentThisValue_ = ilFn.needsThis ? (ilFn.needsEnv ? 1u : 0u) : il::kNoValue;
 
     std::vector<const ast::Stmt*> stmts;

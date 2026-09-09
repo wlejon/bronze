@@ -226,8 +226,10 @@ static std::pair<llvm::Value*, llvm::BasicBlock*> emitLoopWalk(
 ProtoWalkResult emitProtoChainWalk(
     llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
     llvm::Value* startShape, llvm::Value* depth, llvm::BasicBlock* entryBb,
-    llvm::BasicBlock* slowBb, llvm::BasicBlock* successBb, const std::string& prefix) {
+    llvm::BasicBlock* slowBb, llvm::BasicBlock* successBb, const std::string& prefix,
+    bool monomorphic) {
     (void)entryBb;
+    (void)monomorphic;
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
     if (auto* constDepth = llvm::dyn_cast<llvm::ConstantInt>(depth)) {
