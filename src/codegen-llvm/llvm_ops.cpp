@@ -848,7 +848,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             if (!env) return false;
             values_[inst.result] = emitEnvGet(builder_, abi, shared_.tables, env, inst.envDepth,
                                               inst.envIndex, /*tdz=*/false, inst.keyIndex,
-                                              envGuardsElided_);
+                                              envGuardsElided_, inst.envImmutable);
             return true;
         }
         case il::Op::EnvGetTdz: {

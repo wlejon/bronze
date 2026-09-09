@@ -24,15 +24,28 @@ llvm::Value* emitStringCharCodeAtCompute(llvm::IRBuilder<>& builder, llvm::Value
     llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     // 1. Check if idxVal is a number: idxVal <= NUMBER_MAX_BITS
-    llvm::Value* isNum = builder.CreateICmpULE(
-        idxVal, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "cca.idx.isnum");
-    llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "cca.idx.num", fn);
-    auto* brNum = builder.CreateCondBr(isNum, numBb, failBb);
-    brNum->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+    llvm::Value* idxDbl = nullptr;
+    if (auto* sel = llvm::dyn_cast<llvm::SelectInst>(idxVal)) {
+        if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(sel->getFalseValue())) {
+            if (bc->getSrcTy()->isDoubleTy()) {
+                idxDbl = bc->getOperand(0);
+            }
+        }
+    } else if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(idxVal)) {
+        if (bc->getSrcTy()->isDoubleTy()) {
+            idxDbl = bc->getOperand(0);
+        }
+    }
 
-    // 2. Check if idxVal is an exact integer that fits in i32
-    builder.SetInsertPoint(numBb);
-    llvm::Value* idxDbl = builder.CreateBitCast(idxVal, dblTy, "cca.idx.dbl");
+    if (idxDbl == nullptr) {
+        llvm::Value* isNum = builder.CreateICmpULE(
+            idxVal, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "cca.idx.isnum");
+        llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "cca.idx.num", fn);
+        auto* brNum = builder.CreateCondBr(isNum, numBb, failBb);
+        brNum->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+        builder.SetInsertPoint(numBb);
+        idxDbl = builder.CreateBitCast(idxVal, dblTy, "cca.idx.dbl");
+    }
     llvm::Value* idxI32 = builder.CreateFPToSI(idxDbl, i32Ty, "cca.idx.i32");
     llvm::Value* recheckDbl = builder.CreateSIToFP(idxI32, dblTy, "cca.idx.recheck");
     llvm::Value* isExactInt = builder.CreateFCmpOEQ(idxDbl, recheckDbl, "cca.idx.isint");

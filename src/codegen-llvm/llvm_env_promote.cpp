@@ -194,7 +194,7 @@ public:
     //     value might be the same record, and is an observer.
     bool blocksAreClean(llvm::ArrayRef<llvm::BasicBlock*> blocks, const EnvSlotKey& key,
                         const llvm::MemoryLocation& location, bool hasStore, RegionEnd& causeOut,
-                        bool& mayCollectOut) {
+                        bool& mayCollectOut, bool isImmutable = false) {
         mayCollectOut = false;
         for (llvm::BasicBlock* block : blocks) {
             auto found = facts_.find(block);
@@ -213,13 +213,18 @@ public:
                         }
                         break;
                     case InstKind::Observer:
-                        causeOut = fact.cause;
-                        return false;
-                    case InstKind::OtherMemory:
-                        if (hasStore ? llvm::isModOrRefSet(aa_.getModRefInfo(fact.inst, location))
-                                     : llvm::isModSet(aa_.getModRefInfo(fact.inst, location))) {
-                            causeOut = RegionEnd::AliasingMemory;
+                        if (!isImmutable || hasStore) {
+                            causeOut = fact.cause;
                             return false;
+                        }
+                        break;
+                    case InstKind::OtherMemory:
+                        if (!isImmutable || hasStore) {
+                            if (hasStore ? llvm::isModOrRefSet(aa_.getModRefInfo(fact.inst, location))
+                                         : llvm::isModSet(aa_.getModRefInfo(fact.inst, location))) {
+                                causeOut = RegionEnd::AliasingMemory;
+                                return false;
+                            }
                         }
                         break;
                 }
@@ -254,6 +259,7 @@ bool regionIsCollectorSafe(const Region& region, bool mayCollect) {
     }
     return true;
 }
+
 
 // Rewrites one key over one region: an alloca shadow, the entry load, every
 // access redirected into it, the write-back at every exit that takes one.
@@ -539,16 +545,41 @@ bool tryLoopRegion(FunctionScan& scan, llvm::Loop& loop, const EnvSlotKey& key,
     }
 
     bool hasStore = false;
+    bool allLoadsInvariant = !inside.empty();
     for (Access* access : inside) {
-        if (access->isStore) hasStore = true;
+        if (access->isStore) {
+            hasStore = true;
+            allLoadsInvariant = false;
+        } else if (auto* load = llvm::dyn_cast<llvm::LoadInst>(access->inst)) {
+            if (!load->hasMetadata(llvm::LLVMContext::MD_invariant_load)) {
+                allLoadsInvariant = false;
+            }
+        } else {
+            allLoadsInvariant = false;
+        }
     }
 
     RegionEnd cause = RegionEnd::UnknownCall;
     bool mayCollect = false;
-    if (!scan.blocksAreClean(loop.getBlocks(), key, location, hasStore, cause, mayCollect)) {
+    if (!scan.blocksAreClean(loop.getBlocks(), key, location, hasStore, cause, mayCollect, allLoadsInvariant)) {
         ++stats.ends[static_cast<size_t>(cause)];
         return false;
     }
+
+    if (allLoadsInvariant && !hasStore && mayCollect) {
+        bool allNonPtr = true;
+        for (const Access* access : inside) {
+            if (!access->valueNeverPointer) {
+                allNonPtr = false;
+                break;
+            }
+        }
+        if (!allNonPtr) {
+            ++stats.ends[static_cast<size_t>(RegionEnd::HeapValueStore)];
+            return false;
+        }
+    }
+
 
     out.entryPoint = preheader->getTerminator();
     out.overLoop = true;

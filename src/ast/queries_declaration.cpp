@@ -270,6 +270,24 @@ std::vector<std::string> definitelyAssigned(const std::vector<const Stmt*>& stmt
         // module body — the only way the hoisted module functions, which are
         // exactly the closures over the module record, reach the stop set.
         if (dynamic_cast<const ExportNamesDecl*>(stmt) != nullptr) continue;
+        if (const auto* c = dynamic_cast<const ClassDecl*>(stmt)) {
+            bool dangerous = false;
+            if (c->superClass != nullptr && reachesAnythingDangerous(*c->superClass, stop)) {
+                dangerous = true;
+            }
+            for (const auto& m : c->methods) {
+                if (m.keyExpr != nullptr && reachesAnythingDangerous(*m.keyExpr, stop)) {
+                    dangerous = true;
+                    break;
+                }
+            }
+            if (dangerous) break;
+            if (!c->name.empty()) {
+                names.push_back(c->name);
+                stop.erase(c->name);
+            }
+            continue;
+        }
         const auto* v = dynamic_cast<const VarDecl*>(stmt);
         const bool plainDecl = v != nullptr && !v->name.empty() && v->init != nullptr;
         // A declaration whose initializer is wholly a function expression: it

@@ -348,7 +348,8 @@ llvm::Value* emitEnvAncestor(llvm::IRBuilder<>& builder, llvm::Value* envBits, u
 
 llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                         const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
-                        uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards) {
+                        uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards,
+                        bool immutable) {
     if (!envTripwireEdges()) {
         return emitEnvGetMerging(builder, abi, tables, envBits, depth, index, tdz, keyIndex,
                                  elideGuards);
@@ -363,6 +364,7 @@ llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                      emitAccessTripwire(builder, abi, envBits, depth, index));
     auto* fastVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "env.val");
     tagEnvRecordAccess(fastVal, ctx);
+    if (immutable) markInvariant(fastVal, ctx);
 
     // Without the TDZ test the read IS the load: no merge, no phi, and — now
     // that the guard's failure edge does not return — nothing on any reachable

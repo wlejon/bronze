@@ -118,7 +118,11 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
                 builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
                 inst.icIndex, argc, {arg0}, missEmit);
             if (inst.result != il::kNoValue) {
-                values_[inst.result] = res;
+                if (inst.type == il::Type::F64) {
+                    values_[inst.result] = builder_.CreateBitCast(res, builder_.getDoubleTy());
+                } else {
+                    values_[inst.result] = res;
+                }
             }
             return true;
         }
@@ -140,7 +144,11 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
                 builder_, abi, globals_, shared_.tables, *kind, thisVal,
                 inst.keyIndex, inst.icIndex, argc, args, missEmit);
             if (inst.result != il::kNoValue) {
-                values_[inst.result] = res;
+                if (inst.type == il::Type::F64) {
+                    values_[inst.result] = builder_.CreateBitCast(res, builder_.getDoubleTy());
+                } else {
+                    values_[inst.result] = res;
+                }
             }
             return true;
         }
@@ -154,7 +162,11 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
         emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
                              inst.icIndex, argc, argv, inst.icFnRecv);
     if (inst.result != il::kNoValue) {
-        values_[inst.result] = res;
+        if (inst.type == il::Type::F64) {
+            values_[inst.result] = builder_.CreateBitCast(res, builder_.getDoubleTy());
+        } else {
+            values_[inst.result] = res;
+        }
     }
     return true;
 }

@@ -197,6 +197,7 @@ bool Lowerer::envSlotIsF64(uint32_t depth, uint32_t index) const {
 // `cases/temporal_dead_zone.js` pins.
 Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn) {
     const bool lexical = envSlotIsLexical(depth, index) && !envSlotDefiniteInit(depth, index);
+    const SlotImmutability imm = envSlotImmutability(depth, index);
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = lexical ? il::Op::EnvGetTdz : il::Op::EnvGet;
@@ -205,6 +206,7 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
     inst.operands = {currentEnv(ilFn)};
     inst.envDepth = depth;
     inst.envIndex = index;
+    inst.envImmutable = !lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent);
     if (lexical) {
         inst.keyIndex =
             getKeyConstantIndex(envScopes_[envScopes_.size() - 1 - depth].slotNames[index]);

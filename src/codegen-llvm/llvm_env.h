@@ -39,7 +39,8 @@ bool envTripwireEdges();
 // helper path, which raises the ReferenceError `keyIndex` names.
 llvm::Value* emitEnvGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                         const ModuleTables& tables, llvm::Value* envBits, uint32_t depth,
-                        uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards);
+                        uint32_t index, bool tdz, uint32_t keyIndex, bool elideGuards,
+                        bool immutable = false);
 
 // Emits an environment slot write.
 //

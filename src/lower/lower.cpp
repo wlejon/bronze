@@ -550,23 +550,14 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
             if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
         }
     }
-    if (segmentTopLevel_) {
-        // One body refuses a write to a top-level `const` at COMPILE time,
-        // because the binding is in scope at the write. A later segment
-        // resolves the name through the record like a module function does,
-        // where no compile-time check exists — so the slot is marked
-        // immutable and the write takes 9.1.1.1.5's runtime arm instead,
-        // which in strict code (every module) is the TypeError the spec
-        // gives an assignment to `const`. Only simple-name declarations are
-        // marked: a pattern-bound const keeps the module-function semantics
-        // writes to it always had.
-        for (const ast::Stmt* s : topLevelStmts) {
-            const auto* vd = dynamic_cast<const ast::VarDecl*>(s);
-            if (!vd || !vd->isConst || vd->name.empty()) continue;
-            auto slot = info.slotOf.find(vd->name);
-            if (slot != info.slotOf.end()) {
-                info.slotImmutable[slot->second] = SlotImmutability::Throws;
-            }
+    // Top-level const bindings are immutable. Marking them as SlotImmutability::Throws
+    // enables invariant environment load hoisting and runtime TypeError on rebinding.
+    for (const ast::Stmt* s : topLevelStmts) {
+        const auto* vd = dynamic_cast<const ast::VarDecl*>(s);
+        if (!vd || !vd->isConst || vd->name.empty()) continue;
+        auto slot = info.slotOf.find(vd->name);
+        if (slot != info.slotOf.end()) {
+            info.slotImmutable[slot->second] = SlotImmutability::Throws;
         }
     }
     // No value yet, and that is the point: the record is created by `main`,
