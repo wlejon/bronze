@@ -260,6 +260,127 @@ bool Lowerer::lowerPattern(const ast::BindingPattern& pattern, Value source,
 // source must see so that its default can fire.
 bool Lowerer::lowerArrayPattern(const ast::BindingPattern& pattern, Value source,
                                 const PatternTarget& target, il::Function& ilFn) {
+    const auto isSimplePositional = [&]() {
+        if (!target.declare) return false;
+        if (pattern.elements.empty() || pattern.elements.size() > 8) return false;
+        for (const auto& elem : pattern.elements) {
+            if (elem.isRest || elem.target != nullptr) return false;
+        }
+        return true;
+    };
+
+    if (isSimplePositional()) {
+        const size_t n = pattern.elements.size();
+        il::BlockId bFast = createBlock(ilFn);
+        il::BlockId bSlow = createBlock(ilFn);
+        il::BlockId bJoin = createBlock(ilFn);
+
+        for (size_t i = 0; i < n; ++i) {
+            il::ValueId paramId = ilFn.valueCount++;
+            ilFn.blocks[bJoin].params.push_back({paramId, il::Type::Dynamic});
+        }
+
+        il::ValueId isDense = ilFn.valueCount++;
+        il::Instruction isDenseInst;
+        isDenseInst.op = il::Op::IsDenseArray;
+        isDenseInst.type = il::Type::Bool;
+        isDenseInst.result = isDense;
+        isDenseInst.operands = {source.id};
+        isDenseInst.immI32 = static_cast<int32_t>(n - 1);
+        emitInst(ilFn, isDenseInst);
+
+        il::Instruction brInst;
+        brInst.op = il::Op::Branch;
+        brInst.type = il::Type::Void;
+        brInst.result = il::kNoValue;
+        brInst.operands = {isDense};
+        brInst.target = il::BlockTarget{.block = bFast, .args = {}};
+        brInst.elseTarget = il::BlockTarget{.block = bSlow, .args = {}};
+        emitInst(ilFn, brInst);
+
+        // Fast path: direct property get by index on proven dense array
+        setCurrentBlock(bFast);
+        std::vector<il::ValueId> fastArgs;
+        fastArgs.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            il::ValueId readId = ilFn.valueCount++;
+            il::Instruction readInst;
+            readInst.op = il::Op::PropGet;
+            readInst.type = il::Type::Dynamic;
+            readInst.result = readId;
+            readInst.operands = {source.id};
+            readInst.keyIndex = getKeyConstantIndex(std::to_string(i));
+            readInst.icIndex = icSiteCounter_++;
+            readInst.icMonomorphic = false;
+            emitInst(ilFn, readInst);
+            fastArgs.push_back(readId);
+        }
+        il::Instruction jmpFast;
+        jmpFast.op = il::Op::Jump;
+        jmpFast.type = il::Type::Void;
+        jmpFast.result = il::kNoValue;
+        jmpFast.target = il::BlockTarget{.block = bJoin, .args = std::move(fastArgs)};
+        emitInst(ilFn, jmpFast);
+
+        // Slow path: full iterator protocol for non-arrays or short arrays
+        setCurrentBlock(bSlow);
+        il::ValueId recId = ilFn.valueCount++;
+        il::Instruction openInst;
+        openInst.op = il::Op::IterOpen;
+        openInst.type = il::Type::Dynamic;
+        openInst.result = recId;
+        openInst.operands = {source.id};
+        emitInst(ilFn, openInst);
+
+        std::vector<il::ValueId> slowArgs;
+        slowArgs.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            il::ValueId stepId = ilFn.valueCount++;
+            il::Instruction stepInst;
+            stepInst.op = il::Op::IterStep;
+            stepInst.type = il::Type::Bool;
+            stepInst.result = stepId;
+            stepInst.operands = {recId};
+            emitInst(ilFn, stepInst);
+
+            il::ValueId readId = ilFn.valueCount++;
+            il::Instruction readInst;
+            readInst.op = il::Op::IterValue;
+            readInst.type = il::Type::Dynamic;
+            readInst.result = readId;
+            readInst.operands = {recId};
+            emitInst(ilFn, readInst);
+            slowArgs.push_back(readId);
+        }
+        emitIterClose(recId, /*suppress=*/false, ilFn);
+
+        il::Instruction jmpSlow;
+        jmpSlow.op = il::Op::Jump;
+        jmpSlow.type = il::Type::Void;
+        jmpSlow.result = il::kNoValue;
+        jmpSlow.target = il::BlockTarget{.block = bJoin, .args = std::move(slowArgs)};
+        emitInst(ilFn, jmpSlow);
+
+        // Join block: bind elements
+        setCurrentBlock(bJoin);
+        for (size_t i = 0; i < n; ++i) {
+            const auto& elem = pattern.elements[i];
+            Value value{ilFn.blocks[bJoin].params[i].id, il::Type::Dynamic};
+            if (elem.defaultValue) {
+                auto withDefault = emitDefaultIfUndefined(
+                    value, *elem.defaultValue, elem.pattern ? std::string{} : elem.name, ilFn);
+                if (!withDefault) return false;
+                value = *withDefault;
+            }
+            if (elem.pattern) {
+                if (!lowerPattern(*elem.pattern, value, target, ilFn)) return false;
+            } else if (!elem.name.empty()) {
+                if (!bindPatternName(elem.name, value, target, elem.span, ilFn)) return false;
+            }
+        }
+        return true;
+    }
+
     il::ValueId recId = ilFn.valueCount++;
     il::Instruction openInst;
     openInst.op = il::Op::IterOpen;

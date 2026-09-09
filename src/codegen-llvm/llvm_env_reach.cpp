@@ -91,9 +91,37 @@ bool isAnnotationIntrinsic(const llvm::CallBase& call) {
 // absent: `bronze_env_get`, `bronze_env_get_tdz` and `bronze_env_set` are a slot
 // access by definition. `bronze_env_access_failed` needs no entry — it is
 // `noreturn`, which is answered before this list is consulted.
-constexpr std::array<std::string_view, 6> kEnvBlindHelpers{
-    "bronze_create_function", "bronze_env_create", "bronze_is_nullish",
-    "bronze_to_int32_f64",    "bronze_truthy",     "bronze_unbox_bool",
+constexpr std::array<std::string_view, 30> kEnvBlindHelpers{
+    "bronze_create_array",
+    "bronze_create_function",
+    "bronze_create_object",
+    "bronze_dynamic_add",
+    "bronze_dynamic_bit_and",
+    "bronze_dynamic_bit_or",
+    "bronze_dynamic_bit_xor",
+    "bronze_dynamic_div",
+    "bronze_dynamic_gt",
+    "bronze_dynamic_gte",
+    "bronze_dynamic_lt",
+    "bronze_dynamic_lte",
+    "bronze_dynamic_mod",
+    "bronze_dynamic_mul",
+    "bronze_dynamic_shl",
+    "bronze_dynamic_shr",
+    "bronze_dynamic_sub",
+    "bronze_dynamic_ushr",
+    "bronze_env_create",
+    "bronze_is_nullish",
+    "bronze_iter_close",
+    "bronze_iter_step",
+    "bronze_iter_value",
+    "bronze_pattern_check",
+    "bronze_strict_eq",
+    "bronze_string_concat",
+    "bronze_to_int32_f64",
+    "bronze_to_string",
+    "bronze_truthy",
+    "bronze_unbox_bool",
 };
 
 bool isNamedBlindHelper(llvm::StringRef name) {

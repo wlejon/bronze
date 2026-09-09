@@ -315,6 +315,14 @@ uint64_t bronze_create_array(uint32_t length) {
     uint32_t cap = (length < BRONZE_ABI_ARRAY_MIN_CAPACITY) ? BRONZE_ABI_ARRAY_MIN_CAPACITY : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);
     arr->length = length;
+    const uint64_t needed =
+        BRONZE_ABI_ARRAY_HEADER_BYTES + BRONZE_ABI_HDR_BYTES + static_cast<uint64_t>(cap) * 8;
+    const bronze_tls_block* tls = bronze_tls_block_addr();
+    if (tls->alloc_limit - tls->alloc_cursor < needed) {
+        Rooted<Value> arrRoot{Value::fromObject(arr)};
+        rtHeap().refill_inline_lab();
+        return arrRoot.get().rawBits();
+    }
     return Value::fromObject(arr).rawBits();
 }
 

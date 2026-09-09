@@ -24,13 +24,14 @@ llvm::Value* emitRecordPtr(llvm::IRBuilder<>& builder, llvm::Value* recBits,
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::Value* tag = builder.CreateLShr(recBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObj =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     llvm::BasicBlock* kindBb =
         llvm::BasicBlock::Create(ctx, std::string(prefix) + "rec", fn);
-    builder.CreateCondBr(isObj, kindBb, fail);
+    builder.CreateCondBr(isObj, kindBb, fail, likelyBranch);
 
     builder.SetInsertPoint(kindBb);
     llvm::Value* addr =
@@ -42,7 +43,7 @@ llvm::Value* emitRecordPtr(llvm::IRBuilder<>& builder, llvm::Value* recBits,
     llvm::Value* isRec =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ITERATOR));
     llvm::BasicBlock* okBb = llvm::BasicBlock::Create(ctx, std::string(prefix) + "ok", fn);
-    builder.CreateCondBr(isRec, okBb, fail);
+    builder.CreateCondBr(isRec, okBb, fail, likelyBranch);
 
     builder.SetInsertPoint(okBb);
     return hdr;
@@ -70,12 +71,13 @@ llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "io.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "io.done", fn);
 
     llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "io.seam", fn);
-    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb);
+    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb, likelyBranch);
     builder.SetInsertPoint(seamBb);
 
     // ONLY an Array source: `rtOpenIterator` classifies by the receiver's
@@ -87,7 +89,7 @@ llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* tag = builder.CreateLShr(srcBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObj = builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     llvm::BasicBlock* flagsBb = llvm::BasicBlock::Create(ctx, "io.flags", fn);
-    builder.CreateCondBr(isObj, flagsBb, slowBb);
+    builder.CreateCondBr(isObj, flagsBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(flagsBb);
     llvm::Value* srcAddr =
@@ -103,7 +105,7 @@ llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.CreateICmpEQ(srcFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_MAP));
     llvm::Value* canFastOpen = builder.CreateOr(isArr, isMap, "io.canfast");
     llvm::BasicBlock* allocBb = llvm::BasicBlock::Create(ctx, "io.alloc", fn);
-    builder.CreateCondBr(canFastOpen, allocBb, slowBb);
+    builder.CreateCondBr(canFastOpen, allocBb, slowBb, likelyBranch);
 
     // The record, bump-allocated from the inline-allocation window exactly as
     // the inline `new` fast path allocates its instances (llvm_construct.cpp):
@@ -120,7 +122,7 @@ llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* fits =
         builder.CreateICmpUGE(headroom, builder.getInt64(BRONZE_ABI_ITER_RECORD_BYTES), "io.fits");
     llvm::BasicBlock* buildBb = llvm::BasicBlock::Create(ctx, "io.build", fn);
-    builder.CreateCondBr(fits, buildBb, slowBb);
+    builder.CreateCondBr(fits, buildBb, slowBb, likelyBranch);
 
     // The stores IterRecordHeader::create performs, spelled out: header word,
     // then the six Value fields. Pure pointer arithmetic — no call, no
@@ -190,7 +192,7 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "is.done", fn);
 
     llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "is.seam", fn);
-    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb);
+    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb, likelyBranch);
     builder.SetInsertPoint(seamBb);
 
     llvm::Value* rec = emitRecordPtr(builder, recBits, slowBb, "is.");
@@ -205,7 +207,7 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
 
     builder.CreateCondBr(
         builder.CreateICmpEQ(kind, builder.getInt64(BRONZE_ABI_ITER_KIND_ARRAY_BITS)), liveBb,
-        chkMapBb);
+        chkMapBb, likelyBranch);
 
     builder.SetInsertPoint(chkMapBb);
     builder.CreateCondBr(
@@ -275,7 +277,7 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     // (the only way the loop's own arithmetic gets here); anything else —
     // NaN, negative — is not this path's to answer.
     builder.SetInsertPoint(endSplitBb);
-    builder.CreateCondBr(nonneg, endBb, slowBb);
+    builder.CreateCondBr(nonneg, endBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(endBb);
     llvm::Value* trueBits = builder.getInt64(
@@ -495,12 +497,13 @@ void emitIterClose(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* r
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done", fn);
 
     llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "ic.seam", fn);
-    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb);
+    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb, likelyBranch);
     builder.SetInsertPoint(seamBb);
 
     // The open's classification, once more. A kind below `Protocol` owns its
@@ -516,7 +519,7 @@ void emitIterClose(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* r
     builder.CreateCondBr(
         builder.CreateICmpULT(kind, builder.getInt64(BRONZE_ABI_ITER_KIND_OWNED_LIMIT_BITS),
                               "ic.owned"),
-        doneBb, slowBb);
+        doneBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(slowBb);
     builder.CreateCall(abi.bronze_iter_close, {recBits, builder.getInt1(suppress)});
@@ -530,12 +533,13 @@ llvm::Value* emitIterValue(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "iv.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "iv.done", fn);
 
     llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "iv.seam", fn);
-    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb);
+    builder.CreateCondBr(emitIterFastEnabled(builder, abi), seamBb, slowBb, likelyBranch);
     builder.SetInsertPoint(seamBb);
 
     // Every kind keeps its element in `current`, so unlike the step this needs

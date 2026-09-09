@@ -9,6 +9,7 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_cache.h"
@@ -671,8 +672,9 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 builder_.CreateICmpEQ(tag, builder_.getInt64(BRONZE_ABI_TAG_UNDEFINED));
             llvm::Value* isNull =
                 builder_.CreateICmpEQ(tag, builder_.getInt64(BRONZE_ABI_TAG_NULL));
+            llvm::MDNode* unlikelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
             builder_.CreateCondBr(builder_.CreateOr(isUndef, isNull, "pc.nullish"), raiseBb,
-                                  okBb);
+                                  okBb, unlikelyBranch);
             builder_.SetInsertPoint(raiseBb);
             builder_.CreateCall(abi.bronze_pattern_check,
                                 {src, builder_.getInt32(static_cast<uint32_t>(inst.immI32))});
