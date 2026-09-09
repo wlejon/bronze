@@ -41,6 +41,7 @@ const char* opName(Op op) {
         case Op::BitAnd: return "and";
         case Op::BitOr: return "or";
         case Op::BitXor: return "xor";
+        case Op::MathImul: return "math.imul";
         case Op::Shl: return "shl";
         case Op::Shr: return "shr";
         case Op::UShr: return "ushr";

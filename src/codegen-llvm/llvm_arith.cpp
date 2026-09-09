@@ -11,6 +11,7 @@
 #include <string>
 
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include "codegen-llvm/llvm_convert.h"
 #include "codegen-llvm/llvm_func.h"
@@ -39,7 +40,9 @@ llvm::Value* branchIfBothNumbers(llvm::IRBuilder<>& builder, llvm::Value* lhs, l
     llvm::Value* rhsNum =
         builder.CreateICmpULE(rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(builder.getContext(), name, fn);
-    builder.CreateCondBr(builder.CreateAnd(lhsNum, rhsNum), fastBb, slowBb);
+    auto* br = builder.CreateCondBr(builder.CreateAnd(lhsNum, rhsNum), fastBb, slowBb);
+    br->setMetadata(llvm::LLVMContext::MD_prof,
+                    llvm::MDBuilder(builder.getContext()).createBranchWeights(1048576, 1));
     builder.SetInsertPoint(fastBb);
     return nullptr;
 }
@@ -422,10 +425,33 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         if (lhs->getType()->isIntegerTy(32)) {
             values_[inst.result] = lhs;
         } else if (lhs->getType()->isIntegerTy(64)) {
-            // The boxed form, which is a different operation: ToNumber runs
-            // first, so a string is parsed and an object's valueOf is called.
-            // That can execute program text, so it stays a helper call.
-            values_[inst.result] = builder_.CreateCall(shared_.abi.bronze_to_int32, {lhs});
+            llvm::LLVMContext& ctx = builder_.getContext();
+            llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+            llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "toi32.box.num", fn);
+            llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "toi32.box.slow", fn);
+            llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "toi32.box.done", fn);
+            llvm::Value* isNum = builder_.CreateICmpULE(
+                lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "toi32.box.isnum");
+            auto* br = builder_.CreateCondBr(isNum, numBb, slowBb);
+            br->setMetadata(llvm::LLVMContext::MD_prof,
+                            llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+            builder_.SetInsertPoint(numBb);
+            llvm::Value* fastDbl = builder_.CreateBitCast(lhs, builder_.getDoubleTy());
+            llvm::Value* fastRes = emitToInt32F64(builder_, shared_.abi, fastDbl);
+            llvm::BasicBlock* fastEndBb = builder_.GetInsertBlock();
+            builder_.CreateBr(doneBb);
+
+            builder_.SetInsertPoint(slowBb);
+            llvm::Value* slowRes = builder_.CreateCall(shared_.abi.bronze_to_int32, {lhs});
+            llvm::BasicBlock* slowEndBb = builder_.GetInsertBlock();
+            builder_.CreateBr(doneBb);
+
+            builder_.SetInsertPoint(doneBb);
+            llvm::PHINode* phi = builder_.CreatePHI(builder_.getInt32Ty(), 2, "toi32.box.result");
+            phi->addIncoming(fastRes, fastEndBb);
+            phi->addIncoming(slowRes, slowEndBb);
+            values_[inst.result] = phi;
         } else {
             values_[inst.result] =
                 emitToInt32F64(builder_, shared_.abi, widenBool(builder_, lhs));
@@ -561,6 +587,7 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         case il::Op::BitAnd:
         case il::Op::BitOr:
         case il::Op::BitXor:
+        case il::Op::MathImul:
         case il::Op::Shl:
         case il::Op::Shr:
         case il::Op::UShr: {
@@ -592,8 +619,10 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
                     lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.lnum");
                 llvm::Value* rhsNum = builder_.CreateICmpULE(
                     rhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.rnum");
-                builder_.CreateCondBr(builder_.CreateAnd(lhsNum, rhsNum, "dbit.bothnum"), numBb,
+                auto* br = builder_.CreateCondBr(builder_.CreateAnd(lhsNum, rhsNum, "dbit.bothnum"), numBb,
                                       slowBb);
+                br->setMetadata(llvm::LLVMContext::MD_prof,
+                                llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
                 builder_.SetInsertPoint(numBb);
                 llvm::Value* li = emitToInt32F64(builder_, shared_.abi,
@@ -641,6 +670,7 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
                 case il::Op::BitAnd: result = builder_.CreateAnd(lhs, rhs); break;
                 case il::Op::BitOr: result = builder_.CreateOr(lhs, rhs); break;
                 case il::Op::BitXor: result = builder_.CreateXor(lhs, rhs); break;
+                case il::Op::MathImul: result = builder_.CreateMul(lhs, rhs); break;
                 default: {
                     // ToUint32(rhs) & 31, which the language specifies and
                     // LLVM requires: a shift by 32 or more is poison, while

@@ -92,6 +92,7 @@ enum class Op : uint8_t {
     BitAnd,     // a: f64 = and b, c
     BitOr,
     BitXor,
+    MathImul,   // a: f64 = imul b, c         (operands i32, 32-bit signed multiply denotated as f64)
     Shl,        // a: f64 = shl b, c          (count masked to 5 bits)
     Shr,        // arithmetic: the sign bit is replicated
     UShr,       // logical, and the ONE bitwise op whose result is ToUint32

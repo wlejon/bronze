@@ -1,15 +1,29 @@
 #include "codegen-llvm/llvm_convert.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
+
+namespace {
+
+int32_t jsToInt32(double d) {
+    if (!std::isfinite(d) || d == 0.0) return 0;
+    const double truncated = std::trunc(d);
+    const double residue = std::fmod(truncated, 4294967296.0);
+    return static_cast<int32_t>(static_cast<uint32_t>(
+        static_cast<int64_t>(residue < 0 ? residue + 4294967296.0 : residue)));
+}
+
+}  // namespace
 
 bool toInt32InlineEnabled() {
     static const bool enabled = [] {
@@ -28,6 +42,39 @@ bool pureConversionHelpers() {
 }
 
 llvm::Value* emitToInt32F64(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* dbl) {
+    if (dbl->getType()->isIntegerTy(32)) {
+        return dbl;
+    }
+
+    while (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(dbl)) {
+        if (bc->getType()->isDoubleTy() && bc->getOperand(0)->getType()->isIntegerTy(64)) {
+            if (auto* innerBc = llvm::dyn_cast<llvm::BitCastInst>(bc->getOperand(0))) {
+                if (innerBc->getType()->isIntegerTy(64) &&
+                    innerBc->getOperand(0)->getType()->isDoubleTy()) {
+                    dbl = innerBc->getOperand(0);
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(dbl)) {
+        return builder.getInt32(jsToInt32(cfp->getValueAPF().convertToDouble()));
+    }
+
+    if (auto* sitofp = llvm::dyn_cast<llvm::SIToFPInst>(dbl)) {
+        if (sitofp->getOperand(0)->getType()->isIntegerTy(32)) {
+            return sitofp->getOperand(0);
+        }
+    }
+
+    if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(dbl)) {
+        if (uitofp->getOperand(0)->getType()->isIntegerTy(32)) {
+            return uitofp->getOperand(0);
+        }
+    }
+
     if (!toInt32InlineEnabled()) {
         return builder.CreateCall(abi.bronze_to_int32_f64, {dbl}, "toi32");
     }

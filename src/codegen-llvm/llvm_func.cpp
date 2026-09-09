@@ -704,6 +704,7 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
         case il::Op::BitAnd:
         case il::Op::BitOr:
         case il::Op::BitXor:
+        case il::Op::MathImul:
         case il::Op::Shl:
         case il::Op::Shr:
         case il::Op::UShr:

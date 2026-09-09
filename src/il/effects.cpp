@@ -137,6 +137,7 @@ bool canThrow(const Instruction& inst) {
         case Op::BitAnd:
         case Op::BitOr:
         case Op::BitXor:
+        case Op::MathImul:
         case Op::Shl:
         case Op::Shr:
         case Op::UShr:
@@ -264,6 +265,7 @@ bool canCollect(const Instruction& inst) {
         case Op::BitAnd:
         case Op::BitOr:
         case Op::BitXor:
+        case Op::MathImul:
         case Op::Shl:
         case Op::Shr:
         case Op::UShr:

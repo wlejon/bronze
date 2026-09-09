@@ -98,14 +98,14 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::BasicBlock* strLenBb = nullptr;
     llvm::Value* strLenVal = nullptr;
     if (keyStr == "length") {
-        llvm::BasicBlock* strCheckBb = llvm::BasicBlock::Create(ctx, "ic.str.check", fn);
+        llvm::BasicBlock* notStrBb = llvm::BasicBlock::Create(ctx, "ic.str.not", fn);
         strLenBb = llvm::BasicBlock::Create(ctx, "ic.str.len", fn);
-        builder.CreateCondBr(isObject, checkBb, strCheckBb, likelyBranch);
-
-        builder.SetInsertPoint(strCheckBb);
         llvm::Value* isStr =
             builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "ic.isstr");
-        builder.CreateCondBr(isStr, strLenBb, slowBb);
+        builder.CreateCondBr(isStr, strLenBb, notStrBb);
+
+        builder.SetInsertPoint(notStrBb);
+        builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(strLenBb);
         llvm::Value* strAddr =
@@ -114,6 +114,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         llvm::Value* strLenPtr =
             builder.CreateConstInBoundsGEP1_32(i8Ty, strHdr, BRONZE_ABI_STRING_LENGTH_OFFSET);
         auto* strLen = builder.CreateAlignedLoad(i32Ty, strLenPtr, llvm::Align(4), "str.len");
+        markInvariant(strLen, ctx);
         llvm::Value* strLenDbl = builder.CreateUIToFP(strLen, dblTy, "str.len.dbl");
         strLenVal = builder.CreateBitCast(strLenDbl, i64Ty, "str.len.bits");
         builder.CreateBr(doneBb);

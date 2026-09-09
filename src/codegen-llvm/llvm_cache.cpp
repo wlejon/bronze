@@ -4,6 +4,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 
 namespace bronze::codegen_llvm {
 
@@ -13,6 +14,7 @@ llvm::Value* emitGlobalGetCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::Value* cellPtr = globalCacheCellPtr(builder, tables, keyIndex);
     if (!cellPtr) {
@@ -35,7 +37,8 @@ llvm::Value* emitGlobalGetCached(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* filled = builder.CreateICmpNE(
         cached, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), "gbl.filled");
     llvm::BasicBlock* fastBb = builder.GetInsertBlock();
-    builder.CreateCondBr(filled, doneBb, slowBb);
+    auto* br = builder.CreateCondBr(filled, doneBb, slowBb);
+    br->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(
@@ -57,6 +60,7 @@ llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFn
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::Value* codePtr = fnSlotPtr(builder, tables, slot);
     if (!codePtr) {
@@ -77,7 +81,8 @@ llvm::Value* emitFunctionSingletonCached(llvm::IRBuilder<>& builder, const AbiFn
     // therefore always misses.
     llvm::Value* code = builder.CreateAlignedLoad(ptrTy, codePtr, llvm::Align(8), "fnsingle.code");
     llvm::Value* codeOk = builder.CreateICmpEQ(code, wrapper, "fnsingle.codeok");
-    builder.CreateCondBr(codeOk, valueBb, slowBb);
+    auto* brCode = builder.CreateCondBr(codeOk, valueBb, slowBb);
+    brCode->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(valueBb);
     static_assert(BRONZE_ABI_FNSLOT_CODE_OFFSET == 0 && BRONZE_ABI_FNSLOT_VALUE_OFFSET == 8,

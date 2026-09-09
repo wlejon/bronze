@@ -302,6 +302,31 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         }
     }
 
+    // `Math.imul(a, b)` on the PROVEN pristine builtin: 32-bit integer
+    // multiplication without global lookup, property walk, or IC dispatch.
+    if (const auto* mathMem = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
+        mathMem != nullptr && !mathMem->optional && !call->optional &&
+        pristineMathCall(*call) && call->args.size() == 2 &&
+        mathMem->property == "imul" &&
+        !dynamic_cast<const ast::SpreadElement*>(call->args[0].get()) &&
+        !dynamic_cast<const ast::SpreadElement*>(call->args[1].get())) {
+        auto a0 = lowerExpr(*call->args[0], ilFn);
+        if (!a0) return std::nullopt;
+        auto a1 = lowerExpr(*call->args[1], ilFn);
+        if (!a1) return std::nullopt;
+        Value l = emitToInt32(*a0, ilFn);
+        Value r = emitToInt32(*a1, ilFn);
+        recordCall(call->span.file, true, "");
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::MathImul;
+        inst.type = il::Type::F64;
+        inst.result = res;
+        inst.operands = {l.id, r.id};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::F64};
+    }
+
     // A spread argument means the argument count is not known here, and a
     // direct call's operand list is exactly its parameter list. So a spread
     // call always takes the uniform path, where the argument vector is a real

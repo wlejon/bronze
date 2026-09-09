@@ -5,6 +5,7 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Module.h>
 
 #include "codegen-llvm/llvm_convert.h"
@@ -99,6 +100,7 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::Function* expectedCode = mathExpectedCode(abi, kind);
 
@@ -113,7 +115,8 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* tag = builder.CreateLShr(calleeBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObj =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "math.isobj");
-    builder.CreateCondBr(isObj, flagsBb, slowBb);
+    auto* brObj = builder.CreateCondBr(isObj, flagsBb, slowBb);
+    brObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(flagsBb);
     llvm::Value* addr =
@@ -125,7 +128,8 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
     markInvariant(flags, ctx);
     llvm::Value* isFn =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION));
-    builder.CreateCondBr(isFn, codeBb, slowBb);
+    auto* brFn = builder.CreateCondBr(isFn, codeBb, slowBb);
+    brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 2. ...whose code pointer IS the intrinsic — the identity the collector
     // can never move and an overwrite can never fake.
@@ -135,7 +139,8 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
     auto* code = builder.CreateAlignedLoad(ptrTy, codePtr, llvm::Align(8), "math.codeptr");
     markInvariant(code, ctx);
     llvm::Value* codeOk = builder.CreateICmpEQ(code, expectedCode, "math.codeok");
-    builder.CreateCondBr(codeOk, argsBb, slowBb);
+    auto* brCode = builder.CreateCondBr(codeOk, argsBb, slowBb);
+    brCode->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 3. ...called with numbers, so the helper's ToNumber ladder (which can
     // run user code) has nothing to do.
@@ -146,7 +151,8 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
             arg, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "math.argnum");
         argsOk = builder.CreateAnd(argsOk, isNum);
     }
-    builder.CreateCondBr(argsOk, fastBb, slowBb);
+    auto* brArgs = builder.CreateCondBr(argsOk, fastBb, slowBb);
+    brArgs->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(fastBb);
     llvm::Value* fastVal = emitMathCompute(builder, abi, kind, args);
@@ -182,6 +188,7 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::Function* expectedCode = mathExpectedCode(abi, kind);
 
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* plainBb = llvm::BasicBlock::Create(ctx, "math.m.plain", fn);
     llvm::BasicBlock* missBb = llvm::BasicBlock::Create(ctx, "math.m.miss", fn);
@@ -194,7 +201,8 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::Value* tag = builder.CreateLShr(thisVal, BRONZE_ABI_VALUE_TAG_SHIFT, "math.m.tag");
     llvm::Value* isObj =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "math.m.isobj");
-    builder.CreateCondBr(builder.CreateAnd(isEnabled, isObj), plainBb, missBb);
+    auto* brGuard = builder.CreateCondBr(builder.CreateAnd(isEnabled, isObj), plainBb, missBb);
+    brGuard->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(plainBb);
     llvm::Value* addr = builder.CreateAnd(thisVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
@@ -206,7 +214,8 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::Value* isPlain =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN), "math.m.isplain");
     llvm::BasicBlock* shapeBb = llvm::BasicBlock::Create(ctx, "math.m.shape", fn);
-    builder.CreateCondBr(isPlain, shapeBb, missBb);
+    auto* brPlain = builder.CreateCondBr(isPlain, shapeBb, missBb);
+    brPlain->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(shapeBb);
     llvm::Value* shape = builder.CreateAlignedLoad(
@@ -217,7 +226,8 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::Value* cachedShape = builder.CreateIntToPtr(cachedShapeInt, ptrTy, "math.m.cachedshapeptr");
     llvm::Value* shapeMatch = builder.CreateICmpEQ(shape, cachedShape, "math.m.shapematch");
     llvm::BasicBlock* formBb = llvm::BasicBlock::Create(ctx, "math.m.form", fn);
-    builder.CreateCondBr(shapeMatch, formBb, missBb);
+    auto* brShape = builder.CreateCondBr(shapeMatch, formBb, missBb);
+    brShape->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(formBb);
     llvm::Value* arityWord = builder.CreateAlignedLoad(
@@ -228,7 +238,8 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::Value* isSlotForm =
         builder.CreateICmpNE(formBits, builder.getInt64(0), "math.m.isslotform");
     llvm::BasicBlock* slotBb = llvm::BasicBlock::Create(ctx, "math.m.slot", fn);
-    builder.CreateCondBr(isSlotForm, slotBb, missBb);
+    auto* brSlot = builder.CreateCondBr(isSlotForm, slotBb, missBb);
+    brSlot->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(slotBb);
     llvm::Value* slotIdx = builder.CreateSub(formBits, builder.getInt64(1), "math.m.slotidx");
@@ -237,7 +248,8 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::BasicBlock* slotInlBb = llvm::BasicBlock::Create(ctx, "math.m.slot.inl", fn);
     llvm::BasicBlock* slotOvBb = llvm::BasicBlock::Create(ctx, "math.m.slot.ov", fn);
     llvm::BasicBlock* slotLoadBb = llvm::BasicBlock::Create(ctx, "math.m.slot.load", fn);
-    builder.CreateCondBr(isInline, slotInlBb, slotOvBb);
+    auto* brInl = builder.CreateCondBr(isInline, slotInlBb, slotOvBb);
+    brInl->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(slotInlBb);
     llvm::Value* inlBase =
@@ -269,7 +281,8 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::Value* fnIsObj =
         builder.CreateICmpEQ(fnTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "math.m.fnisobj");
     llvm::BasicBlock* fnHdrBb = llvm::BasicBlock::Create(ctx, "math.m.fnhdr", fn);
-    builder.CreateCondBr(fnIsObj, fnHdrBb, missBb);
+    auto* brFnObj = builder.CreateCondBr(fnIsObj, fnHdrBb, missBb);
+    brFnObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(fnHdrBb);
     llvm::Value* fnAddr = builder.CreateAnd(slotVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
@@ -281,7 +294,8 @@ llvm::Value* emitMethodCallMathDirect(
     llvm::Value* isFn =
         builder.CreateICmpEQ(fnFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "math.m.isfn");
     llvm::BasicBlock* codeBb = llvm::BasicBlock::Create(ctx, "math.m.code", fn);
-    builder.CreateCondBr(isFn, codeBb, missBb);
+    auto* brFn = builder.CreateCondBr(isFn, codeBb, missBb);
+    brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(codeBb);
     auto* code = builder.CreateAlignedLoad(
@@ -290,7 +304,8 @@ llvm::Value* emitMethodCallMathDirect(
     markInvariant(code, ctx);
     llvm::Value* codeOk = builder.CreateICmpEQ(code, expectedCode, "math.m.codeok");
     llvm::BasicBlock* argsBb = llvm::BasicBlock::Create(ctx, "math.m.args", fn);
-    builder.CreateCondBr(codeOk, argsBb, missBb);
+    auto* brCode = builder.CreateCondBr(codeOk, argsBb, missBb);
+    brCode->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(argsBb);
     llvm::Value* argsOk = builder.getInt1(true);
@@ -300,7 +315,8 @@ llvm::Value* emitMethodCallMathDirect(
         argsOk = builder.CreateAnd(argsOk, isNum);
     }
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, "math.m.fast", fn);
-    builder.CreateCondBr(argsOk, fastBb, missBb);
+    auto* brArgs = builder.CreateCondBr(argsOk, fastBb, missBb);
+    brArgs->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(fastBb);
     llvm::Value* fastVal = emitMathCompute(builder, abi, kind, args);

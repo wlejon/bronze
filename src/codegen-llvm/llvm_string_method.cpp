@@ -4,6 +4,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi.h"
 #include "codegen-llvm/llvm_prop_ic.h"
@@ -20,12 +21,14 @@ llvm::Value* emitStringCharCodeAtCompute(llvm::IRBuilder<>& builder, llvm::Value
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     // 1. Check if idxVal is a number: idxVal <= NUMBER_MAX_BITS
     llvm::Value* isNum = builder.CreateICmpULE(
         idxVal, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "cca.idx.isnum");
     llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "cca.idx.num", fn);
-    builder.CreateCondBr(isNum, numBb, failBb);
+    auto* brNum = builder.CreateCondBr(isNum, numBb, failBb);
+    brNum->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 2. Check if idxVal is an exact integer that fits in i32
     builder.SetInsertPoint(numBb);
@@ -34,7 +37,8 @@ llvm::Value* emitStringCharCodeAtCompute(llvm::IRBuilder<>& builder, llvm::Value
     llvm::Value* recheckDbl = builder.CreateSIToFP(idxI32, dblTy, "cca.idx.recheck");
     llvm::Value* isExactInt = builder.CreateFCmpOEQ(idxDbl, recheckDbl, "cca.idx.isint");
     llvm::BasicBlock* exactBb = llvm::BasicBlock::Create(ctx, "cca.idx.exact", fn);
-    builder.CreateCondBr(isExactInt, exactBb, failBb);
+    auto* brExact = builder.CreateCondBr(isExactInt, exactBb, failBb);
+    brExact->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 3. String header load and bounds check
     builder.SetInsertPoint(exactBb);
@@ -51,7 +55,8 @@ llvm::Value* emitStringCharCodeAtCompute(llvm::IRBuilder<>& builder, llvm::Value
     llvm::BasicBlock* inBoundsBb = llvm::BasicBlock::Create(ctx, "cca.inbounds.bb", fn);
     llvm::BasicBlock* oobBb = llvm::BasicBlock::Create(ctx, "cca.oob.bb", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "cca.done.bb", fn);
-    builder.CreateCondBr(inBounds, inBoundsBb, oobBb);
+    auto* brBounds = builder.CreateCondBr(inBounds, inBoundsBb, oobBb);
+    brBounds->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // Out of bounds: return canonical NaN
     builder.SetInsertPoint(oobBb);
@@ -64,14 +69,15 @@ llvm::Value* emitStringCharCodeAtCompute(llvm::IRBuilder<>& builder, llvm::Value
     llvm::Value* flagsPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, strHdr, BRONZE_ABI_STRING_FLAGS_OFFSET);
     llvm::Value* flags = builder.CreateAlignedLoad(i32Ty, flagsPtr, llvm::Align(4), "cca.flags");
-    llvm::Value* isUtf16 = builder.CreateICmpNE(
+    llvm::Value* isLatin1 = builder.CreateICmpEQ(
         builder.CreateAnd(flags, builder.getInt32(BRONZE_ABI_STRING_UTF16_BIT)),
-        builder.getInt32(0), "cca.isutf16");
+        builder.getInt32(0), "cca.islatin1");
 
     llvm::BasicBlock* latin1Bb = llvm::BasicBlock::Create(ctx, "cca.latin1", fn);
     llvm::BasicBlock* utf16Bb = llvm::BasicBlock::Create(ctx, "cca.utf16", fn);
     llvm::BasicBlock* charJoinBb = llvm::BasicBlock::Create(ctx, "cca.charjoin", fn);
-    builder.CreateCondBr(isUtf16, utf16Bb, latin1Bb);
+    auto* brLatin = builder.CreateCondBr(isLatin1, latin1Bb, utf16Bb);
+    brLatin->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // Latin-1 branch:
     builder.SetInsertPoint(latin1Bb);
@@ -126,6 +132,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
 
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
 
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+
     llvm::BasicBlock* primBb = llvm::BasicBlock::Create(ctx, "cca.m.prim", fn);
     llvm::BasicBlock* missBb = llvm::BasicBlock::Create(ctx, "cca.m.miss", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "cca.m.done", fn);
@@ -138,7 +146,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::Value* tag = builder.CreateLShr(thisVal, BRONZE_ABI_VALUE_TAG_SHIFT, "cca.m.tag");
     llvm::Value* isString =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "cca.m.isstr");
-    builder.CreateCondBr(builder.CreateAnd(isEnabled, isString), primBb, missBb);
+    auto* brGuard = builder.CreateCondBr(builder.CreateAnd(isEnabled, isString), primBb, missBb);
+    brGuard->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 2. Primitive IC form check (word 0 has receiver's tag in kind field under exotic bit)
     builder.SetInsertPoint(primBb);
@@ -152,7 +161,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
         builder.getInt64(BRONZE_ABI_METHOD_IC_EXOTIC_BIT), "cca.m.prim.expect");
     llvm::Value* kindOk = builder.CreateICmpEQ(primLow, primExpect, "cca.m.prim.kindok");
     llvm::BasicBlock* holderBb = llvm::BasicBlock::Create(ctx, "cca.m.holder", fn);
-    builder.CreateCondBr(kindOk, holderBb, missBb);
+    auto* brKind = builder.CreateCondBr(kindOk, holderBb, missBb);
+    brKind->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 3. Holder (String.prototype) check
     builder.SetInsertPoint(holderBb);
@@ -165,7 +175,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::Value* holderIsObj =
         builder.CreateICmpEQ(holderTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "cca.m.holderisobj");
     llvm::BasicBlock* holderShapeBb = llvm::BasicBlock::Create(ctx, "cca.m.holdershape", fn);
-    builder.CreateCondBr(holderIsObj, holderShapeBb, missBb);
+    auto* brHolderObj = builder.CreateCondBr(holderIsObj, holderShapeBb, missBb);
+    brHolderObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 4. Holder shape matches latched shape
     builder.SetInsertPoint(holderShapeBb);
@@ -185,7 +196,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::Value* shapeOk =
         builder.CreateICmpEQ(holderShape, latchedShape, "cca.m.shapeok");
     llvm::BasicBlock* slotFormBb = llvm::BasicBlock::Create(ctx, "cca.m.slotform", fn);
-    builder.CreateCondBr(shapeOk, slotFormBb, missBb);
+    auto* brShape = builder.CreateCondBr(shapeOk, slotFormBb, missBb);
+    brShape->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 5. Slot form check
     builder.SetInsertPoint(slotFormBb);
@@ -198,7 +210,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::Value* isSlotForm =
         builder.CreateICmpNE(formBits, builder.getInt64(0), "cca.m.isslotform");
     llvm::BasicBlock* slotBb = llvm::BasicBlock::Create(ctx, "cca.m.slot", fn);
-    builder.CreateCondBr(isSlotForm, slotBb, missBb);
+    auto* brSlot = builder.CreateCondBr(isSlotForm, slotBb, missBb);
+    brSlot->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 6. Load slot from holder
     builder.SetInsertPoint(slotBb);
@@ -208,7 +221,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::BasicBlock* slotInlBb = llvm::BasicBlock::Create(ctx, "cca.m.slot.inl", fn);
     llvm::BasicBlock* slotOvBb = llvm::BasicBlock::Create(ctx, "cca.m.slot.ov", fn);
     llvm::BasicBlock* slotLoadBb = llvm::BasicBlock::Create(ctx, "cca.m.slot.load", fn);
-    builder.CreateCondBr(isInline, slotInlBb, slotOvBb);
+    auto* brInl = builder.CreateCondBr(isInline, slotInlBb, slotOvBb);
+    brInl->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(slotInlBb);
     llvm::Value* inlBase =
@@ -241,7 +255,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::Value* fnIsObj =
         builder.CreateICmpEQ(fnTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "cca.m.fnisobj");
     llvm::BasicBlock* fnHdrBb = llvm::BasicBlock::Create(ctx, "cca.m.fnhdr", fn);
-    builder.CreateCondBr(fnIsObj, fnHdrBb, missBb);
+    auto* brFnObj = builder.CreateCondBr(fnIsObj, fnHdrBb, missBb);
+    brFnObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(fnHdrBb);
     llvm::Value* fnAddr =
@@ -254,7 +269,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::Value* isFn = builder.CreateICmpEQ(
         fnFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "cca.m.isfn");
     llvm::BasicBlock* codeBb = llvm::BasicBlock::Create(ctx, "cca.m.code", fn);
-    builder.CreateCondBr(isFn, codeBb, missBb);
+    auto* brFn = builder.CreateCondBr(isFn, codeBb, missBb);
+    brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 8. Check function code pointer is bronze_string_char_code_at
     builder.SetInsertPoint(codeBb);
@@ -265,7 +281,8 @@ llvm::Value* emitMethodCallStringCharCodeAtDirect(
     llvm::Value* codeOk =
         builder.CreateICmpEQ(code, abi.bronze_string_char_code_at, "cca.m.codeok");
     llvm::BasicBlock* computeBb = llvm::BasicBlock::Create(ctx, "cca.m.compute", fn);
-    builder.CreateCondBr(codeOk, computeBb, missBb);
+    auto* brCode = builder.CreateCondBr(codeOk, computeBb, missBb);
+    brCode->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // 9. Compute charCodeAt inline (fails to missBb if index is not an exact integer)
     builder.SetInsertPoint(computeBb);

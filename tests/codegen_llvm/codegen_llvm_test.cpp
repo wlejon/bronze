@@ -876,6 +876,49 @@ TEST_CASE("ToInt32 of a double is a range test, an fptosi to i64 and a truncatio
           codegen_llvm::pureConversionHelpers());
 }
 
+TEST_CASE("ToInt32 optimizes constants, existing i32, and float conversions") {
+    EnvShapeFixture f;
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(f.ctx, "entry", f.fn);
+    llvm::IRBuilder<> b(entry);
+
+    // 1. i32 input returns directly
+    llvm::Value* i32Val = b.getInt32(42);
+    llvm::Value* res1 = codegen_llvm::emitToInt32F64(b, f.abi, i32Val);
+    CHECK(res1 == i32Val);
+
+    // 2. ConstantFP folds at compile time
+    llvm::Value* cfp1 = llvm::ConstantFP::get(b.getDoubleTy(), 16777619.0);
+    llvm::Value* res2 = codegen_llvm::emitToInt32F64(b, f.abi, cfp1);
+    CHECK(llvm::isa<llvm::ConstantInt>(res2));
+    CHECK(llvm::cast<llvm::ConstantInt>(res2)->getSExtValue() == 16777619);
+
+    // 3. ConstantFP with wraparound (4294967295 -> -1)
+    llvm::Value* cfp2 = llvm::ConstantFP::get(b.getDoubleTy(), 4294967295.0);
+    llvm::Value* res3 = codegen_llvm::emitToInt32F64(b, f.abi, cfp2);
+    CHECK(llvm::isa<llvm::ConstantInt>(res3));
+    CHECK(llvm::cast<llvm::ConstantInt>(res3)->getSExtValue() == -1);
+
+    // 4. SIToFP of i32 bypasses conversion
+    llvm::Value* sitofp = b.CreateSIToFP(i32Val, b.getDoubleTy());
+    llvm::Value* res4 = codegen_llvm::emitToInt32F64(b, f.abi, sitofp);
+    CHECK(res4 == i32Val);
+
+    // 5. UIToFP of i32 bypasses conversion
+    llvm::Value* uitofp = b.CreateUIToFP(i32Val, b.getDoubleTy());
+    llvm::Value* res5 = codegen_llvm::emitToInt32F64(b, f.abi, uitofp);
+    CHECK(res5 == i32Val);
+
+    // 6. BitCast unwrap: i64 -> double of double -> i64 of SIToFP
+    llvm::Value* toI64 = b.CreateBitCast(sitofp, b.getInt64Ty());
+    llvm::Value* toDbl = b.CreateBitCast(toI64, b.getDoubleTy());
+    llvm::Value* res6 = codegen_llvm::emitToInt32F64(b, f.abi, toDbl);
+    CHECK(res6 == i32Val);
+
+    b.CreateRetVoid();
+    // No runtime calls should have been emitted for any of these
+    CHECK(f.calleeNames().empty());
+}
+
 // ---- the split's keep sets (llvm_partition.h) -------------------------------
 //
 // The bin packer is inlining-blind: it puts a direct-call callee wherever the
