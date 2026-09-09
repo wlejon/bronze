@@ -10,6 +10,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
@@ -45,12 +46,13 @@ ArrayStoreProof emitArrayStoreProof(llvm::IRBuilder<>& builder, llvm::Value* obj
     llvm::BasicBlock* elemsBb = llvm::BasicBlock::Create(ctx, tag + "elems", fn);
     llvm::BasicBlock* baseBb = llvm::BasicBlock::Create(ctx, tag + "base", fn);
     llvm::BasicBlock* joinBb = llvm::BasicBlock::Create(ctx, tag + "join", fn);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* entryBb = builder.GetInsertBlock();
     llvm::Value* tagBits = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
         builder.CreateICmpEQ(tagBits, builder.getInt64(BRONZE_ABI_TAG_OBJECT), tag + "isobj");
-    builder.CreateCondBr(isObject, hdrBb, joinBb);
+    builder.CreateCondBr(isObject, hdrBb, joinBb, likelyBranch);
 
     builder.SetInsertPoint(hdrBb);
     llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
@@ -60,7 +62,7 @@ ArrayStoreProof emitArrayStoreProof(llvm::IRBuilder<>& builder, llvm::Value* obj
     auto* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), tag + "flags");
     llvm::Value* isArray =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-    builder.CreateCondBr(isArray, lenBb, joinBb);
+    builder.CreateCondBr(isArray, lenBb, joinBb, likelyBranch);
 
     // ONE length test for the whole run, against its largest index. Strict, so
     // every member writes an index that is already a slot — which is what keeps
@@ -72,7 +74,7 @@ ArrayStoreProof emitArrayStoreProof(llvm::IRBuilder<>& builder, llvm::Value* obj
     auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), tag + "len");
     tagArrayHeaderAccess(len, ctx);
     llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(maxIndex), len);
-    builder.CreateCondBr(inBounds, capBb, joinBb);
+    builder.CreateCondBr(inBounds, capBb, joinBb, likelyBranch);
 
     // The head-offset test, in 64 bits. A shifted array (one `shift()` left
     // behind) stores element k at slot `head + k`, and the per-store arm
@@ -91,7 +93,7 @@ ArrayStoreProof emitArrayStoreProof(llvm::IRBuilder<>& builder, llvm::Value* obj
     llvm::Value* head64 = builder.CreateZExt(head, i64Ty);
     llvm::Value* lastSlot = builder.CreateAdd(head64, builder.getInt64(maxIndex));
     llvm::Value* inCap = builder.CreateICmpULT(lastSlot, builder.CreateZExt(cap, i64Ty));
-    builder.CreateCondBr(inCap, propsBb, joinBb);
+    builder.CreateCondBr(inCap, propsBb, joinBb, likelyBranch);
 
     // The named-properties side object, and with it the integrity level: an
     // array that has none is open and extensible, so this one test stands for
@@ -106,7 +108,7 @@ ArrayStoreProof emitArrayStoreProof(llvm::IRBuilder<>& builder, llvm::Value* obj
     llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* noProps =
         builder.CreateICmpEQ(propsTag, builder.getInt64(BRONZE_ABI_TAG_UNDEFINED));
-    builder.CreateCondBr(noProps, elemsBb, joinBb);
+    builder.CreateCondBr(noProps, elemsBb, joinBb, likelyBranch);
 
     builder.SetInsertPoint(elemsBb);
     llvm::Value* elemsPtr =
@@ -116,7 +118,7 @@ ArrayStoreProof emitArrayStoreProof(llvm::IRBuilder<>& builder, llvm::Value* obj
     llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* elemsIsObj =
         builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(elemsIsObj, baseBb, joinBb);
+    builder.CreateCondBr(elemsIsObj, baseBb, joinBb, likelyBranch);
 
     // Element zero's address: the ring head, plus the one slot the elements
     // object carries in front of its payload. The same expression the read

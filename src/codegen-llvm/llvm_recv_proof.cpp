@@ -15,6 +15,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
@@ -578,6 +579,8 @@ ReceiverProof emitArrayProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
     llvm::BasicBlock* baseBb = llvm::BasicBlock::Create(ctx, tag + "base", fn);
     llvm::BasicBlock* joinBb = llvm::BasicBlock::Create(ctx, tag + "join", fn);
 
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+
     llvm::BasicBlock* entryBb = builder.GetInsertBlock();
     llvm::Value* tagBits = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
@@ -592,7 +595,7 @@ ReceiverProof emitArrayProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
     auto* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), tag + "flags");
     llvm::Value* isArray =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-    builder.CreateCondBr(isArray, kindBb, joinBb);
+    builder.CreateCondBr(isArray, kindBb, joinBb, likelyBranch);
 
     // ONE length test for the whole run, against its largest index. Every
     // member is then in bounds by construction, which is what lets each fast
@@ -603,7 +606,7 @@ ReceiverProof emitArrayProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
     auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), tag + "len");
     tagArrayHeaderAccess(len, ctx);
     llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(maxIndex), len);
-    builder.CreateCondBr(inBounds, elemsBb, joinBb);
+    builder.CreateCondBr(inBounds, elemsBb, joinBb, likelyBranch);
 
     builder.SetInsertPoint(elemsBb);
     llvm::Value* elemsPtr =
@@ -613,7 +616,7 @@ ReceiverProof emitArrayProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
     llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* elemsIsObj =
         builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(elemsIsObj, baseBb, joinBb);
+    builder.CreateCondBr(elemsIsObj, baseBb, joinBb, likelyBranch);
 
     // Element zero's address, byte for byte the address llvm_prop_get.cpp's
     // array arm computes for index zero: the ring head, plus the one slot the

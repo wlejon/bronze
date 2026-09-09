@@ -11,6 +11,7 @@
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include "codegen-llvm/llvm_array_store_proof.h"
 #include "codegen-llvm/llvm_func.h"
@@ -664,7 +665,8 @@ bool FunctionEmitter::emitRunArmGroup(const RunArmGroup& group) {
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(shared_.ctx, tag + "fast", llvmFunc_);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(shared_.ctx, tag + "slow", llvmFunc_);
     llvm::BasicBlock* joinBb = llvm::BasicBlock::Create(shared_.ctx, tag + "join", llvmFunc_);
-    builder_.CreateCondBr(ok, gateBb != nullptr ? gateBb : fastBb, slowBb);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(shared_.ctx).createBranchWeights(1048576, 1);
+    builder_.CreateCondBr(ok, gateBb != nullptr ? gateBb : fastBb, slowBb, likelyBranch);
 
     // ---- the fast path: the span, and not one other thing -------------------
     //

@@ -133,7 +133,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "mic.hdr");
     llvm::BasicBlock* tagBb = llvm::BasicBlock::Create(ctx, "mic.tag.split", fn);
     llvm::BasicBlock* primBb = llvm::BasicBlock::Create(ctx, "mic.prim", fn);
-    builder.CreateCondBr(isEnabled, tagBb, slowBb);
+    builder.CreateCondBr(isEnabled, tagBb, slowBb, likelyBranch);
     builder.SetInsertPoint(tagBb);
     auto* brCheck = builder.CreateCondBr(isObj, plainBb, primBb);
     brCheck->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
@@ -197,7 +197,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     markInvariant(flags, ctx);
     llvm::Value* isPlain =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN), "mic.isplain");
-    builder.CreateCondBr(isPlain, shapeBb, exoticBb);
+    builder.CreateCondBr(isPlain, shapeBb, exoticBb, likelyBranch);
 
 
     // 2b. EXOTIC receiver (Array, collection, typed-array view, or a global
@@ -537,7 +537,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::BasicBlock* underArityCheckBb =
         llvm::BasicBlock::Create(ctx, "mic.underarity.check", fn);
 
-    builder.CreateCondBr(directArityOk, dispatchBb, underArityCheckBb);
+    builder.CreateCondBr(directArityOk, dispatchBb, underArityCheckBb, likelyBranch);
 
     // 4d. Under-arity check
     builder.SetInsertPoint(underArityCheckBb);

@@ -88,6 +88,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * runtime's Value constructors by static_asserts in rt_helpers.cpp. */
 #define BRONZE_ABI_UNDEFINED_BITS 0xFFF6000000000000ull
 #define BRONZE_ABI_NULL_BITS      0xFFF5000000000000ull
+#define BRONZE_ABI_FALSE_BITS     0xFFF4000000000000ull
+#define BRONZE_ABI_TRUE_BITS      0xFFF4000000000001ull
 
 /* The Hole singleton, which is what the TLS block's `exception_cell` holds when no
  * exception is pending. The Hole is internal by construction — the value model

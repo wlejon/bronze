@@ -60,7 +60,7 @@ public:
         return Value(std::bit_cast<uint64_t>(d));
     }
 
-    static Value fromBool(bool b) noexcept {
+    static constexpr Value fromBool(bool b) noexcept {
         return Value((static_cast<uint64_t>(Tag::Bool) << kTagShift) | (b ? 1ULL : 0ULL));
     }
 

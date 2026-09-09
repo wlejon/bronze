@@ -166,7 +166,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
         llvm::Value* inCap = builder.CreateICmpULT(actualIdx, cap);
         llvm::Value* arrOk = builder.CreateAnd(builder.CreateAnd(inBounds, inCap), hasNoProps);
-        builder.CreateCondBr(arrOk, arrWriteBb, slowBb);
+        builder.CreateCondBr(arrOk, arrWriteBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(arrWriteBb);
         llvm::Value* elemsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
@@ -176,7 +176,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
         llvm::Value* elemsIsObj =
             builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-        builder.CreateCondBr(elemsIsObj, arrStoreBb, slowBb);
+        builder.CreateCondBr(elemsIsObj, arrStoreBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(arrStoreBb);
         llvm::Value* elemsAddr =

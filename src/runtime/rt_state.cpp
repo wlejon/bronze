@@ -149,6 +149,10 @@ static_assert(Value::fromUndefined().rawBits() == BRONZE_ABI_UNDEFINED_BITS,
               "BRONZE_ABI_UNDEFINED_BITS in bronze_abi.h has drifted from the value model");
 static_assert(Value::fromNull().rawBits() == BRONZE_ABI_NULL_BITS,
               "BRONZE_ABI_NULL_BITS in bronze_abi.h has drifted from the value model");
+static_assert(Value::fromBool(false).rawBits() == BRONZE_ABI_FALSE_BITS,
+              "BRONZE_ABI_FALSE_BITS in bronze_abi.h has drifted from the value model");
+static_assert(Value::fromBool(true).rawBits() == BRONZE_ABI_TRUE_BITS,
+              "BRONZE_ABI_TRUE_BITS in bronze_abi.h has drifted from the value model");
 static_assert(kTagShift == BRONZE_ABI_VALUE_TAG_SHIFT);
 static_assert(kPayloadMask == BRONZE_ABI_VALUE_PAYLOAD_MASK);
 static_assert(static_cast<uint16_t>(Tag::Object) == BRONZE_ABI_TAG_OBJECT);

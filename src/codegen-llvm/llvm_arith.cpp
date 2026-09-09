@@ -15,6 +15,7 @@
 
 #include "codegen-llvm/llvm_convert.h"
 #include "codegen-llvm/llvm_func.h"
+#include "codegen-llvm/llvm_strict_eq.h"
 
 namespace bronze::codegen_llvm {
 
@@ -117,30 +118,84 @@ llvm::Value* emitConcatEnd(llvm::IRBuilder<>& builder, llvm::Function* helper, l
     return result;
 }
 
+// Returns an i1 indicating whether `v` is a primitive operand for arithmetic/relational operations
+// (number, null, undefined, or boolean). Any other tag (Object, String, Symbol, BigInt) returns false.
+llvm::Value* isArithmeticPrimitive(llvm::IRBuilder<>& builder, llvm::Value* v) {
+    llvm::Value* isNum =
+        builder.CreateICmpULE(v, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "is.num");
+    llvm::Value* isNull =
+        builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_NULL_BITS), "is.null");
+    llvm::Value* isUndef =
+        builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), "is.undef");
+    llvm::Value* isTrue =
+        builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_TRUE_BITS), "is.true");
+    llvm::Value* isFalse =
+        builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_FALSE_BITS), "is.false");
+    return builder.CreateOr(
+        isNum,
+        builder.CreateOr(builder.CreateOr(isNull, isUndef), builder.CreateOr(isTrue, isFalse)),
+        "is.prim");
+}
+
+// Converts a primitive boxed value (number, null, undefined, boolean) to double inline.
+// Number -> bitcast double; null -> 0.0; undefined -> NaN; true -> 1.0; false -> 0.0.
+llvm::Value* primitiveToDouble(llvm::IRBuilder<>& builder, llvm::Value* v) {
+    llvm::Type* dblTy = builder.getDoubleTy();
+    llvm::Value* isNum =
+        builder.CreateICmpULE(v, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "cvt.isnum");
+    llvm::Value* isUndef =
+        builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), "cvt.isundef");
+    llvm::Value* isTrue =
+        builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_TRUE_BITS), "cvt.istrue");
+
+    llvm::Value* numVal = builder.CreateBitCast(v, dblTy, "cvt.num");
+    llvm::Value* nanVal =
+        builder.CreateBitCast(builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), dblTy, "cvt.nan");
+    llvm::Value* zeroVal = llvm::ConstantFP::get(dblTy, 0.0);
+    llvm::Value* oneVal = llvm::ConstantFP::get(dblTy, 1.0);
+
+    llvm::Value* boolOrNull = builder.CreateSelect(isTrue, oneVal, zeroVal, "cvt.bool_or_null");
+    llvm::Value* nonNum = builder.CreateSelect(isUndef, nanVal, boolOrNull, "cvt.nonnum");
+    return builder.CreateSelect(isNum, numVal, nonNum, "cvt.dbl");
+}
+
 // `a + b` over boxed operands: the number/number case — the loop-carried case
 // in every allocation-free numeric loop — is an fadd and the canonicalizing
-// re-box, mirroring the fast path at the top of bronze_dynamic_add; anything
-// involving a string, an object or a symbol keeps the helper, which owns
-// ToPrimitive and the concat/TypeError ladder.
+// re-box, mirroring the fast path at the top of bronze_dynamic_add; if both operands
+// are primitive non-strings (number, null, undefined, boolean), they are converted to
+// double inline and added; anything involving a string, an object or a symbol keeps
+// the helper, which owns ToPrimitive and the concat/TypeError ladder.
 llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, llvm::Value* lhs,
                             llvm::Value* rhs) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = builder.getDoubleTy();
+    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
+    llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "dadd.check", fn);
+    llvm::BasicBlock* primBb = llvm::BasicBlock::Create(ctx, "dadd.prim", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "dadd.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "dadd.done", fn);
 
-    branchIfBothNumbers(builder, lhs, rhs, slowBb, "dadd.fast");
+    branchIfBothNumbers(builder, lhs, rhs, checkBb, "dadd.fast");
     llvm::Value* sum =
         builder.CreateFAdd(builder.CreateBitCast(lhs, dblTy), builder.CreateBitCast(rhs, dblTy));
-    // inf + -inf is NaN from two finite-looking inputs, so the sum needs the
-    // same canonicalizing select the Box instruction emits.
-    llvm::Value* isNan = builder.CreateFCmpUNO(sum, sum);
-    llvm::Value* fastVal =
-        builder.CreateSelect(isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS),
-                             builder.CreateBitCast(sum, builder.getInt64Ty()));
+    llvm::Value* fastVal = canonicalizeNumeric(builder, sum);
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(checkBb);
+    llvm::Value* lPrim = isArithmeticPrimitive(builder, lhs);
+    llvm::Value* rPrim = isArithmeticPrimitive(builder, rhs);
+    llvm::Value* bothPrim = builder.CreateAnd(lPrim, rPrim, "dadd.bothprim");
+    builder.CreateCondBr(bothPrim, primBb, slowBb, likely);
+
+    builder.SetInsertPoint(primBb);
+    llvm::Value* lDbl = primitiveToDouble(builder, lhs);
+    llvm::Value* rDbl = primitiveToDouble(builder, rhs);
+    llvm::Value* primSum = builder.CreateFAdd(lDbl, rDbl);
+    llvm::Value* primVal = canonicalizeNumeric(builder, primSum);
+    llvm::BasicBlock* primEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(slowBb);
@@ -148,43 +203,57 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 2, "dadd.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 3, "dadd.result");
     result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(primVal, primEndBb);
     result->addIncoming(slowVal, slowBb);
     return result;
 }
 
 // `a - b`, `a * b`, `a / b`, `a % b` over boxed operands. Same shape as
 // `emitDynamicAdd` and for the same reason: the number/number case is the one
-// a loop carries, and it is one machine instruction. What the helper owns is
-// everything else — a string operand's ToNumber, an object's valueOf, and the
-// BigInt algorithm with 13.15.3's mixing TypeError in front of it.
-//
-// The result needs the canonicalizing NaN select for the same reason `+` does:
-// `inf - inf`, `0 * inf`, `0 / 0` and `x % 0` each produce a NaN out of two
-// finite-looking inputs, and an uncanonicalized NaN is a bit pattern the value
-// model does not admit.
+// a loop carries, and it is one machine instruction. If both operands are primitive
+// (number, null, undefined, boolean), they are converted inline to double without
+// helper calls. What the helper owns is everything else — a string operand's ToNumber,
+// an object's valueOf, and the BigInt algorithm with 13.15.3's mixing TypeError in front of it.
 llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper, il::Op op,
                               llvm::Value* lhs, llvm::Value* rhs) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = builder.getDoubleTy();
+    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
+    llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "darith.check", fn);
+    llvm::BasicBlock* primBb = llvm::BasicBlock::Create(ctx, "darith.prim", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "darith.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "darith.done", fn);
 
-    branchIfBothNumbers(builder, lhs, rhs, slowBb, "darith.fast");
+    branchIfBothNumbers(builder, lhs, rhs, checkBb, "darith.fast");
     llvm::Value* l = builder.CreateBitCast(lhs, dblTy);
     llvm::Value* r = builder.CreateBitCast(rhs, dblTy);
     llvm::Value* num = op == il::Op::Sub   ? builder.CreateFSub(l, r)
                        : op == il::Op::Mul ? builder.CreateFMul(l, r)
                        : op == il::Op::Div ? builder.CreateFDiv(l, r)
                                            : builder.CreateFRem(l, r);
-    llvm::Value* isNan = builder.CreateFCmpUNO(num, num);
-    llvm::Value* fastVal =
-        builder.CreateSelect(isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS),
-                             builder.CreateBitCast(num, builder.getInt64Ty()));
+    llvm::Value* fastVal = canonicalizeNumeric(builder, num);
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(checkBb);
+    llvm::Value* lPrim = isArithmeticPrimitive(builder, lhs);
+    llvm::Value* rPrim = isArithmeticPrimitive(builder, rhs);
+    llvm::Value* bothPrim = builder.CreateAnd(lPrim, rPrim, "darith.bothprim");
+    builder.CreateCondBr(bothPrim, primBb, slowBb, likely);
+
+    builder.SetInsertPoint(primBb);
+    llvm::Value* lDbl = primitiveToDouble(builder, lhs);
+    llvm::Value* rDbl = primitiveToDouble(builder, rhs);
+    llvm::Value* primNum = op == il::Op::Sub   ? builder.CreateFSub(lDbl, rDbl)
+                           : op == il::Op::Mul ? builder.CreateFMul(lDbl, rDbl)
+                           : op == il::Op::Div ? builder.CreateFDiv(lDbl, rDbl)
+                                               : builder.CreateFRem(lDbl, rDbl);
+    llvm::Value* primVal = canonicalizeNumeric(builder, primNum);
+    llvm::BasicBlock* primEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(slowBb);
@@ -192,8 +261,9 @@ llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 2, "darith.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 3, "darith.result");
     result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(primVal, primEndBb);
     result->addIncoming(slowVal, slowBb);
     return result;
 }
@@ -202,311 +272,69 @@ llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper
 // ORDERED fcmp — false for a NaN on either side, which is exactly 13.10's
 // "undefined becomes false" for all four members of the family. Everything
 // else (strings compare by code unit, objects unwrap) keeps the helper —
-// except an `undefined` paired with a number (or another `undefined`), which
-// a second, off-the-hot-path arm answers with constant false: 13.10.1 calls
-// ToPrimitive on both operands first, but `undefined` and a number are
-// already primitive, so no user code can run, ToNumeric(undefined) is NaN,
-// and every ordered comparison against a NaN is false. three.js leans on
-// this shape once per visible object per frame (`material.transmission >
-// 0.0` in WebGLRenderList.push, where the property does not exist). The arm
-// sits behind the BRONZE_NO_UNDEF_REL seam; the both-numbers arm is
-// unchanged and never pays for it.
+// except when both operands are primitive (number, null, undefined, boolean):
+// if either operand is `undefined`, return false directly; if both are number,
+// null, or boolean, convert each to double and compare inline.
 llvm::Value* emitDynamicRel(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Function* helper,
                             llvm::CmpInst::Predicate pred, llvm::Value* lhs, llvm::Value* rhs) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = builder.getDoubleTy();
+    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
-    llvm::BasicBlock* undefBb = llvm::BasicBlock::Create(ctx, "drel.undef", fn);
+    llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "drel.check", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "drel.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "drel.done", fn);
 
-    branchIfBothNumbers(builder, lhs, rhs, undefBb, "drel.fast");
+    branchIfBothNumbers(builder, lhs, rhs, checkBb, "drel.fast");
     llvm::Value* fastVal = builder.CreateFCmp(pred, builder.CreateBitCast(lhs, dblTy),
                                               builder.CreateBitCast(rhs, dblTy), "drel.cmp");
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
-    // Not both numbers: if the seam is on and each operand is a number or
-    // `undefined`, at least one is `undefined` (both-numbers already left),
-    // so the answer is false for all four ordered predicates.
-    builder.SetInsertPoint(undefBb);
+    // Non-both-numbers path:
+    builder.SetInsertPoint(checkBb);
     llvm::Value* base = builder.CreateCall(abi.bronze_tls_block_addr, {}, "tls");
     llvm::Value* cellPtr = builder.CreateConstInBoundsGEP1_64(
         builder.getInt8Ty(), base, BRONZE_TLS_UNDEF_REL_ENABLED_OFF, "tls.undefrel");
     llvm::Value* cell =
         builder.CreateAlignedLoad(builder.getInt64Ty(), cellPtr, llvm::Align(8), "undefrel.seam");
     llvm::Value* seamOn = builder.CreateICmpNE(cell, builder.getInt64(0), "undefrel.on");
+    llvm::BasicBlock* primBb = llvm::BasicBlock::Create(ctx, "drel.prim", fn);
+    builder.CreateCondBr(seamOn, primBb, slowBb, likely);
+
+    builder.SetInsertPoint(primBb);
+    llvm::Value* lPrim = isArithmeticPrimitive(builder, lhs);
+    llvm::Value* rPrim = isArithmeticPrimitive(builder, rhs);
+    llvm::Value* bothPrim = builder.CreateAnd(lPrim, rPrim, "drel.bothprim");
+    llvm::BasicBlock* dispatchBb = llvm::BasicBlock::Create(ctx, "drel.dispatch", fn);
+    builder.CreateCondBr(bothPrim, dispatchBb, slowBb, likely);
+
+    builder.SetInsertPoint(dispatchBb);
     llvm::Value* undef = builder.getInt64(BRONZE_ABI_UNDEFINED_BITS);
-    llvm::Value* numMax = builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS);
-    llvm::Value* lOk = builder.CreateOr(builder.CreateICmpULE(lhs, numMax),
-                                        builder.CreateICmpEQ(lhs, undef), "drel.lok");
-    llvm::Value* rOk = builder.CreateOr(builder.CreateICmpULE(rhs, numMax),
-                                        builder.CreateICmpEQ(rhs, undef), "drel.rok");
-    llvm::Value* take =
-        builder.CreateAnd(seamOn, builder.CreateAnd(lOk, rOk), "drel.undef.take");
-    llvm::BasicBlock* undefEndBb = builder.GetInsertBlock();
-    builder.CreateCondBr(take, doneBb, slowBb);
+    llvm::Value* lUndef = builder.CreateICmpEQ(lhs, undef, "drel.lundef");
+    llvm::Value* rUndef = builder.CreateICmpEQ(rhs, undef, "drel.rundef");
+    llvm::Value* hasUndef = builder.CreateOr(lUndef, rUndef, "drel.hasundef");
+    llvm::BasicBlock* cmpBb = llvm::BasicBlock::Create(ctx, "drel.cmp.prim", fn);
+    builder.CreateCondBr(hasUndef, doneBb, cmpBb);
+
+    builder.SetInsertPoint(cmpBb);
+    llvm::Value* lDbl = primitiveToDouble(builder, lhs);
+    llvm::Value* rDbl = primitiveToDouble(builder, rhs);
+    llvm::Value* cmpVal = builder.CreateFCmp(pred, lDbl, rDbl, "drel.primcmp");
+    llvm::BasicBlock* cmpEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(helper, {lhs, rhs});
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 3, "drel.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 4, "drel.result");
     result->addIncoming(fastVal, fastEndBb);
-    result->addIncoming(builder.getFalse(), undefEndBb);
+    result->addIncoming(builder.getFalse(), dispatchBb);
+    result->addIncoming(cmpVal, cmpEndBb);
     result->addIncoming(slowVal, slowBb);
-    return result;
-}
-
-// The seam word for the inline `===`. `bronze_tls_block_addr` is `readnone` +
-// `willreturn`, so this call CSEs with the prologue's fetch and a loop hoists
-// it — the same shape llvm_iter.cpp's `emitIterFastEnabled` uses, and for the
-// same reason: this file has `AbiFns` but not `AbiGlobals`.
-llvm::Value* emitStrictEqInlineEnabled(llvm::IRBuilder<>& builder, const AbiFns& abi) {
-    llvm::Value* base = builder.CreateCall(abi.bronze_tls_block_addr, {}, "tls");
-    llvm::Value* cellPtr = builder.CreateConstInBoundsGEP1_64(
-        builder.getInt8Ty(), base, BRONZE_TLS_STRICT_EQ_INLINE_ENABLED_OFF, "tls.seqinline");
-    llvm::Value* cell =
-        builder.CreateAlignedLoad(builder.getInt64Ty(), cellPtr, llvm::Align(8), "seq.seam");
-    return builder.CreateICmpNE(cell, builder.getInt64(0), "seq.seam.on");
-}
-
-// `a === b` over boxed operands, as three arms and a helper.
-//
-// The helper (rt_convert.cpp `bronze_strict_eq`) is four tests, and the
-// chunk-4 sampler charged the CALL to it 2.71 % of the `many_meshes` frame —
-// three.js asks this question about markers, `undefined`, `null` and object
-// identity thousands of times a draw. Every one of those is answered here.
-//
-// The arms, and why each is exactly the helper's answer:
-//
-//  1. BOTH NUMBERS -> one ORDERED fcmp. This arm exists first and not as a
-//     special case of bit equality, because bit equality gets both of the
-//     IEEE-754 edges wrong in opposite directions: two values that are the
-//     SAME NaN have identical bits and `===` says false, and `+0` and `-0`
-//     have different bits and `===` says true. `fcmp oeq` is both of those,
-//     which is why the helper's number row is `==` on doubles and not on bits.
-//
-//  2. NOT both numbers, and the BITS ARE EQUAL -> true. Sound because equal
-//     bits means both operands are numbers or neither is, and arm 1 already
-//     took the case where both are: so here neither is a number, and identical
-//     bits are the same object, the same string, the same BigInt, the same
-//     symbol or the same immediate. Every one of those is `===`.
-//
-//  3. Bits differ -> false, UNLESS the left operand is a String or a BigInt.
-//     Those are the only two rows in the helper that can answer true for
-//     different bits (content equality and mathematical-value equality); for
-//     every other tag "different bits" is the helper's own final `aBits ==
-//     bBits`. A number's top sixteen bits are below every tag, so the tag test
-//     is safe on an operand arm 1 rejected.
-//
-// A String or BigInt on the left is the only thing that reaches the helper,
-// and there it takes the path it always took.
-llvm::Value* emitStrictEq(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* lhs,
-                          llvm::Value* rhs) {
-    llvm::LLVMContext& ctx = builder.getContext();
-    llvm::Function* fn = builder.GetInsertBlock()->getParent();
-    llvm::Type* dblTy = builder.getDoubleTy();
-    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
-    llvm::MDNode* unlikely = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
-
-    llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "seq.seam.ok", fn);
-    llvm::BasicBlock* nonNumBb = llvm::BasicBlock::Create(ctx, "seq.nonnum", fn);
-    llvm::BasicBlock* differBb = llvm::BasicBlock::Create(ctx, "seq.differ", fn);
-    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "seq.slow", fn);
-    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "seq.done", fn);
-
-    builder.CreateCondBr(emitStrictEqInlineEnabled(builder, abi), seamBb, slowBb, likely);
-    builder.SetInsertPoint(seamBb);
-
-    // Arm 1.
-    llvm::Value* lhsNum = builder.CreateICmpULE(lhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
-                                                "seq.lnum");
-    llvm::Value* rhsNum = builder.CreateICmpULE(rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
-                                                "seq.rnum");
-    llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "seq.num", fn);
-    builder.CreateCondBr(builder.CreateAnd(lhsNum, rhsNum, "seq.bothnum"), numBb, nonNumBb, likely);
-
-    builder.SetInsertPoint(numBb);
-    llvm::Value* numVal = builder.CreateFCmpOEQ(builder.CreateBitCast(lhs, dblTy),
-                                                builder.CreateBitCast(rhs, dblTy), "seq.numcmp");
-    llvm::BasicBlock* numEndBb = builder.GetInsertBlock();
-    builder.CreateBr(doneBb);
-
-    // Arm 2.
-    builder.SetInsertPoint(nonNumBb);
-    builder.CreateCondBr(builder.CreateICmpEQ(lhs, rhs, "seq.samebits"), doneBb, differBb);
-
-    // Arm 3.
-    builder.SetInsertPoint(differBb);
-    llvm::Value* tag = builder.CreateLShr(lhs, BRONZE_ABI_VALUE_TAG_SHIFT, "seq.tag");
-    llvm::Value* isStr =
-        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "seq.isstr");
-    llvm::Value* isBig =
-        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_BIGINT), "seq.isbig");
-    llvm::BasicBlock* strBb = llvm::BasicBlock::Create(ctx, "seq.str", fn);
-    llvm::BasicBlock* strLenBb = llvm::BasicBlock::Create(ctx, "seq.strlen", fn);
-    builder.CreateCondBr(isStr, strBb, strLenBb);
-
-    // Arm 3, a String on the left: the helper's first two answers are made
-    // here. A right operand that is not a string is false (7.2.15 step 1),
-    // and two strings of different lengths are false (`StringHeader::equals`
-    // opens on that compare; every string is flat, so the header's length is
-    // the whole answer). Only two strings of one length reach the content
-    // compare — which is what `unit.kind === 'titan'` on a miss usually is
-    // not.
-    builder.SetInsertPoint(strBb);
-    llvm::Value* rtag = builder.CreateLShr(rhs, BRONZE_ABI_VALUE_TAG_SHIFT, "seq.rtag");
-    llvm::Value* rIsStr =
-        builder.CreateICmpEQ(rtag, builder.getInt64(BRONZE_ABI_TAG_STRING), "seq.risstr");
-    llvm::BasicBlock* bothStrBb = llvm::BasicBlock::Create(ctx, "seq.bothstr", fn);
-    builder.CreateCondBr(rIsStr, bothStrBb, doneBb);
-
-    builder.SetInsertPoint(bothStrBb);
-    llvm::Type* i8Ty = builder.getInt8Ty();
-    llvm::Type* i16Ty = builder.getInt16Ty();
-    llvm::Type* i32Ty = builder.getInt32Ty();
-    llvm::Type* i64Ty = builder.getInt64Ty();
-    llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
-
-    llvm::Value* lAddr =
-        builder.CreateAnd(lhs, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK), "seq.laddr");
-    llvm::Value* lHdr = builder.CreateIntToPtr(lAddr, ptrTy, "seq.lhdr");
-    llvm::Value* lLenPtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, lHdr, BRONZE_ABI_STRING_LENGTH_OFFSET);
-    llvm::Value* lLen = builder.CreateAlignedLoad(i32Ty, lLenPtr, llvm::Align(4), "seq.llen");
-
-    llvm::Value* rAddr =
-        builder.CreateAnd(rhs, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK), "seq.raddr");
-    llvm::Value* rHdr = builder.CreateIntToPtr(rAddr, ptrTy, "seq.rhdr");
-    llvm::Value* rLenPtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, rHdr, BRONZE_ABI_STRING_LENGTH_OFFSET);
-    llvm::Value* rLen = builder.CreateAlignedLoad(i32Ty, rLenPtr, llvm::Align(4), "seq.rlen");
-
-    llvm::Value* sameLen = builder.CreateICmpEQ(lLen, rLen, "seq.samelen");
-    llvm::BasicBlock* strCmpBb = llvm::BasicBlock::Create(ctx, "seq.strcmp", fn);
-    builder.CreateCondBr(sameLen, strCmpBb, doneBb);
-
-    builder.SetInsertPoint(strCmpBb);
-    llvm::Value* lFlagsPtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, lHdr, BRONZE_ABI_STRING_FLAGS_OFFSET);
-    llvm::Value* lFlags =
-        builder.CreateAlignedLoad(i32Ty, lFlagsPtr, llvm::Align(4), "seq.lflags");
-    llvm::Value* rFlagsPtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, rHdr, BRONZE_ABI_STRING_FLAGS_OFFSET);
-    llvm::Value* rFlags =
-        builder.CreateAlignedLoad(i32Ty, rFlagsPtr, llvm::Align(4), "seq.rflags");
-
-    llvm::Value* flagsOr = builder.CreateOr(lFlags, rFlags, "seq.flags.or");
-    llvm::Value* utf16Bit = builder.CreateAnd(
-        flagsOr, builder.getInt32(BRONZE_ABI_STRING_UTF16_BIT), "seq.utf16.bit");
-    llvm::Value* hasUtf16 =
-        builder.CreateICmpNE(utf16Bit, builder.getInt32(0), "seq.hasutf16");
-
-    llvm::BasicBlock* latinBb = llvm::BasicBlock::Create(ctx, "seq.str.latin", fn);
-    builder.CreateCondBr(hasUtf16, slowBb, latinBb, unlikely);
-
-    builder.SetInsertPoint(latinBb);
-    llvm::Value* lData =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, lHdr, BRONZE_ABI_STRING_DATA_OFFSET, "seq.ldata");
-    llvm::Value* rData =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, rHdr, BRONZE_ABI_STRING_DATA_OFFSET, "seq.rdata");
-
-    llvm::BasicBlock* le8Bb = llvm::BasicBlock::Create(ctx, "seq.str.le8", fn);
-    llvm::BasicBlock* gt8Bb = llvm::BasicBlock::Create(ctx, "seq.str.gt8", fn);
-    llvm::Value* isLe8 = builder.CreateICmpULE(lLen, builder.getInt32(8), "seq.le8");
-    builder.CreateCondBr(isLe8, le8Bb, gt8Bb);
-
-    builder.SetInsertPoint(gt8Bb);
-    llvm::BasicBlock* le16Bb = llvm::BasicBlock::Create(ctx, "seq.str.le16", fn);
-    llvm::Value* isLe16 = builder.CreateICmpULE(lLen, builder.getInt32(16), "seq.le16");
-    builder.CreateCondBr(isLe16, le16Bb, slowBb);
-
-    builder.SetInsertPoint(le16Bb);
-    llvm::Value* headL16 = builder.CreateAlignedLoad(i64Ty, lData, llvm::Align(1), "seq.h64.l");
-    llvm::Value* headR16 = builder.CreateAlignedLoad(i64Ty, rData, llvm::Align(1), "seq.h64.r");
-    llvm::Value* tailOff16 = builder.CreateSub(lLen, builder.getInt32(8), "seq.tail8.off");
-    llvm::Value* lTail16Ptr = builder.CreateInBoundsGEP(i8Ty, lData, tailOff16, "seq.t64.lptr");
-    llvm::Value* rTail16Ptr = builder.CreateInBoundsGEP(i8Ty, rData, tailOff16, "seq.t64.rptr");
-    llvm::Value* tailL16 = builder.CreateAlignedLoad(i64Ty, lTail16Ptr, llvm::Align(1), "seq.t64.l");
-    llvm::Value* tailR16 = builder.CreateAlignedLoad(i64Ty, rTail16Ptr, llvm::Align(1), "seq.t64.r");
-    llvm::Value* headEq16 = builder.CreateICmpEQ(headL16, headR16, "seq.h64.eq");
-    llvm::Value* tailEq16 = builder.CreateICmpEQ(tailL16, tailR16, "seq.t64.eq");
-    llvm::Value* match16 = builder.CreateAnd(headEq16, tailEq16, "seq.match16");
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(le8Bb);
-    llvm::BasicBlock* ge4Bb = llvm::BasicBlock::Create(ctx, "seq.str.ge4", fn);
-    llvm::BasicBlock* lt4Bb = llvm::BasicBlock::Create(ctx, "seq.str.lt4", fn);
-    llvm::Value* isGe4 = builder.CreateICmpUGE(lLen, builder.getInt32(4), "seq.ge4");
-    builder.CreateCondBr(isGe4, ge4Bb, lt4Bb);
-
-    builder.SetInsertPoint(ge4Bb);
-    llvm::Value* headL8 = builder.CreateAlignedLoad(i32Ty, lData, llvm::Align(1), "seq.h32.l");
-    llvm::Value* headR8 = builder.CreateAlignedLoad(i32Ty, rData, llvm::Align(1), "seq.h32.r");
-    llvm::Value* tailOff8 = builder.CreateSub(lLen, builder.getInt32(4), "seq.tail4.off");
-    llvm::Value* lTail8Ptr = builder.CreateInBoundsGEP(i8Ty, lData, tailOff8, "seq.t32.lptr");
-    llvm::Value* rTail8Ptr = builder.CreateInBoundsGEP(i8Ty, rData, tailOff8, "seq.t32.rptr");
-    llvm::Value* tailL8 = builder.CreateAlignedLoad(i32Ty, lTail8Ptr, llvm::Align(1), "seq.t32.l");
-    llvm::Value* tailR8 = builder.CreateAlignedLoad(i32Ty, rTail8Ptr, llvm::Align(1), "seq.t32.r");
-    llvm::Value* headEq8 = builder.CreateICmpEQ(headL8, headR8, "seq.h32.eq");
-    llvm::Value* tailEq8 = builder.CreateICmpEQ(tailL8, tailR8, "seq.t32.eq");
-    llvm::Value* match8 = builder.CreateAnd(headEq8, tailEq8, "seq.match8");
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(lt4Bb);
-    llvm::BasicBlock* len0Bb = llvm::BasicBlock::Create(ctx, "seq.str.len0", fn);
-    llvm::BasicBlock* len1Bb = llvm::BasicBlock::Create(ctx, "seq.str.len1", fn);
-    llvm::BasicBlock* len23Bb = llvm::BasicBlock::Create(ctx, "seq.str.len23", fn);
-    auto* sw = builder.CreateSwitch(lLen, len23Bb, 2);
-    sw->addCase(builder.getInt32(0), len0Bb);
-    sw->addCase(builder.getInt32(1), len1Bb);
-
-    builder.SetInsertPoint(len0Bb);
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(len1Bb);
-    llvm::Value* bL = builder.CreateAlignedLoad(i8Ty, lData, llvm::Align(1), "seq.b.l");
-    llvm::Value* bR = builder.CreateAlignedLoad(i8Ty, rData, llvm::Align(1), "seq.b.r");
-    llvm::Value* match1 = builder.CreateICmpEQ(bL, bR, "seq.match1");
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(len23Bb);
-    llvm::Value* headL2 = builder.CreateAlignedLoad(i16Ty, lData, llvm::Align(1), "seq.h16.l");
-    llvm::Value* headR2 = builder.CreateAlignedLoad(i16Ty, rData, llvm::Align(1), "seq.h16.r");
-    llvm::Value* tailOff2 = builder.CreateSub(lLen, builder.getInt32(2), "seq.tail2.off");
-    llvm::Value* lTail2Ptr = builder.CreateInBoundsGEP(i8Ty, lData, tailOff2, "seq.t16.lptr");
-    llvm::Value* rTail2Ptr = builder.CreateInBoundsGEP(i8Ty, rData, tailOff2, "seq.t16.rptr");
-    llvm::Value* tailL2 = builder.CreateAlignedLoad(i16Ty, lTail2Ptr, llvm::Align(1), "seq.t16.l");
-    llvm::Value* tailR2 = builder.CreateAlignedLoad(i16Ty, rTail2Ptr, llvm::Align(1), "seq.t16.r");
-    llvm::Value* headEq2 = builder.CreateICmpEQ(headL2, headR2, "seq.h16.eq");
-    llvm::Value* tailEq2 = builder.CreateICmpEQ(tailL2, tailR2, "seq.t16.eq");
-    llvm::Value* match23 = builder.CreateAnd(headEq2, tailEq2, "seq.match23");
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(strLenBb);
-    builder.CreateCondBr(isBig, slowBb, doneBb);
-
-    builder.SetInsertPoint(slowBb);
-    llvm::Value* slowVal = builder.CreateCall(abi.bronze_strict_eq, {lhs, rhs}, "seq.slowres");
-    llvm::BasicBlock* slowEndBb = builder.GetInsertBlock();
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 11, "seq.result");
-    result->addIncoming(numVal, numEndBb);
-    result->addIncoming(builder.getTrue(), nonNumBb);
-    result->addIncoming(builder.getFalse(), strBb);
-    result->addIncoming(builder.getFalse(), bothStrBb);
-    result->addIncoming(builder.getFalse(), strLenBb);
-    result->addIncoming(slowVal, slowEndBb);
-    result->addIncoming(builder.getTrue(), len0Bb);
-    result->addIncoming(match1, len1Bb);
-    result->addIncoming(match23, len23Bb);
-    result->addIncoming(match8, ge4Bb);
-    result->addIncoming(match16, le16Bb);
     return result;
 }
 
