@@ -17,6 +17,7 @@
 #include "runtime/generator.h"
 #include "runtime/iterator.h"
 
+#include <bit>
 #include <cstddef>
 #include <string>
 
@@ -60,6 +61,10 @@ static_assert(IterRecordHeader::MapIterator > IterRecordHeader::Protocol);
 static_assert(IterRecordHeader::ArrayIterator > IterRecordHeader::Protocol);
 static_assert(IterRecordHeader::Protocol == 5);
 static_assert(BRONZE_ABI_ITER_KIND_OWNED_LIMIT_BITS == 0x4014000000000000ull);  // 5.0
+static_assert(std::bit_cast<uint64_t>(static_cast<double>(IterRecordHeader::MapEntries)) ==
+              BRONZE_ABI_ITER_KIND_MAP_ENTRIES_BITS);
+static_assert(std::bit_cast<uint64_t>(static_cast<double>(IterRecordHeader::MapIterator)) ==
+              BRONZE_ABI_ITER_KIND_MAP_ITERATOR_BITS);
 
 IterRecordHeader* IterRecordHeader::create(Heap& heap, uint32_t kind) {
     HeapObjectHeader* raw =
@@ -548,7 +553,8 @@ uint64_t bronze_iter_open(uint64_t srcBits) {
     // refill may collect, which is what the root above is for.
     if (rec.get().isObject() &&
         rec.get().asObject<HeapObjectHeader>()->flags == IterRecordHeader::kFlags &&
-        rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::Array) {
+        (rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::Array ||
+         rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::MapEntries)) {
         const bronze_tls_block* tls = bronze_tls_block_addr();
         if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_ITER_RECORD_BYTES) {
             rtHeap().refill_inline_lab();
@@ -619,8 +625,9 @@ bool bronze_iter_step(uint64_t recBits) {
         Rooted<Value> k{rec->target.asObject<MapHeader>()->keyAt(slot)};
         Rooted<Value> v{rec->target.asObject<MapHeader>()->valueAt(slot)};
         Rooted<Value> pair{Value(bronze_create_array(2))};
-        pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 0, k);
-        pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 1, v);
+        auto* arr = pair.get().asObject<ArrayHeader>();
+        arr->elementsData()[0] = k.get();
+        arr->elementsData()[1] = v.get();
         recRoot.get().asObject<IterRecordHeader>()->current = pair.get();
         return true;
     }

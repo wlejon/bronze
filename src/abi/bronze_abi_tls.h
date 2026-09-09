@@ -89,8 +89,10 @@ typedef struct bronze_tls_block {
 #define BRONZE_ABI_ITER_KIND_OFFSET      40
 #define BRONZE_ABI_ITER_DONE_OFFSET      48
 
-#define BRONZE_ABI_ITER_KIND_ARRAY_BITS       0x0000000000000000ull
-#define BRONZE_ABI_ITER_KIND_TYPED_ARRAY_BITS 0x4000000000000000ull
+#define BRONZE_ABI_ITER_KIND_ARRAY_BITS        0x0000000000000000ull
+#define BRONZE_ABI_ITER_KIND_TYPED_ARRAY_BITS  0x4000000000000000ull
+#define BRONZE_ABI_ITER_KIND_MAP_ENTRIES_BITS  0x4008000000000000ull
+#define BRONZE_ABI_ITER_KIND_MAP_ITERATOR_BITS 0x4018000000000000ull
 /* The kinds BELOW this double (5.0: Kind::Protocol) walk a value the runtime
  * owns a cursor into — an array, a string, a typed array, a Map, a Set — and
  * have no iterator object a `return` method could hang off, so closing one is
@@ -98,6 +100,17 @@ typedef struct bronze_tls_block {
  * it holds an ITERATOR OBJECT in `target` and closes through the helper.
  * Pinned against IterRecordHeader::Kind in runtime/iterator.cpp. */
 #define BRONZE_ABI_ITER_KIND_OWNED_LIMIT_BITS 0x4014000000000000ull
+
+#define BRONZE_ABI_MAP_ITER_SLOT_MAP_OFFSET    56
+#define BRONZE_ABI_MAP_ITER_SLOT_NEXT_OFFSET   64
+#define BRONZE_ABI_MAP_ITER_SLOT_KIND_OFFSET   72
+
+#define BRONZE_ABI_MAP_HEADER_ENTRIES_OFFSET   8
+#define BRONZE_ABI_MAP_HEADER_USED_OFFSET      32
+
+#define BRONZE_ABI_MAP_ITER_KIND_KEYS_BITS     0x0000000000000000ull
+#define BRONZE_ABI_MAP_ITER_KIND_VALUES_BITS   0x3FF0000000000000ull
+#define BRONZE_ABI_MAP_ITER_KIND_ENTRIES_BITS  0x4000000000000000ull
 
 /* Total bytes of one iteration record — header plus its six Value fields —
  * which is what the inline `iter.open` fast path bump-allocates from the

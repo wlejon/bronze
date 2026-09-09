@@ -4,6 +4,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 
 #include <string>
 
@@ -98,8 +99,11 @@ llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.CreateAlignedLoad(i16Ty, srcFlagsPtr, llvm::Align(2), "io.srcflags");
     llvm::Value* isArr =
         builder.CreateICmpEQ(srcFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
+    llvm::Value* isMap =
+        builder.CreateICmpEQ(srcFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_MAP));
+    llvm::Value* canFastOpen = builder.CreateOr(isArr, isMap, "io.canfast");
     llvm::BasicBlock* allocBb = llvm::BasicBlock::Create(ctx, "io.alloc", fn);
-    builder.CreateCondBr(isArr, allocBb, slowBb);
+    builder.CreateCondBr(canFastOpen, allocBb, slowBb);
 
     // The record, bump-allocated from the inline-allocation window exactly as
     // the inline `new` fast path allocates its instances (llvm_construct.cpp):
@@ -142,8 +146,10 @@ llvm::Value* emitIterOpen(llvm::IRBuilder<>& builder, const AbiFns& abi,
     // cursor 0.0 and kind Array are BOTH all-zero bit patterns (a double's
     // Value is its IEEE bits; Kind::Array is 0).
     storeWord(BRONZE_ABI_ITER_CURSOR_OFFSET, builder.getInt64(0));
-    storeWord(BRONZE_ABI_ITER_KIND_OFFSET,
-              builder.getInt64(BRONZE_ABI_ITER_KIND_ARRAY_BITS));
+    llvm::Value* openKind = builder.CreateSelect(
+        isArr, builder.getInt64(BRONZE_ABI_ITER_KIND_ARRAY_BITS),
+        builder.getInt64(BRONZE_ABI_ITER_KIND_MAP_ENTRIES_BITS), "io.kind");
+    storeWord(BRONZE_ABI_ITER_KIND_OFFSET, openKind);
     storeWord(BRONZE_ABI_ITER_DONE_OFFSET,
               builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL)
                                << BRONZE_ABI_VALUE_TAG_SHIFT));
@@ -177,6 +183,9 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
 
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    llvm::MDNode* unlikelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
+
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "is.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "is.done", fn);
 
@@ -186,16 +195,22 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
 
     llvm::Value* rec = emitRecordPtr(builder, recBits, slowBb, "is.");
 
-    // The open's answer, and the whole basis of this path: kind == Array. A
-    // double's Value is its IEEE bits and `Kind::Array` is 0.0, so this is a
-    // compare against zero.
+    // The open's answer, and the whole basis of this path: kind == Array or MapIterator.
     llvm::Value* kindPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, rec, BRONZE_ABI_ITER_KIND_OFFSET);
     llvm::Value* kind = builder.CreateAlignedLoad(i64Ty, kindPtr, llvm::Align(8), "is.kind");
     llvm::BasicBlock* liveBb = llvm::BasicBlock::Create(ctx, "is.live", fn);
+    llvm::BasicBlock* chkMapBb = llvm::BasicBlock::Create(ctx, "is.chkmap", fn);
+    llvm::BasicBlock* mapIterLiveBb = llvm::BasicBlock::Create(ctx, "is.mapiter", fn);
+
     builder.CreateCondBr(
         builder.CreateICmpEQ(kind, builder.getInt64(BRONZE_ABI_ITER_KIND_ARRAY_BITS)), liveBb,
-        slowBb);
+        chkMapBb);
+
+    builder.SetInsertPoint(chkMapBb);
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(kind, builder.getInt64(BRONZE_ABI_ITER_KIND_MAP_ITERATOR_BITS)),
+        mapIterLiveBb, slowBb);
 
     // A record already marked done answers false — through the helper, which is
     // where that answer is written down. It happens once per loop.
@@ -206,7 +221,7 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     llvm::Value* falseBits =
         builder.getInt64((static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL) << BRONZE_ABI_VALUE_TAG_SHIFT));
     llvm::BasicBlock* tgtBb = llvm::BasicBlock::Create(ctx, "is.tgt", fn);
-    builder.CreateCondBr(builder.CreateICmpEQ(doneWord, falseBits), tgtBb, slowBb);
+    builder.CreateCondBr(builder.CreateICmpEQ(doneWord, falseBits), tgtBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(tgtBb);
     llvm::Value* targetPtr =
@@ -222,7 +237,7 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     llvm::BasicBlock* boundsBb = llvm::BasicBlock::Create(ctx, "is.bounds", fn);
     builder.CreateCondBr(
         builder.CreateICmpEQ(arrFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY)), boundsBb,
-        slowBb);
+        slowBb, likelyBranch);
 
     // `i >= length` is the walk's END, handled INLINE: the whole of the
     // helper's end-of-walk bookkeeping for the Array kind is two stores —
@@ -254,7 +269,7 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     // miscompile that survives every test on one optimiser and not the next.
     llvm::Value* safeCursor =
         builder.CreateSelect(inRange, cursor, llvm::ConstantFP::get(dblTy, 0.0), "is.safecursor");
-    builder.CreateCondBr(inRange, readBb, endSplitBb);
+    builder.CreateCondBr(inRange, readBb, endSplitBb, likelyBranch);
 
     // Out of range: a non-negative cursor at or past the length is the END
     // (the only way the loop's own arithmetic gets here); anything else —
@@ -280,7 +295,8 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, "is.load", fn);
     builder.CreateCondBr(
-        builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), loadBb, slowBb);
+        builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT)), loadBb, slowBb,
+        likelyBranch);
 
     builder.SetInsertPoint(loadBb);
     llvm::Value* elemsAddr =
@@ -308,16 +324,168 @@ llvm::Value* emitIterStep(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
+    // MapIterator inline step fast path:
+    builder.SetInsertPoint(mapIterLiveBb);
+    llvm::Value* mapDonePtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, rec, BRONZE_ABI_ITER_DONE_OFFSET);
+    llvm::Value* mapDoneWord =
+        builder.CreateAlignedLoad(i64Ty, mapDonePtr, llvm::Align(8), "is.mdone.w");
+    llvm::BasicBlock* mapTgtBb = llvm::BasicBlock::Create(ctx, "is.maptgt", fn);
+    builder.CreateCondBr(builder.CreateICmpEQ(mapDoneWord, falseBits), mapTgtBb, slowBb,
+                         likelyBranch);
+
+    builder.SetInsertPoint(mapTgtBb);
+    llvm::Value* mapTargetPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, rec, BRONZE_ABI_ITER_TARGET_OFFSET);
+    llvm::Value* mapTarget =
+        builder.CreateAlignedLoad(i64Ty, mapTargetPtr, llvm::Align(8), "is.maptarget");
+    llvm::Value* mapTargetTag = builder.CreateLShr(mapTarget, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* isMapTargetObj =
+        builder.CreateICmpEQ(mapTargetTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    llvm::Value* mapTargetAddr =
+        builder.CreateAnd(mapTarget, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* itHdr = builder.CreateIntToPtr(mapTargetAddr, ptrTy, "is.ithdr");
+    llvm::Value* itFlagsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, itHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+    llvm::Value* itFlags =
+        builder.CreateAlignedLoad(i16Ty, itFlagsPtr, llvm::Align(2), "is.itflags");
+    llvm::Value* isItPlain =
+        builder.CreateICmpEQ(itFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
+    llvm::Value* mapTargetOk = builder.CreateAnd(isMapTargetObj, isItPlain);
+    llvm::BasicBlock* itMapBb = llvm::BasicBlock::Create(ctx, "is.itmap", fn);
+    builder.CreateCondBr(mapTargetOk, itMapBb, slowBb, likelyBranch);
+
+    builder.SetInsertPoint(itMapBb);
+    llvm::Value* mapSlotPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, itHdr, BRONZE_ABI_MAP_ITER_SLOT_MAP_OFFSET);
+    llvm::Value* iteratedMap =
+        builder.CreateAlignedLoad(i64Ty, mapSlotPtr, llvm::Align(8), "is.iteratedmap");
+    llvm::Value* mapTag = builder.CreateLShr(iteratedMap, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* isMapObj = builder.CreateICmpEQ(mapTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    llvm::Value* mapAddr =
+        builder.CreateAnd(iteratedMap, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* mapHdr = builder.CreateIntToPtr(mapAddr, ptrTy, "is.maphdr");
+    llvm::Value* mapFlagsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, mapHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+    llvm::Value* mapFlags =
+        builder.CreateAlignedLoad(i16Ty, mapFlagsPtr, llvm::Align(2), "is.mapflags");
+    llvm::Value* isMap =
+        builder.CreateICmpEQ(mapFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_MAP));
+    llvm::Value* isSet =
+        builder.CreateICmpEQ(mapFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_SET));
+    llvm::Value* mapOk = builder.CreateAnd(isMapObj, builder.CreateOr(isMap, isSet));
+    llvm::BasicBlock* kindChkBb = llvm::BasicBlock::Create(ctx, "is.kindchk", fn);
+    builder.CreateCondBr(mapOk, kindChkBb, slowBb, likelyBranch);
+
+    builder.SetInsertPoint(kindChkBb);
+    llvm::Value* iterKindPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, itHdr, BRONZE_ABI_MAP_ITER_SLOT_KIND_OFFSET);
+    llvm::Value* iterKindVal =
+        builder.CreateAlignedLoad(i64Ty, iterKindPtr, llvm::Align(8), "is.iterkind");
+    llvm::Value* isKeys =
+        builder.CreateICmpEQ(iterKindVal, builder.getInt64(BRONZE_ABI_MAP_ITER_KIND_KEYS_BITS));
+    llvm::Value* isValues =
+        builder.CreateICmpEQ(iterKindVal, builder.getInt64(BRONZE_ABI_MAP_ITER_KIND_VALUES_BITS));
+    llvm::Value* isKeysOrValues = builder.CreateOr(isKeys, isValues);
+    llvm::BasicBlock* idxBb = llvm::BasicBlock::Create(ctx, "is.mapidx", fn);
+    builder.CreateCondBr(isKeysOrValues, idxBb, slowBb, likelyBranch);
+
+    builder.SetInsertPoint(idxBb);
+    llvm::Value* nextIndexPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, itHdr, BRONZE_ABI_MAP_ITER_SLOT_NEXT_OFFSET);
+    llvm::Value* nextIndexVal =
+        builder.CreateAlignedLoad(i64Ty, nextIndexPtr, llvm::Align(8), "is.nextindex");
+    llvm::Value* nextIndexDbl = builder.CreateBitCast(nextIndexVal, dblTy, "is.nextindex.dbl");
+    llvm::Value* nonnegNext =
+        builder.CreateFCmpOGE(nextIndexDbl, llvm::ConstantFP::get(dblTy, 0.0), "is.next.nonneg");
+    llvm::BasicBlock* usedBb = llvm::BasicBlock::Create(ctx, "is.usedchk", fn);
+    builder.CreateCondBr(nonnegNext, usedBb, slowBb, likelyBranch);
+
+    builder.SetInsertPoint(usedBb);
+    llvm::Value* atIdx = builder.CreateFPToUI(nextIndexDbl, i32Ty, "is.at");
+    llvm::Value* usedPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, mapHdr, BRONZE_ABI_MAP_HEADER_USED_OFFSET);
+    llvm::Value* usedVal =
+        builder.CreateAlignedLoad(i64Ty, usedPtr, llvm::Align(8), "is.usedval");
+    llvm::Value* usedDbl = builder.CreateBitCast(usedVal, dblTy, "is.used.dbl");
+    llvm::Value* usedIdx = builder.CreateFPToUI(usedDbl, i32Ty, "is.used");
+    llvm::Value* atUnderUsed = builder.CreateICmpULT(atIdx, usedIdx, "is.at.under");
+    llvm::BasicBlock* mapReadBb = llvm::BasicBlock::Create(ctx, "is.mapread", fn);
+    llvm::BasicBlock* mapEndBb = llvm::BasicBlock::Create(ctx, "is.mapend", fn);
+    builder.CreateCondBr(atUnderUsed, mapReadBb, mapEndBb, likelyBranch);
+
+    builder.SetInsertPoint(mapEndBb);
+    builder.CreateAlignedStore(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), mapSlotPtr,
+                               llvm::Align(8));
+    llvm::Value* mapEndTrueBits = builder.getInt64(
+        (static_cast<uint64_t>(BRONZE_ABI_TAG_BOOL) << BRONZE_ABI_VALUE_TAG_SHIFT) | 1u);
+    builder.CreateAlignedStore(mapEndTrueBits, mapDonePtr, llvm::Align(8));
+    llvm::Value* mapEndCurPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, rec, BRONZE_ABI_ITER_CURRENT_OFFSET);
+    builder.CreateAlignedStore(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), mapEndCurPtr,
+                               llvm::Align(8));
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(mapReadBb);
+    llvm::Value* entriesPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, mapHdr, BRONZE_ABI_MAP_HEADER_ENTRIES_OFFSET);
+    llvm::Value* entriesVal =
+        builder.CreateAlignedLoad(i64Ty, entriesPtr, llvm::Align(8), "is.entries");
+    llvm::Value* entriesTag = builder.CreateLShr(entriesVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* isEntriesObj =
+        builder.CreateICmpEQ(entriesTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    llvm::BasicBlock* entriesOkBb = llvm::BasicBlock::Create(ctx, "is.entriesok", fn);
+    builder.CreateCondBr(isEntriesObj, entriesOkBb, slowBb, likelyBranch);
+
+    builder.SetInsertPoint(entriesOkBb);
+    llvm::Value* entriesAddr =
+        builder.CreateAnd(entriesVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* entriesHdr = builder.CreateIntToPtr(entriesAddr, ptrTy, "is.entrieshdr");
+
+    llvm::Value* at64 = builder.CreateZExt(atIdx, i64Ty);
+    llvm::Value* slotOffset =
+        builder.CreateAdd(builder.getInt64(8), builder.CreateMul(at64, builder.getInt64(16)));
+    llvm::Value* keySlotPtr = builder.CreateInBoundsGEP(i8Ty, entriesHdr, slotOffset);
+    llvm::Value* keyVal =
+        builder.CreateAlignedLoad(i64Ty, keySlotPtr, llvm::Align(8), "is.keyval");
+
+    llvm::Value* keyTag = builder.CreateLShr(keyVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* isHole =
+        builder.CreateICmpEQ(keyTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
+    llvm::BasicBlock* notHoleBb = llvm::BasicBlock::Create(ctx, "is.nothole", fn);
+    builder.CreateCondBr(isHole, slowBb, notHoleBb, unlikelyBranch);
+
+    builder.SetInsertPoint(notHoleBb);
+    llvm::Value* valSlotPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, keySlotPtr, 8);
+    llvm::Value* valVal =
+        builder.CreateAlignedLoad(i64Ty, valSlotPtr, llvm::Align(8), "is.valval");
+    llvm::Value* valForKind = builder.CreateSelect(isSet, keyVal, valVal);
+    llvm::Value* mapElem = builder.CreateSelect(isKeys, keyVal, valForKind, "is.mapelem");
+
+    llvm::Value* curPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, rec, BRONZE_ABI_ITER_CURRENT_OFFSET);
+    builder.CreateAlignedStore(mapElem, curPtr, llvm::Align(8));
+
+    llvm::Value* nextAt = builder.CreateAdd(atIdx, builder.getInt32(1));
+    llvm::Value* nextAtDbl = builder.CreateUIToFP(nextAt, dblTy, "is.nextat.dbl");
+    llvm::Value* nextAtBits = builder.CreateBitCast(nextAtDbl, i64Ty);
+    builder.CreateAlignedStore(nextAtBits, nextIndexPtr, llvm::Align(8));
+
+    llvm::BasicBlock* mapFastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(abi.bronze_iter_step, {recBits}, "is.slowval");
     llvm::BasicBlock* slowEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 3, "is.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt1Ty(), 5, "is.result");
     result->addIncoming(builder.getTrue(), fastEndBb);
     result->addIncoming(slowVal, slowEndBb);
     result->addIncoming(builder.getFalse(), endBb);
+    result->addIncoming(builder.getTrue(), mapFastEndBb);
+    result->addIncoming(builder.getFalse(), mapEndBb);
     return result;
 }
 

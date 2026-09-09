@@ -8,6 +8,7 @@
 // no prototype link to hang one on. That is a real divergence and is recorded
 // as one: `m instanceof Map` is false, and `Map.prototype` is a named error.
 
+#include <bit>
 #include <string>
 
 #include "abi/bronze_abi.h"
@@ -53,27 +54,35 @@ bool requireMapLike(Value self, const char* method) {
 
 enum IterKind : uint32_t { Keys = 0, Values = 1, Entries = 2 };
 
+static_assert(offsetof(MapHeader, entries) == BRONZE_ABI_MAP_HEADER_ENTRIES_OFFSET);
+static_assert(offsetof(MapHeader, usedCount) == BRONZE_ABI_MAP_HEADER_USED_OFFSET);
+static_assert(sizeof(ObjectHeader) + (ObjectHeader::kInlineSlots + MapIteratorSlot::IteratedMap) * sizeof(Value) ==
+              BRONZE_ABI_MAP_ITER_SLOT_MAP_OFFSET);
+static_assert(sizeof(ObjectHeader) + (ObjectHeader::kInlineSlots + MapIteratorSlot::NextIndex) * sizeof(Value) ==
+              BRONZE_ABI_MAP_ITER_SLOT_NEXT_OFFSET);
+static_assert(sizeof(ObjectHeader) + (ObjectHeader::kInlineSlots + MapIteratorSlot::Kind) * sizeof(Value) ==
+              BRONZE_ABI_MAP_ITER_SLOT_KIND_OFFSET);
+static_assert(std::bit_cast<uint64_t>(static_cast<double>(Keys)) == BRONZE_ABI_MAP_ITER_KIND_KEYS_BITS);
+static_assert(std::bit_cast<uint64_t>(static_cast<double>(Values)) == BRONZE_ABI_MAP_ITER_KIND_VALUES_BITS);
+static_assert(std::bit_cast<uint64_t>(static_cast<double>(Entries)) == BRONZE_ABI_MAP_ITER_KIND_ENTRIES_BITS);
+static_assert(MapHeader::kMapFlags == BRONZE_ABI_OBJ_FLAGS_MAP);
+static_assert(MapHeader::kSetFlags == BRONZE_ABI_OBJ_FLAGS_SET);
+
 // The iterator object's INTERNAL SLOTS (24.1.5.1): [[IteratedMap]],
 // [[MapNextIndex]] and [[MapIterationKind]]. Real fields on the object, which
 // is what makes them invisible to every enumeration there is — `Object.keys`,
 // `for-in`, spread, `JSON.stringify` AND `getOwnPropertyNames` — rather than
 // only to the four defined over enumerable keys.
 //
-// Neither of these allocates, so neither can move the object; the caller reads
-// the pointer out of its root each time regardless, because the code around
-// them does allocate.
-Value readSlot(Rooted<Value>& obj, uint32_t slot) {
-    return obj.get().asObject<ObjectHeader>()->internalSlot(slot);
-}
-
 void writeSlot(Rooted<Value>& obj, uint32_t slot, Value val) {
     obj.get().asObject<ObjectHeader>()->setInternalSlot(slot, val);
 }
 
 Value makePair(Rooted<Value>& a, Rooted<Value>& b) {
     Rooted<Value> pair{Value(bronze_create_array(2))};
-    pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 0, a);
-    pair.get().asObject<ArrayHeader>()->setElem(rtHeap(), 1, b);
+    auto* arr = pair.get().asObject<ArrayHeader>();
+    arr->elementsData()[0] = a.get();
+    arr->elementsData()[1] = b.get();
     return pair.get();
 }
 
@@ -99,10 +108,18 @@ Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
     // which is where `[Symbol.iterator]` lives — 27.1.2.1 puts the self-hook
     // on the shared %IteratorPrototype%, and an INHERITED property is not an own
     // one, so `Object.getOwnPropertySymbols(m.keys())` is empty.
+    static Value s_mapIterNextFn = Value::fromUndefined();
+    static Value s_keyNext = Value::fromUndefined();
+    if (s_mapIterNextFn.isUndefined()) {
+        s_mapIterNextFn = rtNativeFunction(mapIterNext, 0);
+        rtHeap().add_permanent_root(&s_mapIterNextFn);
+        s_keyNext = rtMakeString("next");
+        rtHeap().add_permanent_root(&s_keyNext);
+    }
     const bool set = isSet(map.get());
     Rooted<Value> it{rtNewIteratorObject(set ? IteratorProto::Set : IteratorProto::Map)};
-    Rooted<Value> nextFn{rtNativeFunction(mapIterNext, 0)};
-    Rooted<Value> nk{rtMakeString("next")};
+    Rooted<Value> nextFn{s_mapIterNextFn};
+    Rooted<Value> nk{s_keyNext};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     // Written AFTER the property above, which is the only thing here that can
     // allocate: `writeSlot` re-derives the object from its root, so the order
@@ -344,32 +361,37 @@ const char* const kSetUnimplemented[] = {
 // `mapIterNext`, so the brand check is the caller's; a foreign receiver never
 // arrives.
 bool rtMapIteratorStep(Rooted<Value>& self, Value& produced) {
-    Rooted<Value> target{readSlot(self, MapIteratorSlot::IteratedMap)};
-    if (!isMapLike(target.get())) return false;
-    const auto kind = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::Kind).asNumber());
-    uint32_t at = static_cast<uint32_t>(readSlot(self, MapIteratorSlot::NextIndex).asNumber());
+    auto* selfObj = self.get().asObject<ObjectHeader>();
+    Value target = selfObj->internalSlot(MapIteratorSlot::IteratedMap);
+    if (!isMapLike(target)) return false;
+    const auto kind = static_cast<uint32_t>(selfObj->internalSlot(MapIteratorSlot::Kind).asNumber());
+    uint32_t at = static_cast<uint32_t>(selfObj->internalSlot(MapIteratorSlot::NextIndex).asNumber());
 
-    auto* map = target.get().asObject<MapHeader>();
+    auto* map = target.asObject<MapHeader>();
     while (at < map->used() && !map->liveAt(at)) ++at;
     if (at >= map->used()) {
         // The cursor is left past the end, so a live iterator over a map that
         // grows after it finished does NOT resume — 24.1.5.1 step 4.c sets
         // [[Map]] to undefined once, and this is that latch.
-        writeSlot(self, MapIteratorSlot::IteratedMap, Value::fromUndefined());
+        selfObj->setInternalSlot(MapIteratorSlot::IteratedMap, Value::fromUndefined());
         return false;
     }
-    Rooted<Value> k{map->keyAt(at)};
-    Rooted<Value> v{map->valueAt(at)};
-    writeSlot(self, MapIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
+    selfObj->setInternalSlot(MapIteratorSlot::NextIndex,
+                             Value::fromDouble(static_cast<double>(at + 1)));
 
     if (kind == Keys) {
-        produced = k.get();
-    } else if (kind == Values) {
-        produced = isSet(target.get()) ? k.get() : v.get();
-    } else {
-        Rooted<Value> second{isSet(target.get()) ? k.get() : v.get()};
-        produced = makePair(k, second);
+        produced = map->keyAt(at);
+        return true;
     }
+    if (kind == Values) {
+        produced = isSet(target) ? map->keyAt(at) : map->valueAt(at);
+        return true;
+    }
+
+    // Entries allocates a pair array, so we root values across allocation.
+    Rooted<Value> k{map->keyAt(at)};
+    Rooted<Value> second{isSet(target) ? map->keyAt(at) : map->valueAt(at)};
+    produced = makePair(k, second);
     return true;
 }
 

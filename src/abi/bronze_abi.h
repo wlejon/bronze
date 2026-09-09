@@ -1050,6 +1050,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_OBJ_FLAGS_PLAIN       0
 #define BRONZE_ABI_OBJ_FLAGS_ARRAY       1
 #define BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY 3
+#define BRONZE_ABI_OBJ_FLAGS_MAP         6
+#define BRONZE_ABI_OBJ_FLAGS_SET         7
 
 /* ArrayHeader field offsets */
 #define BRONZE_ABI_ARRAY_LENGTH_OFFSET   8
