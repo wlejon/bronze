@@ -59,7 +59,9 @@ ElemGuards emitElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm
 
     llvm::Value* ok = builder.CreateAnd(objAndNum, isIntegral);
     llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, std::string(prefix) + "ok", fn);
-    builder.CreateCondBr(ok, cont, slowBb);
+    auto* br = builder.CreateCondBr(ok, cont, slowBb);
+    br->setMetadata(llvm::LLVMContext::MD_prof,
+                    llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
     builder.SetInsertPoint(cont);
 
     llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
@@ -171,10 +173,19 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     ElemGuards g = emitElemGuards(builder, objBits, idxBits, cacheBb, "eg.");
 
     llvm::BasicBlock* arrBb = llvm::BasicBlock::Create(ctx, "eg.arr", fn);
+    llvm::BasicBlock* notArrBb = llvm::BasicBlock::Create(ctx, "eg.notarr", fn);
     llvm::BasicBlock* taBb = llvm::BasicBlock::Create(ctx, "eg.ta", fn);
-    llvm::SwitchInst* swFlags = builder.CreateSwitch(g.flags, cacheBb, 2);
-    swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY), arrBb);
-    swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY), taBb);
+
+    llvm::Value* isArr = builder.CreateICmpEQ(g.flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
+    auto* brArr = builder.CreateCondBr(isArr, arrBb, notArrBb);
+    brArr->setMetadata(llvm::LLVMContext::MD_prof,
+                       llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(notArrBb);
+    llvm::Value* isTa = builder.CreateICmpEQ(g.flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY));
+    auto* brTa = builder.CreateCondBr(isTa, taBb, cacheBb);
+    brTa->setMetadata(llvm::LLVMContext::MD_prof,
+                      llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     // Array: in bounds, elements block present, hole answers undefined. An
     // out-of-bounds read goes to the helper, whose own fast path answers the
@@ -193,7 +204,9 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::Value* elemsIsObj =
         builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
     llvm::BasicBlock* arrReadBb = llvm::BasicBlock::Create(ctx, "eg.arr.read", fn);
-    builder.CreateCondBr(builder.CreateAnd(inBounds, elemsIsObj), arrReadBb, cacheBb);
+    auto* brInBounds = builder.CreateCondBr(builder.CreateAnd(inBounds, elemsIsObj), arrReadBb, cacheBb);
+    brInBounds->setMetadata(llvm::LLVMContext::MD_prof,
+                            llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(arrReadBb);
     llvm::Value* elemsAddr =
@@ -210,11 +223,18 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
     auto* raw = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "eg.raw");
     tagArrayElementsAccess(raw, ctx);
-    llvm::Value* rawTag = builder.CreateLShr(raw, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* isHole = builder.CreateICmpEQ(rawTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
-    llvm::Value* arrVal =
-        builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), raw, "eg.arrval");
-    llvm::BasicBlock* arrEndBb = builder.GetInsertBlock();
+
+    llvm::BasicBlock* arrOkBb = llvm::BasicBlock::Create(ctx, "eg.arr.ok", fn);
+    llvm::BasicBlock* arrHoleBb = llvm::BasicBlock::Create(ctx, "eg.arr.hole", fn);
+    llvm::Value* notHole = builder.CreateICmpNE(raw, builder.getInt64(BRONZE_ABI_HOLE_BITS), "eg.nothole");
+    auto* brNotHole = builder.CreateCondBr(notHole, arrOkBb, arrHoleBb);
+    brNotHole->setMetadata(llvm::LLVMContext::MD_prof,
+                           llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(arrOkBb);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(arrHoleBb);
     builder.CreateBr(doneBb);
 
     // Typed array: all element kinds, in bounds. Out of bounds answers
@@ -224,13 +244,15 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
     // The length word is MAINTAINED, not fixed: `transfer` and `resize` close
     // and reopen views by rewriting it (closeOrReopenViews). So it is scoped,
-    // never invariant â€” hoistable past element and env stores, reloaded past
+    // never invariant — hoistable past element and env stores, reloaded past
     // any call, which is the only place a window can move.
     auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "eg.talen");
     tagViewLengthAccess(taLen, ctx);
     llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "eg.ta.kind", fn);
     llvm::BasicBlock* taUndefBb = llvm::BasicBlock::Create(ctx, "eg.ta.undef", fn);
-    builder.CreateCondBr(builder.CreateICmpULT(g.idx32, taLen), taKindBb, taUndefBb);
+    auto* brTaLen = builder.CreateCondBr(builder.CreateICmpULT(g.idx32, taLen), taKindBb, taUndefBb);
+    brTaLen->setMetadata(llvm::LLVMContext::MD_prof,
+                         llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(taUndefBb);
     builder.CreateBr(doneBb);
@@ -333,9 +355,10 @@ llvm::Value* emitElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Va
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(i64Ty, 12, "eg.result");
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 13, "eg.result");
     result->addIncoming(cached.value, cached.hitBb);
-    result->addIncoming(arrVal, arrEndBb);
+    result->addIncoming(raw, arrOkBb);
+    result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrHoleBb);
     result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), taUndefBb);
     result->addIncoming(f64Val, f64EndBb);
     result->addIncoming(f32Val, f32EndBb);
@@ -367,10 +390,19 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     ElemGuards g = emitElemGuards(builder, objBits, idxBits, slowBb, "es.");
 
     llvm::BasicBlock* arrBb = llvm::BasicBlock::Create(ctx, "es.arr", fn);
+    llvm::BasicBlock* notArrBb = llvm::BasicBlock::Create(ctx, "es.notarr", fn);
     llvm::BasicBlock* taBb = llvm::BasicBlock::Create(ctx, "es.ta", fn);
-    llvm::SwitchInst* swFlags = builder.CreateSwitch(g.flags, slowBb, 2);
-    swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY), arrBb);
-    swFlags->addCase(builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY), taBb);
+
+    llvm::Value* isArr = builder.CreateICmpEQ(g.flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
+    auto* brArr = builder.CreateCondBr(isArr, arrBb, notArrBb);
+    brArr->setMetadata(llvm::LLVMContext::MD_prof,
+                       llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(notArrBb);
+    llvm::Value* isTa = builder.CreateICmpEQ(g.flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY));
+    auto* brTa = builder.CreateCondBr(isTa, taBb, slowBb);
+    brTa->setMetadata(llvm::LLVMContext::MD_prof,
+                      llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     // Array: in bounds, within capacity, and no named-properties side object —
     // the same three conditions the helper's fast path requires before it will
@@ -410,7 +442,9 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     llvm::Value* canStore =
         builder.CreateAnd(builder.CreateAnd(inBounds, noProps), elemsIsObj);
     llvm::BasicBlock* arrStoreBb = llvm::BasicBlock::Create(ctx, "es.arr.store", fn);
-    builder.CreateCondBr(canStore, arrStoreBb, slowBb);
+    auto* canStoreBr = builder.CreateCondBr(canStore, arrStoreBb, slowBb);
+    canStoreBr->setMetadata(llvm::LLVMContext::MD_prof,
+                            llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(arrStoreBb);
     llvm::Value* elemsAddr =
@@ -443,11 +477,15 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
 
     llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "es.ta.kind", fn);
     llvm::BasicBlock* taOobBb = llvm::BasicBlock::Create(ctx, "es.ta.oob", fn);
-    builder.CreateCondBr(fastOk, taKindBb, taOobBb);
+    auto* brFastOk = builder.CreateCondBr(fastOk, taKindBb, taOobBb);
+    brFastOk->setMetadata(llvm::LLVMContext::MD_prof,
+                          llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(taOobBb);
     llvm::BasicBlock* oobNumChkBb = llvm::BasicBlock::Create(ctx, "es.ta.oobnum", fn);
-    builder.CreateCondBr(valIsNum, oobNumChkBb, slowBb);
+    auto* brOobNum = builder.CreateCondBr(valIsNum, oobNumChkBb, slowBb);
+    brOobNum->setMetadata(llvm::LLVMContext::MD_prof,
+                          llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(oobNumChkBb);
     llvm::Value* oobKindPtr =
@@ -456,7 +494,9 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     markInvariant(oobKind, ctx);
     llvm::Value* oobIsNumberKind =
         builder.CreateICmpULT(oobKind, builder.getInt32(BRONZE_ABI_TA_KIND_BIGINT64));
-    builder.CreateCondBr(oobIsNumberKind, doneBb, slowBb);
+    auto* brOobKind = builder.CreateCondBr(oobIsNumberKind, doneBb, slowBb);
+    brOobKind->setMetadata(llvm::LLVMContext::MD_prof,
+                           llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
 
     builder.SetInsertPoint(taKindBb);
     llvm::Value* kindPtr =
@@ -715,15 +755,15 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
             loaded = llvm::ConstantFP::getNaN(dblTy);
             break;
     }
+    llvm::Value* loadedBits = emitBoxDouble(builder, loaded);
     llvm::BasicBlock* loadEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(dblTy, 2, "tel.result");
-    result->addIncoming(loaded, loadEndBb);
-    // ToNumber(undefined): the invalid-index answer in a coercing position.
-    result->addIncoming(llvm::ConstantFP::getNaN(dblTy), entryBb);
-    return result;
+    llvm::PHINode* resultBits = builder.CreatePHI(builder.getInt64Ty(), 2, "tel.bits");
+    resultBits->addIncoming(loadedBits, loadEndBb);
+    resultBits->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), entryBb);
+    return builder.CreateBitCast(resultBits, dblTy, "tel.result");
 }
 
 void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,

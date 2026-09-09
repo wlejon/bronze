@@ -340,14 +340,15 @@ TEST_CASE("a pinned element read on the right of a store reads raw") {
     const std::string manifest = "M.a: numeric-elements\nM.b: numeric-elements\n";
 
     const std::string il = ilWithPins("elem_rhs_raw", src, manifest);
-    // Two reads, both raw — and nothing left for a barrier to ask about, which
-    // is the half that says the proof was really spent rather than re-checked.
+    // Four reads, all raw — the two in `move` on the right of the stores, and
+    // the two in `console.log` — and nothing left for a barrier to ask about,
+    // which is the half that says the proof was really spent rather than re-checked.
     size_t reads = 0;
     for (size_t at = il.find("elem.get.typed"); at != std::string::npos;
          at = il.find("elem.get.typed", at + 1)) {
         ++reads;
     }
-    CHECK(reads == 2);
+    CHECK(reads == 4);
     // The constructor's `this.a = [...]` still carries the FIELD half of the
     // pin. What must be gone is the ELEMENT half: an f64 value satisfies the
     // claim by its IL type, so the four accesses in `move` ask nothing.

@@ -442,6 +442,10 @@ std::optional<uint32_t> Lowerer::literalIndexKey(const ast::Expr& index) {
 
 std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* idxAccess,
                                                         il::Function& ilFn, bool onSpine) {
+    if (const auto kind = typedElemAccessKind(*idxAccess)) {
+        return lowerTypedElemRead(*idxAccess, *kind, ilFn);
+    }
+
     auto objVal = lowerChainBase(*idxAccess->object, ilFn, onSpine);
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
