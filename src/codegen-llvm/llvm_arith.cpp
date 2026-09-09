@@ -14,6 +14,7 @@
 #include <llvm/IR/MDBuilder.h>
 
 #include "codegen-llvm/llvm_convert.h"
+#include "codegen-llvm/llvm_elem_typed.h"
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_strict_eq.h"
 
@@ -36,14 +37,22 @@ llvm::Value* widenBool(llvm::IRBuilder<>& builder, llvm::Value* v) {
 llvm::Value* branchIfBothNumbers(llvm::IRBuilder<>& builder, llvm::Value* lhs, llvm::Value* rhs,
                                  llvm::BasicBlock* slowBb, const char* name) {
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
-    llvm::Value* lhsNum =
-        builder.CreateICmpULE(lhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
-    llvm::Value* rhsNum =
-        builder.CreateICmpULE(rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+    const bool lhsProven = isProvenNumberValue(lhs);
+    const bool rhsProven = isProvenNumberValue(rhs);
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(builder.getContext(), name, fn);
-    auto* br = builder.CreateCondBr(builder.CreateAnd(lhsNum, rhsNum), fastBb, slowBb);
-    br->setMetadata(llvm::LLVMContext::MD_prof,
-                    llvm::MDBuilder(builder.getContext()).createBranchWeights(1048576, 1));
+
+    if (lhsProven && rhsProven) {
+        builder.CreateBr(fastBb);
+    } else {
+        llvm::Value* lhsNum = lhsProven ? static_cast<llvm::Value*>(builder.getTrue())
+                                        : builder.CreateICmpULE(lhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+        llvm::Value* rhsNum = rhsProven ? static_cast<llvm::Value*>(builder.getTrue())
+                                        : builder.CreateICmpULE(rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+        llvm::Value* cond = lhsProven ? rhsNum : (rhsProven ? lhsNum : builder.CreateAnd(lhsNum, rhsNum));
+        auto* br = builder.CreateCondBr(cond, fastBb, slowBb);
+        br->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(builder.getContext()).createBranchWeights(1048576, 1));
+    }
     builder.SetInsertPoint(fastBb);
     return nullptr;
 }
@@ -72,8 +81,11 @@ llvm::Value* emitConcatStep(llvm::IRBuilder<>& builder, llvm::Function* helper, 
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "cat.done", fn);
 
     branchIfBothNumbers(builder, lhs, rhs, slowBb, "cat.fast");
-    llvm::Value* sum = builder.CreateFAdd(builder.CreateBitCast(lhs, builder.getDoubleTy()),
-                                          builder.CreateBitCast(rhs, builder.getDoubleTy()));
+    llvm::Value* ld = unwrapBoxedDouble(lhs);
+    if (!ld) ld = builder.CreateBitCast(lhs, builder.getDoubleTy());
+    llvm::Value* rd = unwrapBoxedDouble(rhs);
+    if (!rd) rd = builder.CreateBitCast(rhs, builder.getDoubleTy());
+    llvm::Value* sum = builder.CreateFAdd(ld, rd);
     llvm::Value* fastVal = canonicalizeNumeric(builder, sum);
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
@@ -121,6 +133,9 @@ llvm::Value* emitConcatEnd(llvm::IRBuilder<>& builder, llvm::Function* helper, l
 // Returns an i1 indicating whether `v` is a primitive operand for arithmetic/relational operations
 // (number, null, undefined, or boolean). Any other tag (Object, String, Symbol, BigInt) returns false.
 llvm::Value* isArithmeticPrimitive(llvm::IRBuilder<>& builder, llvm::Value* v) {
+    if (isProvenNumberValue(v)) {
+        return builder.getTrue();
+    }
     llvm::Value* isNum =
         builder.CreateICmpULE(v, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "is.num");
     llvm::Value* isNull =
@@ -141,6 +156,12 @@ llvm::Value* isArithmeticPrimitive(llvm::IRBuilder<>& builder, llvm::Value* v) {
 // Number -> bitcast double; null -> 0.0; undefined -> NaN; true -> 1.0; false -> 0.0.
 llvm::Value* primitiveToDouble(llvm::IRBuilder<>& builder, llvm::Value* v) {
     llvm::Type* dblTy = builder.getDoubleTy();
+    if (llvm::Value* unwrapped = unwrapBoxedDouble(v)) {
+        return unwrapped;
+    }
+    if (isProvenNumberValue(v)) {
+        return builder.CreateBitCast(v, dblTy, "cvt.num");
+    }
     llvm::Value* isNum =
         builder.CreateICmpULE(v, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "cvt.isnum");
     llvm::Value* isUndef =
@@ -178,8 +199,11 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "dadd.done", fn);
 
     branchIfBothNumbers(builder, lhs, rhs, checkBb, "dadd.fast");
-    llvm::Value* sum =
-        builder.CreateFAdd(builder.CreateBitCast(lhs, dblTy), builder.CreateBitCast(rhs, dblTy));
+    llvm::Value* ld = unwrapBoxedDouble(lhs);
+    if (!ld) ld = builder.CreateBitCast(lhs, dblTy);
+    llvm::Value* rd = unwrapBoxedDouble(rhs);
+    if (!rd) rd = builder.CreateBitCast(rhs, dblTy);
+    llvm::Value* sum = builder.CreateFAdd(ld, rd);
     llvm::Value* fastVal = canonicalizeNumeric(builder, sum);
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
@@ -229,8 +253,10 @@ llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "darith.done", fn);
 
     branchIfBothNumbers(builder, lhs, rhs, checkBb, "darith.fast");
-    llvm::Value* l = builder.CreateBitCast(lhs, dblTy);
-    llvm::Value* r = builder.CreateBitCast(rhs, dblTy);
+    llvm::Value* l = unwrapBoxedDouble(lhs);
+    if (!l) l = builder.CreateBitCast(lhs, dblTy);
+    llvm::Value* r = unwrapBoxedDouble(rhs);
+    if (!r) r = builder.CreateBitCast(rhs, dblTy);
     llvm::Value* num = op == il::Op::Sub   ? builder.CreateFSub(l, r)
                        : op == il::Op::Mul ? builder.CreateFMul(l, r)
                        : op == il::Op::Div ? builder.CreateFDiv(l, r)
@@ -287,8 +313,11 @@ llvm::Value* emitDynamicRel(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm:
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "drel.done", fn);
 
     branchIfBothNumbers(builder, lhs, rhs, checkBb, "drel.fast");
-    llvm::Value* fastVal = builder.CreateFCmp(pred, builder.CreateBitCast(lhs, dblTy),
-                                              builder.CreateBitCast(rhs, dblTy), "drel.cmp");
+    llvm::Value* ld = unwrapBoxedDouble(lhs);
+    if (!ld) ld = builder.CreateBitCast(lhs, dblTy);
+    llvm::Value* rd = unwrapBoxedDouble(rhs);
+    if (!rd) rd = builder.CreateBitCast(rhs, dblTy);
+    llvm::Value* fastVal = builder.CreateFCmp(pred, ld, rd, "drel.cmp");
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
@@ -366,6 +395,15 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         if (lhs->getType()->isIntegerTy(32)) {
             values_[inst.result] = lhs;
         } else if (lhs->getType()->isIntegerTy(64)) {
+            if (llvm::Value* unwrapped = unwrapBoxedDouble(lhs)) {
+                values_[inst.result] = emitToInt32F64(builder_, shared_.abi, unwrapped);
+                return true;
+            }
+            if (isProvenNumberValue(lhs)) {
+                llvm::Value* fastDbl = builder_.CreateBitCast(lhs, builder_.getDoubleTy());
+                values_[inst.result] = emitToInt32F64(builder_, shared_.abi, fastDbl);
+                return true;
+            }
             llvm::LLVMContext& ctx = builder_.getContext();
             llvm::Function* fn = builder_.GetInsertBlock()->getParent();
             llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "toi32.box.num", fn);
@@ -421,11 +459,16 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
             llvm::BasicBlock::Create(ctx, std::string(tag) + ".slow", fn);
         llvm::BasicBlock* doneBb =
             llvm::BasicBlock::Create(ctx, std::string(tag) + ".done", fn);
-        llvm::Value* isNum =
-            builder_.CreateICmpULE(lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+        const bool numProven = isProvenNumberValue(lhs);
         llvm::BasicBlock* fastBb =
             llvm::BasicBlock::Create(ctx, std::string(tag) + ".fast", fn);
-        builder_.CreateCondBr(isNum, fastBb, slowBb);
+        if (numProven) {
+            builder_.CreateBr(fastBb);
+        } else {
+            llvm::Value* isNum =
+                builder_.CreateICmpULE(lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+            builder_.CreateCondBr(isNum, fastBb, slowBb);
+        }
 
         builder_.SetInsertPoint(fastBb);
         llvm::Value* fastVal = lhs;
@@ -553,23 +596,32 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
                 llvm::Function* fn = builder_.GetInsertBlock()->getParent();
                 llvm::Type* dblTy = builder_.getDoubleTy();
                 llvm::Type* i64Ty = builder_.getInt64Ty();
+                const bool lhsProven = isProvenNumberValue(lhs);
+                const bool rhsProven = isProvenNumberValue(rhs);
                 llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "dbit.num", fn);
                 llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "dbit.slow", fn);
                 llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "dbit.done", fn);
-                llvm::Value* lhsNum = builder_.CreateICmpULE(
-                    lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.lnum");
-                llvm::Value* rhsNum = builder_.CreateICmpULE(
-                    rhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.rnum");
-                auto* br = builder_.CreateCondBr(builder_.CreateAnd(lhsNum, rhsNum, "dbit.bothnum"), numBb,
-                                      slowBb);
-                br->setMetadata(llvm::LLVMContext::MD_prof,
-                                llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+                if (lhsProven && rhsProven) {
+                    builder_.CreateBr(numBb);
+                } else {
+                    llvm::Value* lhsNum = lhsProven ? static_cast<llvm::Value*>(builder_.getTrue())
+                                                    : builder_.CreateICmpULE(lhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.lnum");
+                    llvm::Value* rhsNum = rhsProven ? static_cast<llvm::Value*>(builder_.getTrue())
+                                                    : builder_.CreateICmpULE(rhs, builder_.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "dbit.rnum");
+                    llvm::Value* cond = lhsProven ? rhsNum : (rhsProven ? lhsNum : builder_.CreateAnd(lhsNum, rhsNum, "dbit.bothnum"));
+                    auto* br = builder_.CreateCondBr(cond, numBb, slowBb);
+                    br->setMetadata(llvm::LLVMContext::MD_prof,
+                                    llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+                }
 
                 builder_.SetInsertPoint(numBb);
-                llvm::Value* li = emitToInt32F64(builder_, shared_.abi,
-                                                 builder_.CreateBitCast(lhs, dblTy));
-                llvm::Value* ri = emitToInt32F64(builder_, shared_.abi,
-                                                 builder_.CreateBitCast(rhs, dblTy));
+                llvm::Value* ld = unwrapBoxedDouble(lhs);
+                if (!ld) ld = builder_.CreateBitCast(lhs, dblTy);
+                llvm::Value* rd = unwrapBoxedDouble(rhs);
+                if (!rd) rd = builder_.CreateBitCast(rhs, dblTy);
+                llvm::Value* li = emitToInt32F64(builder_, shared_.abi, ld);
+                llvm::Value* ri = emitToInt32F64(builder_, shared_.abi, rd);
                 llvm::Value* bits = nullptr;
                 switch (inst.op) {
                     case il::Op::BitAnd: bits = builder_.CreateAnd(li, ri); break;

@@ -39,4 +39,13 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
 void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
                       llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind);
 
+// Proves whether a double SSA value is guaranteed to be an integral value in [0, 2^32-1].
+bool isProvenIntegralDouble(llvm::Value* v, int depth = 3);
+
+// Unwraps a boxed double Value (from Op::Box or canonicalizeNumeric) back to its double SSA value.
+llvm::Value* unwrapBoxedDouble(llvm::Value* val);
+
+// Proves whether a 64-bit NaN-boxed Value is guaranteed to be a valid Number (<= BRONZE_ABI_NUMBER_MAX_BITS).
+bool isProvenNumberValue(llvm::Value* val, int depth = 3);
+
 }  // namespace bronze::codegen_llvm

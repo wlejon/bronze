@@ -6,10 +6,12 @@
 #include "codegen-llvm/llvm_convert.h"
 #include "il/il.h"
 
+#include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
@@ -102,7 +104,8 @@ struct TypedElemGuards {
     llvm::Value* ok;
 };
 
-static bool isProvenIntegralDouble(llvm::Value* v, int depth = 3) {
+bool isProvenIntegralDoubleHelper(llvm::Value* v, llvm::SmallPtrSetImpl<llvm::PHINode*>& visited,
+                                  int depth) {
     if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(v)) {
         double d = cfp->getValueAPF().convertToDouble();
         return d >= 0.0 && d <= 4294967295.0 && std::trunc(d) == d;
@@ -110,28 +113,124 @@ static bool isProvenIntegralDouble(llvm::Value* v, int depth = 3) {
     if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(v)) {
         return uitofp->getOperand(0)->getType()->isIntegerTy(32);
     }
-    if (depth > 0) {
-        if (auto* bin = llvm::dyn_cast<llvm::BinaryOperator>(v)) {
-            if (bin->getOpcode() == llvm::Instruction::FAdd ||
-                bin->getOpcode() == llvm::Instruction::FSub ||
-                bin->getOpcode() == llvm::Instruction::FMul) {
-                return isProvenIntegralDouble(bin->getOperand(0), depth - 1) &&
-                       isProvenIntegralDouble(bin->getOperand(1), depth - 1);
+    if (depth <= 0) return false;
+
+    if (auto* bin = llvm::dyn_cast<llvm::BinaryOperator>(v)) {
+        if (bin->getOpcode() == llvm::Instruction::FAdd ||
+            bin->getOpcode() == llvm::Instruction::FMul) {
+            return isProvenIntegralDoubleHelper(bin->getOperand(0), visited, depth - 1) &&
+                   isProvenIntegralDoubleHelper(bin->getOperand(1), visited, depth - 1);
+        }
+        if (bin->getOpcode() == llvm::Instruction::FSub) {
+            if (auto* crhs = llvm::dyn_cast<llvm::ConstantFP>(bin->getOperand(1))) {
+                double r = crhs->getValueAPF().convertToDouble();
+                if (auto* clhs = llvm::dyn_cast<llvm::ConstantFP>(bin->getOperand(0))) {
+                    double l = clhs->getValueAPF().convertToDouble();
+                    double res = l - r;
+                    return res >= 0.0 && res <= 4294967295.0 && std::trunc(res) == res;
+                }
             }
         }
+    }
+    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(v)) {
+        if (visited.contains(phi)) {
+            return true;
+        }
+        if (phi->getNumIncomingValues() > 0 && phi->getNumIncomingValues() <= 4) {
+            visited.insert(phi);
+            bool allOk = true;
+            bool hasBaseCase = false;
+            for (unsigned int i = 0; i < phi->getNumIncomingValues(); ++i) {
+                llvm::Value* inc = phi->getIncomingValue(i);
+                if (inc == phi) continue;
+                if (auto* incPhi = llvm::dyn_cast<llvm::PHINode>(inc)) {
+                    if (visited.contains(incPhi)) {
+                        continue;
+                    }
+                }
+                if (!isProvenIntegralDoubleHelper(inc, visited, depth - 1)) {
+                    allOk = false;
+                    break;
+                }
+                hasBaseCase = true;
+            }
+            visited.erase(phi);
+            return allOk && hasBaseCase;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+bool isProvenIntegralDouble(llvm::Value* v, int depth) {
+    llvm::SmallPtrSet<llvm::PHINode*, 8> visited;
+    return isProvenIntegralDoubleHelper(v, visited, depth);
+}
+
+llvm::Value* unwrapBoxedDouble(llvm::Value* val) {
+    if (val == nullptr) return nullptr;
+    if (auto* sel = llvm::dyn_cast<llvm::SelectInst>(val)) {
+        if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(sel->getFalseValue())) {
+            if (bc->getSrcTy()->isDoubleTy()) return bc->getOperand(0);
+        }
+        if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(sel->getTrueValue())) {
+            if (bc->getSrcTy()->isDoubleTy()) return bc->getOperand(0);
+        }
+    }
+    if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(val)) {
+        if (bc->getSrcTy()->isDoubleTy()) return bc->getOperand(0);
+    }
+    if (auto* call = llvm::dyn_cast<llvm::CallInst>(val)) {
+        if (auto* callee = call->getCalledFunction()) {
+            if (callee->getName() == "bronze_box_f64" && call->arg_size() == 1) {
+                if (call->getArgOperand(0)->getType()->isDoubleTy()) {
+                    return call->getArgOperand(0);
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+bool isProvenNumberValue(llvm::Value* v, int depth) {
+    if (v == nullptr) return false;
+    if (unwrapBoxedDouble(v) != nullptr) return true;
+    if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(v)) {
+        return ci->getValue().ule(BRONZE_ABI_NUMBER_MAX_BITS);
+    }
+    if (auto* call = llvm::dyn_cast<llvm::CallInst>(v)) {
+        if (auto* callee = call->getCalledFunction()) {
+            llvm::StringRef name = callee->getName();
+            if (name == "bronze_box_f64" || name == "bronze_to_number" ||
+                name == "bronze_math_imul") {
+                return true;
+            }
+        }
+    }
+    if (auto* bc = llvm::dyn_cast<llvm::BitCastInst>(v)) {
+        if (bc->getSrcTy()->isDoubleTy()) return true;
+    }
+    if (depth > 0) {
         if (auto* phi = llvm::dyn_cast<llvm::PHINode>(v)) {
             if (phi->getNumIncomingValues() > 0 && phi->getNumIncomingValues() <= 4) {
                 for (unsigned int i = 0; i < phi->getNumIncomingValues(); ++i) {
                     llvm::Value* inc = phi->getIncomingValue(i);
                     if (inc == phi) continue;
-                    if (!isProvenIntegralDouble(inc, depth - 1)) return false;
+                    if (!isProvenNumberValue(inc, depth - 1)) return false;
                 }
                 return true;
             }
         }
+        if (auto* sel = llvm::dyn_cast<llvm::SelectInst>(v)) {
+            return isProvenNumberValue(sel->getTrueValue(), depth - 1) &&
+                   isProvenNumberValue(sel->getFalseValue(), depth - 1);
+        }
     }
     return false;
 }
+
+namespace {
 
 TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits,
                                     llvm::Value* idxDbl) {
@@ -310,14 +409,17 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
             loaded = llvm::ConstantFP::getNaN(dblTy);
             break;
     }
+    llvm::Value* loadedBits = (elemKind == BRONZE_ABI_TA_KIND_FLOAT64)
+                                  ? emitBoxDouble(builder, loaded)
+                                  : builder.CreateBitCast(loaded, builder.getInt64Ty());
     llvm::BasicBlock* loadEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(dblTy, 2, "tel.result");
-    result->addIncoming(loaded, loadEndBb);
-    result->addIncoming(llvm::ConstantFP::getNaN(dblTy), entryBb);
-    return result;
+    llvm::PHINode* resultBits = builder.CreatePHI(builder.getInt64Ty(), 2, "tel.bits");
+    resultBits->addIncoming(loadedBits, loadEndBb);
+    resultBits->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), entryBb);
+    return builder.CreateBitCast(resultBits, dblTy, "tel.result");
 }
 
 void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,

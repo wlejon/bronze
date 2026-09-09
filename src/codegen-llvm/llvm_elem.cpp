@@ -1,11 +1,11 @@
+#include <cmath>
+#include <string>
+
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_elem_typed.h"
 #include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_convert.h"
 #include "il/il.h"
-
-#include <string>
-
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -49,24 +49,46 @@ ElemGuards emitElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits, llvm
 
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject = builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    const bool numProven = isProvenNumberValue(idxBits);
     llvm::Value* idxIsNum =
-        builder.CreateICmpULE(idxBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
-    llvm::Value* objAndNum = builder.CreateAnd(isObject, idxIsNum);
+        numProven ? static_cast<llvm::Value*>(builder.getTrue())
+                  : builder.CreateICmpULE(idxBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+    llvm::Value* objAndNum = numProven ? isObject : builder.CreateAnd(isObject, idxIsNum);
 
     llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, std::string(prefix) + "num", fn);
     auto* brObj = builder.CreateCondBr(objAndNum, numBb, slowBb);
     brObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(numBb);
-    llvm::Value* d = builder.CreateBitCast(idxBits, dblTy);
-    llvm::Value* idx32 = builder.CreateIntrinsic(
-        llvm::Intrinsic::fptoui_sat, {builder.getInt32Ty(), dblTy}, {d}, nullptr, "elem.idx");
-    llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
-    llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, d);
+    llvm::Value* d = unwrapBoxedDouble(idxBits);
+    if (!d) {
+        d = builder.CreateBitCast(idxBits, dblTy);
+    }
+    llvm::Value* idx32 = nullptr;
+    if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(d)) {
+        double cd = cfp->getValueAPF().convertToDouble();
+        if (cd >= 0.0 && cd <= 4294967295.0 && std::trunc(cd) == cd) {
+            idx32 = builder.getInt32(static_cast<uint32_t>(cd));
+        }
+    } else if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(d)) {
+        if (uitofp->getOperand(0)->getType()->isIntegerTy(32)) {
+            idx32 = uitofp->getOperand(0);
+        }
+    }
+    if (!idx32) {
+        idx32 = builder.CreateIntrinsic(
+            llvm::Intrinsic::fptoui_sat, {builder.getInt32Ty(), dblTy}, {d}, nullptr, "elem.idx");
+    }
 
     llvm::BasicBlock* cont = llvm::BasicBlock::Create(ctx, std::string(prefix) + "ok", fn);
-    auto* brInt = builder.CreateCondBr(isIntegral, cont, slowBb);
-    brInt->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+    if (isProvenIntegralDouble(d)) {
+        builder.CreateBr(cont);
+    } else {
+        llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
+        llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, d);
+        auto* brInt = builder.CreateCondBr(isIntegral, cont, slowBb);
+        brInt->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+    }
     builder.SetInsertPoint(cont);
 
     llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
@@ -418,14 +440,16 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     // out-of-bounds edge lands on a cold kind test rather than on `done`: at
     // or above BIGINT64 it takes the helper, which converts and throws.
     builder.SetInsertPoint(taBb);
+    const bool valProven = isProvenNumberValue(valBits);
     llvm::Value* valIsNum =
-        builder.CreateICmpULE(valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
+        valProven ? static_cast<llvm::Value*>(builder.getTrue())
+                  : builder.CreateICmpULE(valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
     llvm::Value* taLenPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, g.hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
     auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "es.talen");
     tagViewLengthAccess(taLen, ctx);
     llvm::Value* inLen = builder.CreateICmpULT(g.idx32, taLen);
-    llvm::Value* fastOk = builder.CreateAnd(valIsNum, inLen);
+    llvm::Value* fastOk = valProven ? inLen : builder.CreateAnd(valIsNum, inLen);
 
     llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "es.ta.kind", fn);
     llvm::BasicBlock* taOobBb = llvm::BasicBlock::Create(ctx, "es.ta.oob", fn);
@@ -473,14 +497,22 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
 
     builder.SetInsertPoint(f64Bb);
     llvm::Value* p64 = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 8);
-    auto* s64 = builder.CreateAlignedStore(builder.CreateBitCast(valBits, dblTy), p64, llvm::Align(8));
+    llvm::Value* valDbl = unwrapBoxedDouble(valBits);
+    if (!valDbl) {
+        valDbl = builder.CreateBitCast(valBits, dblTy);
+    }
+    auto* s64 = builder.CreateAlignedStore(valDbl, p64, llvm::Align(8));
     tagTypedArrayAccess(s64, ctx);
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(f32Bb);
     llvm::Value* p32 = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
+    llvm::Value* f32ValDbl = unwrapBoxedDouble(valBits);
+    if (!f32ValDbl) {
+        f32ValDbl = builder.CreateBitCast(valBits, dblTy);
+    }
     llvm::Value* narrowed =
-        builder.CreateFPTrunc(builder.CreateBitCast(valBits, dblTy), f32Ty, "es.f32.val");
+        builder.CreateFPTrunc(f32ValDbl, f32Ty, "es.f32.val");
     auto* s32 = builder.CreateAlignedStore(narrowed, p32, llvm::Align(4));
     tagTypedArrayAccess(s32, ctx);
     builder.CreateBr(doneBb);
