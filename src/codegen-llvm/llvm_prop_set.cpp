@@ -110,6 +110,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* isObject =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.set.isobj");
     llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    llvm::MDNode* unlikelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
     builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
 
     // 2. Load flags from header
@@ -296,18 +297,19 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::BasicBlock* transNodeBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.node", fn);
         llvm::BasicBlock* transHitBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.hit", fn);
 
-        builder.CreateCondBr(accHit, setAccCheckBb, transNullBb);
+        builder.CreateCondBr(accHit, setAccCheckBb, transNullBb, unlikelyBranch);
 
         builder.SetInsertPoint(transNullBb);
         llvm::Value* cachedNonNull = builder.CreateICmpNE(
             cachedShape, llvm::Constant::getNullValue(ptrTy), "trans.cached");
-        builder.CreateCondBr(builder.CreateAnd(isPlain, cachedNonNull), transParentBb, slowBb);
+        builder.CreateCondBr(builder.CreateAnd(isPlain, cachedNonNull), transParentBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(transParentBb);
         llvm::Value* parentPtr = builder.CreateConstInBoundsGEP1_32(
             i8Ty, cachedShape, BRONZE_ABI_SHAPE_PARENT_OFFSET);
-        llvm::Value* parent =
+        auto* parent =
             builder.CreateAlignedLoad(ptrTy, parentPtr, llvm::Align(8), "trans.parent");
+        markInvariant(parent, ctx);
         llvm::Value* parentOk = builder.CreateICmpEQ(parent, shape);
         // Same f64-slot test as the own-property arm above, for the same
         // reason: the transition arm's store is a bare one too, and the node
@@ -320,19 +322,21 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
             "trans.depthbase");
         llvm::Value* transDepthOk = builder.CreateAnd(
             builder.CreateICmpEQ(transDepthBase, builder.getInt64(0)), reprOk, "trans.depthok");
-        builder.CreateCondBr(builder.CreateAnd(parentOk, transDepthOk), transNodeBb, slowBb);
+        builder.CreateCondBr(builder.CreateAnd(parentOk, transDepthOk), transNodeBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(transNodeBb);
         llvm::Value* transSlot32 = builder.CreateTrunc(slotWord, i32Ty, "trans.slot32");
         llvm::Value* nodeSlotPtr = builder.CreateConstInBoundsGEP1_32(
             i8Ty, cachedShape, BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET);
-        llvm::Value* nodeSlot =
+        auto* nodeSlot =
             builder.CreateAlignedLoad(i32Ty, nodeSlotPtr, llvm::Align(4), "trans.nodeslot");
+        markInvariant(nodeSlot, ctx);
         llvm::Value* slotIsNode = builder.CreateICmpEQ(nodeSlot, transSlot32);
         llvm::Value* attrsPtr = builder.CreateConstInBoundsGEP1_32(
             i8Ty, cachedShape, BRONZE_ABI_SHAPE_ATTRS_OFFSET);
-        llvm::Value* attrs =
+        auto* attrs =
             builder.CreateAlignedLoad(i32Ty, attrsPtr, llvm::Align(4), "trans.attrs");
+        markInvariant(attrs, ctx);
         llvm::Value* attrsOk = builder.CreateICmpEQ(
             attrs, builder.getInt32(BRONZE_ABI_SHAPE_ATTRS_PLAIN_DATA));
         llvm::Value* usedPtr = builder.CreateConstInBoundsGEP1_32(
@@ -350,7 +354,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* nodeOk = builder.CreateAnd(
             builder.CreateAnd(slotIsNode, attrsOk),
             builder.CreateAnd(notPrototype, epochOk), "trans.nodeok");
-        builder.CreateCondBr(nodeOk, transHitBb, slowBb);
+        builder.CreateCondBr(nodeOk, transHitBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(transHitBb);
         llvm::BasicBlock* transInlineBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.inline", fn);

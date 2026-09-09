@@ -86,11 +86,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
                                 proof, join, holeRawSlot);
     }
 
-    // Not branched on here: `monomorphic` is an identity proof, and the
-    // sequence below is an inline cache, which is what an unproven site wants
-    // too. It travels to the IL text and to --infer-stats, and the LAYOUT proof
-    // beside it (staticSlot) is what changes emitted code.
-    (void)monomorphic;
+    // `monomorphic` is passed down to `emitIcWayScan`: when true, the multi-way
+    // polymorphic scan is bypassed and miss branches directly to slowBb.
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
 
     llvm::LLVMContext& ctx = builder.getContext();
@@ -296,7 +293,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
 
     IcWayScanResult way = emitIcWayScan(builder, ctx, fn, entry, hdr, flags,
                                         globals.bronze_poly_ic_enabled, slowBb, "ic.get",
-                                        fnArmBb);
+                                        fnArmBb, monomorphic);
     llvm::Value* shape = way.shape;
     // Every field below is read off the MATCHED way, never off the site: with
     // four ways a site's word 1 is way 0's slot, and reading it after way 2
@@ -308,13 +305,6 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* slotWord =
         builder.CreateAlignedLoad(i64Ty, slotWordPtr, llvm::Align(8), "ic.slotword");
     llvm::Value* depth = builder.CreateLShr(slotWord, 32);
-    llvm::Value* isAccessor = builder.CreateICmpNE(
-        builder.CreateAnd(depth, builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG))),
-        builder.getInt64(0), "ic.get.isaccessor");
-    llvm::Value* realDepth = builder.CreateAnd(
-        depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG |
-                                                       BRONZE_ABI_IC_DEPTH_ABSENT_FLAG)),
-        "ic.get.realdepth");
 
     // The depth word decides which arm, and the order is by how hot each is:
     // an own-property hit (depth 0) leaves first and pays ONE compare, then the
@@ -355,6 +345,13 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(flaggedDepthBb);
+    llvm::Value* isAccessor = builder.CreateICmpNE(
+        builder.CreateAnd(depth, builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG))),
+        builder.getInt64(0), "ic.get.isaccessor");
+    llvm::Value* realDepth = builder.CreateAnd(
+        depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG |
+                                                       BRONZE_ABI_IC_DEPTH_ABSENT_FLAG)),
+        "ic.get.realdepth");
     llvm::BasicBlock* getAccCheckBb = llvm::BasicBlock::Create(ctx, "ic.get.acc.check", fn);
     llvm::BasicBlock* protoCheckBb = llvm::BasicBlock::Create(ctx, "ic.proto.check", fn);
     builder.CreateCondBr(isAccessor, getAccCheckBb, protoCheckBb, unlikelyBranch);

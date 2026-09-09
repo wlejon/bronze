@@ -68,7 +68,8 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
                               llvm::Function* fn, llvm::Value* site, llvm::Value* hdr,
                               llvm::Value* flags, llvm::Value* polyEnabledField,
                               llvm::BasicBlock* slowBb, const std::string& prefix,
-                              llvm::BasicBlock* notPlainBb = nullptr);
+                              llvm::BasicBlock* notPlainBb = nullptr,
+                              bool monomorphic = false);
 
 struct ProtoWalkResult {
     llvm::Value* holderHdr{nullptr};

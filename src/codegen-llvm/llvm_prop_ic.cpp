@@ -33,7 +33,7 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
                               llvm::Function* fn, llvm::Value* site, llvm::Value* hdr,
                               llvm::Value* flags, llvm::Value* polyEnabledField,
                               llvm::BasicBlock* slowBb, const std::string& prefix,
-                              llvm::BasicBlock* notPlainBb) {
+                              llvm::BasicBlock* notPlainBb, bool monomorphic) {
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
@@ -60,22 +60,24 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
     // A one-way build is a legal configuration of the constant, and the scan
     // has to degrade to exactly the compare it used to be — no flag load, no
     // block — rather than to a loop that happens to run once.
-    constexpr bool kHasExtraWays = BRONZE_ABI_IC_WAYS > 1;
+    // When lowering proved the access monomorphic, only way 0 can match: bypass
+    // the polymorphic scan and branch straight to slow on miss.
+    const bool kHasExtraWays = (BRONZE_ABI_IC_WAYS > 1) && !monomorphic;
     llvm::BasicBlock* afterWay0 = slowBb;
-    if constexpr (kHasExtraWays) {
+    if (kHasExtraWays) {
         afterWay0 = llvm::BasicBlock::Create(ctx, prefix + ".way.poly", fn);
     }
     matched.push_back({site, builder.GetInsertBlock()});
     builder.CreateCondBr(builder.CreateICmpEQ(shape, way0Cached), hitBb, afterWay0, likely);
 
-    if constexpr (kHasExtraWays) {
+    if (kHasExtraWays) {
         builder.SetInsertPoint(afterWay0);
         llvm::Value* polyOn = builder.CreateICmpNE(
             builder.CreateAlignedLoad(i64Ty, polyEnabledField, llvm::Align(8),
                                       prefix + ".way.polyflag"),
             builder.getInt64(0));
         llvm::BasicBlock* wayBb = llvm::BasicBlock::Create(ctx, prefix + ".way1", fn);
-        builder.CreateCondBr(polyOn, wayBb, slowBb);
+        builder.CreateCondBr(polyOn, wayBb, slowBb, likely);
         builder.SetInsertPoint(wayBb);
         for (unsigned k = 1; k < BRONZE_ABI_IC_WAYS; ++k) {
             llvm::Value* entryK = builder.CreateConstInBoundsGEP1_32(
@@ -94,6 +96,9 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
     }
 
     builder.SetInsertPoint(hitBb);
+    if (matched.size() == 1) {
+        return {site, shape, hitBb};
+    }
     llvm::PHINode* entry = builder.CreatePHI(ptrTy, static_cast<unsigned>(matched.size()),
                                              prefix + ".way.entry");
     for (const auto& [value, block] : matched) entry->addIncoming(value, block);

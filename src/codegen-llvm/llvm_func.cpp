@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 #include "abi/bronze_abi.h"
@@ -567,7 +568,8 @@ void FunctionEmitter::emitExceptionCheck(size_t blockIndex) {
     llvm::Value* pending = builder_.CreateICmpNE(
         cell, builder_.getInt64(BRONZE_ABI_NO_EXCEPTION_BITS), "pending");
     llvm::BasicBlock* cont = llvm::BasicBlock::Create(shared_.ctx, "cont", llvmFunc_);
-    builder_.CreateCondBr(pending, unwindTargetFor(blockIndex), cont);
+    llvm::MDNode* unlikelyBranch = llvm::MDBuilder(shared_.ctx).createBranchWeights(1, 1048576);
+    builder_.CreateCondBr(pending, unwindTargetFor(blockIndex), cont, unlikelyBranch);
     builder_.SetInsertPoint(cont);
 }
 
