@@ -10,6 +10,7 @@
 #include <llvm/IR/Value.h>
 
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_elem_typed.h"
 
 namespace bronze::codegen_llvm {
 
@@ -48,24 +49,6 @@ struct ElemCacheHit {
 ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
                               llvm::Value* keyBits, llvm::BasicBlock* slowBb,
                               llvm::BasicBlock* doneBb);
-
-// Computes the element pointer for a typed array view.
-llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
-                                   llvm::Value* idx32, uint32_t elemSize);
-
-// The PROVEN forms — elem.get.typed / elem.set.typed, receiver proved a
-// Float64Array (isF64) or Float32Array view by inference. No receiver
-// guards, no boxing, no fallback edge: the index is a double in SSA, the
-// result/value is a double in SSA, and the only control flow is the
-// language's own index-validity rule (integral, in range, inside the view),
-// whose failure is NaN for the get and a discarded write for the set —
-// mirroring what bronze_elem_get / _set answer for a number index on this
-// receiver. Neither can call anything, which is what keeps a loop of them
-// free of safepoints.
-llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
-                              llvm::Value* idxDbl, uint32_t elemKind);
-void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
-                      llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind);
 
 // Re-boxes a double value into a NaN-boxed 64-bit value.
 llvm::Value* emitBoxDouble(llvm::IRBuilder<>& builder, llvm::Value* d);
