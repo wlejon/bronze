@@ -15,6 +15,7 @@
 // build anyway.
 
 #include "codegen-llvm/llvm_prop.h"
+#include "codegen-llvm/llvm_prop_index.h"
 #include "il/key.h"
 
 #include "codegen-llvm/llvm_static_slot.h"
@@ -39,7 +40,15 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
                  const ModuleTables& tables, llvm::Value* objBits, llvm::Value* objSlot,
                  uint32_t keyIndex, llvm::Value* valBits, uint32_t icIndex, bool strict,
                  bool monomorphic, const StaticSite& site, ValueRepr valRepr,
-                 std::string_view keyStr, ArrayStoreProof* proof, ProofJoin* join) {
+                  std::string_view keyStr, ArrayStoreProof* proof, ProofJoin* join) {
+    auto optIdx = il::parseIndexKey(keyStr);
+    if (optIdx.has_value()) {
+        emitIndexPropSet(builder, abi, globals, tables, objBits, objSlot, valBits,
+                         keyIndex, icIndex, monomorphic, site, keyStr, *optIdx,
+                         strict, proof, join);
+        return;
+    }
+
     // See the read twin: an identity proof does not change what is emitted; the
     // LAYOUT proof beside it does.
     (void)monomorphic;
@@ -62,8 +71,6 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.set.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.set.done", fn);
 
-    auto optIdx = il::parseIndexKey(keyStr);
-
     // 0a. Where the three BARE-STORE arms meet before `doneBb`: the static-slot
     //     hit, the inline slot and the overflow slot. Each is a shape test and
     //     an eight-byte store into an object that already has the property —
@@ -84,9 +91,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     //     allocate, and a run of those belongs to the Array store planner
     //     anyway.
     llvm::BasicBlock* slotDoneBb =
-        (!optIdx.has_value() && slotStoreCarryEnabled())
-            ? llvm::BasicBlock::Create(ctx, "ic.set.slotdone", fn)
-            : nullptr;
+        slotStoreCarryEnabled() ? llvm::BasicBlock::Create(ctx, "ic.set.slotdone", fn) : nullptr;
     llvm::BasicBlock* bareStoreJoin = slotDoneBb != nullptr ? slotDoneBb : doneBb;
 
     // 0b. The static-slot fast path, in front of everything. It is a bare store
@@ -99,17 +104,6 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     //    is not a case a static slot could serve.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
         builder, tables, objBits, site, bareStoreJoin, valBits, valRepr, "set");
-
-    // 0c. The ARRAY STORE-RUN PROOF's arm (llvm_array_store_proof.h). A run of
-    //     adjacent constant-index writes into one Array spends the ladder ONCE,
-    //     which leaves each member a GEP and an eight-byte store, and everything
-    //     below it is the arm taken when the proof was refused or lost. Nothing
-    //     is emitted when there is no live proof, which is every site outside a
-    //     run.
-    ProvenArrayStore proven;
-    if (proof != nullptr && proof->live() && optIdx.has_value()) {
-        proven = emitProvenArrayElementStore(builder, *proof, *optIdx, valBits, doneBb);
-    }
 
     // 1. Is the receiver an object?
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
@@ -127,125 +121,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
                                                               BRONZE_ABI_OBJ_FLAGS_OFFSET);
     llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.set.flags");
 
-    if (optIdx.has_value()) {
-        uint32_t idx = *optIdx;
-        llvm::BasicBlock* arrElemBb = llvm::BasicBlock::Create(ctx, "ic.set.arr", fn);
-        llvm::BasicBlock* taCheckBb = llvm::BasicBlock::Create(ctx, "ic.set.ta.check", fn);
-        llvm::BasicBlock* taElemBb = llvm::BasicBlock::Create(ctx, "ic.set.ta", fn);
-        llvm::BasicBlock* arrWriteBb = llvm::BasicBlock::Create(ctx, "ic.set.arr.write", fn);
-        llvm::BasicBlock* arrStoreBb = llvm::BasicBlock::Create(ctx, "ic.set.arr.store", fn);
-
-        llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-        builder.CreateCondBr(isArr, arrElemBb, taCheckBb, likelyBranch);
-
-        builder.SetInsertPoint(taCheckBb);
-        llvm::Value* isTa = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY));
-        builder.CreateCondBr(isTa, taElemBb, plainCheckBb);
-
-        builder.SetInsertPoint(arrElemBb);
-        llvm::Value* lenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                                BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-        auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
-        tagArrayHeaderAccess(len, ctx);
-        llvm::Value* capPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                                BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
-        auto* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "arr.cap");
-        tagArrayHeaderAccess(cap, ctx);
-        llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                                 BRONZE_ABI_ARRAY_HEAD_OFFSET);
-        auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
-        tagArrayHeaderAccess(head, ctx);
-        llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
-        llvm::Value* propsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                                  BRONZE_ABI_ARRAY_PROPS_OFFSET);
-        auto* propsVal = builder.CreateAlignedLoad(i64Ty, propsPtr, llvm::Align(8), "arr.props");
-        tagArrayHeaderAccess(propsVal, ctx);
-        llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-        llvm::Value* hasNoProps =
-            builder.CreateICmpEQ(propsTag, builder.getInt64(BRONZE_ABI_TAG_UNDEFINED));
-        llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
-        llvm::Value* inCap = builder.CreateICmpULT(actualIdx, cap);
-        llvm::Value* arrOk = builder.CreateAnd(builder.CreateAnd(inBounds, inCap), hasNoProps);
-        builder.CreateCondBr(arrOk, arrWriteBb, slowBb, likelyBranch);
-
-        builder.SetInsertPoint(arrWriteBb);
-        llvm::Value* elemsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                                  BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-        auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "arr.elems");
-        tagArrayHeaderAccess(elemsVal, ctx);
-        llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-        llvm::Value* elemsIsObj =
-            builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-        builder.CreateCondBr(elemsIsObj, arrStoreBb, slowBb, likelyBranch);
-
-        builder.SetInsertPoint(arrStoreBb);
-        llvm::Value* elemsAddr =
-            builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-        llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
-        llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
-        llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
-        auto* sArr = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
-        tagArrayElementsAccess(sArr, ctx);
-        builder.CreateBr(doneBb);
-
-        // TypedArray store:
-        builder.SetInsertPoint(taElemBb);
-        llvm::Value* valIsNum =
-            builder.CreateICmpULE(valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS));
-        llvm::BasicBlock* taLenBb = llvm::BasicBlock::Create(ctx, "ic.set.ta.len", fn);
-        builder.CreateCondBr(valIsNum, taLenBb, slowBb);
-
-        builder.SetInsertPoint(taLenBb);
-        llvm::Value* taLenPtr =
-            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
-        auto* taLen = builder.CreateAlignedLoad(i32Ty, taLenPtr, llvm::Align(4), "ic.set.ta.len");
-        tagViewLengthAccess(taLen, ctx);
-        llvm::BasicBlock* taKindBb = llvm::BasicBlock::Create(ctx, "ic.set.ta.kind", fn);
-        // Out of bounds discards inline for the Number kinds only; a BigInt
-        // kind still owes ToBigInt's throw for a Number value, so it takes
-        // the helper (llvm_elem.cpp's es.ta.oob says why in full).
-        llvm::BasicBlock* taOobBb = llvm::BasicBlock::Create(ctx, "ic.set.ta.oob", fn);
-        builder.CreateCondBr(builder.CreateICmpULT(builder.getInt32(idx), taLen), taKindBb,
-                             taOobBb);
-
-        builder.SetInsertPoint(taOobBb);
-        llvm::Value* oobKindPtr =
-            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_KIND_OFFSET);
-        auto* oobKind =
-            builder.CreateAlignedLoad(i32Ty, oobKindPtr, llvm::Align(4), "ic.set.ta.oob.kind");
-        markInvariant(oobKind, ctx);
-        llvm::Value* oobIsNumberKind =
-            builder.CreateICmpULT(oobKind, builder.getInt32(BRONZE_ABI_TA_KIND_BIGINT64));
-        builder.CreateCondBr(oobIsNumberKind, doneBb, slowBb);
-
-        builder.SetInsertPoint(taKindBb);
-        llvm::Value* kindPtr =
-            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_KIND_OFFSET);
-        auto* kind = builder.CreateAlignedLoad(i32Ty, kindPtr, llvm::Align(4), "ic.set.ta.kind");
-        markInvariant(kind, ctx);
-
-        llvm::BasicBlock* f64Bb = llvm::BasicBlock::Create(ctx, "ic.set.ta.f64", fn);
-        llvm::BasicBlock* f32Bb = llvm::BasicBlock::Create(ctx, "ic.set.ta.f32", fn);
-        llvm::SwitchInst* swKind = builder.CreateSwitch(kind, slowBb, 2);
-        swKind->addCase(builder.getInt32(BRONZE_ABI_TA_KIND_FLOAT64), f64Bb);
-        swKind->addCase(builder.getInt32(BRONZE_ABI_TA_KIND_FLOAT32), f32Bb);
-
-        builder.SetInsertPoint(f64Bb);
-        llvm::Value* p64 = emitTypedArrayElemPtr(builder, hdr, builder.getInt32(idx), 8);
-        auto* s64 = builder.CreateAlignedStore(builder.CreateBitCast(valBits, llvm::Type::getDoubleTy(ctx)), p64, llvm::Align(8));
-        tagTypedArrayAccess(s64, ctx);
-        builder.CreateBr(doneBb);
-
-        builder.SetInsertPoint(f32Bb);
-        llvm::Value* p32 = emitTypedArrayElemPtr(builder, hdr, builder.getInt32(idx), 4);
-        llvm::Value* narrowed =
-            builder.CreateFPTrunc(builder.CreateBitCast(valBits, llvm::Type::getDoubleTy(ctx)), llvm::Type::getFloatTy(ctx), "ic.set.f32.val");
-        auto* s32 = builder.CreateAlignedStore(narrowed, p32, llvm::Align(4));
-        tagTypedArrayAccess(s32, ctx);
-        builder.CreateBr(doneBb);
-    } else {
-        builder.CreateBr(plainCheckBb);
-    }
+    builder.CreateBr(plainCheckBb);
 
     // 3. Plain object guard
     builder.SetInsertPoint(plainCheckBb);
@@ -413,7 +289,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(notHitBb);
-    const bool transitionArm = !keyStr.empty() && keyStr != "length" && !optIdx.has_value();
+    const bool transitionArm = !keyStr.empty() && keyStr != "length";
     if (transitionArm) {
         llvm::BasicBlock* transNullBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.null", fn);
         llvm::BasicBlock* transParentBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.parent", fn);
@@ -630,7 +506,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     // moved the heap. A site that is neither leaves `fastBb` null, and every
     // proof crossing it dies.
     if (join != nullptr) {
-        join->fastBb = proven.fastBb != nullptr ? proven.fastBb : slotDoneBb;
+        join->fastBb = slotDoneBb;
         join->doneBb = doneBb;
     }
 
@@ -638,7 +514,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     // fast arm alone. Every other predecessor of `doneBb` got here through an
     // arm that can call bronze_prop_set and therefore collect, which is what
     // the derived base pointer cannot survive.
-    if (proof != nullptr) rejoinArrayStoreProof(*proof, proven.fastBb, doneBb);
+    if (proof != nullptr) rejoinArrayStoreProof(*proof, nullptr, doneBb);
 
     (void)staticGuard;
 }

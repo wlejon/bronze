@@ -425,17 +425,12 @@ bool FunctionEmitter::emitCall(const il::Instruction& inst) {
         args.push_back(tlsBase_);
     }
     llvm::CallInst* call = builder_.CreateCall(target, args);
-    if (inst.callEnvHops != il::Instruction::kNoEnvHops) {
+    if (inst.callEnvHops != il::Instruction::kNoEnvHops ||
+        inst.calleeIndex < shared_.module.functions.size()) {
         // The same ask a direct METHOD edge makes, and spent by the same pass:
         // deleting the boundary is worth little next to deleting the callee's
         // prologue, and only inlining does that. `markDirectMethodInlining`
         // decides it once the module is whole and the callee's size is known.
-        //
-        // Asked for the closure edges ONLY. A direct call to a top-level
-        // function has been an ordinary LLVM call since the compiler had one,
-        // and the inliner's own cost model has been deciding those all along;
-        // widening the ask to them is a separate change with its own
-        // measurement, not a side effect of this one.
         call->setMetadata(kDirectMethodMD, llvm::MDNode::get(shared_.ctx, {}));
     }
     llvm::Value* res = call;

@@ -327,7 +327,7 @@ void markDirectMethodInlining(llvm::Module& llvmModule) {
         if (const char* env = std::getenv("BRONZE_DIRECT_INLINE_BUDGET")) {
             return static_cast<unsigned>(std::strtoul(env, nullptr, 10));
         }
-        return 2048u;
+        return 8192u;
     }();
 
     llvm::DenseMap<llvm::Function*, unsigned> sizes;
