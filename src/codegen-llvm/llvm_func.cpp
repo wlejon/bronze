@@ -597,6 +597,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         recvProof_ = ReceiverProof{};
         storeProof_ = StoreProof{};
         arrayStoreProof_ = ArrayStoreProof{};
+        lastGuardedPropRecv_.clear();
     }
     lastTypedElemGet_ = LastTypedElemGet{};
     lastEmittedBlock_ = static_cast<il::BlockId>(blockIndex);
@@ -617,6 +618,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         if (group != RunArmPlan::kNoGroup) {
             if (!emitRunArmGroup(live_.arms.groups[group])) return false;
             lastTypedElemGet_ = LastTypedElemGet{};
+            lastGuardedPropRecv_.clear();
             instIndex = live_.arms.groups[group].last;
             continue;
         }
@@ -658,6 +660,13 @@ bool FunctionEmitter::emitInstructionAt(size_t blockIndex, size_t instIndex, boo
         recvProof_ = ReceiverProof{};
         storeProof_ = StoreProof{};
         arrayStoreProof_ = ArrayStoreProof{};
+        lastGuardedPropRecv_.clear();
+    }
+    if (inst.op == il::Op::ElemSetTyped || inst.op == il::Op::ElemSet ||
+        inst.op == il::Op::PropSet || inst.op == il::Op::SuperSet ||
+        inst.op == il::Op::PrivateSet || inst.op == il::Op::EnvSet ||
+        inst.op == il::Op::ModuleEnvSet) {
+        lastGuardedPropRecv_.clear();
     }
     if (inst.op == il::Op::ElemSetTyped || inst.op == il::Op::ElemSet ||
         inst.op == il::Op::PropSet || inst.op == il::Op::SuperSet ||
@@ -683,8 +692,11 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
     switch (inst.op) {
         case il::Op::Jump:
         case il::Op::Branch:
+            return emitTerminator(inst);
+
         case il::Op::Ret:
         case il::Op::Throw:
+            lastGuardedPropRecv_.clear();
             return emitTerminator(inst);
 
         case il::Op::Add:
@@ -801,6 +813,31 @@ llvm::Value* FunctionEmitter::emitArgv(const il::Instruction& inst, size_t first
         builder_.CreateStore(argV, builder_.CreateGEP(i64Ty_, argvPtr, builder_.getInt32(a)));
     }
     return argvPtr;
+}
+
+void FunctionEmitter::rejoinGuardedPropRecv(llvm::BasicBlock* fastBb, llvm::BasicBlock* doneBb) {
+    if (!lastGuardedPropRecv_.live() || doneBb == nullptr) return;
+    if (llvm::isa<llvm::Instruction>(lastGuardedPropRecv_.isPlain) &&
+        llvm::cast<llvm::Instruction>(lastGuardedPropRecv_.isPlain)->getParent() == doneBb) {
+        return;
+    }
+    if (fastBb == nullptr) {
+        lastGuardedPropRecv_.clear();
+        return;
+    }
+    llvm::IRBuilder<>::InsertPointGuard guard(builder_);
+    builder_.SetInsertPoint(doneBb, doneBb->getFirstInsertionPt());
+    llvm::PHINode* isPlainPhi = builder_.CreatePHI(builder_.getInt1Ty(), 0, "grecv.plain");
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(shared_.ctx);
+    llvm::PHINode* shapePhi = builder_.CreatePHI(ptrTy, 0, "grecv.shape");
+    llvm::Value* nullPtr = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+    llvm::Value* shapeVal = lastGuardedPropRecv_.shape ? lastGuardedPropRecv_.shape : nullPtr;
+    for (llvm::BasicBlock* pred : llvm::predecessors(doneBb)) {
+        isPlainPhi->addIncoming(pred == fastBb ? lastGuardedPropRecv_.isPlain : builder_.getFalse(), pred);
+        shapePhi->addIncoming(pred == fastBb ? shapeVal : nullPtr, pred);
+    }
+    lastGuardedPropRecv_.isPlain = isPlainPhi;
+    lastGuardedPropRecv_.shape = shapePhi;
 }
 
 }  // namespace bronze::codegen_llvm

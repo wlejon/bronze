@@ -17,6 +17,8 @@
 
 namespace bronze::codegen_llvm {
 
+struct GuardedPropReceiver;
+
 // Emits a property read and returns its i64 (NaN-boxed) result.
 //
 // `monomorphic` is an identity proof about the receiver. It reaches the IL and
@@ -53,7 +55,9 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
                          uint32_t icIndex, bool monomorphic, const StaticSite& site,
                          std::string_view keyStr = {}, ReceiverProof* proof = nullptr,
                          ProofJoin* join = nullptr, bool holeRawSlot = false,
-                         bool fnRecvHint = false);
+                         bool fnRecvHint = false,
+                         GuardedPropReceiver* guardedRecv = nullptr,
+                         il::ValueId recvId = il::kNoValue);
 
 // Property writes. The inline paths are the own-slot hit and the
 // shape-transition hit (a constructor body's repeated property add); every

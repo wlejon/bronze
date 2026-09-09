@@ -187,7 +187,7 @@ llvm::Value* primitiveToDouble(llvm::IRBuilder<>& builder, llvm::Value* v) {
 // double inline and added; anything involving a string, an object or a symbol keeps
 // the helper, which owns ToPrimitive and the concat/TypeError ladder.
 llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, llvm::Value* lhs,
-                            llvm::Value* rhs) {
+                            llvm::Value* rhs, FunctionEmitter* emitter = nullptr) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = builder.getDoubleTy();
@@ -231,6 +231,7 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
     result->addIncoming(fastVal, fastEndBb);
     result->addIncoming(primVal, primEndBb);
     result->addIncoming(slowVal, slowBb);
+    if (emitter) emitter->rejoinGuardedPropRecv(fastEndBb, doneBb);
     return result;
 }
 
@@ -241,7 +242,7 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
 // helper calls. What the helper owns is everything else — a string operand's ToNumber,
 // an object's valueOf, and the BigInt algorithm with 13.15.3's mixing TypeError in front of it.
 llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper, il::Op op,
-                              llvm::Value* lhs, llvm::Value* rhs) {
+                              llvm::Value* lhs, llvm::Value* rhs, FunctionEmitter* emitter = nullptr) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = builder.getDoubleTy();
@@ -291,6 +292,7 @@ llvm::Value* emitDynamicArith(llvm::IRBuilder<>& builder, llvm::Function* helper
     result->addIncoming(fastVal, fastEndBb);
     result->addIncoming(primVal, primEndBb);
     result->addIncoming(slowVal, slowBb);
+    if (emitter) emitter->rejoinGuardedPropRecv(fastEndBb, doneBb);
     return result;
 }
 
@@ -700,7 +702,8 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         case il::Op::Add:
             if (inst.type == il::Type::Dynamic) {
                 values_[inst.result] =
-                    emitDynamicAdd(builder_, shared_.abi.bronze_dynamic_add, lhs, rhs);
+                    emitDynamicAdd(builder_, shared_.abi.bronze_dynamic_add, lhs, rhs, this);
+                if (lastGuardedPropRecv_.live()) proofsCarried_ = true;
                 return true;
             }
             if (inst.type == il::Type::Str) {
@@ -718,7 +721,8 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
                                          : inst.op == il::Op::Mul ? shared_.abi.bronze_dynamic_mul
                                          : inst.op == il::Op::Div ? shared_.abi.bronze_dynamic_div
                                                                   : shared_.abi.bronze_dynamic_mod;
-                values_[inst.result] = emitDynamicArith(builder_, helper, inst.op, lhs, rhs);
+                values_[inst.result] = emitDynamicArith(builder_, helper, inst.op, lhs, rhs, this);
+                if (lastGuardedPropRecv_.live()) proofsCarried_ = true;
                 return true;
             }
             const bool asDouble = isDoubleOperation(inst.type, lhs, rhs);

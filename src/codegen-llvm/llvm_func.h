@@ -27,6 +27,17 @@ namespace bronze::codegen_llvm {
 // the caller reports against the construct that produced it.
 llvm::Type* mapILType(il::Type type, llvm::LLVMContext& ctx);
 
+struct GuardedPropReceiver {
+    il::ValueId receiver = il::kNoValue;
+    llvm::Value* objBits = nullptr;
+    llvm::Value* hdr = nullptr;
+    llvm::Value* isPlain = nullptr; // i1 SSA value
+    llvm::Value* shape = nullptr;   // ptr SSA value
+
+    bool live() const { return hdr != nullptr && isPlain != nullptr; }
+    void clear() { *this = GuardedPropReceiver{}; }
+};
+
 class FunctionEmitter {
 public:
     struct Context {
@@ -72,6 +83,7 @@ public:
 
     // Emits every block of the function. False on a diagnosed error.
     bool emit();
+    void rejoinGuardedPropRecv(llvm::BasicBlock* fastBb, llvm::BasicBlock* doneBb);
 
 private:
     void emitPrologue();
@@ -284,6 +296,7 @@ private:
         llvm::Value* res = nullptr;
     };
     LastTypedElemGet lastTypedElemGet_;
+    GuardedPropReceiver lastGuardedPropRecv_{};
     // The IL block whose emission just finished, so `emitBlock` can tell a real
     // chain edge from a plan that merely hoped for one. `kNoBlock` before the
     // first block of a function, which is what makes that block open its own

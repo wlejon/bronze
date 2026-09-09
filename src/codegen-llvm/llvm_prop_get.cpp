@@ -10,6 +10,7 @@
 
 #include "codegen-llvm/llvm_prop.h"
 #include "codegen-llvm/llvm_prop_index.h"
+#include "codegen-llvm/llvm_func.h"
 #include "il/key.h"
 
 #include "codegen-llvm/llvm_static_slot.h"
@@ -77,10 +78,12 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
                          const ModuleTables& tables, llvm::Value* objBits,
                          llvm::Value* objSlot, uint32_t keyIndex, uint32_t icIndex,
                          bool monomorphic, const StaticSite& site, std::string_view keyStr,
-                          ReceiverProof* proof, ProofJoin* join, bool holeRawSlot,
-                          bool fnRecvHint) {
+                         ReceiverProof* proof, ProofJoin* join, bool holeRawSlot,
+                         bool fnRecvHint, GuardedPropReceiver* guardedRecv,
+                         il::ValueId recvId) {
     const std::optional<uint32_t> optIdx = il::parseIndexKey(keyStr);
     if (optIdx.has_value()) {
+        if (guardedRecv) guardedRecv->clear();
         return emitIndexPropGet(builder, abi, globals, tables, objBits, objSlot,
                                 keyIndex, icIndex, monomorphic, site, keyStr, *optIdx,
                                 proof, join, holeRawSlot);
@@ -99,64 +102,39 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "ic.check", fn);
-    llvm::BasicBlock* plainCheckBb = llvm::BasicBlock::Create(ctx, "ic.plain", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.slow");
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.done");
     llvm::BasicBlock* inlineHitBb = nullptr;
     llvm::BasicBlock* overflowAccessBb = nullptr;
+    llvm::BasicBlock* absentHitBb = nullptr;
+    llvm::BasicBlock* protoInlineBb = nullptr;
+    llvm::BasicBlock* protoLoadSuccessBb = nullptr;
     llvm::LoadInst* inlineVal = nullptr;
     llvm::LoadInst* overflowValLoaded = nullptr;
+
+    const bool canReuseGuarded =
+        guardedRecv != nullptr && guardedRecv->live() &&
+        (guardedRecv->objBits == objBits ||
+         (recvId != il::kNoValue && guardedRecv->receiver == recvId));
+
+    llvm::Value* hdr = nullptr;
+    if (canReuseGuarded) {
+        hdr = guardedRecv->hdr;
+    } else {
+        llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        hdr = builder.CreateIntToPtr(addr, ptrTy, "ic.hdr");
+    }
 
     // 0. The static-slot fast path, in front of everything. Emits nothing when
     //    the site has no proven layout, and leaves the builder where it was.
     const StaticSlotGuard staticGuard = emitStaticSlotGuard(
         builder, tables, objBits, site, doneBb, /*store=*/nullptr, ValueRepr::Unknown, "get");
 
-    // 1. Is the receiver an object? A `length` site gives a STRING receiver
-    //    its own arm first: 10.4.3.4's own `length` is the header's code-unit
-    //    count, and `for (i < s.length)` over a string reads it per step.
-    llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* isObject =
-        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.isobj");
     llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1024, 1);
     llvm::MDNode* unlikelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
+
     llvm::BasicBlock* strLenBb = nullptr;
     llvm::Value* strLenVal = nullptr;
-    if (keyStr == "length") {
-        llvm::BasicBlock* notStrBb = llvm::BasicBlock::Create(ctx, "ic.str.not", fn);
-        strLenBb = llvm::BasicBlock::Create(ctx, "ic.str.len", fn);
-        llvm::Value* isStr =
-            builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "ic.isstr");
-        builder.CreateCondBr(isStr, strLenBb, notStrBb);
-
-        builder.SetInsertPoint(notStrBb);
-        builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
-
-        builder.SetInsertPoint(strLenBb);
-        llvm::Value* strAddr =
-            builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-        llvm::Value* strHdr = builder.CreateIntToPtr(strAddr, ptrTy, "ic.str.hdr");
-        llvm::Value* strLenPtr =
-            builder.CreateConstInBoundsGEP1_32(i8Ty, strHdr, BRONZE_ABI_STRING_LENGTH_OFFSET);
-        auto* strLen = builder.CreateAlignedLoad(i32Ty, strLenPtr, llvm::Align(4), "str.len");
-        markInvariant(strLen, ctx);
-        llvm::Value* strLenDbl = builder.CreateUIToFP(strLen, dblTy, "str.len.dbl");
-        strLenVal = builder.CreateBitCast(strLenDbl, i64Ty, "str.len.bits");
-        builder.CreateBr(doneBb);
-    } else {
-        builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
-    }
-
-    // 2. Load flags from header
-    builder.SetInsertPoint(checkBb);
-    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "ic.hdr");
-
-    llvm::Value* flagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
-                                                              BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.flags");
-
     llvm::BasicBlock* arrLenBb = nullptr;
     llvm::Value* arrLenVal = nullptr;
     llvm::BasicBlock* taLenBb = nullptr;
@@ -165,6 +143,58 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* arrMethodVal = nullptr;
     llvm::BasicBlock* fnProtoHitBb = nullptr;
     llvm::Value* fnProtoVal = nullptr;
+    llvm::BasicBlock* fnArmBb = nullptr;
+    llvm::Value* flags = nullptr;
+
+    IcWayScanResult way;
+    if (canReuseGuarded) {
+        llvm::BasicBlock* scanBb = llvm::BasicBlock::Create(ctx, "ic.guarded.scan", fn);
+        builder.CreateCondBr(guardedRecv->isPlain, scanBb, slowBb, likelyBranch);
+        builder.SetInsertPoint(scanBb);
+        way = emitIcWayScan(builder, ctx, fn, entry, hdr, /*flags=*/nullptr,
+                            globals.bronze_poly_ic_enabled, slowBb, "ic.get",
+                            /*notPlainBb=*/nullptr, monomorphic,
+                            /*knownShape=*/guardedRecv->shape);
+    } else {
+        llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "ic.check", fn);
+        llvm::BasicBlock* plainCheckBb = llvm::BasicBlock::Create(ctx, "ic.plain", fn);
+
+        // 1. Is the receiver an object? A `length` site gives a STRING receiver
+        //    its own arm first: 10.4.3.4's own `length` is the header's code-unit
+        //    count, and `for (i < s.length)` over a string reads it per step.
+        llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* isObject =
+            builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.isobj");
+        if (keyStr == "length") {
+            llvm::BasicBlock* notStrBb = llvm::BasicBlock::Create(ctx, "ic.str.not", fn);
+            strLenBb = llvm::BasicBlock::Create(ctx, "ic.str.len", fn);
+            llvm::Value* isStr =
+                builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_STRING), "ic.isstr");
+            builder.CreateCondBr(isStr, strLenBb, notStrBb);
+
+            builder.SetInsertPoint(notStrBb);
+            builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
+
+            builder.SetInsertPoint(strLenBb);
+            llvm::Value* strAddr =
+                builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+            llvm::Value* strHdr = builder.CreateIntToPtr(strAddr, ptrTy, "ic.str.hdr");
+            llvm::Value* strLenPtr =
+                builder.CreateConstInBoundsGEP1_32(i8Ty, strHdr, BRONZE_ABI_STRING_LENGTH_OFFSET);
+            auto* strLen = builder.CreateAlignedLoad(i32Ty, strLenPtr, llvm::Align(4), "str.len");
+            markInvariant(strLen, ctx);
+            llvm::Value* strLenDbl = builder.CreateUIToFP(strLen, dblTy, "str.len.dbl");
+            strLenVal = builder.CreateBitCast(strLenDbl, i64Ty, "str.len.bits");
+            builder.CreateBr(doneBb);
+        } else {
+            builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
+        }
+
+        // 2. Load flags from header
+        builder.SetInsertPoint(checkBb);
+        llvm::Value* flagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr,
+                                                                  BRONZE_ABI_OBJ_FLAGS_OFFSET);
+        flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.flags");
 
     if (keyStr == "length") {
         arrLenBb = llvm::BasicBlock::Create(ctx, "ic.arr.len", fn);
@@ -286,14 +316,14 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     //     block placement and live ranges around a path they never take.
     //     Skipping is always sound — it is the helper, which is the answer
     //     this arm exists to avoid asking for, never a different one.
-    llvm::BasicBlock* fnArmBb = nullptr;
-    if (!fnStaticsIcDisabled() && fnRecvHint) {
-        fnArmBb = llvm::BasicBlock::Create(ctx, "ic.fn.arm", fn);
-    }
+        if (!fnStaticsIcDisabled() && fnRecvHint) {
+            fnArmBb = llvm::BasicBlock::Create(ctx, "ic.fn.arm", fn);
+        }
 
-    IcWayScanResult way = emitIcWayScan(builder, ctx, fn, entry, hdr, flags,
-                                        globals.bronze_poly_ic_enabled, slowBb, "ic.get",
-                                        fnArmBb, monomorphic);
+        way = emitIcWayScan(builder, ctx, fn, entry, hdr, flags,
+                            globals.bronze_poly_ic_enabled, slowBb, "ic.get",
+                            fnArmBb, monomorphic);
+    }
     llvm::Value* shape = way.shape;
     // Every field below is read off the MATCHED way, never off the site: with
     // four ways a site's word 1 is way 0's slot, and reading it after way 2
@@ -379,7 +409,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder.CreateAlignedLoad(i64Ty, absentEpochPtr, llvm::Align(8), "ic.absent.fillepoch");
     llvm::Value* absentCurEpoch = builder.CreateAlignedLoad(
         i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "ic.absent.epoch");
-    llvm::BasicBlock* absentHitBb = llvm::BasicBlock::Create(ctx, "ic.get.absent.hit", fn);
+    absentHitBb = llvm::BasicBlock::Create(ctx, "ic.get.absent.hit", fn);
     builder.CreateCondBr(builder.CreateICmpEQ(absentFillEpoch, absentCurEpoch), absentHitBb,
                          slowBb, likelyBranch);
 
@@ -518,7 +548,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.SetInsertPoint(protoResBb);
     llvm::Value* isProtoInline = builder.CreateICmpULT(
         protoSlot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS), "proto.isinline");
-    llvm::BasicBlock* protoInlineBb = llvm::BasicBlock::Create(ctx, "ic.proto.inline", fn);
+    protoInlineBb = llvm::BasicBlock::Create(ctx, "ic.proto.inline", fn);
     llvm::BasicBlock* protoOverflowBb = llvm::BasicBlock::Create(ctx, "ic.proto.overflow", fn);
     builder.CreateCondBr(isProtoInline, protoInlineBb, protoOverflowBb, likelyBranch);
 
@@ -532,7 +562,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(protoOverflowBb);
-    llvm::BasicBlock* protoLoadSuccessBb = llvm::BasicBlock::Create(ctx, "ic.proto.loadsucc", fn);
+    protoLoadSuccessBb = llvm::BasicBlock::Create(ctx, "ic.proto.loadsucc", fn);
     llvm::Value* protoHitVal = emitObjectSlotLoad(
         builder, ctx, fn, protoWalk.holderHdr, protoSlot32, slowBb, protoLoadSuccessBb, "proto.slot");
 
@@ -685,6 +715,25 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     if (strLenBb) result->addIncoming(strLenVal, strLenBb);
     if (arrMethodHitBb) result->addIncoming(arrMethodVal, arrMethodHitBb);
     if (fnProtoHitBb) result->addIncoming(fnProtoVal, fnProtoHitBb);
+
+    if (guardedRecv != nullptr) {
+        llvm::PHINode* outIsPlain = builder.CreatePHI(builder.getInt1Ty(), 0, "grecv.plain");
+        llvm::PHINode* outShape = builder.CreatePHI(ptrTy, 0, "grecv.shape");
+        llvm::Value* nullShape = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        llvm::Value* matchedShape = way.shape ? way.shape : nullShape;
+        for (llvm::BasicBlock* pred : llvm::predecessors(doneBb)) {
+            const bool isPlainHit = (pred == inlineHitBb || pred == overflowAccessBb ||
+                                     pred == protoInlineBb || pred == protoLoadSuccessBb ||
+                                     pred == absentHitBb);
+            outIsPlain->addIncoming(isPlainHit ? builder.getTrue() : builder.getFalse(), pred);
+            outShape->addIncoming(isPlainHit ? matchedShape : nullShape, pred);
+        }
+        guardedRecv->receiver = recvId;
+        guardedRecv->objBits = objBits;
+        guardedRecv->hdr = hdr;
+        guardedRecv->isPlain = outIsPlain;
+        guardedRecv->shape = outShape;
+    }
 
     // What this site left for anything that has to cross its join — this run's
     // own proof just below, and any OTHER live proof, in the caller.

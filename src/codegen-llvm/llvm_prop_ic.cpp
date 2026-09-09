@@ -33,25 +33,30 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
                               llvm::Function* fn, llvm::Value* site, llvm::Value* hdr,
                               llvm::Value* flags, llvm::Value* polyEnabledField,
                               llvm::BasicBlock* slowBb, const std::string& prefix,
-                              llvm::BasicBlock* notPlainBb, bool monomorphic) {
+                              llvm::BasicBlock* notPlainBb, bool monomorphic,
+                              llvm::Value* knownShape) {
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
     llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
-    llvm::BasicBlock* scanBb = llvm::BasicBlock::Create(ctx, prefix + ".way.scan", fn);
     llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, prefix + ".way.hit", fn);
+    llvm::Value* shape = knownShape;
 
-    llvm::Value* isPlain =
-        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN),
-                             prefix + ".way.isplain");
-    builder.CreateCondBr(isPlain, scanBb, notPlainBb != nullptr ? notPlainBb : slowBb, likely);
-
-    builder.SetInsertPoint(scanBb);
-    llvm::Value* shapePtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    llvm::Value* shape =
-        builder.CreateAlignedLoad(ptrTy, shapePtr, llvm::Align(8), prefix + ".way.shape");
+    if (flags != nullptr) {
+        llvm::BasicBlock* scanBb = llvm::BasicBlock::Create(ctx, prefix + ".way.scan", fn);
+        llvm::Value* isPlain =
+            builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN),
+                                 prefix + ".way.isplain");
+        builder.CreateCondBr(isPlain, scanBb, notPlainBb != nullptr ? notPlainBb : slowBb, likely);
+        builder.SetInsertPoint(scanBb);
+    }
+    if (!shape) {
+        llvm::Value* shapePtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+        shape =
+            builder.CreateAlignedLoad(ptrTy, shapePtr, llvm::Align(8), prefix + ".way.shape");
+    }
 
     llvm::SmallVector<std::pair<llvm::Value*, llvm::BasicBlock*>, BRONZE_ABI_IC_WAYS> matched;
 

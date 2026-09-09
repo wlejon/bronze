@@ -171,10 +171,12 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                 emitPropGet(builder_, abi, globals_, shared_.tables, obj,
                             rootSlotAddrOf(inst, 0), inst.keyIndex, inst.icIndex,
                             inst.icMonomorphic, staticSiteOf(inst), keyStr, proofArg, &join,
-                            holeRawSlot, inst.icFnRecv);
+                            holeRawSlot, inst.icFnRecv, &lastGuardedPropRecv_,
+                            inst.operands.empty() ? il::kNoValue : inst.operands[0]);
             if (holeRawSlot) holeRawSlot_[inst.result] = 1;
             carryOtherProofs(join, /*ownsRead=*/proofArg != nullptr, /*ownsStore=*/false,
                              /*ownsArrayStore=*/false);
+            if (lastGuardedPropRecv_.live()) proofsCarried_ = true;
             if (inst.result < propGetKey_.size()) propGetKey_[inst.result] = inst.keyIndex;
             return true;
         }
