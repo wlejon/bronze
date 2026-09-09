@@ -286,7 +286,7 @@ const MathFn kMathFunctions[] = {
     {"acosh", mathUnary<unaryAcosh>, 1}, {"atanh", mathUnary<unaryAtanh>, 1},
     {"fround", mathUnary<unaryFround>, 1},
     {"f16round", mathUnary<unaryF16round>, 1},
-    {"clz32", mathClz32, 1},             {"imul", mathImul, 2},
+    {"clz32", mathClz32, 1},             {"imul", bronze_math_imul, 2},
     {"atan2", mathAtan2, 2},             {"pow", mathPow, 2},
     // Arity 0 is not "takes nothing": FunctionHeader::arity is the count a
     // short call is PADDED with undefined up to, and a variadic builtin
@@ -375,6 +375,10 @@ extern "C" uint64_t bronze_math_min(uint64_t e, uint64_t t, uint32_t argc, const
 
 extern "C" uint64_t bronze_math_max(uint64_t e, uint64_t t, uint32_t argc, const uint64_t* argv) {
     return mathMax(e, t, argc, argv);
+}
+
+extern "C" uint64_t bronze_math_imul(uint64_t e, uint64_t t, uint32_t argc, const uint64_t* argv) {
+    return mathImul(e, t, argc, argv);
 }
 
 Value rtMathObject() {

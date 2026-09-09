@@ -32,6 +32,7 @@ bronze_add_module(codegen_llvm
         llvm_run_arms.cpp
         llvm_func.cpp
         llvm_math.cpp
+        llvm_string_method.cpp
         llvm_ops.cpp
         llvm_ops_access.cpp
         llvm_ops_call.cpp

@@ -7,7 +7,9 @@
 #include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_math.h"
 #include "codegen-llvm/llvm_prop_ic.h"
+#include "codegen-llvm/llvm_string_method.h"
 
 namespace bronze::codegen_llvm {
 
@@ -577,6 +579,74 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     // 4f. Direct dispatch (argc >= arity)
     builder.SetInsertPoint(dispatchBb);
+    llvm::BasicBlock* normalCallBb = llvm::BasicBlock::Create(ctx, "mic.dispatch.call", fn);
+    llvm::BasicBlock* ccaBb =
+        (argc == 1) ? llvm::BasicBlock::Create(ctx, "mic.dispatch.cca", fn) : nullptr;
+    llvm::BasicBlock* imulBb =
+        (argc == 2) ? llvm::BasicBlock::Create(ctx, "mic.dispatch.imul", fn) : nullptr;
+
+    if (ccaBb) {
+        llvm::Value* isCca =
+            builder.CreateICmpEQ(codePtr, abi.bronze_string_char_code_at, "mic.is_cca");
+        llvm::BasicBlock* nextBb =
+            imulBb ? llvm::BasicBlock::Create(ctx, "mic.check_imul", fn) : normalCallBb;
+        builder.CreateCondBr(isCca, ccaBb, nextBb);
+        if (imulBb) {
+            builder.SetInsertPoint(nextBb);
+            llvm::Value* isImul =
+                builder.CreateICmpEQ(codePtr, abi.bronze_math_imul, "mic.is_imul");
+            builder.CreateCondBr(isImul, imulBb, normalCallBb);
+        }
+    } else if (imulBb) {
+        llvm::Value* isImul =
+            builder.CreateICmpEQ(codePtr, abi.bronze_math_imul, "mic.is_imul");
+        builder.CreateCondBr(isImul, imulBb, normalCallBb);
+    } else {
+        builder.CreateBr(normalCallBb);
+    }
+
+    llvm::Value* ccaRes = nullptr;
+    llvm::BasicBlock* ccaEndBb = nullptr;
+    if (ccaBb) {
+        builder.SetInsertPoint(ccaBb);
+        llvm::Value* recvTag =
+            builder.CreateLShr(thisVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.cca.tag");
+        llvm::Value* recvIsStr =
+            builder.CreateICmpEQ(recvTag, builder.getInt64(BRONZE_ABI_TAG_STRING), "mic.cca.isstr");
+        llvm::BasicBlock* ccaComputeBb = llvm::BasicBlock::Create(ctx, "mic.cca.compute", fn);
+        builder.CreateCondBr(recvIsStr, ccaComputeBb, normalCallBb);
+
+        builder.SetInsertPoint(ccaComputeBb);
+        llvm::Value* arg0 =
+            builder.CreateAlignedLoad(i64Ty, safeArgv, llvm::Align(8), "mic.cca.arg0");
+        ccaRes = emitStringCharCodeAtCompute(builder, thisVal, arg0, normalCallBb);
+        ccaEndBb = builder.GetInsertBlock();
+        builder.CreateBr(doneBb);
+    }
+
+    llvm::Value* imulRes = nullptr;
+    llvm::BasicBlock* imulEndBb = nullptr;
+    if (imulBb) {
+        builder.SetInsertPoint(imulBb);
+        llvm::Value* arg0 =
+            builder.CreateAlignedLoad(i64Ty, safeArgv, llvm::Align(8), "mic.imul.arg0");
+        llvm::Value* arg1Ptr = builder.CreateConstInBoundsGEP1_32(i64Ty, safeArgv, 1);
+        llvm::Value* arg1 =
+            builder.CreateAlignedLoad(i64Ty, arg1Ptr, llvm::Align(8), "mic.imul.arg1");
+        llvm::Value* a0IsNum = builder.CreateICmpULE(
+            arg0, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "mic.imul.a0num");
+        llvm::Value* a1IsNum = builder.CreateICmpULE(
+            arg1, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "mic.imul.a1num");
+        llvm::BasicBlock* imulComputeBb = llvm::BasicBlock::Create(ctx, "mic.imul.compute", fn);
+        builder.CreateCondBr(builder.CreateAnd(a0IsNum, a1IsNum), imulComputeBb, normalCallBb);
+
+        builder.SetInsertPoint(imulComputeBb);
+        imulRes = emitMathCompute(builder, abi, MathIntrinsic::Imul, {arg0, arg1});
+        imulEndBb = builder.GetInsertBlock();
+        builder.CreateBr(doneBb);
+    }
+
+    builder.SetInsertPoint(normalCallBb);
     llvm::Value* fastRes = builder.CreateCall(
         codeTy, codePtr, {envVal, thisVal, builder.getInt32(argc), safeArgv}, "mic.fastres");
     llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
@@ -593,10 +663,15 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     // 6. Merge result
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(i64Ty, 3, "mic.result");
+    unsigned phiEntries = 3;
+    if (ccaEndBb) ++phiEntries;
+    if (imulEndBb) ++phiEntries;
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, phiEntries, "mic.result");
     result->addIncoming(fastRes, fastEndBb);
     result->addIncoming(padRes, padEndBb);
     result->addIncoming(slowRes, slowEndBb);
+    if (ccaEndBb) result->addIncoming(ccaRes, ccaEndBb);
+    if (imulEndBb) result->addIncoming(imulRes, imulEndBb);
     return result;
 }
 

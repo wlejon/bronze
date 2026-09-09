@@ -19,6 +19,7 @@
 #include <string_view>
 
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/STLExtras.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Value.h>
 
@@ -26,11 +27,11 @@
 
 namespace bronze::codegen_llvm {
 
-enum class MathIntrinsic { Sqrt, Sin, Cos, Abs, Min, Max };
+enum class MathIntrinsic { Sqrt, Sin, Cos, Abs, Min, Max, Imul };
 
 // The intrinsic a call site may dispatch directly, decided from the key its
 // callee was read by and the site's compile-time argc — the unary four take
-// exactly one argument, min/max exactly two (any other argc keeps the plain
+// exactly one argument, min/max/imul exactly two (any other argc keeps the plain
 // call, whose variadic semantics the helper owns).
 std::optional<MathIntrinsic> mathIntrinsicFor(std::string_view keyStr, uint32_t argc);
 
@@ -43,5 +44,20 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                 MathIntrinsic kind, llvm::Value* calleeBits,
                                 llvm::Value* thisBits, uint32_t argc, llvm::Value* argvPtr,
                                 llvm::ArrayRef<llvm::Value*> args);
+
+// Computes the result of a MathIntrinsic inline on validated number arguments.
+llvm::Value* emitMathCompute(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                             MathIntrinsic kind, llvm::ArrayRef<llvm::Value*> args);
+
+// Direct method-call fast path for Math intrinsics called as `Math.<fn>(...)`.
+// Checks receiver object/shape and intrinsic code pointer. If all match and
+// arguments are numbers, computes the result inline without allocating argv.
+// Miss fallback invokes `missEmit` to build argv and call emitMethodCallInline.
+llvm::Value* emitMethodCallMathDirect(
+    llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals& globals,
+    const ModuleTables& tables, MathIntrinsic kind, llvm::Value* thisVal,
+    uint32_t keyIndex, uint32_t icIndex, uint32_t argc,
+    llvm::ArrayRef<llvm::Value*> args,
+    llvm::function_ref<llvm::Value*()> missEmit);
 
 }  // namespace bronze::codegen_llvm

@@ -622,10 +622,13 @@ uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     return str.rawBits();
 }
 
+extern "C" uint64_t bronze_string_char_code_at(uint64_t env, uint64_t thisBits, uint32_t argc,
+                                                const uint64_t* argv);
+
 const NativeMethod kStringMethods[] = {
     {"at", stringAt, 1},
     {"charAt", stringCharAt, 1},
-    {"charCodeAt", stringCharCodeAt, 1},
+    {"charCodeAt", bronze_string_char_code_at, 1},
     {"codePointAt", stringCodePointAt, 1},
     {"concat", stringConcat, 0},
     {"endsWith", stringEndsWith, 1},
@@ -655,6 +658,11 @@ const NativeMethod kStringMethods[] = {
 };
 
 }  // namespace
+
+extern "C" uint64_t bronze_string_char_code_at(uint64_t env, uint64_t thisBits, uint32_t argc,
+                                                const uint64_t* argv) {
+    return stringCharCodeAt(env, thisBits, argc, argv);
+}
 
 std::vector<uint16_t> rtStringUnits(const StringHeader* s) {
     std::vector<uint16_t> out;

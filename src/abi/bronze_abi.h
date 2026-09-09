@@ -590,6 +590,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_math_abs,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_min,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_max,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_math_imul,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_string_char_code_at, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_sin_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_cos_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_min2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64)) \
@@ -989,6 +991,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * against the real struct. */
 #define BRONZE_ABI_STRING_LENGTH_OFFSET  8 /* StringHeader::length (uint32, code units) */
 #define BRONZE_ABI_STRING_FLAGS_OFFSET  12 /* StringHeader::flags (uint32) */
+#define BRONZE_ABI_STRING_DATA_OFFSET   16 /* StringHeader payload (latin1 or utf16) */
+#define BRONZE_ABI_STRING_UTF16_BIT      1 /* StringHeader::kUTF16Flag */
 #define BRONZE_ABI_STRING_HASHED_BIT     2 /* StringHeader::kHasHashFlag */
 #define BRONZE_ABI_STRING_HASH_MASK     0xFFFFFFFCu
 #define BRONZE_ABI_MIX64_ADD  0x9E3779B97F4A7C15ull

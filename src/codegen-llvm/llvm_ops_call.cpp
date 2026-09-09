@@ -13,6 +13,7 @@
 #include "codegen-llvm/llvm_func.h"
 #include "codegen-llvm/llvm_math.h"
 #include "codegen-llvm/llvm_pin.h"
+#include "codegen-llvm/llvm_string_method.h"
 
 namespace bronze::codegen_llvm {
 
@@ -100,6 +101,50 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
     uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 1);
 
     if (emitMethodCallDirect(inst, thisVal, argc)) return true;
+
+    if (inst.keyIndex < shared_.module.keyConstants.size()) {
+        std::string_view keyStr = shared_.module.keyConstants[inst.keyIndex];
+        if (keyStr == "charCodeAt" && argc == 1) {
+            llvm::Value* arg0 = operand(inst, 1, "Undefined argument in charCodeAt");
+            if (!arg0) return false;
+            auto missEmit = [&]() -> llvm::Value* {
+                bool ok = false;
+                llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+                return emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal,
+                                            inst.keyIndex, inst.icIndex, argc, argv,
+                                            inst.icFnRecv);
+            };
+            llvm::Value* res = emitMethodCallStringCharCodeAtDirect(
+                builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
+                inst.icIndex, argc, {arg0}, missEmit);
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = res;
+            }
+            return true;
+        }
+        if (auto kind = mathIntrinsicFor(keyStr, argc)) {
+            llvm::SmallVector<llvm::Value*, 2> args;
+            for (uint32_t a = 0; a < argc; ++a) {
+                llvm::Value* v = operand(inst, 1 + a, "Undefined argument in Math method");
+                if (!v) return false;
+                args.push_back(v);
+            }
+            auto missEmit = [&]() -> llvm::Value* {
+                bool ok = false;
+                llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+                return emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal,
+                                            inst.keyIndex, inst.icIndex, argc, argv,
+                                            inst.icFnRecv);
+            };
+            llvm::Value* res = emitMethodCallMathDirect(
+                builder_, abi, globals_, shared_.tables, *kind, thisVal,
+                inst.keyIndex, inst.icIndex, argc, args, missEmit);
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = res;
+            }
+            return true;
+        }
+    }
 
     bool ok = false;
     llvm::Value* argv = emitArgv(inst, 1, argc, ok);
