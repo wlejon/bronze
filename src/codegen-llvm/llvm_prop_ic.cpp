@@ -11,6 +11,7 @@
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Metadata.h>
 #include <llvm/IR/Type.h>
 
@@ -36,6 +37,7 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* scanBb = llvm::BasicBlock::Create(ctx, prefix + ".way.scan", fn);
     llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, prefix + ".way.hit", fn);
@@ -43,7 +45,7 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
     llvm::Value* isPlain =
         builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN),
                              prefix + ".way.isplain");
-    builder.CreateCondBr(isPlain, scanBb, notPlainBb != nullptr ? notPlainBb : slowBb);
+    builder.CreateCondBr(isPlain, scanBb, notPlainBb != nullptr ? notPlainBb : slowBb, likely);
 
     builder.SetInsertPoint(scanBb);
     llvm::Value* shapePtr =
@@ -64,7 +66,7 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
         afterWay0 = llvm::BasicBlock::Create(ctx, prefix + ".way.poly", fn);
     }
     matched.push_back({site, builder.GetInsertBlock()});
-    builder.CreateCondBr(builder.CreateICmpEQ(shape, way0Cached), hitBb, afterWay0);
+    builder.CreateCondBr(builder.CreateICmpEQ(shape, way0Cached), hitBb, afterWay0, likely);
 
     if constexpr (kHasExtraWays) {
         builder.SetInsertPoint(afterWay0);
@@ -86,7 +88,7 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
                     ? llvm::BasicBlock::Create(ctx, prefix + ".way" + std::to_string(k + 1), fn)
                     : slowBb;
             matched.push_back({entryK, builder.GetInsertBlock()});
-            builder.CreateCondBr(builder.CreateICmpEQ(shape, cachedK), hitBb, nextBb);
+            builder.CreateCondBr(builder.CreateICmpEQ(shape, cachedK), hitBb, nextBb, likely);
             if (k + 1 < BRONZE_ABI_IC_WAYS) builder.SetInsertPoint(nextBb);
         }
     }
@@ -99,73 +101,184 @@ IcWayScanResult emitIcWayScan(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx
     return {entry, shape, hitBb};
 }
 
-ProtoWalkResult emitProtoChainWalk(
+struct ProtoStepResult {
+    llvm::Value* protoHdr;
+    llvm::Value* protoShape;
+    llvm::BasicBlock* stepEndBb;
+};
+
+static ProtoStepResult emitProtoStep(
     llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
-    llvm::Value* startShape, llvm::Value* depth, llvm::BasicBlock* entryBb,
-    llvm::BasicBlock* slowBb, llvm::BasicBlock* successBb, const std::string& prefix) {
+    llvm::Value* curShape, llvm::BasicBlock* slowBb, const std::string& stepPrefix) {
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
-    llvm::BasicBlock* loopBb = llvm::BasicBlock::Create(ctx, prefix + ".proto.loop", fn);
-    llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, prefix + ".proto.load", fn);
-    llvm::BasicBlock* stepBb = llvm::BasicBlock::Create(ctx, prefix + ".proto.step", fn);
-    llvm::BasicBlock* dictBb = llvm::BasicBlock::Create(ctx, prefix + ".proto.dict", fn);
-    llvm::BasicBlock* dictLoadBb = llvm::BasicBlock::Create(ctx, prefix + ".proto.dictload", fn);
-    llvm::BasicBlock* latchBb = llvm::BasicBlock::Create(ctx, prefix + ".proto.latch", fn);
-
-    builder.CreateBr(loopBb);
-
-    builder.SetInsertPoint(loopBb);
-    llvm::PHINode* curShape = builder.CreatePHI(ptrTy, 2, prefix + ".proto.curshape");
-    llvm::PHINode* stepIdx = builder.CreatePHI(i64Ty, 2, prefix + ".proto.i");
-    curShape->addIncoming(startShape, entryBb);
-    stepIdx->addIncoming(builder.getInt64(0), entryBb);
+    llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".load", fn);
+    llvm::BasicBlock* stepBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".step", fn);
+    llvm::BasicBlock* dictBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".dict", fn);
+    llvm::BasicBlock* dictLoadBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".dictload", fn);
+    llvm::BasicBlock* endBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".end", fn);
 
     llvm::Value* rootPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, curShape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
-    auto* rootShape = builder.CreateAlignedLoad(ptrTy, rootPtr, llvm::Align(8), prefix + ".proto.root");
+    auto* rootShape = builder.CreateAlignedLoad(ptrTy, rootPtr, llvm::Align(8), stepPrefix + ".root");
     markInvariant(rootShape, ctx);
     llvm::Value* rootNonNull = builder.CreateICmpNE(rootShape, llvm::Constant::getNullValue(ptrTy));
-    builder.CreateCondBr(rootNonNull, loadBb, slowBb);
+    builder.CreateCondBr(rootNonNull, loadBb, slowBb, likely);
 
     builder.SetInsertPoint(loadBb);
     llvm::Value* protoValPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, rootShape, BRONZE_ABI_SHAPE_PROTO_OFFSET);
-    auto* protoVal = builder.CreateAlignedLoad(i64Ty, protoValPtr, llvm::Align(8), prefix + ".proto.val");
+    auto* protoVal = builder.CreateAlignedLoad(i64Ty, protoValPtr, llvm::Align(8), stepPrefix + ".val");
     markInvariant(protoVal, ctx);
     llvm::Value* protoTag = builder.CreateLShr(protoVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* protoIsObj = builder.CreateICmpEQ(protoTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(protoIsObj, stepBb, slowBb);
+    builder.CreateCondBr(protoIsObj, stepBb, slowBb, likely);
 
     builder.SetInsertPoint(stepBb);
     llvm::Value* protoAddr = builder.CreateAnd(protoVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* protoHdr = builder.CreateIntToPtr(protoAddr, ptrTy, prefix + ".proto.hdr");
+    llvm::Value* protoHdr = builder.CreateIntToPtr(protoAddr, ptrTy, stepPrefix + ".hdr");
     llvm::Value* protoFlagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    auto* protoFlags = builder.CreateAlignedLoad(i16Ty, protoFlagsPtr, llvm::Align(2), prefix + ".proto.flags");
+    auto* protoFlags = builder.CreateAlignedLoad(i16Ty, protoFlagsPtr, llvm::Align(2), stepPrefix + ".flags");
     markInvariant(protoFlags, ctx);
     llvm::Value* protoPlain = builder.CreateICmpEQ(protoFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
-    builder.CreateCondBr(protoPlain, dictBb, slowBb);
+    builder.CreateCondBr(protoPlain, dictBb, slowBb, likely);
 
     builder.SetInsertPoint(dictBb);
     llvm::Value* protoShapePtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    auto* protoShape = builder.CreateAlignedLoad(ptrTy, protoShapePtr, llvm::Align(8), prefix + ".proto.shape");
+    auto* protoShape = builder.CreateAlignedLoad(ptrTy, protoShapePtr, llvm::Align(8), stepPrefix + ".shape");
+    markInvariant(protoShape, ctx);
     llvm::Value* protoShapeNonNull = builder.CreateICmpNE(protoShape, llvm::Constant::getNullValue(ptrTy));
-    builder.CreateCondBr(protoShapeNonNull, dictLoadBb, slowBb);
+    builder.CreateCondBr(protoShapeNonNull, dictLoadBb, slowBb, likely);
 
     builder.SetInsertPoint(dictLoadBb);
     llvm::Value* dictPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoShape, BRONZE_ABI_SHAPE_DICT_OFFSET);
-    auto* dict = builder.CreateAlignedLoad(ptrTy, dictPtr, llvm::Align(8), prefix + ".proto.dict");
+    auto* dict = builder.CreateAlignedLoad(ptrTy, dictPtr, llvm::Align(8), stepPrefix + ".dict");
+    markInvariant(dict, ctx);
     llvm::Value* notDict = builder.CreateICmpEQ(dict, llvm::Constant::getNullValue(ptrTy));
-    llvm::Value* stepNext = builder.CreateAdd(stepIdx, builder.getInt64(1), prefix + ".proto.inext");
+    builder.CreateCondBr(notDict, endBb, slowBb, likely);
+
+    builder.SetInsertPoint(endBb);
+    return {protoHdr, protoShape, endBb};
+}
+
+static std::pair<llvm::Value*, llvm::BasicBlock*> emitUnrolledWalk(
+    llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
+    llvm::Value* startShape, uint64_t d, llvm::BasicBlock* slowBb,
+    const std::string& prefix) {
+    llvm::Value* curShape = startShape;
+    llvm::Value* lastHdr = nullptr;
+    llvm::BasicBlock* lastBb = nullptr;
+    for (uint64_t i = 0; i < d; ++i) {
+        auto step = emitProtoStep(builder, ctx, fn, curShape, slowBb,
+                                  prefix + ".s" + std::to_string(i));
+        curShape = step.protoShape;
+        lastHdr = step.protoHdr;
+        lastBb = step.stepEndBb;
+    }
+    return {lastHdr, lastBb};
+}
+
+static std::pair<llvm::Value*, llvm::BasicBlock*> emitLoopWalk(
+    llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
+    llvm::Value* startShape, llvm::Value* depth, llvm::BasicBlock* slowBb,
+    const std::string& prefix) {
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    llvm::BasicBlock* loopBb = llvm::BasicBlock::Create(ctx, prefix + ".loop", fn);
+    llvm::BasicBlock* latchBb = llvm::BasicBlock::Create(ctx, prefix + ".latch", fn);
+    llvm::BasicBlock* loopExitBb = llvm::BasicBlock::Create(ctx, prefix + ".loopexit", fn);
+
+    llvm::BasicBlock* actualEntryBb = builder.GetInsertBlock();
+    builder.CreateBr(loopBb);
+
+    builder.SetInsertPoint(loopBb);
+    llvm::PHINode* curShape = builder.CreatePHI(ptrTy, 2, prefix + ".curshape");
+    llvm::PHINode* stepIdx = builder.CreatePHI(i64Ty, 2, prefix + ".i");
+    curShape->addIncoming(startShape, actualEntryBb);
+    stepIdx->addIncoming(builder.getInt64(0), actualEntryBb);
+
+    auto step = emitProtoStep(builder, ctx, fn, curShape, slowBb, prefix + ".dyn");
+
+    builder.SetInsertPoint(step.stepEndBb);
+    llvm::Value* stepNext = builder.CreateAdd(stepIdx, builder.getInt64(1), prefix + ".inext");
     llvm::Value* walked = builder.CreateICmpEQ(stepNext, depth);
-    builder.CreateCondBr(notDict, latchBb, slowBb);
+    builder.CreateCondBr(walked, loopExitBb, latchBb);
 
     builder.SetInsertPoint(latchBb);
-    curShape->addIncoming(protoShape, latchBb);
+    curShape->addIncoming(step.protoShape, latchBb);
     stepIdx->addIncoming(stepNext, latchBb);
-    builder.CreateCondBr(walked, successBb, loopBb);
+    builder.CreateBr(loopBb);
 
-    return {protoHdr, latchBb};
+    builder.SetInsertPoint(loopExitBb);
+    return {step.protoHdr, loopExitBb};
+}
+
+ProtoWalkResult emitProtoChainWalk(
+    llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
+    llvm::Value* startShape, llvm::Value* depth, llvm::BasicBlock* entryBb,
+    llvm::BasicBlock* slowBb, llvm::BasicBlock* successBb, const std::string& prefix) {
+    (void)entryBb;
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    if (auto* constDepth = llvm::dyn_cast<llvm::ConstantInt>(depth)) {
+        uint64_t d = constDepth->getZExtValue();
+        if (d >= 1 && d <= 3) {
+            auto [holderHdr, lastBb] = emitUnrolledWalk(builder, ctx, fn, startShape, d, slowBb,
+                                                        prefix + ".d" + std::to_string(d));
+            builder.SetInsertPoint(lastBb);
+            builder.CreateBr(successBb);
+            return {holderHdr, lastBb};
+        }
+        auto [holderHdr, lastBb] = emitLoopWalk(builder, ctx, fn, startShape, depth, slowBb, prefix);
+        builder.SetInsertPoint(lastBb);
+        builder.CreateBr(successBb);
+        return {holderHdr, lastBb};
+    }
+
+    llvm::BasicBlock* depth1Bb = llvm::BasicBlock::Create(ctx, prefix + ".depth1", fn);
+    llvm::BasicBlock* depth2Bb = llvm::BasicBlock::Create(ctx, prefix + ".depth2", fn);
+    llvm::BasicBlock* depth3Bb = llvm::BasicBlock::Create(ctx, prefix + ".depth3", fn);
+    llvm::BasicBlock* loopEntryBb = llvm::BasicBlock::Create(ctx, prefix + ".depth.dyn", fn);
+    llvm::BasicBlock* walkSuccessBb = llvm::BasicBlock::Create(ctx, prefix + ".succ", fn);
+
+    auto* sw = builder.CreateSwitch(depth, loopEntryBb, 3);
+    sw->addCase(builder.getInt64(1), depth1Bb);
+    sw->addCase(builder.getInt64(2), depth2Bb);
+    sw->addCase(builder.getInt64(3), depth3Bb);
+    sw->setMetadata(llvm::LLVMContext::MD_prof,
+                    llvm::MDBuilder(ctx).createBranchWeights({1, 1048576, 1048576, 1048576}));
+
+    builder.SetInsertPoint(depth1Bb);
+    auto [hdr1, bb1] = emitUnrolledWalk(builder, ctx, fn, startShape, 1, slowBb, prefix + ".d1");
+    builder.SetInsertPoint(bb1);
+    builder.CreateBr(walkSuccessBb);
+
+    builder.SetInsertPoint(depth2Bb);
+    auto [hdr2, bb2] = emitUnrolledWalk(builder, ctx, fn, startShape, 2, slowBb, prefix + ".d2");
+    builder.SetInsertPoint(bb2);
+    builder.CreateBr(walkSuccessBb);
+
+    builder.SetInsertPoint(depth3Bb);
+    auto [hdr3, bb3] = emitUnrolledWalk(builder, ctx, fn, startShape, 3, slowBb, prefix + ".d3");
+    builder.SetInsertPoint(bb3);
+    builder.CreateBr(walkSuccessBb);
+
+    builder.SetInsertPoint(loopEntryBb);
+    auto [hdrDyn, bbDyn] = emitLoopWalk(builder, ctx, fn, startShape, depth, slowBb, prefix + ".dyn");
+    builder.SetInsertPoint(bbDyn);
+    builder.CreateBr(walkSuccessBb);
+
+    builder.SetInsertPoint(walkSuccessBb);
+    llvm::PHINode* holderHdr = builder.CreatePHI(ptrTy, 4, prefix + ".holder.hdr");
+    holderHdr->addIncoming(hdr1, bb1);
+    holderHdr->addIncoming(hdr2, bb2);
+    holderHdr->addIncoming(hdr3, bb3);
+    holderHdr->addIncoming(hdrDyn, bbDyn);
+    builder.CreateBr(successBb);
+    return {holderHdr, walkSuccessBb};
 }
 
 llvm::Value* emitObjectSlotLoad(
@@ -175,13 +288,14 @@ llvm::Value* emitObjectSlotLoad(
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     llvm::BasicBlock* inlineBb = llvm::BasicBlock::Create(ctx, prefix + ".inline", fn);
     llvm::BasicBlock* overflowBb = llvm::BasicBlock::Create(ctx, prefix + ".overflow", fn);
     llvm::BasicBlock* overflowAccessBb = llvm::BasicBlock::Create(ctx, prefix + ".overflow.access", fn);
 
     llvm::Value* isInline = builder.CreateICmpULT(slot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
-    builder.CreateCondBr(isInline, inlineBb, overflowBb);
+    builder.CreateCondBr(isInline, inlineBb, overflowBb, likely);
 
     builder.SetInsertPoint(inlineBb);
     llvm::Value* slotsBase = builder.CreateConstInBoundsGEP1_32(i8Ty, holderHdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
@@ -195,7 +309,7 @@ llvm::Value* emitObjectSlotLoad(
     llvm::Value* overflowVal = builder.CreateAlignedLoad(i64Ty, overflowPtr, llvm::Align(8), prefix + ".overflow");
     llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* overflowIsObj = builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(overflowIsObj, overflowAccessBb, slowBb);
+    builder.CreateCondBr(overflowIsObj, overflowAccessBb, slowBb, likely);
 
     builder.SetInsertPoint(overflowAccessBb);
     llvm::Value* overflowAddr = builder.CreateAnd(overflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));

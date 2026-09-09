@@ -30,6 +30,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
@@ -114,7 +115,8 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.set.isobj");
-    builder.CreateCondBr(isObject, checkBb, slowBb);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
 
     // 2. Load flags from header
     builder.SetInsertPoint(checkBb);
@@ -318,7 +320,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::BasicBlock* setAccCheckBb = llvm::BasicBlock::Create(ctx, "ic.set.acc.check", fn);
     llvm::BasicBlock* notHitBb = llvm::BasicBlock::Create(ctx, "ic.set.nothit", fn);
 
-    builder.CreateCondBr(hit, hitBb, notHitBb);
+    builder.CreateCondBr(hit, hitBb, notHitBb, likelyBranch);
 
     // Accessor setter fast path
     builder.SetInsertPoint(setAccCheckBb);
@@ -345,7 +347,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "set.acc.epoch");
     llvm::Value* setEpochOk = builder.CreateICmpEQ(setFillEpoch, setCurEpoch);
     llvm::BasicBlock* setAccProtoEntryBb = llvm::BasicBlock::Create(ctx, "ic.set.acc.proto.entry", fn);
-    builder.CreateCondBr(setEpochOk, setAccProtoEntryBb, slowBb);
+    builder.CreateCondBr(setEpochOk, setAccProtoEntryBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(setAccProtoEntryBb);
     ProtoWalkResult setAccWalk = emitProtoChainWalk(
@@ -479,7 +481,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::BasicBlock* transOverflowBb = llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow", fn);
         llvm::Value* isInline = builder.CreateICmpULT(
             transSlot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS), "trans.isinline");
-        builder.CreateCondBr(isInline, transInlineBb, transOverflowBb);
+        builder.CreateCondBr(isInline, transInlineBb, transOverflowBb, likelyBranch);
 
         builder.SetInsertPoint(transInlineBb);
         llvm::Value* shapeSlotPtr =
@@ -510,7 +512,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
         llvm::Value* overflowIsObj =
             builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-        builder.CreateCondBr(builder.CreateAnd(isEnabled, overflowIsObj), transOverflowCheckCapBb, slowBb);
+        builder.CreateCondBr(builder.CreateAnd(isEnabled, overflowIsObj), transOverflowCheckCapBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(transOverflowCheckCapBb);
         llvm::Value* overflowAddr =
@@ -529,7 +531,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* wordCount = builder.CreateLShr(sizeVal, 3, "overflow.words");
         llvm::Value* slotIdx = builder.CreateSub(transSlot32, builder.getInt32(3));
         llvm::Value* withinCap = builder.CreateICmpULT(slotIdx, wordCount, "trans.withincap");
-        builder.CreateCondBr(withinCap, transOverflowAccessBb, slowBb);
+        builder.CreateCondBr(withinCap, transOverflowAccessBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(transOverflowAccessBb);
         llvm::Value* overflowShapeSlotPtr =
@@ -549,7 +551,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* slot32 = builder.CreateTrunc(slotWord, i32Ty, "ic.set.slot32");
     llvm::Value* isInline =
         builder.CreateICmpULT(slot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
-    builder.CreateCondBr(isInline, inlineHitBb, overflowHitBb);
+    builder.CreateCondBr(isInline, inlineHitBb, overflowHitBb, likelyBranch);
 
     builder.SetInsertPoint(inlineHitBb);
     llvm::Value* slotsBase =
@@ -573,7 +575,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* overflowIsObj =
         builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(builder.CreateAnd(isEnabled, overflowIsObj), overflowCheckCapBb, slowBb);
+    builder.CreateCondBr(builder.CreateAnd(isEnabled, overflowIsObj), overflowCheckCapBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(overflowCheckCapBb);
     llvm::Value* overflowAddr =
@@ -588,7 +590,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
     llvm::Value* wordCount = builder.CreateLShr(sizeVal, 3, "overflow.words");
     llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(3));
     llvm::Value* withinCap = builder.CreateICmpULT(slotIdx, wordCount, "set.withincap");
-    builder.CreateCondBr(withinCap, overflowAccessBb, slowBb);
+    builder.CreateCondBr(withinCap, overflowAccessBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(overflowAccessBb);
     llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);

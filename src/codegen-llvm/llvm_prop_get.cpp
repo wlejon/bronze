@@ -25,6 +25,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
@@ -92,12 +93,13 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.isobj");
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
     llvm::BasicBlock* strLenBb = nullptr;
     llvm::Value* strLenVal = nullptr;
     if (keyStr == "length") {
         llvm::BasicBlock* strCheckBb = llvm::BasicBlock::Create(ctx, "ic.str.check", fn);
         strLenBb = llvm::BasicBlock::Create(ctx, "ic.str.len", fn);
-        builder.CreateCondBr(isObject, checkBb, strCheckBb);
+        builder.CreateCondBr(isObject, checkBb, strCheckBb, likelyBranch);
 
         builder.SetInsertPoint(strCheckBb);
         llvm::Value* isStr =
@@ -115,7 +117,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         strLenVal = builder.CreateBitCast(strLenDbl, i64Ty, "str.len.bits");
         builder.CreateBr(doneBb);
     } else {
-        builder.CreateCondBr(isObject, checkBb, slowBb);
+        builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
     }
 
     // 2. Load flags from header
@@ -466,7 +468,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // a single loaded word rather than three separate tests.
     llvm::BasicBlock* nonZeroDepthBb = llvm::BasicBlock::Create(ctx, "ic.get.depth.nonzero", fn);
     builder.CreateCondBr(builder.CreateICmpEQ(depth, builder.getInt64(0), "ic.get.depthzero"),
-                         hitBb, nonZeroDepthBb);
+                         hitBb, nonZeroDepthBb, likelyBranch);
 
     // 3a. The ABSENT answer: the key is on neither the receiver nor its chain.
     // The shape match above covers every own add; this epoch check covers every
@@ -491,7 +493,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "ic.absent.epoch");
     llvm::BasicBlock* absentHitBb = llvm::BasicBlock::Create(ctx, "ic.get.absent.hit", fn);
     builder.CreateCondBr(builder.CreateICmpEQ(absentFillEpoch, absentCurEpoch), absentHitBb,
-                         slowBb);
+                         slowBb, likelyBranch);
 
     builder.SetInsertPoint(absentHitBb);
     builder.CreateBr(doneBb);
@@ -526,7 +528,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "get.acc.epoch");
     llvm::Value* getEpochOk = builder.CreateICmpEQ(getFillEpoch, getCurEpoch);
     llvm::BasicBlock* getAccProtoEntryBb = llvm::BasicBlock::Create(ctx, "ic.get.acc.proto.entry", fn);
-    builder.CreateCondBr(getEpochOk, getAccProtoEntryBb, slowBb);
+    builder.CreateCondBr(getEpochOk, getAccProtoEntryBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(getAccProtoEntryBb);
     ProtoWalkResult getAccWalk = emitProtoChainWalk(
@@ -609,7 +611,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         i64Ty, globals.bronze_proto_epoch, llvm::Align(8), "proto.epoch");
     llvm::Value* epochOk = builder.CreateICmpEQ(fillEpoch, curEpoch);
     llvm::BasicBlock* protoEntryBb = llvm::BasicBlock::Create(ctx, "ic.proto.entry", fn);
-    builder.CreateCondBr(epochOk, protoEntryBb, slowBb);
+    builder.CreateCondBr(epochOk, protoEntryBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(protoEntryBb);
     llvm::BasicBlock* protoResBb = llvm::BasicBlock::Create(ctx, "ic.proto.res", fn);
@@ -629,7 +631,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* slot32 = builder.CreateTrunc(slotWord, i32Ty, "ic.slot32");
     llvm::Value* isInline =
         builder.CreateICmpULT(slot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
-    builder.CreateCondBr(isInline, inlineHitBb, overflowHitBb);
+    builder.CreateCondBr(isInline, inlineHitBb, overflowHitBb, likelyBranch);
 
     builder.SetInsertPoint(inlineHitBb);
     llvm::Value* slotsBase =
@@ -647,7 +649,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* overflowIsObj =
         builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(overflowIsObj, overflowAccessBb, slowBb);
+    builder.CreateCondBr(overflowIsObj, overflowAccessBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(overflowAccessBb);
     llvm::Value* overflowAddr =
