@@ -50,6 +50,13 @@ ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
                               llvm::Value* keyBits, llvm::BasicBlock* slowBb,
                               llvm::BasicBlock* doneBb);
 
+// The committed hit of the computed-write cache, at the site
+// (llvm_elem_cache.cpp). Emitted into the CURRENT block: on a hit it branches
+// to `doneBb`, and on any refusal of its own to `slowBb`.
+void emitElemCacheSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
+                      llvm::Value* keyBits, llvm::Value* valBits, llvm::BasicBlock* slowBb,
+                      llvm::BasicBlock* doneBb);
+
 // Re-boxes a double value into a NaN-boxed 64-bit value.
 llvm::Value* emitBoxDouble(llvm::IRBuilder<>& builder, llvm::Value* d);
 

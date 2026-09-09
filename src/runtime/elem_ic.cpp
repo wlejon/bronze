@@ -22,6 +22,7 @@ namespace {
 // other's epoch questions. Zero-initialized, which is the empty state: an empty
 // entry has a null shape, and `InlineCache::isRealShape` refuses it.
 thread_local ElemCacheEntry g_elemCache[kElemCacheEntries];
+thread_local ElemSetCacheEntry g_elemSetCache[kElemSetCacheEntries];
 
 // Everything generated code assumes about the table's shape, asserted beside
 // the table rather than beside the constants: a layout fact is only true where
@@ -34,6 +35,13 @@ static_assert(offsetof(ElemCacheEntry, key) == BRONZE_ABI_ELEM_KEY_OFFSET);
 static_assert(offsetof(ElemCacheEntry, kind) == BRONZE_ABI_ELEM_KIND_OFFSET);
 static_assert(offsetof(ElemCacheEntry, key_ident) == BRONZE_ABI_ELEM_IDENT_OFFSET);
 static_assert(kElemCacheEntries == BRONZE_ABI_ELEM_ENTRIES);
+static_assert(sizeof(ElemSetCacheEntry) == BRONZE_ABI_ELEM_ENTRY_SIZE);
+static_assert(offsetof(ElemSetCacheEntry, ic) == BRONZE_ABI_ELEM_IC_OFFSET);
+static_assert(offsetof(ElemSetCacheEntry, witness) == BRONZE_ABI_ELEM_WITNESS_OFFSET);
+static_assert(offsetof(ElemSetCacheEntry, key) == BRONZE_ABI_ELEM_KEY_OFFSET);
+static_assert(offsetof(ElemSetCacheEntry, kind) == BRONZE_ABI_ELEM_KIND_OFFSET);
+static_assert(offsetof(ElemSetCacheEntry, key_ident) == BRONZE_ABI_ELEM_IDENT_OFFSET);
+static_assert(kElemSetCacheEntries == BRONZE_ABI_ELEM_SET_ENTRIES);
 // The string-key arm reads the key's memoized hash straight off the flags
 // word, so the layout and the two masks are ABI now.
 static_assert(offsetof(StringHeader, flags) == BRONZE_ABI_STRING_FLAGS_OFFSET);
@@ -156,6 +164,7 @@ void elemCachePublish() noexcept {
     // point sees a null base, which is the inline path's first refusal and
     // costs it the helper it already had.
     rtTls()->elem_cache_tbl = reinterpret_cast<uint64_t*>(g_elemCache);
+    rtTls()->elem_set_cache_tbl = reinterpret_cast<uint64_t*>(g_elemSetCache);
 }
 
 bool elemCacheEnabled() noexcept {
@@ -178,6 +187,11 @@ void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept {
     // tag check, because the word is either 0 (payload 0, outside any live
     // range) or a string Value this thread latched.
     for (ElemCacheEntry& e : g_elemCache) {
+        const uintptr_t target =
+            static_cast<uintptr_t>(e.key_ident & BRONZE_ABI_VALUE_PAYLOAD_MASK);
+        if (target >= lo && target < hi) e.key_ident = 0;
+    }
+    for (ElemSetCacheEntry& e : g_elemSetCache) {
         const uintptr_t target =
             static_cast<uintptr_t>(e.key_ident & BRONZE_ABI_VALUE_PAYLOAD_MASK);
         if (target >= lo && target < hi) e.key_ident = 0;
@@ -350,7 +364,6 @@ namespace {
 // Per thread and direct-mapped, for the read table's reasons: a Shape is
 // process-wide but an entry's validity is asked against the per-thread proto
 // epoch, and a collision costs a fill rather than a wrong answer.
-thread_local ElemSetCacheEntry g_elemSetCache[kElemSetCacheEntries];
 
 thread_local uint8_t g_elemSetIcEnabled = 1;
 
@@ -412,7 +425,12 @@ ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
     }
 
     ElemSetCacheEntry& e = g_elemSetCache[bucketOf(shape, witness, kElemSetCacheEntries)];
-    if (keyMatches(e, kind, witness, key)) return &e;
+    if (keyMatches(e, kind, witness, key)) {
+        if (kind == ElemKeyKind::String && elemKeyIcEnabled()) {
+            e.key_ident = key.rawBits();
+        }
+        return &e;
+    }
 
     recordElemIcMiss(e.kind == ElemKeyKind::Empty       ? "set_entry_empty"
                      : e.ic.cached_shape == shape ? "set_entry_same_shape_other_key"
@@ -448,6 +466,7 @@ ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
     e.witness = witness;
     e.kind = kind;
     e.key = interned;
+    e.key_ident = (kind == ElemKeyKind::String && elemKeyIcEnabled()) ? key.rawBits() : 0;
     return &e;
 }
 

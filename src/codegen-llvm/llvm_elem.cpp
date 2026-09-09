@@ -338,10 +338,11 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
     llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
+    llvm::BasicBlock* cacheBb = llvm::BasicBlock::Create(ctx, "es.cache", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "es.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "es.done", fn);
 
-    ElemGuards g = emitElemGuards(builder, objBits, idxBits, slowBb, "es.");
+    ElemGuards g = emitElemGuards(builder, objBits, idxBits, cacheBb, "es.");
 
     llvm::BasicBlock* arrBb = llvm::BasicBlock::Create(ctx, "es.arr", fn);
     llvm::BasicBlock* notArrBb = llvm::BasicBlock::Create(ctx, "es.notarr", fn);
@@ -353,7 +354,7 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
 
     builder.SetInsertPoint(notArrBb);
     llvm::Value* isTa = builder.CreateICmpEQ(g.flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY));
-    auto* brTa = builder.CreateCondBr(isTa, taBb, slowBb);
+    auto* brTa = builder.CreateCondBr(isTa, taBb, cacheBb);
     brTa->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     // Array: in bounds, within capacity, and no named-properties side object —
@@ -518,6 +519,9 @@ void emitElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* obj
     auto* su8c = builder.CreateAlignedStore(u8cVal, pu8c, llvm::Align(1));
     tagTypedArrayAccess(su8c, ctx);
     builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(cacheBb);
+    emitElemCacheSet(builder, abi, objBits, idxBits, valBits, slowBb, doneBb);
 
     builder.SetInsertPoint(slowBb);
     builder.CreateCall(abi.bronze_elem_set,

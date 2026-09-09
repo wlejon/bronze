@@ -42,6 +42,7 @@
 // latch-side in the runtime: no ident is ever written, so the arm here can
 // only miss and needs no flag of its own.
 
+#include "codegen-llvm/llvm_alias.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_prop_ic.h"
 
@@ -51,6 +52,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 namespace bronze::codegen_llvm {
@@ -354,6 +356,272 @@ ElemCacheHit emitElemCacheGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
     builder.CreateBr(doneBb);
 
     return {result, hitBb};
+}
+
+void emitElemCacheSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
+                      llvm::Value* keyBits, llvm::Value* valBits, llvm::BasicBlock* slowBb,
+                      llvm::BasicBlock* doneBb) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+
+    // The seam and the table, from the thread's ABI block.
+    llvm::Value* tls = builder.CreateCall(abi.bronze_tls_block_addr, {}, "tls");
+    llvm::Value* seamPtr = builder.CreateConstInBoundsGEP1_64(
+        i8Ty, tls, BRONZE_TLS_ELEM_INLINE_ENABLED_OFF, "tls.eleminline");
+    llvm::Value* seam = builder.CreateAlignedLoad(i64Ty, seamPtr, llvm::Align(8), "ec.set.seam");
+    llvm::Value* basePtrPtr = builder.CreateConstInBoundsGEP1_64(
+        i8Ty, tls, BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF, "tls.elemsettbl");
+    llvm::Value* base = builder.CreateAlignedLoad(ptrTy, basePtrPtr, llvm::Align(8), "ec.set.base");
+    llvm::Value* armed =
+        builder.CreateAnd(builder.CreateICmpNE(seam, builder.getInt64(0), "ec.set.seam.on"),
+                          builder.CreateICmpNE(base, llvm::Constant::getNullValue(ptrTy),
+                                               "ec.set.base.live"),
+                          "ec.set.armed");
+
+    llvm::BasicBlock* recvBb = llvm::BasicBlock::Create(ctx, "ec.set.recv", fn);
+    auto* brArmed = builder.CreateCondBr(armed, recvBb, slowBb);
+    brArmed->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // --- the receiver: an object, PLAIN, with a non-dictionary shape --------
+    builder.SetInsertPoint(recvBb);
+    llvm::Value* objTag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT, "ec.set.objtag");
+    llvm::BasicBlock* kindBb = llvm::BasicBlock::Create(ctx, "ec.set.recvkind", fn);
+    auto* brIsObj = builder.CreateCondBr(
+        builder.CreateICmpEQ(objTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ec.set.isobj"),
+        kindBb, slowBb);
+    brIsObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    builder.SetInsertPoint(kindBb);
+    llvm::Value* hdr = builder.CreateIntToPtr(
+        builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK)), ptrTy,
+        "ec.set.hdr");
+    llvm::Value* flagsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+    auto* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ec.set.flags");
+    markInvariant(flags, ctx);
+    llvm::BasicBlock* shapeBb = llvm::BasicBlock::Create(ctx, "ec.set.shape", fn);
+    auto* brIsPlain = builder.CreateCondBr(
+        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN), "ec.set.isplain"),
+        shapeBb, slowBb);
+    brIsPlain->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    builder.SetInsertPoint(shapeBb);
+    llvm::Value* shapePtrPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    llvm::Value* shape =
+        builder.CreateAlignedLoad(ptrTy, shapePtrPtr, llvm::Align(8), "ec.set.recvshape");
+    llvm::BasicBlock* dictBb = llvm::BasicBlock::Create(ctx, "ec.set.dict", fn);
+    auto* brHasShape = builder.CreateCondBr(
+        builder.CreateICmpNE(shape, llvm::Constant::getNullValue(ptrTy), "ec.set.hasshape"),
+        dictBb, slowBb);
+    brHasShape->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    builder.SetInsertPoint(dictBb);
+    llvm::Value* dictPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, shape, BRONZE_ABI_SHAPE_DICT_OFFSET);
+    llvm::Value* dict = builder.CreateAlignedLoad(ptrTy, dictPtr, llvm::Align(8), "ec.set.dictword");
+    llvm::BasicBlock* keyBb = llvm::BasicBlock::Create(ctx, "ec.set.key", fn);
+    auto* brNotDict = builder.CreateCondBr(
+        builder.CreateICmpEQ(dict, llvm::Constant::getNullValue(ptrTy), "ec.set.notdict"),
+        keyBb, slowBb);
+    brNotDict->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // --- the key's witness: number, string, boolean --------------------------
+    builder.SetInsertPoint(keyBb);
+    llvm::BasicBlock* numKeyBb = llvm::BasicBlock::Create(ctx, "ec.set.key.num", fn);
+    llvm::BasicBlock* tagKeyBb = llvm::BasicBlock::Create(ctx, "ec.set.key.tag", fn);
+    llvm::BasicBlock* strHashBb = llvm::BasicBlock::Create(ctx, "ec.set.key.strhash", fn);
+    llvm::BasicBlock* strOkBb = llvm::BasicBlock::Create(ctx, "ec.set.key.str", fn);
+    llvm::BasicBlock* boolKeyBb = llvm::BasicBlock::Create(ctx, "ec.set.key.boolchk", fn);
+    llvm::BasicBlock* boolOkBb = llvm::BasicBlock::Create(ctx, "ec.set.key.bool", fn);
+    llvm::BasicBlock* bucketBb = llvm::BasicBlock::Create(ctx, "ec.set.bucket", fn);
+
+    builder.CreateCondBr(builder.CreateICmpULE(keyBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
+                                               "ec.set.key.isnum"),
+                         numKeyBb, tagKeyBb);
+
+    builder.SetInsertPoint(numKeyBb);
+    builder.CreateBr(bucketBb);
+
+    builder.SetInsertPoint(tagKeyBb);
+    llvm::Value* keyTag = builder.CreateLShr(keyBits, BRONZE_ABI_VALUE_TAG_SHIFT, "ec.set.keytag");
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(keyTag, builder.getInt64(BRONZE_ABI_TAG_STRING), "ec.set.key.isstr"),
+        strHashBb, boolKeyBb);
+
+    builder.SetInsertPoint(strHashBb);
+    llvm::Value* strHdr = builder.CreateIntToPtr(
+        builder.CreateAnd(keyBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK)), ptrTy,
+        "ec.set.strhdr");
+    llvm::Value* strFlagsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, strHdr, BRONZE_ABI_STRING_FLAGS_OFFSET);
+    llvm::Value* strFlags =
+        builder.CreateAlignedLoad(i32Ty, strFlagsPtr, llvm::Align(4), "ec.set.strflags");
+    llvm::Value* hashedBit = builder.CreateAnd(
+        strFlags, builder.getInt32(BRONZE_ABI_STRING_HASHED_BIT), "ec.set.strhashedbit");
+    builder.CreateCondBr(
+        builder.CreateICmpNE(hashedBit, builder.getInt32(0), "ec.set.strhashed"), strOkBb, slowBb);
+
+    builder.SetInsertPoint(strOkBb);
+    llvm::Value* strWitness = builder.CreateZExt(
+        builder.CreateAnd(strFlags, builder.getInt32(BRONZE_ABI_STRING_HASH_MASK)), i64Ty,
+        "ec.set.strwit");
+    builder.CreateBr(bucketBb);
+
+    builder.SetInsertPoint(boolKeyBb);
+    builder.CreateCondBr(
+        builder.CreateICmpEQ(keyTag, builder.getInt64(BRONZE_ABI_TAG_BOOL), "ec.set.key.isbool"),
+        boolOkBb, slowBb);
+
+    builder.SetInsertPoint(boolOkBb);
+    llvm::Value* boolWitness = builder.CreateAnd(keyBits, builder.getInt64(1), "ec.set.key.boolwit");
+    builder.CreateBr(bucketBb);
+
+    // --- bucket index & entry load -----------------------------------------
+    builder.SetInsertPoint(bucketBb);
+    llvm::PHINode* witness = builder.CreatePHI(i64Ty, 3, "ec.set.witness");
+    witness->addIncoming(keyBits, numKeyBb);
+    witness->addIncoming(strWitness, strOkBb);
+    witness->addIncoming(boolWitness, boolOkBb);
+    llvm::PHINode* keyKind = builder.CreatePHI(i8Ty, 3, "ec.set.keykind");
+    keyKind->addIncoming(builder.getInt8(BRONZE_ABI_ELEM_KIND_NUMBER), numKeyBb);
+    keyKind->addIncoming(builder.getInt8(BRONZE_ABI_ELEM_KIND_STRING), strOkBb);
+    keyKind->addIncoming(builder.getInt8(BRONZE_ABI_ELEM_KIND_BOOL), boolOkBb);
+
+    llvm::Value* shapeInt = builder.CreatePtrToInt(shape, i64Ty, "ec.set.shapeint");
+    llvm::Value* hashed =
+        builder.CreateXor(shapeInt, emitMix64(builder, witness, "ec.set.mixwit"), "ec.set.hashin");
+    llvm::Value* bucket = builder.CreateAnd(
+        emitMix64(builder, hashed, "ec.set.hash"),
+        builder.getInt64(BRONZE_ABI_ELEM_SET_ENTRIES - 1), "ec.set.bucket.idx");
+    llvm::Value* entry = builder.CreateInBoundsGEP(
+        i8Ty, base, builder.CreateMul(bucket, builder.getInt64(BRONZE_ABI_ELEM_ENTRY_SIZE)),
+        "ec.set.entry");
+
+    // --- does the entry name THIS (shape, key) pair? ------------------------
+    llvm::Value* entKindPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, entry, BRONZE_ABI_ELEM_KIND_OFFSET);
+    llvm::Value* entKind = builder.CreateAlignedLoad(i8Ty, entKindPtr, llvm::Align(1), "ec.set.entkind");
+    llvm::Value* entWitPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, entry, BRONZE_ABI_ELEM_WITNESS_OFFSET);
+    llvm::Value* entWit = builder.CreateAlignedLoad(i64Ty, entWitPtr, llvm::Align(8), "ec.set.entwit");
+    llvm::Value* entKeyPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, entry, BRONZE_ABI_ELEM_KEY_OFFSET);
+    llvm::Value* entKey = builder.CreateAlignedLoad(ptrTy, entKeyPtr, llvm::Align(8), "ec.set.entkey");
+
+    llvm::Value* pairOk = builder.CreateAnd(
+        builder.CreateAnd(builder.CreateICmpEQ(entKind, keyKind, "ec.set.kindok"),
+                          builder.CreateICmpEQ(entWit, witness, "ec.set.witok")),
+        builder.CreateICmpNE(entKey, llvm::Constant::getNullValue(ptrTy), "ec.set.keyok"),
+        "ec.set.pairok");
+
+    llvm::Value* entIdentPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, entry, BRONZE_ABI_ELEM_IDENT_OFFSET);
+    llvm::Value* entIdent =
+        builder.CreateAlignedLoad(i64Ty, entIdentPtr, llvm::Align(8), "ec.set.entident");
+    llvm::Value* identOk = builder.CreateICmpEQ(entIdent, keyBits, "ec.set.identok");
+    llvm::Value* isStrKey = builder.CreateICmpEQ(
+        keyKind, builder.getInt8(BRONZE_ABI_ELEM_KIND_STRING), "ec.set.keyisstr");
+    llvm::Value* entryOk = builder.CreateSelect(isStrKey, identOk, pairOk, "ec.set.entryok");
+
+    llvm::BasicBlock* shapeCmpBb = llvm::BasicBlock::Create(ctx, "ec.set.shapecmp", fn);
+    auto* brEntryOk = builder.CreateCondBr(entryOk, shapeCmpBb, slowBb);
+    brEntryOk->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // Live shape match against cached shape
+    builder.SetInsertPoint(shapeCmpBb);
+    llvm::Value* cachedShapePtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, entry, BRONZE_ABI_ELEM_IC_OFFSET);
+    llvm::Value* cachedShape =
+        builder.CreateAlignedLoad(ptrTy, cachedShapePtr, llvm::Align(8), "ec.set.cshape");
+    llvm::BasicBlock* depthBb = llvm::BasicBlock::Create(ctx, "ec.set.depth", fn);
+    auto* brShapeOk = builder.CreateCondBr(
+        builder.CreateICmpEQ(cachedShape, shape, "ec.set.shapeok"), depthBb, slowBb);
+    brShapeOk->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // Slot & Depth check for SET: own property, depth == 0, double representation check
+    builder.SetInsertPoint(depthBb);
+    llvm::Value* slotWordPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, entry, BRONZE_ABI_ELEM_IC_OFFSET +
+                                                             BRONZE_ABI_IC_SLOTWORD_OFFSET);
+    llvm::Value* slotWord =
+        builder.CreateAlignedLoad(i64Ty, slotWordPtr, llvm::Align(8), "ec.set.slotword");
+    llvm::Value* depth = builder.CreateLShr(slotWord, 32, "ec.set.depth.w");
+    llvm::Value* slot32 = builder.CreateTrunc(slotWord, i32Ty, "ec.set.slot");
+
+    llvm::Value* isDoubleSlot = builder.CreateICmpNE(
+        builder.CreateAnd(depth, builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG))),
+        builder.getInt64(0), "ec.set.isdouble");
+    llvm::Value* valIsNumber = builder.CreateICmpULE(
+        valBits, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "ec.set.valisnum");
+    llvm::Value* reprOk = builder.CreateOr(builder.CreateNot(isDoubleSlot), valIsNumber, "ec.set.reprok");
+    llvm::Value* depthBase = builder.CreateAnd(
+        depth, builder.getInt64(~static_cast<uint64_t>(BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG)),
+        "ec.set.depthbase");
+    llvm::Value* depthOk = builder.CreateAnd(
+        builder.CreateICmpEQ(depthBase, builder.getInt64(0)), reprOk, "ec.set.depthok");
+
+    llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, "ec.set.store", fn);
+    auto* brDepthOk = builder.CreateCondBr(depthOk, storeBb, slowBb);
+    brDepthOk->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // Store into slot (inline or overflow)
+    builder.SetInsertPoint(storeBb);
+    llvm::BasicBlock* inlineStoreBb = llvm::BasicBlock::Create(ctx, "ec.set.inline", fn);
+    llvm::BasicBlock* overflowStoreBb = llvm::BasicBlock::Create(ctx, "ec.set.overflow", fn);
+    llvm::Value* isInline =
+        builder.CreateICmpULT(slot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS), "ec.set.isinline");
+    auto* brIsInline = builder.CreateCondBr(isInline, inlineStoreBb, overflowStoreBb);
+    brIsInline->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // Inline slot store
+    builder.SetInsertPoint(inlineStoreBb);
+    llvm::Value* slotsBase =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+    llvm::Value* inlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, slotsBase, slot32);
+    auto* sInline = builder.CreateAlignedStore(valBits, inlineSlotPtr, llvm::Align(8));
+    tagObjectSlotAccess(sInline, ctx);
+    builder.CreateBr(doneBb);
+
+    // Overflow slot store
+    builder.SetInsertPoint(overflowStoreBb);
+    llvm::BasicBlock* overflowAccessBb = llvm::BasicBlock::Create(ctx, "ec.set.overflow.access", fn);
+    llvm::Value* overflowPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_OVERFLOW_OFFSET);
+    llvm::Value* overflowVal =
+        builder.CreateAlignedLoad(i64Ty, overflowPtr, llvm::Align(8), "ec.set.overflowval");
+    llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* overflowIsObj =
+        builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    auto* brOvIsObj = builder.CreateCondBr(overflowIsObj, overflowAccessBb, slowBb);
+    brOvIsObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    builder.SetInsertPoint(overflowAccessBb);
+    llvm::BasicBlock* overflowDoStoreBb = llvm::BasicBlock::Create(ctx, "ec.set.overflow.dostore", fn);
+    llvm::Value* overflowAddr =
+        builder.CreateAnd(overflowVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* overflowObj = builder.CreateIntToPtr(overflowAddr, ptrTy);
+    llvm::Value* sizePtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, overflowObj, BRONZE_ABI_HDR_SIZE_OFFSET);
+    llvm::Value* sizeVal =
+        builder.CreateAlignedLoad(i32Ty, sizePtr, llvm::Align(4), "ec.set.overflow.size");
+    llvm::Value* wordCount = builder.CreateLShr(sizeVal, 3, "ec.set.overflow.words");
+    llvm::Value* slotIdx = builder.CreateSub(slot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS));
+    llvm::Value* withinCap = builder.CreateICmpULT(slotIdx, wordCount, "ec.set.withincap");
+    auto* brWithinCap = builder.CreateCondBr(withinCap, overflowDoStoreBb, slowBb);
+    brWithinCap->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    builder.SetInsertPoint(overflowDoStoreBb);
+    llvm::Value* overflowSlotPtr = builder.CreateInBoundsGEP(i64Ty, overflowObj, slotIdx);
+    auto* sOv = builder.CreateAlignedStore(valBits, overflowSlotPtr, llvm::Align(8));
+    tagObjectSlotAccess(sOv, ctx);
+    builder.CreateBr(doneBb);
 }
 
 }  // namespace bronze::codegen_llvm

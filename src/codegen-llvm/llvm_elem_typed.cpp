@@ -1,3 +1,5 @@
+#include <cmath>
+
 #include "codegen-llvm/llvm_elem_typed.h"
 #include "codegen-llvm/llvm_elem.h"
 #include "codegen-llvm/llvm_alias.h"
@@ -18,8 +20,8 @@ namespace bronze::codegen_llvm {
 // the view's buffer Value on every access — never cached across allocations,
 // per the GC rule the header documents. The builder must already be in the
 // view's arm.
-llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
-                                   llvm::Value* idx32, uint32_t elemSize) {
+// Computes the typed array data base pointer (inline data or external store + byte offset).
+llvm::Value* emitTypedArrayBasePtr(llvm::IRBuilder<>& builder, llvm::Value* hdr) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
@@ -39,12 +41,6 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
         builder.CreateAlignedLoad(i32Ty, byteOffPtr, llvm::Align(4), "ta.byteoff");
     byteOff->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
 
-    // The buffer's external-storage word: zero for an ordinary buffer (bytes
-    // inline past the header), else the address of a non-moving host store.
-    // NOT an invariant load — externalizeArrayBuffer flips it once, inside a
-    // host call — but element stores can never change it, so it carries the
-    // view-length alias scope and hoists out of call-free element loops for
-    // the same reason `length` does.
     llvm::Value* extPtrPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, bufHdr, BRONZE_ABI_BUF_EXTPTR_OFFSET);
     auto* extBits = builder.CreateAlignedLoad(i64Ty, extPtrPtr, llvm::Align(8), "ta.extbits");
@@ -56,13 +52,31 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
 
     llvm::Value* basePtr = builder.CreateIntToPtr(base, ptrTy, "ta.base.ptr");
     llvm::Value* byteOff64 = builder.CreateZExt(byteOff, i64Ty, "ta.byteoff64");
-    llvm::Value* dataPtr = builder.CreateInBoundsGEP(i8Ty, basePtr, byteOff64, "ta.data.ptr");
+    return builder.CreateInBoundsGEP(i8Ty, basePtr, byteOff64, "ta.data.ptr");
+}
+
+// Computes the address of element `idx32` given an already computed data base pointer.
+llvm::Value* emitTypedArrayElemPtrFromBase(llvm::IRBuilder<>& builder, llvm::Value* dataPtr,
+                                           llvm::Value* idx32, uint32_t elemSize) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Value* idx64 = builder.CreateZExt(idx32, i64Ty, "ta.idx64");
     llvm::Type* elemTy = (elemSize == 8)
                              ? builder.getDoubleTy()
                              : ((elemSize == 4) ? builder.getFloatTy()
                                                 : ((elemSize == 2) ? builder.getInt16Ty() : i8Ty));
     return builder.CreateInBoundsGEP(elemTy, dataPtr, idx64, "ta.elem.ptr");
+}
+
+// The address of element `idx32` of a typed-array view, computed from
+// the view's buffer Value on every access — never cached across allocations,
+// per the GC rule the header documents. The builder must already be in the
+// view's arm.
+llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
+                                   llvm::Value* idx32, uint32_t elemSize) {
+    llvm::Value* dataPtr = emitTypedArrayBasePtr(builder, hdr);
+    return emitTypedArrayElemPtrFromBase(builder, dataPtr, idx32, elemSize);
 }
 
 namespace {
@@ -83,9 +97,41 @@ namespace {
 // why the length load is scoped rather than invariant (llvm_alias.h).
 struct TypedElemGuards {
     llvm::Value* hdr;
+    llvm::Value* dataPtr;
     llvm::Value* idx32;
     llvm::Value* ok;
 };
+
+static bool isProvenIntegralDouble(llvm::Value* v, int depth = 3) {
+    if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(v)) {
+        double d = cfp->getValueAPF().convertToDouble();
+        return d >= 0.0 && d <= 4294967295.0 && std::trunc(d) == d;
+    }
+    if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(v)) {
+        return uitofp->getOperand(0)->getType()->isIntegerTy(32);
+    }
+    if (depth > 0) {
+        if (auto* bin = llvm::dyn_cast<llvm::BinaryOperator>(v)) {
+            if (bin->getOpcode() == llvm::Instruction::FAdd ||
+                bin->getOpcode() == llvm::Instruction::FSub ||
+                bin->getOpcode() == llvm::Instruction::FMul) {
+                return isProvenIntegralDouble(bin->getOperand(0), depth - 1) &&
+                       isProvenIntegralDouble(bin->getOperand(1), depth - 1);
+            }
+        }
+        if (auto* phi = llvm::dyn_cast<llvm::PHINode>(v)) {
+            if (phi->getNumIncomingValues() > 0 && phi->getNumIncomingValues() <= 4) {
+                for (unsigned int i = 0; i < phi->getNumIncomingValues(); ++i) {
+                    llvm::Value* inc = phi->getIncomingValue(i);
+                    if (inc == phi) continue;
+                    if (!isProvenIntegralDouble(inc, depth - 1)) return false;
+                }
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits,
                                     llvm::Value* idxDbl) {
@@ -95,10 +141,32 @@ TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* obj
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::Value* idx32 = builder.CreateIntrinsic(
-        llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
-    llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
-    llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, idxDbl);
+    llvm::Value* idx32 = nullptr;
+    llvm::Value* isIntegral = nullptr;
+
+    if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(idxDbl)) {
+        double d = cfp->getValueAPF().convertToDouble();
+        if (d >= 0.0 && d <= 4294967295.0 && std::trunc(d) == d) {
+            idx32 = builder.getInt32(static_cast<uint32_t>(d));
+            isIntegral = builder.getTrue();
+        }
+    } else if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(idxDbl)) {
+        if (uitofp->getOperand(0)->getType()->isIntegerTy(32)) {
+            idx32 = uitofp->getOperand(0);
+            isIntegral = builder.getTrue();
+        }
+    } else if (isProvenIntegralDouble(idxDbl)) {
+        idx32 = builder.CreateIntrinsic(
+            llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
+        isIntegral = builder.getTrue();
+    }
+
+    if (!idx32) {
+        idx32 = builder.CreateIntrinsic(
+            llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
+        llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
+        isIntegral = builder.CreateFCmpOEQ(roundTrip, idxDbl);
+    }
 
     llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "tel.hdr");
@@ -108,8 +176,9 @@ TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* obj
     tagViewLengthAccess(len, ctx);
     llvm::Value* inLen = builder.CreateICmpULT(idx32, len);
 
-    llvm::Value* ok = builder.CreateAnd(isIntegral, inLen);
-    return {hdr, idx32, ok};
+    llvm::Value* ok = (isIntegral == builder.getTrue()) ? inLen : builder.CreateAnd(isIntegral, inLen);
+    llvm::Value* dataPtr = emitTypedArrayBasePtr(builder, hdr);
+    return {hdr, dataPtr, idx32, ok};
 }
 
 // The pin ceiling probe's element slot address (il::kElemKindPlainArrayF64,
@@ -181,49 +250,49 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
     llvm::Value* loaded = nullptr;
     switch (elemKind) {
         case BRONZE_ABI_TA_KIND_FLOAT64: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 8);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 8);
             auto* ld = builder.CreateAlignedLoad(dblTy, p, llvm::Align(8), "tel.d64");
             tagTypedArrayAccess(ld, ctx);
             loaded = ld;
             break;
         }
         case BRONZE_ABI_TA_KIND_FLOAT32: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 4);
             auto* ld = builder.CreateAlignedLoad(f32Ty, p, llvm::Align(4), "tel.d32");
             tagTypedArrayAccess(ld, ctx);
             loaded = builder.CreateFPExt(ld, dblTy);
             break;
         }
         case BRONZE_ABI_TA_KIND_INT32: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 4);
             auto* ld = builder.CreateAlignedLoad(i32Ty, p, llvm::Align(4), "tel.i32");
             tagTypedArrayAccess(ld, ctx);
             loaded = builder.CreateSIToFP(ld, dblTy);
             break;
         }
         case BRONZE_ABI_TA_KIND_UINT32: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 4);
             auto* ld = builder.CreateAlignedLoad(i32Ty, p, llvm::Align(4), "tel.u32");
             tagTypedArrayAccess(ld, ctx);
             loaded = builder.CreateUIToFP(ld, dblTy);
             break;
         }
         case BRONZE_ABI_TA_KIND_INT16: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 2);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 2);
             auto* ld = builder.CreateAlignedLoad(i16Ty, p, llvm::Align(2), "tel.i16");
             tagTypedArrayAccess(ld, ctx);
             loaded = builder.CreateSIToFP(ld, dblTy);
             break;
         }
         case BRONZE_ABI_TA_KIND_UINT16: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 2);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 2);
             auto* ld = builder.CreateAlignedLoad(i16Ty, p, llvm::Align(2), "tel.u16");
             tagTypedArrayAccess(ld, ctx);
             loaded = builder.CreateUIToFP(ld, dblTy);
             break;
         }
         case BRONZE_ABI_TA_KIND_INT8: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 1);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 1);
             auto* ld = builder.CreateAlignedLoad(i8Ty, p, llvm::Align(1), "tel.i8");
             tagTypedArrayAccess(ld, ctx);
             loaded = builder.CreateSIToFP(ld, dblTy);
@@ -231,7 +300,7 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
         }
         case BRONZE_ABI_TA_KIND_UINT8:
         case BRONZE_ABI_TA_KIND_UINT8CLAMPED: {
-            llvm::Value* p = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 1);
+            llvm::Value* p = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 1);
             auto* ld = builder.CreateAlignedLoad(i8Ty, p, llvm::Align(1), "tel.u8");
             tagTypedArrayAccess(ld, ctx);
             loaded = builder.CreateUIToFP(ld, dblTy);
@@ -280,13 +349,13 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
     builder.SetInsertPoint(storeBb);
     switch (elemKind) {
         case BRONZE_ABI_TA_KIND_FLOAT64: {
-            llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 8);
+            llvm::Value* elemPtr = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 8);
             auto* st = builder.CreateAlignedStore(valDbl, elemPtr, llvm::Align(8));
             tagTypedArrayAccess(st, ctx);
             break;
         }
         case BRONZE_ABI_TA_KIND_FLOAT32: {
-            llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
+            llvm::Value* elemPtr = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 4);
             llvm::Value* narrowed =
                 builder.CreateFPTrunc(valDbl, f32Ty, "tes.f32");
             auto* st = builder.CreateAlignedStore(narrowed, elemPtr, llvm::Align(4));
@@ -295,7 +364,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
         }
         case BRONZE_ABI_TA_KIND_INT32:
         case BRONZE_ABI_TA_KIND_UINT32: {
-            llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 4);
+            llvm::Value* elemPtr = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 4);
             llvm::Value* i32Val = emitToInt32F64(builder, abi, valDbl);
             auto* st = builder.CreateAlignedStore(i32Val, elemPtr, llvm::Align(4));
             tagTypedArrayAccess(st, ctx);
@@ -303,7 +372,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
         }
         case BRONZE_ABI_TA_KIND_INT16:
         case BRONZE_ABI_TA_KIND_UINT16: {
-            llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 2);
+            llvm::Value* elemPtr = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 2);
             llvm::Value* i32Tmp = emitToInt32F64(builder, abi, valDbl);
             llvm::Value* i16Val = builder.CreateTrunc(i32Tmp, i16Ty, "tes.i16");
             auto* st = builder.CreateAlignedStore(i16Val, elemPtr, llvm::Align(2));
@@ -312,7 +381,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
         }
         case BRONZE_ABI_TA_KIND_INT8:
         case BRONZE_ABI_TA_KIND_UINT8: {
-            llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 1);
+            llvm::Value* elemPtr = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 1);
             llvm::Value* i32Tmp = emitToInt32F64(builder, abi, valDbl);
             llvm::Value* i8Val = builder.CreateTrunc(i32Tmp, i8Ty, "tes.i8");
             auto* st = builder.CreateAlignedStore(i8Val, elemPtr, llvm::Align(1));
@@ -320,7 +389,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
             break;
         }
         case BRONZE_ABI_TA_KIND_UINT8CLAMPED: {
-            llvm::Value* elemPtr = emitTypedArrayElemPtr(builder, g.hdr, g.idx32, 1);
+            llvm::Value* elemPtr = emitTypedArrayElemPtrFromBase(builder, g.dataPtr, g.idx32, 1);
             llvm::Value* u8cTmp = builder.CreateCall(abi.bronze_to_uint8_clamp_f64, {valDbl}, "tes.u8c.tmp");
             llvm::Value* u8cVal = builder.CreateTrunc(u8cTmp, i8Ty, "tes.u8c");
             auto* st = builder.CreateAlignedStore(u8cVal, elemPtr, llvm::Align(1));

@@ -334,6 +334,93 @@ std::optional<EnvSlotKey> matchEnvSlotAccess(const llvm::Instruction& inst,
         }
     }
 
+    // If `record` is a reload from an alloca (such as the gcframe shadow stack),
+    // peel the load back to the uniquely stored value (e.g. the function argument
+    // or dominant definition) so accesses across basic blocks and loop bodies agree
+    // on the canonical EnvSlotKey.
+    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(record)) {
+        const llvm::Value* ptr = ld->getPointerOperand();
+        const llvm::Value* allocaBase = ptr;
+        uint64_t ldOffset = 0;
+        for (unsigned step = 0; step < 8; ++step) {
+            const llvm::Value* stripped = allocaBase->stripPointerCasts();
+            const auto* gep = llvm::dyn_cast<llvm::GEPOperator>(stripped);
+            if (gep == nullptr) {
+                allocaBase = stripped;
+                break;
+            }
+            llvm::APInt delta(layout.getIndexTypeSizeInBits(gep->getType()), 0);
+            if (!gep->accumulateConstantOffset(layout, delta)) {
+                allocaBase = nullptr;
+                break;
+            }
+            ldOffset += delta.getZExtValue();
+            allocaBase = gep->getPointerOperand();
+        }
+        if (allocaBase != nullptr && llvm::isa<llvm::AllocaInst>(allocaBase)) {
+            llvm::Function* fn = const_cast<llvm::Function*>(ld->getFunction());
+            llvm::Value* uniqueVal = nullptr;
+            bool unique = true;
+            for (llvm::BasicBlock& bb : *fn) {
+                for (llvm::Instruction& I : bb) {
+                    if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&I)) {
+                        const llvm::Value* stPtr = st->getPointerOperand();
+                        const llvm::Value* stBase = stPtr;
+                        uint64_t stOffset = 0;
+                        for (unsigned step = 0; step < 8; ++step) {
+                            const llvm::Value* stripped = stBase->stripPointerCasts();
+                            const auto* gep = llvm::dyn_cast<llvm::GEPOperator>(stripped);
+                            if (gep == nullptr) {
+                                stBase = stripped;
+                                break;
+                            }
+                            llvm::APInt delta(layout.getIndexTypeSizeInBits(gep->getType()), 0);
+                            if (!gep->accumulateConstantOffset(layout, delta)) {
+                                stBase = nullptr;
+                                break;
+                            }
+                            stOffset += delta.getZExtValue();
+                            stBase = gep->getPointerOperand();
+                        }
+                        if (stBase == allocaBase && stOffset == ldOffset) {
+                            llvm::Value* val = st->getValueOperand();
+                            if (const auto* ci = llvm::dyn_cast<llvm::ConstantInt>(val)) {
+                                if (ci->getValue().getLimitedValue(UINT64_MAX) ==
+                                    BRONZE_ABI_UNDEFINED_BITS) {
+                                    continue;
+                                }
+                            }
+                            if (uniqueVal == nullptr) {
+                                uniqueVal = val;
+                            } else if (uniqueVal != val) {
+                                unique = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!unique) break;
+            }
+            if (unique && uniqueVal != nullptr) {
+                if (const auto* andOp = llvm::dyn_cast<llvm::BinaryOperator>(uniqueVal)) {
+                    if (andOp->getOpcode() == llvm::Instruction::And) {
+                        for (unsigned side = 0; side < 2; ++side) {
+                            const auto* mask =
+                                llvm::dyn_cast<llvm::ConstantInt>(andOp->getOperand(side));
+                            if (mask != nullptr &&
+                                mask->getValue().getLimitedValue(UINT64_MAX) ==
+                                    BRONZE_ABI_VALUE_PAYLOAD_MASK) {
+                                uniqueVal = andOp->getOperand(1 - side);
+                                break;
+                            }
+                        }
+                    }
+                }
+                record = uniqueVal;
+            }
+        }
+    }
+
     // Inside the slot array, and slot-aligned. An access to the header — the
     // brand, the size, the parent link — is not a slot and is never promoted.
     if (offset < BRONZE_ABI_ENV_SLOTS_OFFSET) return std::nullopt;

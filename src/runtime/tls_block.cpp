@@ -62,6 +62,8 @@ static_assert(offsetof(bronze_tls_block, ta_set_fast_enabled) ==
               BRONZE_TLS_TA_SET_FAST_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, truthy_inline_enabled) ==
               BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
+              BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF);
 
 namespace bronze::runtime {
 
@@ -103,6 +105,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*map_fast_enabled=*/1,
     /*ta_set_fast_enabled=*/1,
     /*truthy_inline_enabled=*/1,
+    /*elem_set_cache_tbl=*/nullptr,
 };
 
 }  // namespace bronze::runtime

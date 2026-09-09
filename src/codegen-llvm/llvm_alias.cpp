@@ -38,7 +38,7 @@ constexpr std::array<std::string_view, 12> kControlTables{
 // Every field of bronze_tls_block is one 8-byte word (abi/bronze_abi_tls.h),
 // so a word index is the whole identity of a TLS field and the last offset
 // bounds the block.
-constexpr unsigned kTlsWords = (BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF / 8) + 1;
+constexpr unsigned kTlsWords = (BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF / 8) + 1;
 
 bool isControlTable(const llvm::GlobalVariable* gv) {
     llvm::StringRef name = gv->getName();

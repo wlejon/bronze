@@ -193,7 +193,7 @@ public:
     //   - a recognized env access at the SAME offset through a different record
     //     value might be the same record, and is an observer.
     bool blocksAreClean(llvm::ArrayRef<llvm::BasicBlock*> blocks, const EnvSlotKey& key,
-                        const llvm::MemoryLocation& location, RegionEnd& causeOut,
+                        const llvm::MemoryLocation& location, bool hasStore, RegionEnd& causeOut,
                         bool& mayCollectOut) {
         mayCollectOut = false;
         for (llvm::BasicBlock* block : blocks) {
@@ -216,7 +216,8 @@ public:
                         causeOut = fact.cause;
                         return false;
                     case InstKind::OtherMemory:
-                        if (llvm::isModOrRefSet(aa_.getModRefInfo(fact.inst, location))) {
+                        if (hasStore ? llvm::isModOrRefSet(aa_.getModRefInfo(fact.inst, location))
+                                     : llvm::isModSet(aa_.getModRefInfo(fact.inst, location))) {
                             causeOut = RegionEnd::AliasingMemory;
                             return false;
                         }
@@ -359,19 +360,24 @@ bool tryFunctionRegion(FunctionScan& scan, const EnvSlotKey& key,
     llvm::SmallVector<llvm::BasicBlock*, 32> blocks;
     for (llvm::BasicBlock& block : fn) blocks.push_back(&block);
 
+    bool hasStore = false;
+    for (Access* access : accesses) {
+        if (access->inst != nullptr && access->isStore) hasStore = true;
+    }
+
     RegionEnd cause = RegionEnd::UnknownCall;
     bool mayCollect = false;
-    if (!scan.blocksAreClean(blocks, key, location, cause, mayCollect)) {
+    if (!scan.blocksAreClean(blocks, key, location, hasStore, cause, mayCollect)) {
         ++stats.ends[static_cast<size_t>(cause)];
         return false;
     }
 
     out.entryPoint = entryPoint;
     out.overLoop = false;
+    out.hasStore = hasStore;
     for (Access* access : accesses) {
         if (access->inst == nullptr) continue;
         out.accesses.push_back(access);
-        if (access->isStore) out.hasStore = true;
     }
     // One access replaced by one entry load and one write-back is a wash; the
     // region has to remove more memory operations than it adds.
@@ -393,7 +399,7 @@ bool tryFunctionRegion(FunctionScan& scan, const EnvSlotKey& key,
 
 // An instruction in an environment record resolution chain is hoistable to the
 // loop preheader if it performs invariant address computation or invariant loading.
-static bool isHoistableEnvRecordInst(const llvm::Instruction* inst) {
+static bool isHoistableEnvRecordInst(const llvm::Instruction* inst, const llvm::Loop* loop = nullptr) {
     if (const auto* binOp = llvm::dyn_cast<llvm::BinaryOperator>(inst)) {
         if (binOp->getOpcode() == llvm::Instruction::And) {
             for (unsigned i = 0; i < 2; ++i) {
@@ -409,7 +415,47 @@ static bool isHoistableEnvRecordInst(const llvm::Instruction* inst) {
     if (llvm::isa<llvm::IntToPtrInst>(inst)) return true;
     if (llvm::isa<llvm::GetElementPtrInst>(inst)) return true;
     if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(inst)) {
-        return load->getMetadata(llvm::LLVMContext::MD_invariant_load) != nullptr;
+        if (load->getMetadata(llvm::LLVMContext::MD_invariant_load) != nullptr) return true;
+        if (loop != nullptr) {
+            const llvm::Value* ptr = load->getPointerOperand();
+            const llvm::Value* allocaBase = ptr;
+            for (unsigned step = 0; step < 8; ++step) {
+                const llvm::Value* stripped = allocaBase->stripPointerCasts();
+                const auto* gep = llvm::dyn_cast<llvm::GEPOperator>(stripped);
+                if (gep == nullptr) {
+                    allocaBase = stripped;
+                    break;
+                }
+                allocaBase = gep->getPointerOperand();
+            }
+            if (allocaBase != nullptr && llvm::isa<llvm::AllocaInst>(allocaBase)) {
+                bool writtenInLoop = false;
+                for (const llvm::BasicBlock* bb : loop->blocks()) {
+                    for (const llvm::Instruction& I : *bb) {
+                        if (const auto* st = llvm::dyn_cast<llvm::StoreInst>(&I)) {
+                            const llvm::Value* stPtr = st->getPointerOperand();
+                            const llvm::Value* stBase = stPtr;
+                            for (unsigned step = 0; step < 8; ++step) {
+                                const llvm::Value* stripped = stBase->stripPointerCasts();
+                                const auto* gep = llvm::dyn_cast<llvm::GEPOperator>(stripped);
+                                if (gep == nullptr) {
+                                    stBase = stripped;
+                                    break;
+                                }
+                                stBase = gep->getPointerOperand();
+                            }
+                            if (stBase == allocaBase) {
+                                writtenInLoop = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (writtenInLoop) break;
+                }
+                if (!writtenInLoop) return true;
+            }
+        }
+        return false;
     }
     return false;
 }
@@ -422,7 +468,7 @@ static bool collectHoistableChain(llvm::Instruction* inst, const llvm::Loop& loo
     if (visited.contains(inst)) return true;
     if (visiting.contains(inst)) return false;
 
-    if (!isHoistableEnvRecordInst(inst)) return false;
+    if (!isHoistableEnvRecordInst(inst, &loop)) return false;
 
     visiting.insert(inst);
     for (llvm::Value* op : inst->operands()) {
@@ -492,18 +538,23 @@ bool tryLoopRegion(FunctionScan& scan, llvm::Loop& loop, const EnvSlotKey& key,
         }
     }
 
+    bool hasStore = false;
+    for (Access* access : inside) {
+        if (access->isStore) hasStore = true;
+    }
+
     RegionEnd cause = RegionEnd::UnknownCall;
     bool mayCollect = false;
-    if (!scan.blocksAreClean(loop.getBlocks(), key, location, cause, mayCollect)) {
+    if (!scan.blocksAreClean(loop.getBlocks(), key, location, hasStore, cause, mayCollect)) {
         ++stats.ends[static_cast<size_t>(cause)];
         return false;
     }
 
     out.entryPoint = preheader->getTerminator();
     out.overLoop = true;
+    out.hasStore = hasStore;
     for (Access* access : inside) {
         out.accesses.push_back(access);
-        if (access->isStore) out.hasStore = true;
     }
     if (!regionIsCollectorSafe(out, mayCollect)) {
         ++stats.ends[static_cast<size_t>(RegionEnd::HeapValueStore)];

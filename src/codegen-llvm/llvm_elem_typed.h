@@ -11,6 +11,13 @@
 
 namespace bronze::codegen_llvm {
 
+// Computes the typed array data base pointer (inline data or external store + byte offset).
+llvm::Value* emitTypedArrayBasePtr(llvm::IRBuilder<>& builder, llvm::Value* hdr);
+
+// Computes the address of element `idx32` given an already computed data base pointer.
+llvm::Value* emitTypedArrayElemPtrFromBase(llvm::IRBuilder<>& builder, llvm::Value* dataPtr,
+                                           llvm::Value* idx32, uint32_t elemSize);
+
 // The address of element `idx32` of a typed-array view, computed from
 // the view's buffer Value on every access — never cached across allocations,
 // per the GC rule the header documents. The builder must already be in the

@@ -984,6 +984,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_ELEM_KIND_OFFSET     40 /* ElemCacheEntry::kind (uint8) */
 #define BRONZE_ABI_ELEM_IDENT_OFFSET    48 /* ElemCacheEntry::key_ident (uint64) */
 #define BRONZE_ABI_ELEM_ENTRIES       4096 /* kElemCacheEntries, a power of two */
+#define BRONZE_ABI_ELEM_SET_ENTRIES   1024 /* kElemSetCacheEntries, a power of two */
 #define BRONZE_ABI_ELEM_KIND_NUMBER      1
 #define BRONZE_ABI_ELEM_KIND_STRING      2
 #define BRONZE_ABI_ELEM_KIND_BOOL        3

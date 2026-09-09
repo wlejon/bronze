@@ -212,6 +212,7 @@ struct ElemSetCacheEntry {
     // allocates on the GC heap under a caller holding a raw receiver.
     StringHeader* key = nullptr;
     ElemKeyKind kind = ElemKeyKind::Empty;
+    uint64_t key_ident = 0;
 };
 
 // Smaller than the read table on purpose: a program reads far more computed
