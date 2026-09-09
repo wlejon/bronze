@@ -33,6 +33,8 @@ struct GuardedPropReceiver {
     llvm::Value* hdr = nullptr;
     llvm::Value* isPlain = nullptr; // i1 SSA value
     llvm::Value* shape = nullptr;   // ptr SSA value
+    uint32_t lastPropKey = UINT32_MAX;
+    llvm::Value* lastPropVal = nullptr;
 
     bool live() const { return hdr != nullptr && isPlain != nullptr; }
     void clear() { *this = GuardedPropReceiver{}; }

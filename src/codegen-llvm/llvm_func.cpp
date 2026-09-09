@@ -832,12 +832,21 @@ void FunctionEmitter::rejoinGuardedPropRecv(llvm::BasicBlock* fastBb, llvm::Basi
     llvm::PHINode* shapePhi = builder_.CreatePHI(ptrTy, 0, "grecv.shape");
     llvm::Value* nullPtr = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
     llvm::Value* shapeVal = lastGuardedPropRecv_.shape ? lastGuardedPropRecv_.shape : nullPtr;
+    llvm::PHINode* valPhi = nullptr;
+    if (lastGuardedPropRecv_.lastPropVal != nullptr) {
+        valPhi = builder_.CreatePHI(i64Ty_, 0, "grecv.val");
+    }
+    llvm::Value* poisonVal = llvm::PoisonValue::get(i64Ty_);
     for (llvm::BasicBlock* pred : llvm::predecessors(doneBb)) {
         isPlainPhi->addIncoming(pred == fastBb ? lastGuardedPropRecv_.isPlain : builder_.getFalse(), pred);
         shapePhi->addIncoming(pred == fastBb ? shapeVal : nullPtr, pred);
+        if (valPhi) {
+            valPhi->addIncoming(pred == fastBb ? lastGuardedPropRecv_.lastPropVal : poisonVal, pred);
+        }
     }
     lastGuardedPropRecv_.isPlain = isPlainPhi;
     lastGuardedPropRecv_.shape = shapePhi;
+    if (valPhi) lastGuardedPropRecv_.lastPropVal = valPhi;
 }
 
 }  // namespace bronze::codegen_llvm

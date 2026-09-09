@@ -7,6 +7,7 @@
 #include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_call.h"
 #include "il/il.h"
 
 namespace bronze::codegen_llvm {
@@ -160,11 +161,14 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
             callArgs.push_back(arg);
         }
         if (callArgs.size() == knownEntry->getFunctionType()->getNumParams()) {
+            llvm::CallInst* call = nullptr;
             if (knownFunc->returnType == il::Type::Void || knownEntry->getReturnType()->isVoidTy()) {
-                builder.CreateCall(knownEntry, callArgs);
+                call = builder.CreateCall(knownEntry, callArgs);
             } else {
-                callRes = builder.CreateCall(knownEntry, callArgs, "new.callres");
+                call = builder.CreateCall(knownEntry, callArgs, "new.callres");
+                callRes = call;
             }
+            call->setMetadata(kDirectMethodMD, llvm::MDNode::get(ctx, {}));
         } else if (knownWrapper) {
             llvm::Value* env = builder.CreateAlignedLoad(
                 i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),

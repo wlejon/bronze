@@ -117,6 +117,43 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         (guardedRecv->objBits == objBits ||
          (recvId != il::kNoValue && guardedRecv->receiver == recvId));
 
+    if (canReuseGuarded && guardedRecv->lastPropKey == keyIndex && guardedRecv->lastPropVal != nullptr) {
+        llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1024, 1);
+        fn->insert(fn->end(), slowBb);
+        fn->insert(fn->end(), doneBb);
+        llvm::BasicBlock* reuseBb = llvm::BasicBlock::Create(ctx, "ic.guarded.reuse", fn);
+        builder.CreateCondBr(guardedRecv->isPlain, reuseBb, slowBb, likelyBranch);
+
+        builder.SetInsertPoint(reuseBb);
+        builder.CreateBr(doneBb);
+
+        builder.SetInsertPoint(slowBb);
+        llvm::Value* slowVal = emitPropGetCall(builder, abi, entry, objBits, tables, keyIndex);
+        builder.CreateBr(doneBb);
+
+        builder.SetInsertPoint(doneBb);
+        llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "prop.val");
+        result->addIncoming(guardedRecv->lastPropVal, reuseBb);
+        result->addIncoming(slowVal, slowBb);
+
+        llvm::PHINode* outIsPlain = builder.CreatePHI(builder.getInt1Ty(), 2, "grecv.plain");
+        outIsPlain->addIncoming(guardedRecv->isPlain, reuseBb);
+        outIsPlain->addIncoming(builder.getFalse(), slowBb);
+
+        llvm::PHINode* outShape = builder.CreatePHI(ptrTy, 2, "grecv.shape");
+        llvm::Value* nullShape = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptrTy));
+        outShape->addIncoming(guardedRecv->shape ? guardedRecv->shape : nullShape, reuseBb);
+        outShape->addIncoming(nullShape, slowBb);
+
+        guardedRecv->isPlain = outIsPlain;
+        guardedRecv->shape = outShape;
+        if (join != nullptr) {
+            join->fastBb = reuseBb;
+            join->doneBb = doneBb;
+        }
+        return result;
+    }
+
     llvm::Value* hdr = nullptr;
     if (canReuseGuarded) {
         hdr = guardedRecv->hdr;
@@ -733,6 +770,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         guardedRecv->hdr = hdr;
         guardedRecv->isPlain = outIsPlain;
         guardedRecv->shape = outShape;
+        guardedRecv->lastPropKey = keyIndex;
+        guardedRecv->lastPropVal = result;
     }
 
     // What this site left for anything that has to cross its join — this run's

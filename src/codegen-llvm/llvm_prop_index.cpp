@@ -38,73 +38,79 @@ llvm::Value* emitIndexPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "ic.idx.check", fn);
-    llvm::BasicBlock* arrElemBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.elem", fn);
-    llvm::BasicBlock* arrReadBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.read", fn);
-    llvm::BasicBlock* arrUndefBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.undef", fn);
-    llvm::BasicBlock* arrPayloadBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.payload", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.idx.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.idx.done", fn);
 
+    ProvenRead proven;
+    llvm::BasicBlock* checkBb = nullptr;
+    llvm::BasicBlock* arrElemBb = nullptr;
+    llvm::BasicBlock* arrReadBb = nullptr;
+    llvm::BasicBlock* arrUndefBb = nullptr;
+    llvm::BasicBlock* arrPayloadBb = nullptr;
     llvm::Value* arrPayloadVal = nullptr;
 
-    // 1. Live receiver proof arm (llvm_recv_proof.h)
-    ProvenRead proven;
     if (proof != nullptr && proof->live()) {
         proven = emitProvenElementRead(builder, *proof, idx, doneBb, holeRawSlot);
+        builder.CreateBr(slowBb);
+    } else {
+        checkBb = llvm::BasicBlock::Create(ctx, "ic.idx.check", fn);
+        arrElemBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.elem", fn);
+        arrReadBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.read", fn);
+        arrUndefBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.undef", fn);
+        arrPayloadBb = llvm::BasicBlock::Create(ctx, "ic.idx.arr.payload", fn);
+
+        // 2. Receiver object tag check
+        llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* isObject =
+            builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.idx.isobj");
+        llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+        builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
+
+        // 3. Load flags from header
+        builder.SetInsertPoint(checkBb);
+        llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "ic.idx.hdr");
+        llvm::Value* flagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+        llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.idx.flags");
+        llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
+        builder.CreateCondBr(isArr, arrElemBb, slowBb, likelyBranch);
+
+        // 4. Array element read
+        builder.SetInsertPoint(arrElemBb);
+        llvm::Value* lenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+        auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
+        tagArrayHeaderAccess(len, ctx);
+        llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
+        builder.CreateCondBr(inBounds, arrReadBb, arrUndefBb, likelyBranch);
+
+        builder.SetInsertPoint(arrUndefBb);
+        builder.CreateBr(doneBb);
+
+        builder.SetInsertPoint(arrReadBb);
+        llvm::Value* elemsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+        auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "arr.elems");
+        tagArrayHeaderAccess(elemsVal, ctx);
+        llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* elemsIsObj = builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+        builder.CreateCondBr(elemsIsObj, arrPayloadBb, slowBb, likelyBranch);
+
+        builder.SetInsertPoint(arrPayloadBb);
+        llvm::Value* elemsAddr = builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
+        llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
+        auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
+        tagArrayHeaderAccess(head, ctx);
+        llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
+        llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
+        llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
+        auto* elemVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "arr.elem.raw");
+        tagArrayElementsAccess(elemVal, ctx);
+        llvm::Value* elemTag = builder.CreateLShr(elemVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* isHole = builder.CreateICmpEQ(elemTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
+        arrPayloadVal =
+            builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), elemVal, "arr.elem");
+        builder.CreateBr(doneBb);
     }
-
-    // 2. Receiver object tag check
-    llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* isObject =
-        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.idx.isobj");
-    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
-    builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
-
-    // 3. Load flags from header
-    builder.SetInsertPoint(checkBb);
-    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "ic.idx.hdr");
-    llvm::Value* flagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.idx.flags");
-    llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-    builder.CreateCondBr(isArr, arrElemBb, slowBb, likelyBranch);
-
-    // 4. Array element read
-    builder.SetInsertPoint(arrElemBb);
-    llvm::Value* lenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
-    tagArrayHeaderAccess(len, ctx);
-    llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
-    builder.CreateCondBr(inBounds, arrReadBb, arrUndefBb, likelyBranch);
-
-    builder.SetInsertPoint(arrUndefBb);
-    builder.CreateBr(doneBb);
-
-    builder.SetInsertPoint(arrReadBb);
-    llvm::Value* elemsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "arr.elems");
-    tagArrayHeaderAccess(elemsVal, ctx);
-    llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* elemsIsObj = builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(elemsIsObj, arrPayloadBb, slowBb, likelyBranch);
-
-    builder.SetInsertPoint(arrPayloadBb);
-    llvm::Value* elemsAddr = builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
-    llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
-    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
-    tagArrayHeaderAccess(head, ctx);
-    llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
-    llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
-    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
-    auto* elemVal = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "arr.elem.raw");
-    tagArrayElementsAccess(elemVal, ctx);
-    llvm::Value* elemTag = builder.CreateLShr(elemVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* isHole = builder.CreateICmpEQ(elemTag, builder.getInt64(BRONZE_ABI_TAG_HOLE));
-    arrPayloadVal =
-        builder.CreateSelect(isHole, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), elemVal, "arr.elem");
-    builder.CreateBr(doneBb);
 
     // 5. Slow path
     builder.SetInsertPoint(slowBb);
@@ -118,12 +124,17 @@ llvm::Value* emitIndexPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 
     // 6. Result join
     builder.SetInsertPoint(doneBb);
-    unsigned phiCount = (proven.fastBb ? 1 : 0) + 3;
-    llvm::PHINode* result = builder.CreatePHI(i64Ty, phiCount, "prop.idx");
-    if (proven.fastBb) result->addIncoming(proven.value, proven.fastBb);
-    result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
-    result->addIncoming(arrPayloadVal, arrPayloadBb);
-    result->addIncoming(slowVal, slowEndBb);
+    llvm::PHINode* result = nullptr;
+    if (proven.fastBb != nullptr) {
+        result = builder.CreatePHI(i64Ty, 2, "prop.idx");
+        result->addIncoming(proven.value, proven.fastBb);
+        result->addIncoming(slowVal, slowEndBb);
+    } else {
+        result = builder.CreatePHI(i64Ty, 3, "prop.idx");
+        result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), arrUndefBb);
+        result->addIncoming(arrPayloadVal, arrPayloadBb);
+        result->addIncoming(slowVal, slowEndBb);
+    }
 
     if (join != nullptr) {
         join->fastBb = proven.fastBb ? proven.fastBb : arrPayloadBb;
@@ -154,74 +165,80 @@ void emitIndexPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.check", fn);
-    llvm::BasicBlock* arrElemBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.arr", fn);
-    llvm::BasicBlock* arrWriteBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.arr.write", fn);
-    llvm::BasicBlock* arrStoreBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.arr.store", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.done", fn);
 
-    // 1. Live array store proof arm (llvm_array_store_proof.h)
     ProvenArrayStore proven;
+    llvm::BasicBlock* checkBb = nullptr;
+    llvm::BasicBlock* arrElemBb = nullptr;
+    llvm::BasicBlock* arrWriteBb = nullptr;
+    llvm::BasicBlock* arrStoreBb = nullptr;
+
     if (proof != nullptr && proof->live()) {
         proven = emitProvenArrayElementStore(builder, *proof, idx, valBits, doneBb);
+        builder.CreateBr(slowBb);
+    } else {
+        checkBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.check", fn);
+        arrElemBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.arr", fn);
+        arrWriteBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.arr.write", fn);
+        arrStoreBb = llvm::BasicBlock::Create(ctx, "ic.set.idx.arr.store", fn);
+
+        // 2. Receiver object tag check
+        llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* isObject =
+            builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.set.idx.isobj");
+        llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+        builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
+
+        // 3. Flags check
+        builder.SetInsertPoint(checkBb);
+        llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "ic.set.idx.hdr");
+        llvm::Value* flagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+        llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.set.idx.flags");
+        llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
+        builder.CreateCondBr(isArr, arrElemBb, slowBb, likelyBranch);
+
+        // 4. Array element write
+        builder.SetInsertPoint(arrElemBb);
+        llvm::Value* lenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+        auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
+        tagArrayHeaderAccess(len, ctx);
+        llvm::Value* capPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+        auto* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "arr.cap");
+        tagArrayHeaderAccess(cap, ctx);
+        llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
+        auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
+        tagArrayHeaderAccess(head, ctx);
+        llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
+        llvm::Value* propsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+        auto* propsVal = builder.CreateAlignedLoad(i64Ty, propsPtr, llvm::Align(8), "arr.props");
+        tagArrayHeaderAccess(propsVal, ctx);
+        llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* hasNoProps =
+            builder.CreateICmpEQ(propsTag, builder.getInt64(BRONZE_ABI_TAG_UNDEFINED));
+        llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
+        llvm::Value* inCap = builder.CreateICmpULT(actualIdx, cap);
+        llvm::Value* arrOk = builder.CreateAnd(builder.CreateAnd(inBounds, inCap), hasNoProps);
+        builder.CreateCondBr(arrOk, arrWriteBb, slowBb, likelyBranch);
+
+        builder.SetInsertPoint(arrWriteBb);
+        llvm::Value* elemsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+        auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "arr.elems");
+        tagArrayHeaderAccess(elemsVal, ctx);
+        llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* elemsIsObj = builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+        builder.CreateCondBr(elemsIsObj, arrStoreBb, slowBb, likelyBranch);
+
+        builder.SetInsertPoint(arrStoreBb);
+        llvm::Value* elemsAddr = builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
+        llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
+        llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
+        auto* sArr = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
+        tagArrayElementsAccess(sArr, ctx);
+        builder.CreateBr(doneBb);
     }
-
-    // 2. Receiver object tag check
-    llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* isObject =
-        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.set.idx.isobj");
-    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
-    builder.CreateCondBr(isObject, checkBb, slowBb, likelyBranch);
-
-    // 3. Flags check
-    builder.SetInsertPoint(checkBb);
-    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "ic.set.idx.hdr");
-    llvm::Value* flagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    llvm::Value* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "ic.set.idx.flags");
-    llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-    builder.CreateCondBr(isArr, arrElemBb, slowBb, likelyBranch);
-
-    // 4. Array element write
-    builder.SetInsertPoint(arrElemBb);
-    llvm::Value* lenPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
-    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
-    tagArrayHeaderAccess(len, ctx);
-    llvm::Value* capPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
-    auto* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "arr.cap");
-    tagArrayHeaderAccess(cap, ctx);
-    llvm::Value* headPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
-    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "arr.head");
-    tagArrayHeaderAccess(head, ctx);
-    llvm::Value* actualIdx = builder.CreateAdd(head, builder.getInt32(idx), "arr.actidx");
-    llvm::Value* propsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
-    auto* propsVal = builder.CreateAlignedLoad(i64Ty, propsPtr, llvm::Align(8), "arr.props");
-    tagArrayHeaderAccess(propsVal, ctx);
-    llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* hasNoProps =
-        builder.CreateICmpEQ(propsTag, builder.getInt64(BRONZE_ABI_TAG_UNDEFINED));
-    llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
-    llvm::Value* inCap = builder.CreateICmpULT(actualIdx, cap);
-    llvm::Value* arrOk = builder.CreateAnd(builder.CreateAnd(inBounds, inCap), hasNoProps);
-    builder.CreateCondBr(arrOk, arrWriteBb, slowBb, likelyBranch);
-
-    builder.SetInsertPoint(arrWriteBb);
-    llvm::Value* elemsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "arr.elems");
-    tagArrayHeaderAccess(elemsVal, ctx);
-    llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* elemsIsObj = builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(elemsIsObj, arrStoreBb, slowBb, likelyBranch);
-
-    builder.SetInsertPoint(arrStoreBb);
-    llvm::Value* elemsAddr = builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
-    llvm::Value* slotIdx = builder.CreateAdd(builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
-    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
-    auto* sArr = builder.CreateAlignedStore(valBits, slotPtr, llvm::Align(8));
-    tagArrayElementsAccess(sArr, ctx);
-    builder.CreateBr(doneBb);
 
     // 5. Slow path
     builder.SetInsertPoint(slowBb);

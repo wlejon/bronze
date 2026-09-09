@@ -386,6 +386,14 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = std::move(operands);
+    if (!spreadArgs) {
+        if (const auto* ident = dynamic_cast<const ast::Ident*>(newExpr->callee.get())) {
+            auto it = functionIndices_.find(ident->name);
+            if (it != functionIndices_.end()) {
+                inst.directTarget = it->second;
+            }
+        }
+    }
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }

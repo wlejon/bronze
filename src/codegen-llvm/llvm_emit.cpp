@@ -340,6 +340,9 @@ bool writeObjectFile(llvm::Module& llvmModule, const std::string& outputPath, bo
         const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
         parts = std::min({kMaxPartitions, hw, std::max(2u, byInsts)});
     }
+    if (const char* env = std::getenv("BRONZE_PARTITIONS")) {
+        parts = static_cast<unsigned>(std::strtoul(env, nullptr, 10));
+    }
 
     if (parts <= 1) {
         // BRONZE_EMIT_FN_SYMBOLS=1: run the split path's local-symbol

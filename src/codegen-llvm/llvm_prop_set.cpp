@@ -191,13 +191,16 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.CreateICmpEQ(depthBase, builder.getInt64(0)), reprOk, "ic.set.depthok");
 
     llvm::Value* hit = builder.CreateAnd(builder.CreateAnd(isPlain, shapeOk), depthOk, "ic.set.hit.cond");
-    llvm::Value* shapeHit = builder.CreateAnd(isPlain, shapeOk);
-    llvm::Value* accHit = builder.CreateAnd(shapeHit, isAccessor, "ic.set.acchit");
+    if (!site.none()) {
+        builder.CreateCondBr(hit, hitBb, slowBb, likelyBranch);
+    } else {
+        llvm::Value* shapeHit = builder.CreateAnd(isPlain, shapeOk);
+        llvm::Value* accHit = builder.CreateAnd(shapeHit, isAccessor, "ic.set.acchit");
 
-    llvm::BasicBlock* setAccCheckBb = llvm::BasicBlock::Create(ctx, "ic.set.acc.check", fn);
-    llvm::BasicBlock* notHitBb = llvm::BasicBlock::Create(ctx, "ic.set.nothit", fn);
+        llvm::BasicBlock* setAccCheckBb = llvm::BasicBlock::Create(ctx, "ic.set.acc.check", fn);
+        llvm::BasicBlock* notHitBb = llvm::BasicBlock::Create(ctx, "ic.set.nothit", fn);
 
-    builder.CreateCondBr(hit, hitBb, notHitBb, likelyBranch);
+        builder.CreateCondBr(hit, hitBb, notHitBb, likelyBranch);
 
     // Accessor setter fast path
     builder.SetInsertPoint(setAccCheckBb);
@@ -425,6 +428,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.CreateBr(doneBb);
     } else {
         builder.CreateCondBr(accHit, setAccCheckBb, slowBb);
+    }
     }
 
     // 4. Hit: inline slot or overflow slot

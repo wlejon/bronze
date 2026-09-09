@@ -322,7 +322,7 @@ void inlineEdgesOf(const il::Function& caller, size_t functionCount,
             uint32_t callee = UINT32_MAX;
             if (inst.op == il::Op::Call && inst.callEnvHops != il::Instruction::kNoEnvHops) {
                 callee = inst.calleeIndex;
-            } else if ((inst.op == il::Op::MethodCall) &&
+            } else if ((inst.op == il::Op::MethodCall || inst.op == il::Op::Construct) &&
                        inst.directTarget != il::Instruction::kNoDirectTarget) {
                 callee = inst.directTarget;
             }

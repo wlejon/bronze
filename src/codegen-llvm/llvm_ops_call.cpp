@@ -351,6 +351,9 @@ bool FunctionEmitter::emitConstruct(const il::Instruction& inst) {
     uint32_t calleeIdx = (inst.operands[0] < funcRefIndex_.size())
                              ? funcRefIndex_[inst.operands[0]]
                              : UINT32_MAX;
+    if (calleeIdx == UINT32_MAX && inst.directTarget != il::Instruction::kNoDirectTarget) {
+        calleeIdx = inst.directTarget;
+    }
     llvm::Function* knownWrapper = (calleeIdx < shared_.wrappers.size())
                                        ? shared_.wrappers[calleeIdx]
                                        : nullptr;
@@ -387,6 +390,12 @@ bool FunctionEmitter::emitConstruct(const il::Instruction& inst) {
                 directArgs.clear();
             }
         }
+    }
+    if (canDirect && calleeIdx < shared_.module.functions.size() &&
+        shared_.regions.isMerged(funcIndex_, calleeIdx)) {
+        knownEntry = shared_.inlineVariants[calleeIdx];
+        directArgs.push_back(calleeRegionBase());
+        directArgs.push_back(tlsBase_);
     }
 
     if (constructSelfSlot_ != kNoSlot) {
