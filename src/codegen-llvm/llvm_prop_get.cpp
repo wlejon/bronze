@@ -30,6 +30,40 @@
 
 namespace bronze::codegen_llvm {
 
+constexpr bool isPossibleArrayMethod(std::string_view key) {
+    switch (key.size()) {
+        case 2:
+            return key == "at";
+        case 3:
+            return key == "map" || key == "pop";
+        case 4:
+            return key == "fill" || key == "find" || key == "flat" ||
+                   key == "join" || key == "keys" || key == "push" ||
+                   key == "some" || key == "sort" || key == "with";
+        case 5:
+            return key == "every" || key == "shift" || key == "slice";
+        case 6:
+            return key == "concat" || key == "filter" || key == "reduce" ||
+                   key == "splice" || key == "values";
+        case 7:
+            return key == "entries" || key == "flatMap" || key == "forEach" ||
+                   key == "indexOf" || key == "reverse";
+        case 8:
+            return key == "includes" || key == "toString";
+        case 9:
+            return key == "findIndex" || key == "findLast" || key == "toSorted" ||
+                   key == "toSpliced" || key == "unshift";
+        case 10:
+            return key == "copyWithin" || key == "toReversed";
+        case 11:
+            return key == "constructor" || key == "reduceRight" || key == "lastIndexOf";
+        case 13:
+            return key == "findLastIndex";
+        default:
+            return false;
+    }
+}
+
 static llvm::Value* emitPropGetCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                     llvm::Value* entry, llvm::Value* objBits,
                                     const ModuleTables& tables, uint32_t keyIndex) {
@@ -365,7 +399,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         taU8Val = emitBoxDouble(builder, builder.CreateUIToFP(du8, dblTy));
         taU8Bb = builder.GetInsertBlock();
         builder.CreateBr(doneBb);
-    } else {
+    } else if (isPossibleArrayMethod(keyStr)) {
         llvm::BasicBlock* arrMethodBb = llvm::BasicBlock::Create(ctx, "ic.arr.method", fn);
         arrMethodHitBb = llvm::BasicBlock::Create(ctx, "ic.arr.method.hit", fn);
         llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
@@ -404,6 +438,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         arrMethodVal = builder.CreateAlignedLoad(
             i64Ty, methodSlotPtr, llvm::Align(8), "arr.method.val");
         builder.CreateBr(doneBb);
+    } else {
+        builder.CreateBr(plainCheckBb);
     }
 
     // 3. Plain object guard, then the site's ways
