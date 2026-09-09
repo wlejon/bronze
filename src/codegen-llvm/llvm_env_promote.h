@@ -91,10 +91,17 @@
 #include "codegen-llvm/llvm_env_reach.h"
 
 namespace llvm {
+class BasicBlock;
+class Instruction;
+class Loop;
 class Module;
 }
 
 namespace bronze::codegen_llvm {
+
+// Hoists invariant environment record instruction chains to loop preheader.
+bool hoistEnvRecordToPreheader(llvm::Instruction* recordInst, llvm::Loop& loop,
+                              llvm::BasicBlock* preheader);
 
 // What the stage did to a module, as static counts. The counter exists for the
 // reason `llvm_repr.h` gives for its own: every arm here is conditional on a

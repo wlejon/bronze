@@ -27,7 +27,7 @@
 
 namespace bronze::codegen_llvm {
 
-enum class MathIntrinsic { Sqrt, Sin, Cos, Abs, Min, Max, Imul };
+enum class MathIntrinsic { Sqrt, Sin, Cos, Abs, Min, Max, Imul, Floor, Ceil, Round };
 
 // The intrinsic a call site may dispatch directly, decided from the key its
 // callee was read by and the site's compile-time argc — the unary four take

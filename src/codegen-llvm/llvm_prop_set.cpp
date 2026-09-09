@@ -136,7 +136,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::BasicBlock* arrStoreBb = llvm::BasicBlock::Create(ctx, "ic.set.arr.store", fn);
 
         llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-        builder.CreateCondBr(isArr, arrElemBb, taCheckBb);
+        builder.CreateCondBr(isArr, arrElemBb, taCheckBb, likelyBranch);
 
         builder.SetInsertPoint(taCheckBb);
         llvm::Value* isTa = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY));

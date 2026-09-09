@@ -70,6 +70,35 @@ bool isAnnotationIntrinsic(const llvm::CallBase& call) {
     }
 }
 
+// Standard memory-free math intrinsics do not access environment records.
+bool isMathIntrinsic(const llvm::CallBase& call) {
+    const llvm::Function* callee = call.getCalledFunction();
+    if (callee == nullptr || !callee->isIntrinsic()) return false;
+    switch (callee->getIntrinsicID()) {
+        case llvm::Intrinsic::sin:
+        case llvm::Intrinsic::cos:
+        case llvm::Intrinsic::sqrt:
+        case llvm::Intrinsic::fabs:
+        case llvm::Intrinsic::floor:
+        case llvm::Intrinsic::ceil:
+        case llvm::Intrinsic::round:
+        case llvm::Intrinsic::minnum:
+        case llvm::Intrinsic::maxnum:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isAllocatingHelper(llvm::StringRef name) {
+    return name == "bronze_create_array" ||
+           name == "bronze_create_function" ||
+           name == "bronze_create_object" ||
+           name == "bronze_env_create" ||
+           name == "bronze_string_concat" ||
+           name == "bronze_to_string";
+}
+
 // THE ALLOWLIST, and every entry is a soundness claim about one ABI helper:
 // this function cannot read or write an environment-record slot, and cannot
 // call user JavaScript. Adding a name here is a claim of the same weight as
@@ -91,7 +120,9 @@ bool isAnnotationIntrinsic(const llvm::CallBase& call) {
 // absent: `bronze_env_get`, `bronze_env_get_tdz` and `bronze_env_set` are a slot
 // access by definition. `bronze_env_access_failed` needs no entry — it is
 // `noreturn`, which is answered before this list is consulted.
-constexpr std::array<std::string_view, 30> kEnvBlindHelpers{
+constexpr std::array<std::string_view, 50> kEnvBlindHelpers{
+    "bronze_box_f64",
+    "bronze_box_str_key",
     "bronze_create_array",
     "bronze_create_function",
     "bronze_create_object",
@@ -111,10 +142,27 @@ constexpr std::array<std::string_view, 30> kEnvBlindHelpers{
     "bronze_dynamic_sub",
     "bronze_dynamic_ushr",
     "bronze_env_create",
+    "bronze_family_stamp",
+    "bronze_function_singleton",
+    "bronze_global_get",
     "bronze_is_nullish",
     "bronze_iter_close",
     "bronze_iter_step",
     "bronze_iter_value",
+    "bronze_math_abs",
+    "bronze_math_ceil",
+    "bronze_math_cos",
+    "bronze_math_cos_f64",
+    "bronze_math_floor",
+    "bronze_math_imul",
+    "bronze_math_max",
+    "bronze_math_max2_f64",
+    "bronze_math_min",
+    "bronze_math_min2_f64",
+    "bronze_math_round",
+    "bronze_math_sin",
+    "bronze_math_sin_f64",
+    "bronze_math_sqrt",
     "bronze_pattern_check",
     "bronze_strict_eq",
     "bronze_string_concat",
@@ -122,6 +170,7 @@ constexpr std::array<std::string_view, 30> kEnvBlindHelpers{
     "bronze_to_string",
     "bronze_truthy",
     "bronze_unbox_bool",
+    "bronze_unbox_f64",
 };
 
 bool isNamedBlindHelper(llvm::StringRef name) {
@@ -351,6 +400,7 @@ bool EnvReach::callIsBlind(const llvm::CallBase& call) const {
     // survive one, and a throw is a pending cell plus a return, never this.
     if (call.doesNotReturn()) return true;
     if (isAnnotationIntrinsic(call)) return true;
+    if (isMathIntrinsic(call)) return true;
     if (call.doesNotAccessMemory()) return true;
 
     const llvm::Function* callee = call.getCalledFunction();
@@ -362,6 +412,14 @@ bool EnvReach::callIsBlind(const llvm::CallBase& call) const {
 bool EnvReach::callMayCollect(const llvm::CallBase& call) const {
     if (call.doesNotReturn()) return false;
     if (isAnnotationIntrinsic(call)) return false;
+    if (isMathIntrinsic(call)) return false;
+
+    const llvm::Function* callee = call.getCalledFunction();
+    if (callee != nullptr && callee->isDeclaration()) {
+        llvm::StringRef name = callee->getName();
+        if (isNamedBlindHelper(name) && !isAllocatingHelper(name)) return false;
+    }
+
     // An allocation WRITES memory. A call that provably does not is a call that
     // provably did not allocate, and therefore did not collect.
     return !call.doesNotAccessMemory() && !call.onlyReadsMemory();

@@ -252,7 +252,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         arrPayloadBb = llvm::BasicBlock::Create(ctx, "ic.arr.payload", fn);
 
         llvm::Value* isArr = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_ARRAY));
-        builder.CreateCondBr(isArr, arrElemBb, taCheckBb);
+        builder.CreateCondBr(isArr, arrElemBb, taCheckBb, likelyBranch);
 
         builder.SetInsertPoint(taCheckBb);
         llvm::Value* isTa = builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY));
@@ -264,7 +264,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "arr.len");
         tagArrayHeaderAccess(len, ctx);
         llvm::Value* inBounds = builder.CreateICmpULT(builder.getInt32(idx), len);
-        builder.CreateCondBr(inBounds, arrReadBb, arrUndefBb);
+        builder.CreateCondBr(inBounds, arrReadBb, arrUndefBb, likelyBranch);
 
         builder.SetInsertPoint(arrUndefBb);
         builder.CreateBr(doneBb);
@@ -277,7 +277,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         llvm::Value* elemsTag = builder.CreateLShr(elemsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
         llvm::Value* elemsIsObj =
             builder.CreateICmpEQ(elemsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-        builder.CreateCondBr(elemsIsObj, arrPayloadBb, slowBb);
+        builder.CreateCondBr(elemsIsObj, arrPayloadBb, slowBb, likelyBranch);
 
         builder.SetInsertPoint(arrPayloadBb);
         llvm::Value* elemsAddr =

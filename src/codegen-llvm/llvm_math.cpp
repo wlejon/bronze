@@ -19,6 +19,9 @@ std::optional<MathIntrinsic> mathIntrinsicFor(std::string_view keyStr, uint32_t 
         if (keyStr == "sin") return MathIntrinsic::Sin;
         if (keyStr == "cos") return MathIntrinsic::Cos;
         if (keyStr == "abs") return MathIntrinsic::Abs;
+        if (keyStr == "floor") return MathIntrinsic::Floor;
+        if (keyStr == "ceil") return MathIntrinsic::Ceil;
+        if (keyStr == "round") return MathIntrinsic::Round;
     } else if (argc == 2) {
         if (keyStr == "min") return MathIntrinsic::Min;
         if (keyStr == "max") return MathIntrinsic::Max;
@@ -36,6 +39,9 @@ static llvm::Function* mathExpectedCode(const AbiFns& abi, MathIntrinsic kind) {
         case MathIntrinsic::Min: return abi.bronze_math_min;
         case MathIntrinsic::Max: return abi.bronze_math_max;
         case MathIntrinsic::Imul: return abi.bronze_math_imul;
+        case MathIntrinsic::Floor: return abi.bronze_math_floor;
+        case MathIntrinsic::Ceil: return abi.bronze_math_ceil;
+        case MathIntrinsic::Round: return abi.bronze_math_round;
     }
     return nullptr;
 }
@@ -66,10 +72,19 @@ llvm::Value* emitMathCompute(llvm::IRBuilder<>& builder, const AbiFns& abi,
             r = builder.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, x);
             break;
         case MathIntrinsic::Sin:
-            r = builder.CreateCall(abi.bronze_math_sin_f64, {x});
+            r = builder.CreateUnaryIntrinsic(llvm::Intrinsic::sin, x);
             break;
         case MathIntrinsic::Cos:
-            r = builder.CreateCall(abi.bronze_math_cos_f64, {x});
+            r = builder.CreateUnaryIntrinsic(llvm::Intrinsic::cos, x);
+            break;
+        case MathIntrinsic::Floor:
+            r = builder.CreateUnaryIntrinsic(llvm::Intrinsic::floor, x);
+            break;
+        case MathIntrinsic::Ceil:
+            r = builder.CreateUnaryIntrinsic(llvm::Intrinsic::ceil, x);
+            break;
+        case MathIntrinsic::Round:
+            r = builder.CreateUnaryIntrinsic(llvm::Intrinsic::round, x);
             break;
         case MathIntrinsic::Min:
         case MathIntrinsic::Max: {

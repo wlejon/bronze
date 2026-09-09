@@ -201,6 +201,7 @@ public:
             if (found == facts_.end()) continue;
             for (const InstFact& fact : found->second) {
                 if (erased_.contains(fact.inst)) continue;
+                if (fact.inst->getParent() != block) continue;
                 if (fact.mayCollect) mayCollectOut = true;
                 switch (fact.kind) {
                     case InstKind::Ignore:
@@ -390,6 +391,74 @@ bool tryFunctionRegion(FunctionScan& scan, const EnvSlotKey& key,
     return true;
 }
 
+// An instruction in an environment record resolution chain is hoistable to the
+// loop preheader if it performs invariant address computation or invariant loading.
+static bool isHoistableEnvRecordInst(const llvm::Instruction* inst) {
+    if (const auto* binOp = llvm::dyn_cast<llvm::BinaryOperator>(inst)) {
+        if (binOp->getOpcode() == llvm::Instruction::And) {
+            for (unsigned i = 0; i < 2; ++i) {
+                if (const auto* ci = llvm::dyn_cast<llvm::ConstantInt>(binOp->getOperand(i))) {
+                    if (ci->getValue().getLimitedValue(UINT64_MAX) == BRONZE_ABI_VALUE_PAYLOAD_MASK) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+    if (llvm::isa<llvm::IntToPtrInst>(inst)) return true;
+    if (llvm::isa<llvm::GetElementPtrInst>(inst)) return true;
+    if (const auto* load = llvm::dyn_cast<llvm::LoadInst>(inst)) {
+        return load->getMetadata(llvm::LLVMContext::MD_invariant_load) != nullptr;
+    }
+    return false;
+}
+
+static bool collectHoistableChain(llvm::Instruction* inst, const llvm::Loop& loop,
+                                  llvm::SmallVectorImpl<llvm::Instruction*>& order,
+                                  llvm::DenseSet<llvm::Instruction*>& visited,
+                                  llvm::DenseSet<llvm::Instruction*>& visiting) {
+    if (!loop.contains(inst->getParent())) return true;
+    if (visited.contains(inst)) return true;
+    if (visiting.contains(inst)) return false;
+
+    if (!isHoistableEnvRecordInst(inst)) return false;
+
+    visiting.insert(inst);
+    for (llvm::Value* op : inst->operands()) {
+        if (auto* opInst = llvm::dyn_cast<llvm::Instruction>(op)) {
+            if (loop.contains(opInst->getParent())) {
+                if (!collectHoistableChain(opInst, loop, order, visited, visiting)) {
+                    return false;
+                }
+            }
+        }
+    }
+    visiting.erase(inst);
+    visited.insert(inst);
+    order.push_back(inst);
+    return true;
+}
+
+bool hoistEnvRecordToPreheader(llvm::Instruction* recordInst, llvm::Loop& loop,
+                              llvm::BasicBlock* preheader) {
+    if (!loop.contains(recordInst->getParent())) return true;
+    if (preheader == nullptr) return false;
+
+    llvm::SmallVector<llvm::Instruction*, 8> order;
+    llvm::DenseSet<llvm::Instruction*> visited;
+    llvm::DenseSet<llvm::Instruction*> visiting;
+    if (!collectHoistableChain(recordInst, loop, order, visited, visiting)) {
+        return false;
+    }
+
+    llvm::Instruction* terminator = preheader->getTerminator();
+    for (llvm::Instruction* inst : order) {
+        inst->moveBefore(terminator->getIterator());
+    }
+    return true;
+}
+
 // Tries one loop as a region. Called outermost-first: the outermost loop that
 // is clean is the one promoted, because it subsumes every loop inside it.
 //
@@ -408,16 +477,19 @@ bool tryLoopRegion(FunctionScan& scan, llvm::Loop& loop, const EnvSlotKey& key,
     }
     if (inside.empty()) return false;
 
-    if (const auto* recordInst = llvm::dyn_cast<llvm::Instruction>(key.record)) {
-        if (loop.contains(recordInst->getParent())) {
-            ++stats.ends[static_cast<size_t>(RegionEnd::RecordNotInvariant)];
-            return false;
-        }
-    }
     llvm::BasicBlock* preheader = loop.getLoopPreheader();
     if (preheader == nullptr || loop.getLoopLatch() == nullptr) {
         ++stats.ends[static_cast<size_t>(RegionEnd::LoopShape)];
         return false;
+    }
+
+    if (auto* recordInst = llvm::dyn_cast<llvm::Instruction>(key.record)) {
+        if (loop.contains(recordInst->getParent())) {
+            if (!hoistEnvRecordToPreheader(recordInst, loop, preheader)) {
+                ++stats.ends[static_cast<size_t>(RegionEnd::RecordNotInvariant)];
+                return false;
+            }
+        }
     }
 
     RegionEnd cause = RegionEnd::UnknownCall;

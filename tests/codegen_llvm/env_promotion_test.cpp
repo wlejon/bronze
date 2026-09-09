@@ -596,3 +596,39 @@ entry:
     CHECK(p.stats.keys == 0);
     CHECK(p.stats.slotsPromoted == 0);
 }
+
+TEST_CASE("a captured record access inside a loop is hoisted to preheader and promoted") {
+    if (stageIsOff()) return;
+    const std::string ir = std::string(kOpaque) + R"(
+define i64 @kernel(i64 %env, i64 %n) {
+entry:
+  call void @opaque()
+  br label %loop
+
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]
+  %payload = and i64 %env, 281474976710655
+  %hdr = inttoptr i64 %payload to ptr
+  %parentPtr = getelementptr inbounds i8, ptr %hdr, i64 8
+  %parent = load i64, ptr %parentPtr, align 8, !invariant.load !5
+  %parentPayload = and i64 %parent, 281474976710655
+  %parentHdr = inttoptr i64 %parentPayload to ptr
+  %slot = getelementptr inbounds i8, ptr %parentHdr, i64 16
+  %v = load i64, ptr %slot, align 8, !alias.scope !0, !noalias !3
+  %sum = add i64 %v, 1
+  store i64 %sum, ptr %slot, align 8, !alias.scope !0, !noalias !3
+  %i.next = add i64 %i, 1
+  %done = icmp eq i64 %i.next, %n
+  br i1 %done, label %exit, label %loop
+
+exit:
+  ret i64 0
+}
+)";
+    Promoted p = promote(ir);
+    CHECK(p.stats.slotsPromoted == 1);
+    CHECK(p.stats.loopRegions == 1);
+    CHECK(p.stats.loadsElided == 1);
+    CHECK(p.stats.storesElided == 1);
+}
+

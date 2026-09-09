@@ -271,9 +271,9 @@ const MathFn kMathFunctions[] = {
     // The six with exported code pointers (bronze_abi.h) are the ones a call
     // site can dispatch directly; the registration here is what makes the
     // guard's pointer compare mean "still the intrinsic".
-    {"abs", bronze_math_abs, 1},         {"floor", mathUnary<unaryFloor>, 1},
-    {"ceil", mathUnary<unaryCeil>, 1},   {"trunc", mathUnary<unaryTrunc>, 1},
-    {"round", mathUnary<jsRound>, 1},    {"sign", mathUnary<jsSign>, 1},
+    {"abs", bronze_math_abs, 1},         {"floor", bronze_math_floor, 1},
+    {"ceil", bronze_math_ceil, 1},       {"trunc", mathUnary<unaryTrunc>, 1},
+    {"round", bronze_math_round, 1},    {"sign", mathUnary<jsSign>, 1},
     {"sqrt", bronze_math_sqrt, 1},       {"cbrt", mathUnary<unaryCbrt>, 1},
     {"exp", mathUnary<unaryExp>, 1},     {"expm1", mathUnary<unaryExpm1>, 1},
     {"log", mathUnary<unaryLog>, 1},     {"log1p", mathUnary<unaryLog1p>, 1},
@@ -379,6 +379,18 @@ extern "C" uint64_t bronze_math_max(uint64_t e, uint64_t t, uint32_t argc, const
 
 extern "C" uint64_t bronze_math_imul(uint64_t e, uint64_t t, uint32_t argc, const uint64_t* argv) {
     return mathImul(e, t, argc, argv);
+}
+
+extern "C" uint64_t bronze_math_floor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(unaryFloor(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_ceil(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(unaryCeil(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_round(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(jsRound(argAt(argc, argv, 0))).rawBits();
 }
 
 Value rtMathObject() {
