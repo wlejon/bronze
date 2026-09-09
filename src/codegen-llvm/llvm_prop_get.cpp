@@ -94,6 +94,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     llvm::Value* isObject =
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "ic.isobj");
     llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    llvm::MDNode* unlikelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
     llvm::BasicBlock* strLenBb = nullptr;
     llvm::Value* strLenVal = nullptr;
     if (keyStr == "length") {
@@ -501,7 +502,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.SetInsertPoint(flaggedDepthBb);
     llvm::BasicBlock* getAccCheckBb = llvm::BasicBlock::Create(ctx, "ic.get.acc.check", fn);
     llvm::BasicBlock* protoCheckBb = llvm::BasicBlock::Create(ctx, "ic.proto.check", fn);
-    builder.CreateCondBr(isAccessor, getAccCheckBb, protoCheckBb);
+    builder.CreateCondBr(isAccessor, getAccCheckBb, protoCheckBb, unlikelyBranch);
 
     // Accessor getter fast path
     builder.SetInsertPoint(getAccCheckBb);
@@ -619,6 +620,22 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
         builder, ctx, fn, shape, depth, protoEntryBb, slowBb, protoResBb, "ic.proto");
 
     builder.SetInsertPoint(protoResBb);
+    llvm::Value* isProtoInline = builder.CreateICmpULT(
+        protoSlot32, builder.getInt32(BRONZE_ABI_OBJ_INLINE_SLOTS), "proto.isinline");
+    llvm::BasicBlock* protoInlineBb = llvm::BasicBlock::Create(ctx, "ic.proto.inline", fn);
+    llvm::BasicBlock* protoOverflowBb = llvm::BasicBlock::Create(ctx, "ic.proto.overflow", fn);
+    builder.CreateCondBr(isProtoInline, protoInlineBb, protoOverflowBb, likelyBranch);
+
+    builder.SetInsertPoint(protoInlineBb);
+    llvm::Value* protoSlotsBase = builder.CreateConstInBoundsGEP1_32(
+        i8Ty, protoWalk.holderHdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+    llvm::Value* protoInlineSlotPtr = builder.CreateInBoundsGEP(i64Ty, protoSlotsBase, protoSlot32);
+    auto* protoInlineVal = builder.CreateAlignedLoad(
+        i64Ty, protoInlineSlotPtr, llvm::Align(8), "proto.inline.val");
+    tagObjectSlotAccess(protoInlineVal, ctx);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(protoOverflowBb);
     llvm::BasicBlock* protoLoadSuccessBb = llvm::BasicBlock::Create(ctx, "ic.proto.loadsucc", fn);
     llvm::Value* protoHitVal = emitObjectSlotLoad(
         builder, ctx, fn, protoWalk.holderHdr, protoSlot32, slowBb, protoLoadSuccessBb, "proto.slot");
@@ -778,9 +795,9 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    // inlineHitBb, overflowAccessBb, slowBb, protoLoadSuccessBb, getCallBb,
+    // inlineHitBb, overflowAccessBb, slowBb, protoInlineBb, protoLoadSuccessBb, getCallBb,
     // getUndefBb, absentHitBb
-    unsigned phiCount = 7;
+    unsigned phiCount = 8;
     if (fnDoneBb) phiCount++;
     if (proven.fastBb) phiCount++;
     if (staticGuard.hitBb) phiCount++;
@@ -807,6 +824,7 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     if (fnDoneBb) result->addIncoming(fnStaticsVal, fnDoneBb);
     if (proven.fastBb) result->addIncoming(proven.value, proven.fastBb);
     if (staticGuard.hitBb) result->addIncoming(staticGuard.value, staticGuard.hitBb);
+    result->addIncoming(protoInlineVal, protoInlineBb);
     result->addIncoming(protoHitVal, protoLoadSuccessBb);
     result->addIncoming(getterRes, getCallBb);
     result->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), getUndefBb);

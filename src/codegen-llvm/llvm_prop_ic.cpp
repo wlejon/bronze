@@ -110,74 +110,76 @@ struct ProtoStepResult {
 static ProtoStepResult emitProtoStep(
     llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
     llvm::Value* curShape, llvm::BasicBlock* slowBb, const std::string& stepPrefix) {
+    (void)fn;
+    (void)slowBb;
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
-    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
-    llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
-
-    llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".load", fn);
-    llvm::BasicBlock* stepBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".step", fn);
-    llvm::BasicBlock* dictBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".dict", fn);
-    llvm::BasicBlock* dictLoadBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".dictload", fn);
-    llvm::BasicBlock* endBb = llvm::BasicBlock::Create(ctx, stepPrefix + ".end", fn);
 
     llvm::Value* rootPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, curShape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
     auto* rootShape = builder.CreateAlignedLoad(ptrTy, rootPtr, llvm::Align(8), stepPrefix + ".root");
     markInvariant(rootShape, ctx);
-    llvm::Value* rootNonNull = builder.CreateICmpNE(rootShape, llvm::Constant::getNullValue(ptrTy));
-    builder.CreateCondBr(rootNonNull, loadBb, slowBb, likely);
 
-    builder.SetInsertPoint(loadBb);
     llvm::Value* protoValPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, rootShape, BRONZE_ABI_SHAPE_PROTO_OFFSET);
     auto* protoVal = builder.CreateAlignedLoad(i64Ty, protoValPtr, llvm::Align(8), stepPrefix + ".val");
     markInvariant(protoVal, ctx);
-    llvm::Value* protoTag = builder.CreateLShr(protoVal, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* protoIsObj = builder.CreateICmpEQ(protoTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-    builder.CreateCondBr(protoIsObj, stepBb, slowBb, likely);
 
-    builder.SetInsertPoint(stepBb);
     llvm::Value* protoAddr = builder.CreateAnd(protoVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* protoHdr = builder.CreateIntToPtr(protoAddr, ptrTy, stepPrefix + ".hdr");
-    llvm::Value* protoFlagsPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    auto* protoFlags = builder.CreateAlignedLoad(i16Ty, protoFlagsPtr, llvm::Align(2), stepPrefix + ".flags");
-    markInvariant(protoFlags, ctx);
-    llvm::Value* protoPlain = builder.CreateICmpEQ(protoFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_PLAIN));
-    builder.CreateCondBr(protoPlain, dictBb, slowBb, likely);
 
-    builder.SetInsertPoint(dictBb);
     llvm::Value* protoShapePtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
     auto* protoShape = builder.CreateAlignedLoad(ptrTy, protoShapePtr, llvm::Align(8), stepPrefix + ".shape");
     markInvariant(protoShape, ctx);
-    llvm::Value* protoShapeNonNull = builder.CreateICmpNE(protoShape, llvm::Constant::getNullValue(ptrTy));
-    builder.CreateCondBr(protoShapeNonNull, dictLoadBb, slowBb, likely);
 
-    builder.SetInsertPoint(dictLoadBb);
-    llvm::Value* dictPtr = builder.CreateConstInBoundsGEP1_32(i8Ty, protoShape, BRONZE_ABI_SHAPE_DICT_OFFSET);
-    auto* dict = builder.CreateAlignedLoad(ptrTy, dictPtr, llvm::Align(8), stepPrefix + ".dict");
-    markInvariant(dict, ctx);
-    llvm::Value* notDict = builder.CreateICmpEQ(dict, llvm::Constant::getNullValue(ptrTy));
-    builder.CreateCondBr(notDict, endBb, slowBb, likely);
-
-    builder.SetInsertPoint(endBb);
-    return {protoHdr, protoShape, endBb};
+    return {protoHdr, protoShape, builder.GetInsertBlock()};
 }
 
 static std::pair<llvm::Value*, llvm::BasicBlock*> emitUnrolledWalk(
     llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, llvm::Function* fn,
     llvm::Value* startShape, uint64_t d, llvm::BasicBlock* slowBb,
     const std::string& prefix) {
+    (void)fn;
+    (void)slowBb;
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
     llvm::Value* curShape = startShape;
     llvm::Value* lastHdr = nullptr;
-    llvm::BasicBlock* lastBb = nullptr;
     for (uint64_t i = 0; i < d; ++i) {
-        auto step = emitProtoStep(builder, ctx, fn, curShape, slowBb,
-                                  prefix + ".s" + std::to_string(i));
-        curShape = step.protoShape;
-        lastHdr = step.protoHdr;
-        lastBb = step.stepEndBb;
+        std::string stepPrefix = prefix + ".s" + std::to_string(i);
+
+        // Every caller enters having already verified `curEpoch == fillEpoch`
+        // (bronze_proto_epoch). That single guard guarantees that the entire
+        // prototype chain remains intact, no prototype has mutated or swapped,
+        // no property was added to any ancestor, and no dictionary transition
+        // occurred. The walk is therefore a straight-line invariant pointer chase.
+        llvm::Value* rootPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, curShape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
+        auto* rootShape = builder.CreateAlignedLoad(
+            ptrTy, rootPtr, llvm::Align(8), stepPrefix + ".root");
+        markInvariant(rootShape, ctx);
+
+        llvm::Value* protoValPtr = builder.CreateConstInBoundsGEP1_32(
+            i8Ty, rootShape, BRONZE_ABI_SHAPE_PROTO_OFFSET);
+        auto* protoVal = builder.CreateAlignedLoad(
+            i64Ty, protoValPtr, llvm::Align(8), stepPrefix + ".val");
+        markInvariant(protoVal, ctx);
+
+        llvm::Value* protoAddr = builder.CreateAnd(
+            protoVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        lastHdr = builder.CreateIntToPtr(protoAddr, ptrTy, stepPrefix + ".hdr");
+
+        if (i + 1 < d) {
+            llvm::Value* protoShapePtr = builder.CreateConstInBoundsGEP1_32(
+                i8Ty, lastHdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+            auto* protoShape = builder.CreateAlignedLoad(
+                ptrTy, protoShapePtr, llvm::Align(8), stepPrefix + ".shape");
+            markInvariant(protoShape, ctx);
+            curShape = protoShape;
+        }
     }
-    return {lastHdr, lastBb};
+    return {lastHdr, builder.GetInsertBlock()};
 }
 
 static std::pair<llvm::Value*, llvm::BasicBlock*> emitLoopWalk(
@@ -289,6 +291,21 @@ llvm::Value* emitObjectSlotLoad(
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
     llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+
+    if (auto* constSlot = llvm::dyn_cast<llvm::ConstantInt>(slot32)) {
+        uint64_t s = constSlot->getZExtValue();
+        if (s < BRONZE_ABI_OBJ_INLINE_SLOTS) {
+            llvm::Value* slotsBase =
+                builder.CreateConstInBoundsGEP1_32(i8Ty, holderHdr, BRONZE_ABI_OBJ_SLOTS_OFFSET);
+            llvm::Value* inlineSlotPtr =
+                builder.CreateConstInBoundsGEP1_32(i64Ty, slotsBase, static_cast<unsigned>(s));
+            auto* inlineVal =
+                builder.CreateAlignedLoad(i64Ty, inlineSlotPtr, llvm::Align(8), prefix + ".inline.val");
+            tagObjectSlotAccess(inlineVal, ctx);
+            builder.CreateBr(successBb);
+            return inlineVal;
+        }
+    }
 
     llvm::BasicBlock* inlineBb = llvm::BasicBlock::Create(ctx, prefix + ".inline", fn);
     llvm::BasicBlock* overflowBb = llvm::BasicBlock::Create(ctx, prefix + ".overflow", fn);

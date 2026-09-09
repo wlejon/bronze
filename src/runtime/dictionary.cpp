@@ -60,6 +60,7 @@ static Shape* createDictionaryShape(NonMovingArena& arena, Shape* from) {
     Shape* dict = arena.create<Shape>();
     dict->root = from->root;
     dict->dict = arena.create<Dictionary>();
+    dict->used_as_prototype = from->used_as_prototype;
     return dict;
 }
 
@@ -68,6 +69,9 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     if (!obj->shape || obj->shape->isDictionary()) return;
 
     Shape* old = obj->shape;
+    // If this object is used as a prototype anywhere, demoting it to dictionary
+    // mode invalidates IC entries that walk through or target it.
+    if (old->used_as_prototype) bumpProtoMutationEpoch();
     Shape* dictShape = createDictionaryShape(arena, old);
     Dictionary& d = *dictShape->dict;
 
@@ -110,6 +114,10 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
     // bronze can answer false, and it is why the "delete never answers false"
     // line is retired rather than merely qualified.
     if (!info.configurable) return false;
+
+    // If deleting a property from an object used as a prototype, any inline
+    // cache that resolved through or to this object must be invalidated.
+    if (shape->used_as_prototype) bumpProtoMutationEpoch();
 
     if (!shape->isDictionary()) {
         // Nothing below allocates on the heap, so the root is a formality —
