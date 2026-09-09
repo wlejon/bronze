@@ -310,15 +310,14 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
             loaded = llvm::ConstantFP::getNaN(dblTy);
             break;
     }
-    llvm::Value* loadedBits = emitBoxDouble(builder, loaded);
     llvm::BasicBlock* loadEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* resultBits = builder.CreatePHI(builder.getInt64Ty(), 2, "tel.bits");
-    resultBits->addIncoming(loadedBits, loadEndBb);
-    resultBits->addIncoming(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), entryBb);
-    return builder.CreateBitCast(resultBits, dblTy, "tel.result");
+    llvm::PHINode* result = builder.CreatePHI(dblTy, 2, "tel.result");
+    result->addIncoming(loaded, loadEndBb);
+    result->addIncoming(llvm::ConstantFP::getNaN(dblTy), entryBb);
+    return result;
 }
 
 void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,

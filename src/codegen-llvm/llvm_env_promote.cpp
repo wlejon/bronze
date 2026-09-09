@@ -24,6 +24,7 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/Transforms/Utils/LoopSimplify.h>
 #include <llvm/Transforms/Utils/LoopUtils.h>
 #include <llvm/Transforms/Utils/PromoteMemToReg.h>
 
@@ -624,6 +625,25 @@ bool tryLoopRegion(FunctionScan& scan, llvm::Loop& loop, const EnvSlotKey& key,
 void promoteInFunction(llvm::Function& fn, const EnvReach& reach,
                        llvm::FunctionAnalysisManager& fam, EnvPromotionStats& stats,
                        bool& cfgChanged) {
+    llvm::LoopInfo& loopInfoInitial = fam.getResult<llvm::LoopAnalysis>(fn);
+    if (!loopInfoInitial.empty()) {
+        bool hasEnv = false;
+        const llvm::DataLayout& layout = fn.getParent()->getDataLayout();
+        for (const llvm::BasicBlock& bb : fn) {
+            for (const llvm::Instruction& inst : bb) {
+                if (inst.mayReadOrWriteMemory() && matchEnvSlotAccess(inst, layout).has_value()) {
+                    hasEnv = true;
+                    break;
+                }
+            }
+            if (hasEnv) break;
+        }
+        if (hasEnv) {
+            auto pa = llvm::LoopSimplifyPass().run(fn, fam);
+            if (!pa.areAllPreserved()) cfgChanged = true;
+        }
+    }
+
     llvm::AAResults& aa = fam.getResult<llvm::AAManager>(fn);
     FunctionScan scan(fn, reach, aa);
     if (scan.byKey().empty()) return;

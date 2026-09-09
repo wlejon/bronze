@@ -95,6 +95,8 @@ private:
     // Instruction families. Each returns false only after diagnosing.
     bool emitTerminator(const il::Instruction& inst);
     bool emitRuntimeOp(const il::Instruction& inst);
+    bool emitBox(const il::Instruction& inst);
+    bool emitUnbox(const il::Instruction& inst);
     bool emitDynamicCall(const il::Instruction& inst);
     bool emitMethodCall(const il::Instruction& inst);
     // The guarded direct edge in front of it, or false when this site has none.
