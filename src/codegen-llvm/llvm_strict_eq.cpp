@@ -7,6 +7,7 @@
 #include <llvm/IR/MDBuilder.h>
 
 #include "abi/bronze_abi_tls.h"
+#include "codegen-llvm/llvm_elem_typed.h"
 
 namespace bronze::codegen_llvm {
 
@@ -32,6 +33,16 @@ llvm::Value* emitStrictEq(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     llvm::MDNode* likely = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
     llvm::MDNode* unlikely = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
 
+    const bool lhsProven = isProvenNumberValue(lhs);
+    const bool rhsProven = isProvenNumberValue(rhs);
+    if (lhsProven && rhsProven) {
+        llvm::Value* lDbl = unwrapBoxedDouble(lhs);
+        if (lDbl == nullptr) lDbl = builder.CreateBitCast(lhs, dblTy, "seq.l.dbl");
+        llvm::Value* rDbl = unwrapBoxedDouble(rhs);
+        if (rDbl == nullptr) rDbl = builder.CreateBitCast(rhs, dblTy, "seq.r.dbl");
+        return builder.CreateFCmpOEQ(lDbl, rDbl, "seq.fcmpoeq");
+    }
+
     llvm::BasicBlock* seamBb = llvm::BasicBlock::Create(ctx, "seq.seam.ok", fn);
     llvm::BasicBlock* nonNumBb = llvm::BasicBlock::Create(ctx, "seq.nonnum", fn);
     llvm::BasicBlock* differBb = llvm::BasicBlock::Create(ctx, "seq.differ", fn);
@@ -42,16 +53,22 @@ llvm::Value* emitStrictEq(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::V
     builder.SetInsertPoint(seamBb);
 
     // Arm 1.
-    llvm::Value* lhsNum = builder.CreateICmpULE(lhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
-                                                "seq.lnum");
-    llvm::Value* rhsNum = builder.CreateICmpULE(rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS),
-                                                "seq.rnum");
+    llvm::Value* lhsNum = lhsProven ? static_cast<llvm::Value*>(builder.getTrue())
+                                     : builder.CreateICmpULE(
+                                           lhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "seq.lnum");
+    llvm::Value* rhsNum = rhsProven ? static_cast<llvm::Value*>(builder.getTrue())
+                                     : builder.CreateICmpULE(
+                                           rhs, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "seq.rnum");
     llvm::BasicBlock* numBb = llvm::BasicBlock::Create(ctx, "seq.num", fn);
-    builder.CreateCondBr(builder.CreateAnd(lhsNum, rhsNum, "seq.bothnum"), numBb, nonNumBb, likely);
+    llvm::Value* bothNum = lhsProven ? rhsNum : (rhsProven ? lhsNum : builder.CreateAnd(lhsNum, rhsNum, "seq.bothnum"));
+    builder.CreateCondBr(bothNum, numBb, nonNumBb, likely);
 
     builder.SetInsertPoint(numBb);
-    llvm::Value* numVal = builder.CreateFCmpOEQ(builder.CreateBitCast(lhs, dblTy),
-                                                builder.CreateBitCast(rhs, dblTy), "seq.numcmp");
+    llvm::Value* lDbl = unwrapBoxedDouble(lhs);
+    if (lDbl == nullptr) lDbl = builder.CreateBitCast(lhs, dblTy, "seq.l.dbl");
+    llvm::Value* rDbl = unwrapBoxedDouble(rhs);
+    if (rDbl == nullptr) rDbl = builder.CreateBitCast(rhs, dblTy, "seq.r.dbl");
+    llvm::Value* numVal = builder.CreateFCmpOEQ(lDbl, rDbl, "seq.numcmp");
     llvm::BasicBlock* numEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 

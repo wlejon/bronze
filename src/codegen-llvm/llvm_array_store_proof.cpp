@@ -176,7 +176,8 @@ ProvenArrayStore emitProvenArrayElementStore(llvm::IRBuilder<>& builder,
         "astore" + std::to_string(proof.run) + ".e" + std::to_string(index) + ".";
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, tag + "fast", fn);
     llvm::BasicBlock* ladderBb = llvm::BasicBlock::Create(ctx, tag + "ladder", fn);
-    builder.CreateCondBr(proof.ok, fastBb, ladderBb);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    builder.CreateCondBr(proof.ok, fastBb, ladderBb, likelyBranch);
 
     builder.SetInsertPoint(fastBb);
     emitElementStore(builder, proof, index, valBits);

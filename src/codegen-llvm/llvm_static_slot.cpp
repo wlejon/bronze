@@ -8,6 +8,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Type.h>
 
 #include <string>
@@ -119,6 +120,7 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     llvm::BasicBlock* objBb = llvm::BasicBlock::Create(ctx, p + ".static.obj", fn);
     llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, p + ".static.hit", fn);
     llvm::BasicBlock* missBb = llvm::BasicBlock::Create(ctx, p + ".static.miss", fn);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
     // 1. An object at all. The same test the ordinary sequence opens with, and
     //    LLVM folds the two into one — which is why this costs a miss almost
@@ -126,7 +128,7 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
     llvm::Value* tag = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     builder.CreateCondBr(
         builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), p + ".static.isobj"),
-        objBb, missBb);
+        objBb, missBb, likelyBranch);
 
     // 2. Plain, and then whichever question this site's guard asks of the shape.
     //
@@ -161,16 +163,16 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
         // what it buys is that the load is not speculated through a header this
         // guard has not yet agreed is an object header.
         llvm::BasicBlock* famBb = llvm::BasicBlock::Create(ctx, p + ".static.fam", fn);
-        builder.CreateCondBr(isPlain, famBb, missBb);
+        builder.CreateCondBr(isPlain, famBb, missBb, likelyBranch);
         builder.SetInsertPoint(famBb);
         shapeOk = familyInRange(builder, tables, familyWord(builder, shape, p), site, p);
-        builder.CreateCondBr(shapeOk, hitBb, missBb);
+        builder.CreateCondBr(shapeOk, hitBb, missBb, likelyBranch);
     } else {
         llvm::Value* want = builder.CreateAlignedLoad(i64Ty, cellPtr(builder, tables, site.cellIndex),
                                                       llvm::Align(8), p + ".static.want");
         llvm::Value* ok = builder.CreateAnd(isPlain, builder.CreateICmpEQ(shape, want),
                                             p + ".static.ok");
-        builder.CreateCondBr(ok, hitBb, missBb);
+        builder.CreateCondBr(ok, hitBb, missBb, likelyBranch);
     }
 
     // 3. The slot, at a compile-time constant offset. For the identity form the
@@ -233,7 +235,7 @@ StaticSlotGuard emitStaticSlotGuard(llvm::IRBuilder<>& builder, const ModuleTabl
                 store, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), p + ".static.valisnum");
             builder.CreateCondBr(builder.CreateOr(builder.CreateNot(isDouble), isNum,
                                                   p + ".static.reprok"),
-                                 storeBb, missBb);
+                                 storeBb, missBb, likelyBranch);
             builder.SetInsertPoint(storeBb);
         }
     }

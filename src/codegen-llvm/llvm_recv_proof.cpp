@@ -585,7 +585,7 @@ ReceiverProof emitArrayProof(llvm::IRBuilder<>& builder, llvm::Value* objBits,
     llvm::Value* tagBits = builder.CreateLShr(objBits, BRONZE_ABI_VALUE_TAG_SHIFT);
     llvm::Value* isObject =
         builder.CreateICmpEQ(tagBits, builder.getInt64(BRONZE_ABI_TAG_OBJECT), tag + "isobj");
-    builder.CreateCondBr(isObject, hdrBb, joinBb);
+    builder.CreateCondBr(isObject, hdrBb, joinBb, likelyBranch);
 
     builder.SetInsertPoint(hdrBb);
     llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
@@ -769,7 +769,8 @@ ProvenRead emitProvenElementRead(llvm::IRBuilder<>& builder, const ReceiverProof
     const std::string tag = "recv" + std::to_string(proof.run) + ".e" + std::to_string(index) + ".";
     llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, tag + "fast", fn);
     llvm::BasicBlock* ladderBb = llvm::BasicBlock::Create(ctx, tag + "ladder", fn);
-    builder.CreateCondBr(proof.ok, fastBb, ladderBb);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    builder.CreateCondBr(proof.ok, fastBb, ladderBb, likelyBranch);
 
     builder.SetInsertPoint(fastBb);
     llvm::Value* value = emitElementLoad(builder, proof, index, holeRawSlot);

@@ -44,11 +44,12 @@ SlotCallee emitSlotCallee(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, ll
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
 
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
     llvm::Value* vTag = builder.CreateLShr(slotVal, BRONZE_ABI_VALUE_TAG_SHIFT, prefix + ".tag");
     llvm::Value* vIsObj =
         builder.CreateICmpEQ(vTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), prefix + ".isobj");
     llvm::BasicBlock* fnBb = llvm::BasicBlock::Create(ctx, prefix + ".fn", fn);
-    builder.CreateCondBr(vIsObj, fnBb, slowBb);
+    builder.CreateCondBr(vIsObj, fnBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(fnBb);
     llvm::Value* fnAddr =
@@ -61,7 +62,7 @@ SlotCallee emitSlotCallee(llvm::IRBuilder<>& builder, llvm::LLVMContext& ctx, ll
     llvm::Value* isFn = builder.CreateICmpEQ(
         fnFlags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), prefix + ".isfn");
     llvm::BasicBlock* okBb = llvm::BasicBlock::Create(ctx, prefix + ".ok", fn);
-    builder.CreateCondBr(isFn, okBb, slowBb);
+    builder.CreateCondBr(isFn, okBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(okBb);
     SlotCallee out;
@@ -98,6 +99,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::PointerType* ptrTy = llvm::PointerType::getUnqual(ctx);
     llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+    llvm::MDNode* unlikelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1, 1048576);
 
     llvm::Value* entry = icEntryPtr(builder, tables.icTable, icIndex);
     llvm::Value* safeArgv = argv ? argv : llvm::ConstantPointerNull::get(ptrTy);
@@ -157,7 +159,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         builder.getInt64(BRONZE_ABI_METHOD_IC_EXOTIC_BIT), "mic.prim.expect");
     llvm::BasicBlock* primHolderBb = llvm::BasicBlock::Create(ctx, "mic.prim.holder", fn);
     builder.CreateCondBr(builder.CreateICmpEQ(primLow, primExpect, "mic.prim.kindok"),
-                         primHolderBb, slowBb);
+                         primHolderBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(primHolderBb);
     llvm::Value* holderBits = builder.CreateAlignedLoad(
@@ -170,7 +172,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     builder.CreateCondBr(
         builder.CreateICmpEQ(holderTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT),
                              "mic.prim.holderisobj"),
-        primShapeBb, slowBb);
+        primShapeBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(primShapeBb);
     llvm::Value* holderAddr =
@@ -187,7 +189,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* latchedShape =
         builder.CreateIntToPtr(latchedShapeInt, ptrTy, "mic.prim.latchedshapeptr");
     builder.CreateCondBr(
-        builder.CreateICmpEQ(holderShape, latchedShape, "mic.prim.shapeok"), hitBb, slowBb);
+        builder.CreateICmpEQ(holderShape, latchedShape, "mic.prim.shapeok"), hitBb, slowBb, likelyBranch);
 
     // 2. Plain Object check (flags == BRONZE_ABI_OBJ_FLAGS_PLAIN)
     builder.SetInsertPoint(plainBb);
@@ -223,7 +225,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     // that gate is the condition on which it is affordable rather than an
     // optimisation of it. Skipping is always sound: it is the helper, which is
     // the answer the arm exists to avoid asking for, never a different one.
-    builder.CreateCondBr(exoKindOk, exoticBoxBb, fnArmBb ? fnArmBb : slowBb);
+    builder.CreateCondBr(exoKindOk, exoticBoxBb, fnArmBb ? fnArmBb : slowBb, likelyBranch);
 
     // The guard's second clause: load the u64 at the aux offset word 0
     // carries in its high half, then ask the question bit 1 selects.
@@ -258,14 +260,14 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     // An exotic entry is always the DIRECT form (word 2's high half is zero),
     // so the shared hit dispatch reads code/arity/env exactly as a shape hit
     // would.
-    builder.CreateCondBr(codeMatch, hitBb, slowBb);
+    builder.CreateCondBr(codeMatch, hitBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(exoBoxChkBb);
     llvm::Value* boxTag =
         builder.CreateLShr(auxVal, BRONZE_ABI_VALUE_TAG_SHIFT, "mic.exo.boxtag");
     llvm::Value* boxIsObj = builder.CreateICmpEQ(
         boxTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "mic.exo.boxisobj");
-    builder.CreateCondBr(boxIsObj, slowBb, hitBb);
+    builder.CreateCondBr(boxIsObj, slowBb, hitBb, unlikelyBranch);
 
     // 3. Shape comparison (receiver shape == icEntry[0]); a way-0 miss falls
     // to the site's WAY 1 (words 6-9, bronze_abi.h's site contract) before
@@ -294,7 +296,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::Value* w1Shape = builder.CreateIntToPtr(w1ShapeInt, ptrTy, "mic.w1.shapeptr");
     llvm::Value* w1Match = builder.CreateICmpEQ(shape, w1Shape, "mic.w1.match");
     llvm::BasicBlock* way1HitBb = llvm::BasicBlock::Create(ctx, "mic.way1.hit", fn);
-    builder.CreateCondBr(w1Match, way1HitBb, slowBb);
+    builder.CreateCondBr(w1Match, way1HitBb, slowBb, likelyBranch);
 
     builder.SetInsertPoint(way1HitBb);
     llvm::Value* w1Code = builder.CreateAlignedLoad(
@@ -340,7 +342,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::BasicBlock* directBb = llvm::BasicBlock::Create(ctx, "mic.direct", fn);
     llvm::BasicBlock* slotBb = llvm::BasicBlock::Create(ctx, "mic.slot", fn);
     llvm::BasicBlock* joinBb = llvm::BasicBlock::Create(ctx, "mic.join", fn);
-    builder.CreateCondBr(isSlotForm, slotBb, directBb);
+    builder.CreateCondBr(isSlotForm, slotBb, directBb, unlikelyBranch);
 
     // 4a. Direct form: everything the call needs is in the entry.
     builder.SetInsertPoint(directBb);
@@ -365,7 +367,7 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
     llvm::BasicBlock* slotInlBb = llvm::BasicBlock::Create(ctx, "mic.slot.inl", fn);
     llvm::BasicBlock* slotOvBb = llvm::BasicBlock::Create(ctx, "mic.slot.ov", fn);
     llvm::BasicBlock* slotLoadBb = llvm::BasicBlock::Create(ctx, "mic.slot.load", fn);
-    builder.CreateCondBr(isInline, slotInlBb, slotOvBb);
+    builder.CreateCondBr(isInline, slotInlBb, slotOvBb, likelyBranch);
 
     builder.SetInsertPoint(slotInlBb);
     llvm::Value* inlBase =
@@ -590,17 +592,17 @@ llvm::Value* emitMethodCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
             builder.CreateICmpEQ(codePtr, abi.bronze_string_char_code_at, "mic.is_cca");
         llvm::BasicBlock* nextBb =
             imulBb ? llvm::BasicBlock::Create(ctx, "mic.check_imul", fn) : normalCallBb;
-        builder.CreateCondBr(isCca, ccaBb, nextBb);
+        builder.CreateCondBr(isCca, ccaBb, nextBb, unlikelyBranch);
         if (imulBb) {
             builder.SetInsertPoint(nextBb);
             llvm::Value* isImul =
                 builder.CreateICmpEQ(codePtr, abi.bronze_math_imul, "mic.is_imul");
-            builder.CreateCondBr(isImul, imulBb, normalCallBb);
+            builder.CreateCondBr(isImul, imulBb, normalCallBb, unlikelyBranch);
         }
     } else if (imulBb) {
         llvm::Value* isImul =
             builder.CreateICmpEQ(codePtr, abi.bronze_math_imul, "mic.is_imul");
-        builder.CreateCondBr(isImul, imulBb, normalCallBb);
+        builder.CreateCondBr(isImul, imulBb, normalCallBb, unlikelyBranch);
     } else {
         builder.CreateBr(normalCallBb);
     }
