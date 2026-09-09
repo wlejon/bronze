@@ -283,8 +283,19 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             llvm::Value* obj = operand(inst, 0, "Undefined operand in ElemGetTyped instruction");
             llvm::Value* idx = operand(inst, 1, "Undefined operand in ElemGetTyped instruction");
             if (!obj || !idx) return false;
-            values_[inst.result] = emitTypedElemGet(builder_, shared_.abi, obj, idx,
-                                                    static_cast<uint32_t>(inst.immI32));
+            const auto kind = static_cast<uint32_t>(inst.immI32);
+            if (lastTypedElemGet_.ilBlock == currentILBlock_ &&
+                ((lastTypedElemGet_.objId == inst.operands[0] &&
+                  lastTypedElemGet_.idxId == inst.operands[1]) ||
+                 (lastTypedElemGet_.obj == obj && lastTypedElemGet_.idx == idx)) &&
+                lastTypedElemGet_.kind == kind && lastTypedElemGet_.res != nullptr) {
+                values_[inst.result] = lastTypedElemGet_.res;
+                return true;
+            }
+            llvm::Value* res = emitTypedElemGet(builder_, shared_.abi, obj, idx, kind);
+            values_[inst.result] = res;
+            lastTypedElemGet_ = {currentILBlock_, inst.operands[0], inst.operands[1],
+                                 obj, idx, kind, res};
             return true;
         }
         case il::Op::ElemSetTyped: {

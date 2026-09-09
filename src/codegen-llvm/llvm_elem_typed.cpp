@@ -232,40 +232,48 @@ bool isProvenNumberValue(llvm::Value* v, int depth) {
 
 namespace {
 
+struct IndexExtraction {
+    llvm::Value* idx32;
+    llvm::Value* isIntegral;
+};
+
+IndexExtraction extractIndex32(llvm::IRBuilder<>& builder, llvm::Value* idxDbl) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
+
+    if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(idxDbl)) {
+        double d = cfp->getValueAPF().convertToDouble();
+        if (d >= 0.0 && d <= 4294967295.0 && std::trunc(d) == d) {
+            return {builder.getInt32(static_cast<uint32_t>(d)), builder.getTrue()};
+        }
+    } else if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(idxDbl)) {
+        if (uitofp->getOperand(0)->getType()->isIntegerTy(32)) {
+            return {uitofp->getOperand(0), builder.getTrue()};
+        }
+    } else if (isProvenIntegralDouble(idxDbl)) {
+        llvm::Value* idx32 = builder.CreateIntrinsic(
+            llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
+        return {idx32, builder.getTrue()};
+    }
+
+    llvm::Value* idx32 = builder.CreateIntrinsic(
+        llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
+    llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
+    llvm::Value* isIntegral = builder.CreateFCmpOEQ(roundTrip, idxDbl);
+    return {idx32, isIntegral};
+}
+
 TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits,
                                     llvm::Value* idxDbl) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
-    llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::Value* idx32 = nullptr;
-    llvm::Value* isIntegral = nullptr;
-
-    if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(idxDbl)) {
-        double d = cfp->getValueAPF().convertToDouble();
-        if (d >= 0.0 && d <= 4294967295.0 && std::trunc(d) == d) {
-            idx32 = builder.getInt32(static_cast<uint32_t>(d));
-            isIntegral = builder.getTrue();
-        }
-    } else if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(idxDbl)) {
-        if (uitofp->getOperand(0)->getType()->isIntegerTy(32)) {
-            idx32 = uitofp->getOperand(0);
-            isIntegral = builder.getTrue();
-        }
-    } else if (isProvenIntegralDouble(idxDbl)) {
-        idx32 = builder.CreateIntrinsic(
-            llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
-        isIntegral = builder.getTrue();
-    }
-
-    if (!idx32) {
-        idx32 = builder.CreateIntrinsic(
-            llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
-        llvm::Value* roundTrip = builder.CreateUIToFP(idx32, dblTy);
-        isIntegral = builder.CreateFCmpOEQ(roundTrip, idxDbl);
-    }
+    IndexExtraction ie = extractIndex32(builder, idxDbl);
+    llvm::Value* idx32 = ie.idx32;
+    llvm::Value* isIntegral = ie.isIntegral;
 
     llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "tel.hdr");
@@ -280,47 +288,169 @@ TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* obj
     return {hdr, dataPtr, idx32, ok};
 }
 
-// The pin ceiling probe's element slot address (il::kElemKindPlainArrayF64,
-// BRONZE_UNSOUND_PINS): a plain dense array's element `idx`, computed with NO
-// guards — the receiver is ASSUMED an array, the index in-bounds, the slot a
-// number. This is the code pin-based compilation would emit after its checks
-// moved to the write paths; here nothing backs the assumption but the
-// fixture's checksum.
-llvm::Value* emitUnsoundArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* objBits,
-                                     llvm::Value* idxDbl) {
+llvm::Value* emitPlainArrayElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                   llvm::Value* objBits, llvm::Value* idxDbl) {
     llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+
+    IndexExtraction ie = extractIndex32(builder, idxDbl);
+    llvm::Value* idx32 = ie.idx32;
+    llvm::Value* isIntegral = ie.isIntegral;
+
+    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "pel.hdr");
+    llvm::Value* lenPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "pel.len");
+    tagArrayHeaderAccess(len, ctx);
+    llvm::Value* inBounds = builder.CreateICmpULT(idx32, len);
+
+    llvm::Value* ok = (isIntegral == builder.getTrue())
+                          ? inBounds
+                          : builder.CreateAnd(isIntegral, inBounds);
+
+    llvm::BasicBlock* readBb = llvm::BasicBlock::Create(ctx, "pel.read", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "pel.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "pel.done", fn);
+    llvm::BasicBlock* entryBb = builder.GetInsertBlock();
+
+    llvm::Value* nanVal = builder.CreateBitCast(
+        builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), dblTy, "pel.nan");
+
+    auto* condBr = builder.CreateCondBr(ok, readBb, doneBb);
+    condBr->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(readBb);
+    llvm::Value* elemsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "pel.elems");
+    tagArrayHeaderAccess(elemsVal, ctx);
+    llvm::Value* elemsAddr =
+        builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
+    llvm::Value* headPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
+    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "pel.head");
+    tagArrayHeaderAccess(head, ctx);
+    llvm::Value* actualIdx = builder.CreateAdd(idx32, head, "pel.actidx");
+    llvm::Value* slotIdx = builder.CreateAdd(
+        builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
+    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
+    auto* raw = builder.CreateAlignedLoad(i64Ty, slotPtr, llvm::Align(8), "pel.raw");
+    tagArrayElementsAccess(raw, ctx);
+
+    llvm::Value* isNum = builder.CreateICmpULE(
+        raw, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "pel.isnum");
+    llvm::Value* dblVal = builder.CreateBitCast(raw, dblTy, "pel.f64");
+    auto* numBr = builder.CreateCondBr(isNum, doneBb, slowBb);
+    numBr->setMetadata(llvm::LLVMContext::MD_prof,
+                       llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* isHole = builder.CreateICmpEQ(
+        raw, builder.getInt64(BRONZE_ABI_HOLE_BITS), "pel.ishole");
+    auto* unboxCall = builder.CreateCall(abi.bronze_unbox_f64, {raw}, "pel.tonum.val");
+    unboxCall->addFnAttr(llvm::Attribute::Cold);
+    llvm::Value* slowVal = builder.CreateSelect(isHole, nanVal, unboxCall);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* phi = builder.CreatePHI(dblTy, 3, "pel.res");
+    phi->addIncoming(nanVal, entryBb);
+    phi->addIncoming(dblVal, readBb);
+    phi->addIncoming(slowVal, slowBb);
+    return phi;
+}
+
+void emitPlainArrayElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                           llvm::Value* objBits, llvm::Value* idxDbl, llvm::Value* valDbl) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    llvm::Value* addr =
-        builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "pel.hdr");
-    llvm::Value* elemsPtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "pel.elems");
-    tagArrayHeaderAccess(elemsVal, ctx);
-    llvm::Value* elemsObj = builder.CreateIntToPtr(
-        builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK)), ptrTy);
+    IndexExtraction ie = extractIndex32(builder, idxDbl);
+    llvm::Value* idx32 = ie.idx32;
+    llvm::Value* isIntegral = ie.isIntegral;
+
+    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "pes.hdr");
+    llvm::Value* lenPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "pes.len");
+    tagArrayHeaderAccess(len, ctx);
+    llvm::Value* capPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET);
+    auto* cap = builder.CreateAlignedLoad(i32Ty, capPtr, llvm::Align(4), "pes.cap");
+    tagArrayHeaderAccess(cap, ctx);
     llvm::Value* headPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_HEAD_OFFSET);
-    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "pel.head");
+    auto* head = builder.CreateAlignedLoad(i32Ty, headPtr, llvm::Align(4), "pes.head");
     tagArrayHeaderAccess(head, ctx);
-    llvm::Value* idx32 = builder.CreateIntrinsic(
-        llvm::Intrinsic::fptoui_sat, {i32Ty, builder.getDoubleTy()}, {idxDbl}, nullptr,
-        "pel.idx");
-    // +1: the elements block's payload begins one i64 past its header.
+    llvm::Value* propsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+    auto* propsVal = builder.CreateAlignedLoad(i64Ty, propsPtr, llvm::Align(8), "pes.props");
+    tagArrayHeaderAccess(propsVal, ctx);
+
+    llvm::Value* propsTag = builder.CreateLShr(propsVal, BRONZE_ABI_VALUE_TAG_SHIFT);
+    llvm::Value* noProps =
+        builder.CreateICmpNE(propsTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
+    llvm::Value* actualIdx = builder.CreateAdd(idx32, head, "pes.actidx");
+    llvm::Value* inBounds = builder.CreateAnd(
+        builder.CreateICmpULT(idx32, len),
+        builder.CreateICmpULT(actualIdx, cap));
+    llvm::Value* ok = builder.CreateAnd(inBounds, noProps);
+    if (isIntegral != builder.getTrue()) {
+        ok = builder.CreateAnd(isIntegral, ok);
+    }
+
+    llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, "pes.store", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "pes.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "pes.done", fn);
+
+    auto* condBr = builder.CreateCondBr(ok, storeBb, slowBb);
+    condBr->setMetadata(llvm::LLVMContext::MD_prof,
+                        llvm::MDBuilder(ctx).createBranchWeights(1048576, 1));
+
+    builder.SetInsertPoint(storeBb);
+    llvm::Value* elemsPtr =
+        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+    auto* elemsVal = builder.CreateAlignedLoad(i64Ty, elemsPtr, llvm::Align(8), "pes.elems");
+    tagArrayHeaderAccess(elemsVal, ctx);
+    llvm::Value* elemsAddr =
+        builder.CreateAnd(elemsVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* elemsObj = builder.CreateIntToPtr(elemsAddr, ptrTy);
     llvm::Value* slotIdx = builder.CreateAdd(
-        builder.CreateZExt(builder.CreateAdd(idx32, head), i64Ty), builder.getInt64(1));
-    return builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx, "pel.slot");
+        builder.CreateZExt(actualIdx, i64Ty), builder.getInt64(1));
+    llvm::Value* slotPtr = builder.CreateInBoundsGEP(i64Ty, elemsObj, slotIdx);
+    llvm::Value* bits = emitBoxDouble(builder, valDbl);
+    auto* st = builder.CreateAlignedStore(bits, slotPtr, llvm::Align(8));
+    tagArrayElementsAccess(st, ctx);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* idxBoxed = emitBoxDouble(builder, idxDbl);
+    llvm::Value* valBoxed = emitBoxDouble(builder, valDbl);
+    auto* call = builder.CreateCall(abi.bronze_elem_set,
+                                    {objBits, idxBoxed, valBoxed, builder.getFalse()});
+    call->addFnAttr(llvm::Attribute::Cold);
+    builder.CreateBr(doneBb);
+
+    builder.SetInsertPoint(doneBb);
 }
 
 }  // namespace
 
 llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
                               llvm::Value* idxDbl, uint32_t elemKind) {
-    (void)abi;
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
@@ -330,11 +460,7 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
     if (elemKind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
-        llvm::Value* slotPtr = emitUnsoundArrayElemPtr(builder, objBits, idxDbl);
-        auto* raw = builder.CreateAlignedLoad(builder.getInt64Ty(), slotPtr, llvm::Align(8),
-                                              "pel.raw");
-        tagArrayElementsAccess(raw, ctx);
-        return builder.CreateBitCast(raw, dblTy, "pel.f64");
+        return emitPlainArrayElemGet(builder, abi, objBits, idxDbl);
     }
 
     TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
@@ -431,12 +557,7 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
 
     if (elemKind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
-        llvm::Value* slotPtr = emitUnsoundArrayElemPtr(builder, objBits, idxDbl);
-        // The canonicalizing select Box emits: a non-canonical NaN written
-        // raw would read back as a tagged pointer.
-        llvm::Value* bits = emitBoxDouble(builder, valDbl);
-        auto* st = builder.CreateAlignedStore(bits, slotPtr, llvm::Align(8));
-        tagArrayElementsAccess(st, ctx);
+        emitPlainArrayElemSet(builder, abi, objBits, idxDbl, valDbl);
         return;
     }
 

@@ -180,10 +180,17 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         // always-numeric compounds, and `+=` against a definitely numeric
         // RHS. The logical assigns are excluded — they may RETURN the read
         // raw — and take the ordinary path below.
-        if (const auto elemKind = typedElemAccessKind(*bin->lhs)) {
+        const types::Type recvType = inferredType(*idxAccess->object);
+        const bool isPinnedOrTyped = recvType.is(types::TypeKind::TypedArray) ||
+                                     recvType.arrayElementsPinned();
+        const bool isNumericRhs = definitelyNumericOperand(*bin->rhs, 8);
+        const bool allowPlain = isPinnedOrTyped || isNumericRhs;
+        if (const auto elemKind = typedElemAccessKind(*bin->lhs, allowPlain)) {
             const bool admissible =
-                bin->op == ast::BinaryOp::Assign ||
-                typedElemCompoundAdmissible(bin->op, *bin->rhs);
+                bin->op == ast::BinaryOp::Assign
+                    ? allowPlain
+                    : (isPinnedOrTyped || isNumericRhs) &&
+                      typedElemCompoundAdmissible(bin->op, *bin->rhs);
             if (admissible) return lowerTypedElemAssign(bin, *idxAccess, *elemKind, ilFn);
         }
         auto objVal = lowerExpr(*idxAccess->object, ilFn);

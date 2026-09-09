@@ -213,6 +213,7 @@ std::optional<il::Module> Lowerer::lower() {
         currentEnvValue_ = il::kNoValue;
         entryEnvValue_ = il::kNoValue;
         immutableEnvCache_.clear();
+        cachedTypedElemGet_.reset();
         currentThisValue_ = il::kNoValue;
         currentFunctionIsArrow_ = false;
         // `main` is the Script's own code, so it takes the Script's mode.
@@ -627,6 +628,7 @@ bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLeve
         functionEnvBase_ = 0;
         functionEnvScope_ = moduleEnvScope_;
         immutableEnvCache_.clear();
+        cachedTypedElemGet_.reset();
         // The module record, loaded the way every module function loads it.
         currentEnvValue_ =
             moduleEnvScope_ != SIZE_MAX ? emitModuleEnvGet(segFn) : il::kNoValue;
@@ -765,6 +767,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     jumpStack_.clear();
     scopeHasEnv_.clear();
     immutableEnvCache_.clear();
+    cachedTypedElemGet_.reset();
     functionVarNames_ = ast::getHoistedVarDeclarations(body);
 
     // Synthetic parameters lead: [__env?][__this?] then source params.

@@ -166,6 +166,14 @@ private:
     // Lowered immutable environment bindings for the current function, keyed by
     // ((uint64_t)depth << 32) | index. Hoisted to block 0 on first read and reused.
     std::unordered_map<uint64_t, Value> immutableEnvCache_;
+    struct CachedTypedElemGet {
+        size_t blockIdx;
+        il::ValueId objId;
+        il::ValueId idxId;
+        uint32_t elemKind;
+        Value val;
+    };
+    std::optional<CachedTypedElemGet> cachedTypedElemGet_;
     bool inUserFunction_ = false;
     // The record innermost right here, as a value usable in the block being
     // emitted into. `currentEnvValue_` itself outside a generator, where a
@@ -207,6 +215,7 @@ private:
     // puts `i` in a record because a handler may read it, and copying that
     // record every time round would be allocation no closure can observe.
     std::unordered_set<std::string> memoryNames_;
+    mutable std::unordered_set<std::string> assumedNumericIdents_;
     size_t functionEnvBase_ = 0;   // envScopes_ size on entry to this function
     size_t functionEnvScope_ = SIZE_MAX;  // this function's own scope, if it has one
     // The module scope. Its slot layout is decided before ANY body is lowered,
@@ -280,7 +289,7 @@ private:
     //
     // The element kind travels as the raw types::TypedArrayElem number.
     static bool typedElemSeamDisabled();  // BRONZE_NO_TYPED_ELEM, read once
-    std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e) const;
+    std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e, bool coercing = false) const;
     bool provenArrayOrTypedArray(const ast::Expr& e) const;
     bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
     bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;
@@ -603,7 +612,8 @@ private:
     // Answers whether a guard was emitted, for the same reason `emitPinGuard`
     // does: a store whose value the barrier just proved a Number may take the
     // array's RAW element form instead of the dynamic ladder.
-    bool emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn);
+    bool emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn,
+                                  bool pinned = true);
 
     // --- the PIN CENSUS (`--census`, src/runtime/pin_census.h, stage C1) -----
     //

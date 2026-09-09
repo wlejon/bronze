@@ -200,34 +200,39 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
     const SlotImmutability imm = envSlotImmutability(depth, index);
     const bool isImmutable =
         !lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent);
-    const bool isModuleImmutable =
-        inUserFunction_ && !ilFn.needsEnv &&
-        isImmutable && moduleEnvScope_ != SIZE_MAX &&
-        depth < envScopes_.size() && (envScopes_.size() - 1 - depth == moduleEnvScope_) &&
-        entryEnvValue_ != il::kNoValue;
-    if (isModuleImmutable) {
-        const uint64_t key = (static_cast<uint64_t>(depth) << 32) | index;
+    const size_t scopeIndex =
+        depth < envScopes_.size() ? (envScopes_.size() - 1 - depth) : SIZE_MAX;
+    const bool isOuterScope = scopeIndex < functionEnvBase_ && functionEnvBase_ > 0;
+    const bool isHoistableImmutable =
+        inUserFunction_ && !generator_ && isImmutable &&
+        isOuterScope && entryEnvValue_ != il::kNoValue;
+    const uint64_t key = (static_cast<uint64_t>(scopeIndex) << 32) | index;
+    if (isHoistableImmutable) {
         auto it = immutableEnvCache_.find(key);
         if (it != immutableEnvCache_.end()) {
             return it->second;
         }
     }
 
+    const uint32_t entryDepth = isHoistableImmutable
+        ? static_cast<uint32_t>((functionEnvBase_ - 1) - scopeIndex)
+        : depth;
+
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = lexical ? il::Op::EnvGetTdz : il::Op::EnvGet;
     inst.type = il::Type::Dynamic;
     inst.result = res;
-    inst.operands = {isModuleImmutable ? entryEnvValue_ : currentEnv(ilFn)};
-    inst.envDepth = isModuleImmutable ? 0 : depth;
+    inst.operands = {isHoistableImmutable ? entryEnvValue_ : currentEnv(ilFn)};
+    inst.envDepth = entryDepth;
     inst.envIndex = index;
     inst.envImmutable = isImmutable;
     if (lexical) {
         inst.keyIndex =
-            getKeyConstantIndex(envScopes_[envScopes_.size() - 1 - depth].slotNames[index]);
+            getKeyConstantIndex(envScopes_[scopeIndex].slotNames[index]);
     }
 
-    if (isModuleImmutable && currentBlockIdx_ != 0 && !ilFn.blocks.empty()) {
+    if (isHoistableImmutable && currentBlockIdx_ != 0 && !ilFn.blocks.empty()) {
         auto& b0 = ilFn.blocks[0];
         if (!b0.instructions.empty() && il::isTerminator(b0.instructions.back().op)) {
             b0.instructions.insert(b0.instructions.end() - 1, inst);
@@ -252,7 +257,7 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
     // marker is not a double.
     Value val{res, il::Type::Dynamic};
     if (envSlotIsF64(depth, index)) {
-        if (isModuleImmutable && currentBlockIdx_ != 0 && !ilFn.blocks.empty()) {
+        if (isHoistableImmutable && currentBlockIdx_ != 0 && !ilFn.blocks.empty()) {
             il::ValueId unboxRes = ilFn.valueCount++;
             il::Instruction unboxInst;
             unboxInst.op = il::Op::Unbox;
@@ -272,8 +277,7 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
         }
     }
 
-    if (isModuleImmutable) {
-        const uint64_t key = (static_cast<uint64_t>(depth) << 32) | index;
+    if (isHoistableImmutable) {
         immutableEnvCache_[key] = val;
     }
 

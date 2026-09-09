@@ -181,6 +181,9 @@ il::BlockId Lowerer::createBlock(il::Function& ilFn) {
 }
 
 void Lowerer::setCurrentBlock(size_t blockIdx) {
+    if (currentBlockIdx_ != blockIdx) {
+        cachedTypedElemGet_.reset();
+    }
     currentBlockIdx_ = blockIdx;
 }
 
@@ -189,6 +192,18 @@ void Lowerer::emitInst(il::Function& ilFn, const il::Instruction& inst) {
         ilFn.blocks.push_back(il::Block{.id = static_cast<il::BlockId>(currentBlockIdx_)});
     }
     ilFn.blocks[currentBlockIdx_].instructions.push_back(inst);
+
+    if (cachedTypedElemGet_.has_value()) {
+        const auto op = inst.op;
+        if (op == il::Op::ElemSetTyped || op == il::Op::ElemSet ||
+            op == il::Op::PropSet || op == il::Op::SuperSet ||
+            op == il::Op::Call || op == il::Op::DynamicCall ||
+            op == il::Op::MethodCall || op == il::Op::Construct ||
+            op == il::Op::EnvSet || op == il::Op::ModuleEnvSet ||
+            il::isTerminator(op) || il::canThrow(inst) || il::canCollect(inst)) {
+            cachedTypedElemGet_.reset();
+        }
+    }
 }
 
 bool Lowerer::currentBlockIsTerminated(const il::Function& ilFn) const {

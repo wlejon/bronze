@@ -375,8 +375,10 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     envScopes_[frameScope].envValue = frameEnv;
     currentEnvValue_ = frameEnv;
     const auto outerImmutableEnvCache = std::move(immutableEnvCache_);
+    const auto outerCachedTypedElemGet = cachedTypedElemGet_;
     const auto outerEntryEnvValue = entryEnvValue_;
     immutableEnvCache_.clear();
+    cachedTypedElemGet_.reset();
     entryEnvValue_ = frameEnv;
     // The receiver comes out of the frame, exactly as an arrow's does: the
     // generator function copied `__this` into the record before returning, and
@@ -446,6 +448,7 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     currentEnvValue_ = outerEnvValue;
     entryEnvValue_ = outerEntryEnvValue;
     immutableEnvCache_ = std::move(outerImmutableEnvCache);
+    cachedTypedElemGet_ = outerCachedTypedElemGet;
     currentHandler_ = outerHandler;
     scopeHasEnv_ = std::move(outerScopeHasEnv);
     cleanupStack_ = std::move(outerCleanupStack);

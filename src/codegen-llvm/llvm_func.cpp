@@ -598,6 +598,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         storeProof_ = StoreProof{};
         arrayStoreProof_ = ArrayStoreProof{};
     }
+    lastTypedElemGet_ = LastTypedElemGet{};
     lastEmittedBlock_ = static_cast<il::BlockId>(blockIndex);
 
     // A block parameter is a def like any other: the phi's value has to reach
@@ -615,6 +616,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         const uint32_t group = live_.arms.startAt(blockIndex, instIndex);
         if (group != RunArmPlan::kNoGroup) {
             if (!emitRunArmGroup(live_.arms.groups[group])) return false;
+            lastTypedElemGet_ = LastTypedElemGet{};
             instIndex = live_.arms.groups[group].last;
             continue;
         }
@@ -656,6 +658,12 @@ bool FunctionEmitter::emitInstructionAt(size_t blockIndex, size_t instIndex, boo
         recvProof_ = ReceiverProof{};
         storeProof_ = StoreProof{};
         arrayStoreProof_ = ArrayStoreProof{};
+    }
+    if (inst.op == il::Op::ElemSetTyped || inst.op == il::Op::ElemSet ||
+        inst.op == il::Op::PropSet || inst.op == il::Op::SuperSet ||
+        inst.op == il::Op::PrivateSet || inst.op == il::Op::EnvSet ||
+        inst.op == il::Op::ModuleEnvSet || il::canCollect(inst)) {
+        lastTypedElemGet_ = LastTypedElemGet{};
     }
 
     if (inst.result != il::kNoValue && inst.result < func_.valueCount && values_[inst.result]) {

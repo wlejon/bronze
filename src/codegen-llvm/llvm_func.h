@@ -274,6 +274,16 @@ private:
     ReceiverProof recvProof_;
     StoreProof storeProof_;
     ArrayStoreProof arrayStoreProof_;
+    struct LastTypedElemGet {
+        size_t ilBlock = SIZE_MAX;
+        il::ValueId objId = il::kNoValue;
+        il::ValueId idxId = il::kNoValue;
+        llvm::Value* obj = nullptr;
+        llvm::Value* idx = nullptr;
+        uint32_t kind = 0;
+        llvm::Value* res = nullptr;
+    };
+    LastTypedElemGet lastTypedElemGet_;
     // The IL block whose emission just finished, so `emitBlock` can tell a real
     // chain edge from a plan that merely hoped for one. `kNoBlock` before the
     // first block of a function, which is what makes that block open its own

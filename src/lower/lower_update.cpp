@@ -193,7 +193,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
     // elem.get.typed already computes — its element is always a Number and
     // its `undefined` is answered as NaN — and the postfix yield is that
     // numeric, so no observable difference survives even out of bounds.
-    if (const auto elemKind = typedElemAccessKind(idxAccess)) {
+    if (const auto elemKind = typedElemAccessKind(idxAccess, true)) {
         auto objVal = lowerExpr(*idxAccess.object, ilFn);
         if (!objVal) return std::nullopt;
         Value objBoxed = boxValueIfNeeded(*objVal, ilFn);
@@ -213,8 +213,8 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
 
         Value numOld{cur, il::Type::F64};
         Value newVal = emitUpdateStep(numOld, op, ilFn);
-        recordElementOp(idxAccess.span.file, true, "");
-        emitPinnedElementBarrier(*elemKind, newVal, ilFn);
+        const types::Type recv = inferredType(*idxAccess.object);
+        emitPinnedElementBarrier(*elemKind, newVal, ilFn, recv.arrayElementsPinned());
         emitTypedElemSet(objBoxed, idxF64, newVal, *elemKind, ilFn);
         return isPrefix(op) ? newVal : numOld;
     }

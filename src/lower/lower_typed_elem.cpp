@@ -129,6 +129,77 @@ private:
     const std::string& target_;
 };
 
+class AssignedNumericFinder final : public ast::detail::IdentVisitor {
+public:
+    AssignedNumericFinder(const std::string& target,
+                          std::function<bool(const ast::Expr&)> isNumeric)
+        : target_(target), isNumeric_(std::move(isNumeric)) {}
+
+    bool valid = true;
+
+    void visit(const ast::Binary& b) override {
+        if (!valid) return;
+        if (ast::isAssignOp(b.op)) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(b.lhs.get())) {
+                if (id->name == target_) {
+                    if (b.op == ast::BinaryOp::Assign || b.op == ast::BinaryOp::PlusAssign ||
+                        alwaysCoercingCompound(b.op)) {
+                        if (!isNumeric_(*b.rhs)) {
+                            valid = false;
+                            return;
+                        }
+                    } else {
+                        valid = false;
+                        return;
+                    }
+                }
+            }
+        }
+        ast::detail::IdentVisitor::visit(b);
+    }
+
+    void visit(const ast::DestructuringAssign& d) override {
+        if (!valid) return;
+        for (const auto& n : ast::patternBoundNames(*d.pattern)) {
+            if (n == target_) {
+                valid = false;
+                return;
+            }
+        }
+        ast::detail::IdentVisitor::visit(d);
+    }
+
+    void visit(const ast::ForInStmt& f) override {
+        if (!valid) return;
+        if (f.pattern) {
+            for (const auto& n : ast::patternBoundNames(*f.pattern)) {
+                if (n == target_) {
+                    valid = false;
+                    return;
+                }
+            }
+        }
+        ast::detail::IdentVisitor::visit(f);
+    }
+
+    void visit(const ast::ForOfStmt& f) override {
+        if (!valid) return;
+        if (f.pattern) {
+            for (const auto& n : ast::patternBoundNames(*f.pattern)) {
+                if (n == target_) {
+                    valid = false;
+                    return;
+                }
+            }
+        }
+        ast::detail::IdentVisitor::visit(f);
+    }
+
+private:
+    const std::string& target_;
+    std::function<bool(const ast::Expr&)> isNumeric_;
+};
+
 }  // namespace
 
 bool Lowerer::typedElemSeamDisabled() {
@@ -142,25 +213,22 @@ bool Lowerer::provenArrayOrTypedArray(const ast::Expr& e) const {
     return recv.is(types::TypeKind::TypedArray) || recv.is(types::TypeKind::Array);
 }
 
-std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e) const {
+std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e, bool coercing) const {
     if (typedElemDisabled_ || inference_ == nullptr) return std::nullopt;
     const auto* ia = dynamic_cast<const ast::IndexAccess*>(&e);
     // An optional link (`a?.[i]`) short-circuits on nullish and never reads,
     // which is control flow this op does not model.
     if (ia == nullptr || ia->optional) return std::nullopt;
     const types::Type recv = inferredType(*ia->object);
-    // A PINNED dense array (`--pins ... numeric-elements`, types/pins.h) takes
-    // the raw form: no tag test, no bounds check, no hole check. The receiver
-    // earned the mark at the pinned field read it came from and carried it
-    // here on its type, so a local holding `this.elements` qualifies and an
-    // array from anywhere else does not. `BRONZE_UNSOUND_PINS` is the
-    // degenerate mode the ceiling probe measured with and pins every Array
-    // receiver in the program. See il::kElemKindPlainArrayF64.
     if (recv.is(types::TypeKind::Array)) {
-        static const bool pinEverything = std::getenv("BRONZE_UNSOUND_PINS") != nullptr;
-        if (!recv.arrayElementsPinned() && !pinEverything) return std::nullopt;
         if (!provenNumber(*ia->index)) return std::nullopt;
-        return static_cast<uint32_t>(il::kElemKindPlainArrayF64);
+        if (recv.arrayElementsPinned()) {
+            return static_cast<uint32_t>(il::kElemKindPlainArrayF64);
+        }
+        if (coercing && !numericArithDisabled_) {
+            return static_cast<uint32_t>(il::kElemKindPlainArrayF64);
+        }
+        return std::nullopt;
     }
     if (!recv.is(types::TypeKind::TypedArray)) return std::nullopt;
     const uint32_t raw = recv.typedArrayElemRaw();
@@ -182,7 +250,7 @@ std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e) const {
 bool Lowerer::definitelyNumericOperand(const ast::Expr& e, int depth) const {
     if (depth <= 0) return false;
     if (provenNumber(e)) return true;
-    if (typedElemAccessKind(e)) return true;
+    if (typedElemAccessKind(e, true)) return true;
     if (const auto* bin = dynamic_cast<const ast::Binary*>(&e)) {
         if (alwaysCoercingBinary(bin->op)) {
             return definitelyNumericOperand(*bin->lhs, depth - 1) ||
@@ -199,17 +267,38 @@ bool Lowerer::definitelyNumericOperand(const ast::Expr& e, int depth) const {
         return false;
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&e)) {
+        if (assumedNumericIdents_.count(ident->name) != 0) return true;
         if (currentBodyStmts_ == nullptr) return false;
-        // One declaration, a const, in this function, initialiser itself
+        // One declaration, a const or let, in this function, initialiser itself
         // definitely numeric. Anything ambiguous — a second declaration
-        // anywhere in the subtree, a pattern, a `let` — proves nothing.
+        // anywhere in the subtree, a pattern, a var — proves nothing.
         DeclFinder finder(ident->name);
         for (const auto& s : *currentBodyStmts_) s->accept(finder);
-        if (finder.count != 1 || finder.decl == nullptr || !finder.decl->isConst ||
+        if (finder.count != 1 || finder.decl == nullptr || finder.decl->isVar ||
             finder.decl->init == nullptr) {
             return false;
         }
-        return definitelyNumericOperand(*finder.decl->init, depth - 1);
+        if (finder.decl->isConst) {
+            return definitelyNumericOperand(*finder.decl->init, depth - 1);
+        }
+        if (memoryNames_.count(ident->name) != 0) return false;
+        assumedNumericIdents_.insert(ident->name);
+        bool allNumeric = definitelyNumericOperand(*finder.decl->init, depth - 1);
+        if (allNumeric) {
+            AssignedNumericFinder assignFinder(
+                ident->name, [this, depth](const ast::Expr& expr) {
+                    return definitelyNumericOperand(expr, depth - 1);
+                });
+            for (const auto& s : *currentBodyStmts_) {
+                s->accept(assignFinder);
+                if (!assignFinder.valid) {
+                    allNumeric = false;
+                    break;
+                }
+            }
+        }
+        assumedNumericIdents_.erase(ident->name);
+        return allNumeric;
     }
     return false;
 }
@@ -225,14 +314,17 @@ bool Lowerer::typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs
 }
 
 bool Lowerer::binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const {
-    if (alwaysCoercingBinary(op) || alwaysCoercingCompound(op)) return true;
-    if (op == ast::BinaryOp::Add || op == ast::BinaryOp::PlusAssign) return definitelyNumericOperand(other, 8);
+    if (!numericArithDisabled_ && (alwaysCoercingBinary(op) || alwaysCoercingCompound(op))) return true;
+    if (alwaysCoercingBinary(op) || alwaysCoercingCompound(op) ||
+        op == ast::BinaryOp::Add || op == ast::BinaryOp::PlusAssign) {
+        return definitelyNumericOperand(other, 8);
+    }
     return false;
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerCoercingOperand(const ast::Expr& e,
                                                             il::Function& ilFn) {
-    if (const auto kind = typedElemAccessKind(e)) {
+    if (const auto kind = typedElemAccessKind(e, true)) {
         return lowerTypedElemRead(static_cast<const ast::IndexAccess&>(e), *kind, ilFn);
     }
     auto val = lowerExpr(e, ilFn);
@@ -280,6 +372,14 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemRead(const ast::IndexAccess
     // Proven number, so this unbox is exact — same licence lowerVarDecl uses.
     Value idxF64 = unboxValueIfNeeded(*idxVal, il::Type::F64, ilFn);
 
+    if (cachedTypedElemGet_.has_value() &&
+        cachedTypedElemGet_->blockIdx == currentBlockIdx_ &&
+        cachedTypedElemGet_->objId == objBoxed.id &&
+        cachedTypedElemGet_->idxId == idxF64.id &&
+        cachedTypedElemGet_->elemKind == elemKind) {
+        return cachedTypedElemGet_->val;
+    }
+
     recordElementOp(idx.span.file, true, "");
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
@@ -289,7 +389,10 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemRead(const ast::IndexAccess
     inst.operands = {objBoxed.id, idxF64.id};
     inst.immI32 = static_cast<int32_t>(elemKind);
     emitInst(ilFn, inst);
-    return Value{res, il::Type::F64};
+    Value val{res, il::Type::F64};
+    cachedTypedElemGet_ =
+        CachedTypedElemGet{currentBlockIdx_, objBoxed.id, idxF64.id, elemKind, val};
+    return val;
 }
 
 void Lowerer::emitTypedElemSet(Value objBoxed, Value idxF64, Value valF64, uint32_t elemKind,
@@ -356,8 +459,7 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
     // array's read has no such substitution to spend, which is why this needs
     // no proof about what the value is used for.
     std::optional<Value> rhsVal;
-    if (const auto rhsKind = typedElemAccessKind(*bin->rhs);
-        rhsKind && *rhsKind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
+    if (const auto rhsKind = typedElemAccessKind(*bin->rhs, true)) {
         rhsVal = lowerTypedElemRead(static_cast<const ast::IndexAccess&>(*bin->rhs),
                                     *rhsKind, ilFn);
     } else {
@@ -379,7 +481,8 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
     // (lower_pin.cpp). Before the branch below, because BOTH arms of it write
     // into the pinned array: the raw one converts a boolean, and the dynamic
     // one stores a boxed value a later PINNED READ will bitcast to a double.
-    const bool guarded = emitPinnedElementBarrier(elemKind, stored, ilFn);
+    const types::Type recv = inferredType(*idxAccess.object);
+    const bool guarded = emitPinnedElementBarrier(elemKind, stored, ilFn, recv.arrayElementsPinned());
     if (stored.type == il::Type::F64 || stored.type == il::Type::I32 ||
         stored.type == il::Type::Bool) {
         Value storedF64 = unboxValueIfNeeded(stored, il::Type::F64, ilFn);
@@ -588,13 +691,13 @@ bool Lowerer::typedElemBindingUsesCoerce(const std::string& name,
         [this](const ast::Expr& e) { return definitelyNumericOperand(e, 8); },
         [this](const ast::Expr& lhs) {
             if (const auto* ia = dynamic_cast<const ast::IndexAccess*>(&lhs)) {
-                return typedElemAccessKind(*ia).has_value();
+                return typedElemAccessKind(*ia, true).has_value();
             }
             return false;
         },
         [this](const ast::Binary& b) {
             const auto* ia = dynamic_cast<const ast::IndexAccess*>(b.lhs.get());
-            return ia != nullptr && typedElemAccessKind(*ia).has_value() &&
+            return ia != nullptr && typedElemAccessKind(*ia, true).has_value() &&
                    definitelyNumericOperand(*b.rhs, 8);
         }};
     CoercingUseScan scan(hooks, name, self);
