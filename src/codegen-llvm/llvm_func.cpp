@@ -599,6 +599,13 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         arrayStoreProof_ = ArrayStoreProof{};
         lastGuardedPropRecv_.clear();
     }
+    llvm::BasicBlock* bb = blocks_[blockIndex];
+    const bool isDirectSinglePred =
+        (lastEmittedLlvmBlock_ != nullptr && bb->getSinglePredecessor() == lastEmittedLlvmBlock_);
+    if (!isDirectSinglePred) {
+        lastGuardedMathRecv_ = nullptr;
+        cachedGlobalGets_.clear();
+    }
     lastTypedElemGet_ = LastTypedElemGet{};
     lastEmittedBlock_ = static_cast<il::BlockId>(blockIndex);
 
@@ -619,11 +626,14 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
             if (!emitRunArmGroup(live_.arms.groups[group])) return false;
             lastTypedElemGet_ = LastTypedElemGet{};
             lastGuardedPropRecv_.clear();
+            lastGuardedMathRecv_ = nullptr;
+            cachedGlobalGets_.clear();
             instIndex = live_.arms.groups[group].last;
             continue;
         }
         if (!emitInstructionAt(blockIndex, instIndex, /*forceReload=*/false)) return false;
     }
+    lastEmittedLlvmBlock_ = builder_.GetInsertBlock();
     return true;
 }
 
@@ -661,12 +671,16 @@ bool FunctionEmitter::emitInstructionAt(size_t blockIndex, size_t instIndex, boo
         storeProof_ = StoreProof{};
         arrayStoreProof_ = ArrayStoreProof{};
         lastGuardedPropRecv_.clear();
+        lastGuardedMathRecv_ = nullptr;
+        cachedGlobalGets_.clear();
     }
     if (inst.op == il::Op::ElemSetTyped || inst.op == il::Op::ElemSet ||
         inst.op == il::Op::PropSet || inst.op == il::Op::SuperSet ||
         inst.op == il::Op::PrivateSet || inst.op == il::Op::EnvSet ||
         inst.op == il::Op::ModuleEnvSet) {
         lastGuardedPropRecv_.clear();
+        lastGuardedMathRecv_ = nullptr;
+        cachedGlobalGets_.clear();
     }
     if (inst.op == il::Op::ElemSetTyped || inst.op == il::Op::ElemSet ||
         inst.op == il::Op::PropSet || inst.op == il::Op::SuperSet ||
@@ -697,6 +711,8 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
         case il::Op::Ret:
         case il::Op::Throw:
             lastGuardedPropRecv_.clear();
+            lastGuardedMathRecv_ = nullptr;
+            cachedGlobalGets_.clear();
             return emitTerminator(inst);
 
         case il::Op::Add:

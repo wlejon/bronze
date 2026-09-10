@@ -39,8 +39,11 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
 void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
                       llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind);
 
-// Proves whether a double SSA value is guaranteed to be an integral value in [0, 2^32-1].
-bool isProvenIntegralDouble(llvm::Value* v, int depth = 3);
+// Proves whether a double SSA value is guaranteed to be an integral value.
+bool isProvenIntegralDouble(llvm::Value* v, int depth = 6);
+
+// Proves whether a double SSA value is guaranteed to be non-negative (>= 0.0) and not NaN.
+bool isProvenNonNegativeDouble(llvm::Value* v, int depth = 6);
 
 // Unwraps a boxed double Value (from Op::Box or canonicalizeNumeric) back to its double SSA value.
 llvm::Value* unwrapBoxedDouble(llvm::Value* val);

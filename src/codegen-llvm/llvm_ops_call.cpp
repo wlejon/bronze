@@ -140,15 +140,13 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
                                             inst.keyIndex, inst.icIndex, argc, argv,
                                             inst.icFnRecv);
             };
+            const bool resultAsF64 = (inst.type == il::Type::F64);
             llvm::Value* res = emitMethodCallMathDirect(
                 builder_, abi, globals_, shared_.tables, *kind, thisVal,
-                inst.keyIndex, inst.icIndex, argc, args, missEmit);
+                inst.keyIndex, inst.icIndex, argc, args, missEmit,
+                &lastGuardedMathRecv_, resultAsF64);
             if (inst.result != il::kNoValue) {
-                if (inst.type == il::Type::F64) {
-                    values_[inst.result] = builder_.CreateBitCast(res, builder_.getDoubleTy());
-                } else {
-                    values_[inst.result] = res;
-                }
+                values_[inst.result] = res;
             }
             return true;
         }

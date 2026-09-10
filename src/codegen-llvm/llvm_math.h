@@ -45,6 +45,10 @@ llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                 llvm::Value* thisBits, uint32_t argc, llvm::Value* argvPtr,
                                 llvm::ArrayRef<llvm::Value*> args);
 
+// Computes the raw double result of a MathIntrinsic inline on validated number arguments.
+llvm::Value* emitMathComputeRaw(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                MathIntrinsic kind, llvm::ArrayRef<llvm::Value*> args);
+
 // Computes the result of a MathIntrinsic inline on validated number arguments.
 llvm::Value* emitMathCompute(llvm::IRBuilder<>& builder, const AbiFns& abi,
                              MathIntrinsic kind, llvm::ArrayRef<llvm::Value*> args);
@@ -58,6 +62,8 @@ llvm::Value* emitMethodCallMathDirect(
     const ModuleTables& tables, MathIntrinsic kind, llvm::Value* thisVal,
     uint32_t keyIndex, uint32_t icIndex, uint32_t argc,
     llvm::ArrayRef<llvm::Value*> args,
-    llvm::function_ref<llvm::Value*()> missEmit);
+    llvm::function_ref<llvm::Value*()> missEmit,
+    llvm::Value** lastGuardedMathRecv = nullptr,
+    bool resultAsF64 = false);
 
 }  // namespace bronze::codegen_llvm

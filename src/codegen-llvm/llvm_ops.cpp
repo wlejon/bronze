@@ -272,11 +272,15 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             return emitAccessOp(inst);
         case il::Op::GlobalGet:
             if (inst.result != il::kNoValue) {
-                // The helper's committed fast path — a cached, non-undefined
-                // cell — read inline off the published rooted table; the
-                // helper keeps every fill and every fallthrough.
-                values_[inst.result] =
-                    emitGlobalGetCached(builder_, abi, shared_.tables, inst.keyIndex);
+                auto it = cachedGlobalGets_.find(inst.keyIndex);
+                if (it != cachedGlobalGets_.end() && it->second != nullptr) {
+                    values_[inst.result] = it->second;
+                } else {
+                    llvm::Value* res =
+                        emitGlobalGetCached(builder_, abi, shared_.tables, inst.keyIndex);
+                    values_[inst.result] = res;
+                    cachedGlobalGets_[inst.keyIndex] = res;
+                }
             }
             return true;
         // The result is READ: the helper answers with the global object's own

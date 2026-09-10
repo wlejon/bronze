@@ -974,10 +974,10 @@ TEST_CASE("a direct-call callee in another bin is kept; an over-cap or uncalled 
     llvm::LLVMContext ctx;
     llvm::Module m("xpart_plan", ctx);
     // Sizes chosen so greedy largest-first into the least-loaded of three bins
-    // is forced: 3000 -> b0, 2002 -> b1, 100 -> b2, 80 -> b2, which puts
+    // is forced: 10000 -> b0, 10000 -> b1, 100 -> b2, 80 -> b2, which puts
     // `caller` apart from all three of its neighbours.
-    llvm::Function* big = sizedFn(m, "callee_over_cap", 3000);
-    llvm::Function* caller = sizedFn(m, "caller", 2000);
+    llvm::Function* big = sizedFn(m, "callee_over_cap", 10000);
+    llvm::Function* caller = sizedFn(m, "caller", 10000);
     llvm::Function* small = sizedFn(m, "callee_small", 100);
     sizedFn(m, "never_called", 80);
     directCall(caller, small);
@@ -995,7 +995,7 @@ TEST_CASE("a direct-call callee in another bin is kept; an over-cap or uncalled 
     }
     // The one edge the split would have broken.
     CHECK(keptHere(plan, home, "callee_small"));
-    // 3000 instructions is past the cap: carrying it would cost every bin that
+    // 10000 instructions is past the cap: carrying it would cost every bin that
     // calls it a body the site's own budget refuses to inline anyway.
     CHECK(!keptHere(plan, home, "callee_over_cap"));
     // Nothing in this bin names it, so there is nothing here to inline it into.

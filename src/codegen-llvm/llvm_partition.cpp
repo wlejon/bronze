@@ -175,7 +175,7 @@ unsigned crossPartitionInlineCap() {
         if (const char* env = std::getenv("BRONZE_XPART_INLINE_CAP")) {
             return static_cast<unsigned>(std::strtoul(env, nullptr, 10));
         }
-        return 2048u;
+        return 8192u;
     }();
     return cap;
 }

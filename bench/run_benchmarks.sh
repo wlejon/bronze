@@ -782,7 +782,7 @@ if do_prof:
         if not prof:
             continue
         tot = prof.get("total_helpers", 0)
-        helpers = ", ".join([f"{h['name']}: {h['count']}" for h in prof.get("top_helpers", [])]) or "None"
+        helpers = ", ".join([h.get("name", "") + ": " + str(h.get("count", 0)) for h in prof.get("top_helpers", [])]) or "None"
         top_miss = prof.get("top_miss") or "None"
         print(f"| `{name}` | {tot:,} | {helpers} | {top_miss} |")
 

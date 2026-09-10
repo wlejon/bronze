@@ -299,6 +299,9 @@ private:
     };
     LastTypedElemGet lastTypedElemGet_;
     GuardedPropReceiver lastGuardedPropRecv_{};
+    llvm::Value* lastGuardedMathRecv_ = nullptr;
+    std::unordered_map<uint32_t, llvm::Value*> cachedGlobalGets_;
+    llvm::BasicBlock* lastEmittedLlvmBlock_ = nullptr;
     // The IL block whose emission just finished, so `emitBlock` can tell a real
     // chain edge from a plan that merely hoped for one. `kNoBlock` before the
     // first block of a function, which is what makes that block open its own

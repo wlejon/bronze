@@ -46,6 +46,7 @@ llvm::Value* emitTypedArrayBasePtr(llvm::IRBuilder<>& builder, llvm::Value* hdr)
     llvm::Value* extPtrPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, bufHdr, BRONZE_ABI_BUF_EXTPTR_OFFSET);
     auto* extBits = builder.CreateAlignedLoad(i64Ty, extPtrPtr, llvm::Align(8), "ta.extbits");
+    extBits->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
     tagViewLengthAccess(extBits, ctx);
     llvm::Value* inlineBase = builder.CreateAdd(
         bufAddr, builder.getInt64(BRONZE_ABI_BUF_DATA_OFFSET), "ta.inlinebase");
@@ -104,6 +105,45 @@ struct TypedElemGuards {
     llvm::Value* ok;
 };
 
+bool isProvenNonNegativeI32(llvm::Value* v, int depth = 3) {
+    if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(v)) {
+        return ci->getSExtValue() >= 0;
+    }
+    if (llvm::isa<llvm::ZExtInst>(v)) return true;
+    if (depth <= 0) return false;
+    if (auto* bin = llvm::dyn_cast<llvm::BinaryOperator>(v)) {
+        if (bin->getOpcode() == llvm::Instruction::LShr) {
+            if (auto* shiftAmt = llvm::dyn_cast<llvm::ConstantInt>(bin->getOperand(1))) {
+                if (shiftAmt->getZExtValue() >= 1 && shiftAmt->getZExtValue() < 32) return true;
+            }
+            return isProvenNonNegativeI32(bin->getOperand(0), depth - 1);
+        }
+        if (bin->getOpcode() == llvm::Instruction::AShr) {
+            return isProvenNonNegativeI32(bin->getOperand(0), depth - 1);
+        }
+        if (bin->getOpcode() == llvm::Instruction::And) {
+            return isProvenNonNegativeI32(bin->getOperand(0), depth - 1) ||
+                   isProvenNonNegativeI32(bin->getOperand(1), depth - 1);
+        }
+        if (bin->getOpcode() == llvm::Instruction::Add ||
+            bin->getOpcode() == llvm::Instruction::Mul) {
+            return isProvenNonNegativeI32(bin->getOperand(0), depth - 1) &&
+                   isProvenNonNegativeI32(bin->getOperand(1), depth - 1);
+        }
+    }
+    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(v)) {
+        if (phi->getNumIncomingValues() > 0 && phi->getNumIncomingValues() <= 4) {
+            for (unsigned int i = 0; i < phi->getNumIncomingValues(); ++i) {
+                llvm::Value* inc = phi->getIncomingValue(i);
+                if (inc == phi) continue;
+                if (!isProvenNonNegativeI32(inc, depth - 1)) return false;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 bool isProvenIntegralDoubleHelper(llvm::Value* v, llvm::SmallPtrSetImpl<llvm::PHINode*>& visited,
                                   int depth) {
     if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(v)) {
@@ -112,6 +152,11 @@ bool isProvenIntegralDoubleHelper(llvm::Value* v, llvm::SmallPtrSetImpl<llvm::PH
     }
     if (auto* uitofp = llvm::dyn_cast<llvm::UIToFPInst>(v)) {
         return uitofp->getOperand(0)->getType()->isIntegerTy(32);
+    }
+    if (auto* sitofp = llvm::dyn_cast<llvm::SIToFPInst>(v)) {
+        if (sitofp->getOperand(0)->getType()->isIntegerTy(32)) {
+            return isProvenNonNegativeI32(sitofp->getOperand(0), depth);
+        }
     }
     if (depth <= 0) return false;
 
@@ -129,6 +174,10 @@ bool isProvenIntegralDoubleHelper(llvm::Value* v, llvm::SmallPtrSetImpl<llvm::PH
                     double res = l - r;
                     return res >= 0.0 && res <= 4294967295.0 && std::trunc(res) == res;
                 }
+            }
+            if (isProvenIntegralDoubleHelper(bin->getOperand(0), visited, depth - 1) &&
+                isProvenIntegralDoubleHelper(bin->getOperand(1), visited, depth - 1)) {
+                return true;
             }
         }
     }
@@ -161,7 +210,66 @@ bool isProvenIntegralDoubleHelper(llvm::Value* v, llvm::SmallPtrSetImpl<llvm::PH
     return false;
 }
 
+bool isProvenNonNegativeDoubleHelper(llvm::Value* v,
+                                     llvm::SmallPtrSetImpl<llvm::PHINode*>& visited,
+                                     int depth) {
+    if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(v)) {
+        return !cfp->isNegative() && !cfp->isNaN();
+    }
+    if (llvm::isa<llvm::UIToFPInst>(v)) return true;
+    if (auto* sitofp = llvm::dyn_cast<llvm::SIToFPInst>(v)) {
+        return isProvenNonNegativeI32(sitofp->getOperand(0));
+    }
+    if (depth <= 0) return false;
+    if (auto* bin = llvm::dyn_cast<llvm::BinaryOperator>(v)) {
+        if (bin->getOpcode() == llvm::Instruction::FAdd ||
+            bin->getOpcode() == llvm::Instruction::FMul) {
+            return isProvenNonNegativeDoubleHelper(bin->getOperand(0), visited, depth - 1) &&
+                   isProvenNonNegativeDoubleHelper(bin->getOperand(1), visited, depth - 1);
+        }
+        if (bin->getOpcode() == llvm::Instruction::FSub) {
+            if (auto* crhs = llvm::dyn_cast<llvm::ConstantFP>(bin->getOperand(1))) {
+                if (auto* clhs = llvm::dyn_cast<llvm::ConstantFP>(bin->getOperand(0))) {
+                    return clhs->getValueAPF().convertToDouble() >= crhs->getValueAPF().convertToDouble();
+                }
+            }
+        }
+    }
+    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(v)) {
+        if (visited.contains(phi)) {
+            return true;
+        }
+        if (phi->getNumIncomingValues() > 0 && phi->getNumIncomingValues() <= 4) {
+            visited.insert(phi);
+            bool allOk = true;
+            bool hasBaseCase = false;
+            for (unsigned int i = 0; i < phi->getNumIncomingValues(); ++i) {
+                llvm::Value* inc = phi->getIncomingValue(i);
+                if (inc == phi) continue;
+                if (auto* incPhi = llvm::dyn_cast<llvm::PHINode>(inc)) {
+                    if (visited.contains(incPhi)) {
+                        continue;
+                    }
+                }
+                if (!isProvenNonNegativeDoubleHelper(inc, visited, depth - 1)) {
+                    allOk = false;
+                    break;
+                }
+                hasBaseCase = true;
+            }
+            visited.erase(phi);
+            return allOk && hasBaseCase;
+        }
+    }
+    return false;
+}
+
 }  // namespace
+
+bool isProvenNonNegativeDouble(llvm::Value* v, int depth) {
+    llvm::SmallPtrSet<llvm::PHINode*, 8> visited;
+    return isProvenNonNegativeDoubleHelper(v, visited, depth);
+}
 
 bool isProvenIntegralDouble(llvm::Value* v, int depth) {
     llvm::SmallPtrSet<llvm::PHINode*, 8> visited;
@@ -251,10 +359,26 @@ IndexExtraction extractIndex32(llvm::IRBuilder<>& builder, llvm::Value* idxDbl) 
         if (uitofp->getOperand(0)->getType()->isIntegerTy(32)) {
             return {uitofp->getOperand(0), builder.getTrue()};
         }
+    } else if (auto* sitofp = llvm::dyn_cast<llvm::SIToFPInst>(idxDbl)) {
+        if (sitofp->getOperand(0)->getType()->isIntegerTy(32)) {
+            llvm::Value* op = sitofp->getOperand(0);
+            if (isProvenNonNegativeI32(op)) {
+                return {op, builder.getTrue()};
+            }
+            llvm::Value* nonNeg = builder.CreateICmpSGE(op, builder.getInt32(0));
+            return {op, nonNeg};
+        }
     } else if (isProvenIntegralDouble(idxDbl)) {
-        llvm::Value* idx32 = builder.CreateIntrinsic(
-            llvm::Intrinsic::fptoui_sat, {i32Ty, dblTy}, {idxDbl}, nullptr, "tel.idx");
-        return {idx32, builder.getTrue()};
+        if (isProvenNonNegativeDouble(idxDbl)) {
+            llvm::Value* idx32 = builder.CreateFPToUI(idxDbl, i32Ty, "tel.idx");
+            return {idx32, builder.getTrue()};
+        }
+        llvm::Value* nonNeg = builder.CreateFCmpOGE(
+            idxDbl, llvm::ConstantFP::get(dblTy, 0.0), "tel.nonneg");
+        llvm::Value* safeDbl = builder.CreateSelect(
+            nonNeg, idxDbl, llvm::ConstantFP::get(dblTy, 0.0));
+        llvm::Value* idx32 = builder.CreateFPToUI(safeDbl, i32Ty, "tel.idx");
+        return {idx32, nonNeg};
     }
 
     llvm::Value* idx32 = builder.CreateIntrinsic(
