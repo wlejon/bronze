@@ -521,11 +521,7 @@ bool isTerminator(Op op);
 // soundness line: a function goes on this list only if IEEE 754 defines its
 // result exactly, so backend intrinsic and runtime libm agree bit for bit.
 enum class MathUnaryFn : uint32_t {
-    Sqrt = 0,   // correctly rounded by IEEE 754 squareRoot
-    Abs = 1,    // a sign-bit clear
-    Floor = 2,  // roundToIntegralTowardNegative
-    Ceil = 3,   // roundToIntegralTowardPositive
-    Trunc = 4,  // roundToIntegralTowardZero
+    Sqrt = 0, Abs = 1, Floor = 2, Ceil = 3, Trunc = 4, Sin = 5, Cos = 6
 };
 
 using ValueId = uint32_t;

@@ -278,6 +278,8 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         else if (mathMem->property == "floor") mathFn = il::MathUnaryFn::Floor;
         else if (mathMem->property == "ceil") mathFn = il::MathUnaryFn::Ceil;
         else if (mathMem->property == "trunc") mathFn = il::MathUnaryFn::Trunc;
+        else if (mathMem->property == "sin") mathFn = il::MathUnaryFn::Sin;
+        else if (mathMem->property == "cos") mathFn = il::MathUnaryFn::Cos;
         // `definitelyNumericOperand`, not just `provenNumber`: the argument
         // this exists for is the FFT/N-body shape — a const chain built from
         // typed-element reads, which inference types dynamic but whose value,

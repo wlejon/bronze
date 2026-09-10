@@ -693,6 +693,8 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 case il::MathUnaryFn::Floor: id = llvm::Intrinsic::floor; break;
                 case il::MathUnaryFn::Ceil: id = llvm::Intrinsic::ceil; break;
                 case il::MathUnaryFn::Trunc: id = llvm::Intrinsic::trunc; break;
+                case il::MathUnaryFn::Sin: id = llvm::Intrinsic::sin; break;
+                case il::MathUnaryFn::Cos: id = llvm::Intrinsic::cos; break;
                 default: return require(false, "Unknown MathUnary function selector");
             }
             values_[inst.result] = builder_.CreateUnaryIntrinsic(id, x);
