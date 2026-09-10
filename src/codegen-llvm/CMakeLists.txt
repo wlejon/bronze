@@ -35,6 +35,7 @@ bronze_add_module(codegen_llvm
         llvm_func.cpp
         llvm_math.cpp
         llvm_string_method.cpp
+        llvm_array_method.cpp
         llvm_ops.cpp
         llvm_ops_box.cpp
         llvm_ops_access.cpp

@@ -36,14 +36,17 @@ enum class MathIntrinsic { Sqrt, Sin, Cos, Abs, Min, Max, Imul, Floor, Ceil, Rou
 std::optional<MathIntrinsic> mathIntrinsicFor(std::string_view keyStr, uint32_t argc);
 
 // Emits the guarded call: the fast arm computes inline, the slow arm is the
-// ordinary bronze_dynamic_call(callee, this, argc, argv). Returns the i64
-// (NaN-boxed) result. `args` are the site's argument values (1 or 2 of them,
-// matching the intrinsic); `argvPtr` is the already-filled root-frame argv
-// block the slow arm passes through.
+// fallback invoking `missEmit()`. Returns the i64 (NaN-boxed) or double result.
+// `args` are the site's argument values (1 or 2 of them, matching the intrinsic).
+// `lastGuardedMathFn` caches the callee guard across consecutive calls.
+// If `resultAsF64` is true, returns raw double instead of NaN-boxed i64.
 llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
                                 MathIntrinsic kind, llvm::Value* calleeBits,
-                                llvm::Value* thisBits, uint32_t argc, llvm::Value* argvPtr,
-                                llvm::ArrayRef<llvm::Value*> args);
+                                llvm::Value* thisBits, uint32_t argc,
+                                llvm::ArrayRef<llvm::Value*> args,
+                                llvm::function_ref<llvm::Value*()> missEmit,
+                                llvm::Value** lastGuardedMathFn = nullptr,
+                                bool resultAsF64 = false);
 
 // Computes the raw double result of a MathIntrinsic inline on validated number arguments.
 llvm::Value* emitMathComputeRaw(llvm::IRBuilder<>& builder, const AbiFns& abi,

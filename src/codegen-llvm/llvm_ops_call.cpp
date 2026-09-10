@@ -6,6 +6,7 @@
 #include <llvm/IR/Function.h>
 
 #include "abi/bronze_abi.h"
+#include "codegen-llvm/llvm_array_method.h"
 #include "codegen-llvm/llvm_call.h"
 #include "codegen-llvm/llvm_method_call.h"
 #include "codegen-llvm/llvm_construct.h"
@@ -36,9 +37,6 @@ bool FunctionEmitter::emitDynamicCall(const il::Instruction& inst) {
         operand(inst, 1, "Undefined callee or this in DynamicCall instruction");
     if (!callee || !thisVal) return false;
     uint32_t argc = static_cast<uint32_t>(inst.operands.size() - 2);
-    bool ok = false;
-    llvm::Value* argv = emitArgv(inst, 2, argc, ok);
-    if (!ok) return false;
 
     const uint32_t calleeKey = inst.operands[0] < propGetKey_.size()
                                     ? propGetKey_[inst.operands[0]]
@@ -51,12 +49,23 @@ bool FunctionEmitter::emitDynamicCall(const il::Instruction& inst) {
                 for (uint32_t a = 0; a < argc; ++a) {
                     args.push_back(values_[inst.operands[2 + a]]);
                 }
-                values_[inst.result] = emitMathDirectCall(builder_, abi, *kind, callee,
-                                                          thisVal, argc, argv, args);
+                auto missEmit = [&]() -> llvm::Value* {
+                    bool ok = false;
+                    llvm::Value* argv = emitArgv(inst, 2, argc, ok);
+                    return builder_.CreateCall(
+                        abi.bronze_dynamic_call, {callee, thisVal, builder_.getInt32(argc), argv});
+                };
+                const bool resultAsF64 = (inst.type == il::Type::F64);
+                values_[inst.result] = emitMathDirectCall(
+                    builder_, abi, *kind, callee, thisVal, argc, args, missEmit,
+                    &lastGuardedMathFn_, resultAsF64);
                 return true;
             }
         }
         if (shared_.module.keyConstants[calleeKey] == "push" && argc == 1) {
+            bool ok = false;
+            llvm::Value* argv = emitArgv(inst, 2, argc, ok);
+            if (!ok) return false;
             llvm::Value* argVal = values_[inst.operands[2]];
             llvm::Value* res = emitArrayPushDirectCall(
                 builder_, abi, callee, thisVal, argc, argv, argVal);
@@ -66,6 +75,10 @@ bool FunctionEmitter::emitDynamicCall(const il::Instruction& inst) {
             return true;
         }
     }
+
+    bool ok = false;
+    llvm::Value* argv = emitArgv(inst, 2, argc, ok);
+    if (!ok) return false;
 
     if (shared_.moduleHasNewTarget) {
         callWith(abi.bronze_dynamic_call,
@@ -147,6 +160,68 @@ bool FunctionEmitter::emitMethodCall(const il::Instruction& inst) {
                 &lastGuardedMathRecv_, resultAsF64);
             if (inst.result != il::kNoValue) {
                 values_[inst.result] = res;
+            }
+            return true;
+        }
+        if (keyStr == "push" && argc == 1) {
+            llvm::Value* arg0 = operand(inst, 1, "Undefined argument in push");
+            if (!arg0) return false;
+            auto missEmit = [&]() -> llvm::Value* {
+                bool ok = false;
+                llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+                return emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal,
+                                            inst.keyIndex, inst.icIndex, argc, argv,
+                                            inst.icFnRecv);
+            };
+            llvm::Value* res = emitMethodCallArrayPushDirect(
+                builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
+                inst.icIndex, arg0, missEmit);
+            if (inst.result != il::kNoValue) {
+                if (inst.type == il::Type::F64) {
+                    values_[inst.result] = builder_.CreateBitCast(res, builder_.getDoubleTy());
+                } else {
+                    values_[inst.result] = res;
+                }
+            }
+            return true;
+        }
+        if (keyStr == "pop" && argc == 0) {
+            auto missEmit = [&]() -> llvm::Value* {
+                bool ok = false;
+                llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+                return emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal,
+                                            inst.keyIndex, inst.icIndex, argc, argv,
+                                            inst.icFnRecv);
+            };
+            llvm::Value* res = emitMethodCallArrayPopDirect(
+                builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
+                inst.icIndex, missEmit);
+            if (inst.result != il::kNoValue) {
+                if (inst.type == il::Type::F64) {
+                    values_[inst.result] = builder_.CreateBitCast(res, builder_.getDoubleTy());
+                } else {
+                    values_[inst.result] = res;
+                }
+            }
+            return true;
+        }
+        if (keyStr == "shift" && argc == 0) {
+            auto missEmit = [&]() -> llvm::Value* {
+                bool ok = false;
+                llvm::Value* argv = emitArgv(inst, 1, argc, ok);
+                return emitMethodCallInline(builder_, abi, globals_, shared_.tables, thisVal,
+                                            inst.keyIndex, inst.icIndex, argc, argv,
+                                            inst.icFnRecv);
+            };
+            llvm::Value* res = emitMethodCallArrayShiftDirect(
+                builder_, abi, globals_, shared_.tables, thisVal, inst.keyIndex,
+                inst.icIndex, missEmit);
+            if (inst.result != il::kNoValue) {
+                if (inst.type == il::Type::F64) {
+                    values_[inst.result] = builder_.CreateBitCast(res, builder_.getDoubleTy());
+                } else {
+                    values_[inst.result] = res;
+                }
             }
             return true;
         }

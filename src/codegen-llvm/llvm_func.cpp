@@ -604,6 +604,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         (lastEmittedLlvmBlock_ != nullptr && bb->getSinglePredecessor() == lastEmittedLlvmBlock_);
     if (!isDirectSinglePred) {
         lastGuardedMathRecv_ = nullptr;
+        lastGuardedMathFn_ = nullptr;
         cachedGlobalGets_.clear();
     }
     lastTypedElemGet_ = LastTypedElemGet{};
@@ -627,6 +628,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
             lastTypedElemGet_ = LastTypedElemGet{};
             lastGuardedPropRecv_.clear();
             lastGuardedMathRecv_ = nullptr;
+            lastGuardedMathFn_ = nullptr;
             cachedGlobalGets_.clear();
             instIndex = live_.arms.groups[group].last;
             continue;
@@ -672,6 +674,7 @@ bool FunctionEmitter::emitInstructionAt(size_t blockIndex, size_t instIndex, boo
         arrayStoreProof_ = ArrayStoreProof{};
         lastGuardedPropRecv_.clear();
         lastGuardedMathRecv_ = nullptr;
+        lastGuardedMathFn_ = nullptr;
         cachedGlobalGets_.clear();
     }
     if (inst.op == il::Op::ElemSetTyped || inst.op == il::Op::ElemSet ||
@@ -680,6 +683,7 @@ bool FunctionEmitter::emitInstructionAt(size_t blockIndex, size_t instIndex, boo
         inst.op == il::Op::ModuleEnvSet) {
         lastGuardedPropRecv_.clear();
         lastGuardedMathRecv_ = nullptr;
+        lastGuardedMathFn_ = nullptr;
         cachedGlobalGets_.clear();
     }
     if (inst.op == il::Op::ElemSetTyped || inst.op == il::Op::ElemSet ||
@@ -712,6 +716,7 @@ bool FunctionEmitter::emitInstruction(const il::Instruction& inst) {
         case il::Op::Throw:
             lastGuardedPropRecv_.clear();
             lastGuardedMathRecv_ = nullptr;
+            lastGuardedMathFn_ = nullptr;
             cachedGlobalGets_.clear();
             return emitTerminator(inst);
 

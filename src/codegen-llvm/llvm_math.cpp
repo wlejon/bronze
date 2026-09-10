@@ -113,83 +113,107 @@ llvm::Value* emitMathCompute(llvm::IRBuilder<>& builder, const AbiFns& abi,
         isNan, builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), rBits, "math.fastval");
 }
 
-llvm::Value* emitMathDirectCall(llvm::IRBuilder<>& builder, const AbiFns& abi,
-                                MathIntrinsic kind, llvm::Value* calleeBits,
-                                llvm::Value* thisBits, uint32_t argc, llvm::Value* argvPtr,
-                                llvm::ArrayRef<llvm::Value*> args) {
+llvm::Value* emitMathDirectCall(
+    llvm::IRBuilder<>& builder, const AbiFns& abi,
+    MathIntrinsic kind, llvm::Value* calleeBits,
+    llvm::Value* thisBits, uint32_t argc,
+    llvm::ArrayRef<llvm::Value*> args,
+    llvm::function_ref<llvm::Value*()> missEmit,
+    llvm::Value** lastGuardedMathFn,
+    bool resultAsF64) {
+    (void)thisBits;
+    (void)argc;
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
     llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
     llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
 
-    llvm::Function* expectedCode = mathExpectedCode(abi, kind);
-
-    llvm::BasicBlock* flagsBb = llvm::BasicBlock::Create(ctx, "math.flags", fn);
-    llvm::BasicBlock* codeBb = llvm::BasicBlock::Create(ctx, "math.code", fn);
     llvm::BasicBlock* argsBb = llvm::BasicBlock::Create(ctx, "math.args", fn);
-    llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, "math.fast", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "math.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "math.done", fn);
 
-    // 1. The callee is a function object...
-    llvm::Value* tag = builder.CreateLShr(calleeBits, BRONZE_ABI_VALUE_TAG_SHIFT);
-    llvm::Value* isObj =
-        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "math.isobj");
-    auto* brObj = builder.CreateCondBr(isObj, flagsBb, slowBb);
-    brObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+    if (lastGuardedMathFn != nullptr && *lastGuardedMathFn == calleeBits) {
+        builder.CreateBr(argsBb);
+    } else {
+        llvm::Function* expectedCode = mathExpectedCode(abi, kind);
+        llvm::BasicBlock* flagsBb = llvm::BasicBlock::Create(ctx, "math.flags", fn);
+        llvm::BasicBlock* codeBb = llvm::BasicBlock::Create(ctx, "math.code", fn);
 
-    builder.SetInsertPoint(flagsBb);
-    llvm::Value* addr =
-        builder.CreateAnd(calleeBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "math.hdr");
-    llvm::Value* flagsPtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
-    auto* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "math.kind");
-    markInvariant(flags, ctx);
-    llvm::Value* isFn =
-        builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION));
-    auto* brFn = builder.CreateCondBr(isFn, codeBb, slowBb);
-    brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+        // 1. The callee is a function object...
+        llvm::Value* tag = builder.CreateLShr(calleeBits, BRONZE_ABI_VALUE_TAG_SHIFT);
+        llvm::Value* isObj =
+            builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "math.isobj");
+        auto* brObj = builder.CreateCondBr(isObj, flagsBb, slowBb);
+        brObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
-    // 2. ...whose code pointer IS the intrinsic — the identity the collector
-    // can never move and an overwrite can never fake.
-    builder.SetInsertPoint(codeBb);
-    llvm::Value* codePtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_FN_CODE_OFFSET);
-    auto* code = builder.CreateAlignedLoad(ptrTy, codePtr, llvm::Align(8), "math.codeptr");
-    markInvariant(code, ctx);
-    llvm::Value* codeOk = builder.CreateICmpEQ(code, expectedCode, "math.codeok");
-    auto* brCode = builder.CreateCondBr(codeOk, argsBb, slowBb);
-    brCode->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+        builder.SetInsertPoint(flagsBb);
+        llvm::Value* addr =
+            builder.CreateAnd(calleeBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "math.hdr");
+        llvm::Value* flagsPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_FLAGS_OFFSET);
+        auto* flags = builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "math.kind");
+        markInvariant(flags, ctx);
+        llvm::Value* isFn =
+            builder.CreateICmpEQ(flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION));
+        auto* brFn = builder.CreateCondBr(isFn, codeBb, slowBb);
+        brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+        // 2. ...whose code pointer IS the intrinsic — the identity the collector
+        // can never move and an overwrite can never fake.
+        builder.SetInsertPoint(codeBb);
+        llvm::Value* codePtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_FN_CODE_OFFSET);
+        auto* code = builder.CreateAlignedLoad(ptrTy, codePtr, llvm::Align(8), "math.codeptr");
+        markInvariant(code, ctx);
+        llvm::Value* codeOk = builder.CreateICmpEQ(code, expectedCode, "math.codeok");
+        auto* brCode = builder.CreateCondBr(codeOk, argsBb, slowBb);
+        brCode->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+    }
 
     // 3. ...called with numbers, so the helper's ToNumber ladder (which can
     // run user code) has nothing to do.
     builder.SetInsertPoint(argsBb);
     llvm::Value* argsOk = builder.getInt1(true);
     for (llvm::Value* arg : args) {
+        if (isProvenNumberValue(arg)) continue;
         llvm::Value* isNum = builder.CreateICmpULE(
             arg, builder.getInt64(BRONZE_ABI_NUMBER_MAX_BITS), "math.argnum");
         argsOk = builder.CreateAnd(argsOk, isNum);
     }
+    llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, "math.fast", fn);
     auto* brArgs = builder.CreateCondBr(argsOk, fastBb, slowBb);
     brArgs->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
 
     builder.SetInsertPoint(fastBb);
-    llvm::Value* fastVal = emitMathCompute(builder, abi, kind, args);
+    llvm::Value* fastVal = resultAsF64 ? emitMathComputeRaw(builder, abi, kind, args)
+                                       : emitMathCompute(builder, abi, kind, args);
+    if (lastGuardedMathFn != nullptr) {
+        *lastGuardedMathFn = calleeBits;
+    }
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(slowBb);
-    llvm::Value* slowVal = builder.CreateCall(
-        abi.bronze_dynamic_call, {calleeBits, thisBits, builder.getInt32(argc), argvPtr});
+    if (lastGuardedMathFn != nullptr) {
+        *lastGuardedMathFn = nullptr;
+    }
+    llvm::Value* slowVal = missEmit();
+    if (resultAsF64) {
+        slowVal = builder.CreateBitCast(slowVal, dblTy, "math.slow.f64");
+    }
+    llvm::BasicBlock* slowEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "math.result");
-    result->addIncoming(fastVal, fastBb);
-    result->addIncoming(slowVal, slowBb);
+    llvm::Type* resTy = resultAsF64 ? dblTy : i64Ty;
+    llvm::PHINode* result = builder.CreatePHI(resTy, 2, "math.result");
+    result->addIncoming(fastVal, fastEndBb);
+    result->addIncoming(slowVal, slowEndBb);
     return result;
 }
 

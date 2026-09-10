@@ -30,6 +30,24 @@ uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     return Value::fromDouble(lengthOf(self.get())).rawBits();
 }
 
+extern "C" uint64_t bronze_array_pop(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Value self(thisBits);
+    if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        ArrayHeader* arr = self.asObject<ArrayHeader>();
+        if (arr->properties.isUndefined()) {
+            if (arr->length == 0) return Value::fromUndefined().rawBits();
+            Value last = arr->getElem(arr->length - 1);
+            arr->elementsData()[arr->length - 1] = Value::fromHole();
+            arr->length -= 1;
+            if (arr->length == 0) {
+                arr->head_offset = 0;
+            }
+            return last.rawBits();
+        }
+    }
+    return arrayPop(env, thisBits, argc, argv);
+}
+
 uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (!requireArray(self, "pop")) return Value::fromUndefined().rawBits();
@@ -43,6 +61,25 @@ uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         arr->head_offset = 0;
     }
     return last.rawBits();
+}
+
+extern "C" uint64_t bronze_array_shift(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Value self(thisBits);
+    if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        ArrayHeader* arr = self.asObject<ArrayHeader>();
+        if (arr->properties.isUndefined()) {
+            if (arr->length == 0) return Value::fromUndefined().rawBits();
+            Value first = arr->getElem(0);
+            arr->elementsData()[0] = Value::fromHole();
+            arr->head_offset += 1;
+            arr->length -= 1;
+            if (arr->length == 0) {
+                arr->head_offset = 0;
+            }
+            return first.rawBits();
+        }
+    }
+    return arrayShift(env, thisBits, argc, argv);
 }
 
 uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {

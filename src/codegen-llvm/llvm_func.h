@@ -300,6 +300,7 @@ private:
     LastTypedElemGet lastTypedElemGet_;
     GuardedPropReceiver lastGuardedPropRecv_{};
     llvm::Value* lastGuardedMathRecv_ = nullptr;
+    llvm::Value* lastGuardedMathFn_ = nullptr;
     std::unordered_map<uint32_t, llvm::Value*> cachedGlobalGets_;
     llvm::BasicBlock* lastEmittedLlvmBlock_ = nullptr;
     // The IL block whose emission just finished, so `emitBlock` can tell a real

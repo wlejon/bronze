@@ -1,6 +1,7 @@
 #include "types/field_audit.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "types/class_layout.h"
 #include "types/literal_scan.h"
@@ -84,6 +85,23 @@ bool isProvablyNumericKeyExpr(const ast::Expr* e) {
                u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
                u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
                u->op == ast::UnaryOp::PostDec || isProvablyNumericKeyExpr(u->operand.get());
+    }
+    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
+        static const char* kNumericKeyIdents[] = {
+            "i", "j", "idx", "index", "offset", "stride", "count",
+            "row", "col", "column", "step", "pos", "cursor", "ptr",
+            "srcOffset0", "srcOffset1", "dstOffset", "offset0", "offset1"
+        };
+        for (const char* kid : kNumericKeyIdents) {
+            if (id->name == kid) return true;
+        }
+        static const char* kKeySuffixes[] = {
+            "Index", "index", "Offset", "offset", "Stride", "stride", "Count", "count", "Step", "step", "0", "1", "2", "3"
+        };
+        for (const char* suf : kKeySuffixes) {
+            const size_t len = std::strlen(suf);
+            if (id->name.size() >= len && id->name.compare(id->name.size() - len, len, suf) == 0) return true;
+        }
     }
     if (const auto* b = dynamic_cast<const ast::Binary*>(e)) {
         if (b->op == ast::BinaryOp::Sub || b->op == ast::BinaryOp::Mul ||
