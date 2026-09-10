@@ -648,8 +648,13 @@ uint64_t bronze_dynamic_add(uint64_t aBits, uint64_t bBits) {
     recordHelperCall("bronze_dynamic_add");
     Value aVal(aBits);
     Value bVal(bBits);
-    if (aVal.isNumber() && bVal.isNumber()) {
-        return Value::fromDouble(aVal.asNumber() + bVal.asNumber()).rawBits();
+    if ((aVal.isNumber() || aVal.isInt32()) && (bVal.isNumber() || bVal.isInt32())) {
+        double a = aVal.isNumber() ? aVal.asNumber() : static_cast<double>(static_cast<int32_t>(aVal.payload()));
+        double b = bVal.isNumber() ? bVal.asNumber() : static_cast<double>(static_cast<int32_t>(bVal.payload()));
+        return Value::fromDouble(a + b).rawBits();
+    }
+    if (aVal.isString() && bVal.isString()) {
+        return bronze_string_concat(aBits, bBits);
     }
     Rooted<Value> aRoot{aVal};
     Rooted<Value> bRoot{bVal};

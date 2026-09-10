@@ -379,6 +379,10 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.SetInsertPoint(transOverflowBb);
         llvm::BasicBlock* transOverflowCheckCapBb =
             llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow.checkcap", fn);
+        llvm::BasicBlock* transOverflowAllocBb =
+            llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow.alloc", fn);
+        llvm::BasicBlock* transOverflowDoAllocBb =
+            llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow.doalloc", fn);
         llvm::BasicBlock* transOverflowAccessBb =
             llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow.access", fn);
 
@@ -393,7 +397,60 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         llvm::Value* overflowTag = builder.CreateLShr(overflowVal, BRONZE_ABI_VALUE_TAG_SHIFT);
         llvm::Value* overflowIsObj =
             builder.CreateICmpEQ(overflowTag, builder.getInt64(BRONZE_ABI_TAG_OBJECT));
-        builder.CreateCondBr(builder.CreateAnd(isEnabled, overflowIsObj), transOverflowCheckCapBb, slowBb, likelyBranch);
+
+        llvm::BasicBlock* checkEnabledBb =
+            llvm::BasicBlock::Create(ctx, "ic.set.trans.overflow.checkenabled", fn);
+        builder.CreateCondBr(isEnabled, checkEnabledBb, slowBb, likelyBranch);
+
+        builder.SetInsertPoint(checkEnabledBb);
+        builder.CreateCondBr(overflowIsObj, transOverflowCheckCapBb, transOverflowAllocBb, likelyBranch);
+
+        builder.SetInsertPoint(transOverflowAllocBb);
+        // Initial overflow allocation: capacity = 16 slots.
+        // slotIdx is (transSlot32 - 3). For slots 4..19, slotIdx is 1..16 (< 17).
+        llvm::Value* allocSlotIdx = builder.CreateSub(transSlot32, builder.getInt32(3));
+        llvm::Value* fitsInitialCap =
+            builder.CreateICmpULT(allocSlotIdx, builder.getInt32(17), "trans.fits_init_cap");
+        llvm::Value* curAlloc = builder.CreateAlignedLoad(
+            i64Ty, globals.bronze_alloc_cursor, llvm::Align(8), "trans.alloc.cursor");
+        llvm::Value* limitAlloc = builder.CreateAlignedLoad(
+            i64Ty, globals.bronze_alloc_limit, llvm::Align(8), "trans.alloc.limit");
+        llvm::Value* headroom = builder.CreateSub(limitAlloc, curAlloc, "trans.alloc.headroom");
+        constexpr uint64_t kInitialOverflowBytes =
+            BRONZE_ABI_HDR_BYTES + 16 * sizeof(uint64_t);
+        llvm::Value* fitsHeadroom =
+            builder.CreateICmpUGE(headroom, builder.getInt64(kInitialOverflowBytes), "trans.fits_headroom");
+        llvm::Value* canAlloc = builder.CreateAnd(fitsInitialCap, fitsHeadroom, "trans.can_alloc");
+        builder.CreateCondBr(canAlloc, transOverflowDoAllocBb, slowBb, likelyBranch);
+
+        builder.SetInsertPoint(transOverflowDoAllocBb);
+        builder.CreateAlignedStore(
+            builder.CreateAdd(curAlloc, builder.getInt64(kInitialOverflowBytes)),
+            globals.bronze_alloc_cursor, llvm::Align(8));
+        llvm::Value* newBlockPtr = builder.CreateIntToPtr(curAlloc, ptrTy, "trans.newblock");
+        constexpr uint64_t kBlockHeaderWord =
+            static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT) |
+            (static_cast<uint64_t>(BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK) << 16) |
+            (kInitialOverflowBytes << 32);
+        builder.CreateAlignedStore(builder.getInt64(kBlockHeaderWord), newBlockPtr, llvm::Align(8));
+        for (uint32_t i = 0; i < 16; ++i) {
+            llvm::Value* p = builder.CreateConstInBoundsGEP1_32(
+                i8Ty, newBlockPtr, BRONZE_ABI_HDR_BYTES + i * 8);
+            builder.CreateAlignedStore(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), p, llvm::Align(8));
+        }
+        llvm::Value* newBlockVal = builder.CreateOr(
+            curAlloc,
+            builder.getInt64(static_cast<uint64_t>(BRONZE_ABI_TAG_OBJECT) << BRONZE_ABI_VALUE_TAG_SHIFT),
+            "trans.newblockval");
+        builder.CreateAlignedStore(newBlockVal, overflowPtr, llvm::Align(8));
+        llvm::Value* allocShapeSlotPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+        builder.CreateAlignedStore(cachedShape, allocShapeSlotPtr, llvm::Align(8));
+        llvm::Value* allocPropSlotPtr =
+            builder.CreateInBoundsGEP(i64Ty, newBlockPtr, allocSlotIdx);
+        auto* sTransAlloc = builder.CreateAlignedStore(storeBits, allocPropSlotPtr, llvm::Align(8));
+        tagObjectSlotAccess(sTransAlloc, ctx);
+        builder.CreateBr(doneBb);
 
         builder.SetInsertPoint(transOverflowCheckCapBb);
         llvm::Value* overflowAddr =

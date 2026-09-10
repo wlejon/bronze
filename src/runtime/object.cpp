@@ -167,6 +167,7 @@ ObjectHeader* ObjectHeader::ensureOverflow(Heap& heap, Rooted<Value>& self, uint
     // an object's (whose shape says which slots are doubles) — and a block that
     // read back as `HeapKind::Plain` would have its first SLOT read as a
     // `Shape*`. See HeapKind::SlotBlock.
+    static_assert(HeapKind::SlotBlock == BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK);
     block->flags = HeapKind::SlotBlock;
     obj = self.get().asObject<ObjectHeader>();
 

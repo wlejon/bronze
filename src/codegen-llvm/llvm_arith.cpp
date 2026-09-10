@@ -146,14 +146,20 @@ llvm::Value* isArithmeticPrimitive(llvm::IRBuilder<>& builder, llvm::Value* v) {
         builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_TRUE_BITS), "is.true");
     llvm::Value* isFalse =
         builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_FALSE_BITS), "is.false");
+    llvm::Value* tag =
+        builder.CreateLShr(v, builder.getInt64(BRONZE_ABI_VALUE_TAG_SHIFT), "is.tag");
+    llvm::Value* isInt32 =
+        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_INT32), "is.int32");
     return builder.CreateOr(
         isNum,
-        builder.CreateOr(builder.CreateOr(isNull, isUndef), builder.CreateOr(isTrue, isFalse)),
+        builder.CreateOr(
+            builder.CreateOr(isNull, isUndef),
+            builder.CreateOr(builder.CreateOr(isTrue, isFalse), isInt32)),
         "is.prim");
 }
 
-// Converts a primitive boxed value (number, null, undefined, boolean) to double inline.
-// Number -> bitcast double; null -> 0.0; undefined -> NaN; true -> 1.0; false -> 0.0.
+// Converts a primitive boxed value (number, null, undefined, boolean, int32) to double inline.
+// Number -> bitcast double; null -> 0.0; undefined -> NaN; true -> 1.0; false -> 0.0; int32 -> sitofp.
 llvm::Value* primitiveToDouble(llvm::IRBuilder<>& builder, llvm::Value* v) {
     llvm::Type* dblTy = builder.getDoubleTy();
     if (llvm::Value* unwrapped = unwrapBoxedDouble(v)) {
@@ -168,25 +174,34 @@ llvm::Value* primitiveToDouble(llvm::IRBuilder<>& builder, llvm::Value* v) {
         builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), "cvt.isundef");
     llvm::Value* isTrue =
         builder.CreateICmpEQ(v, builder.getInt64(BRONZE_ABI_TRUE_BITS), "cvt.istrue");
+    llvm::Value* tag =
+        builder.CreateLShr(v, builder.getInt64(BRONZE_ABI_VALUE_TAG_SHIFT), "cvt.tag");
+    llvm::Value* isInt32 =
+        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_INT32), "cvt.isint32");
 
     llvm::Value* numVal = builder.CreateBitCast(v, dblTy, "cvt.num");
     llvm::Value* nanVal =
         builder.CreateBitCast(builder.getInt64(BRONZE_ABI_CANONICAL_NAN_BITS), dblTy, "cvt.nan");
     llvm::Value* zeroVal = llvm::ConstantFP::get(dblTy, 0.0);
     llvm::Value* oneVal = llvm::ConstantFP::get(dblTy, 1.0);
+    llvm::Value* i32Val = builder.CreateTrunc(v, builder.getInt32Ty(), "cvt.i32");
+    llvm::Value* intDbl = builder.CreateSIToFP(i32Val, dblTy, "cvt.intdbl");
 
     llvm::Value* boolOrNull = builder.CreateSelect(isTrue, oneVal, zeroVal, "cvt.bool_or_null");
-    llvm::Value* nonNum = builder.CreateSelect(isUndef, nanVal, boolOrNull, "cvt.nonnum");
+    llvm::Value* nonNumOrInt = builder.CreateSelect(isUndef, nanVal, boolOrNull, "cvt.nonnum_or_int");
+    llvm::Value* nonNum = builder.CreateSelect(isInt32, intDbl, nonNumOrInt, "cvt.nonnum");
     return builder.CreateSelect(isNum, numVal, nonNum, "cvt.dbl");
 }
 
 // `a + b` over boxed operands: the number/number case — the loop-carried case
 // in every allocation-free numeric loop — is an fadd and the canonicalizing
 // re-box, mirroring the fast path at the top of bronze_dynamic_add; if both operands
-// are primitive non-strings (number, null, undefined, boolean), they are converted to
-// double inline and added; anything involving a string, an object or a symbol keeps
+// are primitive non-strings (number, null, undefined, boolean, int32), they are converted to
+// double inline and added; if both operands are strings, they concatenate directly via
+// bronze_string_concat without calling bronze_dynamic_add; anything else keeps
 // the helper, which owns ToPrimitive and the concat/TypeError ladder.
-llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, llvm::Value* lhs,
+llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper,
+                            llvm::Function* concatHelper, llvm::Value* lhs,
                             llvm::Value* rhs, FunctionEmitter* emitter = nullptr) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
@@ -195,6 +210,8 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
 
     llvm::BasicBlock* checkBb = llvm::BasicBlock::Create(ctx, "dadd.check", fn);
     llvm::BasicBlock* primBb = llvm::BasicBlock::Create(ctx, "dadd.prim", fn);
+    llvm::BasicBlock* checkStrBb = llvm::BasicBlock::Create(ctx, "dadd.checkstr", fn);
+    llvm::BasicBlock* strBb = llvm::BasicBlock::Create(ctx, "dadd.str", fn);
     llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "dadd.slow", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "dadd.done", fn);
 
@@ -212,7 +229,7 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
     llvm::Value* lPrim = isArithmeticPrimitive(builder, lhs);
     llvm::Value* rPrim = isArithmeticPrimitive(builder, rhs);
     llvm::Value* bothPrim = builder.CreateAnd(lPrim, rPrim, "dadd.bothprim");
-    builder.CreateCondBr(bothPrim, primBb, slowBb, likely);
+    builder.CreateCondBr(bothPrim, primBb, checkStrBb, likely);
 
     builder.SetInsertPoint(primBb);
     llvm::Value* lDbl = primitiveToDouble(builder, lhs);
@@ -222,14 +239,27 @@ llvm::Value* emitDynamicAdd(llvm::IRBuilder<>& builder, llvm::Function* helper, 
     llvm::BasicBlock* primEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
 
+    builder.SetInsertPoint(checkStrBb);
+    llvm::Value* lTag = builder.CreateLShr(lhs, builder.getInt64(BRONZE_ABI_VALUE_TAG_SHIFT), "dadd.ltag");
+    llvm::Value* rTag = builder.CreateLShr(rhs, builder.getInt64(BRONZE_ABI_VALUE_TAG_SHIFT), "dadd.rtag");
+    llvm::Value* lIsStr = builder.CreateICmpEQ(lTag, builder.getInt64(BRONZE_ABI_TAG_STRING), "dadd.lisstr");
+    llvm::Value* rIsStr = builder.CreateICmpEQ(rTag, builder.getInt64(BRONZE_ABI_TAG_STRING), "dadd.risstr");
+    llvm::Value* bothStr = builder.CreateAnd(lIsStr, rIsStr, "dadd.bothstr");
+    builder.CreateCondBr(bothStr, strBb, slowBb, likely);
+
+    builder.SetInsertPoint(strBb);
+    llvm::Value* strVal = builder.CreateCall(concatHelper, {lhs, rhs}, "dadd.strres");
+    builder.CreateBr(doneBb);
+
     builder.SetInsertPoint(slowBb);
     llvm::Value* slowVal = builder.CreateCall(helper, {lhs, rhs});
     builder.CreateBr(doneBb);
 
     builder.SetInsertPoint(doneBb);
-    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 3, "dadd.result");
+    llvm::PHINode* result = builder.CreatePHI(builder.getInt64Ty(), 4, "dadd.result");
     result->addIncoming(fastVal, fastEndBb);
     result->addIncoming(primVal, primEndBb);
+    result->addIncoming(strVal, strBb);
     result->addIncoming(slowVal, slowBb);
     if (emitter) emitter->rejoinGuardedPropRecv(fastEndBb, doneBb);
     return result;
@@ -702,7 +732,8 @@ bool FunctionEmitter::emitArithmetic(const il::Instruction& inst) {
         case il::Op::Add:
             if (inst.type == il::Type::Dynamic) {
                 values_[inst.result] =
-                    emitDynamicAdd(builder_, shared_.abi.bronze_dynamic_add, lhs, rhs, this);
+                    emitDynamicAdd(builder_, shared_.abi.bronze_dynamic_add,
+                                   shared_.abi.bronze_string_concat, lhs, rhs, this);
                 if (lastGuardedPropRecv_.live()) proofsCarried_ = true;
                 return true;
             }
