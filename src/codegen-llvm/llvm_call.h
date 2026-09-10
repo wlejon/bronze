@@ -40,6 +40,13 @@ llvm::Value* emitArrayPushDirectCall(llvm::IRBuilder<>& builder, const AbiFns& a
                                      uint32_t argc, llvm::Value* argvPtr,
                                      llvm::Value* argVal);
 
+// Emits an inlined SuperCall fast path:
+// Invokes `base->code(env, thisVal, argc, argv)` directly when `base` is a Function
+// and `argc >= base->arity`. Falls back to `bronze_super_call` on any guard miss.
+llvm::Value* emitSuperCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                 llvm::Value* base, llvm::Value* thisVal,
+                                 uint32_t argc, llvm::Value* argv);
+
 // The two conversions a TYPED CALLING CONVENTION needs at its boundaries, and
 // the reason they are inline rather than the ABI helpers they defer to.
 //

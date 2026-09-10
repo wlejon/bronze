@@ -400,4 +400,88 @@ llvm::Value* emitBoxF64Inline(llvm::IRBuilder<>& builder, llvm::Value* value) {
                                 "box.res");
 }
 
+llvm::Value* emitSuperCallInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
+                                 llvm::Value* base, llvm::Value* thisVal,
+                                 uint32_t argc, llvm::Value* argv) {
+    llvm::LLVMContext& ctx = builder.getContext();
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
+    llvm::Type* i16Ty = llvm::Type::getInt16Ty(ctx);
+    llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+    llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
+    llvm::MDNode* likelyBranch = llvm::MDBuilder(ctx).createBranchWeights(1048576, 1);
+
+    llvm::BasicBlock* fnBb = llvm::BasicBlock::Create(ctx, "scall.fn", fn);
+    llvm::BasicBlock* fastBb = llvm::BasicBlock::Create(ctx, "scall.fast", fn);
+    llvm::BasicBlock* slowBb = llvm::BasicBlock::Create(ctx, "scall.slow", fn);
+    llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "scall.done", fn);
+
+    // 1. Is base an object?
+    llvm::Value* tag = builder.CreateLShr(base, BRONZE_ABI_VALUE_TAG_SHIFT, "scall.tag");
+    llvm::Value* isObj =
+        builder.CreateICmpEQ(tag, builder.getInt64(BRONZE_ABI_TAG_OBJECT), "scall.isobj");
+    auto* brObj = builder.CreateCondBr(isObj, fnBb, slowBb);
+    brObj->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // 2. Is base a Function?
+    builder.SetInsertPoint(fnBb);
+    llvm::Value* baseAddr =
+        builder.CreateAnd(base, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    llvm::Value* fnPtr = builder.CreateIntToPtr(baseAddr, ptrTy, "scall.fnptr");
+    auto* flags = builder.CreateAlignedLoad(
+        i16Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_OBJ_FLAGS_OFFSET),
+        llvm::Align(2), "scall.flags");
+    markInvariant(flags, ctx);
+    llvm::Value* isFn = builder.CreateICmpEQ(
+        flags, builder.getInt16(BRONZE_ABI_OBJ_FLAGS_FUNCTION), "scall.isfn");
+    auto* brFn = builder.CreateCondBr(isFn, fastBb, slowBb);
+    brFn->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // 3. Arity check: if arity == 0 || arity <= argc
+    builder.SetInsertPoint(fastBb);
+    auto* arity = builder.CreateAlignedLoad(
+        i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ARITY_OFFSET),
+        llvm::Align(4), "scall.arity");
+    markInvariant(arity, ctx);
+    llvm::Value* arityZero = builder.CreateICmpEQ(arity, builder.getInt32(0));
+    llvm::Value* arityOk = builder.CreateICmpULE(arity, builder.getInt32(argc));
+    llvm::Value* directOk = builder.CreateOr(arityZero, arityOk, "scall.arityok");
+
+    llvm::BasicBlock* dispatchBb = llvm::BasicBlock::Create(ctx, "scall.dispatch", fn);
+    auto* brDir = builder.CreateCondBr(directOk, dispatchBb, slowBb);
+    brDir->setMetadata(llvm::LLVMContext::MD_prof, likelyBranch);
+
+    // 4. Dispatch: invoke code(env, thisVal, argc, argv)
+    builder.SetInsertPoint(dispatchBb);
+    auto* env = builder.CreateAlignedLoad(
+        i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
+        llvm::Align(8), "scall.env");
+    markInvariant(env, ctx);
+    auto* code = builder.CreateAlignedLoad(
+        ptrTy, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CODE_OFFSET),
+        llvm::Align(8), "scall.code");
+    markInvariant(code, ctx);
+    llvm::FunctionType* codeTy =
+        llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
+    llvm::Value* fastRes = builder.CreateCall(
+        codeTy, code, {env, thisVal, builder.getInt32(argc), argv}, "scall.fastres");
+    llvm::BasicBlock* fastEndBb = builder.GetInsertBlock();
+    builder.CreateBr(doneBb);
+
+    // 5. Slow path: bronze_super_call
+    builder.SetInsertPoint(slowBb);
+    llvm::Value* slowRes = builder.CreateCall(
+        abi.bronze_super_call, {base, thisVal, builder.getInt32(argc), argv}, "scall.slowres");
+    builder.CreateBr(doneBb);
+
+    // 6. Join
+    builder.SetInsertPoint(doneBb);
+    llvm::PHINode* result = builder.CreatePHI(i64Ty, 2, "scall.result");
+    result->addIncoming(fastRes, fastEndBb);
+    result->addIncoming(slowRes, slowBb);
+    return result;
+}
+
 }  // namespace bronze::codegen_llvm
+

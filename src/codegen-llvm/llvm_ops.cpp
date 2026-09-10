@@ -170,7 +170,7 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
                 // returns, the `[a, b, c]` a table row is — is bump-allocated
                 // inline (llvm_construct.h); its HOLE fill is `capacity`
                 // stores, which is why the size is bounded here.
-                if (inst.immI32 >= 0 && inst.immI32 <= 8) {
+                if (inst.immI32 >= 0 && inst.immI32 <= 32) {
                     values_[inst.result] = emitCreateArrayInline(
                         builder_, abi, globals_, static_cast<uint32_t>(inst.immI32));
                 } else {
@@ -506,8 +506,11 @@ bool FunctionEmitter::emitRuntimeOp(const il::Instruction& inst) {
             bool ok = false;
             llvm::Value* argv = emitArgv(inst, 2, argc, ok);
             if (!ok) return false;
-            callWith(abi.bronze_super_call,
-                     {base, thisVal, builder_.getInt32(argc), argv});
+            llvm::Value* res =
+                emitSuperCallInline(builder_, abi, base, thisVal, argc, argv);
+            if (inst.result != il::kNoValue) {
+                values_[inst.result] = res;
+            }
             return true;
         }
         case il::Op::SuperCallSpread: {
