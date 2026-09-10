@@ -222,7 +222,7 @@ llvm::Value* emitConcatEnd(llvm::IRBuilder<>& builder, llvm::Function* helper, l
     llvm::Value* curFlags =
         builder.CreateAlignedLoad(i16Ty, flagsPtr, llvm::Align(2), "cend.flags");
     llvm::Value* sealedFlags = builder.CreateAnd(
-        curFlags, builder.getInt16(~static_cast<uint16_t>(BRONZE_ABI_STRING_BUILDER_BIT)));
+        curFlags, builder.getInt16(static_cast<uint16_t>(~BRONZE_ABI_STRING_BUILDER_BIT)));
     builder.CreateAlignedStore(sealedFlags, flagsPtr, llvm::Align(2));
     llvm::BasicBlock* sealEndBb = builder.GetInsertBlock();
     builder.CreateBr(doneBb);
