@@ -26,13 +26,12 @@ add_executable(bronze_threaded_modules_host
     host.cpp
     ${_thr_bin}/mod_a.obj
     ${_thr_bin}/mod_b.obj)
-target_link_libraries(bronze_threaded_modules_host PRIVATE bronze::embed)
+find_package(Threads REQUIRED)
+target_link_libraries(bronze_threaded_modules_host PRIVATE bronze::embed /home/j/projects/brass/build/libbrass.a Threads::Threads ${CMAKE_DL_LIBS} m)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Same non-PIC objects, same -no-pie necessity as two_module.
-    target_link_options(bronze_threaded_modules_host PRIVATE -no-pie)
+    target_link_options(bronze_threaded_modules_host PRIVATE -no-pie -Wl,-z,muldefs)
 endif()
-find_package(Threads REQUIRED)
-target_link_libraries(bronze_threaded_modules_host PRIVATE Threads::Threads)
 if(MSVC)
     target_compile_options(bronze_threaded_modules_host PRIVATE /W4 /WX /permissive-)
 else()

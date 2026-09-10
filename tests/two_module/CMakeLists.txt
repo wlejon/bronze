@@ -37,12 +37,13 @@ add_executable(bronze_two_module_host
     host.cpp
     ${_two_bin}/mod_a.obj
     ${_two_bin}/mod_b.obj)
-target_link_libraries(bronze_two_module_host PRIVATE bronze::embed)
+find_package(Threads REQUIRED)
+target_link_libraries(bronze_two_module_host PRIVATE bronze::embed /home/j/projects/brass/build/libbrass.a Threads::Threads ${CMAKE_DL_LIBS} m)
 # bronze emits non-PIC objects (its own driver links executables -no-pie on
 # Linux, link.cpp); a distro-default PIE link of them dies in GNU ld with
 # "failed to set dynamic section sizes: bad value".
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(bronze_two_module_host PRIVATE -no-pie)
+    target_link_options(bronze_two_module_host PRIVATE -no-pie -Wl,-z,muldefs)
 endif()
 if(MSVC)
     target_compile_options(bronze_two_module_host PRIVATE /W4 /WX /permissive-)

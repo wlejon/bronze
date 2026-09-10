@@ -1,3 +1,4 @@
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
@@ -91,6 +92,83 @@ bool rtGlobalThisOwnLookup(const std::string& name, Value& out) {
     if (!obj->shape || !obj->shape->lookupProperty(pkey, slot)) return false;
     out = g_globalThisObject.asObject<ObjectHeader>()->getProp(rtHeap(), key);
     return true;
+}
+
+extern "C" uint64_t bronze_global_get_name(const char* name) {
+    if (!name || std::strcmp(name, "globalThis") == 0) {
+        return rtGlobalThisObject().rawBits();
+    }
+    Value host = Value::fromUndefined();
+    if (rtHostGlobalLookup(name, host)) {
+        return host.rawBits();
+    }
+    Value resolved = Value::fromUndefined();
+    if (rtResolveBuiltinGlobal(name, resolved)) {
+        return resolved.rawBits();
+    }
+    if (rtGlobalThisOwnLookup(name, resolved)) {
+        return resolved.rawBits();
+    }
+    return BRONZE_ABI_UNDEFINED_BITS;
+}
+
+extern "C" uint64_t bronze_create_function(bronze_fn_code code, uint32_t arity, uint32_t length,
+                                           uint32_t nameKey, uint32_t fnFlags, uint64_t envBits);
+extern "C" uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t argc,
+                                        const uint64_t* argvBits);
+
+extern "C" uint64_t bronze_create_func(bronze_fn_code code, int32_t param_count, uint64_t envBits) {
+    return bronze_create_function(code, param_count >= 0 ? static_cast<uint32_t>(param_count) : 0,
+                                  param_count >= 0 ? static_cast<uint32_t>(param_count) : 0,
+                                  BRONZE_ABI_FN_NAME_NONE, 0, envBits);
+}
+
+extern "C" uint64_t bronze_call_dynamic_0(uint64_t callee, uint64_t thisVal) {
+    return bronze_dynamic_call(callee, thisVal, 0, nullptr);
+}
+
+extern "C" uint64_t bronze_call_dynamic_1(uint64_t callee, uint64_t thisVal, uint64_t a0) {
+    uint64_t args[1] = {a0};
+    return bronze_dynamic_call(callee, thisVal, 1, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_2(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1) {
+    uint64_t args[2] = {a0, a1};
+    return bronze_dynamic_call(callee, thisVal, 2, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_3(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2) {
+    uint64_t args[3] = {a0, a1, a2};
+    return bronze_dynamic_call(callee, thisVal, 3, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_4(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    uint64_t args[4] = {a0, a1, a2, a3};
+    return bronze_dynamic_call(callee, thisVal, 4, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_5(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    uint64_t args[5] = {a0, a1, a2, a3, a4};
+    return bronze_dynamic_call(callee, thisVal, 5, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_6(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    uint64_t args[6] = {a0, a1, a2, a3, a4, a5};
+    return bronze_dynamic_call(callee, thisVal, 6, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_7(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
+    uint64_t args[7] = {a0, a1, a2, a3, a4, a5, a6};
+    return bronze_dynamic_call(callee, thisVal, 7, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_8(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7) {
+    uint64_t args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+    return bronze_dynamic_call(callee, thisVal, 8, args);
+}
+
+extern "C" uint64_t bronze_call_dynamic_n(uint64_t callee, uint64_t thisVal, uint32_t argc, const uint64_t* argv) {
+    return bronze_dynamic_call(callee, thisVal, argc, argv);
 }
 
 }  // namespace bronze::runtime

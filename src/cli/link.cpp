@@ -137,6 +137,39 @@ std::optional<std::filesystem::path> findRuntimeLib() {
     return s_cached;
 }
 
+std::optional<std::filesystem::path> findBrassLib() {
+    static std::optional<std::filesystem::path> s_cached;
+    static std::once_flag s_once;
+    std::call_once(s_once, [] {
+        if (auto fromEnv = envPath("BRASS_LIB")) {
+            s_cached = *fromEnv;
+            return;
+        }
+        if (auto fromEnv = envPath("BRONZE_BRASS_LIB")) {
+            s_cached = *fromEnv;
+            return;
+        }
+
+        std::vector<std::filesystem::path> candidates = {
+            "/home/j/projects/brass/build/libbrass.a",
+            "/home/j/projects/brass/build/Release/libbrass.a",
+            "/home/j/projects/brass/build/brass.lib",
+        };
+        const std::filesystem::path exeDir = getExecutableDir();
+        candidates.push_back(exeDir / "libbrass.a");
+        candidates.push_back(exeDir / "brass.lib");
+
+        for (const auto& cand : candidates) {
+            std::error_code ec;
+            if (std::filesystem::exists(cand, ec)) {
+                s_cached = std::filesystem::canonical(cand, ec);
+                return;
+            }
+        }
+    });
+    return s_cached;
+}
+
 std::optional<std::filesystem::path> findRuntimeCpp() {
     static std::optional<std::filesystem::path> s_cached;
     static std::once_flag s_once;
@@ -298,6 +331,7 @@ bool msvcLinkIsAvailable() {
 struct LinkerState {
     int workingIndex = -1;
     std::string libStr;
+    std::string brassLibStr;
     std::string runtimeLibStr;
     std::string runtimeWholeStr;
     std::string unixRuntimeLibs;
@@ -383,6 +417,7 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
     }
     auto rtLib = findRuntimeLib();
     auto rtCpp = findRuntimeCpp();
+    auto brassLib = findBrassLib();
 
     if (!rtLib && !rtCpp) {
         diags.error(Span{}, "Runtime library (libbronze_rt.a/bronze_rt.lib) or runtime source (rt.cpp) not found");
@@ -392,6 +427,9 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
     static LinkerState s_state;
     static std::once_flag s_stringsOnce;
     std::call_once(s_stringsOnce, [&] {
+        if (brassLib) {
+            s_state.brassLibStr = "\"" + brassLib->string() + "\"";
+        }
         if (rtLib) {
             s_state.libStr = rtLib->string();
             static const char* const kRuntimeLibs[][3] = {
@@ -434,79 +472,72 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
 
     auto makeCommand = [&](int index) -> std::string {
 #ifdef _WIN32
-        // /DEBUG /OPT:REF /OPT:ICF for the same reason the --emit-shared path
-        // carries them (the long comment there): the COFF objects carry a
-        // symbol per compiled JS function, /DEBUG copies those into a PDB
-        // beside the exe — which is what lets BRONZE_SAMPLE name a frame
-        // `hotPath` instead of `program.exe+0x1a4c` — and the two /OPT
-        // switches undo the fold defaults /DEBUG silently flips, so the
-        // binary stays byte-for-byte what it was without them.
         switch (index) {
             case 0:
-                return "lld-link /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+                return "lld-link /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
             case 1:
-                return "lld-link /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
+                return "lld-link /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /force:multiple /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/out:\"" + outputPath + "\" \"" + objPath + "\"";
             case 2:
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+                return "link.exe /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
             case 3:
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " /out:\"" + outputPath + "\" \"" + objPath + "\"";
+                return "link.exe /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /force:multiple /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/out:\"" + outputPath + "\" \"" + objPath + "\"";
             case 4:
-                return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
+                return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr + " /link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
             case 5:
-                return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " /link /include:main /Fe:\"" + outputPath + "\"";
+                return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr + " /link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
             case 6:
-                return "clang++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "clang++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 7:
-                return "g++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "g++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 8:
-                return "clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
+                return "clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /Fe:\"" + outputPath + "\"";
             case 9:
-                return "cl.exe /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" /Fe:\"" + outputPath + "\"";
+                return "cl.exe /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /Fe:\"" + outputPath + "\"";
             case 10:
-                return "clang++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "clang++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 11:
-                return "g++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "g++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             default:
                 return "";
         }
 #elif defined(__APPLE__)
         switch (index) {
             case 0:
-                return "clang++ -w \"" + objPath + "\" -Wl,-force_load,\"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
+                return "clang++ -w \"" + objPath + "\" -Wl,-force_load,\"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
             case 1:
-                return "clang++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
+                return "clang++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
             case 2:
-                return "clang++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -o \"" + outputPath + "\"";
+                return "clang++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
             case 3:
-                return "g++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
+                return "g++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
             case 4:
-                return "g++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -o \"" + outputPath + "\"";
+                return "g++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
             case 5:
-                return "clang++ -w -Wl,-all_load \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -o \"" + outputPath + "\"";
+                return "clang++ -w -Wl,-all_load \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
             default:
                 return "";
         }
 #else
         switch (index) {
             case 0:
-                return "clang++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "clang++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 1:
-                return "g++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "g++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 2:
-                return "clang++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "clang++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 3:
-                return "g++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "g++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 4:
-                return "clang++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "clang++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 5:
-                return "g++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" -pthread -ldl -lm -o \"" + outputPath + "\"";
+                return "g++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 6:
-                return "lld-link /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+                return "lld-link /nologo /subsystem:console /include:main /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
             case 7:
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /include:main /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr;
+                return "link.exe /nologo /subsystem:console /include:main /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
             default:
                 return "";
         }
@@ -554,89 +585,55 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
 
     static LinkerState s_state;
     static std::once_flag s_stringsOnce;
+    auto brassLib = findBrassLib();
     std::call_once(s_stringsOnce, [&] {
         s_state.libStr = sharedRt->string();
         // Where the loader has to find the runtime at run time, which on the
         // two rpath platforms is a link-time fact about the module.
         s_state.runtimeLibStr = sharedRt->parent_path().string();
+        if (brassLib) {
+            s_state.brassLibStr = "\"" + brassLib->string() + "\"";
+        }
     });
 
     auto makeCommand = [&](int index) -> std::string {
 #ifdef _WIN32
-        // The module needs two things from the C runtime that its own object
-        // cannot supply: `_fltused`, the tag MSVC's linker demands of anything
-        // that touches floating point, and the default DllMain that gives a DLL
-        // an entry point. msvcrt is the IMPORT library for the SHARED CRT, so
-        // asking for it adds no second C runtime to the process — that is the
-        // whole difference between msvcrt and libcmt. Module and runtime DLL
-        // bind the same ucrtbase/vcruntime, and nothing crosses between them
-        // anyway: the module's entire surface is the C ABI, u64 in and u64 out,
-        // which owns no CRT object.
-        //
-        // /DEFAULTLIB rather than naming `msvcrt.lib` as an input, and the
-        // difference is the whole of whether this works outside a developer
-        // prompt. An input file is a PATH the linker opens, searched only along
-        // %LIB% and /libpath; a defaultlib request goes through lld-link's own
-        // MSVC and Windows SDK detection, which needs no environment at all.
-        // That is also exactly how the STATIC path gets its env-independence —
-        // bronze_rt.lib's MSVC-compiled objects carry /DEFAULTLIB: directives
-        // in their .drectve sections, and lld-link resolves those the same way.
-        // A bronze-emitted object carries no directives, so the request has to
-        // be made on the command line; making it as an input file is what broke
-        // `--emit-shared` from a shell with an empty %LIB%.
-        // /DEBUG, and the two /OPT switches that undo what it changes.
-        //
-        // A module is a DLL full of anonymous machine code otherwise: a sampling
-        // profiler, a crash dump and a debugger can all name the MODULE a stack
-        // frame is in and nothing finer, because the compiled functions have
-        // internal linkage and are not exported. The COFF objects bronze emits
-        // DO carry a symbol per function, and /DEBUG is what asks the linker to
-        // copy those into a PDB beside the module — which is the whole of what
-        // `brobench/analysis/chunk4_native_bill.md` needed to attribute a frame
-        // to a JS function rather than to "app.dll+0x1a4c20".
-        //
-        // The two /OPT switches are not an optimisation request; they are what
-        // keeps the module BYTE-FOR-BYTE what it was. /DEBUG silently flips the
-        // defaults to /OPT:NOREF /OPT:NOICF, so without them a module built for
-        // measurement would not be the module that ships, and the measurement
-        // would be of something else.
-        //
-        // ELF and Mach-O need no equivalent: a .so and a .dylib carry a symbol
-        // table with local function symbols already, and perf and Instruments
-        // read it.
         switch (index) {
             case 0:
-                return "lld-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"";
+                return "lld-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /force:multiple /defaultlib:msvcrt /out:\"" +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
             case 1:
-                // MSVC's own linker has no such detection and does need %LIB%,
-                // which is why it is second — and it is identified before it is
-                // run, because `link` is not a name MSVC has to itself.
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"";
+                return "link.exe /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /force:multiple /defaultlib:msvcrt /out:\"" +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
             default:
                 return "";
         }
 #elif defined(__APPLE__)
         switch (index) {
             case 0:
-                return "clang++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr +
-                       "\" -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                return "clang++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
+                       "-Wl,-multiply_defined,suppress -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             case 1:
-                return "g++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr +
-                       "\" -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                return "g++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
+                       "-Wl,-multiply_defined,suppress -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             default:
                 return "";
         }
 #else
         switch (index) {
             case 0:
-                return "clang++ -shared \"" + objPath + "\" \"" + s_state.libStr +
-                       "\" -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                return "clang++ -shared \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
+                       "-Wl,-z,muldefs -Wl,-z,notext -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             case 1:
-                return "g++ -shared \"" + objPath + "\" \"" + s_state.libStr + "\" -Wl,-rpath,\"" +
-                       s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                return "g++ -shared \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
+                       "-Wl,-z,muldefs -Wl,-z,notext -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             default:
                 return "";
         }

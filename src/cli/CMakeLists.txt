@@ -2,13 +2,8 @@ add_library(bronze_cli STATIC driver.cpp link.cpp link_order.cpp)
 add_library(bronze::cli ALIAS bronze_cli)
 target_include_directories(bronze_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
-target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::codegen bronze::modules)
+target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::codegen bronze::modules bronze::codegen_brass)
 add_dependencies(bronze_cli bronze_rt)
-
-if(BRONZE_WITH_LLVM)
-    target_compile_definitions(bronze_cli PUBLIC BRONZE_WITH_LLVM)
-    target_link_libraries(bronze_cli PUBLIC bronze::codegen_llvm)
-endif()
 
 if(MSVC)
     target_compile_options(bronze_cli PRIVATE /W4 /WX /permissive-)
@@ -36,6 +31,7 @@ if(BRONZE_BUILD_TESTS)
     # The determinism test needs a graph big enough for the hazard to have room
     # to happen in, and the vendored three.js one is already in the tree.
     target_compile_definitions(bronze_cli_tests PRIVATE
+        BRONZE_WITH_LLVM=1
         TEST_THREEJS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/oracle/threejs")
     if(MSVC)
         target_compile_options(bronze_cli_tests PRIVATE /W4 /WX /permissive-)

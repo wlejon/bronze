@@ -100,6 +100,7 @@ add_subdirectory(src/modules)
 add_subdirectory(src/types)
 add_subdirectory(src/lower)
 add_subdirectory(src/codegen)
+add_subdirectory(src/codegen-brass)
 if(BRONZE_WITH_LLVM)
     add_subdirectory(src/codegen-llvm)
 endif()
@@ -118,7 +119,7 @@ if(BRONZE_IS_TOP_LEVEL)
     add_subdirectory(tools)
 endif()
 
-if(BRONZE_WITH_LLVM AND BRONZE_BUILD_TESTS)
+if(BRONZE_BUILD_TESTS)
     add_subdirectory(tests/oracle)
     # Compiles JS to objects and links two of them into one host, so it needs
     # both the backend and the test registration — the same pair as the oracle.

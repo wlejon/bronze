@@ -17,9 +17,7 @@
 #include "cli/link.h"
 #include "cli/link_order.h"
 #include "codegen/backend.h"
-#if BRONZE_WITH_LLVM
-#include "codegen-llvm/llvm_backend.h"
-#endif
+#include "codegen-brass/brass_backend.h"
 #include "il/il.h"
 #include "il/print.h"
 #include "lex/lexer.h"
@@ -73,7 +71,7 @@ private:
 };
 
 constexpr const char* kUsage =
-    "bronze — AOT compiler for JavaScript (native-first, LLVM backend)\n"
+    "bronze — AOT compiler for JavaScript (native-first, Brass backend)\n"
     "\n"
     "Usage:\n"
     "  bronze lex <file>                   Tokenize and print one token per line\n"
@@ -479,29 +477,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& importMapPath, bool assumeNoBigInt,
              const std::string& pinsPath, const std::string& censusOutPath,
              bool pinsAllowObserved) {
-#if !BRONZE_WITH_LLVM
-    (void)sourcePath;
-    (void)outputPath;
-    (void)infer;
-    (void)timings;
-    (void)emitObj;
-    (void)hostGlobalsPath;
-    (void)inferStats;
-    (void)statsOut;
-    (void)moduleRoots;
-    (void)entrySymbol;
-    (void)emitShared;
-    (void)retainFnSource;
-    (void)importMapPath;
-    (void)assumeNoBigInt;
-    (void)pinsPath;
-    (void)censusOutPath;
-    (void)pinsAllowObserved;
-    std::string msg = "error: bronze build requires LLVM backend (BRONZE_WITH_LLVM=ON)\n";
-    if (errOut) *errOut = msg;
-    else std::fputs(msg.c_str(), stderr);
-    return 1;
-#else
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -614,7 +589,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     // linking is the one step that belongs to the HOST's toolchain when the
     // object is destined for embedding.
     if (emitObj) {
-        LLVMBackend objBackend;
+        BrassBackend objBackend;
         if (!entrySymbol.empty()) objBackend.setEntrySymbol(entrySymbol);
         objBackend.setHostGlobals(hostGlobals);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
@@ -630,15 +605,10 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     // Everything else — an executable, and `--emit-shared`'s loadable module —
-    // is the same object emission followed by a different link. The only
-    // compile-time difference between the two is where the runtime will be:
-    // `setSharedRuntime` is what makes the object reach the runtime's data
-    // symbols through import slots (llvm_abi.h) and marks the three names a
-    // module publishes, and with it off this is byte for byte the object
-    // bronze has always emitted.
+    // is the same object emission followed by a different link.
     std::filesystem::path tempObj = uniqueTempObjPath(sourcePath);
 
-    LLVMBackend backend;
+    BrassBackend backend;
     if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(hostGlobals);
     backend.setSharedRuntime(emitShared);
@@ -692,7 +662,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     return 0;
-#endif
 }
 
 int runDriver(int argc, char** argv) {
