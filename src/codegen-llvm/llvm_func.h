@@ -16,6 +16,7 @@
 #include <llvm/IR/LLVMContext.h>
 
 #include "codegen-llvm/llvm_abi.h"
+#include "codegen-llvm/llvm_elem_typed.h"
 #include "codegen-llvm/llvm_frame.h"
 #include "codegen-llvm/llvm_recv_proof.h"
 #include "il/il.h"
@@ -228,6 +229,7 @@ private:
     // a register, and a register is only legal where the block that produced it
     // dominates the use — which the plan guarantees for the block it names, and
     // for no other.
+    std::vector<uint8_t> isIntegralNonNegative_;
     std::vector<uint32_t> regBlock_;
 
     const std::vector<uint32_t>& slotOf_;
@@ -298,6 +300,7 @@ private:
         llvm::Value* res = nullptr;
     };
     LastTypedElemGet lastTypedElemGet_;
+    TypedArrayCache lastTypedArrayCache_{};
     GuardedPropReceiver lastGuardedPropRecv_{};
     llvm::Value* lastGuardedMathRecv_ = nullptr;
     llvm::Value* lastGuardedMathFn_ = nullptr;

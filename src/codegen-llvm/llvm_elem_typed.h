@@ -25,6 +25,16 @@ llvm::Value* emitTypedArrayElemPtrFromBase(llvm::IRBuilder<>& builder, llvm::Val
 llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
                                    llvm::Value* idx32, uint32_t elemSize);
 
+struct TypedArrayCache {
+    il::ValueId objId = il::kNoValue;
+    llvm::Value* obj = nullptr;
+    llvm::Value* hdr = nullptr;
+    llvm::Value* dataPtr = nullptr;
+    llvm::Value* len = nullptr;
+};
+
+std::vector<uint8_t> planIntegralNonNegativeValues(const il::Function& func);
+
 // The PROVEN forms — elem.get.typed / elem.set.typed, receiver proved a
 // Float64Array (isF64) or Float32Array view by inference. No receiver
 // guards, no boxing, no fallback edge: the index is a double in SSA, the
@@ -35,9 +45,15 @@ llvm::Value* emitTypedArrayElemPtr(llvm::IRBuilder<>& builder, llvm::Value* hdr,
 // receiver. Neither can call anything, which is what keeps a loop of them
 // free of safepoints.
 llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
-                              llvm::Value* idxDbl, uint32_t elemKind);
+                              llvm::Value* idxDbl, uint32_t elemKind,
+                              TypedArrayCache* cache = nullptr,
+                              bool isKnownIntegralNonNegative = false,
+                              il::ValueId objId = il::kNoValue);
 void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
-                      llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind);
+                      llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind,
+                      TypedArrayCache* cache = nullptr,
+                      bool isKnownIntegralNonNegative = false,
+                      il::ValueId objId = il::kNoValue);
 
 // Proves whether a double SSA value is guaranteed to be an integral value.
 bool isProvenIntegralDouble(llvm::Value* v, int depth = 6);

@@ -34,6 +34,7 @@ llvm::Value* emitTypedArrayBasePtr(llvm::IRBuilder<>& builder, llvm::Value* hdr)
         builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_BUFFER_OFFSET);
     auto* bufVal = builder.CreateAlignedLoad(i64Ty, bufPtr, llvm::Align(8), "ta.buf");
     bufVal->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
+    tagViewLengthAccess(bufVal, ctx);
     llvm::Value* bufAddr =
         builder.CreateAnd(bufVal, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
     llvm::Value* bufHdr = builder.CreateIntToPtr(bufAddr, ptrTy);
@@ -42,6 +43,7 @@ llvm::Value* emitTypedArrayBasePtr(llvm::IRBuilder<>& builder, llvm::Value* hdr)
     auto* byteOff =
         builder.CreateAlignedLoad(i32Ty, byteOffPtr, llvm::Align(4), "ta.byteoff");
     byteOff->setMetadata(llvm::LLVMContext::MD_invariant_load, llvm::MDNode::get(ctx, {}));
+    tagViewLengthAccess(byteOff, ctx);
 
     llvm::Value* extPtrPtr =
         builder.CreateConstInBoundsGEP1_32(i8Ty, bufHdr, BRONZE_ABI_BUF_EXTPTR_OFFSET);
@@ -338,6 +340,182 @@ bool isProvenNumberValue(llvm::Value* v, int depth) {
     return false;
 }
 
+std::vector<uint8_t> planIntegralNonNegativeValues(const il::Function& func) {
+    std::vector<uint8_t> isNonNeg(func.valueCount, 0);
+    if (func.blocks.empty()) return isNonNeg;
+
+    struct Edge {
+        il::BlockId from;
+        const std::vector<il::ValueId>* args;
+    };
+    std::vector<std::vector<Edge>> preds(func.blocks.size());
+    for (size_t b = 0; b < func.blocks.size(); ++b) {
+        for (const auto& inst : func.blocks[b].instructions) {
+            if (inst.target.block != il::kNoBlock && inst.target.block < func.blocks.size()) {
+                preds[inst.target.block].push_back({static_cast<il::BlockId>(b), &inst.target.args});
+            }
+            if (inst.elseTarget.block != il::kNoBlock && inst.elseTarget.block < func.blocks.size()) {
+                preds[inst.elseTarget.block].push_back({static_cast<il::BlockId>(b), &inst.elseTarget.args});
+            }
+        }
+    }
+
+    std::vector<il::ValueId> aliasOf(func.valueCount, il::kNoValue);
+    for (size_t b = 0; b < func.blocks.size(); ++b) {
+        if (preds[b].size() == 1) {
+            const auto& edge = preds[b][0];
+            const auto& blk = func.blocks[b];
+            for (size_t p = 0; p < blk.params.size(); ++p) {
+                if (p < edge.args->size()) {
+                    il::ValueId pId = blk.params[p].id;
+                    if (pId < func.valueCount) {
+                        aliasOf[pId] = (*edge.args)[p];
+                    }
+                }
+            }
+        }
+    }
+    auto resolve = [&](il::ValueId v, auto& self) -> il::ValueId {
+        if (v < func.valueCount && aliasOf[v] != il::kNoValue) {
+            return self(aliasOf[v], self);
+        }
+        return v;
+    };
+
+    auto isNonNegativeConst = [](double d) {
+        return d >= 0.0 && d <= 4294967295.0 && std::trunc(d) == d;
+    };
+
+    auto propagate = [&]() -> bool {
+        bool changed = false;
+        for (size_t b = 0; b < func.blocks.size(); ++b) {
+            const auto& blk = func.blocks[b];
+            for (const auto& inst : blk.instructions) {
+                if (inst.result == il::kNoValue || inst.result >= func.valueCount || isNonNeg[inst.result]) continue;
+                bool ok = false;
+                switch (inst.op) {
+                    case il::Op::ConstF64:
+                        if (isNonNegativeConst(inst.immF64)) ok = true;
+                        break;
+                    case il::Op::ConstI32:
+                        if (inst.immI32 >= 0) ok = true;
+                        break;
+                    case il::Op::UShr:
+                        ok = true;
+                        break;
+                    case il::Op::Add:
+                    case il::Op::Mul:
+                        if (inst.operands.size() >= 2) {
+                            il::ValueId op0 = resolve(inst.operands[0], resolve);
+                            il::ValueId op1 = resolve(inst.operands[1], resolve);
+                            if (op0 < func.valueCount && isNonNeg[op0] &&
+                                op1 < func.valueCount && isNonNeg[op1]) {
+                                ok = true;
+                            }
+                        }
+                        break;
+                    case il::Op::BitAnd:
+                        if (inst.operands.size() >= 2) {
+                            il::ValueId op0 = resolve(inst.operands[0], resolve);
+                            il::ValueId op1 = resolve(inst.operands[1], resolve);
+                            if ((op0 < func.valueCount && isNonNeg[op0]) ||
+                                (op1 < func.valueCount && isNonNeg[op1])) {
+                                ok = true;
+                            }
+                        }
+                        break;
+                    case il::Op::ToInt32:
+                        if (!inst.operands.empty()) {
+                            il::ValueId op = resolve(inst.operands[0], resolve);
+                            if (op < func.valueCount && isNonNeg[op]) ok = true;
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                if (ok) {
+                    isNonNeg[inst.result] = 1;
+                    changed = true;
+                }
+            }
+            if (preds[b].size() == 1) {
+                for (const auto& p : blk.params) {
+                    if (p.id < func.valueCount && !isNonNeg[p.id]) {
+                        il::ValueId resVal = resolve(p.id, resolve);
+                        if (resVal < func.valueCount && isNonNeg[resVal]) {
+                            isNonNeg[p.id] = 1;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        return changed;
+    };
+
+    while (propagate()) {}
+
+    for (size_t b = 0; b < func.blocks.size(); ++b) {
+        const auto& blk = func.blocks[b];
+        if (blk.params.empty() || preds[b].size() < 2) continue;
+        for (size_t p = 0; p < blk.params.size(); ++p) {
+            il::ValueId pId = blk.params[p].id;
+            if (pId == il::kNoValue || pId >= func.valueCount || isNonNeg[pId]) continue;
+
+            bool hasValidEntry = false;
+            bool entryFailed = false;
+            std::vector<const Edge*> backedges;
+
+            for (const auto& edge : preds[b]) {
+                if (p >= edge.args->size()) { entryFailed = true; break; }
+                il::ValueId arg = resolve((*edge.args)[p], resolve);
+                if (arg < func.valueCount && isNonNeg[arg]) {
+                    hasValidEntry = true;
+                } else {
+                    backedges.push_back(&edge);
+                }
+            }
+
+            if (!hasValidEntry || entryFailed || backedges.empty()) continue;
+
+            bool allBackedgesOk = true;
+            for (const auto* edge : backedges) {
+                il::ValueId rawArg = (*edge->args)[p];
+                il::ValueId arg = resolve(rawArg, resolve);
+                bool stepOk = false;
+                for (const auto& blkCheck : func.blocks) {
+                    for (const auto& inst : blkCheck.instructions) {
+                        if (inst.result == arg) {
+                            if (inst.op == il::Op::Add && inst.operands.size() >= 2) {
+                                il::ValueId a0 = resolve(inst.operands[0], resolve);
+                                il::ValueId a1 = resolve(inst.operands[1], resolve);
+                                if ((a0 == pId && a1 < func.valueCount && isNonNeg[a1]) ||
+                                    (a1 == pId && a0 < func.valueCount && isNonNeg[a0])) {
+                                    stepOk = true;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if (stepOk) break;
+                }
+                if (!stepOk) {
+                    allBackedgesOk = false;
+                    break;
+                }
+            }
+
+            if (allBackedgesOk) {
+                isNonNeg[pId] = 1;
+            }
+        }
+    }
+
+    while (propagate()) {}
+
+    return isNonNeg;
+}
+
 namespace {
 
 struct IndexExtraction {
@@ -345,10 +523,16 @@ struct IndexExtraction {
     llvm::Value* isIntegral;
 };
 
-IndexExtraction extractIndex32(llvm::IRBuilder<>& builder, llvm::Value* idxDbl) {
+IndexExtraction extractIndex32(llvm::IRBuilder<>& builder, llvm::Value* idxDbl,
+                              bool isKnownIntegralNonNegative = false) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
+
+    if (isKnownIntegralNonNegative) {
+        llvm::Value* idx32 = builder.CreateFPToUI(idxDbl, i32Ty, "tel.idx");
+        return {idx32, builder.getTrue()};
+    }
 
     if (auto* cfp = llvm::dyn_cast<llvm::ConstantFP>(idxDbl)) {
         double d = cfp->getValueAPF().convertToDouble();
@@ -389,26 +573,47 @@ IndexExtraction extractIndex32(llvm::IRBuilder<>& builder, llvm::Value* idxDbl) 
 }
 
 TypedElemGuards emitTypedElemGuards(llvm::IRBuilder<>& builder, llvm::Value* objBits,
-                                    llvm::Value* idxDbl) {
+                                    llvm::Value* idxDbl, TypedArrayCache* cache = nullptr,
+                                    bool isKnownIntegralNonNegative = false,
+                                    il::ValueId objId = il::kNoValue) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
     llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
     llvm::Type* ptrTy = llvm::PointerType::getUnqual(ctx);
 
-    IndexExtraction ie = extractIndex32(builder, idxDbl);
+    IndexExtraction ie = extractIndex32(builder, idxDbl, isKnownIntegralNonNegative);
     llvm::Value* idx32 = ie.idx32;
     llvm::Value* isIntegral = ie.isIntegral;
 
-    llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
-    llvm::Value* hdr = builder.CreateIntToPtr(addr, ptrTy, "tel.hdr");
-    llvm::Value* lenPtr =
-        builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
-    auto* len = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "tel.len");
-    tagViewLengthAccess(len, ctx);
-    llvm::Value* inLen = builder.CreateICmpULT(idx32, len);
+    llvm::Value* hdr = nullptr;
+    llvm::Value* len = nullptr;
+    llvm::Value* dataPtr = nullptr;
 
+    if (cache != nullptr && cache->dataPtr != nullptr &&
+        (cache->obj == objBits || (objId != il::kNoValue && cache->objId == objId))) {
+        hdr = cache->hdr;
+        len = cache->len;
+        dataPtr = cache->dataPtr;
+    } else {
+        llvm::Value* addr = builder.CreateAnd(objBits, builder.getInt64(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        hdr = builder.CreateIntToPtr(addr, ptrTy, "tel.hdr");
+        llvm::Value* lenPtr =
+            builder.CreateConstInBoundsGEP1_32(i8Ty, hdr, BRONZE_ABI_TA_LENGTH_OFFSET);
+        auto* loadedLen = builder.CreateAlignedLoad(i32Ty, lenPtr, llvm::Align(4), "tel.len");
+        tagViewLengthAccess(loadedLen, ctx);
+        len = loadedLen;
+        dataPtr = emitTypedArrayBasePtr(builder, hdr);
+        if (cache != nullptr) {
+            cache->objId = objId;
+            cache->obj = objBits;
+            cache->hdr = hdr;
+            cache->dataPtr = dataPtr;
+            cache->len = len;
+        }
+    }
+
+    llvm::Value* inLen = builder.CreateICmpULT(idx32, len);
     llvm::Value* ok = (isIntegral == builder.getTrue()) ? inLen : builder.CreateAnd(isIntegral, inLen);
-    llvm::Value* dataPtr = emitTypedArrayBasePtr(builder, hdr);
     return {hdr, dataPtr, idx32, ok};
 }
 
@@ -574,7 +779,10 @@ void emitPlainArrayElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi,
 }  // namespace
 
 llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
-                              llvm::Value* idxDbl, uint32_t elemKind) {
+                              llvm::Value* idxDbl, uint32_t elemKind,
+                              TypedArrayCache* cache,
+                              bool isKnownIntegralNonNegative,
+                              il::ValueId objId) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* dblTy = llvm::Type::getDoubleTy(ctx);
@@ -587,7 +795,8 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
         return emitPlainArrayElemGet(builder, abi, objBits, idxDbl);
     }
 
-    TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
+    TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl, cache,
+                                           isKnownIntegralNonNegative, objId);
     llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(ctx, "tel.load", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "tel.done", fn);
     llvm::BasicBlock* entryBb = builder.GetInsertBlock();
@@ -673,7 +882,10 @@ llvm::Value* emitTypedElemGet(llvm::IRBuilder<>& builder, const AbiFns& abi, llv
 }
 
 void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value* objBits,
-                      llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind) {
+                      llvm::Value* idxDbl, llvm::Value* valDbl, uint32_t elemKind,
+                      TypedArrayCache* cache,
+                      bool isKnownIntegralNonNegative,
+                      il::ValueId objId) {
     llvm::LLVMContext& ctx = builder.getContext();
     llvm::Function* fn = builder.GetInsertBlock()->getParent();
     llvm::Type* f32Ty = llvm::Type::getFloatTy(ctx);
@@ -685,7 +897,8 @@ void emitTypedElemSet(llvm::IRBuilder<>& builder, const AbiFns& abi, llvm::Value
         return;
     }
 
-    TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl);
+    TypedElemGuards g = emitTypedElemGuards(builder, objBits, idxDbl, cache,
+                                           isKnownIntegralNonNegative, objId);
     llvm::BasicBlock* storeBb = llvm::BasicBlock::Create(ctx, "tes.store", fn);
     llvm::BasicBlock* doneBb = llvm::BasicBlock::Create(ctx, "tes.done", fn);
     auto* condBr = builder.CreateCondBr(g.ok, storeBb, doneBb);

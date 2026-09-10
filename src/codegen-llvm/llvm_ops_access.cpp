@@ -294,7 +294,11 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                 values_[inst.result] = lastTypedElemGet_.res;
                 return true;
             }
-            llvm::Value* res = emitTypedElemGet(builder_, shared_.abi, obj, idx, kind);
+            const bool isNonNeg = inst.operands[1] < isIntegralNonNegative_.size() &&
+                                  isIntegralNonNegative_[inst.operands[1]] != 0;
+            llvm::Value* res =
+                emitTypedElemGet(builder_, shared_.abi, obj, idx, kind, &lastTypedArrayCache_,
+                                 isNonNeg, inst.operands[0]);
             values_[inst.result] = res;
             lastTypedElemGet_ = {currentILBlock_, inst.operands[0], inst.operands[1],
                                  obj, idx, kind, res};
@@ -307,6 +311,8 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             llvm::Value* val = operand(inst, 2, "Undefined operand in ElemSetTyped instruction");
             if (!obj || !idx || !val) return false;
             const auto kind = static_cast<uint32_t>(inst.immI32);
+            const bool isNonNeg = inst.operands[1] < isIntegralNonNegative_.size() &&
+                                  isIntegralNonNegative_[inst.operands[1]] != 0;
             // The PINNED plain-array store is an Array element store like any
             // other, so it joins the Array store runs (llvm_recv_proof.cpp,
             // `arrayStoreIndexOf`). Its own unguarded form derives the element
@@ -323,7 +329,8 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                 if (kind == static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
                     arrayStoreProof_ = ArrayStoreProof{};
                 }
-                emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind);
+                emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind, &lastTypedArrayCache_,
+                                 isNonNeg, inst.operands[0]);
                 return true;
             }
             if (runSite.establishes) {
@@ -331,7 +338,8 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
                                                        runSite.run, runSite.runMaxIndex);
             }
             if (!arrayStoreProof_.live() || arrayStoreProof_.run != runSite.run) {
-                emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind);
+                emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind, &lastTypedArrayCache_,
+                                 isNonNeg, inst.operands[0]);
                 return true;
             }
             llvm::BasicBlock* doneBb =
@@ -339,7 +347,8 @@ bool FunctionEmitter::emitAccessOp(const il::Instruction& inst) {
             ProvenArrayStore proven =
                 emitProvenArrayElementStore(builder_, arrayStoreProof_, runSite.index,
                                             emitBoxDouble(builder_, val), doneBb);
-            emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind);
+            emitTypedElemSet(builder_, shared_.abi, obj, idx, val, kind, &lastTypedArrayCache_,
+                             isNonNeg, inst.operands[0]);
             builder_.CreateBr(doneBb);
             builder_.SetInsertPoint(doneBb);
             rejoinArrayStoreProof(arrayStoreProof_, proven.fastBb, doneBb);

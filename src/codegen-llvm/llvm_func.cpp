@@ -46,6 +46,7 @@ FunctionEmitter::FunctionEmitter(const Context& shared, uint32_t funcIndex,
       holeRawSafe_(holeRawSlotEnabled()
                        ? planHoleRawRegisters(shared.module.functions[funcIndex])
                        : std::vector<uint8_t>(shared.module.functions[funcIndex].valueCount, 0)),
+      isIntegralNonNegative_(planIntegralNonNegativeValues(shared.module.functions[funcIndex])),
       regBlock_(shared.module.functions[funcIndex].valueCount, il::kNoBlock),
       slotOf_(shared.plans[funcIndex].slotOf),
       ownSlots_(shared.plans[funcIndex].ownSlots),
@@ -608,6 +609,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         cachedGlobalGets_.clear();
     }
     lastTypedElemGet_ = LastTypedElemGet{};
+    lastTypedArrayCache_ = TypedArrayCache{};
     lastEmittedBlock_ = static_cast<il::BlockId>(blockIndex);
 
     // A block parameter is a def like any other: the phi's value has to reach
@@ -626,6 +628,7 @@ bool FunctionEmitter::emitBlock(size_t blockIndex) {
         if (group != RunArmPlan::kNoGroup) {
             if (!emitRunArmGroup(live_.arms.groups[group])) return false;
             lastTypedElemGet_ = LastTypedElemGet{};
+            lastTypedArrayCache_ = TypedArrayCache{};
             lastGuardedPropRecv_.clear();
             lastGuardedMathRecv_ = nullptr;
             lastGuardedMathFn_ = nullptr;
@@ -691,6 +694,9 @@ bool FunctionEmitter::emitInstructionAt(size_t blockIndex, size_t instIndex, boo
         inst.op == il::Op::PrivateSet || inst.op == il::Op::EnvSet ||
         inst.op == il::Op::ModuleEnvSet || il::canCollect(inst)) {
         lastTypedElemGet_ = LastTypedElemGet{};
+    }
+    if (il::canCollect(inst)) {
+        lastTypedArrayCache_ = TypedArrayCache{};
     }
 
     if (inst.result != il::kNoValue && inst.result < func_.valueCount && values_[inst.result]) {
