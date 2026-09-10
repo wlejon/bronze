@@ -86,10 +86,18 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         i8Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_CTOR_VETTED_OFFSET),
         llvm::Align(1), "new.vet");
     llvm::Value* vetOk = builder.CreateICmpNE(vet, builder.getInt8(0), "new.vetok");
+    static constexpr uint32_t kPadSlots = 16;
     llvm::Value* arity = builder.CreateAlignedLoad(
         i32Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ARITY_OFFSET),
         llvm::Align(4), "new.arity");
-    llvm::Value* arityOk = builder.CreateICmpULE(arity, builder.getInt32(argc), "new.arityok");
+    llvm::Value* arityLEargc =
+        builder.CreateICmpULE(arity, builder.getInt32(argc), "new.arity.le.argc");
+    llvm::Value* arityOk = arityLEargc;
+    if (argc < kPadSlots) {
+        llvm::Value* arityLEcap =
+            builder.CreateICmpULE(arity, builder.getInt32(kPadSlots), "new.arity.le.cap");
+        arityOk = builder.CreateOr(arityLEargc, arityLEcap, "new.arityok");
+    }
     llvm::Value* shape = builder.CreateAlignedLoad(
         i64Ty,
         builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET),
@@ -145,6 +153,35 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                          << BRONZE_ABI_VALUE_TAG_SHIFT),
         "new.inst");
     builder.CreateStore(instBits, selfSlotAddr);
+
+    llvm::Value* callArgv = argv;
+    if (argc < kPadSlots) {
+        llvm::BasicBlock& entry = fn->getEntryBlock();
+        llvm::IRBuilder<> entryBuilder(&entry, entry.getFirstInsertionPt());
+        llvm::Value* padBuf = entryBuilder.CreateAlloca(
+            llvm::ArrayType::get(i64Ty, kPadSlots), nullptr, "new.padbuf");
+
+        if (argc > 0 && argv) {
+            for (uint32_t a = 0; a < argc; ++a) {
+                llvm::Value* srcPtr = builder.CreateGEP(i64Ty, argv, builder.getInt32(a));
+                llvm::Value* val = builder.CreateAlignedLoad(i64Ty, srcPtr, llvm::Align(8));
+                llvm::Value* dstPtr = builder.CreateConstInBoundsGEP2_32(
+                    llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, a);
+                builder.CreateAlignedStore(val, dstPtr, llvm::Align(8));
+            }
+        }
+        for (uint32_t a = argc; a < kPadSlots; ++a) {
+            llvm::Value* dstPtr = builder.CreateConstInBoundsGEP2_32(
+                llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, a);
+            builder.CreateAlignedStore(undef, dstPtr, llvm::Align(8));
+        }
+        llvm::Value* padArgv = builder.CreateConstInBoundsGEP2_32(
+            llvm::ArrayType::get(i64Ty, kPadSlots), padBuf, 0, 0);
+        callArgv = (argc == 0)
+            ? padArgv
+            : builder.CreateSelect(arityLEargc, argv, padArgv, "new.callargv");
+    }
+
     llvm::Value* callRes = nullptr;
     if (knownEntry && knownFunc) {
         llvm::SmallVector<llvm::Value*, 4> callArgs;
@@ -174,7 +211,7 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
                 i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
                 llvm::Align(8), "new.env");
             callRes = builder.CreateCall(
-                knownWrapper, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+                knownWrapper, {env, instBits, builder.getInt32(argc), callArgv}, "new.callres");
         } else {
             llvm::Value* env = builder.CreateAlignedLoad(
                 i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
@@ -185,14 +222,14 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
             llvm::FunctionType* codeTy =
                 llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
             callRes = builder.CreateCall(
-                codeTy, code, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+                codeTy, code, {env, instBits, builder.getInt32(argc), callArgv}, "new.callres");
         }
     } else if (knownWrapper) {
         llvm::Value* env = builder.CreateAlignedLoad(
             i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
             llvm::Align(8), "new.env");
         callRes = builder.CreateCall(
-            knownWrapper, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+            knownWrapper, {env, instBits, builder.getInt32(argc), callArgv}, "new.callres");
     } else {
         llvm::Value* env = builder.CreateAlignedLoad(
             i64Ty, builder.CreateConstInBoundsGEP1_32(i8Ty, fnPtr, BRONZE_ABI_FN_ENV_OFFSET),
@@ -203,7 +240,7 @@ llvm::Value* emitConstructInline(llvm::IRBuilder<>& builder, const AbiFns& abi,
         llvm::FunctionType* codeTy =
             llvm::FunctionType::get(i64Ty, {i64Ty, i64Ty, i32Ty, ptrTy}, false);
         callRes = builder.CreateCall(
-            codeTy, code, {env, instBits, builder.getInt32(argc), argv}, "new.callres");
+            codeTy, code, {env, instBits, builder.getInt32(argc), callArgv}, "new.callres");
     }
     llvm::Value* self = builder.CreateLoad(i64Ty, selfSlotAddr, "new.self");
     // A constructor returning an object replaces the instance; any other

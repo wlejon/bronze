@@ -444,7 +444,7 @@ bool FunctionEmitter::emitConstruct(const il::Instruction& inst) {
         size_t envOffset = knownFunc->needsEnv ? 1 : 0;
         size_t thisOffset = envOffset + (knownFunc->needsThis ? 1 : 0);
         size_t sourceParamCount = expectedParams - thisOffset;
-        if (argc == sourceParamCount) {
+        if (argc <= sourceParamCount && sourceParamCount <= 16) {
             bool typesMatch = true;
             for (size_t p = 0; p < argc; ++p) {
                 il::ValueId opId = inst.operands[1 + p];
@@ -457,7 +457,18 @@ bool FunctionEmitter::emitConstruct(const il::Instruction& inst) {
                 }
                 directArgs.push_back(opVal);
             }
-            if (typesMatch && directArgs.size() == argc) {
+            if (typesMatch) {
+                llvm::Value* undefVal = builder_.getInt64(BRONZE_ABI_UNDEFINED_BITS);
+                for (size_t p = argc; p < sourceParamCount; ++p) {
+                    llvm::Type* expectedTy = knownEntry->getFunctionType()->getParamType(static_cast<unsigned>(thisOffset + p));
+                    if (expectedTy != i64Ty_) {
+                        typesMatch = false;
+                        break;
+                    }
+                    directArgs.push_back(undefVal);
+                }
+            }
+            if (typesMatch && directArgs.size() == sourceParamCount) {
                 canDirect = true;
             } else {
                 directArgs.clear();
