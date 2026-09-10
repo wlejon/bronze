@@ -201,6 +201,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerEnvValue = currentEnvValue_;
     auto outerEntryEnvValue = entryEnvValue_;
     auto outerImmutableEnvCache = std::move(immutableEnvCache_);
+    auto outerAssignedNames = assignedNames_;
     auto outerCachedTypedElemGet = cachedTypedElemGet_;
     cachedTypedElemGet_.reset();
     auto outerThisValue = currentThisValue_;
@@ -269,6 +270,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     currentEnvValue_ = outerEnvValue;
     entryEnvValue_ = outerEntryEnvValue;
     immutableEnvCache_ = std::move(outerImmutableEnvCache);
+    assignedNames_ = std::move(outerAssignedNames);
     cachedTypedElemGet_ = outerCachedTypedElemGet;
     currentThisValue_ = outerThisValue;
     currentFunctionIsArrow_ = outerIsArrow;

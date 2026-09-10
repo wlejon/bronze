@@ -177,6 +177,7 @@ std::optional<il::Module> Lowerer::lower() {
             // so its mode is set here — from the node, for the same reason.
             const bool outerStrict = strictCode_;
             strictCode_ = fnDecl->strict;
+            assignedNames_.clear();
             const bool ok = lowerFunctionBody(*fnDecl, ilModule_.functions[fnIndex]);
             strictCode_ = outerStrict;
             if (!ok) return std::nullopt;
@@ -215,6 +216,10 @@ std::optional<il::Module> Lowerer::lower() {
         entryEnvValue_ = il::kNoValue;
         immutableEnvCache_.clear();
         cachedTypedElemGet_.reset();
+        assignedNames_.clear();
+        for (const auto* s : topLevelStmts) {
+            if (s) for (auto& n : ast::getAssignedNames(*s)) assignedNames_.insert(std::move(n));
+        }
         currentThisValue_ = il::kNoValue;
         currentFunctionIsArrow_ = false;
         // `main` is the Script's own code, so it takes the Script's mode.
@@ -771,6 +776,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     immutableEnvCache_.clear();
     cachedTypedElemGet_.reset();
     functionVarNames_ = ast::getHoistedVarDeclarations(body);
+    for (auto& n : ast::getAssignedNames(body)) assignedNames_.insert(std::move(n));
 
     // Synthetic parameters lead: [__env?][__this?] then source params.
     const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());

@@ -198,11 +198,18 @@ bool Lowerer::envSlotIsF64(uint32_t depth, uint32_t index) const {
 Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function& ilFn) {
     const bool lexical = envSlotIsLexical(depth, index) && !envSlotDefiniteInit(depth, index);
     const SlotImmutability imm = envSlotImmutability(depth, index);
-    const bool isImmutable =
-        !lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent);
     const size_t scopeIndex =
         depth < envScopes_.size() ? (envScopes_.size() - 1 - depth) : SIZE_MAX;
     const bool isOuterScope = scopeIndex < functionEnvBase_ && functionEnvBase_ > 0;
+    const std::string& slotName =
+        (scopeIndex < envScopes_.size() && index < envScopes_[scopeIndex].slotNames.size())
+            ? envScopes_[scopeIndex].slotNames[index]
+            : "";
+    const bool isEffectivelyImmutable =
+        isOuterScope && !lexical && !slotName.empty() && !assignedNames_.contains(slotName);
+    const bool isImmutable =
+        (!lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent)) ||
+        isEffectivelyImmutable;
     const bool isHoistableImmutable =
         inUserFunction_ && !generator_ && isImmutable &&
         isOuterScope && entryEnvValue_ != il::kNoValue;

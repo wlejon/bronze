@@ -166,6 +166,7 @@ private:
     // Lowered immutable environment bindings for the current function, keyed by
     // ((uint64_t)depth << 32) | index. Hoisted to block 0 on first read and reused.
     std::unordered_map<uint64_t, Value> immutableEnvCache_;
+    std::unordered_set<std::string> assignedNames_;
     struct CachedTypedElemGet {
         size_t blockIdx;
         il::ValueId objId;
