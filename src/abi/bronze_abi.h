@@ -1003,6 +1003,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_STRING_UTF16_BIT      1 /* StringHeader::kUTF16Flag */
 #define BRONZE_ABI_STRING_HASHED_BIT     2 /* StringHeader::kHasHashFlag */
 #define BRONZE_ABI_STRING_HASH_MASK     0xFFFFFFFCu
+#define BRONZE_ABI_STRING_BUILDER_BIT   1 /* StringHeader::kBuilderFlag (in HeapObjectHeader::flags) */
 #define BRONZE_ABI_MIX64_ADD  0x9E3779B97F4A7C15ull
 #define BRONZE_ABI_MIX64_MUL1 0xBF58476D1CE4E5B9ull
 #define BRONZE_ABI_MIX64_MUL2 0x94D049BB133111EBull

@@ -43,6 +43,21 @@
 
 namespace bronze::runtime {
 
+static_assert(offsetof(StringHeader, header) + offsetof(HeapObjectHeader, flags) ==
+                  BRONZE_ABI_OBJ_FLAGS_OFFSET,
+              "HeapObjectHeader::flags offset mismatch");
+static_assert(offsetof(StringHeader, header) + offsetof(HeapObjectHeader, size) ==
+                  BRONZE_ABI_HDR_SIZE_OFFSET,
+              "HeapObjectHeader::size offset mismatch");
+static_assert(StringHeader::kBuilderFlag == BRONZE_ABI_STRING_BUILDER_BIT,
+              "StringHeader::kBuilderFlag mismatch");
+static_assert(offsetof(StringHeader, length) == BRONZE_ABI_STRING_LENGTH_OFFSET,
+              "StringHeader::length offset mismatch");
+static_assert(offsetof(StringHeader, flags) == BRONZE_ABI_STRING_FLAGS_OFFSET,
+              "StringHeader::flags offset mismatch");
+static_assert(sizeof(StringHeader) == BRONZE_ABI_STRING_DATA_OFFSET,
+              "StringHeader data payload offset mismatch");
+
 // How much room the accumulator gets up front, where `seed` is what the first
 // `+` produced and `remaining` is how many operands the lowerer knows are
 // still to come.

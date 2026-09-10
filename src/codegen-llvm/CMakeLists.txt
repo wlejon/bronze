@@ -42,6 +42,7 @@ bronze_add_module(codegen_llvm
         llvm_ops_call.cpp
         llvm_private.cpp
         llvm_arith.cpp
+        llvm_concat.cpp
         llvm_strict_eq.cpp
         llvm_partition.cpp
         llvm_pin.cpp
