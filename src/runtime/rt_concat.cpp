@@ -29,6 +29,7 @@
 // hold.
 
 #include <cstdint>
+#include <cstring>
 
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
@@ -97,6 +98,11 @@ uint64_t bronze_concat_begin(uint64_t aBits, uint64_t bBits, uint32_t remaining)
     if (aVal.isNumber() && bVal.isNumber()) {
         return Value::fromDouble(aVal.asNumber() + bVal.asNumber()).rawBits();
     }
+    if (aVal.isString() && bVal.isString()) {
+        Rooted<Value> aRoot{aVal};
+        Rooted<Value> bRoot{bVal};
+        return concatIntoBuilder(aRoot, bRoot, remaining);
+    }
     Rooted<Value> aRoot{aVal};
     Rooted<Value> bRoot{bVal};
     if (!rtAddToPrimitives(aRoot, bRoot)) return Value::fromUndefined().rawBits();
@@ -112,6 +118,29 @@ uint64_t bronze_concat_append(uint64_t accBits, uint64_t xBits) {
     Value xVal(xBits);
     if (accVal.isNumber() && xVal.isNumber()) {
         return Value::fromDouble(accVal.asNumber() + xVal.asNumber()).rawBits();
+    }
+    if (accVal.isString() && xVal.isString()) {
+        StringHeader* b = accVal.asString<StringHeader>();
+        const StringHeader* s = xVal.asString<StringHeader>();
+        if (b->isBuilder()) {
+            const uint32_t addLen = s->length;
+            if (addLen == 0) return accBits;
+            const uint32_t oldLen = b->length;
+            const uint32_t newLen = oldLen + addLen;
+            const bool needUTF16 = b->isUTF16() || s->isUTF16();
+            if (needUTF16 == b->isUTF16() && b->capacity() >= newLen) {
+                if (needUTF16) {
+                    std::memcpy(b->utf16Data() + oldLen, s->utf16Data(), addLen * sizeof(uint16_t));
+                    b->utf16Data()[newLen] = 0;
+                } else {
+                    std::memcpy(b->latin1Data() + oldLen, s->latin1Data(), addLen);
+                    b->latin1Data()[newLen] = '\0';
+                }
+                b->length = newLen;
+                b->flags &= StringHeader::kUTF16Flag;
+                return accBits;
+            }
+        }
     }
     Rooted<Value> accRoot{accVal};
     Rooted<Value> xRoot{xVal};

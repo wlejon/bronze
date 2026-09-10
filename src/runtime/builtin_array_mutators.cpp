@@ -8,8 +8,12 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
     Value self(thisBits);
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         ArrayHeader* arr = self.asObject<ArrayHeader>();
-        if (argc == 1 && (arr->head_offset + arr->length < arr->capacity) && arr->properties.isUndefined()) {
-            arr->elementsData()[arr->length++] = Value(argv[0]);
+        if ((arr->head_offset + arr->length + argc <= arr->capacity) && arr->properties.isUndefined()) {
+            Value* dst = arr->elementsData() + arr->length;
+            for (uint32_t i = 0; i < argc; ++i) {
+                dst[i] = Value(argv[i]);
+            }
+            arr->length += argc;
             return Value::fromDouble(arr->length).rawBits();
         }
     }
@@ -23,9 +27,10 @@ uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     if (args.count() > 0 && !requireExtensible(self.get(), "push")) {
         return Value::fromUndefined().rawBits();
     }
+    Heap& heap = rtHeap();
     for (uint32_t i = 0; i < args.count(); ++i) {
-        Rooted<Value> v{args[i]};
-        appendTo(self, v);
+        ArrayHeader* arr = self.get().asObject<ArrayHeader>();
+        arr->setElem(heap, arr->length, args[i]);
     }
     return Value::fromDouble(lengthOf(self.get())).rawBits();
 }
