@@ -406,18 +406,19 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
         builder.CreateCondBr(overflowIsObj, transOverflowCheckCapBb, transOverflowAllocBb, likelyBranch);
 
         builder.SetInsertPoint(transOverflowAllocBb);
-        // Initial overflow allocation: capacity = 16 slots.
-        // slotIdx is (transSlot32 - 3). For slots 4..19, slotIdx is 1..16 (< 17).
+        // Initial overflow allocation: capacity = 32 slots.
+        // slotIdx is (transSlot32 - 3). For slots 4..35, slotIdx is 1..32 (< 33).
+        constexpr uint32_t kInitialOverflowSlots = 32;
+        constexpr uint64_t kInitialOverflowBytes =
+            BRONZE_ABI_HDR_BYTES + kInitialOverflowSlots * sizeof(uint64_t);
         llvm::Value* allocSlotIdx = builder.CreateSub(transSlot32, builder.getInt32(3));
         llvm::Value* fitsInitialCap =
-            builder.CreateICmpULT(allocSlotIdx, builder.getInt32(17), "trans.fits_init_cap");
+            builder.CreateICmpULT(allocSlotIdx, builder.getInt32(kInitialOverflowSlots + 1), "trans.fits_init_cap");
         llvm::Value* curAlloc = builder.CreateAlignedLoad(
             i64Ty, globals.bronze_alloc_cursor, llvm::Align(8), "trans.alloc.cursor");
         llvm::Value* limitAlloc = builder.CreateAlignedLoad(
             i64Ty, globals.bronze_alloc_limit, llvm::Align(8), "trans.alloc.limit");
         llvm::Value* headroom = builder.CreateSub(limitAlloc, curAlloc, "trans.alloc.headroom");
-        constexpr uint64_t kInitialOverflowBytes =
-            BRONZE_ABI_HDR_BYTES + 16 * sizeof(uint64_t);
         llvm::Value* fitsHeadroom =
             builder.CreateICmpUGE(headroom, builder.getInt64(kInitialOverflowBytes), "trans.fits_headroom");
         llvm::Value* canAlloc = builder.CreateAnd(fitsInitialCap, fitsHeadroom, "trans.can_alloc");
@@ -433,7 +434,7 @@ void emitPropSet(llvm::IRBuilder<>& builder, const AbiFns& abi, const AbiGlobals
             (static_cast<uint64_t>(BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK) << 16) |
             (kInitialOverflowBytes << 32);
         builder.CreateAlignedStore(builder.getInt64(kBlockHeaderWord), newBlockPtr, llvm::Align(8));
-        for (uint32_t i = 0; i < 16; ++i) {
+        for (uint32_t i = 0; i < kInitialOverflowSlots; ++i) {
             llvm::Value* p = builder.CreateConstInBoundsGEP1_32(
                 i8Ty, newBlockPtr, BRONZE_ABI_HDR_BYTES + i * 8);
             builder.CreateAlignedStore(builder.getInt64(BRONZE_ABI_UNDEFINED_BITS), p, llvm::Align(8));

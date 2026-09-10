@@ -157,7 +157,7 @@ ObjectHeader* ObjectHeader::ensureOverflow(Heap& heap, Rooted<Value>& self, uint
     if (needed <= cap) {
         return obj;
     }
-    uint32_t new_cap = cap ? cap * 2 : 16;
+    uint32_t new_cap = cap ? cap * 2 : 32;
     while (new_cap < needed) {
         new_cap *= 2;
     }
