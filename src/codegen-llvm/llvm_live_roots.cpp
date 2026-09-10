@@ -299,6 +299,7 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
     std::vector<uint32_t> written(n, kNone);
     for (size_t p = 0; p < func.params.size() && p < n; ++p) written[p] = 0;
 
+
     for (uint32_t b = 0; b < blockCount; ++b) {
         anchor.assign(n, kNone);
         if (b == 0) {
@@ -311,21 +312,82 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
                 for (size_t p = 0; p < func.params.size() && p < n; ++p) anchor[p] = 0;
             }
         } else if (excPreds[b] == 0 && !preds[b].empty()) {
-            // Every predecessor has to have been walked already — a back edge
-            // comes from a block whose exit map is not written yet, and a
-            // register that survives a loop is not a claim this pass makes.
-            bool usable = true;
+            bool hasBackedge = false;
+            std::vector<uint32_t> forwardPreds;
             for (uint32_t p : preds[b]) {
-                if (p >= b) usable = false;
+                if (p >= b) {
+                    hasBackedge = true;
+                } else {
+                    forwardPreds.push_back(p);
+                }
             }
-            // Under the seam the old rule stands: one predecessor and no other
-            // way in. That is the single-element case of the meet, so the two
-            // differ in this line and nowhere else.
-            if (!meetPreds && (normalPreds[b] != 1 || soleNormalPred[b] >= b)) usable = false;
-            if (usable) {
-                meet = anchorOut[preds[b][0]];
-                for (size_t k = 1; k < preds[b].size() && !meet.empty(); ++k) {
-                    const auto& other = anchorOut[preds[b][k]];
+
+            if (!hasBackedge) {
+                bool usable = true;
+                if (!meetPreds && (normalPreds[b] != 1 || soleNormalPred[b] >= b)) usable = false;
+                if (usable) {
+                    meet = anchorOut[preds[b][0]];
+                    for (size_t k = 1; k < preds[b].size() && !meet.empty(); ++k) {
+                        const auto& other = anchorOut[preds[b][k]];
+                        next.clear();
+                        size_t x = 0;
+                        size_t y = 0;
+                        while (x < meet.size() && y < other.size()) {
+                            if (meet[x].first < other[y].first) {
+                                ++x;
+                            } else if (other[y].first < meet[x].first) {
+                                ++y;
+                            } else {
+                                if (meet[x].second == other[y].second) next.push_back(meet[x]);
+                                ++x;
+                                ++y;
+                            }
+                        }
+                        meet.swap(next);
+                    }
+                    for (const auto& entry : meet) {
+                        if (written[entry.first] == entry.second) anchor[entry.first] = entry.second;
+                    }
+                }
+            } else if (!forwardPreds.empty() && meetPreds) {
+                // Loop header: predecessors include forward entry edges and backedges.
+                // If the loop has no collection points on its backedge (or the value is an
+                // immutable environment load), allow the dominating anchor from the
+                // preheader to carry through to the header.
+                bool backedgeCanCollect = false;
+                std::vector<uint8_t> inLoop(blockCount, 0);
+                inLoop[b] = 1;
+                std::vector<uint32_t> work;
+                for (uint32_t p : preds[b]) {
+                    if (p >= b && !inLoop[p]) {
+                        inLoop[p] = 1;
+                        work.push_back(p);
+                    }
+                }
+                while (!work.empty()) {
+                    uint32_t cur = work.back();
+                    work.pop_back();
+                    for (uint32_t p : preds[cur]) {
+                        if (!inLoop[p]) {
+                            inLoop[p] = 1;
+                            work.push_back(p);
+                        }
+                    }
+                }
+                for (size_t blk = 0; blk < blockCount; ++blk) {
+                    if (!inLoop[blk]) continue;
+                    for (const il::Instruction& inst : func.blocks[blk].instructions) {
+                        if (il::canCollect(inst)) {
+                            backedgeCanCollect = true;
+                            break;
+                        }
+                    }
+                    if (backedgeCanCollect) break;
+                }
+
+                meet = anchorOut[forwardPreds[0]];
+                for (size_t k = 1; k < forwardPreds.size() && !meet.empty(); ++k) {
+                    const auto& other = anchorOut[forwardPreds[k]];
                     next.clear();
                     size_t x = 0;
                     size_t y = 0;
@@ -342,8 +404,13 @@ LiveRootPlan planLiveRoots(const il::Function& func, RunArmPlan arms) {
                     }
                     meet.swap(next);
                 }
+
                 for (const auto& entry : meet) {
-                    if (written[entry.first] == entry.second) anchor[entry.first] = entry.second;
+                    const uint32_t v = entry.first;
+                    const uint32_t anchorBlock = entry.second;
+                    if (written[v] == anchorBlock && !backedgeCanCollect) {
+                        anchor[v] = anchorBlock;
+                    }
                 }
             }
         }

@@ -8,6 +8,7 @@
 #include "ast/assigned.h"
 #include "ast/queries.h"
 #include "lower/guard_region.h"
+#include "lower/loop_prop_hoist.h"
 #include "lower/lowerer.h"
 #include "support/timings.h"
 
@@ -303,6 +304,7 @@ std::optional<il::Module> Lowerer::lower() {
     // named. It is also why `bronze il` shows the transformed IL: `lowerModule`
     // is the single funnel both `runIl` and `runBuild` come through.
     {
+        hoistLoopInvariantProps(ilModule_);
         GuardRegionStats stats;
         applyGuardedRegions(ilModule_, &stats);
         guardRegionStatsReport(stats);

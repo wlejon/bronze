@@ -381,7 +381,8 @@ llvm::Value* emitPropGet(llvm::IRBuilder<>& builder, const AbiFns& abi, const Ab
     // a single loaded word rather than three separate tests.
     llvm::BasicBlock* hitBb = llvm::BasicBlock::Create(ctx, "ic.hit", fn);
     llvm::BasicBlock* nonZeroDepthBb = llvm::BasicBlock::Create(ctx, "ic.get.depth.nonzero", fn);
-    llvm::MDNode* depthZeroWeights = llvm::MDBuilder(ctx).createBranchWeights(1024, 1);
+    llvm::MDNode* depthZeroWeights =
+        monomorphic ? nullptr : llvm::MDBuilder(ctx).createBranchWeights(1024, 1);
     builder.CreateCondBr(builder.CreateICmpEQ(depth, builder.getInt64(0), "ic.get.depthzero"),
                          hitBb, nonZeroDepthBb, depthZeroWeights);
 
