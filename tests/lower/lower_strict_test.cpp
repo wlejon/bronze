@@ -72,6 +72,7 @@ TEST_CASE("every write form carries it, and a read carries nothing") {
         "const k = \"x\";\n"
         "o[k] = 1;\n"
         "const q = { k: 0 };\n"
+        "const r = q.m;\n"
         "q.k += 1;\n"
         "q.k++;\n"
         "delete q.k;\n");
@@ -79,19 +80,18 @@ TEST_CASE("every write form carries it, and a read carries nothing") {
     // A computed key is `elem.set obj, key, val, <strict>` — no inline cache,
     // so the flag is the fourth field rather than the fifth.
     CHECK(has(il, "elem.set %1, %2, %4, 1\n"));
-    // A compound assignment is a read and a write, and only the write is
-    // flagged: `prop.get` has no such field at all.
-    CHECK(has(il, "%8: dynamic = prop.get %5, 2, 1\n"));
-    CHECK(has(il, "prop.set %5, 2, %11, 2, 1\n"));
+    // A read carries no strictness flag: `prop.get` has no such field at all.
+    CHECK(has(il, "%8: dynamic = prop.get %5, 3, 1"));
+    CHECK(has(il, "prop.set %5, 2, %12, 3, 1\n"));
     // An update operator writes too (13.4.2.1) — and it steps through
     // ToNumeric first, because `q.k` could hold a BigInt (13.4.4.1's delta
     // has the operand's own numeric type).
     CHECK(has(il, "to.numeric %12\n"));
-    CHECK(has(il, "numeric.step %13, +1\n"));
-    CHECK(has(il, "prop.set %5, 2, %14, 4, 1\n"));
+    CHECK(has(il, "numeric.step %14, +1\n"));
+    CHECK(has(il, "prop.set %5, 2, %15, 5, 1\n"));
     // And `delete` carries it, because 13.5.1.2 step 5.b turns a refusal into
     // a TypeError on the same rule.
-    CHECK(has(il, "%15: bool = prop.delete %5, 2, 1\n"));
+    CHECK(has(il, "%16: bool = prop.delete %5, 2, 1\n"));
 }
 
 TEST_CASE("a sloppy delete is flagged 0") {
