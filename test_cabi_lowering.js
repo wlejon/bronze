@@ -492,7 +492,48 @@ bro.wake.init();
 let wakeView = new WakeStreamView();
 let wakeActive = wakeView.active;
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer, qwenImEnd, qwenImStart, misEos, misBos, misVocab, gemEos, gemBos, gemPad, gemUnk, gemVocab, lmFamily, lmVocab, lmHidden, lmLayers, lmMaxSeq, lmCache, q35Family, q35Vocab, q35Eos, q3vlFamily, q3vlVocab, q3vlEos, nllbFamily, nllbVocab, nllbDModel, nllbEncLayers, nllbDecLayers, nllbLangCount, nllbHasEng, clipDim, t5DModel, t5MaxLen, t5PadId, t5EosId, t5Vocab, wtokLoaded, wmodDev, ptokLoaded, qmodDev, kmodDev, smodDev, sencDev, qtmodDev, kwsActive, sftDev, cdiarDev, raveSr, gestureActive, senseActive, wakeActive);
+// --- Phase 17: DOM Elements, Compatibility Layer & Vendor Globals ---
+let customRegistry = new CustomElementRegistry();
+customRegistry.define("my-elem", null, null);
+let myElem = customRegistry.get("my-elem");
+customRegistry.upgrade(null);
+let htmlEl = new HTMLElement();
+
+let iframeEl = new HTMLIFrameElement();
+let iframeSrc0 = iframeEl.src;
+iframeEl.src = "app.html";
+let iframeSrc1 = iframeEl.src;
+let iframeW = iframeEl.width;
+let iframeH = iframeEl.height;
+iframeEl.reload();
+
+let mql = new MediaQueryList();
+let mqlMatches = mql.matches;
+let mqlMedia = mql.media;
+mql.addListener(null);
+mql.removeListener(null);
+
+let mqlFromFn = matchMedia("(min-width: 600px)");
+let mqlFnMatches = mqlFromFn.matches;
+
+let mqlFromWin = window.matchMedia("(min-width: 600px)");
+let mqlWinMatches = mqlFromWin.matches;
+
+let mqlFromBroWin = bro.window.matchMedia("(min-width: 600px)");
+let mqlBroWinMatches = mqlFromBroWin.matches;
+
+let vgSignals = window.signals;
+let vgCodeMirror = window.CodeMirror;
+let vgAcorn = window.acorn;
+let vgTern = window.tern;
+let vgEsprima = window.esprima;
+let vgJsonlint = window.jsonlint;
+let vgDraco = window.draco_encoder;
+let vgBroSignals = bro.vendor_globals.signals;
+let vgBroCodeMirror = bro.vendor_globals.CodeMirror;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer, qwenImEnd, qwenImStart, misEos, misBos, misVocab, gemEos, gemBos, gemPad, gemUnk, gemVocab, lmFamily, lmVocab, lmHidden, lmLayers, lmMaxSeq, lmCache, q35Family, q35Vocab, q35Eos, q3vlFamily, q3vlVocab, q3vlEos, nllbFamily, nllbVocab, nllbDModel, nllbEncLayers, nllbDecLayers, nllbLangCount, nllbHasEng, clipDim, t5DModel, t5MaxLen, t5PadId, t5EosId, t5Vocab, wtokLoaded, wmodDev, ptokLoaded, qmodDev, kmodDev, smodDev, sencDev, qtmodDev, kwsActive, sftDev, cdiarDev, raveSr, gestureActive, senseActive, wakeActive, iframeSrc0, iframeSrc1, iframeW, iframeH, mqlMatches, mqlMedia, mqlFnMatches, mqlWinMatches, mqlBroWinMatches);
+
 
 
 
