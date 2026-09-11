@@ -90,10 +90,11 @@ bool declareEntries(const il::Module& module, llvm::Module& llvmModule, llvm::LL
         // the ABI stamp and the host-globals manifest are the only names that
         // have to be distinct, and the latter two are named after the entry.
         const bool isEntry = (func.name == "main");
+        const bool isExternal = func.blocks.empty();
         const std::string symbol = isEntry ? entrySymbol : func.name;
         out.push_back(llvm::Function::Create(llvm::FunctionType::get(retTy, paramTys, false),
-                                             isEntry ? llvm::Function::ExternalLinkage
-                                                     : llvm::Function::InternalLinkage,
+                                             (isEntry || isExternal) ? llvm::Function::ExternalLinkage
+                                                                     : llvm::Function::InternalLinkage,
                                              symbol, &llvmModule));
     }
     return true;
@@ -529,6 +530,7 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
                                           regions, inlineVariants, moduleHasNewTarget,
                                           reprPlans, livePlans};
     for (size_t i = 0; i < module.functions.size(); ++i) {
+        if (module.functions[i].blocks.empty()) continue;
         const bool frameless = regions.isMergeTarget[i];
         FunctionEmitter emitter(shared, static_cast<uint32_t>(i),
                                 frameless ? inlineVariants[i] : entries[i], frameless);
@@ -537,6 +539,10 @@ bool LLVMBackend::emitObject(const il::Module& module, const std::string& output
             codegen_llvm::emitFrameForwarder(shared, static_cast<uint32_t>(i), entries[i],
                                              inlineVariants[i]);
         }
+    }
+
+    if (std::getenv("BRONZE_DUMP_MODULE")) {
+        llvmModule->print(llvm::errs(), nullptr);
     }
 
     // Every used TLS-block fetch becomes a load of a module-local

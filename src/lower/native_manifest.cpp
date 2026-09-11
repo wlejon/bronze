@@ -126,7 +126,7 @@ il::Type nativeTypeToIl(NativeTypeKind kind) {
         case NativeTypeKind::F64: return il::Type::F64;
         case NativeTypeKind::I32: return il::Type::I32;
         case NativeTypeKind::Bool: return il::Type::Bool;
-        case NativeTypeKind::Str: return il::Type::Dynamic;
+        case NativeTypeKind::Str: return il::Type::Str;
         case NativeTypeKind::Dynamic: return il::Type::Dynamic;
     }
     return il::Type::Dynamic;
@@ -184,6 +184,7 @@ std::optional<NativeManifest> NativeManifest::loadFromFile(const std::string& pa
                             NativeFunctionSig sig;
                             sig.symbol = getStringMember(fnVal, "symbol");
                             sig.returnType = parseNativeTypeKind(getStringMember(fnVal, "returnType"));
+                            sig.returnClass = getStringMember(fnVal, "returnClass");
 
                             if (const auto* paramsArr = findMember(fnVal, "paramTypes")) {
                                 if (paramsArr->kind == json::Value::Kind::Array) {
@@ -244,6 +245,10 @@ std::optional<NativeManifest> NativeManifest::loadFromFile(const std::string& pa
                 if (const auto* ctorVal = findMember(clsVal, "constructor")) {
                     clsSig.constructor.symbol = getStringMember(ctorVal, "symbol");
                     clsSig.constructor.returnType = parseNativeTypeKind(getStringMember(ctorVal, "returnType"));
+                    clsSig.constructor.returnClass = getStringMember(ctorVal, "returnClass");
+                    if (clsSig.constructor.returnClass.empty()) {
+                        clsSig.constructor.returnClass = clsSig.name;
+                    }
                     if (const auto* paramsArr = findMember(ctorVal, "paramTypes")) {
                         if (paramsArr->kind == json::Value::Kind::Array) {
                             for (const auto& pElem : paramsArr->elements) {
@@ -271,6 +276,7 @@ std::optional<NativeManifest> NativeManifest::loadFromFile(const std::string& pa
                             NativeFunctionSig msig;
                             msig.symbol = getStringMember(mVal, "symbol");
                             msig.returnType = parseNativeTypeKind(getStringMember(mVal, "returnType"));
+                            msig.returnClass = getStringMember(mVal, "returnClass");
                             if (const auto* paramsArr = findMember(mVal, "paramTypes")) {
                                 if (paramsArr->kind == json::Value::Kind::Array) {
                                     for (const auto& pElem : paramsArr->elements) {
@@ -308,6 +314,48 @@ std::optional<NativeManifest> NativeManifest::loadFromFile(const std::string& pa
                 manifest.classes_[clsKey] = clsSig;
                 if (!clsSig.name.empty() && clsSig.name != clsKey) {
                     manifest.classes_[clsSig.name] = clsSig;
+                }
+            }
+        }
+    }
+
+    // 3. Parse flat symbols array
+    if (const auto* symbolsArr = findMember(root.get(), "symbols")) {
+        if (symbolsArr->kind == json::Value::Kind::Array) {
+            for (const auto& elem : symbolsArr->elements) {
+                if (!elem || elem->kind != json::Value::Kind::Object) continue;
+                std::string kind = getStringMember(elem.get(), "kind");
+                std::string jsPath = getStringMember(elem.get(), "jsPath");
+                if (jsPath.empty()) continue;
+
+                auto dotPos = jsPath.find('.');
+                std::string rootNs = (dotPos != std::string::npos) ? jsPath.substr(0, dotPos) : jsPath;
+                manifest.namespaceRoots_.insert(rootNs);
+
+                if (kind == "function") {
+                    NativeFunctionSig sig;
+                    sig.symbol = getStringMember(elem.get(), "symbol");
+                    sig.returnType = parseNativeTypeKind(getStringMember(elem.get(), "returnType"));
+                    sig.returnClass = getStringMember(elem.get(), "returnClass");
+
+                    if (const auto* paramsArr = findMember(elem.get(), "paramTypes")) {
+                        if (paramsArr->kind == json::Value::Kind::Array) {
+                            for (const auto& pElem : paramsArr->elements) {
+                                if (pElem && pElem->kind == json::Value::Kind::String) {
+                                    sig.paramTypes.push_back(parseNativeTypeKind(toUtf8(pElem->text)));
+                                }
+                            }
+                        }
+                    }
+                    if (!sig.symbol.empty()) {
+                        manifest.functions_[jsPath] = sig;
+                    }
+                } else if (kind == "property") {
+                    NativePropertySig psig;
+                    psig.getterSymbol = getStringMember(elem.get(), "getter");
+                    psig.setterSymbol = getStringMember(elem.get(), "setter");
+                    psig.type = parseNativeTypeKind(getStringMember(elem.get(), "returnType"));
+                    manifest.namespaceProperties_[jsPath] = psig;
                 }
             }
         }

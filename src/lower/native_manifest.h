@@ -27,6 +27,7 @@ struct NativeFunctionSig {
     std::string symbol;
     NativeTypeKind returnType = NativeTypeKind::Void;
     std::vector<NativeTypeKind> paramTypes;
+    std::string returnClass;
 
     il::Type toIlReturnType() const { return nativeTypeToIl(returnType); }
     std::vector<il::Type> toIlParamTypes() const;

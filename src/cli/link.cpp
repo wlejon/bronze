@@ -99,22 +99,25 @@ std::optional<std::filesystem::path> findRuntimeLib() {
 #endif
         };
 
+        // First, check the running compiler's own build directory and active configuration
+        std::string exeConfig = exeDir.filename().string();
         for (const char* name : libNames) {
             candidates.push_back(exeDir / name);
-            candidates.push_back(exeDir / "../rt" / name);
+            candidates.push_back(exeDir.parent_path().parent_path() / "rt" / exeConfig / name);
+            candidates.push_back(exeDir.parent_path().parent_path() / "rt" / name);
+            candidates.push_back(exeDir / "../../rt" / exeConfig / name);
             candidates.push_back(exeDir / "../../rt" / name);
-            candidates.push_back(exeDir / "../../../rt" / name);
-            candidates.push_back(exeDir / "src/rt" / name);
-            candidates.push_back(exeDir / "../src/rt" / name);
-            candidates.push_back(exeDir / "../../src/rt" / name);
-            candidates.push_back(exeDir / "../../../src/rt" / name);
+            candidates.push_back(exeDir / "../rt" / name);
+        }
 
+        for (const char* name : libNames) {
             std::filesystem::path cwd = std::filesystem::current_path();
-            candidates.push_back(cwd / name);
-            candidates.push_back(cwd / "src/rt" / name);
-            candidates.push_back(cwd / "build/dev/src/rt" / name);
+            candidates.push_back(cwd / "build/src/rt" / exeConfig / name);
             candidates.push_back(cwd / "build/src/rt" / name);
             candidates.push_back(cwd / "build/Release/src/rt" / name);
+            candidates.push_back(cwd / "build/dev/src/rt" / name);
+            candidates.push_back(cwd / "src/rt" / name);
+            candidates.push_back(cwd / name);
         }
 
         const size_t flatCount = candidates.size();
@@ -479,19 +482,19 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
 #ifdef _WIN32
         switch (index) {
             case 0:
-                return "lld-link /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
+                return "lld-link /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
             case 1:
                 return "lld-link /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /force:multiple /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/out:\"" + outputPath + "\" \"" + objPath + "\"";
             case 2:
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
+                return "link.exe /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
             case 3:
                 if (!msvcLinkIsAvailable()) return "";
                 return "link.exe /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /force:multiple /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/out:\"" + outputPath + "\" \"" + objPath + "\"";
             case 4:
-                return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr + " /link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
+                return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
             case 5:
-                return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr + " /link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
+                return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
             case 6:
                 return "clang++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
             case 7:

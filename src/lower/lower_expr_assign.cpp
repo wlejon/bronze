@@ -567,6 +567,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         } else {
             emitEnvSet(depth, index, stored, ilFn, /*assigning=*/true);
         }
+        if (nativeManifest_ && !stored.nativeClass.empty()) {
+            varNativeClasses_[ident->name] = stored.nativeClass;
+        }
         return stored;
     }
     // An array or object literal on the left never arrives here: the parser

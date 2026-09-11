@@ -195,7 +195,9 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         }
 
         if (nativeManifest_) {
-            if (const auto* newExpr = dynamic_cast<const ast::NewExpr*>(varDecl->init.get())) {
+            if (!initVal->nativeClass.empty()) {
+                varNativeClasses_[varDecl->name] = initVal->nativeClass;
+            } else if (const auto* newExpr = dynamic_cast<const ast::NewExpr*>(varDecl->init.get())) {
                 std::string clsName;
                 if (const auto* id = dynamic_cast<const ast::Ident*>(newExpr->callee.get())) {
                     clsName = id->name;

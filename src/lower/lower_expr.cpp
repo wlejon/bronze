@@ -571,6 +571,12 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         if (bound.type == il::Type::Dynamic && provenNumber(*ident)) {
             bound = unboxValueIfNeeded(bound, il::Type::F64, ilFn);
         }
+        if (nativeManifest_) {
+            auto itCls = varNativeClasses_.find(ident->name);
+            if (itCls != varNativeClasses_.end()) {
+                bound.nativeClass = itCls->second;
+            }
+        }
         return bound;
     }
 

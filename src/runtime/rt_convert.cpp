@@ -569,6 +569,18 @@ bool bronze_truthy(uint64_t bits) {
 
 bool bronze_unbox_bool(uint64_t bits) { return bronze_truthy(bits); }
 
+const char* bronze_unbox_str(uint64_t bits) {
+    Value v = Value::fromRawBits(bits);
+    if (!v.isString()) {
+        v = rtValueToString(v);
+    }
+    const StringHeader* s = v.asString<StringHeader>();
+    if (!s) return "";
+    thread_local std::string s_storage;
+    s_storage = rtUtf8Chars(s);
+    return s_storage.c_str();
+}
+
 bool bronze_is_nullish(uint64_t bits) {
     Value v(bits);
     return v.isNull() || v.isUndefined() || v.isHole();

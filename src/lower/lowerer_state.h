@@ -21,6 +21,7 @@ namespace bronze::lower {
 struct LowererValue {
     il::ValueId id = il::kNoValue;
     il::Type type = il::Type::Dynamic;
+    std::string nativeClass = {};
 };
 
 struct VarBinding {

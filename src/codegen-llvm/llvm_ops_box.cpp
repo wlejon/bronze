@@ -15,12 +15,18 @@ bool FunctionEmitter::emitBox(const il::Instruction& inst) {
     const AbiFns& abi = shared_.abi;
     if (inst.result == il::kNoValue) return true;
 
-    // A Str box names a registered key rather than boxing an operand:
-    // the string itself is a compile-time constant.
+    // A Str box names a registered key when operands are empty (literal),
+    // or calls bronze_box_str when boxing a dynamic const char* pointer.
     if (inst.boxType == il::Type::Str) {
-        values_[inst.result] =
-            builder_.CreateCall(abi.bronze_box_str_key,
-                                {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
+        if (inst.operands.empty()) {
+            values_[inst.result] =
+                builder_.CreateCall(abi.bronze_box_str_key,
+                                    {emitKeyId(builder_, shared_.tables, inst.keyIndex)});
+            return true;
+        }
+        llvm::Value* src = operand(inst, 0, "Undefined value in Box Str instruction");
+        if (!src) return false;
+        values_[inst.result] = builder_.CreateCall(abi.bronze_box_str, {src});
         return true;
     }
     if (!require(inst.operands.size() >= 1 && inst.result != il::kNoValue,
@@ -267,6 +273,11 @@ bool FunctionEmitter::emitUnbox(const il::Instruction& inst) {
         phi->addIncoming(fastDouble, curBb);
         phi->addIncoming(slowVal, slowEndBb);
         values_[inst.result] = phi;
+        return true;
+    }
+
+    if (inst.type == il::Type::Str) {
+        values_[inst.result] = builder_.CreateCall(abi.bronze_unbox_str, {src});
         return true;
     }
 

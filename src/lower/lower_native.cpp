@@ -80,6 +80,8 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
                     coerced = emitToInt32(coerced, ilFn);
                 } else if (expType == il::Type::Bool) {
                     coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+                } else if (expType == il::Type::Str) {
+                    coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
                 } else {
                     coerced = boxValueIfNeeded(coerced, ilFn);
                 }
@@ -106,7 +108,10 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
             if (retType == il::Type::Void) {
                 return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
             }
-            return Value{res, retType};
+            if (retType == il::Type::Str) {
+                return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
+            }
+            return Value{res, retType, sig->returnClass};
         }
     }
 
@@ -156,6 +161,8 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
                             coerced = emitToInt32(coerced, ilFn);
                         } else if (expType == il::Type::Bool) {
                             coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+                        } else if (expType == il::Type::Str) {
+                            coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
                         } else {
                             coerced = boxValueIfNeeded(coerced, ilFn);
                         }
@@ -182,7 +189,10 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
                     if (retType == il::Type::Void) {
                         return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
                     }
-                    return Value{res, retType};
+                    if (retType == il::Type::Str) {
+                        return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
+                    }
+                    return Value{res, retType, msig.returnClass};
                 }
             }
         }
@@ -229,6 +239,8 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeNew(const ast::NewExpr* new
             coerced = emitToInt32(coerced, ilFn);
         } else if (expType == il::Type::Bool) {
             coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+        } else if (expType == il::Type::Str) {
+            coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
         } else {
             coerced = boxValueIfNeeded(coerced, ilFn);
         }
@@ -250,7 +262,7 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeNew(const ast::NewExpr* new
     inst.calleeIndex = calleeIdx;
     emitInst(ilFn, inst);
 
-    return Value{res, il::Type::Dynamic};
+    return Value{res, il::Type::Dynamic, className};
 }
 
 std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::MemberAccess* mem,
@@ -274,6 +286,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
             emitInst(ilFn, inst);
             if (retType == il::Type::Void) {
                 return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+            }
+            if (retType == il::Type::Str) {
+                return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
             }
             return Value{res, retType};
         }
@@ -304,6 +319,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
                 inst.operands = {boxValueIfNeeded(*objVal, ilFn).id};
                 inst.calleeIndex = calleeIdx;
                 emitInst(ilFn, inst);
+                if (retType == il::Type::Str) {
+                    return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
+                }
                 return Value{res, retType};
             }
         }
@@ -362,6 +380,8 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeAssignment(const ast::Binar
                 coerced = emitToInt32(coerced, ilFn);
             } else if (propType == il::Type::Bool) {
                 coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+            } else if (propType == il::Type::Str) {
+                coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
             } else {
                 coerced = boxValueIfNeeded(coerced, ilFn);
             }
@@ -435,6 +455,8 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeAssignment(const ast::Binar
                     coerced = emitToInt32(coerced, ilFn);
                 } else if (propType == il::Type::Bool) {
                     coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+                } else if (propType == il::Type::Str) {
+                    coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
                 } else {
                     coerced = boxValueIfNeeded(coerced, ilFn);
                 }

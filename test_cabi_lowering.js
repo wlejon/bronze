@@ -23,4 +23,14 @@ bro.time.paused = true;
 let p1 = bro.time.paused;
 let now = bro.time.now;
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now);
+let appD = bro.appDir;
+let userD = bro.userDataDir;
+let pRes = bro.resolvePath("test.txt");
+let wRes = bro.paths.resolveWritePath("save.dat");
+
+let simplex = FastNoise.Simplex();
+simplex.set("Frequency", 0.05);
+let noiseSample = simplex.genSingle2D(1.5, 2.5, 1337);
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample);
+

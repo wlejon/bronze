@@ -101,6 +101,34 @@ std::optional<lower::NativeManifest> resolveNativeManifest(
             std::error_code ec;
             if (std::filesystem::exists(lPath, ec)) {
                 manifest->addExtraLibPath(std::filesystem::canonical(lPath, ec).string());
+
+                // Locate the build directory containing CMakeCache.txt to find companion libs
+                std::filesystem::path buildDir = lPath.parent_path();
+                while (!buildDir.empty() && buildDir.has_relative_path()) {
+                    if (std::filesystem::exists(buildDir / "CMakeCache.txt", ec)) {
+                        break;
+                    }
+                    auto parent = buildDir.parent_path();
+                    if (parent == buildDir) break;
+                    buildDir = parent;
+                }
+
+                if (std::filesystem::exists(buildDir / "CMakeCache.txt", ec)) {
+                    std::string config = lPath.parent_path().filename().string();
+                    std::vector<std::filesystem::path> companions = {
+                        buildDir / "FastNoise2" / "src" / config / (config == "Debug" ? "FastNoiseD.lib" : "FastNoise.lib"),
+                        buildDir / "FastNoise2" / "src" / "FastNoise.lib",
+                        buildDir / "FastNoise2" / "src" / "FastSIMD_FastNoise.dir" / config / "FastSIMD_FastNoise.lib",
+                        buildDir / "FastNoise2" / "src" / "FastSIMD_FastNoise.dir" / "FastSIMD_FastNoise.lib",
+                        buildDir / "_deps" / "fastsimd-build" / "FastSIMD.dir" / config / "FastSIMD.lib",
+                        buildDir / "_deps" / "fastsimd-build" / "FastSIMD.dir" / "FastSIMD.lib",
+                    };
+                    for (const auto& comp : companions) {
+                        if (std::filesystem::exists(comp, ec)) {
+                            manifest->addExtraLibPath(std::filesystem::canonical(comp, ec).string());
+                        }
+                    }
+                }
             } else if (!libPath.empty()) {
                 err = "error: native lib path does not exist: " + libPath + "\n";
                 return std::nullopt;
