@@ -373,6 +373,78 @@ let diffVer = bro.diffusion.version;
 let pipe = new Pipeline();
 let pipeState = new PipelineState();
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer);
+// --- Phase 14 Subsystems: Large Language Models (LLM) & Tokenizers Subsystems ---
+// 42. Language Models & Tokenizers (AsyncHandle, QwenTokenizer, MistralTokenizer, GemmaTokenizer, LMModel, Qwen35Model, Qwen3VLModel, NllbModel, ClipModel, T5Model, bro.lm)
+bro.lm.init();
+let asyncH = new AsyncHandle();
+asyncH.cancel();
+
+let qwenTok = new QwenTokenizer();
+let qwenImEnd = qwenTok.imEndId;
+let qwenImStart = qwenTok.imStartId;
+
+let mistralTok = new MistralTokenizer();
+let misEos = mistralTok.eosId;
+let misBos = mistralTok.bosId;
+let misVocab = mistralTok.vocabCount;
+
+let gemmaTok = new GemmaTokenizer();
+let gemEos = gemmaTok.eosId;
+let gemBos = gemmaTok.bosId;
+let gemPad = gemmaTok.padId;
+let gemUnk = gemmaTok.unkId;
+let gemVocab = gemmaTok.vocabCount;
+
+let lmModel = new LMModel();
+let lmFamily = lmModel.family;
+let lmVocab = lmModel.vocabSize;
+let lmHidden = lmModel.hiddenSize;
+let lmLayers = lmModel.numLayers;
+let lmMaxSeq = lmModel.maxSeqLen;
+let lmCache = lmModel.cacheLen;
+lmModel.allocateCache(2048);
+lmModel.resetCache();
+
+let q35Model = new Qwen35Model();
+let q35Family = q35Model.family;
+let q35Vocab = q35Model.vocabSize;
+let q35Hidden = q35Model.hiddenSize;
+let q35Layers = q35Model.numLayers;
+let q35MaxSeq = q35Model.maxSeqLen;
+let q35Eos = q35Model.eosId;
+let q35ImEnd = q35Model.imEndId;
+let q35EndText = q35Model.endoftextId;
+
+let q3vlModel = new Qwen3VLModel();
+let q3vlFamily = q3vlModel.family;
+let q3vlVocab = q3vlModel.vocabSize;
+let q3vlHidden = q3vlModel.hiddenSize;
+let q3vlLayers = q3vlModel.numLayers;
+let q3vlMaxSeq = q3vlModel.maxSeqLen;
+let q3vlEos = q3vlModel.eosId;
+let q3vlImEnd = q3vlModel.imEndId;
+let q3vlEndText = q3vlModel.endoftextId;
+
+let nllbModel = new NllbModel();
+let nllbFamily = nllbModel.family;
+let nllbVocab = nllbModel.vocabSize;
+let nllbDModel = nllbModel.dModel;
+let nllbEncLayers = nllbModel.encoderLayers;
+let nllbDecLayers = nllbModel.decoderLayers;
+let nllbLangCount = nllbModel.languageCount;
+let nllbHasEng = nllbModel.hasLanguage("eng_Latn");
+
+let clipModel = new ClipModel();
+let clipDim = clipModel.projectionDim;
+
+let t5Model = new T5Model();
+let t5DModel = t5Model.dModel;
+let t5MaxLen = t5Model.maxLength;
+let t5PadId = t5Model.padId;
+let t5EosId = t5Model.eosId;
+let t5Vocab = t5Model.vocabCount;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer, qwenImEnd, qwenImStart, misEos, misBos, misVocab, gemEos, gemBos, gemPad, gemUnk, gemVocab, lmFamily, lmVocab, lmHidden, lmLayers, lmMaxSeq, lmCache, q35Family, q35Vocab, q35Eos, q3vlFamily, q3vlVocab, q3vlEos, nllbFamily, nllbVocab, nllbDModel, nllbEncLayers, nllbDecLayers, nllbLangCount, nllbHasEng, clipDim, t5DModel, t5MaxLen, t5PadId, t5EosId, t5Vocab);
+
 
 
