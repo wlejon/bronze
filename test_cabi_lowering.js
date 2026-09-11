@@ -275,6 +275,30 @@ bro.flora.setDensity(0.75);
 bro.flora.update(0.016);
 bro.flora.clear();
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging);
+// --- Phase 12 Subsystems: Skeletal Rigging, Procedural Motion, Splats & Web Animations Subsystems ---
+// 34. Rigging
+let skel = new Skeleton();
+let skelBones = skel.boneCount;
+let pose = new Pose(skel);
+let poseBones = pose.boneCount;
+let skin = new SkinData();
+let skinVerts = skin.vertexCount;
+let vox = new VoxelChunk(4, 4, 4);
+let voxVal0 = vox.get(1, 2, 3);
+vox.set(1, 2, 3, 7);
+let voxVal1 = vox.get(1, 2, 3);
+
+// 35. Motion
+bro.motion.init();
+
+// 36. TripoSplat
+let splat = new TripoSplatPipeline();
+
+// 37. WebAnimations
+let webAnims = new WebAnimations();
+let anim = new Animation();
+let animRate = anim.playbackRate;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate);
 
 
