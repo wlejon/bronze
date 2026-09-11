@@ -410,6 +410,9 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
                 objRoot.get().asObject<FunctionHeader>()->name != nullptr) {
                 return true;
             }
+            if (Value stat; rtTypedArrayStatic(objRoot.get(), key, stat)) {
+                return true;
+            }
             Rooted<Value> keyStr{rtMakeString(key)};
             Value props = objRoot.get().asObject<FunctionHeader>()->properties;
             if (props.isObject() && plainObjectHas(props.asObject<ObjectHeader>(),
@@ -693,6 +696,9 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         if (!isCallable(ctorRoot.get())) return false;
         if (rtIsArrayConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
+        }
+        if (rtIsRegExpConstructor(ctorRoot.get())) {
+            return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::RegExp;
         }
         // A Map and a Set are the same case as an array and were missing from
         // it only because nothing could produce one whose chain a walk would

@@ -249,6 +249,15 @@ uint64_t arrayBufferCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv
     return Value::fromObject(ArrayBufferHeader::create(rtHeap(), byteLength)).rawBits();
 }
 
+uint64_t arrayBufferIsView(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    const Value v = args[0];
+    if (!v.isObject()) return Value::fromBool(false).rawBits();
+    const uint16_t flags = v.asObject<HeapObjectHeader>()->flags;
+    return Value::fromBool(flags == TypedArrayHeader::kFlags || flags == DataViewHeader::kFlags)
+        .rawBits();
+}
+
 struct CtorEntry {
     ElementKind kind;
     bronze_fn_code code;
@@ -549,6 +558,13 @@ bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
         return false;
     }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
+    if (code == arrayBufferCtor) {
+        if (key == "isView") {
+            out = rtNativeFunction(arrayBufferIsView, 1);
+            return true;
+        }
+        return false;
+    }
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;
         if (key == "BYTES_PER_ELEMENT") {

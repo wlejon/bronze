@@ -533,6 +533,7 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
         FunctionHeader* live = fnRoot.get().asObject<FunctionHeader>();
         Value result = live->call(self.get(), argc,
                                   const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return result.isObject() ? result.rawBits() : self.get().rawBits();
     }
 
@@ -560,6 +561,7 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     fn = fnRoot.get().asObject<FunctionHeader>();
     Value result = fn->call(self.get(), argc,
                             const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     // Re-arm the inline-allocation window when it cannot fit even one more
     // instance — this helper is the fast path's designated miss, so this is

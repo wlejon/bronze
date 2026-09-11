@@ -104,11 +104,12 @@ Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name) {
     // trampoline reads the env cell on every call, so the method-call IC must
     // never latch this function onto its env-less direct dispatch.
     FunctionHeader* fnObj =
-        FunctionHeader::create(runtime::rtHeap(), hostTrampoline, Value::fromUndefined(), arity,
+        FunctionHeader::create(runtime::rtHeap(), hostTrampoline, Value::fromUndefined(), 0,
                                BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE |
                                    BRONZE_ABI_FN_FLAG_NEEDS_ENV);
     fnObj->env_record = env.get();
     fnObj->header.flags = HeapKind::Function;
+    fnObj->length = arity;
     // Unnamed by default, like every native builtin: `f.name` then stays the
     // named refusal rt_state.cpp's rtSetFunctionNameAndLength documents,
     // rather than two wrong facts.
@@ -124,7 +125,6 @@ Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name) {
         StringHeader* interned = StringHeader::internToArena(
             runtime::rtArena(), StringHeader::createFromUTF8(runtime::rtHeap(), name));
         fnObj->name = interned;
-        fnObj->length = arity;
     }
     return Value::fromObject(fnObj);
 }

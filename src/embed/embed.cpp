@@ -158,19 +158,25 @@ Value getElement(Value obj, uint32_t index) {
 
 // ---- throw helpers ---------------------------------------------------------
 
-Value throwValue(Value thrown) { return runtime::rtThrow(thrown); }
+Value throwValue(Value thrown) {
+    if (runtime::rtExceptionPending()) runtime::rtClearException();
+    return runtime::rtThrow(thrown);
+}
 
 Value throwError(const std::string& message) {
+    if (runtime::rtExceptionPending()) runtime::rtClearException();
     ShadowStackFrame frame;
     return runtime::rtThrowError(runtime::ErrorKind::Error, message);
 }
 
 Value throwTypeError(const std::string& message) {
+    if (runtime::rtExceptionPending()) runtime::rtClearException();
     ShadowStackFrame frame;
     return runtime::rtThrowTypeError(message);
 }
 
 Value throwRangeError(const std::string& message) {
+    if (runtime::rtExceptionPending()) runtime::rtClearException();
     ShadowStackFrame frame;
     return runtime::rtThrowRangeError(message);
 }

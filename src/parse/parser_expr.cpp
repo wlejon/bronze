@@ -453,7 +453,8 @@ bool Parser::parseMemberLink(ExprPtr& expr) {
         // cannot resolve — because a program that carries `console.table` in
         // a branch it never takes is a program that runs (the same judgment
         // the unresolved-name path makes; lower_unresolved.cpp).
-        if (baseIdent && baseIdent->name == "console") {
+        if (baseIdent && baseIdent->name == "console" &&
+            ast::consoleStreamOf("console." + std::string(member->text)) != ConsoleStream::None) {
             const std::string folded = "console." + std::string(member->text);
             auto ident = std::make_unique<ast::Ident>();
             ident->span = {expr->span.begin, member->span.end};
