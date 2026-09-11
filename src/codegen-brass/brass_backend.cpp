@@ -7,6 +7,7 @@
 #include <brass/il_translator/il_translator.hpp>
 #include <brass/object/coff_writer.hpp>
 #include <brass/object/elf_writer.hpp>
+#include <brass/object/macho_writer.hpp>
 #include <brass/object/object_writer.hpp>
 #include <brass/target/target.hpp>
 
@@ -18,8 +19,14 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
                               DiagnosticSink& diags) {
     std::vector<std::string> uniqueNames(module.functions.size());
     std::unordered_map<std::string, size_t> nameCounts;
+    auto sanitizeName = [](std::string n) {
+        for (char& c : n) {
+            if (c == ' ') c = '_';
+        }
+        return n;
+    };
     for (const auto& fn : module.functions) {
-        nameCounts[fn.name]++;
+        nameCounts[sanitizeName(fn.name)]++;
     }
     std::unordered_set<std::string> usedNames;
     for (size_t i = 0; i < module.functions.size(); ++i) {
@@ -32,11 +39,12 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     for (size_t i = 0; i < module.functions.size(); ++i) {
         if (!uniqueNames[i].empty()) continue;
         const auto& fn = module.functions[i];
-        if (nameCounts[fn.name] == 1 && !usedNames.count(fn.name)) {
-            uniqueNames[i] = fn.name;
-            usedNames.insert(fn.name);
+        std::string sName = sanitizeName(fn.name);
+        if (nameCounts[sName] == 1 && !usedNames.count(sName)) {
+            uniqueNames[i] = sName;
+            usedNames.insert(sName);
         } else {
-            std::string uname = fn.name + "$" + std::to_string(i);
+            std::string uname = sName + "$" + std::to_string(i);
             uniqueNames[i] = uname;
             usedNames.insert(uname);
         }
@@ -429,6 +437,9 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     bool writeSuccess = false;
     if (target.is_windows()) {
         brass::object::CoffWriter writer(obj);
+        writeSuccess = writer.write_to_file(outputPath);
+    } else if (target.is_macos()) {
+        brass::object::MachOWriter writer(obj);
         writeSuccess = writer.write_to_file(outputPath);
     } else {
         brass::object::ElfWriter writer(obj);
