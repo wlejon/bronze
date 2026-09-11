@@ -11,7 +11,7 @@ bronze build app.js -o app
 ./app
 ```
 
-bronze compiles JavaScript to machine code through LLVM. It follows `import`s 
+bronze compiles JavaScript to machine code through Brass. It follows `import`s 
 from your entry file, compiles the whole program, and links a standalone binary.
 The test suite compiles three.js r160 and pixi.js v8 from unmodified source.
 
@@ -96,16 +96,13 @@ Prereqs: CMake ≥ 3.24, Ninja, a C++20 compiler, and vcpkg. On Windows,
 `dev.cmd` wraps the MSVC environment: `.\dev.cmd cmake ...`.
 
 ```
-cmake --preset dev -DBRONZE_WITH_LLVM=ON
+cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev
 ```
 
-`-DBRONZE_WITH_LLVM=ON` enables the backend that emits objects and
-executables. vcpkg builds LLVM from source the first time (hours,
-binary-cached afterwards). Configuring without the flag builds the compiler
-front half (lexer, parser, inference, IL) with a fast test loop for
-frontend work. [docs/internals.md](docs/internals.md) has the full
+The native code generation backend is Brass (`src/codegen-brass`), which compiles
+Bronze IL to native machine code. [docs/internals.md](docs/internals.md) has the full
 build-and-iteration workflow.
 
 ## Testing

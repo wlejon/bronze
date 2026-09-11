@@ -23,7 +23,6 @@
 
 namespace {
 
-#if BRONZE_WITH_LLVM
 
 std::filesystem::path workDir() {
     const std::filesystem::path dir =
@@ -145,6 +144,5 @@ TEST_CASE("an unimplemented performance member is diagnosed by name") {
     CHECK(out.find("undefined") == std::string::npos);
 }
 
-#endif  // BRONZE_WITH_LLVM
 
 }  // namespace

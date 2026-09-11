@@ -183,7 +183,7 @@ BUILD_TYPE="$(detect_build_type "$BRONZE_BIN")"
 
 if [[ "$BUILD_TYPE" != "Release" && $ALLOW_DEBUG -eq 0 ]]; then
     echo "Error: $BRONZE_BIN is a $BUILD_TYPE binary. Benchmarks require a Release build for build-type truth." >&2
-    echo "       Rebuild with: ./dev.cmd cmake --preset dev -DBRONZE_WITH_LLVM=ON && ./dev.cmd cmake --build --preset dev" >&2
+    echo "       Rebuild with: ./dev.cmd cmake --preset dev && ./dev.cmd cmake --build --preset dev" >&2
     echo "       Or pass --allow-debug to benchmark this build anyway." >&2
     exit 1
 fi

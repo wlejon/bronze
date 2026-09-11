@@ -20,8 +20,7 @@
 // bias into a spread that can be printed next to the delta. Nothing else about
 // the build changes: same objects, same symbols, same program, and with no
 // seed set the linker is handed exactly the order the backend chose — which is
-// the affinity order the partition plan decides, not the bin numbering
-// (codegen-llvm/llvm_partition.h).
+// the affinity order the partition plan decides, not the bin numbering.
 //
 // `--keep-objs` is the other half. A seed costs a LINK, not a compile, only if
 // the objects outlive the build that made them; without it a per-seed sweep of

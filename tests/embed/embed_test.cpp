@@ -1,6 +1,6 @@
 // Runtime-level tests of the embedding API: everything here goes through the
 // same heap, registries and call machinery a real host would, and none of it
-// needs the LLVM backend — the "compiled program" side of each seam is played
+// needs the native backend — the "compiled program" side of each seam is played
 // by the runtime's own dynamic-call path. The embed-gc-stress run re-executes
 // all of it with a collection forced at every allocation, which is where the
 // rooting mistakes this module can make actually surface.

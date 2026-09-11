@@ -6,11 +6,10 @@
 
 namespace bronze {
 
-// Backend interface. The LLVM implementation lives in src/codegen-llvm
-// behind BRONZE_WITH_LLVM so the rest of the compiler builds, tests, and
-// iterates without the heavy dependency. There is deliberately NO fallback
-// backend: requesting codegen without a backend compiled in is a hard error
-// at the CLI, never a silent no-op.
+// Backend interface. The native implementation is BrassBackend in
+// src/codegen-brass. There is deliberately NO fallback backend: requesting
+// codegen without a backend compiled in is a hard error at the CLI, never a
+// silent no-op.
 class Backend {
 public:
     virtual ~Backend() = default;

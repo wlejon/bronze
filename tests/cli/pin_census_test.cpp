@@ -86,7 +86,6 @@ bool holds(const std::vector<std::string>& entries, const std::string& what) {
     return false;
 }
 
-#if BRONZE_WITH_LLVM
 std::string runOutput(const std::filesystem::path& exePath) {
     std::string result;
 #ifdef _WIN32
@@ -159,7 +158,6 @@ std::string buildWithPins(const std::string& name, const std::string& source,
     if (status != 0) return {};
     return runOutput(exe);
 }
-#endif
 
 // The factory-closure shape the whole campaign is aimed at: hot state in
 // captured bindings, one closure handed OUT, and the parameter of that closure
@@ -250,7 +248,6 @@ TEST_CASE("an array index is not a field and never registers an opaque row") {
     CHECK(il.find("opaque-store \"0\"") == std::string::npos);
 }
 
-#if BRONZE_WITH_LLVM
 
 // ---- the manifest, and the loop closing ------------------------------------
 
@@ -453,4 +450,3 @@ TEST_CASE("a wrong inference is a TypeError naming the census's own line") {
     CHECK(out.find("alive 3") != std::string::npos);
 }
 
-#endif  // BRONZE_WITH_LLVM

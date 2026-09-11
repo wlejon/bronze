@@ -68,7 +68,6 @@ std::string ilWithPins(const std::string& name, const std::string& source,
     return il;
 }
 
-#if BRONZE_WITH_LLVM
 std::string runOutput(const std::filesystem::path& exePath) {
     std::string result;
 #ifdef _WIN32
@@ -110,7 +109,6 @@ std::string buildAndRun(const std::string& name, const std::string& source,
     REQUIRE_MESSAGE(status == 0, err);
     return runOutput(exe);
 }
-#endif
 
 // The harness every behavioural program below shares: a violation has to be
 // DATA, so that the assertions can be about the message and about the program
@@ -145,7 +143,6 @@ TEST_CASE("a violating write to a pinned env slot throws a TypeError naming the 
     CHECK(il.find("pin.guard") != std::string::npos);
     CHECK(il.find("\"function makeState.cur: number\"") != std::string::npos);
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("env_slot", src, manifest);
     CHECK(out.find("before 7") != std::string::npos);
     CHECK(out.find("slot true pin 'function makeState.cur: number' violated") !=
@@ -156,7 +153,6 @@ TEST_CASE("a violating write to a pinned env slot throws a TypeError naming the 
     // slot reading a string pointer as a double, which is the whole failure
     // this stage exists to close.
     CHECK(out.find("after 7") != std::string::npos);
-#endif
 }
 
 TEST_CASE("a slot the fixpoint proved carries no barrier") {
@@ -195,13 +191,11 @@ TEST_CASE("a violating write to a pinned field throws a TypeError naming the fie
     CHECK(il.find("pin.guard") != std::string::npos);
     CHECK(il.find("\"Vec.x: number\"") != std::string::npos);
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("field_number", src, manifest);
     CHECK(out.find("before 4") != std::string::npos);
     CHECK(out.find("field true pin 'Vec.x: number' violated") != std::string::npos);
     CHECK(out.find("NOTHROW") == std::string::npos);
     CHECK(out.find("after 4") != std::string::npos);
-#endif
 }
 
 TEST_CASE("a nullish-widened field admits null and undefined and refuses a string") {
@@ -219,13 +213,11 @@ TEST_CASE("a nullish-widened field admits null and undefined and refuses a strin
     CHECK(il.find("pin.guard") != std::string::npos);
     CHECK(il.find("number-or-nullish") != std::string::npos);
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("field_nullish", src, manifest);
     CHECK(out.find("nullish-ok") != std::string::npos);
     CHECK(out.find("nullish true pin 'Node.limit: number-or-nullish' violated") !=
           std::string::npos);
     CHECK(out.find("NOTHROW") == std::string::npos);
-#endif
 }
 
 TEST_CASE("a numeric-elements field refuses a non-array and its elements refuse a non-number") {
@@ -248,7 +240,6 @@ TEST_CASE("a numeric-elements field refuses a non-array and its elements refuse 
     CHECK(il.find("dense-array") != std::string::npos);
     CHECK(il.find("<numeric-elements element>: number") != std::string::npos);
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("field_elements", src, manifest);
     CHECK(out.find("before 5") != std::string::npos);
     CHECK(out.find("whole true pin 'M.elements: numeric-elements' violated") !=
@@ -257,7 +248,6 @@ TEST_CASE("a numeric-elements field refuses a non-array and its elements refuse 
           std::string::npos);
     CHECK(out.find("NOTHROW") == std::string::npos);
     CHECK(out.find("after 5") != std::string::npos);
-#endif
 }
 
 TEST_CASE("a field store the compiler already typed f64 carries no barrier") {
@@ -290,13 +280,11 @@ TEST_CASE("a violating argument through the boxed wrapper throws and names the p
                             "console.log('after ' + apply(scale, 3));\n";
     const std::string manifest = "param scale(k): number\n";
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("param_pin", src, manifest);
     CHECK(out.find("before 6") != std::string::npos);
     CHECK(out.find("param true pin 'param scale(k): number' violated") != std::string::npos);
     CHECK(out.find("NOTHROW") == std::string::npos);
     CHECK(out.find("after 6") != std::string::npos);
-#endif
 }
 
 TEST_CASE("a violating return throws and names the return pin") {
@@ -315,13 +303,11 @@ TEST_CASE("a violating return throws and names the return pin") {
     const std::string il = ilWithPins("return_pin", src, manifest);
     CHECK(il.find("\"return pick: number\"") != std::string::npos);
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("return_pin", src, manifest);
     CHECK(out.find("before 42") != std::string::npos);
     CHECK(out.find("return true pin 'return pick: number' violated") != std::string::npos);
     CHECK(out.find("NOTHROW") == std::string::npos);
     CHECK(out.find("after 42") != std::string::npos);
-#endif
 }
 
 // ---- what a pinned array's stores are made of -------------------------------
@@ -354,9 +340,7 @@ TEST_CASE("a pinned element read on the right of a store reads raw") {
     // claim by its IL type, so the four accesses in `move` ask nothing.
     CHECK(il.find("<numeric-elements element>: number") == std::string::npos);
 
-#if BRONZE_WITH_LLVM
     CHECK(buildAndRun("elem_rhs_raw", src, manifest).find("1 2") != std::string::npos);
-#endif
 }
 
 TEST_CASE("a guarded element store spends its guard on the raw store") {
@@ -384,7 +368,6 @@ TEST_CASE("a guarded element store spends its guard on the raw store") {
     // answer away.
     CHECK(il.find("elem.set %") == std::string::npos);
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("elem_guard_raw", src, manifest);
     CHECK(out.find("before 7") != std::string::npos);
     CHECK(out.find("elem true pin '<numeric-elements element>: number' violated") !=
@@ -392,7 +375,6 @@ TEST_CASE("a guarded element store spends its guard on the raw store") {
     CHECK(out.find("NOTHROW") == std::string::npos);
     // The violating value was not stored: the guard runs BEFORE the unbox.
     CHECK(out.find("after 7") != std::string::npos);
-#endif
 }
 
 TEST_CASE("a violation mid-run is caught by a try in the SAME function") {
@@ -433,7 +415,6 @@ TEST_CASE("a violation mid-run is caught by a try in the SAME function") {
     CHECK(il.find("elem.set.typed") != std::string::npos);
     CHECK(il.find("<numeric-elements element>: number") != std::string::npos);
 
-#if BRONZE_WITH_LLVM
     const std::string out = buildAndRun("elem_run_try", src, manifest);
     CHECK(out.find("no-throw") != std::string::npos);
     CHECK(out.find("ok 5,6,9,8") != std::string::npos);
@@ -443,7 +424,6 @@ TEST_CASE("a violation mid-run is caught by a try in the SAME function") {
     // not write `b`'s 4 over the 8 that was there. An element 3 of 4 would mean
     // control carried on down the proof's fast arm past the raise.
     CHECK(out.find("after 1,2,9,8") != std::string::npos);
-#endif
 }
 
 // ---- the seam ---------------------------------------------------------------

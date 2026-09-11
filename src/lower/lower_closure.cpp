@@ -36,7 +36,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                                                     bool bindsOwnName) {
     std::string fnName = declaredName;
     if (fnName.empty()) {
-        fnName = "__anon_fn_" + std::to_string(ilModule_.functions.size());
+        anonFnCounter_ = std::max(anonFnCounter_, static_cast<uint32_t>(ilModule_.functions.size()));
+        fnName = "__anon_fn_" + std::to_string(anonFnCounter_++);
     }
     il::Function newFn;
     newFn.name = fnName;

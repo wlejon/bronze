@@ -31,7 +31,6 @@ if(BRONZE_BUILD_TESTS)
     # The determinism test needs a graph big enough for the hazard to have room
     # to happen in, and the vendored three.js one is already in the tree.
     target_compile_definitions(bronze_cli_tests PRIVATE
-        BRONZE_WITH_LLVM=1
         TEST_THREEJS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/oracle/threejs")
     if(MSVC)
         target_compile_options(bronze_cli_tests PRIVATE /W4 /WX /permissive-)

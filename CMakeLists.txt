@@ -36,35 +36,6 @@ if(BRONZE_IS_TOP_LEVEL AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
-option(BRONZE_WITH_LLVM "Build the LLVM codegen backend" OFF)
-if(BRONZE_WITH_LLVM)
-    if(NOT DEFINED LLVM_DIR AND NOT DEFINED ENV{LLVM_DIR})
-        foreach(_llvm_candidate
-                "D:/llvm-22/lib/cmake/llvm"
-                "D:/llvm-21/lib/cmake/llvm"
-                "D:/llvm-20/lib/cmake/llvm"
-                "C:/Program Files/LLVM/lib/cmake/llvm"
-                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows/share/llvm"
-                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/arm64-osx/share/llvm"
-                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-osx/share/llvm"
-                "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-linux/share/llvm"
-                "/opt/homebrew/opt/llvm/lib/cmake/llvm"
-                "/usr/local/opt/llvm/lib/cmake/llvm"
-                "/usr/lib/llvm-22/lib/cmake/llvm"
-                "/usr/lib/llvm-22/cmake"
-                "/usr/lib/llvm-21/lib/cmake/llvm"
-                "/usr/lib/llvm-21/cmake"
-                "/usr/lib/llvm-20/lib/cmake/llvm"
-                "/usr/lib/llvm-20/cmake")
-            if(EXISTS "${_llvm_candidate}")
-                set(LLVM_DIR "${_llvm_candidate}" CACHE PATH "" FORCE)
-                set(LLVM_DIR "${_llvm_candidate}")
-                list(APPEND CMAKE_PREFIX_PATH "${_llvm_candidate}/../..")
-                break()
-            endif()
-        endforeach()
-    endif()
-endif()
 
 # C is enabled solely for src/abi/abi_check.c, which compiles the
 # generated-code ABI header as pure C to keep C++ types out of it.
@@ -101,17 +72,13 @@ add_subdirectory(src/types)
 add_subdirectory(src/lower)
 add_subdirectory(src/codegen)
 add_subdirectory(src/codegen-brass)
-if(BRONZE_WITH_LLVM)
-    add_subdirectory(src/codegen-llvm)
-endif()
 add_subdirectory(src/rt)
 add_subdirectory(src/runtime)
 add_subdirectory(src/embed)
 add_subdirectory(src/cli)
-
 # The runtime again, as a DLL/.so/.dylib. After every module it is built from,
 # because it reads their source lists off the targets rather than relisting
-# them. It needs no LLVM: the backend is what EMITS a loadable module, the
+# them. It needs no backend: the backend is what EMITS a loadable module, the
 # runtime is only what one links against.
 include(cmake/bronze_shared_runtime.cmake)
 

@@ -83,7 +83,6 @@ TEST_CASE("a single object has no order to permute") {
     CHECK(bronze::cli::orderForLink(one) == one);
 }
 
-#if BRONZE_WITH_LLVM
 
 TEST_CASE("two seeds link the same objects into the same program") {
     SeedGuard guard;
@@ -149,4 +148,3 @@ TEST_CASE("two seeds link the same objects into the same program") {
     CHECK(linkUnder(uint64_t{0xB0BB1E5ull}, "seed_b") == unseeded);
 }
 
-#endif  // BRONZE_WITH_LLVM

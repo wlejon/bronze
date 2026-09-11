@@ -314,6 +314,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_env_get,             BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_get_tdz,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     X(bronze_env_set,             BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
+    X(bronze_env_ancestor,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     /* The environment ACCESS-GUARD tripwire: what the inline path branches to\
      * when the object tag, the Env brand or the slot range says the resolved\
      * (depth, index) does not describe the record it was handed. Every one of\
@@ -675,7 +676,12 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_print_i32,           BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
     X(bronze_print_dynamic,       BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_print_space,         BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
-    X(bronze_print_newline,       BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS))
+    X(bronze_print_newline,       BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+    X(bronze_print_f64_err,       BRONZE_ABI_VOID, (BRONZE_ABI_F64)) \
+    X(bronze_print_i32_err,       BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
+    X(bronze_print_dynamic_err,   BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
+    X(bronze_print_space_err,     BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+    X(bronze_print_newline_err,   BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS))
 
 /*
  * There are no data symbols in this ABI. Every mutable word generated code

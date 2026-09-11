@@ -225,6 +225,27 @@ void bronze_print_newline() {
     std::fflush(stdout);
 }
 
+void bronze_print_f64_err(double v) {
+    writeValue(Value::fromDouble(v).rawBits(), stderr);
+}
+
+void bronze_print_i32_err(int32_t v) {
+    writeValue(Value::fromDouble(static_cast<double>(v)).rawBits(), stderr);
+}
+
+void bronze_print_dynamic_err(uint64_t valBits) {
+    writeValue(valBits, stderr);
+}
+
+void bronze_print_space_err() {
+    std::fputc(' ', stderr);
+}
+
+void bronze_print_newline_err() {
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+}
+
 }  // extern "C"
 
 }  // namespace bronze::runtime

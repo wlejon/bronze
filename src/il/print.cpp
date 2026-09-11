@@ -180,7 +180,11 @@ static std::string formatBlockTarget(const BlockTarget& target) {
     return out;
 }
 
-std::string print(const Module& module) {
+std::string print(const Module& module, const std::vector<std::string>& fnNames) {
+    auto getFnName = [&](uint32_t idx) -> std::string {
+        if (idx < fnNames.size() && !fnNames[idx].empty()) return fnNames[idx];
+        return idx < module.functions.size() ? module.functions[idx].name : "?";
+    };
     std::string out = "module " + module.name + "\n";
     // The PIN CENSUS site table, when there is one. Printed because some of its
     // rows have NO instruction to read them off: a store through a receiver the
@@ -219,9 +223,10 @@ std::string print(const Module& module) {
         }
         out += "}\n";
     }
-    for (const auto& fn : module.functions) {
+    for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
+        const auto& fn = module.functions[fnIdx];
         if (fn.blocks.empty()) continue;
-        out += "\nfunc " + fn.name + "(";
+        out += "\nfunc " + getFnName(fnIdx) + "(";
         for (size_t i = 0; i < fn.params.size(); ++i) {
             if (i > 0) out += ", ";
             out += "%" + std::to_string(i) + ": " + typeName(fn.params[i].type);
@@ -589,9 +594,7 @@ std::string print(const Module& module) {
                         break;
                     }
                     case Op::FunctionRef:
-                        out += "func.ref @" + (inst.calleeIndex < module.functions.size()
-                                                   ? module.functions[inst.calleeIndex].name
-                                                   : "?");
+                        out += "func.ref @" + getFnName(inst.calleeIndex);
                         break;
                     case Op::Construct: {
                         out += "new";
@@ -812,7 +815,7 @@ std::string print(const Module& module) {
                         out += "create.array " + std::to_string(inst.immI32);
                         break;
                     case Op::CreateFunction:
-                        out += "create.func @" + (inst.calleeIndex < module.functions.size() ? module.functions[inst.calleeIndex].name : "?") +
+                        out += "create.func @" + getFnName(inst.calleeIndex) +
                                ", " + std::to_string(inst.immI32) + ", %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
@@ -870,7 +873,7 @@ std::string print(const Module& module) {
                             case Op::ConstI32: out += " " + std::to_string(inst.immI32); break;
                             case Op::ConstBool: out += " " + std::string(inst.immI32 ? "true" : "false"); break;
                             case Op::Call:
-                                out += " @" + module.functions[inst.calleeIndex].name;
+                                out += " @" + getFnName(inst.calleeIndex);
                                 break;
                             default: break;
                         }

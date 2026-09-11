@@ -34,3 +34,16 @@ EnvHeader* EnvHeader::ancestor(uint32_t depth) noexcept {
 }
 
 }  // namespace bronze
+
+extern "C" uint64_t bronze_env_ancestor(uint64_t envBits, uint32_t depth) {
+    if (depth == 0) return envBits;
+    bronze::Value envVal(envBits);
+    if (!envVal.isObject()) {
+        bronze::fatal("environment access on a value that is not an environment record");
+    }
+    auto* env = envVal.asObject<bronze::EnvHeader>();
+    if (env->header.flags != bronze::EnvHeader::kFlags) {
+        bronze::fatal("environment access on a value that is not an environment record");
+    }
+    return bronze::Value::fromObject(env->ancestor(depth)).rawBits();
+}

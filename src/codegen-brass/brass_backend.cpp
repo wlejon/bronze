@@ -16,7 +16,33 @@ namespace bronze {
 
 bool BrassBackend::emitObject(const il::Module& module, const std::string& outputPath,
                               DiagnosticSink& diags) {
-    const std::string ilText = il::print(module);
+    std::vector<std::string> uniqueNames(module.functions.size());
+    std::unordered_map<std::string, size_t> nameCounts;
+    for (const auto& fn : module.functions) {
+        nameCounts[fn.name]++;
+    }
+    std::unordered_set<std::string> usedNames;
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        const auto& fn = module.functions[i];
+        if (fn.isEntryPoint || (fn.name == "main" && nameCounts["main"] == 1)) {
+            uniqueNames[i] = "main";
+            usedNames.insert("main");
+        }
+    }
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        if (!uniqueNames[i].empty()) continue;
+        const auto& fn = module.functions[i];
+        if (nameCounts[fn.name] == 1 && !usedNames.count(fn.name)) {
+            uniqueNames[i] = fn.name;
+            usedNames.insert(fn.name);
+        } else {
+            std::string uname = fn.name + "$" + std::to_string(i);
+            uniqueNames[i] = uname;
+            usedNames.insert(uname);
+        }
+    }
+
+    const std::string ilText = il::print(module, uniqueNames);
 
     brass::il::TranslatorOptions options;
     options.enable_optimizations = true;
@@ -34,7 +60,8 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.entry_symbol = entrySymbol_;
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
-    for (const auto& fn : module.functions) {
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        const auto& fn = module.functions[i];
         brass::il::FunctionMeta meta;
         meta.needs_env = fn.needsEnv;
         meta.needs_this = fn.needsThis;
@@ -42,11 +69,26 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         meta.has_rest_param = fn.hasRestParam;
         meta.is_strict = fn.isStrict;
         meta.first_source_param = static_cast<uint32_t>(fn.firstSourceParam());
+        meta.fn_flags = fn.fnFlags | (fn.needsEnv ? 0x40u : 0u);
+        meta.name_key = fn.nameKeyIndex;
+        meta.required_args = fn.requiredArgs;
+        meta.adapt_arity = fn.adaptArity();
         for (const auto& p : fn.params) {
             meta.params_pinned.push_back(p.pinned);
             meta.param_pin_keys.push_back(p.pinKeyIndex);
         }
-        options.function_meta[fn.name] = meta;
+        options.function_meta[uniqueNames[i]] = meta;
+    }
+    for (uint16_t file = 0; file < module.sourceTexts.size(); ++file) {
+        brass::il::TranslatorOptions::SourceFileMeta sf;
+        sf.text_len = static_cast<uint32_t>(module.sourceTexts[file].size());
+        for (size_t i = 0; i < module.functions.size(); ++i) {
+            const auto& fn = module.functions[i];
+            if (fn.sourceFile == file && fn.sourceEnd > fn.sourceBegin && uniqueNames[i] != "main") {
+                sf.entry_count++;
+            }
+        }
+        options.source_files.push_back(sf);
     }
 
     brass::DiagnosticReporter reporter;
@@ -218,6 +260,78 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         }
     }
 
+    for (uint16_t file = 0; file < module.sourceTexts.size(); ++file) {
+        uint32_t entry_count = 0;
+        for (size_t i = 0; i < module.functions.size(); ++i) {
+            const auto& fn = module.functions[i];
+            if (fn.sourceFile == file && fn.sourceEnd > fn.sourceBegin && uniqueNames[i] != "main") {
+                entry_count++;
+            }
+        }
+        if (entry_count == 0) continue;
+
+        roSec.align_to(1);
+        const size_t textOffset = roSec.data.size();
+        const std::string& text = module.sourceTexts[file];
+        roSec.emit_bytes(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+        roSec.emit8(0);
+        const size_t textSize = text.size() + 1;
+
+        std::string textSymName = "__bronze_source_text_" + std::to_string(file);
+        if (auto* sym = obj.find_symbol(textSymName)) {
+            sym->section_index = obj.get_section_index(roSecName);
+            sym->value = textOffset;
+            sym->size = textSize;
+            sym->binding = brass::object::SymbolBinding::Local;
+            sym->type = brass::object::SymbolType::Object;
+        } else {
+            brass::object::ObjectSymbol textSym;
+            textSym.name = textSymName;
+            textSym.section_index = obj.get_section_index(roSecName);
+            textSym.value = textOffset;
+            textSym.size = textSize;
+            textSym.binding = brass::object::SymbolBinding::Local;
+            textSym.type = brass::object::SymbolType::Object;
+            obj.add_symbol(std::move(textSym));
+        }
+
+        roSec.align_to(8);
+        const size_t entriesOffset = roSec.data.size();
+        for (size_t i = 0; i < module.functions.size(); ++i) {
+            const auto& fn = module.functions[i];
+            if (fn.sourceFile != file || fn.sourceEnd <= fn.sourceBegin || uniqueNames[i] == "main") continue;
+            brass::object::ObjectRelocation reloc;
+            reloc.offset = roSec.data.size();
+            reloc.symbol_name = "__wrapper_" + uniqueNames[i];
+            reloc.kind = brass::object::RelocKind::Abs64;
+            reloc.addend = 0;
+            roSec.relocations.push_back(reloc);
+            roSec.emit64(0);
+            uint64_t span = (static_cast<uint64_t>(fn.sourceBegin) << 32) |
+                            static_cast<uint64_t>(fn.sourceEnd - fn.sourceBegin);
+            roSec.emit64(span);
+        }
+        const size_t entriesSize = entry_count * 16;
+
+        std::string entriesSymName = "__bronze_source_entries_" + std::to_string(file);
+        if (auto* sym = obj.find_symbol(entriesSymName)) {
+            sym->section_index = obj.get_section_index(roSecName);
+            sym->value = entriesOffset;
+            sym->size = entriesSize;
+            sym->binding = brass::object::SymbolBinding::Local;
+            sym->type = brass::object::SymbolType::Object;
+        } else {
+            brass::object::ObjectSymbol entriesSym;
+            entriesSym.name = entriesSymName;
+            entriesSym.section_index = obj.get_section_index(roSecName);
+            entriesSym.value = entriesOffset;
+            entriesSym.size = entriesSize;
+            entriesSym.binding = brass::object::SymbolBinding::Local;
+            entriesSym.type = brass::object::SymbolType::Object;
+            obj.add_symbol(std::move(entriesSym));
+        }
+    }
+
     std::string dataSecName = target.is_windows() ? ".data" : ".data";
     brass::object::Section& dataSec = obj.get_or_create_section(
         dataSecName,
@@ -266,6 +380,33 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         kmSym.binding = brass::object::SymbolBinding::Local;
         kmSym.type = brass::object::SymbolType::Object;
         obj.add_symbol(std::move(kmSym));
+    }
+
+    dataSec.align_to(8);
+    const size_t tplOffset = dataSec.data.size();
+    const size_t tplCount = 1024;
+    const size_t tplBytes = tplCount * sizeof(uint64_t);
+    const size_t curTplSize = dataSec.data.size();
+    dataSec.data.resize(curTplSize + tplBytes);
+    for (size_t i = 0; i < tplCount; ++i) {
+        *reinterpret_cast<uint64_t*>(&dataSec.data[curTplSize + i * sizeof(uint64_t)]) = BRONZE_ABI_UNDEFINED_BITS;
+    }
+
+    if (auto* sym = obj.find_symbol("__bronze_template_cells")) {
+        sym->section_index = obj.get_section_index(dataSecName);
+        sym->value = tplOffset;
+        sym->size = tplBytes;
+        sym->binding = brass::object::SymbolBinding::Local;
+        sym->type = brass::object::SymbolType::Object;
+    } else {
+        brass::object::ObjectSymbol tplSym;
+        tplSym.name = "__bronze_template_cells";
+        tplSym.section_index = obj.get_section_index(dataSecName);
+        tplSym.value = tplOffset;
+        tplSym.size = tplBytes;
+        tplSym.binding = brass::object::SymbolBinding::Local;
+        tplSym.type = brass::object::SymbolType::Object;
+        obj.add_symbol(std::move(tplSym));
     }
 
     for (auto& sym : obj.symbols) {

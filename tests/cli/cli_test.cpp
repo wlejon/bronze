@@ -91,7 +91,6 @@ TEST_CASE("CLI driver build command compiles and links executable") {
     std::string err;
     int status = bronze::cli::runBuild(jsPath.string(), exePath.string(), &err);
 
-#if BRONZE_WITH_LLVM
     REQUIRE(status == 0);
     REQUIRE(std::filesystem::exists(exePath));
 
@@ -99,15 +98,10 @@ TEST_CASE("CLI driver build command compiles and links executable") {
     CHECK(output == "42\n");
 
     std::filesystem::remove(exePath, ec);
-#else
-    CHECK(status != 0);
-    CHECK(err.find("BRONZE_WITH_LLVM") != std::string::npos);
-#endif
 
     std::filesystem::remove(jsPath, ec);
 }
 
-#if BRONZE_WITH_LLVM
 TEST_CASE("CLI driver concurrent builds do not collide on temp object path") {
     std::filesystem::path dirA = std::filesystem::temp_directory_path() / "bronze_test_cli_a";
     std::filesystem::path dirB = std::filesystem::temp_directory_path() / "bronze_test_cli_b";
@@ -320,7 +314,6 @@ TEST_CASE("CLI driver accepts --import-map parameter in runTypes and runBuild") 
 
     std::filesystem::remove_all(tempDir, ec);
 }
-#endif
 
 
 

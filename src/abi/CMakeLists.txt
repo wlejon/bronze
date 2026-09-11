@@ -9,8 +9,7 @@ bronze_add_module(abi
 # header IS the ABI — every helper signature, data symbol, layout constant
 # and bit pattern generated code relies on lives in it — so its content
 # hash names the ABI version without a number anyone can forget to bump.
-#
-# codegen-llvm stamps the value into every emitted object as
+# The backend stamps the value into every emitted object as
 # `bronze_object_abi_fingerprint`; the runtime compares the object's stamp
 # against its own value at program entry (runtime/abi_guard.h). PUBLIC so
 # both sides read one value from one place. A meaning-only ABI change that

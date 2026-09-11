@@ -9,7 +9,7 @@ out of scope.
 ## Build & test (Ninja + cl via the vcvars wrapper)
 
 ```
-.\dev.cmd cmake --preset dev -DBRONZE_WITH_LLVM=ON   # configure
+.\dev.cmd cmake --preset dev               # configure
 .\dev.cmd cmake --build --preset dev      # build (incremental ~2s)
 .\dev.cmd ctest --preset dev              # all tests (~5 min)
 .\dev.cmd ctest --preset dev -L lex       # one module's tests
@@ -21,16 +21,8 @@ out of scope.
 Iterate with scoped module tests; run the full `ctest` before any commit.
 
 The `dev` preset builds **Release**, deliberately: this test suite compiles
-hundreds of JS programs, and a Debug bronze links debug LLVM, which is ~20x
-slower at object emission (the three.js graph: ~3.4 s Release, ~72 s Debug).
-Wall time is the loop; don't switch the working build to Debug.
-
-`-DBRONZE_WITH_LLVM=ON` is on the configure line and not in the preset,
-because the hard rule below keeps the default build free of LLVM. It is not
-optional for the pre-commit run: `tests/oracle` is only defined when the
-backend is built, so without it `ctest` silently runs 15 tests instead of 19
-and the entire oracle ratchet — the thing that decides whether bronze is
-correct — is absent rather than failing.
+hundreds of JS programs. Wall time is the loop; don't switch the working
+build to Debug.
 
 `oracle-threejs` compiles unmodified three.js r160 from vendored source and
 checks the scene graph it builds (`tests/oracle/threejs/README.md`).
@@ -43,8 +35,7 @@ but `-LE "threejs|pixi"` is the loop to iterate against.
 
 ## Hard rules
 
-- **Never make the default build depend on heavy libraries.** LLVM lives
-  behind the vcpkg `llvm` feature + `-DBRONZE_WITH_LLVM=ON` only.
+- **Brass is the native backend.** Object code is generated via Brass.
 - **Hard errors over silent fallbacks.** Unimplemented constructs are
   diagnosed by name; no quiet skips, no placeholder output.
 - **Every parser consumes all input or errors.** No silent drops.
@@ -70,7 +61,7 @@ but `-LE "threejs|pixi"` is the loop to iterate against.
 - **The generated-code ABI lives in `src/abi/bronze_abi.h`, and only
   there.** Pure C, primitives only (u64 in / u64 out); every helper
   generated code calls is an X(...) line in its registry, which expands
-  into both the C prototypes and codegen-llvm's LLVM declarations. Never
+  into both the C prototypes and the backend's declarations. Never
   hand-declare a runtime symbol in the backend, and never put a C++ type
   in a signature generated code touches — MSVC returns classes via hidden
   sret, which silently shifts every argument register (the 2026-08-10

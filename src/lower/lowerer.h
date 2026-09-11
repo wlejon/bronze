@@ -122,6 +122,7 @@ private:
     // keyConstants_ read the other way, filled as indices are handed out.
     std::vector<std::string> keyStrings_;
     uint32_t icSiteCounter_ = 0;
+    uint32_t anonFnCounter_ = 0;
 
     // --- the direct method-call edge (direct_method_table.h) --------------
     DirectMethodTable directMethods_;

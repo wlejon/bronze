@@ -30,7 +30,7 @@ IL  (src/il)       — typed SSA, canonical text form. Native types where
    │                 is the sound fallback, not a failure
    ▼
 Backend (src/codegen interface)
-   │  src/codegen-llvm  — LLVM, gated by BRONZE_WITH_LLVM
+   │  src/codegen-brass — Brass native backend
    ▼
 object file → system linker → exe
 ```
@@ -186,23 +186,8 @@ cmake --build --preset dev  # build everything
 ctest --preset dev          # run all module tests
 ```
 
-That is the light configure, and it does not build a compiler that can emit
-an executable: the LLVM backend is opt-in, and `tests/oracle` is only defined
-when it is on. Working on the front half — lexer, parser, inference, lowering,
-IL — that is the loop you want, and its tests are the whole suite.
-
-```
-cmake --preset dev -DBRONZE_WITH_LLVM=ON
-```
-
-is the other one, and it is what `bronze build`, the oracle suite and the
-three.js milestone need. **It is the configure the pre-commit run means.**
-Without it `ctest` does not fail, it runs a smaller suite, which is the more
-dangerous of the two.
-
-The `llvm` vcpkg feature is provisioned once (`vcpkg` builds it from source,
-hours; binary-cached afterwards). Day-to-day work on the front half does not
-rebuild or even see it.
+The default build compiles Bronze with the Brass native backend (`src/codegen-brass`),
+enabling `bronze build`, the oracle suite, and the milestone tests out of the box.
 
 ## Iteration workflow (the point of this repo layout)
 
@@ -215,7 +200,7 @@ cmake --build --preset dev --target bronze_lex_tests && ctest --preset dev -L le
 
 Rules that keep iteration fast:
 
-- **Heavy deps are opt-in.** The default configure/build never touches LLVM.
+- **Brass native backend.** Native object emission uses Brass.
 - **Scoped tests per change; full `ctest` before a commit.** Not the other
   way around.
 - **No module reaches into another's internals.** Dependencies flow through
@@ -225,7 +210,7 @@ Rules that keep iteration fast:
 
 | Path | Contents |
 |---|---|
-| `src/support` | Source buffers, spans, diagnostics, and the `--timings` flag the CLI and the LLVM backend both report through |
+| `src/support` | Source buffers, spans, diagnostics, and the `--timings` flag the CLI and backend both report through |
 | `src/lex` | Hand-written lexer (TS core) |
 | `src/ast` | AST nodes + visitor + canonical dump |
 | `src/parse` | Recursive-descent parser, split by grammar seam: `parser_stmt` (cursor + statements), `parser_expr`, `parser_literal` (escapes, templates, object/array literals), `parser_func` (functions, arrows, classes), `parser_pattern` (destructuring targets), `parser_module` (import/export), `parser_generator` (the desugaring), `parser_strict` (the Directive Prologue and the early errors strict code alone has) |
@@ -234,7 +219,7 @@ Rules that keep iteration fast:
 | `src/lower` | AST + inference side table → IL. Split by seam, one file per construct family rather than by size: `lower_infer` (what may be believed), `lower_scope` (closures and env slots), `lower_control` (block-argument SSA), and a file each for the expression kinds (`lower_expr`, `_binary`, `_chain`, `_cond`), the statement kinds (`lower_stmt`, `_switch`, `_try`, `_label`, `_iter_loop`), and the declaration kinds (`lower_object`, `_class`, `_pattern`, `_update`, `_unresolved`) |
 | `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |
 | `src/codegen` | Backend interface |
-| `src/codegen-llvm` | LLVM backend (gated: `BRONZE_WITH_LLVM`): `llvm_abi` (helper declarations from the ABI registry), `llvm_prop_get`/`llvm_prop_set` (the inline property caches, one file per direction, over the guards they share in `llvm_prop_ic`), `llvm_func`/`llvm_ops`/`llvm_arith` (one IL function's body), `llvm_backend` (module in, object file out) |
+| `src/codegen-brass` | Brass native backend: `brass_backend.cpp` (translates Bronze IL to native machine code via Brass) |
 | `src/abi` | The generated-code ABI (`bronze_abi.h`) and its pure-C compile check — the only place a runtime helper signature is written. Its content hash is the ABI fingerprint (see Embedding above) |
 | `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments. The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_reflect` (28.1, whose members are the internal methods by name and so are forwards into the funnels `rt_object` and `rt_prop` already own), `rt_prop` (property access, split by receiver kind: `rt_prop_primitive` is the one whose answer comes from an intrinsic rather than from the receiver, `rt_prop_map` the one whose named properties are a side object beside its entries), `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built). Unicode DEFAULT CASE CONVERSION lives here rather than in `src/regex`, because it is a different operation from folding over different data: `unicode_case` is the algorithm and `unicode_case_data_*.cpp` the generated tables |
 | `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts |
