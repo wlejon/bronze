@@ -408,33 +408,8 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
 std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess* mem,
                                                          il::Function& ilFn, bool onSpine) {
     if (nativeManifest_) {
-        std::string className;
-        if (const auto* objIdent = dynamic_cast<const ast::Ident*>(mem->object.get())) {
-            auto it = varNativeClasses_.find(objIdent->name);
-            if (it != varNativeClasses_.end()) {
-                className = it->second;
-            }
-        }
-        if (!className.empty()) {
-            const auto* cls = nativeManifest_->findClass(className);
-            if (cls) {
-                auto pIt = cls->properties.find(mem->property);
-                if (pIt != cls->properties.end() && !pIt->second.getterSymbol.empty()) {
-                    auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
-                    if (!objVal) return std::nullopt;
-                    il::Type retType = nativeTypeToIl(pIt->second.type);
-                    uint32_t calleeIdx = registerExternalFunction(pIt->second.getterSymbol, retType, {il::Type::Dynamic});
-                    il::ValueId res = ilFn.valueCount++;
-                    il::Instruction inst;
-                    inst.op = il::Op::Call;
-                    inst.type = retType;
-                    inst.result = res;
-                    inst.operands = {boxValueIfNeeded(*objVal, ilFn).id};
-                    inst.calleeIndex = calleeIdx;
-                    emitInst(ilFn, inst);
-                    return Value{res, retType};
-                }
-            }
+        if (auto nativeProp = tryLowerNativePropertyGet(mem, ilFn, onSpine)) {
+            return nativeProp;
         }
     }
 

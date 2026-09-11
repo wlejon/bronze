@@ -15,4 +15,12 @@ sm.setTarget(100.0);
 let cur1 = sm.current;
 let cur2 = sm.tick();
 
-console.log(v, c, count, nearest, r1, cur1, cur2);
+let t0 = bro.time.scale;
+bro.time.scale = 2.5;
+let t1 = bro.time.scale;
+let p0 = bro.time.paused;
+bro.time.paused = true;
+let p1 = bro.time.paused;
+let now = bro.time.now;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now);

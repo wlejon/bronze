@@ -68,7 +68,11 @@ public:
     // Check if an identifier is a known class name (e.g. "SpatialHash3D")
     bool isKnownClass(const std::string& name) const;
 
+    // Look up namespace property by full path e.g. "bro.time.scale"
+    const NativePropertySig* findNamespaceProperty(const std::string& qualifiedName) const;
+
     const std::unordered_map<std::string, NativeFunctionSig>& functions() const { return functions_; }
+    const std::unordered_map<std::string, NativePropertySig>& namespaceProperties() const { return namespaceProperties_; }
     const std::unordered_map<std::string, NativeClassSig>& classes() const { return classes_; }
     const std::unordered_set<std::string>& namespaceRoots() const { return namespaceRoots_; }
     const std::unordered_set<std::string>& knownClasses() const { return knownClasses_; }
@@ -78,6 +82,7 @@ public:
 
 private:
     std::unordered_map<std::string, NativeFunctionSig> functions_;
+    std::unordered_map<std::string, NativePropertySig> namespaceProperties_;
     std::unordered_map<std::string, NativeClassSig> classes_;
     std::unordered_set<std::string> namespaceRoots_;
     std::unordered_set<std::string> knownClasses_;

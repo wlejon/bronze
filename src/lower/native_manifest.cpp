@@ -202,6 +202,24 @@ std::optional<NativeManifest> NativeManifest::loadFromFile(const std::string& pa
                         }
                     }
                 }
+
+                if (const auto* propsObj = findMember(nsVal, "properties")) {
+                    if (propsObj->kind == json::Value::Kind::Object) {
+                        for (const auto& pMember : propsObj->members) {
+                            std::string propName = toUtf8(pMember.key);
+                            const auto* pVal = pMember.value.get();
+                            if (!pVal) continue;
+
+                            NativePropertySig psig;
+                            psig.getterSymbol = getStringMember(pVal, "getter");
+                            psig.setterSymbol = getStringMember(pVal, "setter");
+                            psig.type = parseNativeTypeKind(getStringMember(pVal, "returnType"));
+
+                            std::string qName = nsName + "." + propName;
+                            manifest.namespaceProperties_[qName] = psig;
+                        }
+                    }
+                }
             }
         }
     }
@@ -332,6 +350,9 @@ bool NativeManifest::merge(const NativeManifest& other) {
     for (const auto& [k, v] : other.functions_) {
         functions_[k] = v;
     }
+    for (const auto& [k, v] : other.namespaceProperties_) {
+        namespaceProperties_[k] = v;
+    }
     for (const auto& [k, v] : other.classes_) {
         classes_[k] = v;
     }
@@ -350,6 +371,12 @@ bool NativeManifest::merge(const NativeManifest& other) {
 const NativeFunctionSig* NativeManifest::findFunction(const std::string& qualifiedName) const {
     auto it = functions_.find(qualifiedName);
     if (it != functions_.end()) return &it->second;
+    return nullptr;
+}
+
+const NativePropertySig* NativeManifest::findNamespaceProperty(const std::string& qualifiedName) const {
+    auto it = namespaceProperties_.find(qualifiedName);
+    if (it != namespaceProperties_.end()) return &it->second;
     return nullptr;
 }
 
