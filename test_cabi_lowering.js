@@ -150,5 +150,63 @@ let evtType = evt.type;
 // 18. Text
 let bidiAvail = bro.text.bidiAvailable;
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail);
+// --- Phase 9 Subsystems: Graphics, Canvas, WebGL2, Imaging & GPU ---
+// 19. GPU
+let gpuAvail = bro.gpu.available;
+let gpuBackend = bro.gpu.backend;
+let gpuDevCount = bro.gpu.deviceCount("cpu");
+let gpuDevName = bro.gpu.deviceName("cpu");
+let gpuTrimmed = bro.gpu.trim("cpu", 0);
+
+// 20. Image
+let img = new Image();
+img.src = "assets/logo.png";
+let imgSrc = img.src;
+let imgComplete = img.complete;
+let imgW = img.width;
+let imgH = img.height;
+
+// 21. ImageBitmap & ImageData
+let imgData = new ImageData(32, 32);
+let imgDataW = imgData.width;
+let imgDataH = imgData.height;
+let imgBmp = new ImageBitmap();
+let imgBmpW = imgBmp.width;
+imgBmp.close();
+let createdBmp = createImageBitmap(imgData);
+
+// 22. Canvas (CanvasRenderingContext2D, CanvasGradient, TextMetrics)
+let canvasCtx = new CanvasRenderingContext2D();
+canvasCtx.fillStyle = "#ff0000";
+canvasCtx.lineWidth = 2.0;
+let ctxFill = canvasCtx.fillStyle;
+let ctxLineW = canvasCtx.lineWidth;
+canvasCtx.save();
+canvasCtx.beginPath();
+canvasCtx.closePath();
+canvasCtx.stroke();
+canvasCtx.fill();
+canvasCtx.restore();
+
+let grad = new CanvasGradient();
+grad.addColorStop(0.0, "#000000");
+grad.addColorStop(1.0, "#ffffff");
+
+let metrics = new TextMetrics();
+let metricsW = metrics.width;
+
+// 23. WebGL2 (WebGL2RenderingContext, WebGLBuffer, etc.)
+let gl = new WebGL2RenderingContext();
+gl.viewport(0, 0, 800, 600);
+gl.clearColor(0.1, 0.2, 0.3, 1.0);
+gl.clear(16384);
+let glBuf = gl.createBuffer();
+let glTex = gl.createTexture();
+let glProg = gl.createProgram();
+gl.deleteBuffer(glBuf);
+gl.deleteTexture(glTex);
+gl.deleteProgram(glProg);
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW);
+
 
