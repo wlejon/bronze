@@ -299,6 +299,80 @@ let webAnims = new WebAnimations();
 let anim = new Animation();
 let animRate = anim.playbackRate;
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate);
+// --- Phase 13 Subsystems: Game AI, GpuTensor, Vision ML & Diffusion Inference Subsystems ---
+// 38. Game AI (AIAgent, AIWorld, AINavGrid, CombatAction, Formation, VecSim, bro.ai.game)
+let aiWorld = new AIWorld();
+aiWorld.step(0.016);
+let agent = new AIAgent();
+let agentId = agent.id;
+agent.setPosition(10.0, 0.0, 20.0);
+agent.setVelocity(1.0, 0.0, 0.0);
+agent.setGoal(50.0, 0.0, 50.0);
+agent.stop();
+let worldAgent = aiWorld.createAgent();
+aiWorld.destroyAgent(worldAgent);
+
+let navGrid = new AINavGrid();
+let walkable0 = navGrid.isWalkable(0.0, 0.0);
+navGrid.setWalkable(0.0, 0.0, false);
+let walkable1 = navGrid.isWalkable(0.0, 0.0);
+
+let combat = new CombatAction();
+combat.targetX = 12.5;
+let cX = combat.targetX;
+combat.targetZ = 25.0;
+let cZ = combat.targetZ;
+combat.actionType = 3;
+let cType = combat.actionType;
+
+let formation = new Formation();
+formation.setLeader(agent);
+formation.addFollower(agent, 2.0, 2.0);
+formation.update(0.016);
+
+let vecSim = new VecSim();
+vecSim.step(0.016);
+
+let fWorld = bro.ai.game.createWorld();
+let fCombat = bro.ai.game.createCombatAction();
+
+// 39. GpuTensor & bro.tensor
+bro.tensor.init();
+let tensorAvail = bro.tensor.available;
+let tensorBackend = bro.tensor.backend;
+let gpuTensor = new GpuTensor();
+let gtRows = gpuTensor.rows;
+let gtCols = gpuTensor.cols;
+let gtSize = gpuTensor.size;
+let gtBytes = gpuTensor.bytes;
+gpuTensor.zero();
+let gtDtype = gpuTensor.dtype();
+let gtClone = gpuTensor.clone();
+let createdTensor = bro.tensor.createTensor(4, 4);
+let ctRows = createdTensor.rows;
+let ctCols = createdTensor.cols;
+
+// 40. Vision (DepthEstimator, Sam, NormalEstimator, Hed, Lineart, Mlsd, Openpose, Segformer, Birefnet, StyleGAN3, Dinov2, Dinov3, bro.vision)
+bro.vision.init();
+let depth = new DepthEstimator();
+let depthDev = depth.device;
+let sam = new Sam();
+let samDev = sam.device;
+let samHasImg = sam.hasImage;
+let sg3 = new StyleGAN3();
+let sg3Z = sg3.zDim;
+let sg3Res = sg3.imgResolution;
+let dinov2 = new Dinov2();
+let d2Dev = dinov2.device;
+let dinov3 = new Dinov3();
+let d3Dev = dinov3.device;
+
+// 41. Diffusion (Pipeline, PipelineState, bro.diffusion)
+bro.diffusion.init();
+let diffVer = bro.diffusion.version;
+let pipe = new Pipeline();
+let pipeState = new PipelineState();
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer);
 
 
