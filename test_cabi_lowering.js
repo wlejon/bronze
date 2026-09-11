@@ -95,4 +95,23 @@ let gpBtn = bro.gamepad.getButton(0, 0);
 let gpRumble = bro.gamepad.rumble(0, 0.8, 0.4, 200);
 let gpTriggers = bro.gamepad.rumbleTriggers(0, 0.5, 0.5, 100);
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers);
+// --- Phase 6 Subsystems ---
+// 7. Media (availability query)
+let mediaAvail = bro.media.available;
+
+// 8. Listen (support check, retain, frame query)
+let listenSupported = bro.listen.supported();
+bro.listen.retain(10);
+let listenFrame = bro.listen.frame();
+
+// 9. Audio (AudioContext, VoiceAllocator, Sequence)
+let ctx = new AudioContext();
+let ctxRate = ctx.sampleRate;
+let ctxState = ctx.state;
+let va = new VoiceAllocator();
+let vaCount = va.voiceCount();
+let seq = new Sequence();
+let seqTempo = seq.tempo;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo);
+
