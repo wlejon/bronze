@@ -19,6 +19,53 @@ std::string Lowerer::getDottedPath(const ast::Expr* expr) const {
     return "";
 }
 
+std::string Lowerer::getNativeClassOfExpr(const ast::Expr* expr) const {
+    if (!nativeManifest_ || !expr) return "";
+    if (const auto* id = dynamic_cast<const ast::Ident*>(expr)) {
+        auto it = varNativeClasses_.find(id->name);
+        if (it != varNativeClasses_.end()) return it->second;
+        return "";
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(expr)) {
+        std::string parentClass = getNativeClassOfExpr(mem->object.get());
+        if (!parentClass.empty()) {
+            const auto* cls = nativeManifest_->findClass(parentClass);
+            if (cls) {
+                auto pIt = cls->properties.find(mem->property);
+                if (pIt != cls->properties.end() && !pIt->second.returnClass.empty()) {
+                    return pIt->second.returnClass;
+                }
+                auto mIt = cls->methods.find(mem->property);
+                if (mIt != cls->methods.end() && !mIt->second.returnClass.empty()) {
+                    return mIt->second.returnClass;
+                }
+            }
+        }
+        return "";
+    }
+    if (const auto* call = dynamic_cast<const ast::Call*>(expr)) {
+        if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
+            std::string parentClass = getNativeClassOfExpr(mem->object.get());
+            if (!parentClass.empty()) {
+                const auto* cls = nativeManifest_->findClass(parentClass);
+                if (cls) {
+                    auto mIt = cls->methods.find(mem->property);
+                    if (mIt != cls->methods.end() && !mIt->second.returnClass.empty()) {
+                        return mIt->second.returnClass;
+                    }
+                }
+            }
+        }
+        std::string dotted = getDottedPath(call->callee.get());
+        if (!dotted.empty()) {
+            const auto* fn = nativeManifest_->findFunction(dotted);
+            if (fn) return fn->returnClass;
+        }
+        return "";
+    }
+    return "";
+}
+
 void Lowerer::initNativeManifestGlobals() {
     if (!nativeManifest_) return;
     for (const auto& root : nativeManifest_->namespaceRoots()) {
@@ -155,13 +202,7 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
 
     // 2. Method invocation on a native class instance, e.g. sh.insert(...)
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
-        std::string className;
-        if (const auto* objIdent = dynamic_cast<const ast::Ident*>(mem->object.get())) {
-            auto it = varNativeClasses_.find(objIdent->name);
-            if (it != varNativeClasses_.end()) {
-                className = it->second;
-            }
-        }
+        std::string className = getNativeClassOfExpr(mem->object.get());
 
         if (!className.empty()) {
             const auto* cls = nativeManifest_->findClass(className);
@@ -329,13 +370,7 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
     }
 
     // 2. Class instance property access, e.g. smoother.current
-    std::string className;
-    if (const auto* objIdent = dynamic_cast<const ast::Ident*>(mem->object.get())) {
-        auto it = varNativeClasses_.find(objIdent->name);
-        if (it != varNativeClasses_.end()) {
-            className = it->second;
-        }
-    }
+    std::string className = getNativeClassOfExpr(mem->object.get());
     if (!className.empty()) {
         const auto* cls = nativeManifest_->findClass(className);
         if (cls) {
@@ -356,7 +391,7 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
                 if (retType == il::Type::Str) {
                     return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
                 }
-                return Value{res, retType};
+                return Value{res, retType, pIt->second.returnClass};
             }
         }
     }
@@ -434,13 +469,7 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeAssignment(const ast::Binar
     }
 
     // 2. Class instance property assignment, e.g. obj.prop = val
-    std::string className;
-    if (const auto* objIdent = dynamic_cast<const ast::Ident*>(mem->object.get())) {
-        auto it = varNativeClasses_.find(objIdent->name);
-        if (it != varNativeClasses_.end()) {
-            className = it->second;
-        }
-    }
+    std::string className = getNativeClassOfExpr(mem->object.get());
     if (!className.empty()) {
         const auto* cls = nativeManifest_->findClass(className);
         if (cls) {

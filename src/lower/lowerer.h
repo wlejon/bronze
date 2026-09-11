@@ -553,6 +553,7 @@ private:
     std::unordered_map<std::string, std::string> varNativeClasses_;
     void initNativeManifestGlobals();
     std::string getDottedPath(const ast::Expr* expr) const;
+    std::string getNativeClassOfExpr(const ast::Expr* expr) const;
     std::optional<Value> tryLowerNativeCall(const ast::Call* call, il::Function& ilFn);
     std::optional<Value> tryLowerNativeNew(const ast::NewExpr* newExpr, il::Function& ilFn);
     std::optional<Value> tryLowerNativePropertyGet(const ast::MemberAccess* mem, il::Function& ilFn, bool onSpine);

@@ -112,6 +112,26 @@ let va = new VoiceAllocator();
 let vaCount = va.voiceCount();
 let seq = new Sequence();
 let seqTempo = seq.tempo;
+// --- Phase 7 Subsystems ---
+// 10. Steam (availability, persona, appId)
+let steamAvail = bro.steam.available;
+let steamPersona = bro.steam.personaName;
+let steamAppId = bro.steam.appId;
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo);
+// 11. Server (tickrate, uptime, stop)
+let srvTick = bro.server.tickrate;
+let srvUptime = bro.server.uptime;
+bro.server.stop();
+
+// 12. Net (peers)
+let netPeers = bro.net.peers();
+
+// 13. Worker (new Worker)
+let worker = new Worker("worker.js");
+
+// 14. Abort (AbortController, signal.aborted)
+let controller = new AbortController();
+let aborted = controller.signal.aborted;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted);
 

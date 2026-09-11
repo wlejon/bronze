@@ -37,6 +37,7 @@ struct NativePropertySig {
     std::string getterSymbol;
     std::string setterSymbol;
     NativeTypeKind type = NativeTypeKind::Dynamic;
+    std::string returnClass;
 };
 
 struct NativeClassSig {

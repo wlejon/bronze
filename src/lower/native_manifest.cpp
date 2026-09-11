@@ -305,6 +305,7 @@ std::optional<NativeManifest> NativeManifest::loadFromFile(const std::string& pa
                             psig.getterSymbol = getStringMember(pVal, "getter");
                             psig.setterSymbol = getStringMember(pVal, "setter");
                             psig.type = parseNativeTypeKind(getStringMember(pVal, "returnType"));
+                            psig.returnClass = getStringMember(pVal, "returnClass");
                             clsSig.properties[propName] = psig;
                         }
                     }
