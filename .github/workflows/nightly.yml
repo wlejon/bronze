@@ -32,7 +32,6 @@ permissions:
 env:
   # Same pins as ci.yml — see the comments there.
   VCPKG_COMMIT: 0b88aacde46a853151730fbe7d0b7ee45f4b6864
-  LLVM_VERSION: "22.1.8"
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
@@ -67,34 +66,27 @@ jobs:
       - name: sccache
         uses: mozilla-actions/sccache-action@v0.0.11
 
-      # Shares ci.yml's caches — the keys are content-addressed per version /
-      # per package, not per workflow.
-      - name: LLVM prebuilt cache
-        id: llvm-cache
-        uses: actions/cache@v6
+      # Put cl.exe on PATH so Windows can use the dev preset's Ninja generator
+      # (this is what dev.cmd does locally). Also gives ctest's oracle cases
+      # link.exe, which `bronze build` invokes to link its test executables.
+      - name: MSVC dev environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          path: ${{ runner.temp }}/llvm-prebuilt
-          key: llvm-${{ env.LLVM_VERSION }}-${{ matrix.llvm }}
+          arch: x64
 
-      - name: Fetch LLVM prebuilt
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+      - name: Checkout brass
+        uses: actions/checkout@v7
+        with:
+          repository: wlejon/brass
+          path: brass
+
+      - name: Build brass
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p "$RUNNER_TEMP/llvm-prebuilt"
-          gh release download "llvm-prebuilt-${LLVM_VERSION}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" \
-            --dir "$RUNNER_TEMP"
-          # cd first: $RUNNER_TEMP is a D:\... path on Windows, and GNU tar
-          # reads the colon in an -f argument as a remote-host separator.
-          cd "$RUNNER_TEMP"
-          tar -xzf "bronze-llvm-${LLVM_VERSION}-${{ matrix.llvm }}.tar.gz" -C llvm-prebuilt
-
-      - name: Point LLVM_DIR at the prebuilt
-        shell: bash
-        run: echo "LLVM_DIR=$RUNNER_TEMP/llvm-prebuilt/llvm/lib/cmake/llvm" >> "$GITHUB_ENV"
+          cmake -B brass/build -S brass -DCMAKE_BUILD_TYPE=Release
+          cmake --build brass/build --config Release
+          echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
 
       - name: vcpkg (pinned)
         shell: bash
@@ -119,12 +111,6 @@ jobs:
             vcpkg-bin-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-
             vcpkg-bin-${{ matrix.triplet }}-
 
-      - name: MSVC dev environment (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
       - name: Configure
         shell: bash
         run: |
@@ -132,7 +118,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             EXTRA="-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
           fi
-          cmake --preset dev -DBRONZE_WITH_LLVM=ON \
+          cmake --preset dev \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \

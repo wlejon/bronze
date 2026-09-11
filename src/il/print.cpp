@@ -181,7 +181,7 @@ static std::string formatBlockTarget(const BlockTarget& target) {
 }
 
 std::string print(const Module& module, const std::vector<std::string>& fnNames) {
-    auto getFnName = [&](uint32_t idx) -> std::string {
+    auto getFnName = [&](size_t idx) -> std::string {
         if (idx < fnNames.size() && !fnNames[idx].empty()) return fnNames[idx];
         return idx < module.functions.size() ? module.functions[idx].name : "?";
     };

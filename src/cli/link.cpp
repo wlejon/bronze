@@ -152,6 +152,16 @@ std::optional<std::filesystem::path> findBrassLib() {
             s_cached = *fromEnv;
             return;
         }
+        if (auto fromBrassRoot = envPath("BRASS_ROOT")) {
+            for (const auto* rel : {"build/libbrass.a", "build/Release/libbrass.a", "build/brass.lib", "build/Release/brass.lib", "build_msvc/brass.lib", "libbrass.a", "brass.lib"}) {
+                auto p = *fromBrassRoot / rel;
+                std::error_code ec;
+                if (std::filesystem::exists(p, ec)) {
+                    s_cached = std::filesystem::canonical(p, ec);
+                    return;
+                }
+            }
+        }
 
         std::vector<std::filesystem::path> candidates = {
             "D:/projects/brass/build_msvc/brass.lib",

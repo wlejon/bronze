@@ -11,6 +11,7 @@
 // changes them goes through the runtime, which initializes lazily.
 
 #include "runtime/tls_block.h"
+#include "runtime/profile.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -154,7 +155,7 @@ static thread_local ShadowStack g_shadow_stack;
 }  // namespace
 
 extern "C" bronze_gc_frame* bronze_gc_frame_push(uint32_t count) {
-    if (__builtin_expect(!g_shadow_stack.base, 0)) {
+    if (BRONZE_UNLIKELY(!g_shadow_stack.base)) {
         g_shadow_stack.init();
     }
     bronze_tls_block* tls = bronze_tls_block_addr();
@@ -173,7 +174,7 @@ extern "C" bronze_gc_frame* bronze_gc_frame_push(uint32_t count) {
 extern "C" void bronze_gc_frame_pop(void) {
     bronze_tls_block* tls = bronze_tls_block_addr();
     bronze_gc_frame* frame = tls->frame_top;
-    if (__builtin_expect(frame != nullptr, 1)) {
+    if (BRONZE_LIKELY(frame != nullptr)) {
         tls->frame_top = frame->prev;
         g_shadow_stack.top = reinterpret_cast<uint64_t*>(frame);
     }
