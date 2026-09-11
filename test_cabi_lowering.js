@@ -479,7 +479,20 @@ bro.rave.init();
 let rave = new Rave();
 let raveSr = rave.sampleRate;
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer, qwenImEnd, qwenImStart, misEos, misBos, misVocab, gemEos, gemBos, gemPad, gemUnk, gemVocab, lmFamily, lmVocab, lmHidden, lmLayers, lmMaxSeq, lmCache, q35Family, q35Vocab, q35Eos, q3vlFamily, q3vlVocab, q3vlEos, nllbFamily, nllbVocab, nllbDModel, nllbEncLayers, nllbDecLayers, nllbLangCount, nllbHasEng, clipDim, t5DModel, t5MaxLen, t5PadId, t5EosId, t5Vocab, wtokLoaded, wmodDev, ptokLoaded, qmodDev, kmodDev, smodDev, sencDev, qtmodDev, kwsActive, sftDev, cdiarDev, raveSr);
+// --- Phase 16: Multimodal Sensors and Gestures (Gesture, Sense, Wake) ---
+bro.gesture.init();
+let gestureView = new GestureStreamView();
+let gestureActive = gestureView.active;
+
+bro.sense.init();
+let senseView = new SenseStreamView();
+let senseActive = senseView.active;
+
+bro.wake.init();
+let wakeView = new WakeStreamView();
+let wakeActive = wakeView.active;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer, qwenImEnd, qwenImStart, misEos, misBos, misVocab, gemEos, gemBos, gemPad, gemUnk, gemVocab, lmFamily, lmVocab, lmHidden, lmLayers, lmMaxSeq, lmCache, q35Family, q35Vocab, q35Eos, q3vlFamily, q3vlVocab, q3vlEos, nllbFamily, nllbVocab, nllbDModel, nllbEncLayers, nllbDecLayers, nllbLangCount, nllbHasEng, clipDim, t5DModel, t5MaxLen, t5PadId, t5EosId, t5Vocab, wtokLoaded, wmodDev, ptokLoaded, qmodDev, kmodDev, smodDev, sencDev, qtmodDev, kwsActive, sftDev, cdiarDev, raveSr, gestureActive, senseActive, wakeActive);
 
 
 
