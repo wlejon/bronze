@@ -634,6 +634,9 @@ std::string print(const Module& module) {
                         out += "create.object";
                         break;
                     case Op::ModuleNamespace:
+                        out += "module.namespace %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
                     case Op::DynamicImport:
                         out += "dynamic_import %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +

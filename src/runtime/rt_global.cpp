@@ -120,7 +120,7 @@ extern "C" uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, 
 extern "C" uint64_t bronze_create_func(bronze_fn_code code, int32_t param_count, uint64_t envBits) {
     return bronze_create_function(code, param_count >= 0 ? static_cast<uint32_t>(param_count) : 0,
                                   param_count >= 0 ? static_cast<uint32_t>(param_count) : 0,
-                                  BRONZE_ABI_FN_NAME_NONE, 0, envBits);
+                                  BRONZE_ABI_FN_NAME_NONE, BRONZE_ABI_FN_FLAGS_ORDINARY, envBits);
 }
 
 extern "C" uint64_t bronze_call_dynamic_0(uint64_t callee, uint64_t thisVal) {
@@ -171,4 +171,128 @@ extern "C" uint64_t bronze_call_dynamic_n(uint64_t callee, uint64_t thisVal, uin
     return bronze_dynamic_call(callee, thisVal, argc, argv);
 }
 
+extern "C" uint64_t bronze_super_call(uint64_t baseBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits);
+
+extern "C" uint64_t bronze_super_call_0(uint64_t base, uint64_t thisVal) {
+    return bronze_super_call(base, thisVal, 0, nullptr);
+}
+
+extern "C" uint64_t bronze_super_call_1(uint64_t base, uint64_t thisVal, uint64_t a0) {
+    uint64_t args[1] = {a0};
+    return bronze_super_call(base, thisVal, 1, args);
+}
+
+extern "C" uint64_t bronze_super_call_2(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1) {
+    uint64_t args[2] = {a0, a1};
+    return bronze_super_call(base, thisVal, 2, args);
+}
+
+extern "C" uint64_t bronze_super_call_3(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2) {
+    uint64_t args[3] = {a0, a1, a2};
+    return bronze_super_call(base, thisVal, 3, args);
+}
+
+extern "C" uint64_t bronze_super_call_4(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    uint64_t args[4] = {a0, a1, a2, a3};
+    return bronze_super_call(base, thisVal, 4, args);
+}
+
+extern "C" uint64_t bronze_super_call_5(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    uint64_t args[5] = {a0, a1, a2, a3, a4};
+    return bronze_super_call(base, thisVal, 5, args);
+}
+
+extern "C" uint64_t bronze_super_call_6(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    uint64_t args[6] = {a0, a1, a2, a3, a4, a5};
+    return bronze_super_call(base, thisVal, 6, args);
+}
+
+extern "C" uint64_t bronze_super_call_7(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
+    uint64_t args[7] = {a0, a1, a2, a3, a4, a5, a6};
+    return bronze_super_call(base, thisVal, 7, args);
+}
+
+extern "C" uint64_t bronze_super_call_8(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7) {
+    uint64_t args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+    return bronze_super_call(base, thisVal, 8, args);
+}
+
+extern "C" uint64_t bronze_super_call_n(uint64_t base, uint64_t thisVal, uint32_t argc, const uint64_t* argv) {
+    return bronze_super_call(base, thisVal, argc, argv);
+}
+
+extern "C" uint64_t bronze_construct_0(uint64_t callee) {
+    return bronze_construct(callee, 0, nullptr);
+}
+
+extern "C" uint64_t bronze_construct_1(uint64_t callee, uint64_t a0) {
+    uint64_t args[1] = {a0};
+    return bronze_construct(callee, 1, args);
+}
+
+extern "C" uint64_t bronze_construct_2(uint64_t callee, uint64_t a0, uint64_t a1) {
+    uint64_t args[2] = {a0, a1};
+    return bronze_construct(callee, 2, args);
+}
+
+extern "C" uint64_t bronze_construct_3(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2) {
+    uint64_t args[3] = {a0, a1, a2};
+    return bronze_construct(callee, 3, args);
+}
+
+extern "C" uint64_t bronze_construct_4(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    uint64_t args[4] = {a0, a1, a2, a3};
+    return bronze_construct(callee, 4, args);
+}
+
+extern "C" uint64_t bronze_construct_5(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    uint64_t args[5] = {a0, a1, a2, a3, a4};
+    return bronze_construct(callee, 5, args);
+}
+
+extern "C" uint64_t bronze_construct_6(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    uint64_t args[6] = {a0, a1, a2, a3, a4, a5};
+    return bronze_construct(callee, 6, args);
+}
+
+extern "C" uint64_t bronze_construct_7(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
+    uint64_t args[7] = {a0, a1, a2, a3, a4, a5, a6};
+    return bronze_construct(callee, 7, args);
+}
+
+extern "C" uint64_t bronze_construct_8(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7) {
+    uint64_t args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+    return bronze_construct(callee, 8, args);
+}
+
+extern "C" uint64_t bronze_exception_get() {
+    return bronze::runtime::rtTls()->exception_cell;
+}
+
+extern "C" void bronze_exception_set(uint64_t bits) {
+    bronze::runtime::rtTls()->exception_cell = bits;
+}
+
+extern "C" uint64_t bronze_exception_take() {
+    uint64_t bits = bronze::runtime::rtTls()->exception_cell;
+    bronze::runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    return bits;
+}
+
+extern "C" int32_t bronze_exception_pending() {
+    return bronze::runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
+}
+
+extern "C" void bronze_register_key_manifest(const uint8_t* data) {
+    if (!data) return;
+    uint32_t count = 0;
+    std::memcpy(&count, data, sizeof(uint32_t));
+    const char* ptr = reinterpret_cast<const char*>(data + sizeof(uint32_t));
+    for (uint32_t i = 0; i < count; ++i) {
+        bronze_register_key_string(ptr);
+        ptr += std::strlen(ptr) + 1;
+    }
+}
+
 }  // namespace bronze::runtime
+

@@ -109,6 +109,10 @@ extern "C" {
 
 void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint64_t* icEntry,
                      bool strict) {
+    if (reinterpret_cast<uintptr_t>(icEntry) < 0x10000 ||
+        reinterpret_cast<uintptr_t>(icEntry) > 0x00007fffffffffffULL) {
+        icEntry = nullptr;
+    }
     recordPropCall("bronze_prop_set", keyIndex, icEntry);
     recordPropSetMiss(objBits, keyIndex, valBits, icEntry, strict);
     if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {

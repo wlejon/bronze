@@ -314,6 +314,10 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
 }
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
+    if (reinterpret_cast<uintptr_t>(icEntry) < 0x10000 ||
+        reinterpret_cast<uintptr_t>(icEntry) > 0x00007fffffffffffULL) {
+        icEntry = nullptr;
+    }
     if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
         // Receiver identity is read BEFORE the body: the walk below can
         // allocate, and a collection would move the receiver out from under a

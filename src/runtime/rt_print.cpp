@@ -204,6 +204,27 @@ void bronze_print_spread_err(uint64_t arrBits) {
     std::fflush(stderr);
 }
 
+void bronze_print_f64(double v) {
+    writeValue(Value::fromDouble(v).rawBits(), stdout);
+}
+
+void bronze_print_i32(int32_t v) {
+    writeValue(Value::fromDouble(static_cast<double>(v)).rawBits(), stdout);
+}
+
+void bronze_print_dynamic(uint64_t valBits) {
+    writeValue(valBits, stdout);
+}
+
+void bronze_print_space() {
+    std::fputc(' ', stdout);
+}
+
+void bronze_print_newline() {
+    std::fputc('\n', stdout);
+    std::fflush(stdout);
+}
+
 }  // extern "C"
 
 }  // namespace bronze::runtime

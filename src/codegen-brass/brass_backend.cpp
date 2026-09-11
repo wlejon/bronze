@@ -30,6 +30,17 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.enable_jump_threading = true;
     options.enable_trace_layout = true;
     options.enable_pic = sharedRuntime_;
+    options.key_constants = module.keyConstants;
+    for (const auto& fn : module.functions) {
+        brass::il::FunctionMeta meta;
+        meta.needs_env = fn.needsEnv;
+        meta.needs_this = fn.needsThis;
+        meta.needs_arguments = fn.needsArguments;
+        meta.has_rest_param = fn.hasRestParam;
+        meta.is_strict = fn.isStrict;
+        meta.first_source_param = static_cast<uint32_t>(fn.firstSourceParam());
+        options.function_meta[fn.name] = meta;
+    }
 
     brass::DiagnosticReporter reporter;
     brass::il::TranslationResult res = brass::il::translate_bronze_il(ilText, options, &reporter);
@@ -65,6 +76,22 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
             for (auto& reloc : sec.relocations) {
                 if (reloc.symbol_name == "main") {
                     reloc.symbol_name = entrySymbol_;
+                }
+            }
+        }
+    }
+
+    const std::string keySymbol = (entrySymbol_ == "bronze_main")
+                                      ? "bronze_main_key_constants"
+                                      : (entrySymbol_ + "_key_constants");
+    if (keySymbol != "bronze_main_key_constants") {
+        if (auto* sym = obj.find_symbol("bronze_main_key_constants")) {
+            sym->name = keySymbol;
+        }
+        for (auto& sec : obj.sections) {
+            for (auto& reloc : sec.relocations) {
+                if (reloc.symbol_name == "bronze_main_key_constants") {
+                    reloc.symbol_name = keySymbol;
                 }
             }
         }
@@ -113,6 +140,25 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     manifestSym.binding = brass::object::SymbolBinding::Global;
     manifestSym.type = brass::object::SymbolType::Object;
     obj.add_symbol(std::move(manifestSym));
+
+    roSec.align_to(4);
+    const size_t keyOffset = roSec.data.size();
+    const uint32_t keyCount = static_cast<uint32_t>(module.keyConstants.size());
+    roSec.emit32(keyCount);
+    for (const std::string& key : module.keyConstants) {
+        roSec.emit_bytes(reinterpret_cast<const uint8_t*>(key.data()), key.size());
+        roSec.emit8(0);
+    }
+    const size_t keySize = roSec.data.size() - keyOffset;
+
+    brass::object::ObjectSymbol keySym;
+    keySym.name = keySymbol;
+    keySym.section_index = obj.get_section_index(roSecName);
+    keySym.value = keyOffset;
+    keySym.size = keySize;
+    keySym.binding = brass::object::SymbolBinding::Global;
+    keySym.type = brass::object::SymbolType::Object;
+    obj.add_symbol(std::move(keySym));
 
     std::string dataSecName = target.is_windows() ? ".data" : ".data";
     brass::object::Section& dataSec = obj.get_or_create_section(
