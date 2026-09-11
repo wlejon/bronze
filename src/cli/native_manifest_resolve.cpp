@@ -42,7 +42,8 @@ std::optional<lower::NativeManifest> resolveNativeManifest(
             mPath = *env;
         }
     }
-    if (mPath.empty()) {
+    if (mPath == "auto") {
+        mPath.clear();
         const std::vector<std::filesystem::path> manifestCandidates = {
             "D:/projects/brosurface/out/c_abi/manifest",
             "../brosurface/out/c_abi/manifest",

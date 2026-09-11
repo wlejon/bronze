@@ -42,9 +42,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: windows, os: windows-2022, llvm: windows-x64, triplet: x64-windows }
-          - { name: linux,   os: ubuntu-24.04, llvm: linux-x64,   triplet: x64-linux }
-          - { name: macos,   os: macos-15,     llvm: macos-arm64, triplet: arm64-osx }
+          - { name: windows, os: windows-2022, triplet: x64-windows }
+          - { name: linux,   os: ubuntu-24.04, triplet: x64-linux }
+          - { name: macos,   os: macos-15,     triplet: x64-osx }
     steps:
       - uses: actions/checkout@v7
 
@@ -77,7 +77,11 @@ jobs:
       - name: Build brass
         shell: bash
         run: |
-          cmake -B brass/build -S brass -DCMAKE_BUILD_TYPE=Release
+          EXTRA_BRASS=""
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            EXTRA_BRASS="-DCMAKE_OSX_ARCHITECTURES=x86_64"
+          fi
+          cmake -G Ninja -B brass/build -S brass -DCMAKE_BUILD_TYPE=Release $EXTRA_BRASS
           cmake --build brass/build --config Release
           echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
 
@@ -117,6 +121,8 @@ jobs:
             # Embedded debug info (/Z7) instead of a separate PDB (/Zi) is what
             # lets sccache cache MSVC objects at all.
             EXTRA="-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            EXTRA="-DCMAKE_OSX_ARCHITECTURES=x86_64"
           fi
           cmake --preset dev \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
@@ -127,13 +133,8 @@ jobs:
       - name: Build
         run: cmake --build --preset dev --parallel 4
 
-      # Everything except the pixi milestone. Compiling the 2 MB pixi bundle
-      # twice plus its gc-stress re-runs is ~80% of this job's wall time on
-      # these runners (~36 of 45 test-minutes on Windows); the Nightly
-      # workflow runs the full suite, pixi included, on all three platforms
-      # daily. threejs stays per-push: it is ~10% of the cost and the only
-      # real-library smoke left in this job. The oracle cases compile and
-      # link real executables, so this still exercises `bronze build` end to
-      # end on each platform.
+      # Everything except the pixi milestone and external cabi tests. Compiling
+      # the 2 MB pixi bundle twice plus its gc-stress re-runs is ~80% of this job's
+      # wall time on these runners; threejs stays per-push as the real-library smoke.
       - name: Test
-        run: ctest --preset dev -LE pixi
+        run: ctest --preset dev -LE "pixi|cabi"

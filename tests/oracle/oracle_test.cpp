@@ -421,9 +421,10 @@ TEST_CASE("Oracle differential test suite") {
                             ("Missing pinned expectation " + res.expectedPathStr).c_str());
 
             // Inference on
-            REQUIRE_MESSAGE(res.buildInferStatus == 0,
-                            ("Bronze build failed for " + res.oracleCase.entry.string() +
-                             " (inference on): " + res.buildInferErr).c_str());
+            std::string inferBuildMsg = "Bronze build failed for " + res.oracleCase.entry.string() +
+                                        " (inference on): " + res.buildInferErr;
+            INFO(inferBuildMsg);
+            REQUIRE(res.buildInferStatus == 0);
             REQUIRE(res.inferExeExists);
             CHECK_MESSAGE(!res.runInfer.timedOut,
                           ("Compiled case did not finish within the timeout: " +
@@ -444,10 +445,11 @@ TEST_CASE("Oracle differential test suite") {
                                res.oracleCase.id + " (gc-stress)").c_str());
             }
 
-            // --no-infer
-            REQUIRE_MESSAGE(res.buildNoInferStatus == 0,
-                            ("Bronze build failed for " + res.oracleCase.entry.string() +
-                             " (--no-infer): " + res.buildNoInferErr).c_str());
+            // No-inference mode
+            std::string noInferBuildMsg = "Bronze build failed for " + res.oracleCase.entry.string() +
+                                          " (--no-infer): " + res.buildNoInferErr;
+            INFO(noInferBuildMsg);
+            REQUIRE(res.buildNoInferStatus == 0);
             REQUIRE(res.noInferExeExists);
             CHECK_MESSAGE(!res.runNoInfer.timedOut,
                           ("Compiled case did not finish within the timeout: " +
@@ -537,8 +539,9 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
 
         std::string errOut;
         int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer);
-        REQUIRE_MESSAGE(status == 0,
-                        ("Bronze failed to build three.js" + mode + ": " + errOut).c_str());
+        std::string threeMsg = "Bronze failed to build three.js" + mode + ": " + errOut;
+        INFO(threeMsg);
+        REQUIRE(status == 0);
         REQUIRE(std::filesystem::exists(exePath));
 
         RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);

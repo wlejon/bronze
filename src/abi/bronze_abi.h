@@ -681,7 +681,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_print_i32_err,       BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
     X(bronze_print_dynamic_err,   BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_print_space_err,     BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
-    X(bronze_print_newline_err,   BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS))
+    X(bronze_print_newline_err,   BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+    X(brass_gc_write_barrier,     BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64))
 
 /*
  * There are no data symbols in this ABI. Every mutable word generated code

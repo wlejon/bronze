@@ -83,3 +83,8 @@ void RootValueBlock::blockAllocationFailed(uint32_t count) {
 }
 
 }  // namespace bronze
+
+extern "C" void brass_gc_write_barrier(uint64_t obj, uint64_t val) {
+    (void)obj;
+    (void)val;
+}

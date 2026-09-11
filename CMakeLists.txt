@@ -37,6 +37,10 @@ if(BRONZE_IS_TOP_LEVEL AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+    set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "OSX Architectures" FORCE)
+endif()
+
 # C is enabled solely for src/abi/abi_check.c, which compiles the
 # generated-code ABI header as pure C to keep C++ types out of it.
 project(bronze VERSION 0.1.0 LANGUAGES C CXX)
@@ -107,7 +111,7 @@ endif()
 if(BRONZE_IS_TOP_LEVEL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js")
     add_custom_target(test_cabi_lowering
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Release"
-        COMMAND $<TARGET_FILE:bronze> build "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js" -o "${CMAKE_CURRENT_BINARY_DIR}/Release/test_cabi_lowering.exe"
+        COMMAND $<TARGET_FILE:bronze> build "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js" --native-manifest auto -o "${CMAKE_CURRENT_BINARY_DIR}/Release/test_cabi_lowering.exe"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/Release/test_cabi_lowering.exe" "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.exe"
         DEPENDS bronze
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -115,6 +119,7 @@ if(BRONZE_IS_TOP_LEVEL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowerin
     )
     if(BRONZE_BUILD_TESTS)
         add_test(NAME test_cabi_lowering COMMAND "${CMAKE_CURRENT_BINARY_DIR}/Release/test_cabi_lowering.exe")
+        set_tests_properties(test_cabi_lowering PROPERTIES LABELS cabi)
     endif()
 endif()
 

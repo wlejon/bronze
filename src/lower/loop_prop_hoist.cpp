@@ -163,6 +163,28 @@ bool isFreshLocalObject(il::ValueId val, const il::Function& fn, const std::vect
            inst.op == il::Op::CreateArray;
 }
 
+bool isKnownPlainObject(il::ValueId val, const il::Function& fn, const std::vector<DefSite>& defs,
+                        const il::Module& module,
+                        std::vector<std::optional<SafeConstructorInfo>>& ctorCache) {
+    if (val >= defs.size()) return false;
+    const auto& def = defs[val];
+    if (def.block == il::kNoBlock || def.block >= fn.blocks.size()) return false;
+    const auto& blk = fn.blocks[def.block];
+    if (def.index >= blk.instructions.size()) return false;
+    const auto& inst = blk.instructions[def.index];
+    if (inst.op == il::Op::CreateObject) return true;
+    if (inst.op == il::Op::Construct) {
+        const uint32_t calleeIdx = findCalleeIndex(inst, fn, defs, module);
+        if (calleeIdx != UINT32_MAX && calleeIdx < ctorCache.size()) {
+            if (!ctorCache[calleeIdx].has_value()) {
+                ctorCache[calleeIdx] = analyzeConstructor(module.functions[calleeIdx]);
+            }
+            if (ctorCache[calleeIdx]->isSafe) return true;
+        }
+    }
+    return false;
+}
+
 bool isMathObject(il::ValueId val, const il::Function& fn, const std::vector<DefSite>& defs,
                   const il::Module& module) {
     if (val >= defs.size()) return false;
@@ -649,6 +671,12 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                     const il::ValueId val = inst.operands[1];
                     const uint32_t key = inst.keyIndex;
 
+                    if (!isKnownPlainObject(target, fn, defs, module, ctorCache)) {
+                        table.clear();
+                        ++i;
+                        continue;
+                    }
+
                     const bool isArrIdx = (key < module.keyConstants.size() &&
                                            isArrayIndexKey(module.keyConstants[key]));
 
@@ -709,6 +737,11 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                 const bool isArrIdx = (key < module.keyConstants.size() &&
                                        isArrayIndexKey(module.keyConstants[key]));
                 if (!isArrIdx && key < isAccessorKey.size() && !isAccessorKey[key]) {
+                    if (!isKnownPlainObject(recv, fn, defs, module, ctorCache)) {
+                        table.clear();
+                        ++i;
+                        continue;
+                    }
                     il::ValueId existing = il::kNoValue;
                     for (const auto& entry : table) {
                         if (entry.recv == recv && entry.keyIndex == key) {

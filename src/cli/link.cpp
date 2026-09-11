@@ -105,6 +105,12 @@ std::optional<std::filesystem::path> findRuntimeLib() {
             candidates.push_back(exeDir / name);
             candidates.push_back(exeDir.parent_path().parent_path() / "rt" / exeConfig / name);
             candidates.push_back(exeDir.parent_path().parent_path() / "rt" / name);
+            candidates.push_back(exeDir.parent_path().parent_path() / "src" / "rt" / exeConfig / name);
+            candidates.push_back(exeDir.parent_path().parent_path() / "src" / "rt" / name);
+            candidates.push_back(exeDir.parent_path().parent_path().parent_path() / "src" / "rt" / name);
+            candidates.push_back(exeDir / "../../src/rt" / exeConfig / name);
+            candidates.push_back(exeDir / "../../src/rt" / name);
+            candidates.push_back(exeDir / "../../../src/rt" / name);
             candidates.push_back(exeDir / "../../rt" / exeConfig / name);
             candidates.push_back(exeDir / "../../rt" / name);
             candidates.push_back(exeDir / "../rt" / name);
@@ -118,6 +124,9 @@ std::optional<std::filesystem::path> findRuntimeLib() {
             candidates.push_back(cwd / "build/dev/src/rt" / name);
             candidates.push_back(cwd / "src/rt" / name);
             candidates.push_back(cwd / name);
+            candidates.push_back(cwd / "../src/rt" / name);
+            candidates.push_back(cwd / "../../src/rt" / name);
+            candidates.push_back(cwd / "../../../src/rt" / name);
         }
 
         const size_t flatCount = candidates.size();
@@ -603,15 +612,11 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
 
     static LinkerState s_state;
     static std::once_flag s_stringsOnce;
-    auto brassLib = findBrassLib();
     std::call_once(s_stringsOnce, [&] {
         s_state.libStr = sharedRt->string();
         // Where the loader has to find the runtime at run time, which on the
         // two rpath platforms is a link-time fact about the module.
         s_state.runtimeLibStr = sharedRt->parent_path().string();
-        if (brassLib) {
-            s_state.brassLibStr = "\"" + brassLib->string() + "\"";
-        }
     });
 
 #ifdef _WIN32
@@ -625,14 +630,12 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
 #ifdef _WIN32
         switch (index) {
             case 0:
-                return "lld-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /force:multiple /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags + " " +
-                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
+                return "lld-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags;
             case 1:
                 if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /force:multiple /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags + " " +
-                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
+                return "link.exe /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags;
             default:
                 return "";
         }
@@ -640,12 +643,10 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
         switch (index) {
             case 0:
                 return "clang++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
-                       "-Wl,-multiply_defined,suppress -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             case 1:
                 return "g++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
-                       "-Wl,-multiply_defined,suppress -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             default:
                 return "";
         }
@@ -653,12 +654,10 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
         switch (index) {
             case 0:
                 return "clang++ -shared \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
-                       "-Wl,-z,muldefs -Wl,-z,notext -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             case 1:
                 return "g++ -shared \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) +
-                       "-Wl,-z,muldefs -Wl,-z,notext -Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
+                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
             default:
                 return "";
         }

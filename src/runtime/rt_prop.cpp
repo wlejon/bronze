@@ -536,7 +536,11 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // guarantee for the computed path and lost it when that path was folded
     // into this one.
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        fatal("internal: a property read on an unknown object kind");
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+                      "internal: a property read on an unknown object kind: flags=%u, key='%.*s'",
+                      (unsigned)hdr->flags, (int)keyStr.size(), keyStr.data());
+        fatal(buf);
     }
     Rooted<Value> objRoot{objVal};
     // 10.4.3.5 StringGetOwnProperty, ahead of the ordinary lookup for a String
