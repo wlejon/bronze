@@ -13,6 +13,20 @@
 #include "runtime/tls_block.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 #include "abi/bronze_abi.h"
 
@@ -112,4 +126,55 @@ thread_local bronze_tls_block g_tls_block = {
 
 extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
     return &bronze::runtime::g_tls_block;
+}
+
+namespace {
+
+struct ShadowStack {
+    uint64_t* base = nullptr;
+    uint64_t* top = nullptr;
+
+    void init() {
+        if (!base) {
+            size_t bytes = 64 * 1024 * 1024; // 64 MB virtual address reservation
+#if defined(_WIN32)
+            base = reinterpret_cast<uint64_t*>(
+                VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+#else
+            base = reinterpret_cast<uint64_t*>(
+                mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+#endif
+            top = base;
+        }
+    }
+};
+
+static thread_local ShadowStack g_shadow_stack;
+
+}  // namespace
+
+extern "C" bronze_gc_frame* bronze_gc_frame_push(uint32_t count) {
+    if (__builtin_expect(!g_shadow_stack.base, 0)) {
+        g_shadow_stack.init();
+    }
+    bronze_tls_block* tls = bronze_tls_block_addr();
+    bronze_gc_frame* frame = reinterpret_cast<bronze_gc_frame*>(g_shadow_stack.top);
+    g_shadow_stack.top += 2 + count;
+
+    frame->prev = tls->frame_top;
+    frame->count = count;
+    for (uint32_t i = 0; i < count; ++i) {
+        frame->slots[i] = BRONZE_ABI_UNDEFINED_BITS;
+    }
+    tls->frame_top = frame;
+    return frame;
+}
+
+extern "C" void bronze_gc_frame_pop(void) {
+    bronze_tls_block* tls = bronze_tls_block_addr();
+    bronze_gc_frame* frame = tls->frame_top;
+    if (__builtin_expect(frame != nullptr, 1)) {
+        tls->frame_top = frame->prev;
+        g_shadow_stack.top = reinterpret_cast<uint64_t*>(frame);
+    }
 }

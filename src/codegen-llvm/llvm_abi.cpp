@@ -69,8 +69,11 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #define BRONZE_ABI_CSTR   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_PU64   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_PU32   llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_PU8    llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_MU64   llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_MU32   llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_TLSPTR llvm::PointerType::getUnqual(ctx)
+#define BRONZE_ABI_FRAMEPTR llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_FNPTR  llvm::PointerType::getUnqual(ctx)
 #define BRONZE_ABI_VOID   llvm::Type::getVoidTy(ctx)
 #define BRONZE_ABI_NOARGS
@@ -194,8 +197,11 @@ void declareAbiSymbols(llvm::Module& llvmModule, llvm::LLVMContext& ctx, AbiFns&
 #undef BRONZE_ABI_CSTR
 #undef BRONZE_ABI_PU64
 #undef BRONZE_ABI_PU32
+#undef BRONZE_ABI_PU8
 #undef BRONZE_ABI_MU64
+#undef BRONZE_ABI_MU32
 #undef BRONZE_ABI_TLSPTR
+#undef BRONZE_ABI_FRAMEPTR
 #undef BRONZE_ABI_FNPTR
 #undef BRONZE_ABI_VOID
 #undef BRONZE_ABI_NOARGS

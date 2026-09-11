@@ -31,6 +31,9 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.enable_trace_layout = true;
     options.enable_pic = sharedRuntime_;
     options.key_constants = module.keyConstants;
+    options.entry_symbol = entrySymbol_;
+    options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
+    options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
     for (const auto& fn : module.functions) {
         brass::il::FunctionMeta meta;
         meta.needs_env = fn.needsEnv;
@@ -39,6 +42,10 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         meta.has_rest_param = fn.hasRestParam;
         meta.is_strict = fn.isStrict;
         meta.first_source_param = static_cast<uint32_t>(fn.firstSourceParam());
+        for (const auto& p : fn.params) {
+            meta.params_pinned.push_back(p.pinned);
+            meta.param_pin_keys.push_back(p.pinKeyIndex);
+        }
         options.function_meta[fn.name] = meta;
     }
 
@@ -160,6 +167,57 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     keySym.type = brass::object::SymbolType::Object;
     obj.add_symbol(std::move(keySym));
 
+    if (!module.censusSites.empty() && !module.censusOutPath.empty()) {
+        roSec.align_to(1);
+        const size_t outPathOffset = roSec.data.size();
+        roSec.emit_bytes(reinterpret_cast<const uint8_t*>(module.censusOutPath.data()),
+                         module.censusOutPath.size());
+        roSec.emit8(0);
+        const size_t outPathSize = roSec.data.size() - outPathOffset;
+
+        if (auto* sym = obj.find_symbol("__bronze_census_out_path")) {
+            sym->section_index = obj.get_section_index(roSecName);
+            sym->value = outPathOffset;
+            sym->size = outPathSize;
+            sym->binding = brass::object::SymbolBinding::Local;
+            sym->type = brass::object::SymbolType::Object;
+        } else {
+            brass::object::ObjectSymbol outPathSym;
+            outPathSym.name = "__bronze_census_out_path";
+            outPathSym.section_index = obj.get_section_index(roSecName);
+            outPathSym.value = outPathOffset;
+            outPathSym.size = outPathSize;
+            outPathSym.binding = brass::object::SymbolBinding::Local;
+            outPathSym.type = brass::object::SymbolType::Object;
+            obj.add_symbol(std::move(outPathSym));
+        }
+
+        roSec.align_to(4);
+        const size_t sitesOffset = roSec.data.size();
+        for (const auto& site : module.censusSites) {
+            roSec.emit32(site.keyIndex);
+            roSec.emit32(site.info);
+        }
+        const size_t sitesSize = roSec.data.size() - sitesOffset;
+
+        if (auto* sym = obj.find_symbol("__bronze_census_sites")) {
+            sym->section_index = obj.get_section_index(roSecName);
+            sym->value = sitesOffset;
+            sym->size = sitesSize;
+            sym->binding = brass::object::SymbolBinding::Local;
+            sym->type = brass::object::SymbolType::Object;
+        } else {
+            brass::object::ObjectSymbol sitesSym;
+            sitesSym.name = "__bronze_census_sites";
+            sitesSym.section_index = obj.get_section_index(roSecName);
+            sitesSym.value = sitesOffset;
+            sitesSym.size = sitesSize;
+            sitesSym.binding = brass::object::SymbolBinding::Local;
+            sitesSym.type = brass::object::SymbolType::Object;
+            obj.add_symbol(std::move(sitesSym));
+        }
+    }
+
     std::string dataSecName = target.is_windows() ? ".data" : ".data";
     brass::object::Section& dataSec = obj.get_or_create_section(
         dataSecName,
@@ -188,11 +246,34 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         obj.add_symbol(std::move(envSym));
     }
 
+    dataSec.align_to(4);
+    const size_t keyMapOffset = dataSec.data.size();
+    const size_t keyMapBytes = std::max<size_t>(static_cast<size_t>(keyCount) * sizeof(uint32_t), sizeof(uint32_t));
+    dataSec.data.resize(dataSec.data.size() + keyMapBytes, 0);
+
+    if (auto* sym = obj.find_symbol("__bronze_key_map")) {
+        sym->section_index = obj.get_section_index(dataSecName);
+        sym->value = keyMapOffset;
+        sym->size = keyMapBytes;
+        sym->binding = brass::object::SymbolBinding::Local;
+        sym->type = brass::object::SymbolType::Object;
+    } else {
+        brass::object::ObjectSymbol kmSym;
+        kmSym.name = "__bronze_key_map";
+        kmSym.section_index = obj.get_section_index(dataSecName);
+        kmSym.value = keyMapOffset;
+        kmSym.size = keyMapBytes;
+        kmSym.binding = brass::object::SymbolBinding::Local;
+        kmSym.type = brass::object::SymbolType::Object;
+        obj.add_symbol(std::move(kmSym));
+    }
+
     for (auto& sym : obj.symbols) {
         if (sym.section_index != brass::object::SECTION_UNDEF && sym.section_index >= 0) {
             if (sym.name != entrySymbol_ &&
                 sym.name != stampSymbol &&
-                sym.name != manifestSymbol) {
+                sym.name != manifestSymbol &&
+                sym.name != keySymbol) {
                 sym.binding = brass::object::SymbolBinding::Local;
             }
         }

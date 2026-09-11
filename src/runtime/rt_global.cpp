@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -127,44 +128,72 @@ extern "C" uint64_t bronze_call_dynamic_0(uint64_t callee, uint64_t thisVal) {
     return bronze_dynamic_call(callee, thisVal, 0, nullptr);
 }
 
+template <typename... Args>
+inline uint64_t bronze_call_dynamic_helper(uint64_t callee, uint64_t thisVal, Args... args) {
+    constexpr uint32_t N = sizeof...(Args);
+    bronze_gc_frame* frame = bronze_gc_frame_push(N);
+    uint32_t i = 0;
+    ((frame->slots[i++] = args), ...);
+    uint64_t res = bronze_dynamic_call(callee, thisVal, N, frame->slots);
+    bronze_gc_frame_pop();
+    return res;
+}
+
 extern "C" uint64_t bronze_call_dynamic_1(uint64_t callee, uint64_t thisVal, uint64_t a0) {
-    uint64_t args[1] = {a0};
-    return bronze_dynamic_call(callee, thisVal, 1, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0);
 }
 
 extern "C" uint64_t bronze_call_dynamic_2(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1) {
-    uint64_t args[2] = {a0, a1};
-    return bronze_dynamic_call(callee, thisVal, 2, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1);
 }
 
 extern "C" uint64_t bronze_call_dynamic_3(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2) {
-    uint64_t args[3] = {a0, a1, a2};
-    return bronze_dynamic_call(callee, thisVal, 3, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2);
 }
 
 extern "C" uint64_t bronze_call_dynamic_4(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
-    uint64_t args[4] = {a0, a1, a2, a3};
-    return bronze_dynamic_call(callee, thisVal, 4, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3);
 }
 
 extern "C" uint64_t bronze_call_dynamic_5(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
-    uint64_t args[5] = {a0, a1, a2, a3, a4};
-    return bronze_dynamic_call(callee, thisVal, 5, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4);
 }
 
 extern "C" uint64_t bronze_call_dynamic_6(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    uint64_t args[6] = {a0, a1, a2, a3, a4, a5};
-    return bronze_dynamic_call(callee, thisVal, 6, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5);
 }
 
 extern "C" uint64_t bronze_call_dynamic_7(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
-    uint64_t args[7] = {a0, a1, a2, a3, a4, a5, a6};
-    return bronze_dynamic_call(callee, thisVal, 7, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6);
 }
 
 extern "C" uint64_t bronze_call_dynamic_8(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7) {
-    uint64_t args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
-    return bronze_dynamic_call(callee, thisVal, 8, args);
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7);
+}
+
+extern "C" uint64_t bronze_call_dynamic_9(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8);
+}
+extern "C" uint64_t bronze_call_dynamic_10(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+}
+extern "C" uint64_t bronze_call_dynamic_11(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+extern "C" uint64_t bronze_call_dynamic_12(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
+}
+extern "C" uint64_t bronze_call_dynamic_13(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12);
+}
+extern "C" uint64_t bronze_call_dynamic_14(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
+}
+extern "C" uint64_t bronze_call_dynamic_15(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
+}
+extern "C" uint64_t bronze_call_dynamic_16(uint64_t callee, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
+    return bronze_call_dynamic_helper(callee, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
 }
 
 extern "C" uint64_t bronze_call_dynamic_n(uint64_t callee, uint64_t thisVal, uint32_t argc, const uint64_t* argv) {
@@ -177,48 +206,87 @@ extern "C" uint64_t bronze_super_call_0(uint64_t base, uint64_t thisVal) {
     return bronze_super_call(base, thisVal, 0, nullptr);
 }
 
+template <typename... Args>
+inline uint64_t bronze_super_call_helper(uint64_t base, uint64_t thisVal, Args... args) {
+    constexpr uint32_t N = sizeof...(Args);
+    bronze_gc_frame* frame = bronze_gc_frame_push(N);
+    uint32_t i = 0;
+    ((frame->slots[i++] = args), ...);
+    uint64_t res = bronze_super_call(base, thisVal, N, frame->slots);
+    bronze_gc_frame_pop();
+    return res;
+}
+
 extern "C" uint64_t bronze_super_call_1(uint64_t base, uint64_t thisVal, uint64_t a0) {
-    uint64_t args[1] = {a0};
-    return bronze_super_call(base, thisVal, 1, args);
+    return bronze_super_call_helper(base, thisVal, a0);
 }
 
 extern "C" uint64_t bronze_super_call_2(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1) {
-    uint64_t args[2] = {a0, a1};
-    return bronze_super_call(base, thisVal, 2, args);
+    return bronze_super_call_helper(base, thisVal, a0, a1);
 }
 
 extern "C" uint64_t bronze_super_call_3(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2) {
-    uint64_t args[3] = {a0, a1, a2};
-    return bronze_super_call(base, thisVal, 3, args);
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2);
 }
 
 extern "C" uint64_t bronze_super_call_4(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
-    uint64_t args[4] = {a0, a1, a2, a3};
-    return bronze_super_call(base, thisVal, 4, args);
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3);
 }
 
 extern "C" uint64_t bronze_super_call_5(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
-    uint64_t args[5] = {a0, a1, a2, a3, a4};
-    return bronze_super_call(base, thisVal, 5, args);
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4);
 }
 
 extern "C" uint64_t bronze_super_call_6(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    uint64_t args[6] = {a0, a1, a2, a3, a4, a5};
-    return bronze_super_call(base, thisVal, 6, args);
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5);
 }
 
 extern "C" uint64_t bronze_super_call_7(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
-    uint64_t args[7] = {a0, a1, a2, a3, a4, a5, a6};
-    return bronze_super_call(base, thisVal, 7, args);
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6);
 }
 
 extern "C" uint64_t bronze_super_call_8(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7) {
-    uint64_t args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
-    return bronze_super_call(base, thisVal, 8, args);
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7);
+}
+
+extern "C" uint64_t bronze_super_call_9(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8);
+}
+extern "C" uint64_t bronze_super_call_10(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+}
+extern "C" uint64_t bronze_super_call_11(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+extern "C" uint64_t bronze_super_call_12(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
+}
+extern "C" uint64_t bronze_super_call_13(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12);
+}
+extern "C" uint64_t bronze_super_call_14(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
+}
+extern "C" uint64_t bronze_super_call_15(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
+}
+extern "C" uint64_t bronze_super_call_16(uint64_t base, uint64_t thisVal, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
+    return bronze_super_call_helper(base, thisVal, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
 }
 
 extern "C" uint64_t bronze_super_call_n(uint64_t base, uint64_t thisVal, uint32_t argc, const uint64_t* argv) {
     return bronze_super_call(base, thisVal, argc, argv);
+}
+
+template <typename... Args>
+inline uint64_t bronze_construct_helper(uint64_t callee, Args... args) {
+    constexpr uint32_t N = sizeof...(Args);
+    bronze_gc_frame* frame = bronze_gc_frame_push(N);
+    uint32_t i = 0;
+    ((frame->slots[i++] = args), ...);
+    uint64_t res = bronze_construct(callee, N, frame->slots);
+    bronze_gc_frame_pop();
+    return res;
 }
 
 extern "C" uint64_t bronze_construct_0(uint64_t callee) {
@@ -226,43 +294,60 @@ extern "C" uint64_t bronze_construct_0(uint64_t callee) {
 }
 
 extern "C" uint64_t bronze_construct_1(uint64_t callee, uint64_t a0) {
-    uint64_t args[1] = {a0};
-    return bronze_construct(callee, 1, args);
+    return bronze_construct_helper(callee, a0);
 }
 
 extern "C" uint64_t bronze_construct_2(uint64_t callee, uint64_t a0, uint64_t a1) {
-    uint64_t args[2] = {a0, a1};
-    return bronze_construct(callee, 2, args);
+    return bronze_construct_helper(callee, a0, a1);
 }
 
 extern "C" uint64_t bronze_construct_3(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2) {
-    uint64_t args[3] = {a0, a1, a2};
-    return bronze_construct(callee, 3, args);
+    return bronze_construct_helper(callee, a0, a1, a2);
 }
 
 extern "C" uint64_t bronze_construct_4(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
-    uint64_t args[4] = {a0, a1, a2, a3};
-    return bronze_construct(callee, 4, args);
+    return bronze_construct_helper(callee, a0, a1, a2, a3);
 }
 
 extern "C" uint64_t bronze_construct_5(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
-    uint64_t args[5] = {a0, a1, a2, a3, a4};
-    return bronze_construct(callee, 5, args);
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4);
 }
 
 extern "C" uint64_t bronze_construct_6(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    uint64_t args[6] = {a0, a1, a2, a3, a4, a5};
-    return bronze_construct(callee, 6, args);
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5);
 }
 
 extern "C" uint64_t bronze_construct_7(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6) {
-    uint64_t args[7] = {a0, a1, a2, a3, a4, a5, a6};
-    return bronze_construct(callee, 7, args);
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6);
 }
 
 extern "C" uint64_t bronze_construct_8(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7) {
-    uint64_t args[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
-    return bronze_construct(callee, 8, args);
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7);
+}
+
+extern "C" uint64_t bronze_construct_9(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8);
+}
+extern "C" uint64_t bronze_construct_10(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+}
+extern "C" uint64_t bronze_construct_11(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+extern "C" uint64_t bronze_construct_12(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
+}
+extern "C" uint64_t bronze_construct_13(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12);
+}
+extern "C" uint64_t bronze_construct_14(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
+}
+extern "C" uint64_t bronze_construct_15(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
+}
+extern "C" uint64_t bronze_construct_16(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
+    return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
 }
 
 extern "C" uint64_t bronze_exception_get() {
@@ -283,15 +368,22 @@ extern "C" int32_t bronze_exception_pending() {
     return bronze::runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
-extern "C" void bronze_register_key_manifest(const uint8_t* data) {
+extern "C" void bronze_register_key_manifest(const uint8_t* data, uint32_t* key_map) {
     if (!data) return;
     uint32_t count = 0;
     std::memcpy(&count, data, sizeof(uint32_t));
     const char* ptr = reinterpret_cast<const char*>(data + sizeof(uint32_t));
     for (uint32_t i = 0; i < count; ++i) {
-        bronze_register_key_string(ptr);
+        uint32_t id = bronze_register_key_string(ptr);
+        if (key_map) {
+            key_map[i] = id;
+        }
         ptr += std::strlen(ptr) + 1;
     }
+}
+
+extern "C" double bronze_f64_mod(double a, double b) {
+    return std::fmod(a, b);
 }
 
 }  // namespace bronze::runtime
