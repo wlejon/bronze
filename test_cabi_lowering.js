@@ -444,7 +444,42 @@ let t5PadId = t5Model.padId;
 let t5EosId = t5Model.eosId;
 let t5Vocab = t5Model.vocabCount;
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer, qwenImEnd, qwenImStart, misEos, misBos, misVocab, gemEos, gemBos, gemPad, gemUnk, gemVocab, lmFamily, lmVocab, lmHidden, lmLayers, lmMaxSeq, lmCache, q35Family, q35Vocab, q35Eos, q3vlFamily, q3vlVocab, q3vlEos, nllbFamily, nllbVocab, nllbDModel, nllbEncLayers, nllbDecLayers, nllbLangCount, nllbHasEng, clipDim, t5DModel, t5MaxLen, t5PadId, t5EosId, t5Vocab);
+// --- Phase 15: Audio ML, STT, TTS, KWS, DIAR, RAVE ---
+bro.stt.init();
+let wtok = new WhisperTokenizer();
+let wtokLoaded = wtok.loaded;
+let wmod = new WhisperModel();
+let wmodDev = wmod.device;
+let ptok = new ParakeetTokenizer();
+let ptokLoaded = ptok.loaded;
+let qmod = new QwenAsrModel();
+let qmodDev = qmod.device;
+
+bro.tts.init();
+let kmod = new KokoroModel();
+let kmodDev = kmod.device;
+let smod = new SupertonicModel();
+let smodDev = smod.device;
+let senc = new SpeakerEncoder();
+let sencDev = senc.device;
+let qtmod = new QwenTtsModel();
+let qtmodDev = qtmod.device;
+
+bro.kws.init();
+let kwsView = new KwsStreamView();
+let kwsActive = kwsView.active;
+
+bro.diar.init();
+let sft = new Sortformer();
+let sftDev = sft.device;
+let cdiar = new ClusterDiarizer();
+let cdiarDev = cdiar.device;
+
+bro.rave.init();
+let rave = new Rave();
+let raveSr = rave.sampleRate;
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging, skelBones, poseBones, skinVerts, voxVal0, voxVal1, animRate, agentId, walkable0, walkable1, cX, cZ, cType, tensorAvail, tensorBackend, gtRows, gtCols, gtSize, gtBytes, gtDtype, ctRows, ctCols, depthDev, samDev, samHasImg, sg3Z, sg3Res, d2Dev, d3Dev, diffVer, qwenImEnd, qwenImStart, misEos, misBos, misVocab, gemEos, gemBos, gemPad, gemUnk, gemVocab, lmFamily, lmVocab, lmHidden, lmLayers, lmMaxSeq, lmCache, q35Family, q35Vocab, q35Eos, q3vlFamily, q3vlVocab, q3vlEos, nllbFamily, nllbVocab, nllbDModel, nllbEncLayers, nllbDecLayers, nllbLangCount, nllbHasEng, clipDim, t5DModel, t5MaxLen, t5PadId, t5EosId, t5Vocab, wtokLoaded, wmodDev, ptokLoaded, qmodDev, kmodDev, smodDev, sencDev, qtmodDev, kwsActive, sftDev, cdiarDev, raveSr);
 
 
 
