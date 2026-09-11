@@ -207,6 +207,32 @@ gl.deleteBuffer(glBuf);
 gl.deleteTexture(glTex);
 gl.deleteProgram(glProg);
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW);
+// --- Phase 10 Subsystems: 3D Scene Graph, Mesh Geometry, Lighting, Gizmo & Animation Subsystems ---
+// 24. Scene
+let sceneNode = new SceneNode();
+sceneNode.name = "rootNode";
+let sceneNodeName = sceneNode.name;
+let sceneNodeVis = sceneNode.visible;
+sceneNode.setPosition(1.0, 2.0, 3.0);
+
+// 25. Mesh
+let mesh = new Mesh();
+let bvh = new MeshBVH();
+
+// 26. Lighting
+let light = new LightNode();
+let shape = new ShapeNode();
+
+// 27. Gizmo
+let gizmoVis0 = bro.gizmo.visible;
+bro.gizmo.show();
+let gizmoVis1 = bro.gizmo.visible;
+bro.gizmo.setMode("translate");
+
+// 28. Animation
+let tween = new Tween();
+let animPlayer = new AnimationPlayer();
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1);
 
 
