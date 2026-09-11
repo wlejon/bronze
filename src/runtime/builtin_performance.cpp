@@ -49,7 +49,9 @@ std::chrono::steady_clock::time_point timeOrigin() {
 // `duration_cast<milliseconds>`, which truncates to the integer this function
 // exists to avoid.
 uint64_t performanceNow(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    const auto elapsed = std::chrono::steady_clock::now() - timeOrigin();
+    const auto origin = timeOrigin();
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = now >= origin ? (now - origin) : std::chrono::nanoseconds::zero();
     const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
     return Value::fromDouble(static_cast<double>(ns) / 1e6).rawBits();
 }
