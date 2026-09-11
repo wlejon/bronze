@@ -521,7 +521,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
-    bool linked = emitShared ? linkSharedModule(linkInputs, outputPath, diags)
+    bool linked = emitShared ? linkSharedModule(linkInputs, outputPath, diags, entrySymbol)
                              : linkExecutable(linkInputs, outputPath, diags);
     timer.mark("link");
     timer.total();

@@ -575,7 +575,7 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
 }
 
 bool linkSharedModule(const std::vector<std::string>& objPaths, const std::string& outputPath,
-                      DiagnosticSink& diags) {
+                      DiagnosticSink& diags, const std::string& entrySymbol) {
     // Quote-splice join, exactly as linkExecutable does it.
     std::string objPath;
     for (size_t i = 0; i < objPaths.size(); ++i) {
@@ -614,17 +614,24 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
         }
     });
 
+#ifdef _WIN32
+    const std::string entry = entrySymbol.empty() ? "bronze_main" : entrySymbol;
+    const std::string stamp = (entry == "bronze_main") ? "bronze_object_abi_fingerprint" : (entry + "_abi_fingerprint");
+    const std::string globals = entry + "_host_globals";
+    const std::string exportFlags = " /EXPORT:" + entry + " /EXPORT:" + stamp + " /EXPORT:" + globals;
+#endif
+
     auto makeCommand = [&](int index) -> std::string {
 #ifdef _WIN32
         switch (index) {
             case 0:
                 return "lld-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /force:multiple /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags + " " +
                        (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
             case 1:
                 if (!msvcLinkIsAvailable()) return "";
                 return "link.exe /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /force:multiple /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " +
+                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags + " " +
                        (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
             default:
                 return "";

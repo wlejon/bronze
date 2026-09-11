@@ -38,7 +38,7 @@ bool linkExecutable(const std::vector<std::string>& objPaths, const std::string&
 // against a static runtime would load, run, and quietly allocate out of a
 // second heap.
 bool linkSharedModule(const std::vector<std::string>& objPaths, const std::string& outputPath,
-                      DiagnosticSink& diags);
+                      DiagnosticSink& diags, const std::string& entrySymbol = "bronze_main");
 
 // A temp object path unique per process and per call, for the two commands
 // that emit an object only to hand it straight to a linker.
