@@ -1,4 +1,4 @@
-set(BRASS_ROOT "/home/j/projects/brass" CACHE PATH "Path to Brass root directory")
+set(BRASS_ROOT "D:/projects/brass" CACHE PATH "Path to Brass root directory")
 if(DEFINED ENV{BRASS_ROOT})
     set(BRASS_ROOT "$ENV{BRASS_ROOT}")
 endif()
@@ -17,15 +17,28 @@ target_include_directories(bronze_codegen_brass SYSTEM PUBLIC
 
 find_package(Threads REQUIRED)
 
+if(MSVC)
+    if(EXISTS "${BRASS_ROOT}/build_msvc/brass.lib")
+        set(BRASS_LIB "${BRASS_ROOT}/build_msvc/brass.lib")
+    elseif(EXISTS "${BRASS_ROOT}/build/brass.lib")
+        set(BRASS_LIB "${BRASS_ROOT}/build/brass.lib")
+    else()
+        set(BRASS_LIB "${BRASS_ROOT}/build/libbrass.a")
+    endif()
+    set(PLATFORM_LIBS)
+else()
+    set(BRASS_LIB "${BRASS_ROOT}/build/libbrass.a")
+    set(PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
+endif()
+
 target_link_libraries(bronze_codegen_brass PUBLIC
     bronze::abi
     bronze::codegen
     bronze::il
     bronze::support
-    ${BRASS_ROOT}/build/libbrass.a
+    ${BRASS_LIB}
     Threads::Threads
-    ${CMAKE_DL_LIBS}
-    m
+    ${PLATFORM_LIBS}
 )
 
 if(MSVC)

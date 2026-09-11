@@ -59,6 +59,7 @@ namespace bronze::lower {
 // lowering rather than a miscompile — and so does the standalone build that
 // never passed a flag.
 class InferStatsCollector;
+class NativeManifest;
 
 // `pins` is the `--pins` manifest, or null. Lowering reads only its ENV-SLOT
 // entries: a captured binding has no name inference can key a side table on —
@@ -73,6 +74,7 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       InferStatsCollector* stats = nullptr,
                                       bool assumeNoBigInt = false,
                                       const types::PinManifest* pins = nullptr,
-                                      const std::string& censusOutPath = {});
+                                      const std::string& censusOutPath = {},
+                                      const NativeManifest* nativeManifest = nullptr);
 
 }  // namespace bronze::lower

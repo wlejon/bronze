@@ -984,9 +984,10 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       InferStatsCollector* stats,
                                       bool assumeNoBigInt,
                                       const types::PinManifest* pins,
-                                      const std::string& censusOutPath) {
+                                      const std::string& censusOutPath,
+                                      const NativeManifest* nativeManifest) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
-                    assumeNoBigInt, pins, censusOutPath);
+                    assumeNoBigInt, pins, censusOutPath, nativeManifest);
     return lowerer.lower();
 }
 

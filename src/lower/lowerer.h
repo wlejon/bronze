@@ -23,6 +23,8 @@
 
 namespace bronze::lower {
 
+class NativeManifest;
+
 // Operators whose EVERY operand goes through ToNumeric on every branch. One
 // table, two consumers: the typed-element seam (lower_typed_elem.cpp, which
 // defines it) and the env-slot number proof (lower_scope.cpp).
@@ -66,15 +68,20 @@ public:
             InferStatsCollector* stats = nullptr,
             bool assumeNoBigInt = false,
             const types::PinManifest* pins = nullptr,
-            const std::string& censusOutPath = {})
+            const std::string& censusOutPath = {},
+            const NativeManifest* nativeManifest = nullptr)
         : astModule_(astModule), diags_(diags), inference_(inference),
-          pins_(pins), sources_(sources), stats_(stats) {
+          pins_(pins), sources_(sources), stats_(stats),
+          nativeManifest_(nativeManifest) {
         // Assigned rather than initialized: the member sits with the rest of
         // the census machinery, far below the four the list already names, and
         // an initializer list out of declaration order is a warning this build
         // treats as an error.
         censusOutPath_ = censusOutPath;
         if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
+        if (nativeManifest_) {
+            initNativeManifestGlobals();
+        }
         if (stats_ && sources_) stats_->setSourceSet(sources_);
         typedElemDisabled_ = typedElemSeamDisabled() ||
                              hostGlobals_.count("Float64Array") != 0 ||
@@ -540,6 +547,15 @@ private:
     Value coerceToType(Value val, il::Type target, il::Function& ilFn);
     Value lowerCondition(const ast::Expr& expr, il::Function& ilFn);
     Value lowerConditionFromVal(Value val, il::Function& ilFn);
+
+    // --- lower_native.cpp: direct lowering of native C-ABI symbols ---
+    const NativeManifest* nativeManifest_ = nullptr;
+    std::unordered_map<std::string, std::string> varNativeClasses_;
+    void initNativeManifestGlobals();
+    std::optional<Value> tryLowerNativeCall(const ast::Call* call, il::Function& ilFn);
+    std::optional<Value> tryLowerNativeNew(const ast::NewExpr* newExpr, il::Function& ilFn);
+    uint32_t registerExternalFunction(const std::string& symbol, il::Type returnType,
+                                      const std::vector<il::Type>& paramTypes);
 
     // --- lower_scope.cpp: scopes, environments, closures -----
     bool declareVariable(const std::string& name, il::Type type, bool isConst, bool isLet,

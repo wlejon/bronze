@@ -151,6 +151,8 @@ std::optional<std::filesystem::path> findBrassLib() {
         }
 
         std::vector<std::filesystem::path> candidates = {
+            "D:/projects/brass/build_msvc/brass.lib",
+            "D:/projects/brass/build/brass.lib",
             "/home/j/projects/brass/build/libbrass.a",
             "/home/j/projects/brass/build/Release/libbrass.a",
             "/home/j/projects/brass/build/brass.lib",
@@ -158,6 +160,9 @@ std::optional<std::filesystem::path> findBrassLib() {
         const std::filesystem::path exeDir = getExecutableDir();
         candidates.push_back(exeDir / "libbrass.a");
         candidates.push_back(exeDir / "brass.lib");
+        candidates.push_back(exeDir / "../../../brass/build_msvc/brass.lib");
+        candidates.push_back(exeDir / "../../brass/build_msvc/brass.lib");
+        candidates.push_back(exeDir / "../brass/build_msvc/brass.lib");
 
         for (const auto& cand : candidates) {
             std::error_code ec;

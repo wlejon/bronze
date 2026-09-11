@@ -144,6 +144,12 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
 
 std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Function& ilFn,
                                                  bool onSpine) {
+    if (nativeManifest_) {
+        if (auto nativeVal = tryLowerNativeCall(call, ilFn)) {
+            return nativeVal;
+        }
+    }
+
     // Which console method this is, if any. The parser folded the whole
     // member expression into one `Ident`, so the name is the only thing to
     // ask, and `consoleStreamOf` is the one table that answers.

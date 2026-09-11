@@ -8,10 +8,10 @@ bronze_add_module(lower
             guard_region_cfg.cpp guard_region_select.cpp guard_region_build.cpp
             guard_region_runs.cpp loop_prop_hoist.cpp
             lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp
-            lower_pattern.cpp lower_pin.cpp lower_census.cpp
+            lower_pattern.cpp lower_pin.cpp lower_census.cpp native_manifest.cpp lower_native.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
             lower_try.cpp lower_unresolved.cpp lower_yield_star.cpp lower_async.cpp
-    DEPS ast il support types
+    DEPS ast il support types json
     TEST_SOURCES ../../tests/lower/lower_test.cpp ../../tests/lower/lower_jumps_test.cpp
                  ../../tests/lower/lower_try_test.cpp ../../tests/lower/lower_infer_test.cpp
                  ../../tests/lower/lower_scope_test.cpp

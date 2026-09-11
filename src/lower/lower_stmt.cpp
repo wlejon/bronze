@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "lower/lowerer.h"
+#include "lower/native_manifest.h"
 
 namespace bronze::lower {
 
@@ -191,6 +192,25 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
             initVal = lowerNamedEvaluation(*varDecl->init, varDecl->name, ilFn);
             if (!initVal) return false;
             declType = initVal->type;
+        }
+
+        if (nativeManifest_) {
+            if (const auto* newExpr = dynamic_cast<const ast::NewExpr*>(varDecl->init.get())) {
+                std::string clsName;
+                if (const auto* id = dynamic_cast<const ast::Ident*>(newExpr->callee.get())) {
+                    clsName = id->name;
+                } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(newExpr->callee.get())) {
+                    clsName = mem->property;
+                }
+                if (nativeManifest_->isKnownClass(clsName)) {
+                    varNativeClasses_[varDecl->name] = clsName;
+                }
+            } else if (const auto* rhsId = dynamic_cast<const ast::Ident*>(varDecl->init.get())) {
+                auto it = varNativeClasses_.find(rhsId->name);
+                if (it != varNativeClasses_.end()) {
+                    varNativeClasses_[varDecl->name] = it->second;
+                }
+            }
         }
 
         // A binding inference proved numeric holds an unboxed f64, so the

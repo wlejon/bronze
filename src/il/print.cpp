@@ -220,6 +220,7 @@ std::string print(const Module& module) {
         out += "}\n";
     }
     for (const auto& fn : module.functions) {
+        if (fn.blocks.empty()) continue;
         out += "\nfunc " + fn.name + "(";
         for (size_t i = 0; i < fn.params.size(); ++i) {
             if (i > 0) out += ", ";

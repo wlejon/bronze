@@ -59,7 +59,9 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
           const std::vector<modules::ModuleRoot>& moduleRoots = {},
           const std::string& importMapPath = {}, bool inferStats = false,
           bool assumeNoBigInt = false, const std::string& pinsPath = {},
-          const std::string& censusOutPath = {}, bool pinsAllowObserved = false);
+          const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
+          const std::string& nativeManifestPath = {},
+          const std::string& nativeLibPath = {});
 // `timings` prints per-phase wall time to stderr. It defaults off and no test
 // passes it: a duration is the one thing bronze emits that cannot be
 // deterministic, so it stays out of every path an expectation can see.
@@ -99,7 +101,9 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              bool retainFnSource = true,
              const std::string& importMapPath = {},
              bool assumeNoBigInt = false, const std::string& pinsPath = {},
-             const std::string& censusOutPath = {}, bool pinsAllowObserved = false);
+             const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
+             const std::string& nativeManifestPath = {},
+             const std::string& nativeLibPath = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

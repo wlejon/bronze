@@ -16,6 +16,8 @@
 #include "ast/dump.h"
 #include "cli/link.h"
 #include "cli/link_order.h"
+#include "cli/native_manifest_resolve.h"
+#include "cli/usage.h"
 #include "codegen/backend.h"
 #include "codegen-brass/brass_backend.h"
 #include "il/il.h"
@@ -69,168 +71,6 @@ private:
     Clock::time_point start_{};
     Clock::time_point last_{};
 };
-
-constexpr const char* kUsage =
-    "bronze — AOT compiler for JavaScript (native-first, Brass backend)\n"
-    "\n"
-    "Usage:\n"
-    "  bronze lex <file>                   Tokenize and print one token per line\n"
-    "  bronze parse <file>                 Parse and print the canonical AST dump\n"
-    "  bronze types <file>                 Infer types and print the canonical type dump\n"
-    "  bronze il <file>                    Lower to IL and print canonical IL dump\n"
-    "  bronze build <file> -o <output>     Compile JS source to native executable\n"
-    "  bronze link <objdir> -o <output>    Link an executable from the objects a\n"
-    "                                      `build --keep-objs <objdir>` left behind\n"
-    "  bronze version                      Print version\n"
-    "\n"
-    "Options (types, il, build):\n"
-    "  --module-root <prefix>=<path>       Map module specifier prefix to a path\n"
-    "  --import-map <path>                 Load browser import map JSON file\n"
-    "\n"
-    "Options (il, build):\n"
-    "  --no-infer                          Skip inference: force every inferred type\n"
-    "                                      to dynamic and lower on the uniform\n"
-    "                                      dynamic convention. This is the bisection\n"
-    "                                      seam for a suspected miscompile — right\n"
-    "                                      with it and wrong without means inference\n"
-    "                                      is at fault. The oracle suite runs every\n"
-    "                                      case both ways and requires the same bytes\n"
-    "                                      from both.\n"
-    "  --host-globals <path>               Manifest of identifiers an embedding host\n"
-    "                                      will register with the runtime before the\n"
-    "                                      program runs: one name per line, `#`\n"
-    "                                      comments, blank lines ignored. Each joins\n"
-    "                                      the provided-globals set, so reads resolve\n"
-    "                                      like a builtin's instead of warning and\n"
-    "                                      throwing ReferenceError. A lowering-level\n"
-    "                                      fact: identical with --no-infer.\n"
-    "  --pins <path>                       Pin manifest: per-(class, field)\n"
-    "                                      declarations inference is told to believe.\n"
-    "                                      `Matrix4.elements: numeric-elements` and\n"
-    "                                      `Vector3.x: number`, one per line, `#`\n"
-    "                                      comments. A pinned read spends its claim\n"
-    "                                      without the builtHere / per-class /\n"
-    "                                      write-audit proofs, and a pinned array's\n"
-    "                                      elements compile to raw f64 loads and\n"
-    "                                      stores with no guard at all. The claim is\n"
-    "                                      spent unchecked at the READ and ENFORCED at\n"
-    "                                      the write: a store, argument or return that\n"
-    "                                      violates a pin throws a catchable TypeError\n"
-    "                                      naming the manifest line, rather than\n"
-    "                                      silently corrupting the unboxed state. A\n"
-    "                                      store the compiler has already proved\n"
-    "                                      carries no check. BRONZE_NO_PIN_BARRIERS=1\n"
-    "                                      removes the checks and restores the older,\n"
-    "                                      undefined behaviour. src/types/pins.h has\n"
-    "                                      the grammar and the residual unchecked\n"
-    "                                      positions.\n"
-    "  --pins-allow-observed               Accept a `--pins` entry marked `@observed`.\n"
-    "                                      A census writes that marker on an entry\n"
-    "                                      whose stores are not all from sites the\n"
-    "                                      compiler can type, so a violation of it\n"
-    "                                      would be SILENT rather than a TypeError.\n"
-    "                                      Refused without this flag, by name.\n"
-    "  --census <path>                     Instrument the program and write a `--pins`\n"
-    "                                      manifest to <path> when it exits. The\n"
-    "                                      manifest writes itself: the build records\n"
-    "                                      what reaches every slot, parameter, return\n"
-    "                                      and field the compiler could NOT type, a\n"
-    "                                      representative run joins the observations,\n"
-    "                                      and what was monomorphic becomes an entry.\n"
-    "                                      An offline step in two compiles and one\n"
-    "                                      artefact — a census build is an instrument\n"
-    "                                      and is never a build anything is measured\n"
-    "                                      on. BRONZE_PIN_CENSUS_OUT overrides <path>\n"
-    "                                      at run time. src/runtime/pin_census.h.\n"
-    "\n"
-    "Options (il):\n"
-    "  --infer-stats                       Prepend the inference statistics report to\n"
-    "                                      the IL dump. Same report as `build\n"
-    "                                      --infer-stats`, without paying for object\n"
-    "                                      emission to read it.\n"
-    "\n"
-    "Options (build):\n"
-    "  --timings                           Print per-phase wall time to stderr. The\n"
-    "                                      one deliberately nondeterministic thing\n"
-    "                                      bronze prints, which is why it is opt-in\n"
-    "                                      and on stderr: no pinned output can\n"
-    "                                      see it.\n"
-    "  --infer-stats                       Print deterministic compile-time inference\n"
-    "                                      statistics per module to stdout (property\n"
-    "                                      accesses, calls, and element operations\n"
-    "                                      native vs dynamic, with top bail reasons).\n"
-    "  --entry-symbol <name>               Name the object exported entry point\n"
-    "                                      (default bronze_main). The entry and the\n"
-    "                                      ABI stamp are the only two symbols an\n"
-    "                                      object exports, so distinct names here\n"
-    "                                      are what let a host link more than one\n"
-    "                                      compiled module into one image.\n"
-    "  --assume-no-bigint                  Promise that no BigInt will reach an\n"
-    "                                      arithmetic operator ACROSS THE HOST\n"
-    "                                      BOUNDARY — through an exported function a\n"
-    "                                      host calls, or a host global's value. Only\n"
-    "                                      a build that has such a boundary needs it:\n"
-    "                                      --host-globals, --emit-obj or\n"
-    "                                      --emit-shared. A standalone executable has\n"
-    "                                      no boundary, so the whole-program scan is a\n"
-    "                                      proof on its own and this flag changes\n"
-    "                                      nothing there.\n"
-    "                                      What the promise buys: `*`, `-`, `/` and\n"
-    "                                      `%` over unproven operands produce an f64\n"
-    "                                      rather than a boxed value, so the result\n"
-    "                                      needs no GC root slot and stays in a\n"
-    "                                      register. A promise about the boundary,\n"
-    "                                      like --host-globals; the program's own text\n"
-    "                                      is still scanned, and any BigInt spelled in\n"
-    "                                      it overrides the flag.\n"
-    "  --no-fn-source                      Leave the source text of each function out\n"
-    "                                      of the image. It is embedded by default,\n"
-    "                                      once per file, because that is what\n"
-    "                                      Function.prototype.toString returns and\n"
-    "                                      library code reads it: argument names,\n"
-    "                                      `class X` sniffing, hook-identity checks.\n"
-    "                                      A library-heavy program roughly doubles in\n"
-    "                                      size for it, which is what this buys back;\n"
-    "                                      a toString of a compiled function then\n"
-    "                                      throws a TypeError naming this flag rather\n"
-    "                                      than answering [native code], which no\n"
-    "                                      caller could tell from a real one.\n"
-    "  --emit-obj                          Stop after object emission: -o names the\n"
-    "                                      object file, written exactly where given,\n"
-    "                                      and no linker runs. The embedding seam —\n"
-    "                                      the host build links the object against\n"
-    "                                      bronze's runtime and its own code.\n"
-    "  --emit-shared                       Link a loadable module (DLL/.so/.dylib)\n"
-    "                                      against the SHARED bronze runtime instead\n"
-    "                                      of an executable against the static one.\n"
-    "                                      It exports three names, all after the\n"
-    "                                      entry: <entry>, <entry>_abi_fingerprint\n"
-    "                                      and <entry>_host_globals. A host opens it\n"
-    "                                      at run time, checks the stamp against the\n"
-    "                                      runtime's, and calls the entry. One\n"
-    "                                      runtime in the process means one heap, so\n"
-    "                                      a missing shared runtime is an error and\n"
-    "                                      never a fall back to the static one.\n"
-    "\n"
-    "Options (build, link):\n"
-    "  --link-seed <n>                     Permute the order the partition objects\n"
-    "                                      are handed to the linker in: same seed,\n"
-    "                                      same order, every run. Layout only — same\n"
-    "                                      objects, same symbols, same program — and\n"
-    "                                      with no seed, the order the backend\n"
-    "                                      emitted. It lets a measurement VARY binary\n"
-    "                                      layout across seeds and report the spread\n"
-    "                                      beside the delta, instead of pinning one\n"
-    "                                      arbitrary layout per arm and reading its\n"
-    "                                      bias as a result.\n"
-    "  --keep-objs <dir>                   (build) Leave the partition objects in\n"
-    "                                      <dir>, named so lexicographic order is\n"
-    "                                      emission order. `bronze link <dir>` then\n"
-    "                                      relinks them under another --link-seed in\n"
-    "                                      seconds instead of recompiling.\n"
-    "\n"
-    "TS annotations are untrusted hints. One that inference does not prove is\n"
-    "discarded with a warning and the value stays dynamic.\n";
 
 int fail(const std::string& message) {
     std::fputs(message.c_str(), stderr);
@@ -373,7 +213,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
           const std::vector<modules::ModuleRoot>& moduleRoots,
           const std::string& importMapPath, bool inferStats,
           bool assumeNoBigInt, const std::string& pinsPath, const std::string& censusOutPath,
-          bool pinsAllowObserved) {
+          bool pinsAllowObserved, const std::string& nativeManifestPath,
+          const std::string& nativeLibPath) {
     // The manifests are read before any compilation happens: an unreadable file
     // or a bad line is a fact about the INVOCATION, and burying it after a
     // long compile would report it as late as possible for no reason.
@@ -384,6 +225,21 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
             if (outString) *outString = err;
             else std::fputs(err.c_str(), stderr);
             return 1;
+        }
+    }
+    std::string nativeManifestErr;
+    auto nativeManifest = resolveNativeManifest(nativeManifestPath, nativeLibPath, nativeManifestErr);
+    if (!nativeManifestErr.empty()) {
+        if (outString) *outString = nativeManifestErr;
+        else std::fputs(nativeManifestErr.c_str(), stderr);
+        return 1;
+    }
+    if (nativeManifest) {
+        for (const auto& root : nativeManifest->namespaceRoots()) {
+            hostGlobals.push_back(root);
+        }
+        for (const auto& cls : nativeManifest->knownClasses()) {
+            hostGlobals.push_back(cls);
         }
     }
     types::PinManifest pins;
@@ -446,7 +302,8 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        inferStats ? &statsCollector : nullptr,
                                        noBigIntPromised,
                                        pins.empty() ? nullptr : &pins,
-                                       censusOutPath);
+                                       censusOutPath,
+                                       nativeManifest ? &*nativeManifest : nullptr);
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -476,7 +333,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& entrySymbol, bool emitShared, bool retainFnSource,
              const std::string& importMapPath, bool assumeNoBigInt,
              const std::string& pinsPath, const std::string& censusOutPath,
-             bool pinsAllowObserved) {
+             bool pinsAllowObserved, const std::string& nativeManifestPath,
+             const std::string& nativeLibPath) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -504,6 +362,21 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
             if (errOut) *errOut = manifestErr;
             else std::fputs(manifestErr.c_str(), stderr);
             return 1;
+        }
+    }
+    std::string nativeManifestErr;
+    auto nativeManifest = resolveNativeManifest(nativeManifestPath, nativeLibPath, nativeManifestErr);
+    if (!nativeManifestErr.empty()) {
+        if (errOut) *errOut = nativeManifestErr;
+        else std::fputs(nativeManifestErr.c_str(), stderr);
+        return 1;
+    }
+    if (nativeManifest) {
+        for (const auto& root : nativeManifest->namespaceRoots()) {
+            hostGlobals.push_back(root);
+        }
+        for (const auto& cls : nativeManifest->knownClasses()) {
+            hostGlobals.push_back(cls);
         }
     }
     types::PinManifest pins;
@@ -556,7 +429,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                        inferStats ? &statsCollector : nullptr,
                                        noBigIntPromised,
                                        pins.empty() ? nullptr : &pins,
-                                       censusOutPath);
+                                       censusOutPath,
+                                       nativeManifest ? &*nativeManifest : nullptr);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -640,8 +514,15 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
-    bool linked = emitShared ? linkSharedModule(objPaths, outputPath, diags)
-                             : linkExecutable(objPaths, outputPath, diags);
+    std::vector<std::string> linkInputs = objPaths;
+    if (nativeManifest) {
+        for (const auto& lib : nativeManifest->extraLibPaths()) {
+            linkInputs.push_back(lib);
+        }
+    }
+
+    bool linked = emitShared ? linkSharedModule(linkInputs, outputPath, diags)
+                             : linkExecutable(linkInputs, outputPath, diags);
     timer.mark("link");
     timer.total();
 
@@ -770,6 +651,8 @@ int runDriver(int argc, char** argv) {
         std::string pinsPath;
         std::string censusOutPath;
         bool pinsAllowObserved = false;
+        std::string nativeManifestPath;
+        std::string nativeLibPath;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
@@ -784,6 +667,24 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
+            } else if (arg == "--native-manifest") {
+                if (i + 1 < argc) {
+                    nativeManifestPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --native-manifest\n");
+                }
+            } else if (arg.rfind("--native-manifest=", 0) == 0) {
+                nativeManifestPath = arg.substr(18);
+                if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
+            } else if (arg == "--native-lib") {
+                if (i + 1 < argc) {
+                    nativeLibPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --native-lib\n");
+                }
+            } else if (arg.rfind("--native-lib=", 0) == 0) {
+                nativeLibPath = arg.substr(13);
+                if (nativeLibPath.empty()) return fail("error: missing argument for --native-lib\n");
             } else if (arg == "--pins") {
                 if (i + 1 < argc) {
                     pinsPath = argv[++i];
@@ -835,7 +736,8 @@ int runDriver(int argc, char** argv) {
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
-                     inferStats, assumeNoBigInt, pinsPath, censusOutPath, pinsAllowObserved);
+                     inferStats, assumeNoBigInt, pinsPath, censusOutPath, pinsAllowObserved,
+                     nativeManifestPath, nativeLibPath);
     }
 
     if (command == "build") {
@@ -856,6 +758,8 @@ int runDriver(int argc, char** argv) {
         std::string pinsPath;
         std::string censusOutPath;
         bool pinsAllowObserved = false;
+        std::string nativeManifestPath;
+        std::string nativeLibPath;
         std::string linkFlagError;
 
         for (int i = 2; i < argc; ++i) {
@@ -893,6 +797,24 @@ int runDriver(int argc, char** argv) {
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
+            } else if (arg == "--native-manifest") {
+                if (i + 1 < argc) {
+                    nativeManifestPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --native-manifest\n");
+                }
+            } else if (arg.rfind("--native-manifest=", 0) == 0) {
+                nativeManifestPath = arg.substr(18);
+                if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
+            } else if (arg == "--native-lib") {
+                if (i + 1 < argc) {
+                    nativeLibPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --native-lib\n");
+                }
+            } else if (arg.rfind("--native-lib=", 0) == 0) {
+                nativeLibPath = arg.substr(13);
+                if (nativeLibPath.empty()) return fail("error: missing argument for --native-lib\n");
             } else if (arg == "--pins") {
                 if (i + 1 < argc) {
                     pinsPath = argv[++i];
@@ -953,7 +875,7 @@ int runDriver(int argc, char** argv) {
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
-                        censusOutPath, pinsAllowObserved);
+                        censusOutPath, pinsAllowObserved, nativeManifestPath, nativeLibPath);
     }
 
     return fail(kUsage);
