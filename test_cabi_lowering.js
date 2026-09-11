@@ -233,6 +233,48 @@ bro.gizmo.setMode("translate");
 let tween = new Tween();
 let animPlayer = new AnimationPlayer();
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1);
+// --- Phase 11 Subsystems: Physics, World Simulation & Terrains Subsystems ---
+// 29. Physics
+Physics.setGravity(0.0, -9.81, 0.0);
+Physics.step(0.016);
+let physWorld = new PhysicsWorldHandle();
+let physChar = new PhysicsCharacter();
+let physVeh = new PhysicsVehicle();
+let physRag = new PhysicsRagdoll();
+let physSoft = new PhysicsSoftBody();
+
+// 30. Terrain
+let terr = new Terrain();
+let tChunks = terr.chunkCount;
+let tH = terr.heightAt(0.0, 0.0);
+let tElev = terr.elevation(0.0, 0.0);
+let tLayers = terr.layers;
+terr.update(0.0, 0.0, 0.0);
+terr.destroy();
+
+// 31. Clipmap
+let clip = new ClipmapTerrain();
+let cLevels = clip.levels;
+clip.setSnowLine(1500.0);
+clip.update(0.0, 0.0, 0.0);
+clip.destroy();
+
+// 32. TileWorld
+let tw = new TileWorld();
+tw.setTile(0, 1, 2, 42);
+let tile = tw.getTile(0, 1, 2);
+let twChunks = tw.chunks;
+tw.paging = true;
+let twPaging = tw.paging;
+tw.update(0.0, 0.0, 0.0);
+tw.destroy();
+
+// 33. Flora
+bro.flora.setWind(10.0, 1.0, 0.0);
+bro.flora.setDensity(0.75);
+bro.flora.update(0.016);
+bro.flora.clear();
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength, menuVis0, menuVis1, menuVis2, menuRemoved, micRate, micActive0, micActive1, micActive2, gpConnected, gpAxis, gpBtn, gpRumble, gpTriggers, mediaAvail, listenSupported, listenFrame, ctxRate, ctxState, vaCount, seqTempo, steamAvail, steamPersona, steamAppId, srvTick, srvUptime, aborted, bSize, fName, evtType, bidiAvail, gpuAvail, gpuBackend, gpuDevCount, gpuDevName, gpuTrimmed, imgSrc, imgComplete, imgW, imgH, imgDataW, imgDataH, imgBmpW, ctxFill, ctxLineW, metricsW, sceneNodeName, sceneNodeVis, gizmoVis0, gizmoVis1, tChunks, tH, tElev, tLayers, cLevels, tile, twChunks, twPaging);
 
 
