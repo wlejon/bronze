@@ -576,9 +576,11 @@ const char* bronze_unbox_str(uint64_t bits) {
     }
     const StringHeader* s = v.asString<StringHeader>();
     if (!s) return "";
-    thread_local std::string s_storage;
-    s_storage = rtUtf8Chars(s);
-    return s_storage.c_str();
+    thread_local std::string s_storage[16];
+    thread_local size_t s_idx = 0;
+    size_t idx = s_idx++ & 15;
+    s_storage[idx] = rtUtf8Chars(s);
+    return s_storage[idx].c_str();
 }
 
 bool bronze_is_nullish(uint64_t bits) {

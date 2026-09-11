@@ -32,5 +32,43 @@ let simplex = FastNoise.Simplex();
 simplex.set("Frequency", 0.05);
 let noiseSample = simplex.genSingle2D(1.5, 2.5, 1337);
 
-console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample);
+// --- Phase 4 Subsystems ---
+// 1. Dialogs (both unqualified global and bro.dialogs paths)
+alert("Native alert test");
+let confirmed = confirm("Are you ready?");
+let promptResult = prompt("Enter text:", "default_input");
+let saveDialog = showSaveFileDialog("Text|txt", "output.txt");
+let openDialog = showOpenFileDialog("All|*");
+let folderDialog = showOpenFolderDialog("C:/");
 
+// 2. Window (state, properties, coordinates, display queries)
+let winState = bro.window.state;
+bro.window.borderless = true;
+let winBorderless = bro.window.borderless;
+bro.window.alwaysOnTop = true;
+let winTop = bro.window.alwaysOnTop;
+bro.window.setPosition(150, 250);
+let posX = bro.window.getPositionX();
+let posY = bro.window.getPositionY();
+bro.window.setMinSize(800, 600);
+let minW = bro.window.getMinWidth();
+let minH = bro.window.getMinHeight();
+bro.window.setMaxSize(1920, 1080);
+let maxW = bro.window.getMaxWidth();
+let maxH = bro.window.getMaxHeight();
+let dispCount = bro.window.getDisplayCount();
+let moveOk = bro.window.moveToDisplay(0);
+bro.window.minimize();
+bro.window.maximize();
+bro.window.restore();
+
+// 3. Settings (load, set, get, action checks, save, reset)
+bro.settings.load();
+bro.settings.set("audio.volume", "0.85");
+let audioVol = bro.settings.get("audio.volume");
+let jumpPressed = bro.settings.isActionPressed("jump");
+let jumpStrength = bro.settings.getActionStrength("jump");
+bro.settings.save();
+bro.settings.reset("audio");
+
+console.log(v, c, count, nearest, r1, cur1, cur2, t0, t1, p0, p1, now, appD, userD, pRes, wRes, noiseSample, confirmed, promptResult, saveDialog, openDialog, folderDialog, winState, winBorderless, winTop, posX, posY, minW, minH, maxW, maxH, dispCount, moveOk, audioVol, jumpPressed, jumpStrength);

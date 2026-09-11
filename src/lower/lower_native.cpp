@@ -51,6 +51,46 @@ uint32_t Lowerer::registerExternalFunction(const std::string& symbol, il::Type r
     return idx;
 }
 
+Lowerer::Value Lowerer::emitDefaultValueForType(il::Type type, il::Function& ilFn) {
+    if (type == il::Type::Str) {
+        uint32_t keyIdx = getKeyConstantIndex("");
+        il::ValueId boxId = ilFn.valueCount++;
+        il::Instruction boxInst;
+        boxInst.op = il::Op::Box;
+        boxInst.type = il::Type::Dynamic;
+        boxInst.boxType = il::Type::Str;
+        boxInst.result = boxId;
+        boxInst.keyIndex = keyIdx;
+        emitInst(ilFn, boxInst);
+        return unboxValueIfNeeded(Value{boxId, il::Type::Dynamic}, il::Type::Str, ilFn);
+    }
+
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.result = res;
+    inst.type = type;
+    switch (type) {
+        case il::Type::F64:
+            inst.op = il::Op::ConstF64;
+            inst.immF64 = 0.0;
+            break;
+        case il::Type::I32:
+            inst.op = il::Op::ConstI32;
+            inst.immI32 = 0;
+            break;
+        case il::Type::Bool:
+            inst.op = il::Op::ConstBool;
+            inst.immI32 = 0;
+            break;
+        default:
+            inst.op = il::Op::ConstUndefined;
+            inst.type = il::Type::Dynamic;
+            break;
+    }
+    emitInst(ilFn, inst);
+    return Value{res, inst.type};
+}
+
 std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call, il::Function& ilFn) {
     if (!nativeManifest_) return std::nullopt;
 
@@ -59,31 +99,29 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
     if (!dotted.empty()) {
         const auto* sig = nativeManifest_->findFunction(dotted);
         if (sig) {
-            if (call->args.size() < sig->paramTypes.size()) {
-                diags_.error(call->span, "Native function '" + dotted + "' expects " +
-                             std::to_string(sig->paramTypes.size()) + " arguments, but got " +
-                             std::to_string(call->args.size()));
-                return std::nullopt;
-            }
-
             const auto expectedTypes = sig->toIlParamTypes();
             std::vector<il::ValueId> argValIds;
             for (size_t i = 0; i < sig->paramTypes.size(); ++i) {
-                auto argVal = lowerExpr(*call->args[i], ilFn);
-                if (!argVal) return std::nullopt;
-
                 il::Type expType = expectedTypes[i];
-                Value coerced = *argVal;
-                if (expType == il::Type::F64) {
-                    coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-                } else if (expType == il::Type::I32) {
-                    coerced = emitToInt32(coerced, ilFn);
-                } else if (expType == il::Type::Bool) {
-                    coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-                } else if (expType == il::Type::Str) {
-                    coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
+                Value coerced{il::kNoValue, expType};
+                if (i < call->args.size()) {
+                    auto argVal = lowerExpr(*call->args[i], ilFn);
+                    if (!argVal) return std::nullopt;
+
+                    coerced = *argVal;
+                    if (expType == il::Type::F64) {
+                        coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
+                    } else if (expType == il::Type::I32) {
+                        coerced = emitToInt32(coerced, ilFn);
+                    } else if (expType == il::Type::Bool) {
+                        coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+                    } else if (expType == il::Type::Str) {
+                        coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
+                    } else {
+                        coerced = boxValueIfNeeded(coerced, ilFn);
+                    }
                 } else {
-                    coerced = boxValueIfNeeded(coerced, ilFn);
+                    coerced = emitDefaultValueForType(expType, ilFn);
                 }
                 argValIds.push_back(coerced.id);
             }
@@ -142,29 +180,27 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
 
                     // Method source arguments start from index 1 in expectedTypes
                     size_t methodArgCount = expectedTypes.size() > 0 ? expectedTypes.size() - 1 : 0;
-                    if (call->args.size() < methodArgCount) {
-                        diags_.error(call->span, "Native method '" + mem->property + "' on class '" +
-                                     className + "' expects " + std::to_string(methodArgCount) +
-                                     " arguments, but got " + std::to_string(call->args.size()));
-                        return std::nullopt;
-                    }
-
                     for (size_t i = 0; i < methodArgCount; ++i) {
-                        auto argVal = lowerExpr(*call->args[i], ilFn);
-                        if (!argVal) return std::nullopt;
-
                         il::Type expType = expectedTypes[i + 1];
-                        Value coerced = *argVal;
-                        if (expType == il::Type::F64) {
-                            coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-                        } else if (expType == il::Type::I32) {
-                            coerced = emitToInt32(coerced, ilFn);
-                        } else if (expType == il::Type::Bool) {
-                            coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-                        } else if (expType == il::Type::Str) {
-                            coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
+                        Value coerced{il::kNoValue, expType};
+                        if (i < call->args.size()) {
+                            auto argVal = lowerExpr(*call->args[i], ilFn);
+                            if (!argVal) return std::nullopt;
+
+                            coerced = *argVal;
+                            if (expType == il::Type::F64) {
+                                coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
+                            } else if (expType == il::Type::I32) {
+                                coerced = emitToInt32(coerced, ilFn);
+                            } else if (expType == il::Type::Bool) {
+                                coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+                            } else if (expType == il::Type::Str) {
+                                coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
+                            } else {
+                                coerced = boxValueIfNeeded(coerced, ilFn);
+                            }
                         } else {
-                            coerced = boxValueIfNeeded(coerced, ilFn);
+                            coerced = emitDefaultValueForType(expType, ilFn);
                         }
                         argValIds.push_back(coerced.id);
                     }
@@ -219,30 +255,28 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeNew(const ast::NewExpr* new
     const auto& ctor = cls->constructor;
     const auto expectedTypes = ctor.toIlParamTypes();
 
-    if (newExpr->args.size() < expectedTypes.size()) {
-        diags_.error(newExpr->span, "Constructor for native class '" + className + "' expects " +
-                     std::to_string(expectedTypes.size()) + " arguments, but got " +
-                     std::to_string(newExpr->args.size()));
-        return std::nullopt;
-    }
-
     std::vector<il::ValueId> argValIds;
     for (size_t i = 0; i < expectedTypes.size(); ++i) {
-        auto argVal = lowerExpr(*newExpr->args[i], ilFn);
-        if (!argVal) return std::nullopt;
-
         il::Type expType = expectedTypes[i];
-        Value coerced = *argVal;
-        if (expType == il::Type::F64) {
-            coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-        } else if (expType == il::Type::I32) {
-            coerced = emitToInt32(coerced, ilFn);
-        } else if (expType == il::Type::Bool) {
-            coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-        } else if (expType == il::Type::Str) {
-            coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
+        Value coerced{il::kNoValue, expType};
+        if (i < newExpr->args.size()) {
+            auto argVal = lowerExpr(*newExpr->args[i], ilFn);
+            if (!argVal) return std::nullopt;
+
+            coerced = *argVal;
+            if (expType == il::Type::F64) {
+                coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
+            } else if (expType == il::Type::I32) {
+                coerced = emitToInt32(coerced, ilFn);
+            } else if (expType == il::Type::Bool) {
+                coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
+            } else if (expType == il::Type::Str) {
+                coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
+            } else {
+                coerced = boxValueIfNeeded(coerced, ilFn);
+            }
         } else {
-            coerced = boxValueIfNeeded(coerced, ilFn);
+            coerced = emitDefaultValueForType(expType, ilFn);
         }
         argValIds.push_back(coerced.id);
     }

@@ -557,6 +557,7 @@ private:
     std::optional<Value> tryLowerNativeNew(const ast::NewExpr* newExpr, il::Function& ilFn);
     std::optional<Value> tryLowerNativePropertyGet(const ast::MemberAccess* mem, il::Function& ilFn, bool onSpine);
     std::optional<Value> tryLowerNativeAssignment(const ast::Binary* bin, il::Function& ilFn);
+    Value emitDefaultValueForType(il::Type type, il::Function& ilFn);
     uint32_t registerExternalFunction(const std::string& symbol, il::Type returnType,
                                       const std::vector<il::Type>& paramTypes);
 
