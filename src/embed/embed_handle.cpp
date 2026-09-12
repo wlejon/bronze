@@ -29,6 +29,8 @@ namespace {
 // per free slot and keeps the source a plain loop.
 thread_local std::vector<Value> g_persistentSlots;
 thread_local std::vector<uint32_t> g_persistentFreeSlots;
+thread_local std::vector<Value> g_localHandleSlots;
+thread_local HandleScope* g_currentHandleScope = nullptr;
 
 // The native-handle finalizer registry: one entry per live handle cell. The
 // collector never visits a dead object — it copies the live ones and abandons
@@ -112,6 +114,7 @@ void ensureRegistries() {
     static thread_local const bool registered = [] {
         runtime::rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (Value& slot : g_persistentSlots) visit(slot);
+            for (Value& slot : g_localHandleSlots) visit(slot);
         });
         // One of the hook LIST's entries now (heap.h says why it stopped being
         // a slot): the weak-reference sweep registers its own, and the two are
@@ -203,6 +206,67 @@ void Persistent::set(Value v) {
     } else {
         g_persistentSlots[slot_] = v;
     }
+}
+
+// ---- local handle scopes ---------------------------------------------------
+
+uint32_t createLocalSlot(Value v) {
+    ensureRegistries();
+    if (!g_currentHandleScope) {
+        fatal("embed: Local handle created without an active HandleScope");
+    }
+    g_localHandleSlots.push_back(v);
+    return static_cast<uint32_t>(g_localHandleSlots.size() - 1);
+}
+
+Value getLocalValue(uint32_t index) {
+    if (index >= g_localHandleSlots.size()) return Value::fromUndefined();
+    return g_localHandleSlots[index];
+}
+
+void setLocalValue(uint32_t index, Value v) {
+    if (index < g_localHandleSlots.size()) {
+        g_localHandleSlots[index] = v;
+    }
+}
+
+HandleScope::HandleScope() {
+    ensureRegistries();
+    prev_top_ = static_cast<uint32_t>(g_localHandleSlots.size());
+    prev_scope_ = g_currentHandleScope;
+    g_currentHandleScope = this;
+}
+
+HandleScope::~HandleScope() {
+    g_localHandleSlots.resize(prev_top_);
+    g_currentHandleScope = prev_scope_;
+}
+
+size_t HandleScope::numberOfHandles() const noexcept {
+    return g_localHandleSlots.size() >= prev_top_ ? (g_localHandleSlots.size() - prev_top_) : 0;
+}
+
+EscapableHandleScope::EscapableHandleScope() : HandleScope() {}
+
+EscapableHandleScope::~EscapableHandleScope() = default;
+
+uint32_t EscapableHandleScope::escapeSlot(uint32_t index) {
+    if (escaped_) {
+        fatal("embed: EscapableHandleScope::escape called more than once on the same scope");
+    }
+    if (index >= g_localHandleSlots.size()) {
+        fatal("embed: EscapableHandleScope::escape passed invalid handle index");
+    }
+    escaped_ = true;
+    Value v = g_localHandleSlots[index];
+    if (prev_top_ < g_localHandleSlots.size()) {
+        g_localHandleSlots[prev_top_] = v;
+    } else {
+        g_localHandleSlots.push_back(v);
+    }
+    uint32_t ret_index = prev_top_;
+    prev_top_++;
+    return ret_index;
 }
 
 // ---- opaque native handles -------------------------------------------------

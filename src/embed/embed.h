@@ -404,6 +404,93 @@ private:
     uint32_t slot_{kNoSlot};  // kNoSlot only in the moved-from state
 };
 
+// ---- local handle scopes (embed_handle.cpp) -------------------------------
+//
+// RAII management of short-lived GC roots on the C++ stack. Entering a
+// HandleScope captures the stack top, and leaving it unwinds all local handles
+// created within that scope in O(1) time without free-list overhead.
+// Local<T> holds a slot index updated in place across moving collections.
+
+BRONZE_EMBED_API uint32_t createLocalSlot(Value v);
+BRONZE_EMBED_API Value getLocalValue(uint32_t index);
+BRONZE_EMBED_API void setLocalValue(uint32_t index, Value v);
+
+class HandleScope;
+class EscapableHandleScope;
+
+template <typename T = Value>
+class Local {
+public:
+    Local() noexcept : index_(kNoIndex) {}
+    explicit Local(uint32_t index) noexcept : index_(index) {}
+    Local(HandleScope& scope, Value v);
+
+    Local(const Local& other) noexcept = default;
+    Local& operator=(const Local& other) noexcept = default;
+    Local(Local&& other) noexcept : index_(other.index_) { other.index_ = kNoIndex; }
+    Local& operator=(Local&& other) noexcept {
+        if (this != &other) {
+            index_ = other.index_;
+            other.index_ = kNoIndex;
+        }
+        return *this;
+    }
+
+    bool isEmpty() const noexcept { return index_ == kNoIndex; }
+    Value get() const { return index_ != kNoIndex ? getLocalValue(index_) : Value::fromUndefined(); }
+    void set(Value v) {
+        if (index_ != kNoIndex) setLocalValue(index_, v);
+    }
+
+    Value operator*() const { return get(); }
+    operator Value() const { return get(); }
+
+    uint32_t index() const noexcept { return index_; }
+
+private:
+    static constexpr uint32_t kNoIndex = UINT32_MAX;
+    uint32_t index_{kNoIndex};
+};
+
+class BRONZE_EMBED_API HandleScope {
+public:
+    HandleScope();
+    ~HandleScope();
+
+    HandleScope(const HandleScope&) = delete;
+    HandleScope& operator=(const HandleScope&) = delete;
+
+    template <typename T = Value>
+    Local<T> createLocal(Value v) {
+        return Local<T>(createLocalSlot(v));
+    }
+
+    size_t numberOfHandles() const noexcept;
+
+protected:
+    friend class EscapableHandleScope;
+    uint32_t prev_top_{0};
+    HandleScope* prev_scope_{nullptr};
+};
+
+template <typename T>
+inline Local<T>::Local(HandleScope& scope, Value v) : index_(scope.createLocal<T>(v).index()) {}
+
+class BRONZE_EMBED_API EscapableHandleScope : public HandleScope {
+public:
+    EscapableHandleScope();
+    ~EscapableHandleScope();
+
+    template <typename T = Value>
+    Local<T> escape(Local<T> val) {
+        return Local<T>(escapeSlot(val.index()));
+    }
+
+private:
+    BRONZE_EMBED_API uint32_t escapeSlot(uint32_t index);
+    bool escaped_{false};
+};
+
 // The bits bridge, for a host that stores u64 (a component table, a script
 // field). Raw bits are NOT a root — bits held across an allocation name a
 // pre-collection address. Round-trip through a Persistent to keep them live.

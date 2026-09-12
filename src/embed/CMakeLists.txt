@@ -19,6 +19,7 @@ bronze_add_module(embed
         support
     TEST_SOURCES
         ../../tests/embed/embed_test.cpp
+        ../../tests/embed/embed_handle_scope_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on —
