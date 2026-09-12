@@ -353,19 +353,35 @@ bool rtHostGlobalLookup(const std::string& name, Value& out) {
 // over is the host's to keep alive, and the Values it hands back per call are
 // rooted by the caller like any other builtin result.
 static thread_local DynamicFunctionHost g_dynamicFunctionHost;
+static DynamicFunctionHost g_defaultDynamicFunctionHost;
 
 void rtSetDynamicFunctionHost(DynamicFunctionHost host) {
     g_dynamicFunctionHost = std::move(host);
 }
 
-const DynamicFunctionHost& rtDynamicFunctionHost() { return g_dynamicFunctionHost; }
+void rtSetDefaultDynamicFunctionHost(DynamicFunctionHost host) {
+    g_defaultDynamicFunctionHost = std::move(host);
+}
+
+const DynamicFunctionHost& rtDynamicFunctionHost() {
+    if (g_dynamicFunctionHost) return g_dynamicFunctionHost;
+    return g_defaultDynamicFunctionHost;
+}
 
 // The host's eval, if it has one — the same seam, for `Function`'s sibling.
 static thread_local DynamicEvalHost g_dynamicEvalHost;
+static DynamicEvalHost g_defaultDynamicEvalHost;
 
 void rtSetDynamicEvalHost(DynamicEvalHost host) { g_dynamicEvalHost = std::move(host); }
 
-const DynamicEvalHost& rtDynamicEvalHost() { return g_dynamicEvalHost; }
+void rtSetDefaultDynamicEvalHost(DynamicEvalHost host) {
+    g_defaultDynamicEvalHost = std::move(host);
+}
+
+const DynamicEvalHost& rtDynamicEvalHost() {
+    if (g_dynamicEvalHost) return g_dynamicEvalHost;
+    return g_defaultDynamicEvalHost;
+}
 
 // The host's `import()`, if it has one — the seam for the specifier the module
 // graph could not read at compile time.

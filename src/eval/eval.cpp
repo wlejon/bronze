@@ -26,7 +26,10 @@ namespace bronze::eval {
 
 namespace {
 
-static std::vector<std::unique_ptr<BrassJitProgram>> g_retainedJitPrograms;
+static std::vector<std::unique_ptr<BrassJitProgram>>& retainedPrograms() {
+    static auto* list = new std::vector<std::unique_ptr<BrassJitProgram>>();
+    return *list;
+}
 static std::mutex g_programsMutex;
 static std::atomic<uint64_t> s_evalCounter{0};
 
@@ -138,7 +141,7 @@ std::unique_ptr<BrassJitProgram> compileSourceToJit(
 void retainJitProgram(std::unique_ptr<BrassJitProgram> program) {
     if (!program) return;
     std::lock_guard<std::mutex> lock(g_programsMutex);
-    g_retainedJitPrograms.push_back(std::move(program));
+    retainedPrograms().push_back(std::move(program));
 }
 
 embed::CallResult evalScript(std::string_view source, const EvalOptions& options) {
@@ -317,15 +320,29 @@ Value evalFunction(std::span<const std::string> params, std::string_view body,
 }
 
 void installDefaultDynamicHooks() {
-    embed::setDynamicEvalHook([](Value source) -> Value {
+    auto evalHook = [](Value source) -> Value {
         if (!source.isString()) return source;
         std::string code = embed::toUtf8(source);
         return evalScriptDirect(code, EvalOptions{.filename = "<eval>"});
-    });
+    };
 
-    embed::setDynamicFunctionHook([](runtime::DynamicFunctionKind kind, std::span<const Value> args) -> Value {
+    auto funcHook = [](runtime::DynamicFunctionKind kind, std::span<const Value> args) -> Value {
         return evalFunction(kind, args);
-    });
+    };
+
+    runtime::rtSetDefaultDynamicEvalHost(evalHook);
+    runtime::rtSetDefaultDynamicFunctionHost(funcHook);
+    embed::setDynamicEvalHook(evalHook);
+    embed::setDynamicFunctionHook(funcHook);
+}
+
+namespace {
+struct AutoInstallHooks {
+    AutoInstallHooks() {
+        installDefaultDynamicHooks();
+    }
+};
+static AutoInstallHooks s_autoInstallHooks;
 }
 
 }  // namespace bronze::eval

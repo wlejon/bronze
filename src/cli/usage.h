@@ -6,6 +6,8 @@ constexpr const char* kUsage =
     "bronze — AOT compiler for JavaScript (native-first, Brass backend)\n"
     "\n"
     "Usage:\n"
+    "  bronze run <file>                   Run JS source directly in-memory via JIT\n"
+    "  bronze eval <code> (or -e <code>)   Evaluate JS code directly in-memory via JIT\n"
     "  bronze lex <file>                   Tokenize and print one token per line\n"
     "  bronze parse <file>                 Parse and print the canonical AST dump\n"
     "  bronze types <file>                 Infer types and print the canonical type dump\n"

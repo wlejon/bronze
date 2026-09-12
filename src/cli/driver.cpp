@@ -17,6 +17,7 @@
 #include "cli/link.h"
 #include "cli/link_order.h"
 #include "cli/native_manifest_resolve.h"
+#include "cli/run.h"
 #include "cli/usage.h"
 #include "codegen/backend.h"
 #include "codegen-brass/brass_backend.h"
@@ -574,6 +575,16 @@ int runDriver(int argc, char** argv) {
         std::puts("bronze 0.1.0 (Debug)");
 #endif
         return 0;
+    }
+
+    if (command == "-e" || command == "eval") {
+        if (argc < 3) return fail("error: missing code to evaluate\n");
+        return runEval(argv[2]);
+    }
+
+    if (command == "run") {
+        if (argc < 3) return fail("error: missing <file>\n");
+        return runFileInJit(argv[2]);
     }
 
     if (command == "link") return runLink(argc, argv);

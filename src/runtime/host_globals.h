@@ -70,6 +70,7 @@ using DynamicFunctionHost =
 // Install (or clear, with an empty function) the host's answer. Process-wide
 // and set once at startup, like the host globals beside it.
 void rtSetDynamicFunctionHost(DynamicFunctionHost host);
+void rtSetDefaultDynamicFunctionHost(DynamicFunctionHost host);
 
 // The installed answer, or an empty std::function when there is none — which
 // is the signal to refuse.
@@ -101,6 +102,7 @@ using DynamicEvalHost = std::function<Value(Value source)>;
 // Install (or clear, with an empty function) the host's answer. Process-wide
 // and set once at startup, like the host globals beside it.
 void rtSetDynamicEvalHost(DynamicEvalHost host);
+void rtSetDefaultDynamicEvalHost(DynamicEvalHost host);
 
 // The installed answer, or an empty std::function when there is none — which
 // is the signal to refuse.
