@@ -71,6 +71,15 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.enable_array_contraction = true;
     options.enable_tlab = true;
     options.use_bronze_tlab = true;
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__GNUC__) || defined(__clang__)
+    if (__builtin_cpu_supports("avx2")) {
+        options.enable_avx2 = true;
+        options.vector_width = 256;
+    }
+    options.enable_fma = true;
+#endif
+#endif
     options.enable_pic = sharedRuntime_;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
