@@ -441,6 +441,8 @@ private:
     static const char* generatorIterSlotName();
     static const char* asyncMachineSlotName();
     static std::string loopIterSlotName(uint32_t depth);
+    static std::string finallyPendingSlotName(uint32_t depth);
+    static const char* generatorReturnSlotName();
     Value emitConstF64(double value, il::Function& ilFn);
     Value emitIterResult(Value value, bool done, il::Function& ilFn);
     Value emitAsyncAwaitResult(il::Function& ilFn);
@@ -1128,7 +1130,8 @@ private:
     bool emitAccessorDef(Value target, const std::string& key, ast::AccessorKind kind,
                          const ast::FunctionExpr& fn, bool enumerable, il::Function& ilFn);
     bool emitAccessorDefComputed(Value target, Value key, ast::AccessorKind kind,
-                                 const ast::FunctionExpr& fn, bool enumerable, il::Function& ilFn);
+                                 const ast::FunctionExpr& fn, bool enumerable, il::Function& ilFn,
+                                 const std::optional<std::string>& jsName = std::nullopt);
     std::optional<Value> lowerArrayLit(const ast::ArrayLit* arrLit, il::Function& ilFn);
     std::optional<Value> lowerNewExpr(const ast::NewExpr* newExpr, il::Function& ilFn);
     // `onSpine` says this node is a link of an optional chain already being

@@ -210,6 +210,15 @@ bool containsYield(const std::vector<StmtPtr>& stmts) {
     return scan.found;
 }
 
+bool containsYield(const std::vector<const Stmt*>& stmts) {
+    YieldScan scan;
+    for (const auto* s : stmts) {
+        if (s) s->accept(scan);
+        if (scan.found) return true;
+    }
+    return scan.found;
+}
+
 YieldForms yieldFormsIn(const Node& node) {
     YieldScan scan(/*stopAtFirst=*/false);
     node.accept(scan);
@@ -402,6 +411,43 @@ uint32_t iterationDepth(const Stmt& s) {
     return 0;
 }
 
+uint32_t suspendingFinallyDepth(const Stmt& s);
+
+uint32_t suspendingFinallyDepth(const std::vector<StmtPtr>& stmts) {
+    uint32_t deepest = 0;
+    for (const auto& s : stmts) {
+        if (s) deepest = std::max(deepest, suspendingFinallyDepth(*s));
+    }
+    return deepest;
+}
+
+uint32_t suspendingFinallyDepth(const Stmt& s) {
+    if (const auto* b = dynamic_cast<const BlockStmt*>(&s)) return suspendingFinallyDepth(b->stmts);
+    if (const auto* i = dynamic_cast<const IfStmt*>(&s)) {
+        return std::max(suspendingFinallyDepth(i->thenBody), suspendingFinallyDepth(i->elseBody));
+    }
+    if (const auto* w = dynamic_cast<const WhileStmt*>(&s)) return suspendingFinallyDepth(w->body);
+    if (const auto* d = dynamic_cast<const DoWhileStmt*>(&s)) return suspendingFinallyDepth(d->body);
+    if (const auto* f = dynamic_cast<const ForStmt*>(&s)) return suspendingFinallyDepth(f->body);
+    if (const auto* fo = dynamic_cast<const ForOfStmt*>(&s)) return suspendingFinallyDepth(fo->body);
+    if (const auto* fi = dynamic_cast<const ForInStmt*>(&s)) return suspendingFinallyDepth(fi->body);
+    if (const auto* sw = dynamic_cast<const SwitchStmt*>(&s)) {
+        uint32_t deepest = 0;
+        for (const auto& c : sw->cases) deepest = std::max(deepest, suspendingFinallyDepth(c.body));
+        return deepest;
+    }
+    if (const auto* lb = dynamic_cast<const LabeledStmt*>(&s)) {
+        return lb->body ? suspendingFinallyDepth(*lb->body) : 0;
+    }
+    if (const auto* tr = dynamic_cast<const TryStmt*>(&s)) {
+        const uint32_t inner = std::max({suspendingFinallyDepth(tr->body),
+                                          suspendingFinallyDepth(tr->catchBody),
+                                          suspendingFinallyDepth(tr->finallyBody)});
+        return (tr->hasFinally && containsYield(tr->finallyBody)) ? inner + 1 : inner;
+    }
+    return 0;
+}
+
 }  // namespace
 
 uint32_t maxSuspendingIterationDepth(const std::vector<StmtPtr>& stmts) {
@@ -412,6 +458,18 @@ uint32_t maxSuspendingIterationDepth(const std::vector<const Stmt*>& stmts) {
     uint32_t deepest = 0;
     for (const auto* s : stmts) {
         if (s) deepest = std::max(deepest, iterationDepth(*s));
+    }
+    return deepest;
+}
+
+uint32_t maxSuspendingFinallyDepth(const std::vector<StmtPtr>& stmts) {
+    return suspendingFinallyDepth(stmts);
+}
+
+uint32_t maxSuspendingFinallyDepth(const std::vector<const Stmt*>& stmts) {
+    uint32_t deepest = 0;
+    for (const auto* s : stmts) {
+        if (s) deepest = std::max(deepest, suspendingFinallyDepth(*s));
     }
     return deepest;
 }

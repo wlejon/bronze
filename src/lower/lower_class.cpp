@@ -214,8 +214,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                 auto keyOpt = lowerExpr(*m.keyExpr, ilFn);
                 if (!keyOpt) return std::nullopt;
                 auto keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+                std::optional<std::string> inferredKey;
+                if (const auto* strLit = dynamic_cast<const ast::StringLit*>(m.keyExpr.get())) {
+                    inferredKey = (m.accessor == ast::AccessorKind::Getter ? "get " : "set ") + strLit->value;
+                }
                 if (!emitAccessorDefComputed(Value{homeObject, il::Type::Dynamic}, keyBoxed,
-                                             m.accessor, *m.fn, /*enumerable=*/false, ilFn)) {
+                                             m.accessor, *m.fn, /*enumerable=*/false, ilFn, inferredKey)) {
                     return std::nullopt;
                 }
             } else {
@@ -237,9 +241,18 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
         }
 
+        std::optional<std::string> inferredMethodName;
+        if (m.keyExpr) {
+            if (const auto* strLit = dynamic_cast<const ast::StringLit*>(m.keyExpr.get())) {
+                inferredMethodName = strLit->value;
+            }
+        } else {
+            inferredMethodName = m.name;
+        }
+
         auto fnVal = lowerClosure(
             *m.fn, m.fn->name,
-            m.keyExpr ? std::optional<std::string>{} : std::optional<std::string>{m.name},
+            inferredMethodName,
             m.fn->params, m.fn->returnType, m.fn->body, m.fn->span, ilFn);
         if (!fnVal) return std::nullopt;
 

@@ -79,8 +79,12 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
                 auto keyOpt = lowerExpr(*prop.keyExpr, ilFn);
                 if (!keyOpt) return std::nullopt;
                 auto keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+                std::optional<std::string> inferredKey;
+                if (const auto* strLit = dynamic_cast<const ast::StringLit*>(prop.keyExpr.get())) {
+                    inferredKey = (prop.accessor == ast::AccessorKind::Getter ? "get " : "set ") + strLit->value;
+                }
                 if (!emitAccessorDefComputed(Value{res, il::Type::Dynamic}, keyBoxed,
-                                             prop.accessor, *fn, /*enumerable=*/true, ilFn)) {
+                                             prop.accessor, *fn, /*enumerable=*/true, ilFn, inferredKey)) {
                     return std::nullopt;
                 }
             } else {
@@ -114,7 +118,18 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
         // one, would leave `{ m() {} }.m.name` reading "obj.0.m".
         std::optional<Value> valOpt;
         if (prop.computed()) {
-            valOpt = lowerExpr(*prop.value, ilFn);
+            const auto* strLit = dynamic_cast<const ast::StringLit*>(prop.keyExpr.get());
+            if (strLit) {
+                if (prop.isMethod) {
+                    const auto& fn = static_cast<const ast::FunctionExpr&>(*prop.value);
+                    valOpt = lowerClosure(fn, fn.name, strLit->value, fn.params, fn.returnType, fn.body,
+                                          fn.span, ilFn, fn.isArrow);
+                } else {
+                    valOpt = lowerNamedEvaluation(*prop.value, strLit->value, ilFn);
+                }
+            } else {
+                valOpt = lowerExpr(*prop.value, ilFn);
+            }
         } else if (prop.isMethod) {
             const auto& fn = static_cast<const ast::FunctionExpr&>(*prop.value);
             valOpt = lowerClosure(fn, fn.name, prop.key, fn.params, fn.returnType, fn.body,
@@ -198,8 +213,9 @@ bool Lowerer::emitAccessorDef(Value target, const std::string& key, ast::Accesso
 
 bool Lowerer::emitAccessorDefComputed(Value target, Value key, ast::AccessorKind kind,
                                       const ast::FunctionExpr& fn, bool enumerable,
-                                      il::Function& ilFn) {
-    auto fnVal = lowerClosure(fn, fn.name, std::nullopt, fn.params, fn.returnType, fn.body,
+                                      il::Function& ilFn,
+                                      const std::optional<std::string>& jsName) {
+    auto fnVal = lowerClosure(fn, fn.name, jsName, fn.params, fn.returnType, fn.body,
                               fn.span, ilFn);
     if (!fnVal) return false;
     const il::ValueId absent = emitConstUndefined(ilFn);

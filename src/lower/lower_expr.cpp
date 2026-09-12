@@ -766,22 +766,31 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     return std::nullopt;
 }
 
-std::optional<Lowerer::Value> Lowerer::lowerThisValue(Span span, il::Function& ilFn) {
+std::optional<Lowerer::Value> Lowerer::lowerThisValue(Span /*span*/, il::Function& ilFn) {
     if (currentFunctionIsArrow_) {
         uint32_t depth = 0;
         uint32_t index = 0;
         if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar("this", depth, index)) {
             return emitEnvGet(depth, index, ilFn);
         }
-        diags_.error(span, "`this` outside a function is unsupported");
-        return std::nullopt;
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::GlobalGet;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.keyIndex = getKeyConstantIndex("globalThis");
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
     }
     if (currentThisValue_ == il::kNoValue) {
-        // usesThis() decided the parameter, so reaching here means `this` at
-        // module top level, where its value is a module system question bronze
-        // has not answered yet.
-        diags_.error(span, "`this` outside a function is unsupported");
-        return std::nullopt;
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::GlobalGet;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.keyIndex = getKeyConstantIndex("globalThis");
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
     }
     return Value{currentThisValue_, il::Type::Dynamic};
 }

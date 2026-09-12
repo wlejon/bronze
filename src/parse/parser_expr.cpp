@@ -270,7 +270,7 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
 ExprPtr Parser::parseUnaryPrefix() {
     const Token& t = peek();
     if (check(TokenKind::Identifier) && t.text == "await") {
-        if (inAsyncBody_) {
+        if (inAsyncBody_ || functionDepth_ == 0) {
             // An AwaitExpression is a *UnaryExpression* (13.3), so it parses
             // at exactly this rung — which is also what refuses it on the
             // left of `**`, the same way every other unary operand is.
@@ -282,8 +282,7 @@ ExprPtr Parser::parseUnaryPrefix() {
         // await = 1`, `await(x)` a call — and stays one. What cannot be one
         // is `await <operand>`: two adjacent expression heads are never a
         // program, so the shape is named for what it is instead of dying as
-        // "expected ';'" three tokens later. Top-level await is the case
-        // that hits this.
+        // "expected ';'" three tokens later.
         const TokenKind next = peek(1).kind;
         const bool operandFollows =
             !peek(1).newlineBefore &&
@@ -297,8 +296,7 @@ ExprPtr Parser::parseUnaryPrefix() {
         // `[` is deliberately not in the list: `await[0]` indexes a binding
         // named `await`, and `(` is a call of one — both stay programs.
         if (operandFollows) {
-            error("unsupported construct: `await` outside an async function body "
-                  "(module top-level await is not built)");
+            error("unsupported construct: `await` outside an async function body");
             return nullptr;
         }
     }

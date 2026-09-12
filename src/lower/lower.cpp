@@ -147,15 +147,12 @@ std::optional<il::Module> Lowerer::lower() {
         }
     }
 
-    // Whether the top level lowers as one body or as segments, decided from
-    // its SOURCE size — the only measure available before anything lowers.
-    // The threshold is far above any handwritten program: it exists for
-    // bundles, where one `main` was the floor under parallel object emission.
+    const bool topLevelAsync = ast::containsYield(topLevelStmts);
     {
         size_t topLevelBytes = 0;
         for (const ast::Stmt* s : topLevelStmts) topLevelBytes += s->span.end - s->span.begin;
         constexpr size_t kSegmentSourceBytes = 128 * 1024;
-        segmentTopLevel_ = topLevelBytes >= kSegmentSourceBytes;
+        segmentTopLevel_ = !topLevelAsync && (topLevelBytes >= kSegmentSourceBytes);
         if (support::timingsEnabled()) {
             std::fprintf(stderr, "  segment? stmts=%zu bytes=%zu -> %d\n", topLevelStmts.size(),
                          topLevelBytes, static_cast<int>(segmentTopLevel_));
@@ -231,7 +228,8 @@ std::optional<il::Module> Lowerer::lower() {
 
         const auto topLevelVars = ast::getTopLevelVarDeclarations(topLevelStmts);
         const auto allHoistedVars = ast::getHoistedVarDeclarations(topLevelStmts);
-        for (const auto& varName : topLevelVars) {
+        const auto& hoistedVarsToDeclare = topLevelAsync ? allHoistedVars : topLevelVars;
+        for (const auto& varName : hoistedVarsToDeclare) {
             if (activeVarMap_.find(varName) == activeVarMap_.end()) {
                 il::ValueId undefVal = emitConstUndefined(mainFn);
                 if (!declareVariable(varName, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/false,
@@ -246,13 +244,19 @@ std::optional<il::Module> Lowerer::lower() {
             }
         }
         functionVarNames_.clear();
-        for (const auto& v : allHoistedVars) {
-            if (std::find(topLevelVars.begin(), topLevelVars.end(), v) == topLevelVars.end()) {
-                functionVarNames_.push_back(v);
+        if (!topLevelAsync) {
+            for (const auto& v : allHoistedVars) {
+                if (std::find(topLevelVars.begin(), topLevelVars.end(), v) == topLevelVars.end()) {
+                    functionVarNames_.push_back(v);
+                }
             }
         }
 
-        if (segmentTopLevel_) {
+        if (topLevelAsync) {
+            mainFn.returnType = il::Type::Dynamic;
+            mainFn.fnFlags |= BRONZE_ABI_FN_FLAG_ASYNC;
+            if (!lowerAsyncTail(topLevelStmts, mainFn)) return std::nullopt;
+        } else if (segmentTopLevel_) {
             if (!lowerTopLevelSegments(topLevelStmts, mainFn)) return std::nullopt;
         } else if (!lowerStmtList(topLevelStmts, mainFn)) {
             return std::nullopt;
@@ -406,6 +410,13 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
         for (uint32_t depth = 0; depth < iterLoops; ++depth) {
             slots.emplace_back(loopIterSlotName(depth));
         }
+        const uint32_t finallyDepth = ast::maxSuspendingFinallyDepth(body);
+        for (uint32_t depth = 0; depth < finallyDepth; ++depth) {
+            slots.emplace_back(finallyPendingSlotName(depth));
+        }
+        if (finallyDepth > 0 || iterLoops > 0) {
+            slots.emplace_back(generatorReturnSlotName());
+        }
     }
     // Parameters first, then the body's own let/const/function declarations,
     // then `var`s hoisted from anywhere below (they are function-scoped
@@ -482,6 +493,7 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
 // anything as far as this pass could see, got no slot, and the read reported
 // `undefined variable` for a binding written three lines above it.
 void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) {
+    const bool topLevelAsync = ast::containsYield(topLevelStmts);
     // Deliberately a LOCAL set, not `capturedNames_`. The two answer
     // different questions and the difference is not cosmetic:
     //
@@ -520,13 +532,29 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
         // segmentation — top-level code reads its own bindings through the
         // record instead of SSA — paid by modules big enough that compile
         // time, not top-level throughput, is the binding constraint.
-        if (!segmentTopLevel_ && !moduleCaptures.contains(name)) return;
+        if (!segmentTopLevel_ && !topLevelAsync && !moduleCaptures.contains(name)) return;
         if (std::find(moduleEnvSlots_.begin(), moduleEnvSlots_.end(), name) !=
             moduleEnvSlots_.end()) {
             return;
         }
         moduleEnvSlots_.push_back(name);
     };
+    if (topLevelAsync) {
+        moduleEnvSlots_.emplace_back(generatorStateSlotName());
+        moduleEnvSlots_.emplace_back(generatorEnvSlotName());
+        moduleEnvSlots_.emplace_back(asyncMachineSlotName());
+        const uint32_t iterLoops = ast::maxSuspendingIterationDepth(topLevelStmts);
+        for (uint32_t depth = 0; depth < iterLoops; ++depth) {
+            moduleEnvSlots_.emplace_back(loopIterSlotName(depth));
+        }
+        const uint32_t finallyDepth = ast::maxSuspendingFinallyDepth(topLevelStmts);
+        for (uint32_t depth = 0; depth < finallyDepth; ++depth) {
+            moduleEnvSlots_.emplace_back(finallyPendingSlotName(depth));
+        }
+        if (finallyDepth > 0 || iterLoops > 0) {
+            moduleEnvSlots_.emplace_back(generatorReturnSlotName());
+        }
+    }
     // Only the top level's OWN declarations. A top-level function
     // declaration is deliberately absent: it is a module symbol resolved
     // through `functionIndices_`, and a slot for it would shadow that symbol
@@ -538,6 +566,7 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     if (moduleEnvSlots_.empty()) return;
 
     EnvScopeInfo info;
+    if (topLevelAsync) info.childSlot = 1;
     for (uint32_t i = 0; i < moduleEnvSlots_.size(); ++i) info.slotOf[moduleEnvSlots_[i]] = i;
     info.slotNames = moduleEnvSlots_;
     // Which of them are lexical is settled HERE and not in `openModuleEnv`,
@@ -554,7 +583,7 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // And which of them no read can catch uninitialized, settled here for the
     // same reason: the module function that reads one is lowered before `main`
     // and has to know then whether the read carries a check.
-    if (!definiteInitDisabled()) {
+    if (!definiteInitDisabled() && !topLevelAsync) {
         for (const auto& name : ast::getDefinitelyAssignedLexicalNames(astModule_.body)) {
             auto slot = info.slotOf.find(name);
             if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
@@ -597,90 +626,13 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
 // a safe cut: no SSA value crosses segments. Cuts are taken only between
 // top-level statements, where no block scope is open.
 //
-// A top-level `throw` makes the current block terminated; one body DROPS the
-// statements after it (lowerStmtList says why that is the language's answer),
-// so the segmented form drops them too rather than lowering segments no call
-// would ever reach — `main`'s pending-exception check after each call is what
-// makes the calls after a throwing segment unreachable at run time.
-bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLevelStmts,
-                                    il::Function& mainFn) {
-    // Sized in IL instructions — the only size lowering can see. One IL
-    // instruction expands to ~50 LLVM instructions (measured on the three.js
-    // bundle: the inline IC fast paths are most of it), so 800 IL is roughly
-    // a 40k-instruction function: big enough that per-function pass overhead
-    // stays noise, small enough that emission partitions balance dozens of
-    // them evenly.
-    constexpr size_t kSegmentIlInsts = 800;
-    const size_t mainBlockIdx = currentBlockIdx_;
-    size_t stmtIdx = 0;
-    unsigned segNo = 0;
-    while (stmtIdx < topLevelStmts.size()) {
-        il::Function segFn;
-        segFn.name = "main.seg" + std::to_string(segNo++);
-        segFn.returnType = il::Type::Void;
-        segFn.isStrict = strictCode_;
-        segFn.blocks.push_back(il::Block{.id = 0});
-
-        // The reset `main` itself got above, less what stays module-wide:
-        // functionVarNames_ (a `var` nested in any top-level statement is
-        // module-scoped wherever it is written), the env layout, strict mode.
-        varBindings_.clear();
-        activeVarMap_.clear();
-        currentScopeDepth_ = 0;
-        varDeclCounter_ = 0;
-        jumpStack_.clear();
-        scopeHasEnv_.clear();
-        currentBlockIdx_ = 0;
-        currentThisValue_ = il::kNoValue;
-        functionEnvBase_ = 0;
-        functionEnvScope_ = moduleEnvScope_;
-        immutableEnvCache_.clear();
-        cachedTypedElemGet_.reset();
-        // The module record, loaded the way every module function loads it.
-        currentEnvValue_ =
-            moduleEnvScope_ != SIZE_MAX ? emitModuleEnvGet(segFn) : il::kNoValue;
-        entryEnvValue_ = currentEnvValue_;
-
-        while (stmtIdx < topLevelStmts.size()) {
-            if (!lowerStmt(*topLevelStmts[stmtIdx], segFn)) return false;
-            ++stmtIdx;
-            if (currentBlockIsTerminated(segFn)) {
-                stmtIdx = topLevelStmts.size();
-                break;
-            }
-            size_t segInsts = 0;
-            for (const auto& b : segFn.blocks) segInsts += b.instructions.size();
-            if (segInsts >= kSegmentIlInsts) break;
-        }
-
-        if (!currentBlockIsTerminated(segFn)) {
-            il::Instruction retInst;
-            retInst.op = il::Op::Ret;
-            retInst.type = il::Type::Void;
-            emitInst(segFn, retInst);
-        }
-
-        // Appended AFTER the closures the segment's own statements appended,
-        // so the index is taken here, not before the statements lowered.
-        const uint32_t segIndex = static_cast<uint32_t>(ilModule_.functions.size());
-        ilModule_.functions.push_back(std::move(segFn));
-
-        currentBlockIdx_ = mainBlockIdx;
-        il::Instruction call;
-        call.op = il::Op::Call;
-        call.type = il::Type::Void;
-        call.result = il::kNoValue;
-        call.calleeIndex = segIndex;
-        emitInst(mainFn, call);
-    }
-    return true;
-}
 
 // `main` creates the module scope's record and publishes it, ahead of every
 // statement — including the hoisted closures, which capture it as their
 // parent environment.
 void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
                             il::Function& mainFn) {
+    const bool topLevelAsync = ast::containsYield(topLevelStmts);
     // The narrow set: what closures WRITTEN at top level capture. See
     // planModuleEnv for why this is not the set the record's layout came
     // from.
@@ -688,6 +640,11 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     memoryNames_ = capturedNames_;
     for (auto& name : ast::getTryAssignedNames(topLevelStmts)) memoryNames_.insert(std::move(name));
     for (auto& name : ast::getTdzExposedNames(topLevelStmts)) memoryNames_.insert(std::move(name));
+    if (topLevelAsync) {
+        for (auto& name : ast::getGeneratorFrameNames(topLevelStmts)) memoryNames_.insert(std::move(name));
+        for (auto& name : ast::getScopeDeclarations(topLevelStmts)) memoryNames_.insert(std::move(name));
+        for (auto& name : ast::getHoistedVarDeclarations(topLevelStmts)) memoryNames_.insert(std::move(name));
+    }
     if (moduleEnvScope_ == SIZE_MAX) return;
     envScopes_[moduleEnvScope_].envValue =
         emitEnvCreate(static_cast<uint32_t>(moduleEnvSlots_.size()), mainFn);
@@ -696,6 +653,17 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     entryEnvValue_ = currentEnvValue_;
     functionEnvScope_ = moduleEnvScope_;
     emitModuleEnvSet(currentEnvValue_, mainFn);
+    if (envScopes_[moduleEnvScope_].slotOf.contains("this")) {
+        il::ValueId gthis = mainFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::GlobalGet;
+        inst.type = il::Type::Dynamic;
+        inst.result = gthis;
+        inst.keyIndex = getKeyConstantIndex("globalThis");
+        emitInst(mainFn, inst);
+        emitEnvSet(0, envScopes_[moduleEnvScope_].slotOf.at("this"),
+                   Value{gthis, il::Type::Dynamic}, mainFn);
+    }
     // Ahead of every top-level statement, and ahead of the hoisted closures
     // that capture this record: 16.2.1.6.4 instantiates the module's lexical
     // bindings — uninitialized — before any of its body runs, and a function
@@ -706,9 +674,11 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     // precisely the closures over this record that 16.2.1.6.4 instantiates
     // before any of it runs — so the scan has to see their names to refuse a
     // statement that can call one.
-    openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts),
-                        ast::getDefinitelyAssignedLexicalNames(astModule_.body),
-                        ast::getConstDeclarations(topLevelStmts), mainFn);
+    if (!topLevelAsync) {
+        openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts),
+                            ast::getDefinitelyAssignedLexicalNames(astModule_.body),
+                            ast::getConstDeclarations(topLevelStmts), mainFn);
+    }
 }
 
 // Does this module function need the module scope's record at entry? An
@@ -732,250 +702,7 @@ bool Lowerer::referencesModuleEnv(const std::vector<ast::Param>& params,
     return false;
 }
 
-// The closure-parameter plan is made for THIS body and consumed while THIS body
-// is lowered, so it lives in a frame that opens and closes here. Keyed by node
-// address, it must not survive the nodes it names — a class constructor's body
-// is a copy that dies with `lowerClass`, and an entry outliving that copy is
-// later answered for whatever the allocator puts at the same address. See the
-// note on `provenClosureParams_`.
-bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
-                                const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
-                                bool isGenerator, bool isAsync) {
-    bool oldUserFn = inUserFunction_;
-    inUserFunction_ = true;
-    provenClosureParams_.emplace_back();
-    const bool ok = lowerBodyWithPlan(params, body, ilFn, isGenerator, isAsync);
-    provenClosureParams_.pop_back();
-    inUserFunction_ = oldUserFn;
-    return ok;
-}
 
-bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
-                                const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
-                                bool isGenerator, bool isAsync) {
-    // Bodies lower one at a time (the state resets below assume it), so a
-    // plain pointer is the whole bookkeeping the typed-element binding scan
-    // needs.
-    currentBodyStmts_ = &body;
-    // Which of this body's own nested declarations have parameters every call
-    // site proves to be Numbers (lower_scope.cpp). Decided BEFORE any statement
-    // of the body is lowered, because the first thing lowering does with a
-    // `function f() {}` statement is build `f`'s IL skeleton — parameter types
-    // and all — and the whole point of the plan is to be part of it.
-    planClosureParamNumbers(params, body);
-    ilFn.blocks.push_back(il::Block{.id = 0});
-    ilFn.isStrict = strictCode_;
-    ilFn.isGenerator = isGenerator;
-    currentBlockIdx_ = 0;
-    varBindings_.clear();
-    activeVarMap_.clear();
-    currentScopeDepth_ = 0;
-    varDeclCounter_ = 0;
-    jumpStack_.clear();
-    scopeHasEnv_.clear();
-    immutableEnvCache_.clear();
-    cachedTypedElemGet_.reset();
-    functionVarNames_ = ast::getHoistedVarDeclarations(body);
-    for (auto& n : ast::getAssignedNames(body)) assignedNames_.insert(std::move(n));
-
-    // Synthetic parameters lead: [__env?][__this?] then source params.
-    const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());
-    if (ilFn.needsEnv) {
-        // A closure: its environment arrives as the first parameter, and the
-        // chain from there already reaches every enclosing scope including the
-        // module's.
-        currentEnvValue_ = 0;
-    } else {
-        // A module function. It has no environment parameter and never will —
-        // that is what keeps it a direct-call target — so the one scope it can
-        // still need, the module's, is loaded from the runtime.
-        currentEnvValue_ =
-            referencesModuleEnv(params, body) ? emitModuleEnvGet(ilFn) : il::kNoValue;
-    }
-    entryEnvValue_ = currentEnvValue_;
-    currentThisValue_ = ilFn.needsThis ? (ilFn.needsEnv ? 1u : 0u) : il::kNoValue;
-
-    std::vector<const ast::Stmt*> stmts;
-    stmts.reserve(body.size());
-    for (const auto& s : body) stmts.push_back(s.get());
-    enterFunctionEnv(params, stmts, ilFn, isGenerator, isAsync);
-
-    // An arrow in this body reads the receiver out of the environment, so
-    // the receiver has to be IN it: copy `__this` across on entry, once,
-    // exactly as a captured parameter is copied below. Undefined where
-    // there is no receiver, which is what `this` means at module level.
-    if (functionEnvScope_ != SIZE_MAX && envScopes_[functionEnvScope_].slotOf.contains("this")) {
-        Value thisVal{currentThisValue_, il::Type::Dynamic};
-        if (currentThisValue_ == il::kNoValue) {
-            il::ValueId undef = ilFn.valueCount++;
-            il::Instruction undefInst;
-            undefInst.op = il::Op::ConstUndefined;
-            undefInst.type = il::Type::Dynamic;
-            undefInst.result = undef;
-            emitInst(ilFn, undefInst);
-            thisVal = Value{undef, il::Type::Dynamic};
-        }
-        emitEnvSet(envDepthOf(functionEnvScope_), envScopes_[functionEnvScope_].slotOf.at("this"),
-                   thisVal, ilFn);
-    }
-
-    // The arguments object is a BINDING named `arguments`, not a keyword:
-    // that is what makes an arrow in this body see it through the ordinary
-    // capture machinery, and what makes a `let arguments` shadow it without a
-    // rule of its own. Declared before the parameters so that any real
-    // declaration of the name — which `ast::usesArguments` already refuses to
-    // create this for — would shadow rather than collide with it.
-    if (ilFn.needsArguments) {
-        const il::ValueId argsVal = static_cast<il::ValueId>(ilFn.firstSourceParam() - 1);
-        if (functionEnvScope_ != SIZE_MAX &&
-            envScopes_[functionEnvScope_].slotOf.contains("arguments")) {
-            emitEnvSet(envDepthOf(functionEnvScope_),
-                       envScopes_[functionEnvScope_].slotOf.at("arguments"),
-                       Value{argsVal, il::Type::Dynamic}, ilFn);
-        }
-        if (!declareVariable("arguments", il::Type::Dynamic, /*isConst=*/false, /*isLet=*/false,
-                             /*isVar=*/true, /*isInitialized=*/true, argsVal, Span{})) {
-            return false;
-        }
-    }
-
-    if (!lowerParamBindings(params, paramBase, ilFn)) return false;
-
-    const auto allHoistedVars = ast::getHoistedVarDeclarations(body);
-    for (const auto& varName : allHoistedVars) {
-        if (activeVarMap_.find(varName) == activeVarMap_.end()) {
-            il::ValueId undefVal = emitConstUndefined(ilFn);
-            if (!declareVariable(varName, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/false,
-                                 /*isVar=*/true, /*isInitialized=*/true, undefVal, Span{})) {
-                return false;
-            }
-            VarBinding& b = varBindings_[activeVarMap_[varName]];
-            if (b.inEnv) {
-                emitEnvSet(envDepthOf(b.envScopeIndex), b.envSlot,
-                           Value{undefVal, il::Type::Dynamic}, ilFn);
-            }
-        }
-    }
-    functionVarNames_.clear();
-
-    // A generator's body does not run here at all (15.5.3): what is left of
-    // this function is to close the resume function over the frame the
-    // prologue above has just filled in, and hand back the generator object.
-    // Its lexical bindings are opened in the resume function's start block, for
-    // the reason recorded there. An async function's tail differs in one
-    // fact — 27.7.5.1 runs the body synchronously to the first await — and
-    // that fact lives in the runtime driver its tail calls, not here.
-    if (isGenerator || isAsync) {
-        const bool ok = (isGenerator && isAsync) ? lowerAsyncGeneratorTail(stmts, ilFn)
-                        : isGenerator             ? lowerGeneratorTail(stmts, ilFn)
-                                                  : lowerAsyncTail(stmts, ilFn);
-        if (functionEnvScope_ != SIZE_MAX) {
-            envScopes_.pop_back();
-            currentEnvValue_ = savedEnvValues_.back();
-            savedEnvValues_.pop_back();
-        }
-        return ok;
-    }
-
-    // After the parameters, so that a body that redeclares one is still the
-    // redeclaration error it was rather than a parameter slot holding the
-    // uninitialized marker; before the statements, because 14.3.1 creates the
-    // binding when the scope is entered and the declaration only initializes
-    // it.
-    if (functionEnvScope_ != SIZE_MAX) {
-        openLexicalBindings(functionEnvScope_, ast::getLexicalDeclarations(stmts),
-                            ast::getDefinitelyAssignedLexicalNames(stmts, &params),
-                            ast::getConstDeclarations(stmts), ilFn);
-    }
-
-    if (!lowerStmtList(stmts, ilFn)) return false;
-
-    if (!currentBlockIsTerminated(ilFn)) {
-        if (currentBlockIdx_ < ilFn.blocks.size()) {
-            // A tail block no edge targets (e.g. the join of an if whose
-            // arms both return) is unreachable; give it any well-typed
-            // ret. A reachable tail means the function can actually fall
-            // off the end, which yields undefined.
-            bool reachable = currentBlockIdx_ == 0;
-            for (const auto& block : ilFn.blocks) {
-                for (const auto& inst : block.instructions) {
-                    if (inst.op == il::Op::Jump || inst.op == il::Op::Branch) {
-                        if (inst.target.block == currentBlockIdx_ ||
-                            (inst.op == il::Op::Branch && inst.elseTarget.block == currentBlockIdx_)) {
-                            reachable = true;
-                        }
-                    }
-                }
-            }
-
-            // A body that can REACH its end returns `undefined` there, and a
-            // pinned return is refused by the arm below when it does — so a
-            // census entry for this function would be a manifest that does not
-            // compile. Refused by the site table, which is the only way a
-            // static fact reaches a dynamic instrument: reachability is a
-            // property of the program, and no run can be asked about it.
-            if (censusEnabled() && reachable && ilFn.returnType == il::Type::Dynamic &&
-                !ilFn.name.empty() && !ilFn.isGenerator &&
-                (ilFn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC)) == 0) {
-                addCensusSite("return " + manifestOwnerName(ilFn.name), il::CensusSite::Return,
-                              /*refuses=*/true);
-            }
-
-            il::Instruction retInst;
-            retInst.op = il::Op::Ret;
-            if (ilFn.returnType == il::Type::Void) {
-                retInst.type = il::Type::Void;
-            } else if (ilFn.returnType == il::Type::Dynamic ||
-                       (!reachable && ilFn.returnType != il::Type::Str)) {
-                Value retVal{il::kNoValue, il::Type::Void};
-                if (ilFn.returnType == il::Type::Dynamic) {
-                    il::ValueId undefVal = ilFn.valueCount++;
-                    il::Instruction constInst;
-                    constInst.op = il::Op::ConstUndefined;
-                    constInst.type = il::Type::Dynamic;
-                    constInst.result = undefVal;
-                    emitInst(ilFn, constInst);
-                    retVal = Value{undefVal, il::Type::Dynamic};
-                } else {
-                    il::ValueId dummyVal = ilFn.valueCount++;
-                    il::Instruction constInst;
-                    constInst.op = ilFn.returnType == il::Type::Bool ? il::Op::ConstBool
-                                   : ilFn.returnType == il::Type::I32 ? il::Op::ConstI32
-                                                                      : il::Op::ConstF64;
-                    constInst.type = ilFn.returnType;
-                    constInst.result = dummyVal;
-                    emitInst(ilFn, constInst);
-                    retVal = Value{dummyVal, ilFn.returnType};
-                }
-                retInst.type = retVal.type;
-                retInst.operands = {retVal.id};
-            } else {
-                diags_.error(Span{}, "function " + ilFn.name +
-                                         " can fall off the end but returns typed " +
-                                         il::typeName(ilFn.returnType) +
-                                         "; falling off yields undefined");
-                return false;
-            }
-            emitInst(ilFn, retInst);
-        }
-    }
-
-    if (functionEnvScope_ != SIZE_MAX) {
-        envScopes_.pop_back();
-        currentEnvValue_ = savedEnvValues_.back();
-        savedEnvValues_.pop_back();
-    }
-    return true;
-}
-
-// The return annotation is deliberately not passed down: it is a hint, and the
-// callers apply it — `lower()` and `lowerClosure` both check it against the
-// proof BEFORE the body is lowered, because the IL return type is part of the
-// calling convention.
-bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
-    return lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn, fnDecl.isGenerator,
-                             fnDecl.isAsync);
-}
 
 std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSink& diags,
                                       const types::InferenceResult* inference,

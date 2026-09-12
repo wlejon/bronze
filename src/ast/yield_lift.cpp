@@ -611,13 +611,6 @@ private:
         if (auto* tr = dynamic_cast<TryStmt*>(s.get())) {
             liftStmts(tr->body);
             liftStmts(tr->catchBody);
-            if (containsYield(tr->finallyBody)) {
-                // A `finally` body is lowered once per path that leaves the
-                // protected region, so a suspension inside one would be several
-                // suspension points wearing one source position — and the
-                // resumption would have to choose between them.
-                refuse(tr->span, yieldFormsIn(tr->finallyBody), "inside a `finally` block");
-            }
             liftStmts(tr->finallyBody);
             out.push_back(std::move(s));
             return;

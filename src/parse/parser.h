@@ -89,6 +89,7 @@ private:
     // machine a temporary belongs to.
     bool inAsyncBody_ = false;
     size_t asyncOrdinal_ = 0;
+    size_t functionDepth_ = 0;
     // Whether the code under the cursor is STRICT (ECMA-262 11.2.2).
     // Strictness is a property of a Script or a function body, decided by that
     // body's Directive Prologue and fixed for good at parse time — so a flag
@@ -281,10 +282,12 @@ private:
               savedInAsync(parser.inAsyncBody_) {
             p.inGeneratorBody_ = false;
             p.inAsyncBody_ = false;
+            ++p.functionDepth_;
         }
         ~GeneratorScopeGuard() {
             p.inGeneratorBody_ = savedInBody;
             p.inAsyncBody_ = savedInAsync;
+            --p.functionDepth_;
         }
     };
     // `yield`, `yield <expr>` and `yield* <expr>` under the cursor.

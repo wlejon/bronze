@@ -191,13 +191,28 @@ bool Lowerer::lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn) {
     take.result = pending;
     emitInst(ilFn, take);
 
+    uint32_t finallySlot = UINT32_MAX;
+    if (generator_ && generator_->activeFinallyDepth < generator_->finallyPendingSlots.size()) {
+        finallySlot = generator_->finallyPendingSlots[generator_->activeFinallyDepth++];
+        emitFrameSlotSet(finallySlot, Value{pending, il::Type::Dynamic}, ilFn);
+    }
+
     if (!lowerFinallyBody(*tryStmt, ilFn)) return false;
+
+    if (finallySlot != UINT32_MAX) {
+        --generator_->activeFinallyDepth;
+    }
+
     if (!currentBlockIsTerminated(ilFn)) {
+        il::ValueId toThrow = pending;
+        if (finallySlot != UINT32_MAX) {
+            toThrow = emitFrameSlotGet(finallySlot, ilFn).id;
+        }
         il::Instruction rethrow;
         rethrow.op = il::Op::Throw;
         rethrow.type = il::Type::Void;
         rethrow.result = il::kNoValue;
-        rethrow.operands = {pending};
+        rethrow.operands = {toThrow};
         emitInst(ilFn, rethrow);
     }
 

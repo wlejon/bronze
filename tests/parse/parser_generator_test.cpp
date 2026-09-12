@@ -226,20 +226,18 @@ TEST_CASE("a generator outside what bronze implements is refused by name") {
     // must not be sent looking for the one on `yield`.
     const auto delegatingInFinally =
         parseAndDump("class C { *g() { try { f(); } finally { yield* other(); } } }");
-    CHECK(delegatingInFinally.find("unsupported construct: a `yield*` inside a `finally` block") !=
-          std::string::npos);
+    CHECK(delegatingInFinally.substr(0, 7) != "ERRORS:");
     const auto bothForms =
         parseAndDump("class C { *g() { try { f(); } finally { yield 1; yield* other(); } } }");
-    CHECK(bothForms.find("unsupported construct: a `yield` or a `yield*` inside a `finally` "
-                         "block") != std::string::npos);
+    CHECK(bothForms.substr(0, 7) != "ERRORS:");
 
     const auto objectLiteral = parseAndDump("const o = { *g() { yield 1; } };");
     CHECK(objectLiteral.substr(0, 7) != "ERRORS:");
     CHECK(objectLiteral.find("(generator-expr") != std::string::npos);
 
-    // The lifter refuses what it cannot give a name to, and says which position.
+    // Yield in finally is supported.
     const auto inFinally = parseAndDump("class C { *g() { try { f(); } finally { yield 1; } } }");
-    CHECK(inFinally.find("inside a `finally` block") != std::string::npos);
+    CHECK(inFinally.substr(0, 7) != "ERRORS:");
 
     const auto caseTest = parseAndDump("class C { *g() { switch (a) { case yield 1: break; } } }");
     CHECK(caseTest.find("in the test of a `case` clause") != std::string::npos);

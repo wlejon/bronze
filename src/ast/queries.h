@@ -225,6 +225,7 @@ bool returnsAValue(const std::vector<StmtPtr>& stmts);
 // covers both forms without a second walk.
 bool containsYield(const Node& node);
 bool containsYield(const std::vector<StmtPtr>& stmts);
+bool containsYield(const std::vector<const Stmt*>& stmts);
 
 // WHICH suspension forms are under there. Two consumers, and neither can use
 // the boolean above: the lifter has to NAME the construct it refuses, and a
@@ -286,5 +287,8 @@ std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<const S
 // nesting makes two records live together.
 uint32_t maxSuspendingIterationDepth(const std::vector<StmtPtr>& stmts);
 uint32_t maxSuspendingIterationDepth(const std::vector<const Stmt*>& stmts);
+
+uint32_t maxSuspendingFinallyDepth(const std::vector<StmtPtr>& stmts);
+uint32_t maxSuspendingFinallyDepth(const std::vector<const Stmt*>& stmts);
 
 }  // namespace bronze::ast

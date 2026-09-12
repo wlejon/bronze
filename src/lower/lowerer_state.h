@@ -172,6 +172,9 @@ struct GeneratorContext {
     uint32_t machineSlot = UINT32_MAX;
     std::vector<uint32_t> loopIterSlots;
     uint32_t activeIterLoops = 0;
+    uint32_t returnSlot = UINT32_MAX;
+    std::vector<uint32_t> finallyPendingSlots;
+    uint32_t activeFinallyDepth = 0;
 
     static constexpr double kModeNext = 0.0;
     static constexpr double kModeReturn = 1.0;

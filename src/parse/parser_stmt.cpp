@@ -1,6 +1,7 @@
 // The token cursor, the module entry point, and one method per statement
 // production. Expressions are parser_expr.cpp.
 
+#include "ast/queries.h"
 #include "parse/parser.h"
 
 namespace bronze {
@@ -88,6 +89,9 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
     if (!check(TokenKind::EndOfFile)) {
         error("unconsumed input after last declaration");
         return nullptr;
+    }
+    if (ast::containsYield(mod->body)) {
+        if (!liftAsyncBody(mod->body)) return nullptr;
     }
     return mod;
 }

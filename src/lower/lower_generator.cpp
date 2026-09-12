@@ -58,6 +58,8 @@ constexpr const char* kIterSlot = "gen.iter";
 // One per level of nested `for-of`/`for-in` whose body suspends. Numbered by
 // DEPTH and not by loop, so a body with ten sibling loops reserves one slot.
 constexpr const char* kLoopIterPrefix = "loop.iter.";
+constexpr const char* kFinallyPendingPrefix = "finally.pending.";
+constexpr const char* kReturnSlot = "gen.return";
 
 // The resume index that means "the walk is over". Never dispatched to: the
 // runtime latches [[GeneratorState]] the moment a result says `done`, so the
@@ -72,6 +74,10 @@ const char* Lowerer::generatorIterSlotName() { return kIterSlot; }
 std::string Lowerer::loopIterSlotName(uint32_t depth) {
     return std::string(kLoopIterPrefix) + std::to_string(depth);
 }
+std::string Lowerer::finallyPendingSlotName(uint32_t depth) {
+    return std::string(kFinallyPendingPrefix) + std::to_string(depth);
+}
+const char* Lowerer::generatorReturnSlotName() { return kReturnSlot; }
 
 Lowerer::Value Lowerer::emitConstF64(double value, il::Function& ilFn) {
     il::ValueId res = ilFn.valueCount++;
@@ -192,8 +198,14 @@ bool Lowerer::lowerGeneratorReturn(const ast::ReturnStmt* retStmt, il::Function&
     } else {
         value = Value{emitConstUndefined(ilFn), il::Type::Dynamic};
     }
+    if (generator_ && generator_->returnSlot != UINT32_MAX) {
+        emitFrameSlotSet(generator_->returnSlot, value, ilFn);
+    }
     if (!runCleanups(0, ilFn)) return false;
     if (currentBlockIsTerminated(ilFn)) return true;
+    if (generator_ && generator_->returnSlot != UINT32_MAX) {
+        value = emitFrameSlotGet(generator_->returnSlot, ilFn);
+    }
     emitGeneratorFinish(value, ilFn);
     return true;
 }
@@ -404,6 +416,15 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
         auto slot = envScopes_[frameScope].slotOf.find(loopIterSlotName(depth));
         if (slot == envScopes_[frameScope].slotOf.end()) break;
         context.loopIterSlots.push_back(slot->second);
+    }
+    for (uint32_t depth = 0;; ++depth) {
+        auto slot = envScopes_[frameScope].slotOf.find(finallyPendingSlotName(depth));
+        if (slot == envScopes_[frameScope].slotOf.end()) break;
+        context.finallyPendingSlots.push_back(slot->second);
+    }
+    if (auto slot = envScopes_[frameScope].slotOf.find(generatorReturnSlotName());
+        slot != envScopes_[frameScope].slotOf.end()) {
+        context.returnSlot = slot->second;
     }
     // An async body is the same machine driven by a different caller: the
     // runtime's promise driver instead of a generator object. Await sites need
