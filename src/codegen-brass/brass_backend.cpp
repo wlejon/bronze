@@ -68,6 +68,7 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.enable_wbe = true;
     options.enable_gvn_pre = true;
     options.enable_loop_fusion = true;
+    options.enable_loop_distribution = true;
     options.enable_array_contraction = true;
     options.enable_partial_escape = true;
     options.enable_allocation_sinking = true;
@@ -137,6 +138,11 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
 
     brass::Target target = brass::Target::host();
     brass::object::ModuleCompiler compiler(target);
+    brass::codegen::SchedOptions schedOpts;
+    schedOpts.enable_post_ra = true;
+    schedOpts.enable_software_pipelining = true;
+    compiler.set_sched_options(schedOpts);
+    compiler.set_enable_trace_layout(true);
     brass::object::ObjectFile obj = compiler.compile(*res.module);
 
     if (entrySymbol_ != "main") {
