@@ -35,6 +35,14 @@ struct ModuleRoot {
 struct ModuleOptions {
     std::vector<ModuleRoot> moduleRoots;
     std::string importMapPath;
+    // Where the ENTRY file's own specifiers resolve from, when the file on disk
+    // is not where the program lives: a host that compiles a document's inline
+    // script writes it to a temp file, and `./x.js` in that script means the
+    // file beside the document, not one beside the temp file. Empty means the
+    // entry resolves from its own path like every other module. Only the entry
+    // is affected — a module it imports is a real file and resolves from where
+    // it is.
+    std::filesystem::path entryResolvesAs;
 };
 
 // Loads an import map from a JSON file, resolving relative target paths relative

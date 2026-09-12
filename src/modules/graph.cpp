@@ -431,7 +431,7 @@ private:
         const std::string namePrefix = pattern.head.substr(slash + 1);
 
         std::filesystem::path dir;
-        if (!resolveSpecifierDirectory(dirSpec, file.path, options_.moduleRoots, dir)) {
+        if (!resolveSpecifierDirectory(dirSpec, resolvesFrom(file), options_.moduleRoots, dir)) {
             // No such directory is the same answer as an empty one: the
             // pattern still gets its (empty) table, so every string the call
             // computes is a MISS in it — named in the rejection — rather than
@@ -470,10 +470,17 @@ private:
         return true;
     }
 
+    // The path a file's specifiers resolve from: its own, except for an entry
+    // the host says lives elsewhere (see `ModuleOptions::entryResolvesAs`).
+    const std::filesystem::path& resolvesFrom(const ModuleFile& file) const {
+        if (file.id == 0 && !options_.entryResolvesAs.empty()) return options_.entryResolvesAs;
+        return file.path;
+    }
+
     bool follow(ModuleFile& file, const std::string& specifier, Span span) {
         if (file.deps.count(specifier)) return true;  // the same specifier twice is one edge
         std::filesystem::path target;
-        if (!resolveSpecifier(specifier, file.path, span, diags_, target, options_.moduleRoots)) return false;
+        if (!resolveSpecifier(specifier, resolvesFrom(file), span, diags_, target, options_.moduleRoots)) return false;
         uint16_t targetId = 0;
         if (!load(target, span, targetId)) return false;
         file.deps[specifier] = targetId;

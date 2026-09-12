@@ -103,7 +103,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              bool assumeNoBigInt = false, const std::string& pinsPath = {},
              const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
              const std::string& nativeManifestPath = {},
-             const std::string& nativeLibPath = {});
+             const std::string& nativeLibPath = {},
+             // See ModuleOptions::entryResolvesAs: the path `sourcePath`'s own
+             // imports resolve from when it is a temp copy of a script that
+             // lives elsewhere. Empty = its own path.
+             const std::string& entryResolvesAs = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

@@ -334,7 +334,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& importMapPath, bool assumeNoBigInt,
              const std::string& pinsPath, const std::string& censusOutPath,
              bool pinsAllowObserved, const std::string& nativeManifestPath,
-             const std::string& nativeLibPath) {
+             const std::string& nativeLibPath, const std::string& entryResolvesAs) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -391,7 +391,9 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
 
     SourceSet sources;
     DiagnosticSink diags;
-    auto astModule = modules::loadProgram(sourcePath, sources, diags, {moduleRoots, importMapPath});
+    modules::ModuleOptions moduleOptions{moduleRoots, importMapPath};
+    moduleOptions.entryResolvesAs = entryResolvesAs;
+    auto astModule = modules::loadProgram(sourcePath, sources, diags, moduleOptions);
     timer.mark("load");
     if (!astModule) {
         std::string msg = diags.render(sources);
