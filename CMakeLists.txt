@@ -109,16 +109,20 @@ if(BRONZE_BUILD_TESTS)
 endif()
 
 if(BRONZE_IS_TOP_LEVEL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js")
+    set(CABI_EXE_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+    if(MSVC)
+        set(CABI_EXE_DIR "${CMAKE_CURRENT_BINARY_DIR}/Release")
+    endif()
     add_custom_target(test_cabi_lowering
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/Release"
-        COMMAND $<TARGET_FILE:bronze> build "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js" --native-manifest auto -o "${CMAKE_CURRENT_BINARY_DIR}/Release/test_cabi_lowering.exe"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/Release/test_cabi_lowering.exe" "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.exe"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CABI_EXE_DIR}"
+        COMMAND $<TARGET_FILE:bronze> build "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js" --native-manifest auto -o "${CABI_EXE_DIR}/test_cabi_lowering.exe"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CABI_EXE_DIR}/test_cabi_lowering.exe" "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.exe"
         DEPENDS bronze
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         COMMENT "Compiling test_cabi_lowering.js via bronze CLI"
     )
-    if(BRONZE_BUILD_TESTS)
-        add_test(NAME test_cabi_lowering COMMAND "${CMAKE_CURRENT_BINARY_DIR}/Release/test_cabi_lowering.exe")
+    if(BRONZE_BUILD_TESTS AND EXISTS "${CABI_EXE_DIR}/test_cabi_lowering.exe")
+        add_test(NAME test_cabi_lowering COMMAND "${CABI_EXE_DIR}/test_cabi_lowering.exe")
         set_tests_properties(test_cabi_lowering PROPERTIES LABELS cabi)
     endif()
 endif()

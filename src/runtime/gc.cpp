@@ -88,3 +88,9 @@ extern "C" void brass_gc_write_barrier(uint64_t obj, uint64_t val) {
     (void)obj;
     (void)val;
 }
+
+extern "C" {
+uintptr_t brass_tlab_top = 0;
+uintptr_t brass_tlab_end = 0;
+void* brass_root_shape = nullptr;
+}

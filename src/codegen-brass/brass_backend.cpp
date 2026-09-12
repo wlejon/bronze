@@ -63,6 +63,7 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.enable_loop_unswitch = true;
     options.enable_jump_threading = true;
     options.enable_trace_layout = true;
+    options.enable_f64_demote = false;
     options.enable_pic = sharedRuntime_;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
