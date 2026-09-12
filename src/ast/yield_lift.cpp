@@ -109,6 +109,13 @@ private:
             dynamic_cast<const UndefinedLit*>(&e)) {
             return true;
         }
+        if (const auto* mem = dynamic_cast<const MemberAccess*>(&e)) {
+            if (const auto* baseIdent = dynamic_cast<const Ident*>(mem->object.get())) {
+                if (baseIdent->name == "console" && consoleStreamOf("console." + mem->property) != ConsoleStream::None) {
+                    return true;
+                }
+            }
+        }
         const auto* ident = dynamic_cast<const Ident*>(&e);
         if (!ident) return false;
         // `console.log` is one Ident spelling a whole member path, folded by the

@@ -182,6 +182,17 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                                "answered by the host's eval hook, or a TypeError without one)");
             }
         }
+    } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
+        if (const auto* baseIdent = dynamic_cast<const ast::Ident*>(mem->object.get())) {
+            if (baseIdent->name == "console" && !hostGlobals_.contains("console")) {
+                consoleStream = ast::consoleStreamOf("console." + mem->property);
+                consoleName = "console." + mem->property;
+                if (consoleStream == ast::ConsoleStream::None) {
+                    warnUnresolved(consoleName, call->span);
+                    return emitReferenceError(consoleName, call->span, ilFn);
+                }
+            }
+        }
     }
 
     if (consoleStream != ast::ConsoleStream::None) {
