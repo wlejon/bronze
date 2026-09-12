@@ -10,6 +10,7 @@
 #include "codegen-brass/brass_jit.h"
 #include "embed/embed.h"
 #include "lex/lexer.h"
+#include "modules/modules.h"
 #include "lower/lower.h"
 #include "parse/parser.h"
 #include "runtime/exception.h"
@@ -87,22 +88,14 @@ void transformEvalAst(ast::Module& astModule, const std::string& resName) {
     }
 }
 
-std::unique_ptr<BrassJitProgram> compileSourceToJit(
-    const std::string& code,
+std::unique_ptr<BrassJitProgram> compileAstToJit(
+    std::unique_ptr<ast::Module> astModule,
     const EvalOptions& options,
     const std::string& resName,
     DiagnosticSink& diags,
     SourceSet& sources) {
 
-    const auto& buffer = sources.add(options.filename, code);
-    Lexer lexer(buffer, diags);
-    auto tokens = lexer.lex();
-    if (diags.hasErrors()) return nullptr;
-
-    Parser parser(std::move(tokens), diags);
-    auto astModule = parser.parseModule(options.filename);
-    if (diags.hasErrors() || !astModule) return nullptr;
-
+    if (!astModule) return nullptr;
     transformEvalAst(*astModule, resName);
 
     std::vector<std::string> hostGlobals = options.hostGlobals;
@@ -136,36 +129,45 @@ std::unique_ptr<BrassJitProgram> compileSourceToJit(
     return backend.compileToJit(*ilModule, diags);
 }
 
-}  // namespace
+std::unique_ptr<BrassJitProgram> compileSourceToJit(
+    const std::string& code,
+    const EvalOptions& options,
+    const std::string& resName,
+    DiagnosticSink& diags,
+    SourceSet& sources) {
 
-void retainJitProgram(std::unique_ptr<BrassJitProgram> program) {
-    if (!program) return;
-    std::lock_guard<std::mutex> lock(g_programsMutex);
-    retainedPrograms().push_back(std::move(program));
+    const auto& buffer = sources.add(options.filename, code);
+    Lexer lexer(buffer, diags);
+    auto tokens = lexer.lex();
+    if (diags.hasErrors()) return nullptr;
+
+    Parser parser(std::move(tokens), diags);
+    auto astModule = parser.parseModule(options.filename);
+    if (diags.hasErrors() || !astModule) return nullptr;
+
+    return compileAstToJit(std::move(astModule), options, resName, diags, sources);
 }
 
-embed::CallResult evalScript(std::string_view source, const EvalOptions& options) {
-    bronze::ShadowStackFrame rootFrame;
-    if (source.empty()) {
-        return embed::CallResult{embed::undefined(), false};
-    }
+std::unique_ptr<BrassJitProgram> compileFileToJit(
+    const std::string& filePath,
+    const EvalOptions& options,
+    const std::string& resName,
+    DiagnosticSink& diags,
+    SourceSet& sources) {
 
-    const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
-    const std::string resName = "__bronze_eval_res_" + std::to_string(evalId);
+    modules::ModuleOptions modOpts;
+    modOpts.moduleRoots = options.moduleRoots;
+    modOpts.entryResolvesAs = options.entryResolvesAs;
 
-    SourceSet sources;
-    DiagnosticSink diags;
-    std::string codeStr(source);
+    auto astModule = modules::loadProgram(filePath, sources, diags, modOpts);
+    if (diags.hasErrors() || !astModule) return nullptr;
 
-    auto jitProgram = compileSourceToJit(codeStr, options, resName, diags, sources);
+    return compileAstToJit(std::move(astModule), options, resName, diags, sources);
+}
 
-    if (!jitProgram) {
-        std::string err = diags.render(sources);
-        runtime::rtThrowSyntaxError(err);
-        Value syntaxErr(runtime::rtTls()->exception_cell);
-        runtime::rtClearException();
-        return embed::CallResult{syntaxErr, /*thrown=*/true};
-    }
+embed::CallResult runJitProgramAndCollectResult(
+    std::unique_ptr<BrassJitProgram> jitProgram,
+    const std::string& resName) {
 
     auto* programPtr = jitProgram.get();
     retainJitProgram(std::move(jitProgram));
@@ -199,6 +201,59 @@ embed::CallResult evalScript(std::string_view source, const EvalOptions& options
     }
 
     return embed::CallResult{result.get(), /*thrown=*/false};
+}
+
+}  // namespace
+
+void retainJitProgram(std::unique_ptr<BrassJitProgram> program) {
+    if (!program) return;
+    std::lock_guard<std::mutex> lock(g_programsMutex);
+    retainedPrograms().push_back(std::move(program));
+}
+
+embed::CallResult evalScript(std::string_view source, const EvalOptions& options) {
+    bronze::ShadowStackFrame rootFrame;
+    if (source.empty()) {
+        return embed::CallResult{embed::undefined(), false};
+    }
+
+    const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
+    const std::string resName = "__bronze_eval_res_" + std::to_string(evalId);
+
+    SourceSet sources;
+    DiagnosticSink diags;
+    std::string codeStr(source);
+
+    auto jitProgram = compileSourceToJit(codeStr, options, resName, diags, sources);
+    if (!jitProgram) {
+        std::string err = diags.render(sources);
+        runtime::rtThrowSyntaxError(err);
+        Value syntaxErr(runtime::rtTls()->exception_cell);
+        runtime::rtClearException();
+        return embed::CallResult{syntaxErr, /*thrown=*/true};
+    }
+
+    return runJitProgramAndCollectResult(std::move(jitProgram), resName);
+}
+
+embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options) {
+    bronze::ShadowStackFrame rootFrame;
+    const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
+    const std::string resName = "__bronze_eval_res_" + std::to_string(evalId);
+
+    SourceSet sources;
+    DiagnosticSink diags;
+
+    auto jitProgram = compileFileToJit(filePath, options, resName, diags, sources);
+    if (!jitProgram) {
+        std::string err = diags.render(sources);
+        runtime::rtThrowSyntaxError(err);
+        Value syntaxErr(runtime::rtTls()->exception_cell);
+        runtime::rtClearException();
+        return embed::CallResult{syntaxErr, /*thrown=*/true};
+    }
+
+    return runJitProgramAndCollectResult(std::move(jitProgram), resName);
 }
 
 Value evalScriptDirect(std::string_view source, const EvalOptions& options) {

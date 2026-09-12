@@ -11,18 +11,7 @@
 
 namespace bronze::cli {
 
-namespace {
 
-bool readFile(const std::string& path, std::string& out) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
-}
-
-}  // namespace
 
 int runEval(std::string_view code) {
     embed::setupIo();
@@ -44,13 +33,8 @@ int runEval(std::string_view code) {
 int runFileInJit(const std::string& filePath) {
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
-    std::string source;
-    if (!readFile(filePath, source)) {
-        std::fprintf(stderr, "error: cannot read %s\n", filePath.c_str());
-        return 1;
-    }
     eval::installDefaultDynamicHooks();
-    embed::CallResult res = eval::evalScript(source, eval::EvalOptions{.filename = filePath});
+    embed::CallResult res = eval::evalFile(filePath, eval::EvalOptions{.filename = filePath});
     if (res.thrown) {
         std::string errStr = embed::toUtf8(res.value);
         std::fprintf(stderr, "Uncaught %s\n", errStr.c_str());

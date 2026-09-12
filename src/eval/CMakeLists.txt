@@ -12,6 +12,7 @@ bronze_add_module(eval
         runtime
         embed
         support
+        modules
     TEST_SOURCES
         ../../tests/eval/eval_test.cpp
 )

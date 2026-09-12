@@ -4,6 +4,8 @@
 #include "eval/eval.h"
 #include "embed/embed.h"
 #include "runtime/exception.h"
+#include <filesystem>
+#include <fstream>
 
 using namespace bronze;
 using namespace bronze::eval;
@@ -189,4 +191,19 @@ TEST_CASE("installDefaultDynamicHooks hooks into runtime eval and Function") {
     // Clean up dynamic hook to avoid affecting any subsequent tests
     embed::setDynamicEvalHook({});
     embed::setDynamicFunctionHook({});
+}
+
+TEST_CASE("evalFile evaluates script file and returns result") {
+    std::string tempPath = "/tmp/bronze_test_eval_file.js";
+    {
+        std::ofstream out(tempPath);
+        out << "function multiply(a, b) { return a * b; }\n";
+        out << "multiply(6, 7);\n";
+    }
+
+    embed::CallResult r = evalFile(tempPath);
+    CHECK(!r.thrown);
+    CHECK(r.value.asNumber() == 42.0);
+
+    std::filesystem::remove(tempPath);
 }

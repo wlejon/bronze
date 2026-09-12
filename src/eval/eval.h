@@ -8,8 +8,10 @@
 #include <string_view>
 #include <vector>
 
+#include <filesystem>
 #include "codegen-brass/brass_jit.h"
 #include "embed/embed.h"
+#include "modules/modules.h"
 #include "runtime/host_globals.h"
 #include "runtime/value.h"
 
@@ -19,6 +21,8 @@ struct EvalOptions {
     std::string filename = "<eval>";
     std::vector<std::string> hostGlobals = {};
     bool retainSource = true;
+    std::vector<modules::ModuleRoot> moduleRoots = {};
+    std::filesystem::path entryResolvesAs = {};
 };
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine
@@ -28,6 +32,9 @@ void retainJitProgram(std::unique_ptr<BrassJitProgram> program);
 // Evaluates a script in memory using the Brass JIT and returns the result as a CallResult.
 // If code execution throws an exception, CallResult::thrown is true and value is the thrown error.
 embed::CallResult evalScript(std::string_view source, const EvalOptions& options = {});
+
+// Evaluates a file and its transitive module graph directly in memory via Brass JIT.
+embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options = {});
 
 // Evaluates a script in memory and returns the Value directly.
 // If an exception was thrown, leaves the exception pending in rtTls()->exception_cell

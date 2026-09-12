@@ -30,9 +30,11 @@ IL  (src/il)       — typed SSA, canonical text form. Native types where
    │                 is the sound fallback, not a failure
    ▼
 Backend (src/codegen interface)
-   │  src/codegen-brass — Brass native backend
+   │  src/codegen-brass — Brass native backend:
+   │                      • AOT mode: object file (.o / .obj) → system linker → exe / dll
+   │                      • JIT mode: in-memory compilation → executable RAM (BrassJitProgram)
    ▼
-object file → system linker → exe
+object file / executable RAM
 ```
 
 Dependency edges point downward only: support ← lex ← parse; `ast` is a peer
@@ -178,6 +180,18 @@ rule hot swap already imposes. `src/embed/embed.h` states the full contract;
 `tests/threaded_modules` is the worked example — two compiled modules on two
 threads concurrently, each hammered under per-allocation collection.
 
+## In-Memory Dynamic Execution and JIT (`src/eval`)
+
+Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem leverages `BrassBackend::compileToJit` (`src/codegen-brass/brass_jit.h`) to compile JavaScript source code or files directly into executable machine code in memory.
+
+Key capabilities:
+- **Zero-disk dynamic evaluation:** `evalScript` compiles and runs code strings in RAM, returning an `embed::CallResult` or `Value`.
+- **In-memory file execution:** `evalFile` resolves full module graphs and executes them directly via JIT.
+- **Dynamic builtins:** `eval(...)` and `new Function(...)` (as well as generator and async functions) compile dynamically in-memory via automatic hooks (`installDefaultDynamicHooks`).
+- **CLI commands:** `bronze run <file>` runs scripts and module graphs in memory; `bronze eval <code>` (or `-e <code>`) evaluates expressions or statements directly from the command line.
+
+For the complete architectural design and API specification, see [`docs/dynamic-eval.md`](docs/dynamic-eval.md).
+
 ## Build modes
 
 ```
@@ -219,14 +233,15 @@ Rules that keep iteration fast:
 | `src/lower` | AST + inference side table → IL. Split by seam, one file per construct family rather than by size: `lower_infer` (what may be believed), `lower_scope` (closures and env slots), `lower_control` (block-argument SSA), and a file each for the expression kinds (`lower_expr`, `_binary`, `_chain`, `_cond`), the statement kinds (`lower_stmt`, `_switch`, `_try`, `_label`, `_iter_loop`), and the declaration kinds (`lower_object`, `_class`, `_pattern`, `_update`, `_unresolved`) |
 | `src/il` | Typed SSA IL: types, module model, canonical printer, verifier |
 | `src/codegen` | Backend interface |
-| `src/codegen-brass` | Brass native backend: `brass_backend.cpp` (translates Bronze IL to native machine code via Brass) |
+| `src/codegen-brass` | Brass native backend: `brass_backend.cpp` (AOT object emission), `brass_jit.cpp` (in-memory JIT execution via `brass::codegen::JitExecutionEngine`) |
+| `src/eval` | In-memory dynamic JavaScript execution and JIT evaluation: `evalScript`, `evalFile`, `evalFunction`, `installDefaultDynamicHooks`. See `docs/dynamic-eval.md` |
 | `src/abi` | The generated-code ABI (`bronze_abi.h`) and its pure-C compile check — the only place a runtime helper signature is written. Its content hash is the ABI fingerprint (see Embedding above) |
 | `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments. The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_reflect` (28.1, whose members are the internal methods by name and so are forwards into the funnels `rt_object` and `rt_prop` already own), `rt_prop` (property access, split by receiver kind: `rt_prop_primitive` is the one whose answer comes from an intrinsic rather than from the receiver, `rt_prop_map` the one whose named properties are a side object beside its entries), `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built). Unicode DEFAULT CASE CONVERSION lives here rather than in `src/regex`, because it is a different operation from folding over different data: `unicode_case` is the algorithm and `unicode_case_data_*.cpp` the generated tables |
 | `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts |
 | `src/regex` | The RegExp pattern grammar (ECMA-262 22.2.1) and its backtracking matcher, on the same rule as `src/json`: a language of its own inside the source text, with its own parser and its own diagnostics. Reached from `src/lex`, which decides whether a `/` opens a pattern or divides, by what came before it. Its Unicode data — General_Category and simple case FOLDING, which is not the same table as the case CONVERSION `src/runtime` applies — is generated once by `tools/gen_unicode_tables` and checked in as ordinary sources (`unicode_data_*.cpp`); the build never runs generator tooling |
 | `src/rt` | The static library compiled output links against |
 | `src/embed` | The host-facing C++ embedding API (`tests/embed` holds its suite): run a compiled program in-process, register host globals, wrap native functions and objects, hold GC-safe handles across frames. Depends on the runtime and only calls it — the runtime never learns it exists |
-| `src/cli` | `bronze` driver (`lex`, `parse`, `types`, `il`, `build`, `version`) |
+| `src/cli` | `bronze` driver (`run`, `eval`, `lex`, `parse`, `types`, `il`, `build`, `link`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
 | `tests/oracle` | Differential cases with pinned `.expected` stdout — see `tests/oracle/README.md`. A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |
 | `tools` | Generators whose OUTPUT is committed. Run by hand, never by the build, so that no build step depends on a language bronze does not already require |
