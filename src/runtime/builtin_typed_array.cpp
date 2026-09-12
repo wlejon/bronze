@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iterator>
 #include <string>
+#include <unordered_map>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -559,6 +560,10 @@ bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
     }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     if (code == arrayBufferCtor) {
+        if (key == "name") {
+            out = rtMakeString("ArrayBuffer");
+            return true;
+        }
         if (key == "isView") {
             out = rtNativeFunction(arrayBufferIsView, 1);
             return true;
@@ -567,6 +572,10 @@ bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
     }
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;
+        if (key == "name") {
+            out = rtMakeString(elementKindInfo(entry.kind).name);
+            return true;
+        }
         if (key == "BYTES_PER_ELEMENT") {
             out = Value::fromDouble(elementKindInfo(entry.kind).bytesPerElement);
             return true;
@@ -627,6 +636,42 @@ void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value) {
     if (index < live->length) live->set(index, num);
 }
 
+static std::unordered_map<const void*, std::unordered_map<std::string, Value>> g_typedArrayAttached;
+static bool g_typedArrayRootRegistered = false;
+
+void rtTypedArraySetAttached(Value viewVal, const std::string& key, Value val) {
+    if (!viewVal.isObject()) return;
+    auto* hdr = viewVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != TypedArrayHeader::kFlags) return;
+    auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+    if (!g_typedArrayRootRegistered) {
+        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
+            for (auto& [ptr, props] : g_typedArrayAttached) {
+                for (auto& [k, v] : props) {
+                    visit(v);
+                }
+            }
+        });
+        g_typedArrayRootRegistered = true;
+    }
+    g_typedArrayAttached[view->bytes()][key] = val;
+}
+
+Value rtTypedArrayGetAttached(Value viewVal, const std::string& key) {
+    if (!viewVal.isObject()) return Value::fromUndefined();
+    auto* hdr = viewVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != TypedArrayHeader::kFlags) return Value::fromUndefined();
+    auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+    auto it = g_typedArrayAttached.find(view->bytes());
+    if (it != g_typedArrayAttached.end()) {
+        auto propIt = it->second.find(key);
+        if (propIt != it->second.end()) {
+            return propIt->second;
+        }
+    }
+    return Value::fromUndefined();
+}
+
 Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     auto* view = viewVal.asObject<TypedArrayHeader>();
     // `length` and `byteLength` answer 0 for a view its buffer left behind
@@ -651,6 +696,8 @@ Value rtTypedArrayMember(Value viewVal, const std::string& key) {
     // builtin_typed_array_iteration.cpp carry the per-method stories).
     Value method = rtTypedArrayMethod(key);
     if (!method.isUndefined()) return method;
+    Value attached = rtTypedArrayGetAttached(viewVal, key);
+    if (!attached.isUndefined()) return attached;
     rtCheckTypedArrayMember(kindName, key);
     return Value::fromUndefined();
 }

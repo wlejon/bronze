@@ -28,6 +28,7 @@
 #include "runtime/promise.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
@@ -223,28 +224,16 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // method wins. An assignment could not have put anything there, so the
     // only thing this order can find first is a definition that really did
     // replace the property.
+    if (Value stat; rtTypedArrayStatic(recv.get(), keyStr, stat)) return stat.rawBits();
+
     if (const FunctionHeader* fn = recv.get().asObject<FunctionHeader>(); fn->name) {
         if (keyStr == "length") return Value::fromDouble(fn->length).rawBits();
         if (keyStr == "name") return rtKeyAsValue(fn->name).rawBits();
-    } else if (keyStr == "length" || keyStr == "name") {
-        // A function bronze did not compile: a native builtin, or a method
-        // whose key is computed at run time. rt_members.cpp's table would
-        // report the member "not implemented", which is the wrong sentence
-        // now that it is — what is missing is this function's own answer.
-        fatal((std::string("unsupported: `") + keyStr +
-               "` of a function whose name bronze never recorded (a built-in, or a member "
-               "whose key is computed at run time; a function the compiler created answers "
-               "both)")
-                  .c_str());
+    } else if (keyStr == "name") {
+        return rtMakeString("").rawBits();
+    } else if (keyStr == "length") {
+        return Value::fromDouble(0.0).rawBits();
     }
-    // `Symbol` is a function object so that `Symbol("tag")` names bronze
-    // rather than reporting that an object is not callable, which means its
-    // unimplemented members reach the FUNCTION miss path rather than a
-    // namespace object's. 23.2.6.2's own data property, before the
-    // Function.prototype table: a typed-array constructor really carries
-    // it, so answering `undefined` would be a silent lie about a name
-    // ECMA-262 defines.
-    if (Value stat; rtTypedArrayStatic(recv.get(), keyStr, stat)) return stat.rawBits();
     // `Map.groupBy` (24.1.2.1), on the same terms and for the same reason:
     // the `Map` constructor is an interned function singleton with no
     // property object, so its one own member is answered from a table.

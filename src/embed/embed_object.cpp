@@ -18,6 +18,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
+#include "runtime/typed_array.h"
 
 namespace bronze::embed {
 
@@ -87,6 +88,12 @@ Value setProperty(Value obj, std::string_view key, Value v) {
         propsRoot.get().asObject<ObjectHeader>()->setProp(
             runtime::rtHeap(), runtime::rtArena(), keyRoot, val, nullptr,
             /*enumerable=*/true, /*defineOwn=*/true);
+        return self.get();
+    }
+
+    if (self.get().isObject() &&
+        self.get().asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray) {
+        runtime::rtTypedArraySetAttached(self.get(), std::string(key), val.get());
         return self.get();
     }
 

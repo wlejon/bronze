@@ -398,6 +398,8 @@ Value rtMapDefaultIterator(bool isSetReceiver);
 // so can run user code and can throw, which is why it takes the view rooted.
 Value rtTypedArrayElement(Value viewVal, uint32_t index);
 void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value);
+void rtTypedArraySetAttached(Value viewVal, const std::string& key, Value val);
+Value rtTypedArrayGetAttached(Value viewVal, const std::string& key);
 
 Value rtWeakCollectionConstructor(const std::string& name);
 const char* rtWeakCollectionConstructorName(Value fn);

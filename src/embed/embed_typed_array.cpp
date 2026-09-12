@@ -310,4 +310,18 @@ uint32_t typedArrayByteOffset(Value view) {
     return reinterpret_cast<TypedArrayHeader*>(view.asObject<HeapObjectHeader>())->byteOffset;
 }
 
+void detachArrayBuffer(Value v) {
+    ArrayBufferHeader* buf = bufferBehind(v);
+    if (buf) {
+        buf->setDetached();
+        Rooted<Value> root{v};
+        closeOrReopenViews(runtime::rtHeap(), root);
+    }
+}
+
+bool isDetachedArrayBuffer(Value v) {
+    ArrayBufferHeader* buf = bufferBehind(v);
+    return buf ? buf->isDetached() : false;
+}
+
 }  // namespace bronze::embed

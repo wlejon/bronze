@@ -238,9 +238,8 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             rtTypedArraySetElement(viewRoot, ki.elemIndex, Value(valBits));
             return;
         }
-        fatal(("named property writes on a typed array (" +
-               std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +
-               ") are unsupported").c_str());
+        rtTypedArraySetAttached(objVal, rtKeyString(keyIndex), Value(valBits));
+        return;
     }
     if (hdr->flags == ArrayBufferHeader::kFlags) {
         fatal("property writes on an ArrayBuffer are unsupported");
@@ -844,9 +843,10 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // Only an actual string key can name one.
         if (Value(idxBits).isNumber()) return;
         if (!rtValueToElementIndex(Value(idxBits), idx)) {
-            fatal(("named property writes on a typed array (" +
-                   std::string(reinterpret_cast<TypedArrayHeader*>(hdr)->kindName()) +
-                   ") are unsupported").c_str());
+            Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
+            const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
+            rtTypedArraySetAttached(objVal, keyText, Value(valBits));
+            return;
         }
         Rooted<Value> viewRoot{objVal};
         rtTypedArraySetElement(viewRoot, idx, Value(valBits));

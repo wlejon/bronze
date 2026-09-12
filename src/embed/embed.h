@@ -759,6 +759,8 @@ BRONZE_EMBED_API Value createTypedArrayView(ElementKind kind, Value buffer,
 // stores — and typedArrayInfo deliberately answers only the window's bytes.
 BRONZE_EMBED_API Value typedArrayBuffer(Value view);
 BRONZE_EMBED_API uint32_t typedArrayByteOffset(Value view);
+BRONZE_EMBED_API void detachArrayBuffer(Value v);
+BRONZE_EMBED_API bool isDetachedArrayBuffer(Value v);
 
 // ---- promises (embed_promise.cpp) ------------------------------------------
 
@@ -817,6 +819,8 @@ BRONZE_EMBED_API Value fromUtf8(std::string_view utf8);
 // documents — conversions that run user code are the program's business, not
 // a host accessor's).
 BRONZE_EMBED_API double toDouble(Value v);
+BRONZE_EMBED_API uint64_t toUint64(Value v);
+BRONZE_EMBED_API int64_t toInt64(Value v);
 // JS truthiness — the `if (v)` answer, never a strict-bool unbox.
 BRONZE_EMBED_API bool toBool(Value v);
 // The string's bytes as UTF-8 for a string value; ToString for the other
@@ -843,6 +847,7 @@ BRONZE_EMBED_API bool isSymbol(Value v);
 // toUtf8 of 5 and of "5" agree, so a bridge built on them turns one into the
 // other silently. These are the tag itself, not a coercion.
 BRONZE_EMBED_API bool isNumber(Value v);
+BRONZE_EMBED_API bool isBigInt(Value v);
 BRONZE_EMBED_API bool isString(Value v);
 BRONZE_EMBED_API bool isBool(Value v);
 BRONZE_EMBED_API bool isPromise(Value v);

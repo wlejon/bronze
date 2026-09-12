@@ -16,6 +16,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -197,10 +198,40 @@ Value fromUtf8(std::string_view utf8) {
 }
 
 // A frame, because ToNumber of an OBJECT is 7.1.4 step 1: ToPrimitive, which
+// A frame, because ToNumber of an OBJECT is 7.1.4 step 1: ToPrimitive, which
 // calls the host's own JS and allocates. A primitive still costs nothing.
 double toDouble(Value v) {
+    if (v.isBigInt()) {
+        return runtime::rtBigIntToNumber(v);
+    }
     ShadowStackFrame frame;
     return runtime::rtToNumber(v);
+}
+
+uint64_t toUint64(Value v) {
+    if (v.isBigInt()) {
+        uint64_t bits = 0;
+        if (runtime::rtBigIntToRawBits64(v, bits)) return bits;
+        return static_cast<uint64_t>(runtime::rtBigIntToNumber(v));
+    }
+    if (v.isNumber()) {
+        double d = v.asNumber();
+        if (!std::isnan(d)) return static_cast<uint64_t>(d);
+    }
+    return 0;
+}
+
+int64_t toInt64(Value v) {
+    if (v.isBigInt()) {
+        uint64_t bits = 0;
+        if (runtime::rtBigIntToRawBits64(v, bits)) return static_cast<int64_t>(bits);
+        return static_cast<int64_t>(runtime::rtBigIntToNumber(v));
+    }
+    if (v.isNumber()) {
+        double d = v.asNumber();
+        if (!std::isnan(d)) return static_cast<int64_t>(d);
+    }
+    return 0;
 }
 
 bool toBool(Value v) { return bronze_truthy(v.rawBits()); }
@@ -229,6 +260,7 @@ bool isObject(Value v) { return v.isObject(); }
 
 bool isSymbol(Value v) { return v.isSymbol(); }
 bool isNumber(Value v) { return v.isNumber(); }
+bool isBigInt(Value v) { return v.isBigInt(); }
 bool isString(Value v) { return v.isString(); }
 bool isBool(Value v) { return v.isBool(); }
 

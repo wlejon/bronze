@@ -335,6 +335,7 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
             if (rtIsIntegerLikeKey(key, index)) return index < view->length;
             if (rtTypedArrayHasMember(view->kindName(), key)) return true;
+            if (!rtTypedArrayGetAttached(objRoot.get(), key).isUndefined()) return true;
             break;
         }
         case HeapKind::ArrayBuffer:
