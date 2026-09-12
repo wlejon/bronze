@@ -69,6 +69,8 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.enable_gvn_pre = true;
     options.enable_loop_fusion = true;
     options.enable_array_contraction = true;
+    options.enable_partial_escape = true;
+    options.enable_allocation_sinking = true;
     options.enable_tlab = true;
     options.use_bronze_tlab = true;
 #if defined(__x86_64__) || defined(_M_X64)
