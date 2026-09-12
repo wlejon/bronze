@@ -194,7 +194,7 @@ TEST_CASE("installDefaultDynamicHooks hooks into runtime eval and Function") {
 }
 
 TEST_CASE("evalFile evaluates script file and returns result") {
-    std::string tempPath = "/tmp/bronze_test_eval_file.js";
+    std::string tempPath = (std::filesystem::temp_directory_path() / "bronze_test_eval_file.js").string();
     {
         std::ofstream out(tempPath);
         out << "function multiply(a, b) { return a * b; }\n";
