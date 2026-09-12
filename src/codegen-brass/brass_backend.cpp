@@ -88,6 +88,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     options.enable_pic = sharedRuntime_;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
+    options.propagate_exceptions_in_entry = propagateExceptionsInEntry_;
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
     for (size_t i = 0; i < module.functions.size(); ++i) {
@@ -498,13 +499,21 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
 
 std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& module,
                                                             DiagnosticSink& diags) {
+    const bool prevPropagate = propagateExceptionsInEntry_;
+    propagateExceptionsInEntry_ = true;
     auto obj = buildObjectFile(module, diags);
+    propagateExceptionsInEntry_ = prevPropagate;
     if (!obj) {
         return nullptr;
     }
 
     auto engine = std::make_unique<brass::codegen::JitExecutionEngine>(brass::Target::host());
     brass::il::register_bronze_runtime_symbols(engine.get());
+
+#define BRONZE_ABI_REG_JIT(name, ret, args) \
+    engine->register_external_symbol(#name, reinterpret_cast<void*>(&::name));
+    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_JIT)
+#undef BRONZE_ABI_REG_JIT
 
     if (!engine->load_object(*obj)) {
         diags.error(Span{}, "Failed to load object into JIT execution engine");

@@ -1,0 +1,192 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include <doctest/doctest.h>
+
+#include "eval/eval.h"
+#include "embed/embed.h"
+#include "runtime/exception.h"
+
+using namespace bronze;
+using namespace bronze::eval;
+
+TEST_CASE("evalScript evaluates basic arithmetic expressions") {
+    embed::CallResult r1 = evalScript("1 + 2");
+    CHECK(!r1.thrown);
+    CHECK(r1.value.asNumber() == 3.0);
+
+    embed::CallResult r2 = evalScript("40 / 2 + 2");
+    CHECK(!r2.thrown);
+    CHECK(r2.value.asNumber() == 22.0);
+
+    embed::CallResult r3 = evalScript("Math.min(10, 5)");
+    CHECK(!r3.thrown);
+    CHECK(r3.value.asNumber() == 5.0);
+}
+
+TEST_CASE("evalScript evaluates string concatenation and boolean expressions") {
+    embed::CallResult r1 = evalScript("'hello ' + 'world'");
+    CHECK(!r1.thrown);
+    CHECK(embed::isString(r1.value));
+    CHECK(embed::toUtf8(r1.value) == "hello world");
+
+    embed::CallResult r2 = evalScript("10 > 5");
+    CHECK(!r2.thrown);
+    CHECK(embed::isBool(r2.value));
+    CHECK(r2.value.asBool() == true);
+}
+
+TEST_CASE("evalScript evaluates multiple statements and returns last expression") {
+    embed::CallResult r1 = evalScript("var a = 10; var b = 20; a + b;");
+    CHECK(!r1.thrown);
+    CHECK(r1.value.asNumber() == 30.0);
+
+    embed::CallResult r2 = evalScript("let x = 7; let y = 8; x * y;");
+    CHECK(!r2.thrown);
+    CHECK(r2.value.asNumber() == 56.0);
+}
+
+TEST_CASE("evalScript exports top-level var and function to globalThis") {
+    embed::CallResult r1 = evalScript("var globalCounter = 100;");
+    CHECK(!r1.thrown);
+
+    embed::CallResult r2 = evalScript("globalCounter + 5;");
+    CHECK(!r2.thrown);
+    CHECK(r2.value.asNumber() == 105.0);
+
+    embed::CallResult r3 = evalScript("function addTen(n) { return n + 10; }");
+    CHECK(!r3.thrown);
+
+    embed::CallResult r4 = evalScript("addTen(32);");
+    CHECK(!r4.thrown);
+    CHECK(r4.value.asNumber() == 42.0);
+}
+
+TEST_CASE("evalScript handles statement-only code returning undefined") {
+    embed::CallResult r1 = evalScript("var z = 99;");
+    CHECK(!r1.thrown);
+    CHECK(embed::isUndefined(r1.value));
+
+    embed::CallResult r2 = evalScript("");
+    CHECK(!r2.thrown);
+    CHECK(embed::isUndefined(r2.value));
+
+    embed::CallResult r3 = evalScript("   \n   ");
+    CHECK(!r3.thrown);
+    CHECK(embed::isUndefined(r3.value));
+}
+
+TEST_CASE("evalScript handles syntax errors gracefully") {
+    embed::CallResult r = evalScript("var 123 invalid syntax ;;;");
+    CHECK(r.thrown);
+    CHECK(embed::isObject(r.value));
+}
+
+TEST_CASE("evalScript handles runtime exceptions gracefully") {
+    embed::CallResult r = evalScript("throw new Error('test runtime error');");
+    CHECK(r.thrown);
+    CHECK(embed::isObject(r.value));
+    Value msg = embed::getProperty(r.value, "message");
+    CHECK(embed::toUtf8(msg) == "test runtime error");
+}
+
+TEST_CASE("evalFunction creates callable ordinary function") {
+    std::vector<std::string> params{"a", "b"};
+    Value fn = evalFunction(params, "return a * b + 2;");
+    REQUIRE(embed::isFunction(fn));
+
+    std::vector<Value> args{embed::fromDouble(6.0), embed::fromDouble(7.0)};
+    embed::CallResult r = embed::call(fn, embed::undefined(), args);
+    CHECK(!r.thrown);
+    CHECK(r.value.asNumber() == 44.0);
+}
+
+TEST_CASE("evalFunction creates callable generator function") {
+    Value genFn = evalFunction({}, "yield 10; yield 20; return 30;",
+                               runtime::DynamicFunctionKind::Generator);
+    REQUIRE(embed::isFunction(genFn));
+
+    embed::CallResult r = embed::call(genFn, embed::undefined(), {});
+    CHECK(!r.thrown);
+    Value gen = r.value;
+    REQUIRE(embed::isObject(gen));
+
+    Value nextFn = embed::getProperty(gen, "next");
+    REQUIRE(embed::isFunction(nextFn));
+
+    embed::CallResult step1 = embed::call(nextFn, gen, {});
+    CHECK(!step1.thrown);
+    Value val1 = embed::getProperty(step1.value, "value");
+    CHECK(val1.asNumber() == 10.0);
+    Value done1 = embed::getProperty(step1.value, "done");
+    CHECK(done1.asBool() == false);
+
+    embed::CallResult step2 = embed::call(nextFn, gen, {});
+    CHECK(!step2.thrown);
+    Value val2 = embed::getProperty(step2.value, "value");
+    CHECK(val2.asNumber() == 20.0);
+    Value done2 = embed::getProperty(step2.value, "done");
+    CHECK(done2.asBool() == false);
+
+    embed::CallResult step3 = embed::call(nextFn, gen, {});
+    CHECK(!step3.thrown);
+    Value val3 = embed::getProperty(step3.value, "value");
+    CHECK(val3.asNumber() == 30.0);
+    Value done3 = embed::getProperty(step3.value, "done");
+    CHECK(done3.asBool() == true);
+}
+
+TEST_CASE("evalFunction creates callable async function") {
+    std::vector<std::string> params{"x"};
+    Value asyncFn = evalFunction(params, "return x + 5;",
+                                 runtime::DynamicFunctionKind::Async);
+    REQUIRE(embed::isFunction(asyncFn));
+
+    std::vector<Value> args{embed::fromDouble(10.0)};
+    embed::CallResult r = embed::call(asyncFn, embed::undefined(), args);
+    CHECK(!r.thrown);
+    CHECK(embed::isPromise(r.value));
+    embed::drainMicrotasks();
+}
+
+TEST_CASE("evalFunction handles syntax error in function body") {
+    std::vector<std::string> params{"a"};
+    Value fn = evalFunction(params, "return a +++ ;;; {{{;");
+    CHECK(runtime::rtExceptionPending());
+    runtime::rtClearException();
+    CHECK(embed::isUndefined(fn));
+}
+
+TEST_CASE("evalScript with top-level await wraps into async promise") {
+    embed::CallResult cr = evalScript("await Promise.resolve(42);");
+    CHECK(!cr.thrown);
+    CHECK(embed::isPromise(cr.value));
+    embed::drainMicrotasks();
+}
+
+TEST_CASE("multiple consecutive evalScript calls retain memory and work together") {
+    for (int i = 0; i < 5; ++i) {
+        std::string code = "globalThis.loopVal = " + std::to_string(i) + "; globalThis.loopVal * 2;";
+        embed::CallResult cr = evalScript(code);
+        CHECK(!cr.thrown);
+        CHECK(cr.value.asNumber() == static_cast<double>(i * 2));
+    }
+    embed::CallResult finalCheck = evalScript("loopVal;");
+    CHECK(!finalCheck.thrown);
+    CHECK(finalCheck.value.asNumber() == 4.0);
+}
+
+TEST_CASE("installDefaultDynamicHooks hooks into runtime eval and Function") {
+    installDefaultDynamicHooks();
+
+    embed::GlobalValue evalGlobal = embed::globalValue("eval");
+    REQUIRE(evalGlobal.found);
+    REQUIRE(embed::isFunction(evalGlobal.value));
+
+    std::vector<Value> args{embed::fromUtf8("50 + 50")};
+    embed::CallResult r = embed::call(evalGlobal.value, embed::undefined(), args);
+    CHECK(!r.thrown);
+    CHECK(r.value.asNumber() == 100.0);
+
+    // Clean up dynamic hook to avoid affecting any subsequent tests
+    embed::setDynamicEvalHook({});
+    embed::setDynamicFunctionHook({});
+}

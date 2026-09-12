@@ -79,6 +79,7 @@ add_subdirectory(src/codegen-brass)
 add_subdirectory(src/rt)
 add_subdirectory(src/runtime)
 add_subdirectory(src/embed)
+add_subdirectory(src/eval)
 add_subdirectory(src/cli)
 # The runtime again, as a DLL/.so/.dylib. After every module it is built from,
 # because it reads their source lists off the targets rather than relisting

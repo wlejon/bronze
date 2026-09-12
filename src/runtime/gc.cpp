@@ -84,13 +84,19 @@ void RootValueBlock::blockAllocationFailed(uint32_t count) {
 
 }  // namespace bronze
 
-extern "C" void brass_gc_write_barrier(uint64_t obj, uint64_t val) {
+#ifdef _MSC_VER
+#define BRONZE_STUB_WEAK __declspec(selectany)
+#else
+#define BRONZE_STUB_WEAK __attribute__((weak))
+#endif
+
+extern "C" BRONZE_STUB_WEAK void brass_gc_write_barrier(uint64_t obj, uint64_t val) {
     (void)obj;
     (void)val;
 }
 
 extern "C" {
-uintptr_t brass_tlab_top = 0;
-uintptr_t brass_tlab_end = 0;
-void* brass_root_shape = nullptr;
+BRONZE_STUB_WEAK uintptr_t brass_tlab_top = 0;
+BRONZE_STUB_WEAK uintptr_t brass_tlab_end = 0;
+BRONZE_STUB_WEAK void* brass_root_shape = nullptr;
 }

@@ -1,0 +1,17 @@
+bronze_add_module(eval
+    SOURCES
+        eval.cpp
+    DEPS
+        lex
+        parse
+        ast
+        types
+        lower
+        il
+        codegen_brass
+        runtime
+        embed
+        support
+    TEST_SOURCES
+        ../../tests/eval/eval_test.cpp
+)
