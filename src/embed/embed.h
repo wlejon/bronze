@@ -487,7 +487,7 @@ public:
     }
 
 private:
-    BRONZE_EMBED_API uint32_t escapeSlot(uint32_t index);
+    uint32_t escapeSlot(uint32_t index);
     bool escaped_{false};
 };
 

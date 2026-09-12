@@ -38,26 +38,10 @@ add_executable(bronze_two_module_host
     ${_two_bin}/mod_a.obj
     ${_two_bin}/mod_b.obj)
 find_package(Threads REQUIRED)
-set(BRASS_ROOT "D:/projects/brass" CACHE PATH "Path to Brass root directory")
-if(DEFINED ENV{BRASS_ROOT})
-    set(BRASS_ROOT "$ENV{BRASS_ROOT}")
-endif()
-if(MSVC)
-    if(EXISTS "${BRASS_ROOT}/build_msvc/brass.lib")
-        set(BRASS_LIB "${BRASS_ROOT}/build_msvc/brass.lib")
-    elseif(EXISTS "${BRASS_ROOT}/build/Release/brass.lib")
-        set(BRASS_LIB "${BRASS_ROOT}/build/Release/brass.lib")
-    elseif(EXISTS "${BRASS_ROOT}/build/brass.lib")
-        set(BRASS_LIB "${BRASS_ROOT}/build/brass.lib")
-    else()
-        set(BRASS_LIB "${BRASS_ROOT}/build/libbrass.a")
-    endif()
-    set(PLATFORM_LIBS)
-else()
-    set(BRASS_LIB "${BRASS_ROOT}/build/libbrass.a")
+if(NOT MSVC)
     set(PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
 endif()
-target_link_libraries(bronze_two_module_host PRIVATE bronze::embed ${BRASS_LIB} Threads::Threads ${PLATFORM_LIBS})
+target_link_libraries(bronze_two_module_host PRIVATE bronze::embed Threads::Threads ${PLATFORM_LIBS})
 # bronze emits non-PIC objects (its own driver links executables -no-pie on
 # Linux, link.cpp); a distro-default PIE link of them dies in GNU ld with
 # "failed to set dynamic section sizes: bad value".
