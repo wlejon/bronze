@@ -9,6 +9,7 @@ target_link_libraries(bronze_oracle_tests PRIVATE bronze::cli doctest::doctest)
 
 if(MSVC)
     target_compile_options(bronze_oracle_tests PRIVATE /W4 /WX /permissive-)
+    target_link_options(bronze_oracle_tests PRIVATE /FORCE:MULTIPLE)
 endif()
 
 # The three suites share one binary and are split into three ctest tests by
