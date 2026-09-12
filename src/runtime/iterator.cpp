@@ -302,7 +302,7 @@ ProtoEntry& protoEntry(IteratorProto kind) {
 // intrinsic object, so `m.entries().hasOwnProperty` is the method a program
 // would find in a spec engine rather than `undefined`.
 Value iteratorPrototypeRoot() {
-    static Value root = Value::fromUndefined();
+    static thread_local Value root = Value::fromUndefined();
     if (root.isObject()) return root;
     Rooted<Value> obj{
         Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};
@@ -322,7 +322,7 @@ Value iteratorPrototypeRoot() {
 // %AsyncIteratorPrototype% (27.1.3). Inherits Object.prototype.
 // Has [Symbol.asyncIterator]() { return this; }.
 Value asyncIteratorPrototypeRoot() {
-    static Value root = Value::fromUndefined();
+    static thread_local Value root = Value::fromUndefined();
     if (root.isObject()) return root;
     Rooted<Value> obj{
         Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};

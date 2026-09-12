@@ -108,8 +108,8 @@ Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
     // which is where `[Symbol.iterator]` lives — 27.1.2.1 puts the self-hook
     // on the shared %IteratorPrototype%, and an INHERITED property is not an own
     // one, so `Object.getOwnPropertySymbols(m.keys())` is empty.
-    static Value s_mapIterNextFn = Value::fromUndefined();
-    static Value s_keyNext = Value::fromUndefined();
+    static thread_local Value s_mapIterNextFn = Value::fromUndefined();
+    static thread_local Value s_keyNext = Value::fromUndefined();
     if (s_mapIterNextFn.isUndefined()) {
         s_mapIterNextFn = rtNativeFunction(mapIterNext, 0);
         rtHeap().add_permanent_root(&s_mapIterNextFn);
