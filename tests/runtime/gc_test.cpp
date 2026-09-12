@@ -5,6 +5,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <stdexcept>
@@ -405,5 +406,12 @@ TEST_CASE("heap dynamically scales for deep hierarchy without bad_alloc") {
     auto* liveHdr = rootNode.get().asObject<HeapObjectHeader>();
     CHECK(liveHdr != nullptr);
     CHECK(liveHdr->tag == static_cast<uint16_t>(Tag::Object));
+}
+
+TEST_CASE("heap enforces thread affinity") {
+    Heap heap(1024 * 1024, 64 * 1024);
+    auto* obj = heap.allocate(16, Tag::Object);
+    CHECK(obj != nullptr);
+    heap.check_thread_affinity();
 }
 

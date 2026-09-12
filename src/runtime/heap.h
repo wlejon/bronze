@@ -9,6 +9,11 @@
 #include <utility>
 #include <vector>
 
+#ifndef NDEBUG
+#include <cassert>
+#include <thread>
+#endif
+
 #include "runtime/value.h"
 
 namespace bronze {
@@ -174,6 +179,12 @@ public:
 
     void set_collection_hook(CollectionHook hook) { collection_hook_ = std::move(hook); }
     void collect();
+
+    void check_thread_affinity() const noexcept {
+#ifndef NDEBUG
+        assert(owner_thread_id_ == std::this_thread::get_id() && "Heap accessed from non-owning thread");
+#endif
+    }
 
     // Invoked inside collect(), after the copy phase and before the semispace
     // swap — the one moment liveness of an arbitrary heap pointer is decidable
@@ -347,6 +358,9 @@ private:
     uint64_t relocations_{0};
     CollectionHook collection_hook_;
     std::vector<PostCollectionHook> post_collection_hooks_;
+#ifndef NDEBUG
+    std::thread::id owner_thread_id_{};
+#endif
 };
 
 class NonMovingArena {

@@ -33,6 +33,7 @@ static const char* heap_kind_name(uint16_t kind) noexcept {
 }
 
 void Heap::walk_objects(const std::function<void(HeapObjectHeader*)>& fn) {
+    check_thread_affinity();
     // The same header-run stepping verify_space's pass 1 validates — and the
     // same precondition: the space is a gapless run of live, fully-built
     // objects only immediately after collect() (heap.h has the contract).

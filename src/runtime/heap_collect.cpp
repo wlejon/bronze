@@ -186,6 +186,7 @@ HeapObjectHeader* Heap::survivor_of(HeapObjectHeader* header) const noexcept {
 }
 
 void Heap::collect() {
+    check_thread_affinity();
     if (in_gc_) {
         return;
     }

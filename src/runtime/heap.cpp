@@ -130,6 +130,9 @@ void VirtualMemory::release(void* ptr, size_t bytes) {
 
 Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
     : reserved_bytes_(reserve_bytes) {
+#ifndef NDEBUG
+    owner_thread_id_ = std::this_thread::get_id();
+#endif
     reserved_base_ = VirtualMemory::reserve(reserved_bytes_);
     semispace_size_ = reserved_bytes_ / 2;
 
@@ -386,6 +389,7 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
 }
 
 Heap::~Heap() {
+    check_thread_affinity();
     // Retract the inline-allocation window if this heap published it: the
     // memory under it is released on the next line, and this thread's TLS
     // block outlives a Heap (in tests) that need not be the thread's last.
@@ -446,6 +450,7 @@ void* Heap::allocate_in_space(Semispace& space, size_t bytes) {
 }
 
 void* Heap::allocate_raw(size_t bytes) {
+    check_thread_affinity();
     if (gc_stress_mode_ && !in_gc_) {
         collect();
     }
@@ -485,6 +490,7 @@ void* Heap::allocate_raw(size_t bytes) {
 }
 
 HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag) {
+    check_thread_affinity();
     if (gc_stress_mode_ && !in_gc_) {
         collect();
     }
@@ -503,6 +509,7 @@ HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag) {
 }
 
 void Heap::refill_inline_lab() {
+    check_thread_affinity();
     if (!inline_lab_enabled_) return;
     // Under stress: exactly one plain object, so the inline path runs on the
     // very next `new` — its rooting across the constructor call is what the
