@@ -4,6 +4,7 @@
 #include "il/print.h"
 
 #include <brass/brass.hpp>
+#include <brass/codegen/jit_exec.hpp>
 #include <brass/il_translator/il_translator.hpp>
 #include <brass/object/coff_writer.hpp>
 #include <brass/object/elf_writer.hpp>
@@ -15,8 +16,8 @@
 
 namespace bronze {
 
-bool BrassBackend::emitObject(const il::Module& module, const std::string& outputPath,
-                              DiagnosticSink& diags) {
+std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
+    const il::Module& module, DiagnosticSink& diags) {
     std::vector<std::string> uniqueNames(module.functions.size());
     std::unordered_map<std::string, size_t> nameCounts;
     auto sanitizeName = [](std::string n) {
@@ -128,7 +129,7 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
             msg = "Failed to translate Bronze IL to Brass MIR";
         }
         diags.error(Span{}, msg);
-        return false;
+        return std::nullopt;
     }
 
     if (entrySymbol_ != "main") {
@@ -454,6 +455,17 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         }
     }
 
+    return obj;
+}
+
+bool BrassBackend::emitObject(const il::Module& module, const std::string& outputPath,
+                              DiagnosticSink& diags) {
+    auto obj = buildObjectFile(module, diags);
+    if (!obj) {
+        return false;
+    }
+
+    brass::Target target = brass::Target::host();
     std::error_code ec;
     std::filesystem::path outPath(outputPath);
     if (outPath.has_parent_path()) {
@@ -462,13 +474,13 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
 
     bool writeSuccess = false;
     if (target.is_windows()) {
-        brass::object::CoffWriter writer(obj);
+        brass::object::CoffWriter writer(*obj);
         writeSuccess = writer.write_to_file(outputPath);
     } else if (target.is_macos()) {
-        brass::object::MachOWriter writer(obj);
+        brass::object::MachOWriter writer(*obj);
         writeSuccess = writer.write_to_file(outputPath);
     } else {
-        brass::object::ElfWriter writer(obj);
+        brass::object::ElfWriter writer(*obj);
         writeSuccess = writer.write_to_file(outputPath);
     }
 
@@ -482,6 +494,25 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     }
 
     return true;
+}
+
+std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& module,
+                                                            DiagnosticSink& diags) {
+    auto obj = buildObjectFile(module, diags);
+    if (!obj) {
+        return nullptr;
+    }
+
+    auto engine = std::make_unique<brass::codegen::JitExecutionEngine>(brass::Target::host());
+    brass::il::register_bronze_runtime_symbols(engine.get());
+
+    if (!engine->load_object(*obj)) {
+        diags.error(Span{}, "Failed to load object into JIT execution engine");
+        return nullptr;
+    }
+
+    void* entry = engine->get_symbol_address(entrySymbol_);
+    return std::make_unique<BrassJitProgram>(std::move(engine), entry);
 }
 
 }  // namespace bronze
