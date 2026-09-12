@@ -35,7 +35,8 @@ TEST_CASE("Local handles survive moving GC inside HandleScope") {
 
     embed::Local<Value> str = scope.createLocal(embed::fromUtf8("survive_gc"));
     embed::Local<Value> obj = scope.createLocal(embed::createObject());
-    embed::setProperty(obj.get(), "key", embed::fromUtf8("val"));
+    embed::Local<Value> val = scope.createLocal(embed::fromUtf8("val"));
+    obj.set(embed::setProperty(obj.get(), "key", val.get()));
 
     // Force garbage collections to trigger moving semispace relocations
     for (int i = 0; i < 3; ++i) {
