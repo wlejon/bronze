@@ -118,10 +118,7 @@ private:
         }
         const auto* ident = dynamic_cast<const Ident*>(&e);
         if (!ident) return false;
-        // `console.log` is one Ident spelling a whole member path, folded by the
-        // parser: it names no binding at all, so nothing can rebind it — and
-        // pinning it would turn the name lowering dispatches on into a
-        // temporary holding an unresolvable reference.
+        if (ident->name == "console") return true;
         if (consoleStreamOf(ident->name) != ConsoleStream::None) return true;
         return ident->name.rfind(prefix_, 0) == 0;
     }
@@ -477,8 +474,11 @@ private:
         }
         if (auto* mem = dynamic_cast<MemberAccess*>(call.callee.get())) {
             if (mem->optional) return refuseOptional(std::move(e), mem->span, yieldFormsIn(call));
+            const auto* baseIdent = dynamic_cast<const Ident*>(mem->object.get());
+            const bool isConsole = baseIdent && baseIdent->name == "console" &&
+                                   consoleStreamOf("console." + mem->property) != ConsoleStream::None;
             mem->object = lift(std::move(mem->object), pre);
-            if (argSuspends) mem->object = pin(std::move(mem->object), pre);
+            if (argSuspends && !isConsole) mem->object = pin(std::move(mem->object), pre);
         } else if (auto* idx = dynamic_cast<IndexAccess*>(call.callee.get())) {
             if (idx->optional) return refuseOptional(std::move(e), idx->span, yieldFormsIn(call));
             liftSlots({&idx->object, &idx->index}, pre);

@@ -160,24 +160,23 @@ TEST_CASE("`delete` is a reference operator, and a binding is not a reference") 
     CHECK(binding.substr(0, 7) != "ERRORS:");  // it parses; lowering refuses it
 }
 
-TEST_CASE("console members are folded by name, and an unbuilt one is loud") {
+TEST_CASE("console members parse as member access expressions") {
     const auto log = parseAndDump("console.log(1); console.info(2); console.debug(3);");
     CHECK(log.substr(0, 7) != "ERRORS:");
-    CHECK(log.find("(ident console.info)") != std::string::npos);
+    CHECK(log.find("(member .info") != std::string::npos);
 
     const auto warn = parseAndDump("console.warn(1); console.error(2);");
     CHECK(warn.substr(0, 7) != "ERRORS:");
-    CHECK(warn.find("(ident console.warn)") != std::string::npos);
-    CHECK(warn.find("(ident console.error)") != std::string::npos);
+    CHECK(warn.find("(member .warn") != std::string::npos);
+    CHECK(warn.find("(member .error") != std::string::npos);
 
-    // An unbuilt member FOLDS like a built one. The refusal moved to where
-    // the unresolved-name judgment lives (lower_unresolved.cpp): lowering
-    // warns by name and compiles a deferred ReferenceError, so a program
-    // that carries `console.table` in a branch it never takes still runs —
-    // which real bundles do (pixi's deprecation path).
+    // An unbuilt member parses like any member access. Lowering warns by
+    // name and compiles a deferred ReferenceError, so a program that
+    // carries `console.table` in a branch it never takes still runs — which
+    // real bundles do (pixi's deprecation path).
     const auto count = parseAndDump("console.count();");
     CHECK(count.substr(0, 7) != "ERRORS:");
-    CHECK(count.find("(ident console.count)") != std::string::npos);
+    CHECK(count.find("(member .count") != std::string::npos);
 }
 
 TEST_CASE("contextual keyword 'of' in expressions") {
