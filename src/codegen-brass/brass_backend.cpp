@@ -55,6 +55,7 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     brass::il::TranslatorOptions options;
     options.enable_optimizations = true;
     options.enable_inlining = true;
+    options.enable_speculative_inlining = true;
     options.enable_sroa = true;
     options.enable_gvn = true;
     options.enable_sccp = true;
