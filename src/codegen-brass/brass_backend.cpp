@@ -69,6 +69,8 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
     options.enable_gvn_pre = true;
     options.enable_loop_fusion = true;
     options.enable_array_contraction = true;
+    options.enable_tlab = true;
+    options.use_bronze_tlab = true;
     options.enable_pic = sharedRuntime_;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;

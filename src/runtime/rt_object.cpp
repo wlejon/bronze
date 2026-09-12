@@ -782,7 +782,15 @@ uint64_t bronze_object_keys(uint64_t objBits) {
 uint64_t bronze_env_create(uint64_t parentBits, uint32_t slotCount) {
     recordHelperCall("bronze_env_create");
     Rooted<Value> parent{Value(parentBits)};
-    return Value::fromObject(EnvHeader::create(rtHeap(), parent, slotCount)).rawBits();
+    EnvHeader* env = EnvHeader::create(rtHeap(), parent, slotCount);
+    const size_t needed = sizeof(HeapObjectHeader) + sizeof(Value) + static_cast<size_t>(slotCount) * sizeof(Value);
+    const bronze_tls_block* tls = bronze_tls_block_addr();
+    if (tls->alloc_limit - tls->alloc_cursor < needed) {
+        Rooted<Value> envRoot{Value::fromObject(env)};
+        rtHeap().refill_inline_lab();
+        return envRoot.get().rawBits();
+    }
+    return Value::fromObject(env).rawBits();
 }
 
 static EnvHeader* resolveEnv(uint64_t envBits, uint32_t depth) {
