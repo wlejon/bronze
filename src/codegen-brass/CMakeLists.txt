@@ -74,6 +74,7 @@ if(BRONZE_BUILD_TESTS)
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass
         bronze::cli
+        bronze::runtime
         doctest::doctest
     )
     if(MSVC)
