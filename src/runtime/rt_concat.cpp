@@ -145,7 +145,13 @@ uint64_t bronze_concat_append(uint64_t accBits, uint64_t xBits) {
             const bool needUTF16 = b->isUTF16() || s->isUTF16();
             if (needUTF16 == b->isUTF16() && b->capacity() >= newLen) {
                 if (needUTF16) {
-                    std::memcpy(b->utf16Data() + oldLen, s->utf16Data(), addLen * sizeof(uint16_t));
+                    if (s->isUTF16()) {
+                        std::memcpy(b->utf16Data() + oldLen, s->utf16Data(), addLen * sizeof(uint16_t));
+                    } else {
+                        const unsigned char* in = reinterpret_cast<const unsigned char*>(s->latin1Data());
+                        uint16_t* out = b->utf16Data() + oldLen;
+                        for (uint32_t i = 0; i < addLen; ++i) out[i] = in[i];
+                    }
                     b->utf16Data()[newLen] = 0;
                 } else {
                     std::memcpy(b->latin1Data() + oldLen, s->latin1Data(), addLen);
