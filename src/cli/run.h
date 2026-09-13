@@ -5,7 +5,11 @@
 
 namespace bronze::cli {
 
-int runEval(std::string_view code);
-int runFileInJit(const std::string& filePath);
+using RunEvalFn = int (*)(std::string_view);
+using RunFileInJitFn = int (*)(const std::string&);
+
+void registerRunHooks(RunEvalFn evalFn, RunFileInJitFn fileFn);
+int runEvalReal(std::string_view code);
+int runFileInJitReal(const std::string& filePath);
 
 }  // namespace bronze::cli

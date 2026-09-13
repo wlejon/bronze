@@ -548,6 +548,26 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     return 0;
 }
 
+namespace {
+static RunEvalFn s_runEvalFn = nullptr;
+static RunFileInJitFn s_runFileInJitFn = nullptr;
+}  // namespace
+
+void registerRunHooks(RunEvalFn evalFn, RunFileInJitFn fileFn) {
+    s_runEvalFn = evalFn;
+    s_runFileInJitFn = fileFn;
+}
+
+static int runEval(std::string_view code) {
+    if (s_runEvalFn) return s_runEvalFn(code);
+    return fail("error: eval not supported in this build\n");
+}
+
+static int runFileInJit(const std::string& filePath) {
+    if (s_runFileInJitFn) return s_runFileInJitFn(filePath);
+    return fail("error: run not supported in this build\n");
+}
+
 int runDriver(int argc, char** argv) {
     if (argc < 2) return fail(kUsage);
     const std::string command = argv[1];

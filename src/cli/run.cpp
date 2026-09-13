@@ -13,7 +13,7 @@ namespace bronze::cli {
 
 
 
-int runEval(std::string_view code) {
+int runEvalReal(std::string_view code) {
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
@@ -30,7 +30,7 @@ int runEval(std::string_view code) {
     return 0;
 }
 
-int runFileInJit(const std::string& filePath) {
+int runFileInJitReal(const std::string& filePath) {
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();

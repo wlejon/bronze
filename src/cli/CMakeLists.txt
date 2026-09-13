@@ -1,8 +1,8 @@
-add_library(bronze_cli STATIC driver.cpp link.cpp link_order.cpp native_manifest_resolve.cpp run.cpp)
+add_library(bronze_cli STATIC driver.cpp link.cpp link_order.cpp native_manifest_resolve.cpp)
 add_library(bronze::cli ALIAS bronze_cli)
 target_include_directories(bronze_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
-target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::codegen bronze::modules bronze::codegen_brass bronze::eval)
+target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast bronze::support bronze::il bronze::types bronze::lower bronze::codegen bronze::modules bronze::codegen_brass)
 add_dependencies(bronze_cli bronze_rt)
 
 if(MSVC)
@@ -10,8 +10,8 @@ if(MSVC)
     target_compile_definitions(bronze_cli PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-add_executable(bronze main.cpp)
-target_link_libraries(bronze PRIVATE bronze::cli)
+add_executable(bronze main.cpp run.cpp)
+target_link_libraries(bronze PRIVATE bronze::cli bronze::eval)
 if(MSVC)
     target_compile_options(bronze PRIVATE /W4 /WX /permissive-)
     target_compile_definitions(bronze PRIVATE _CRT_SECURE_NO_WARNINGS)
