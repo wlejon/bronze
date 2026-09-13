@@ -23,6 +23,10 @@ struct EvalOptions {
     bool retainSource = true;
     std::vector<modules::ModuleRoot> moduleRoots = {};
     std::filesystem::path entryResolvesAs = {};
+    std::string pinsPath = {};
+    std::string censusOutPath = {};
+    std::string nativeManifestPath = {};
+    std::string nativeLibPath = {};
 };
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine

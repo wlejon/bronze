@@ -8,6 +8,7 @@
 // usable from a host that has no linked module and may hold several loaded
 // ones.
 
+#include <atomic>
 #include <cstdint>
 
 #include "abi/bronze_abi.h"
@@ -15,8 +16,14 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/microtask.h"
+#include "runtime/profile.h"
 #include "runtime/rt_state.h"
 #include "runtime/sampler.h"
+
+namespace bronze {
+extern uint64_t g_lastGcPauseNs;
+extern std::atomic<uint64_t> g_shapeTransitions;
+}
 
 namespace bronze::embed {
 
@@ -57,5 +64,25 @@ void unloadModule(ModuleHandle module) { runtime::rtDropModuleEpoch(module); }
 void collectGarbage() { runtime::rtHeap().collect(); }
 
 uint64_t relocationEpoch() { return runtime::rtHeap().relocation_epoch(); }
+
+void setProfileCalleeNamer(ProfileCalleeNamer namer) {
+    runtime::profileSetCalleeNamer(namer);
+}
+
+void dumpProfileReport() {
+    runtime::dumpProfileReport();
+}
+
+RuntimeTelemetry getRuntimeTelemetry() {
+    RuntimeTelemetry tel;
+    auto& heap = runtime::rtHeap();
+    tel.heapUsedBytes = heap.used_size();
+    tel.heapCommittedBytes = heap.committed_size();
+    tel.heapReservedBytes = heap.reserved_size();
+    tel.gcCollections = heap.collection_count();
+    tel.gcPauseNs = bronze::g_lastGcPauseNs;
+    tel.shapeTransitions = bronze::g_shapeTransitions.load(std::memory_order_relaxed);
+    return tel;
+}
 
 }  // namespace bronze::embed

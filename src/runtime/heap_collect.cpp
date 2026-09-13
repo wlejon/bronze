@@ -21,6 +21,8 @@
 
 namespace bronze {
 
+uint64_t g_lastGcPauseNs{0};
+
 static bool is_valid_object_tag(uint16_t tag) noexcept {
     return (tag >= 0xFFF1 && tag <= 0xFFF9) ||
            tag == static_cast<uint16_t>(Tag::BigInt) ||
@@ -200,8 +202,7 @@ void Heap::collect() {
     bronze_tls_block_addr()->alloc_cursor = 0;
     bronze_tls_block_addr()->alloc_limit = 0;
 
-    std::chrono::steady_clock::time_point gc_t0;
-    if (g_gcLog.enabled) gc_t0 = std::chrono::steady_clock::now();
+    const auto gc_t0 = std::chrono::steady_clock::now();
 
     if (collection_hook_) {
         collection_hook_(*this);
@@ -283,12 +284,16 @@ void Heap::collect() {
         verify_space(to_space_);
     }
 
+    const uint64_t pauseNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - gc_t0)
+            .count());
+    g_lastGcPauseNs = pauseNs;
+
     if (g_gcLog.enabled) {
         ++g_gcLog.collections;
         g_gcLog.copied_bytes += to_space_.bump_ptr - to_space_.base;
-        g_gcLog.gc_nanos += std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                std::chrono::steady_clock::now() - gc_t0)
-                                .count();
+        g_gcLog.gc_nanos += pauseNs;
     }
 
     // Poison AFTER the hooks: they are the last legitimate reader of the

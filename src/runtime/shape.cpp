@@ -1,7 +1,7 @@
 #include "runtime/shape.h"
 
 #include <algorithm>
-
+#include <atomic>
 #include <vector>
 
 #include "runtime/fatal.h"
@@ -10,6 +10,8 @@
 #include "runtime/slot_repr.h"
 
 namespace bronze {
+
+std::atomic<uint64_t> g_shapeTransitions{0};
 
 Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
     Shape* root = arena.create<Shape>();
@@ -134,6 +136,7 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     // marked when some object first becomes a prototype, which can be long
     // after its transitions were built by unrelated objects.
     if (used_as_prototype) next_shape->used_as_prototype = true;
+    ++g_shapeTransitions;
     return next_shape;
 }
 

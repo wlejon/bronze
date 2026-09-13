@@ -265,6 +265,22 @@ BRONZE_EMBED_API void collectGarbage();
 // uses the same discipline internally (heap.h relocation_epoch).
 BRONZE_EMBED_API uint64_t relocationEpoch();
 
+// ---- callee naming bridge & profile report (embed_module.cpp) --------------
+using ProfileCalleeNamer = bool (*)(uint64_t calleeBits, void* code, char* out, size_t outSize);
+BRONZE_EMBED_API void setProfileCalleeNamer(ProfileCalleeNamer namer);
+BRONZE_EMBED_API void dumpProfileReport();
+
+// ---- runtime telemetry (embed_module.cpp) ----------------------------------
+struct RuntimeTelemetry {
+    size_t heapUsedBytes{0};
+    size_t heapCommittedBytes{0};
+    size_t heapReservedBytes{0};
+    uint64_t gcCollections{0};
+    uint64_t gcPauseNs{0};
+    uint64_t shapeTransitions{0};
+};
+BRONZE_EMBED_API RuntimeTelemetry getRuntimeTelemetry();
+
 // ---- the microtask checkpoint (embed_run.cpp) ------------------------------
 //
 // Promise reactions and async resumptions run as JOBS, and a job runs only

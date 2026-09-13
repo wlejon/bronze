@@ -1,7 +1,9 @@
 #include "eval/eval.h"
 
 #include <atomic>
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <vector>
 
 #include "ast/ast.h"
@@ -12,6 +14,7 @@
 #include "lex/lexer.h"
 #include "modules/modules.h"
 #include "lower/lower.h"
+#include "lower/native_manifest.h"
 #include "parse/parser.h"
 #include "runtime/exception.h"
 #include "runtime/host_globals.h"
@@ -22,6 +25,7 @@
 #include "support/diagnostics.h"
 #include "support/source.h"
 #include "types/infer.h"
+#include "types/pins.h"
 
 namespace bronze::eval {
 
@@ -107,14 +111,53 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
         }
     }
 
+    std::optional<lower::NativeManifest> nativeManifest;
+    if (!options.nativeManifestPath.empty()) {
+        std::string err;
+        std::error_code ec;
+        if (std::filesystem::is_directory(options.nativeManifestPath, ec)) {
+            nativeManifest = lower::NativeManifest::loadFromDirectory(options.nativeManifestPath, err);
+        } else if (std::filesystem::exists(options.nativeManifestPath, ec)) {
+            nativeManifest = lower::NativeManifest::loadFromFile(options.nativeManifestPath, err);
+        }
+        if (nativeManifest && !options.nativeLibPath.empty()) {
+            nativeManifest->addExtraLibPath(options.nativeLibPath);
+        }
+    }
+    if (nativeManifest) {
+        for (const auto& root : nativeManifest->namespaceRoots()) {
+            hostGlobals.push_back(root);
+        }
+        for (const auto& cls : nativeManifest->knownClasses()) {
+            hostGlobals.push_back(cls);
+        }
+    }
+
+    types::PinManifest pins;
+    if (!options.pinsPath.empty()) {
+        std::ifstream in(options.pinsPath, std::ios::binary);
+        if (in) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            std::string err;
+            pins.parse(ss.str(), options.pinsPath, err, /*allowObserved=*/true);
+        }
+    }
+
     auto inferred = types::inferModule(*astModule, diags,
-                                       hostGlobals.empty() ? nullptr : &hostGlobals);
+                                       hostGlobals.empty() ? nullptr : &hostGlobals,
+                                       pins.empty() ? nullptr : &pins);
     if (diags.hasErrors() || !inferred) return nullptr;
 
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
-                                       &sources);
+                                       &sources,
+                                       /*stats=*/nullptr,
+                                       /*assumeNoBigInt=*/false,
+                                       pins.empty() ? nullptr : &pins,
+                                       options.censusOutPath,
+                                       nativeManifest ? &*nativeManifest : nullptr);
     if (diags.hasErrors() || !ilModule) return nullptr;
 
     if (!options.retainSource) {
