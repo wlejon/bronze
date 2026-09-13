@@ -12,6 +12,8 @@
 // seam, the bronze_tls_block its prologue fetches (bronze_abi.h), so a
 // compiled module runs against whichever thread's runtime ran its entry.
 
+#include <deque>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -173,30 +175,46 @@ static_assert(sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI
 
 // ---- Property keys ----------------------------------------------------------
 
-static thread_local std::vector<std::string> g_keyStrings;
-// The same keys as immortal arena strings, so a property access allocates
-// nothing on the path that reaches one.
-static thread_local std::vector<StringHeader*> g_keyHeaders;
-static thread_local std::vector<KeyInfo> g_keyInfos;
-// Text -> id, which is what makes the registry an INTERN table rather than an
-// array a module fills by index. Two modules that both mention "position" must
-// come out holding one id: shapes, inline caches and `Object.keys` all identify
-// a property by its key id, so the same string arriving as two ids would give
-// one object two indistinguishable properties. Nothing iterates this map, so
-// its ordering never reaches output.
-static thread_local std::unordered_map<std::string, uint32_t> g_keyIndex;
+static std::mutex g_keyMutex;
+static std::deque<std::string> g_keyStrings;
+static std::deque<KeyInfo> g_keyInfos;
+static std::unordered_map<std::string, uint32_t> g_keyIndex;
 static const std::string g_emptyKey;
 static const KeyInfo g_emptyKeyInfo{};
 
+static thread_local std::vector<StringHeader*> g_keyHeaders;
+
 const std::string& rtKeyString(uint32_t index) {
+    std::lock_guard<std::mutex> lock(g_keyMutex);
     return index < g_keyStrings.size() ? g_keyStrings[index] : g_emptyKey;
 }
 
 StringHeader* rtKeyHeader(uint32_t index) {
-    return index < g_keyHeaders.size() ? g_keyHeaders[index] : nullptr;
+    if (index >= g_keyHeaders.size()) {
+        g_keyHeaders.resize(index + 1, nullptr);
+    }
+    StringHeader* hdr = g_keyHeaders[index];
+    if (!hdr) {
+        bool valid = false;
+        std::string str;
+        {
+            std::lock_guard<std::mutex> lock(g_keyMutex);
+            if (index < g_keyStrings.size()) {
+                str = g_keyStrings[index];
+                valid = true;
+            }
+        }
+        if (valid) {
+            StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(str));
+            hdr = StringHeader::internToArena(rtArena(), tmp);
+            g_keyHeaders[index] = hdr;
+        }
+    }
+    return hdr;
 }
 
 const KeyInfo& rtKeyInfo(uint32_t index) {
+    std::lock_guard<std::mutex> lock(g_keyMutex);
     return index < g_keyInfos.size() ? g_keyInfos[index] : g_emptyKeyInfo;
 }
 
@@ -639,31 +657,31 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     return resolved.rawBits();
 }
 
-uint32_t bronze_register_key_string(const char* str) {
-    const std::string text = str ? str : "";
+uint32_t bronze_register_key_string_len(const char* str, size_t len) {
+    const std::string text(str ? str : "", str ? len : 0);
+    std::lock_guard<std::mutex> lock(g_keyMutex);
     if (auto it = g_keyIndex.find(text); it != g_keyIndex.end()) return it->second;
 
     const uint32_t index = static_cast<uint32_t>(g_keyStrings.size());
     g_keyStrings.push_back(text);
-    g_keyHeaders.push_back(nullptr);
-    g_keyInfos.emplace_back();
-    g_keyIndex.emplace(text, index);
-
-    StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(g_keyStrings[index]));
-    g_keyHeaders[index] = StringHeader::internToArena(rtArena(), tmp);
 
     KeyInfo info;
     uint32_t elemIdx = 0;
-    if (rtIsIntegerLikeKey(g_keyStrings[index], elemIdx)) {
+    if (rtIsIntegerLikeKey(text, elemIdx)) {
         info.isElemIndex = true;
         info.elemIndex = elemIdx;
     } else {
         info.isElemIndex = false;
         info.elemIndex = UINT32_MAX;
     }
-    info.isLength = (g_keyStrings[index] == "length");
-    g_keyInfos[index] = info;
+    info.isLength = (text == "length");
+    g_keyInfos.push_back(info);
+    g_keyIndex.emplace(text, index);
     return index;
+}
+
+uint32_t bronze_register_key_string(const char* str) {
+    return bronze_register_key_string_len(str, str ? std::strlen(str) : 0);
 }
 
 }  // extern "C"

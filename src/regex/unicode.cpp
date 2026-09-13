@@ -191,6 +191,22 @@ bool binaryPropertySet(std::string_view value, RangeList& out) {
         out = rangesForMask(mask & ~bit(aliasIndex("Cn")));
         return true;
     }
+    if (value == "ID_Start" || value == "IDS") {
+        out.clear();
+        out.reserve(data::kIdStartRangeCount);
+        for (uint32_t i = 0; i < data::kIdStartRangeCount; ++i) {
+            out.push_back({data::kIdStartRanges[i].first, data::kIdStartRanges[i].last});
+        }
+        return true;
+    }
+    if (value == "ID_Continue" || value == "IDC") {
+        out.clear();
+        out.reserve(data::kIdContinueRangeCount);
+        for (uint32_t i = 0; i < data::kIdContinueRangeCount; ++i) {
+            out.push_back({data::kIdContinueRanges[i].first, data::kIdContinueRanges[i].last});
+        }
+        return true;
+    }
     return false;
 }
 
@@ -270,7 +286,7 @@ const char* kSupported =
     "bronze carries General_Category and Script: General_Category's 30 values by "
     "alias or long name (`\\p{Lu}`, `\\p{Uppercase_Letter}`, "
     "`\\p{General_Category=Lu}`), the unions `C L LC M N P S Z`, the binary "
-    "properties `ASCII`, `Any` and `Assigned` which follow from the same table, "
+    "properties `ASCII`, `Any`, `Assigned`, `ID_Start` and `ID_Continue` (aliases `IDS`, `IDC`), "
     "and `Script` / `Script_Extensions` by either spelling (`\\p{Script=Greek}`, "
     "`\\p{scx=Grek}`)";
 

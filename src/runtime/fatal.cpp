@@ -22,7 +22,11 @@ void dumpBacktrace() {
 #ifdef _WIN32
     HANDLE proc = GetCurrentProcess();
     SymSetOptions(SymGetOptions() | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-    SymInitialize(proc, nullptr, TRUE);
+    char exeDir[MAX_PATH] = {0};
+    GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
+    char* slash = strrchr(exeDir, '\\');
+    if (slash) *slash = '\0';
+    SymInitialize(proc, exeDir, TRUE);
     void* frames[62];
     USHORT n = CaptureStackBackTrace(0, 62, frames, nullptr);
     char symBuf[sizeof(SYMBOL_INFO) + 512];
@@ -44,8 +48,9 @@ void dumpBacktrace() {
             const char* base = strrchr(modName, '\\');
             if (base) memmove(modName, base + 1, strlen(base));
         }
-        std::fprintf(stderr, "  #%02u %p %s!%s+0x%llx\n", (unsigned)i, frames[i], modName,
-                     name, (unsigned long long)disp);
+        DWORD64 rva = mod ? (addr - reinterpret_cast<DWORD64>(mod)) : 0;
+        std::fprintf(stderr, "  #%02u %p %s (rva 0x%llx)!%s+0x%llx\n", (unsigned)i, frames[i], modName,
+                     (unsigned long long)rva, name, (unsigned long long)disp);
     }
     std::fflush(stderr);
 #endif

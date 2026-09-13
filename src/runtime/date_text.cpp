@@ -438,6 +438,34 @@ std::string utcString(double tv) {
            " " + yearField(tv) + " " + timeString(tv);
 }
 
+std::string localeDateString(double tv) {
+    if (std::isnan(tv)) return "Invalid Date";
+    const double t = localTime(tv);
+    const int m = static_cast<int>(monthFromTime(t)) + 1;
+    const int d = static_cast<int>(dateFromTime(t));
+    const int y = static_cast<int>(yearFromTime(t));
+    return std::to_string(m) + "/" + std::to_string(d) + "/" + std::to_string(y);
+}
+
+std::string localeTimeString(double tv) {
+    if (std::isnan(tv)) return "Invalid Date";
+    const double t = localTime(tv);
+    int h = static_cast<int>(hourFromTime(t));
+    const char* ampm = (h >= 12) ? "PM" : "AM";
+    h = h % 12;
+    if (h == 0) h = 12;
+    const int m = static_cast<int>(minFromTime(t));
+    const int s = static_cast<int>(secFromTime(t));
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%d:%02d:%02d %s", h, m, s, ampm);
+    return std::string(buf);
+}
+
+std::string localeDateTimeString(double tv) {
+    if (std::isnan(tv)) return "Invalid Date";
+    return localeDateString(tv) + ", " + localeTimeString(tv);
+}
+
 std::string inspectString(double tv) {
     std::string out;
     if (!isoString(tv, out)) return "Invalid Date";

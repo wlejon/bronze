@@ -372,13 +372,16 @@ extern "C" void bronze_register_key_manifest(const uint8_t* data, uint32_t* key_
     if (!data) return;
     uint32_t count = 0;
     std::memcpy(&count, data, sizeof(uint32_t));
-    const char* ptr = reinterpret_cast<const char*>(data + sizeof(uint32_t));
+    const uint8_t* ptr = data + sizeof(uint32_t);
     for (uint32_t i = 0; i < count; ++i) {
-        uint32_t id = bronze_register_key_string(ptr);
+        uint32_t len = 0;
+        std::memcpy(&len, ptr, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        uint32_t id = bronze_register_key_string_len(reinterpret_cast<const char*>(ptr), len);
         if (key_map) {
             key_map[i] = id;
         }
-        ptr += std::strlen(ptr) + 1;
+        ptr += len + 1;
     }
 }
 

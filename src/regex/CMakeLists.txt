@@ -6,6 +6,7 @@ bronze_add_module(regex
         matcher.cpp
         unicode.cpp
         unicode_data_gc.cpp
+        unicode_data_id.cpp
         unicode_data_scf.cpp
         unicode_data_script.cpp
     TEST_SOURCES

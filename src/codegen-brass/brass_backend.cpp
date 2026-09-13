@@ -182,6 +182,13 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
+    auto moduleSym = [&](const std::string& base) -> std::string {
+        if (entrySymbol_.empty() || entrySymbol_ == "main" || entrySymbol_ == "bronze_main") {
+            return base;
+        }
+        return base + "_" + entrySymbol_;
+    };
+
     std::string roSecName = target.is_windows() ? ".rdata" : (target.is_macos() ? "__const" : ".rodata");
     brass::object::Section& roSec = obj.get_or_create_section(
         roSecName,
@@ -231,6 +238,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const uint32_t keyCount = static_cast<uint32_t>(module.keyConstants.size());
     roSec.emit32(keyCount);
     for (const std::string& key : module.keyConstants) {
+        roSec.emit32(static_cast<uint32_t>(key.size()));
         roSec.emit_bytes(reinterpret_cast<const uint8_t*>(key.data()), key.size());
         roSec.emit8(0);
     }
@@ -253,7 +261,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         roSec.emit8(0);
         const size_t outPathSize = roSec.data.size() - outPathOffset;
 
-        if (auto* sym = obj.find_symbol("__bronze_census_out_path")) {
+        if (auto* sym = obj.find_symbol(moduleSym("__bronze_census_out_path"))) {
             sym->section_index = obj.get_section_index(roSecName);
             sym->value = outPathOffset;
             sym->size = outPathSize;
@@ -261,7 +269,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             sym->type = brass::object::SymbolType::Object;
         } else {
             brass::object::ObjectSymbol outPathSym;
-            outPathSym.name = "__bronze_census_out_path";
+            outPathSym.name = moduleSym("__bronze_census_out_path");
             outPathSym.section_index = obj.get_section_index(roSecName);
             outPathSym.value = outPathOffset;
             outPathSym.size = outPathSize;
@@ -278,7 +286,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
         const size_t sitesSize = roSec.data.size() - sitesOffset;
 
-        if (auto* sym = obj.find_symbol("__bronze_census_sites")) {
+        if (auto* sym = obj.find_symbol(moduleSym("__bronze_census_sites"))) {
             sym->section_index = obj.get_section_index(roSecName);
             sym->value = sitesOffset;
             sym->size = sitesSize;
@@ -286,7 +294,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             sym->type = brass::object::SymbolType::Object;
         } else {
             brass::object::ObjectSymbol sitesSym;
-            sitesSym.name = "__bronze_census_sites";
+            sitesSym.name = moduleSym("__bronze_census_sites");
             sitesSym.section_index = obj.get_section_index(roSecName);
             sitesSym.value = sitesOffset;
             sitesSym.size = sitesSize;
@@ -313,7 +321,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         roSec.emit8(0);
         const size_t textSize = text.size() + 1;
 
-        std::string textSymName = "__bronze_source_text_" + std::to_string(file);
+        std::string textSymName = moduleSym("__bronze_source_text_" + std::to_string(file));
         if (auto* sym = obj.find_symbol(textSymName)) {
             sym->section_index = obj.get_section_index(roSecName);
             sym->value = textOffset;
@@ -349,7 +357,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
         const size_t entriesSize = entry_count * 16;
 
-        std::string entriesSymName = "__bronze_source_entries_" + std::to_string(file);
+        std::string entriesSymName = moduleSym("__bronze_source_entries_" + std::to_string(file));
         if (auto* sym = obj.find_symbol(entriesSymName)) {
             sym->section_index = obj.get_section_index(roSecName);
             sym->value = entriesOffset;
@@ -379,7 +387,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const size_t envOffset = dataSec.data.size();
     dataSec.emit64(BRONZE_ABI_UNDEFINED_BITS);
 
-    if (auto* sym = obj.find_symbol("__bronze_module_env")) {
+    if (auto* sym = obj.find_symbol(moduleSym("__bronze_module_env"))) {
         sym->section_index = obj.get_section_index(dataSecName);
         sym->value = envOffset;
         sym->size = 8;
@@ -387,7 +395,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         sym->type = brass::object::SymbolType::Object;
     } else {
         brass::object::ObjectSymbol envSym;
-        envSym.name = "__bronze_module_env";
+        envSym.name = moduleSym("__bronze_module_env");
         envSym.section_index = obj.get_section_index(dataSecName);
         envSym.value = envOffset;
         envSym.size = 8;
@@ -401,7 +409,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const size_t keyMapBytes = std::max<size_t>(static_cast<size_t>(keyCount) * sizeof(uint32_t), sizeof(uint32_t));
     dataSec.data.resize(dataSec.data.size() + keyMapBytes, 0);
 
-    if (auto* sym = obj.find_symbol("__bronze_key_map")) {
+    if (auto* sym = obj.find_symbol(moduleSym("__bronze_key_map"))) {
         sym->section_index = obj.get_section_index(dataSecName);
         sym->value = keyMapOffset;
         sym->size = keyMapBytes;
@@ -409,7 +417,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         sym->type = brass::object::SymbolType::Object;
     } else {
         brass::object::ObjectSymbol kmSym;
-        kmSym.name = "__bronze_key_map";
+        kmSym.name = moduleSym("__bronze_key_map");
         kmSym.section_index = obj.get_section_index(dataSecName);
         kmSym.value = keyMapOffset;
         kmSym.size = keyMapBytes;
@@ -428,7 +436,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         *reinterpret_cast<uint64_t*>(&dataSec.data[curTplSize + i * sizeof(uint64_t)]) = BRONZE_ABI_UNDEFINED_BITS;
     }
 
-    if (auto* sym = obj.find_symbol("__bronze_template_cells")) {
+    if (auto* sym = obj.find_symbol(moduleSym("__bronze_template_cells"))) {
         sym->section_index = obj.get_section_index(dataSecName);
         sym->value = tplOffset;
         sym->size = tplBytes;
@@ -436,7 +444,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         sym->type = brass::object::SymbolType::Object;
     } else {
         brass::object::ObjectSymbol tplSym;
-        tplSym.name = "__bronze_template_cells";
+        tplSym.name = moduleSym("__bronze_template_cells");
         tplSym.section_index = obj.get_section_index(dataSecName);
         tplSym.value = tplOffset;
         tplSym.size = tplBytes;

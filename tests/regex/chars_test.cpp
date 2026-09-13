@@ -571,3 +571,44 @@ TEST_CASE("WordCharacters grows by exactly two members under `u` and `i`") {
     CHECK(matches(*compileOk("a\\b", "i"), unitsOf({'a', 0x017F})));
     CHECK(matches(*compileOk("a\\b", "u"), unitsOf({'a', 0x017F})));
 }
+
+TEST_CASE("binary properties ID_Start and ID_Continue") {
+    std::string error;
+    regex::RangeList idStart;
+    REQUIRE(regex::unicodePropertySet("", "ID_Start", idStart, error));
+    regex::RangeList ids;
+    REQUIRE(regex::unicodePropertySet("", "IDS", ids, error));
+    CHECK(idStart.size() == ids.size());
+
+    regex::RangeList idContinue;
+    REQUIRE(regex::unicodePropertySet("", "ID_Continue", idContinue, error));
+    regex::RangeList idc;
+    REQUIRE(regex::unicodePropertySet("", "IDC", idc, error));
+    CHECK(idContinue.size() == idc.size());
+
+    // Basic ASCII identifiers
+    CHECK(regex::rangesContain(idStart, 'a'));
+    CHECK(regex::rangesContain(idStart, 'Z'));
+    CHECK_FALSE(regex::rangesContain(idStart, '0'));
+    CHECK_FALSE(regex::rangesContain(idStart, '_'));
+
+    CHECK(regex::rangesContain(idContinue, 'a'));
+    CHECK(regex::rangesContain(idContinue, 'Z'));
+    CHECK(regex::rangesContain(idContinue, '0'));
+    CHECK(regex::rangesContain(idContinue, '_'));
+
+    // Unicode identifier characters
+    CHECK(regex::rangesContain(idStart, 0x03B1));      // Greek alpha
+    CHECK(regex::rangesContain(idContinue, 0x03B1));
+    CHECK(regex::rangesContain(idContinue, 0x0300));   // Combining grave accent (Mn)
+    CHECK_FALSE(regex::rangesContain(idStart, 0x0300));
+
+    // Regex compile and match
+    CHECK(matches(*compileOk("^\\p{ID_Start}$", "u"), unitsOf({'a'})));
+    CHECK(matches(*compileOk("^\\p{IDS}$", "u"), unitsOf({'Z'})));
+    CHECK_FALSE(matches(*compileOk("^\\p{ID_Start}$", "u"), unitsOf({'0'})));
+    CHECK(matches(*compileOk("^\\p{ID_Continue}$", "u"), unitsOf({'0'})));
+    CHECK(matches(*compileOk("^\\p{ID_Continue}$", "u"), unitsOf({'_'})));
+    CHECK(matches(*compileOk("^\\p{IDC}$", "u"), unitsOf({'_'})));
+}
+

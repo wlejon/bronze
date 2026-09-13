@@ -112,6 +112,9 @@ std::string dateTimeString(double t);
 std::string dateOnlyString(double t);
 std::string timeOnlyString(double t);
 std::string utcString(double t);
+std::string localeDateTimeString(double t);
+std::string localeDateString(double t);
+std::string localeTimeString(double t);
 
 // What console.log prints for a Date: node's form, which is the ISO string
 // bare (no quotes, no braces), and "Invalid Date" for NaN. Never allocates a JS

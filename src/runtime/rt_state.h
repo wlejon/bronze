@@ -52,6 +52,7 @@ struct KeyInfo {
 const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
 const KeyInfo& rtKeyInfo(uint32_t index);
+extern "C" uint32_t bronze_register_key_string_len(const char* str, size_t len);
 
 uint32_t rtArrayMethodId(const std::string& key);
 Value rtArrayMethodById(uint32_t id);

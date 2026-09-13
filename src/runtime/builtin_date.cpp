@@ -303,23 +303,10 @@ uint64_t dateToPrimitive(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
               .c_str());
 }
 
-constexpr const char* kLocaleWhy =
-    "it formats through a locale, and bronze's output is deterministic by rule: a locale-"
-    "dependent string would differ between machines running the same program. Use toISOString, "
-    "toUTCString or the field getters";
 constexpr const char* kAnnexBWhy =
     "it is an Annex B legacy member; use the four-digit getFullYear / setFullYear pair, and "
     "toUTCString in place of toGMTString";
 
-uint64_t dateToLocaleString(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    refuse("toLocaleString", kLocaleWhy);
-}
-uint64_t dateToLocaleDateString(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    refuse("toLocaleDateString", kLocaleWhy);
-}
-uint64_t dateToLocaleTimeString(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    refuse("toLocaleTimeString", kLocaleWhy);
-}
 uint64_t dateGetYear(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     refuse("getYear", kAnnexBWhy);
 }
@@ -337,9 +324,9 @@ const NativeMethod kStringMembers[] = {
     {"toUTCString", dateToText<dt::utcString>, 0},
     {"toISOString", dateToISOString, 0},
     {"toJSON", dateToJSON, 0},
-    {"toLocaleString", dateToLocaleString, 0},
-    {"toLocaleDateString", dateToLocaleDateString, 0},
-    {"toLocaleTimeString", dateToLocaleTimeString, 0},
+    {"toLocaleString", dateToText<dt::localeDateTimeString>, 0},
+    {"toLocaleDateString", dateToText<dt::localeDateString>, 0},
+    {"toLocaleTimeString", dateToText<dt::localeTimeString>, 0},
     {"getYear", dateGetYear, 0},
     {"setYear", dateSetYear, 0},
     {"toGMTString", dateToGMTString, 0},

@@ -93,4 +93,16 @@ constexpr uint32_t kScxRangeCount = 204;
 extern const uint16_t kScxScripts[];
 constexpr uint32_t kScxScriptCount = 501;
 
+// Identifier properties (UAX #31 / ECMA-262 Table 66): ID_Start and ID_Continue.
+struct IdRange {
+    uint32_t first;
+    uint32_t last;
+};
+
+extern const IdRange kIdStartRanges[];
+constexpr uint32_t kIdStartRangeCount = 677;
+
+extern const IdRange kIdContinueRanges[];
+constexpr uint32_t kIdContinueRangeCount = 793;
+
 }  // namespace bronze::regex::data

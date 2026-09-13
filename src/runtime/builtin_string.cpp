@@ -625,6 +625,23 @@ uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
 extern "C" uint64_t bronze_string_char_code_at(uint64_t env, uint64_t thisBits, uint32_t argc,
                                                 const uint64_t* argv);
 
+uint64_t stringLocaleCompare(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Units self = thisUnits(Value(thisBits), "localeCompare");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Units that = args.count() > 0 ? argUnits(args[0]) : Units{};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    size_t minLen = std::min(self.size(), that.size());
+    for (size_t i = 0; i < minLen; ++i) {
+        if (self[i] < that[i]) return Value::fromDouble(-1.0).rawBits();
+        if (self[i] > that[i]) return Value::fromDouble(1.0).rawBits();
+    }
+    if (self.size() < that.size()) return Value::fromDouble(-1.0).rawBits();
+    if (self.size() > that.size()) return Value::fromDouble(1.0).rawBits();
+    return Value::fromDouble(0.0).rawBits();
+}
+
 const NativeMethod kStringMethods[] = {
     {"at", stringAt, 1},
     {"charAt", stringCharAt, 1},
@@ -636,6 +653,7 @@ const NativeMethod kStringMethods[] = {
     {"indexOf", stringIndexOf, 1},
     {"isWellFormed", stringIsWellFormed, 0},
     {"lastIndexOf", stringLastIndexOf, 1},
+    {"localeCompare", stringLocaleCompare, 1},
     {"normalize", stringNormalize, 0},
     {"padEnd", stringPadImpl<false>, 1},
     {"padStart", stringPadImpl<true>, 1},

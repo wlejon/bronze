@@ -47,7 +47,7 @@ const char* const kArrayMembers[] = {
 // a diagnostic that named the wrong holder would send a reader to the wrong
 // file.
 const char* const kStringMembers[] = {
-    "localeCompare", "toLocaleString",
+    "toLocaleString",
 };
 
 // The typed-array and ArrayBuffer tables are NOT here: they live in

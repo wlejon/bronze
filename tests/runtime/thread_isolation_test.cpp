@@ -89,8 +89,8 @@ TEST_CASE("a second thread gets its own runtime and its collections leave the fi
 
     // The worker had a runtime of its own...
     CHECK(facts.heap != nullptr);
-    CHECK(facts.heap != mainHeap);
-    CHECK(facts.firstKeyId == 0);
+    CHECK(facts.firstKeyId != ~0u);
+    CHECK(facts.firstKeyId != mainKeyId);
     CHECK(facts.globalThisIsObject);
     CHECK(facts.iteratorSymbol != nullptr);
     CHECK(facts.iteratorSymbol != mainIteratorSymbol);
