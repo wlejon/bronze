@@ -205,8 +205,7 @@ StringHeader* rtKeyHeader(uint32_t index) {
             }
         }
         if (valid) {
-            StringHeader* tmp = StringHeader::createFromUTF8(rtHeap(), std::string_view(str));
-            hdr = StringHeader::internToArena(rtArena(), tmp);
+            hdr = StringHeader::createFromUTF8InArena(rtArena(), std::string_view(str));
             g_keyHeaders[index] = hdr;
         }
     }

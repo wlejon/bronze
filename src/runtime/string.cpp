@@ -412,9 +412,163 @@ StringHeader* StringHeader::createLatin1InArena(NonMovingArena& arena, const cha
     hdr->header.size = static_cast<uint32_t>(total);
     hdr->length = len;
     hdr->flags = 0;
-    std::memcpy(hdr + 1, str, len);
+    if (str && len > 0) {
+        std::memcpy(hdr + 1, str, len);
+    }
     hdr->latin1Data()[len] = '\0';
     return hdr;
+}
+
+StringHeader* StringHeader::createUTF16InArena(NonMovingArena& arena, const uint16_t* str, uint32_t len) {
+    size_t payload_size = sizeof(uint32_t) + sizeof(uint32_t) + (static_cast<size_t>(len) * sizeof(uint16_t)) + sizeof(uint16_t);
+    size_t total = sizeof(HeapObjectHeader) + payload_size;
+    void* mem = arena.allocate(total, alignof(StringHeader));
+    auto* hdr = static_cast<StringHeader*>(mem);
+    hdr->header.tag = static_cast<uint16_t>(Tag::String);
+    hdr->header.flags = 0;
+    hdr->header.size = static_cast<uint32_t>(total);
+    hdr->length = len;
+    hdr->flags = kUTF16Flag;
+    if (str && len > 0) {
+        std::memcpy(hdr->utf16Data(), str, len * sizeof(uint16_t));
+    }
+    hdr->utf16Data()[len] = 0;
+    return hdr;
+}
+
+StringHeader* StringHeader::createFromUTF8InArena(NonMovingArena& arena, const char* str, uint32_t utf8_len) {
+    if (!str || utf8_len == 0) {
+        return createLatin1InArena(arena, "", 0);
+    }
+
+    bool is_latin1 = true;
+    uint32_t code_units = 0;
+    uint32_t i = 0;
+
+    while (i < utf8_len) {
+        uint8_t b0 = static_cast<uint8_t>(str[i]);
+        if (b0 < 0x80) {
+            code_units++;
+            i++;
+        } else if ((b0 & 0xE0) == 0xC0) {
+            if (i + 1 < utf8_len) {
+                uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
+                uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+                if (cp > 0xFF) {
+                    is_latin1 = false;
+                }
+                code_units++;
+                i += 2;
+            } else {
+                is_latin1 = false;
+                code_units++;
+                i++;
+            }
+        } else if ((b0 & 0xF0) == 0xE0) {
+            is_latin1 = false;
+            code_units++;
+            if (i + 2 < utf8_len) {
+                i += 3;
+            } else {
+                i++;
+            }
+        } else if ((b0 & 0xF8) == 0xF0) {
+            is_latin1 = false;
+            code_units += 2;
+            if (i + 3 < utf8_len) {
+                i += 4;
+            } else {
+                i++;
+            }
+        } else {
+            is_latin1 = false;
+            code_units++;
+            i++;
+        }
+    }
+
+    if (is_latin1) {
+        StringHeader* s = createLatin1InArena(arena, nullptr, code_units);
+        char* dst = s->latin1Data();
+        uint32_t out_idx = 0;
+        i = 0;
+        while (i < utf8_len) {
+            uint8_t b0 = static_cast<uint8_t>(str[i]);
+            if (b0 < 0x80) {
+                dst[out_idx++] = static_cast<char>(b0);
+                i++;
+            } else if ((b0 & 0xE0) == 0xC0 && i + 1 < utf8_len) {
+                uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
+                uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+                dst[out_idx++] = static_cast<char>(cp & 0xFF);
+                i += 2;
+            } else {
+                dst[out_idx++] = str[i++];
+            }
+        }
+        dst[code_units] = '\0';
+        return s;
+    } else {
+        StringHeader* s = createUTF16InArena(arena, nullptr, code_units);
+        uint16_t* dst = s->utf16Data();
+        uint32_t out_idx = 0;
+        i = 0;
+        while (i < utf8_len) {
+            uint8_t b0 = static_cast<uint8_t>(str[i]);
+            if (b0 < 0x80) {
+                dst[out_idx++] = static_cast<uint16_t>(b0);
+                i++;
+            } else if ((b0 & 0xE0) == 0xC0) {
+                if (i + 1 < utf8_len) {
+                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
+                    uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+                    dst[out_idx++] = static_cast<uint16_t>(cp);
+                    i += 2;
+                } else {
+                    dst[out_idx++] = 0xFFFD;
+                    i++;
+                }
+            } else if ((b0 & 0xF0) == 0xE0) {
+                if (i + 2 < utf8_len) {
+                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
+                    uint8_t b2 = static_cast<uint8_t>(str[i + 2]);
+                    uint32_t cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+                    dst[out_idx++] = static_cast<uint16_t>(cp);
+                    i += 3;
+                } else {
+                    dst[out_idx++] = 0xFFFD;
+                    i++;
+                }
+            } else if ((b0 & 0xF8) == 0xF0) {
+                if (i + 3 < utf8_len) {
+                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
+                    uint8_t b2 = static_cast<uint8_t>(str[i + 2]);
+                    uint8_t b3 = static_cast<uint8_t>(str[i + 3]);
+                    uint32_t cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+                    if (cp >= 0x10000) {
+                        uint32_t v = cp - 0x10000;
+                        dst[out_idx++] = static_cast<uint16_t>(0xD800 + (v >> 10));
+                        dst[out_idx++] = static_cast<uint16_t>(0xDC00 + (v & 0x3FF));
+                    } else {
+                        dst[out_idx++] = static_cast<uint16_t>(cp);
+                    }
+                    i += 4;
+                } else {
+                    dst[out_idx++] = 0xFFFD;
+                    i++;
+                }
+            } else {
+                dst[out_idx++] = 0xFFFD;
+                i++;
+            }
+        }
+        dst[code_units] = 0;
+        return s;
+    }
+}
+
+StringHeader* StringHeader::createFromUTF8InArena(NonMovingArena& arena, std::string_view sv) {
+    return createFromUTF8InArena(arena, sv.data(), static_cast<uint32_t>(sv.size()));
 }
 
 }  // namespace bronze

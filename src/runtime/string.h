@@ -34,6 +34,9 @@ struct StringHeader {
     // the movable heap (shape keys, the compiled key-constant table).
     static StringHeader* internToArena(NonMovingArena& arena, const StringHeader* src);
     static StringHeader* createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len);
+    static StringHeader* createUTF16InArena(NonMovingArena& arena, const uint16_t* str, uint32_t len);
+    static StringHeader* createFromUTF8InArena(NonMovingArena& arena, const char* str, uint32_t utf8_len);
+    static StringHeader* createFromUTF8InArena(NonMovingArena& arena, std::string_view sv);
 
     bool isLatin1() const noexcept { return (flags & kUTF16Flag) == 0; }
     bool isUTF16() const noexcept { return (flags & kUTF16Flag) != 0; }
