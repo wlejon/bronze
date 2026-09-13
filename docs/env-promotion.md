@@ -17,12 +17,14 @@ code in which nothing but the accesses the promotion rewrites can observe that
 slot — with a load at the region's entry and a write-back at every one of its
 exits.
 
-Implementation: `src/codegen-llvm/llvm_env_reach.{h,cpp}` (what can see a slot),
-`src/codegen-llvm/llvm_env_promote.{h,cpp}` (regions and the rewrite), wired at
-`registerOptimizerEarlyEPCallback` in `src/codegen-llvm/llvm_backend.cpp`. The
-`!bronze.env.nonptr` half is emitted by `emitEnvSet` in
-`src/codegen-llvm/llvm_env.cpp`. Tests:
-`tests/codegen_llvm/env_promotion_test.cpp` and the six
+Implementation context: Stage R3 escape analysis was originally implemented as an
+LLVM pass in `src/codegen-llvm/llvm_env_reach.{h,cpp}` and
+`src/codegen-llvm/llvm_env_promote.{h,cpp}`. With the migration to the Brass native
+backend (`src/codegen-brass`), Bronze retired the LLVM backend. In the current
+architecture, Brass performs backend optimizations directly — including speculative
+inlining, SROA, GVN, and partial escape analysis with allocation sinking
+(`options.enable_partial_escape = true`, `options.enable_allocation_sinking = true`).
+The six differential oracle test cases continue to serve as committed correctness ratchets:
 `tests/oracle/cases/env_promotion_*.js`.
 
 ## Where the analysis runs, and why that is the whole stage
@@ -222,11 +224,13 @@ hoisting it.
 
 ## Env vars
 
+The compile-time seams below were part of the historical LLVM backend pass.
+
 | var | effect |
 |---|---|
-| `BRONZE_NO_ENV_PROMOTION=1` | **the seam.** The analysis does not run; the emitted code is what the stage-R2 compiler produced. Read by the COMPILER, once per invocation, because what it isolates is the emitted code — a run-time flag could not change it. Swept as a `CSEAMS` entry in `tests/oracle/pin_matrix.sh` for the same reason. |
-| `BRONZE_ENV_PROMOTION_STATS=1` | prints the static counts and the region-end histogram to stderr after the last partition's pipeline has joined |
-| `BRONZE_DUMP_LLVM_IR=<prefix>` | `<prefix>.post.ll` is where a region can be read: the promoted slots are the `env.promote.in` loads in a preheader and the `env.promote.out` stores in the exits |
+| `BRONZE_NO_ENV_PROMOTION=1` | *(historical)* **the seam.** The LLVM pass was bypassed; the emitted code was what the unpromoted compiler produced. |
+| `BRONZE_ENV_PROMOTION_STATS=1` | *(historical)* printed static counts and the region-end histogram to stderr after the pipeline joined. |
+| `BRONZE_DUMP_LLVM_IR=<prefix>` | *(historical)* dumped LLVM IR at `<prefix>.post.ll`. |
 
 ## Reading the counters
 

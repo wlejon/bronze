@@ -146,7 +146,8 @@ runs.
 
 `src/embed` is the host-facing C++ API: run a compiled program in-process,
 register host globals, wrap native functions and objects, hold GC-safe
-handles across frames. The bro engine's `src/bronze_host/` is a complete
+handles across frames (`Persistent`, RAII `HandleScope`, `EscapableHandleScope`, `Local<T>`).
+The bro engine's `src/bronze_host/` is a complete
 worked example — a browser-shaped global set (`document`, canvas, WebGL2,
 timers, rAF) backed by a real engine.
 
@@ -240,7 +241,7 @@ Rules that keep iteration fast:
 | `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts |
 | `src/regex` | The RegExp pattern grammar (ECMA-262 22.2.1) and its backtracking matcher, on the same rule as `src/json`: a language of its own inside the source text, with its own parser and its own diagnostics. Reached from `src/lex`, which decides whether a `/` opens a pattern or divides, by what came before it. Its Unicode data — General_Category and simple case FOLDING, which is not the same table as the case CONVERSION `src/runtime` applies — is generated once by `tools/gen_unicode_tables` and checked in as ordinary sources (`unicode_data_*.cpp`); the build never runs generator tooling |
 | `src/rt` | The static library compiled output links against |
-| `src/embed` | The host-facing C++ embedding API (`tests/embed` holds its suite): run a compiled program in-process, register host globals, wrap native functions and objects, hold GC-safe handles across frames. Depends on the runtime and only calls it — the runtime never learns it exists |
+| `src/embed` | The host-facing C++ embedding API (`tests/embed` holds its suite): run a compiled program in-process, register host globals, wrap native functions and objects, hold GC-safe handles across frames (`Persistent`, RAII `HandleScope`, `Local<T>`). Depends on the runtime and only calls it — the runtime never learns it exists |
 | `src/cli` | `bronze` driver (`run`, `eval`, `lex`, `parse`, `types`, `il`, `build`, `link`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
 | `tests/oracle` | Differential cases with pinned `.expected` stdout — see `tests/oracle/README.md`. A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |

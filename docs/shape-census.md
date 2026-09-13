@@ -37,7 +37,7 @@ over the pure-compute fixtures, census on against off).
   compiled source site, stable for the process lifetime.
 * Computed reads/writes (`o[k]`) and `super.k` accesses have no per-site IC;
   they are keyed by the **helper call's return address**, which is unique per
-  call site up to LLVM block merging.
+  call site up to backend block merging.
 * Function attribution: the site's return address is symbolized through the
   module PDBs at dump time, so `fn` carries the same verbatim IL names the
   sampler reports (`Matrix4.multiplyMatrices`, `__anon_fn_1354`,

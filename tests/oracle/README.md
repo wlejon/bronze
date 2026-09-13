@@ -6,8 +6,10 @@ is the harness; it is a doctest suite like any other module's.
 
 ```
 cmake --build --preset dev --target bronze_oracle_tests
-ctest --preset dev -L oracle
-ctest --preset dev -LE threejs      # skip the ~145s milestone case
+ctest --preset dev -L oracle                # differential cases (excluding milestones)
+ctest --preset dev -LE "threejs|pixi"       # fast loop (skip both heavy milestones)
+ctest --preset dev -L threejs               # three.js r160 milestone
+ctest --preset dev -L pixi                  # pixi.js v8 milestone
 ```
 
 ## Adding a case

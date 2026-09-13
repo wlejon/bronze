@@ -20,6 +20,10 @@ The test suite compiles three.js r160 and pixi.js v8 from unmodified source.
 **A standalone executable.** `bronze build app.js -o app` produces a single
 binary with bronze's runtime linked in.
 
+**Direct in-memory execution / JIT.** `bronze run app.js` compiles and runs
+scripts and module graphs directly in memory with zero disk I/O, and
+`bronze eval "2 + 2"` (or `-e`) evaluates expressions on the fly.
+
 **An app embedded in a larger program.** `--emit-obj` produces an object
 file for your own build to link, and `--host-globals` lists the globals your
 host provides (`document`, `requestAnimationFrame`, and so on).
@@ -28,7 +32,8 @@ against a shared bronze runtime so one process can load several. The bro
 engine uses this to run compiled three.js apps against its DOM and WebGL.
 The app's scene graph and render loop run as machine code while the engine
 supplies the browser surface. `src/embed` is the C++ API a host uses to
-drive the compiled program, register globals, and hold GC-safe handles.
+drive the compiled program, register globals, and hold GC-safe handles
+(`Persistent`, `HandleScope`, `Local<T>`).
 
 ## How it works
 
@@ -50,14 +55,18 @@ same program, and benchmarks that fall short are treated as bugs.
 ## Status
 
 bronze implements enough of ECMA-262 to compile large real-world libraries
-(three.js and pixi.js are the pinned milestones). Programs are compiled
-ahead of time, so `eval` and `new Function` are out of scope. When a program
-uses a language feature bronze hasn't implemented yet, compilation stops
-with an error naming the feature.
+(three.js and pixi.js are the pinned milestones). Ahead-of-time compilation
+turns the full module graph into native machine code. Dynamic constructs
+like `eval` and `new Function` (including generator and async functions)
+are evaluated dynamically in-memory via the Brass JIT engine (`src/eval`).
+When a program uses a language feature bronze hasn't implemented yet,
+compilation stops with an error naming the feature.
 
 ## The CLI
 
 ```
+bronze run   <entry.js>                   run JS directly in-memory via JIT
+bronze eval  <code> (or -e <code>)        evaluate JS code directly in-memory via JIT
 bronze build <entry.js> -o <exe>          compile and link an executable
 bronze build <entry.js> -o <obj> \
              --emit-obj \
@@ -121,11 +130,17 @@ fails at launch with both versions named.
 - [docs/internals.md](docs/internals.md) the pipeline, repository layout,
   inference and `--no-infer` in depth, embedding details, and the iteration
   workflow.
+- [docs/dynamic-eval.md](docs/dynamic-eval.md) in-memory dynamic evaluation and
+  JIT execution (`eval`, `new Function`, `bronze run`, `bronze eval`, `src/eval`).
 - [docs/pin-census.md](docs/pin-census.md) `--census`: how a `--pins` manifest
   gets written by a run of the program instead of by hand.
+- [docs/shape-census.md](docs/shape-census.md) the shape-flow census
+  (`BRONZE_SHAPE_CENSUS=1`) and artifact schema v0.
 - [docs/slot-representation.md](docs/slot-representation.md) per-slot
   representation: what lets a shape say a slot holds a raw double, and what
   keeps that true.
+- [docs/env-promotion.md](docs/env-promotion.md) scoped escape analysis and
+  environment record optimization.
 - [tests/oracle/README.md](tests/oracle/README.md) how the differential
   suite works and how to add a case.
 

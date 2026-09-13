@@ -196,13 +196,13 @@ small leaf bodies it calls have nothing in common except the call edge, and it
 measured at the 96th percentile of the twenty-five-order distribution: nearly
 the worst order available.
 
-So the order is now decided instead of inherited (`src/codegen-llvm/llvm_partition.h`,
-`partitionUsesLinkOrderPolicy`): start at the partition that owns the entry
+So the order is now decided instead of inherited (managed in `src/cli/link_order.{h,cpp}`
+and `src/cli/link.cpp`): start at the partition that owns the entry
 point, then repeatedly hand over whichever partition is most tightly tied by
 symbol references to the one just handed over. It is static, it reads nothing
 but the module, and the same input gives the same order and the same bytes.
-`BRONZE_NO_LINK_POLICY=1` restores the old order and is the A/B seam — the
-objects are byte-identical under it, only the sequence changes. On
+`--link-seed <n>` deterministically permutes this order to measure layout spread,
+and `--keep-objs <dir>` leaves partition objects behind for rapid relinking. On
 `instanced_mesh_churn` the shipped order reads 38.18 and 38.91 ms across two
 sweeps against the old order's 40.95 and 40.56, and `mesh_churn_2k` and
 `three_math` move by less than their own noise.
@@ -263,8 +263,8 @@ then aligning every emitted function quantizes where a body can start, and a
 coarser quantum could plausibly leave fewer distinct collision patterns to draw
 from — a NARROWER band at some cost to the mean. That would be worth having
 even at a worse centre: an A/B could be adjudicated under alignment, at a
-tighter bar, and shipped without it. `BRONZE_XALIGN=<n>` is the seam that asks
-(src/codegen-llvm/llvm_emit.h); the answer is no.
+tighter bar, and shipped without it. `BRONZE_XALIGN=<n>` was the historical experiment
+that asked; the answer was no.
 
 Same objects per arm, nine link orders, three copies, eleven rounds, the whole
 sweep repeated to see which numbers reproduce:

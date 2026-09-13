@@ -13,8 +13,9 @@ is what generated code spends it on, and it is the second half of this document.
 
 Implementation: `src/runtime/slot_repr.{h,cpp}`, `src/runtime/shape.{h,cpp}`
 (`double_slots`, `repr`, `withSlotBoxed`), `src/runtime/object.h`
-(`ObjectHeader::setSlot`), `src/runtime/heap.cpp` (`scan_plain_object`);
-stage R2 in `src/codegen-llvm/llvm_repr.{h,cpp}` and the store sites it feeds.
+(`ObjectHeader::setSlot`), `src/runtime/heap_collect.cpp` (`scan_plain_object`);
+stage R2 codegen was previously implemented in `src/codegen-llvm/llvm_repr.{h,cpp}`
+and is now handled natively via the Brass backend (`src/codegen-brass`).
 
 ## The claim, and how it is kept
 
@@ -183,10 +184,11 @@ question R2 opens with.
 R1 made the storage model true. R2 is the compile-time half: a fact about an IL
 **value**, spent at the places R1 had to leave a test.
 
-Implementation: `src/codegen-llvm/llvm_repr.{h,cpp}` (the plan),
-`llvm_static_slot.cpp` and `llvm_prop_set.cpp` (the store arms),
-`llvm_frame.cpp` (the roots). Tests: `tests/codegen_llvm/repr_test.cpp`,
-`tests/oracle/cases/slot_repr_codegen.js`.
+Implementation context: Stage R2 was originally prototyped in the LLVM backend
+(`llvm_repr.{h,cpp}`, `llvm_static_slot.cpp`, `llvm_prop_set.cpp`, `llvm_frame.cpp`).
+With the retirement of the LLVM backend and transition to Brass (`src/codegen-brass`),
+code generation and native optimization are performed directly by the Brass backend.
+Tests: `tests/oracle/cases/slot_repr_codegen.js`.
 
 ## The plan
 
@@ -249,7 +251,7 @@ flag makes `depthBase != 0`, and a published static-slot cell is only ever fille
 for an own data property), and a dictionary-mode object has no shape the guard
 can match.
 
-Emitted shapes, from `tests/codegen_llvm/repr_test.cpp`:
+Emitted shapes (historical LLVM baseline reference):
 
 | value | loads | `sitofp` | `select` | stores |
 |---|---|---|---|---|
@@ -319,10 +321,19 @@ those chains `il::Type::F64` and they never reach a boxed operator at all.
 
 ## Env vars
 
+The runtime representation seams (`BRONZE_NO_SLOT_REPR`, `BRONZE_SLOT_REPR_OBSERVED`,
+`BRONZE_SLOT_REPR_STATS`, and `BRONZE_SLOT_REPR_CENSUS`) are actively implemented in
+`src/runtime/slot_repr.cpp`. The historical compiler-side seams (`BRONZE_NO_REPR_CODEGEN`
+and `BRONZE_REPR_CODEGEN_STATS`) were part of the retired LLVM backend.
+
 | var | effect |
 |---|---|
-| `BRONZE_NO_REPR_CODEGEN=1` | **the stage R2 seam, read by the COMPILER.** Every value comes back `Unknown`, so every site emits exactly the stage R1 sequence and every `dynamic` value keeps its root. Build-time and not run-time deliberately: what it isolates is the emitted code. `tests/oracle/pin_matrix.sh` sweeps it as a `CSEAMS` entry. |
-| `BRONZE_REPR_CODEGEN_STATS=1` | prints one line to stderr after the module is emitted: functions planned, values proven `Number`, roots elided, raw store sites, `sitofp` store sites. Counts EMITTED SITES, so an inlined callee's sites count once per region — which is how many of them the binary has. |
+| `BRONZE_NO_SLOT_REPR=1` | **the runtime seam.** No shape node is ever created double, every `double_slots` word stays zero, and storage is exactly what it was before the stage. |
+| `BRONZE_SLOT_REPR_OBSERVED=1` | every key becomes eligible, not only the pinned ones — the unpinned "first store was a double" policy (off by default). |
+| `BRONZE_SLOT_REPR_STATS=1` | prints the creation-side counters at exit: eligible names, shape nodes born double vs boxed, number stores refused for an ineligible name, generalizations, and helper stores. |
+| `BRONZE_SLOT_REPR_CENSUS=1` | adds per-(shape, slot) representation stability: stores as Numbers vs non-Numbers, reads, and candidate unboxing opportunities. |
+| `BRONZE_NO_REPR_CODEGEN=1` | *(historical)* Compiler seam in the retired LLVM backend. |
+| `BRONZE_REPR_CODEGEN_STATS=1` | *(historical)* Static planning counters in the retired LLVM backend. |
 
 ```
 $ BRONZE_REPR_CODEGEN_STATS=1 bronze build bench/three_math.js --pins bench/pins/threejs-math.pins -o tm.exe

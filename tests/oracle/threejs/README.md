@@ -34,7 +34,7 @@ already-built executable, which costs half a second and is where a missing GC
 root in generated code shows up.
 
 `.\dev.cmd ctest --preset dev -L threejs` runs only this;
-`.\dev.cmd ctest --preset dev -LE threejs` is the fast pre-existing loop.
+`.\dev.cmd ctest --preset dev -LE "threejs|pixi"` is the fast loop that skips both heavy milestones.
 
 ## `three.module.js`, which is NOT part of the milestone
 
