@@ -1,6 +1,6 @@
 name: Nightly
 
-# Builds bronze for Windows x64, Linux x64, and macOS arm64 every night, runs
+# Builds bronze for Windows x64, Linux x64, and macOS x64 every night, runs
 # the full test suite (oracle differential cases + the three.js and pixi.js
 # milestones), smoke-tests the packaged layout end to end, and publishes the
 # three zips to a single rolling "nightly" release marked Latest. The tag is
@@ -49,9 +49,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: windows-x64, os: windows-2022, llvm: windows-x64, triplet: x64-windows }
-          - { name: linux-x64,   os: ubuntu-24.04, llvm: linux-x64,   triplet: x64-linux }
-          - { name: macos-arm64, os: macos-15,     llvm: macos-arm64, triplet: arm64-osx }
+          - { name: windows-x64, os: windows-2022, triplet: x64-windows }
+          - { name: linux-x64,   os: ubuntu-24.04, triplet: x64-linux }
+          - { name: macos-x64,   os: macos-15,     triplet: x64-osx }
     steps:
       - uses: actions/checkout@v7
 
@@ -84,7 +84,11 @@ jobs:
       - name: Build brass
         shell: bash
         run: |
-          cmake -B brass/build -S brass -DCMAKE_BUILD_TYPE=Release
+          EXTRA_BRASS=""
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            EXTRA_BRASS="-DCMAKE_OSX_ARCHITECTURES=x86_64"
+          fi
+          cmake -G Ninja -B brass/build -S brass -DCMAKE_BUILD_TYPE=Release $EXTRA_BRASS
           cmake --build brass/build --config Release
           echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
 
@@ -117,6 +121,8 @@ jobs:
           EXTRA=""
           if [ "$RUNNER_OS" = "Windows" ]; then
             EXTRA="-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            EXTRA="-DCMAKE_OSX_ARCHITECTURES=x86_64"
           fi
           cmake --preset dev \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
