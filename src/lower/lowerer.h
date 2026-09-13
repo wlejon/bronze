@@ -78,7 +78,10 @@ public:
         // an initializer list out of declaration order is a warning this build
         // treats as an error.
         censusOutPath_ = censusOutPath;
-        if (hostGlobals) hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
+        if (hostGlobals) {
+            hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
+            explicitHostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
+        }
         if (nativeManifest_) {
             initNativeManifestGlobals();
         }
@@ -116,6 +119,7 @@ private:
     // provided-globals set. isProvidedGlobal consults it after the builtin
     // list, so a read of one lowers to `global.get` like a builtin's does.
     std::unordered_set<std::string> hostGlobals_;
+    std::unordered_set<std::string> explicitHostGlobals_;
     std::unordered_map<std::string, uint32_t> functionIndices_;
     std::unordered_map<uint32_t, Value> functionRefMap_;
     std::unordered_map<std::string, uint32_t> keyConstants_;

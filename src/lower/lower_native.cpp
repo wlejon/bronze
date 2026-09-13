@@ -144,6 +144,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
     // 1. Direct namespace/static functions, e.g. bro.math.lerp(...)
     std::string dotted = getDottedPath(call->callee.get());
     if (!dotted.empty()) {
+        auto dotPos = dotted.find('.');
+        std::string root = (dotPos != std::string::npos) ? dotted.substr(0, dotPos) : dotted;
+        if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(dotted)) return std::nullopt;
         const auto* sig = nativeManifest_->findFunction(dotted);
         if (sig) {
             const auto expectedTypes = sig->toIlParamTypes();
@@ -209,7 +212,8 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
 
         if (!className.empty()) {
             const auto* cls = nativeManifest_->findClass(className);
-            if (cls) {
+            if (cls && !explicitHostGlobals_.contains(cls->name) &&
+                !explicitHostGlobals_.contains(cls->qualifiedName)) {
                 auto mIt = cls->methods.find(mem->property);
                 if (mIt != cls->methods.end()) {
                     const auto& msig = mIt->second;
@@ -295,9 +299,14 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeNew(const ast::NewExpr* new
     }
 
     if (className.empty()) return std::nullopt;
+    auto dotPos = className.find('.');
+    std::string root = (dotPos != std::string::npos) ? className.substr(0, dotPos) : className;
+    if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(className)) return std::nullopt;
 
     const auto* cls = nativeManifest_->findClass(className);
     if (!cls || cls->constructor.symbol.empty()) return std::nullopt;
+    if (explicitHostGlobals_.contains(cls->name) ||
+        explicitHostGlobals_.contains(cls->qualifiedName)) return std::nullopt;
 
     const auto& ctor = cls->constructor;
     const auto expectedTypes = ctor.toIlParamTypes();
@@ -353,6 +362,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
     // 1. Namespace property access, e.g. bro.time.scale, bro.time.now
     std::string dotted = getDottedPath(mem);
     if (!dotted.empty()) {
+        auto dotPos = dotted.find('.');
+        std::string root = (dotPos != std::string::npos) ? dotted.substr(0, dotPos) : dotted;
+        if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(dotted)) return std::nullopt;
         const auto* psig = nativeManifest_->findNamespaceProperty(dotted);
         if (psig && !psig->getterSymbol.empty()) {
             il::Type retType = nativeTypeToIl(psig->type);
@@ -382,7 +394,8 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
     std::string className = getNativeClassOfExpr(mem->object.get());
     if (!className.empty()) {
         const auto* cls = nativeManifest_->findClass(className);
-        if (cls) {
+        if (cls && !explicitHostGlobals_.contains(cls->name) &&
+            !explicitHostGlobals_.contains(cls->qualifiedName)) {
             auto pIt = cls->properties.find(mem->property);
             if (pIt != cls->properties.end() && !pIt->second.getterSymbol.empty()) {
                 auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
@@ -421,6 +434,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeAssignment(const ast::Binar
     // 1. Namespace property assignment, e.g. bro.time.scale = 2.0
     std::string dotted = getDottedPath(mem);
     if (!dotted.empty()) {
+        auto dotPos = dotted.find('.');
+        std::string root = (dotPos != std::string::npos) ? dotted.substr(0, dotPos) : dotted;
+        if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(dotted)) return std::nullopt;
         const auto* psig = nativeManifest_->findNamespaceProperty(dotted);
         if (psig) {
             if (psig->setterSymbol.empty()) {

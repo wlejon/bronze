@@ -205,7 +205,11 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
                     clsName = mem->property;
                 }
                 if (nativeManifest_->isKnownClass(clsName)) {
-                    varNativeClasses_[varDecl->name] = clsName;
+                    const auto* cls = nativeManifest_->findClass(clsName);
+                    if (!cls || (!explicitHostGlobals_.contains(cls->name) &&
+                                 !explicitHostGlobals_.contains(cls->qualifiedName))) {
+                        varNativeClasses_[varDecl->name] = clsName;
+                    }
                 }
             } else if (const auto* rhsId = dynamic_cast<const ast::Ident*>(varDecl->init.get())) {
                 auto it = varNativeClasses_.find(rhsId->name);
