@@ -16,6 +16,7 @@ set(BRASS_ROOT "${BRASS_ROOT}" CACHE PATH "Path to Brass root directory" FORCE)
 add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
     brass_jit.cpp
+    il_to_brass_ast.cpp
 )
 add_library(bronze::codegen_brass ALIAS bronze_codegen_brass)
 

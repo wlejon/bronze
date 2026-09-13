@@ -1,7 +1,7 @@
 #include "codegen-brass/brass_backend.h"
+#include "codegen-brass/il_to_brass_ast.h"
 
 #include "abi/bronze_abi.h"
-#include "il/print.h"
 
 #include <brass/brass.hpp>
 #include <brass/codegen/jit_exec.hpp>
@@ -50,8 +50,6 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             usedNames.insert(uname);
         }
     }
-
-    const std::string ilText = il::print(module, uniqueNames);
 
     brass::il::TranslatorOptions options;
     options.enable_optimizations = true;
@@ -123,7 +121,8 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     }
 
     brass::DiagnosticReporter reporter;
-    brass::il::TranslationResult res = brass::il::translate_bronze_il(ilText, options, &reporter);
+    auto ast = codegen::lowerToBrassAst(module, uniqueNames);
+    brass::il::TranslationResult res = brass::il::translate_bronze_ast(ast, options, &reporter);
     if (!res.success || !res.module || reporter.has_errors()) {
         std::string msg = reporter.has_errors() ? reporter.format_all() : res.error_message;
         if (msg.empty()) {
