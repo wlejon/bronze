@@ -27,31 +27,31 @@ struct EvalOptions {
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine
 // code, data sections, and function pointers remain valid across executions.
-void retainJitProgram(std::unique_ptr<BrassJitProgram> program);
+BRONZE_EMBED_API void retainJitProgram(std::unique_ptr<BrassJitProgram> program);
 
 // Evaluates a script in memory using the Brass JIT and returns the result as a CallResult.
 // If code execution throws an exception, CallResult::thrown is true and value is the thrown error.
-embed::CallResult evalScript(std::string_view source, const EvalOptions& options = {});
+BRONZE_EMBED_API embed::CallResult evalScript(std::string_view source, const EvalOptions& options = {});
 
 // Evaluates a file and its transitive module graph directly in memory via Brass JIT.
-embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options = {});
+BRONZE_EMBED_API embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options = {});
 
 // Evaluates a script in memory and returns the Value directly.
 // If an exception was thrown, leaves the exception pending in rtTls()->exception_cell
 // and returns Value::fromUndefined().
-Value evalScriptDirect(std::string_view source, const EvalOptions& options = {});
+BRONZE_EMBED_API Value evalScriptDirect(std::string_view source, const EvalOptions& options = {});
 
 // Compiles and returns a dynamic function object of the requested kind (Ordinary, Generator,
 // Async, AsyncGenerator).
 // Takes arguments matching the Function constructor (parameters followed by body).
 // If compilation fails, raises a SyntaxError into the runtime and returns Value::fromUndefined().
-Value evalFunction(runtime::DynamicFunctionKind kind, std::span<const Value> args);
+BRONZE_EMBED_API Value evalFunction(runtime::DynamicFunctionKind kind, std::span<const Value> args);
 
 // Helper overload taking params and body as strings.
-Value evalFunction(std::span<const std::string> params, std::string_view body,
-                   runtime::DynamicFunctionKind kind = runtime::DynamicFunctionKind::Ordinary);
+BRONZE_EMBED_API Value evalFunction(std::span<const std::string> params, std::string_view body,
+                                    runtime::DynamicFunctionKind kind = runtime::DynamicFunctionKind::Ordinary);
 
 // Installs Bronze's native in-memory JIT evaluator as the dynamic eval and function hooks.
-void installDefaultDynamicHooks();
+BRONZE_EMBED_API void installDefaultDynamicHooks();
 
 }  // namespace bronze::eval

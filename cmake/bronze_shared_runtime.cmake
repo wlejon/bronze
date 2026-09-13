@@ -51,7 +51,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/bronze_abi_exports.cmake)
 # the same sequence with the entry passed in, which is what a loading host has.
 set(_bronze_shared_sources "")
 set(_bronze_shared_excluded embed_run.cpp)
-foreach(_mod IN ITEMS abi json regex runtime embed)
+foreach(_mod IN ITEMS abi json regex runtime embed eval)
     get_target_property(_mod_dir bronze_${_mod} SOURCE_DIR)
     get_target_property(_mod_srcs bronze_${_mod} SOURCES)
     foreach(_src IN LISTS _mod_srcs)
@@ -72,6 +72,18 @@ add_library(bronze_runtime_shared SHARED ${_bronze_shared_sources})
 add_library(bronze::runtime_shared ALIAS bronze_runtime_shared)
 
 target_include_directories(bronze_runtime_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+target_link_libraries(bronze_runtime_shared PRIVATE
+    bronze::lex
+    bronze::parse
+    bronze::ast
+    bronze::types
+    bronze::lower
+    bronze::il
+    bronze::codegen_brass
+    bronze::support
+    bronze::modules
+)
 
 # BRONZE_ABI_FINGERPRINT, copied off the target that computes it rather than
 # recomputed: two hashes of one header are two chances to disagree.
@@ -127,7 +139,8 @@ else()
                      PROPERTY LINK_DEPENDS ${_bronze_abi_exp})
     else()
         target_link_options(bronze_runtime_shared PRIVATE
-            "LINKER:--version-script,${_bronze_abi_ver}")
+            "LINKER:--version-script,${_bronze_abi_ver}"
+            "LINKER:-Bsymbolic-functions")
         set_property(TARGET bronze_runtime_shared APPEND
                      PROPERTY LINK_DEPENDS ${_bronze_abi_ver})
     endif()

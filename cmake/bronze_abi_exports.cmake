@@ -152,6 +152,8 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     string(APPEND _ver_text "    brass_root_shape;\n")
     string(APPEND _ver_text "    _ZN6bronze5embed*;\n")
     string(APPEND _ver_text "    _ZNK6bronze5embed*;\n")
+    string(APPEND _ver_text "    _ZN6bronze4eval*;\n")
+    string(APPEND _ver_text "    _ZNK6bronze4eval*;\n")
     string(APPEND _ver_text "  local:\n    *;\n};\n")
 
     # ---- Mach-O: the exported-symbols list ---------------------------------
@@ -169,6 +171,8 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     string(APPEND _exp_text "_brass_root_shape\n")
     string(APPEND _exp_text "__ZN6bronze5embed*\n")
     string(APPEND _exp_text "__ZNK6bronze5embed*\n")
+    string(APPEND _exp_text "__ZN6bronze4eval*\n")
+    string(APPEND _exp_text "__ZNK6bronze4eval*\n")
 
     # file(GENERATE) rather than file(WRITE): it leaves an unchanged file
     # untouched, so a configure re-run for an unrelated reason does not restamp

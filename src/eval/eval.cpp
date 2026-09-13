@@ -32,6 +32,7 @@ static std::vector<std::unique_ptr<BrassJitProgram>>& retainedPrograms() {
     return *list;
 }
 static std::mutex g_programsMutex;
+static std::mutex g_jitCompileMutex;
 static std::atomic<uint64_t> s_evalCounter{0};
 
 void transformEvalAst(ast::Module& astModule, const std::string& resName) {
@@ -96,6 +97,7 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
     SourceSet& sources) {
 
     if (!astModule) return nullptr;
+    std::lock_guard<std::mutex> compileLock(g_jitCompileMutex);
     transformEvalAst(*astModule, resName);
 
     std::vector<std::string> hostGlobals = options.hostGlobals;
