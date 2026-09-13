@@ -196,6 +196,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
             if (retType == il::Type::Str) {
                 return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
             }
+            if (retType == il::Type::I32) {
+                return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
+            }
             return Value{res, retType, sig->returnClass};
         }
     }
@@ -268,6 +271,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call,
                     }
                     if (retType == il::Type::Str) {
                         return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
+                    }
+                    if (retType == il::Type::I32) {
+                        return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
                     }
                     return Value{res, retType, msig.returnClass};
                 }
@@ -365,6 +371,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
             if (retType == il::Type::Str) {
                 return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
             }
+            if (retType == il::Type::I32) {
+                return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
+            }
             return Value{res, retType};
         }
     }
@@ -390,6 +399,9 @@ std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::Memb
                 emitInst(ilFn, inst);
                 if (retType == il::Type::Str) {
                     return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
+                }
+                if (retType == il::Type::I32) {
+                    return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
                 }
                 return Value{res, retType, pIt->second.returnClass};
             }

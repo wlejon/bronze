@@ -227,6 +227,24 @@ Lowerer::Value Lowerer::boxValueIfNeeded(Value val, il::Function& ilFn) {
 
 Lowerer::Value Lowerer::unboxValueIfNeeded(Value val, il::Type targetType, il::Function& ilFn) {
     if (val.type == targetType) return val;
+    if (val.type == il::Type::I32 && targetType == il::Type::F64) {
+        il::ValueId zeroRes = ilFn.valueCount++;
+        il::Instruction zeroInst;
+        zeroInst.op = il::Op::ConstI32;
+        zeroInst.type = il::Type::I32;
+        zeroInst.result = zeroRes;
+        zeroInst.immI32 = 0;
+        emitInst(ilFn, zeroInst);
+
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::BitOr;
+        inst.type = il::Type::F64;
+        inst.result = res;
+        inst.operands = {val.id, zeroRes};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::F64};
+    }
     if (val.type == il::Type::Bool && targetType == il::Type::F64) {
         // ToNumber(bool) — route through the boxed form.
         val = boxValueIfNeeded(val, ilFn);
