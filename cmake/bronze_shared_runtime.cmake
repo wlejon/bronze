@@ -123,6 +123,7 @@ if(MSVC)
     target_compile_options(bronze_runtime_shared PRIVATE
         $<$<CONFIG:Release,MinSizeRel>:/Z7>)
     target_link_options(bronze_runtime_shared PRIVATE
+        /FORCE:MULTIPLE
         $<$<CONFIG:Release,MinSizeRel>:/DEBUG>
         $<$<CONFIG:Release,MinSizeRel>:/OPT:REF>
         $<$<CONFIG:Release,MinSizeRel>:/OPT:ICF>)
