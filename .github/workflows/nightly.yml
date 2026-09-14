@@ -81,16 +81,9 @@ jobs:
           repository: wlejon/brass
           path: brass
 
-      - name: Build brass
+      - name: Set BRASS_ROOT
         shell: bash
-        run: |
-          EXTRA_BRASS=""
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            EXTRA_BRASS="-DCMAKE_OSX_ARCHITECTURES=x86_64"
-          fi
-          cmake -G Ninja -B brass/build -S brass -DCMAKE_BUILD_TYPE=Release $EXTRA_BRASS
-          cmake --build brass/build --config Release
-          echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
+        run: echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
 
       - name: vcpkg (pinned)
         shell: bash
@@ -137,7 +130,9 @@ jobs:
       # rule demands — a nightly that skipped the milestones would be a binary
       # nobody proved.
       - name: Test
-        run: ctest --preset dev
+        env:
+          BRONZE_TEST_JOBS: 4
+        run: ctest --preset dev --parallel 4
 
       # Flat layout: the driver resolves bronze_rt next to the exe first, then
       # the sibling runtime/json/regex libs beside it — so exe + four static

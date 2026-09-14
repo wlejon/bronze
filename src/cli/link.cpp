@@ -182,6 +182,14 @@ std::optional<std::filesystem::path> findBrassLib() {
         const std::filesystem::path exeDir = getExecutableDir();
         candidates.push_back(exeDir / "libbrass.a");
         candidates.push_back(exeDir / "brass.lib");
+        candidates.push_back(exeDir / "../../brass-build/libbrass.a");
+        candidates.push_back(exeDir / "../../brass-build/brass.lib");
+        candidates.push_back(exeDir / "../../../brass-build/libbrass.a");
+        candidates.push_back(exeDir / "../../../brass-build/brass.lib");
+        candidates.push_back(exeDir / "../brass-build/libbrass.a");
+        candidates.push_back(exeDir / "../brass-build/brass.lib");
+        candidates.push_back(exeDir / "brass-build/libbrass.a");
+        candidates.push_back(exeDir / "brass-build/brass.lib");
         candidates.push_back(exeDir / "../../../brass/build_msvc/brass.lib");
         candidates.push_back(exeDir / "../../brass/build_msvc/brass.lib");
         candidates.push_back(exeDir / "../brass/build_msvc/brass.lib");

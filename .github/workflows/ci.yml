@@ -74,16 +74,9 @@ jobs:
           repository: wlejon/brass
           path: brass
 
-      - name: Build brass
+      - name: Set BRASS_ROOT
         shell: bash
-        run: |
-          EXTRA_BRASS=""
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            EXTRA_BRASS="-DCMAKE_OSX_ARCHITECTURES=x86_64"
-          fi
-          cmake -G Ninja -B brass/build -S brass -DCMAKE_BUILD_TYPE=Release $EXTRA_BRASS
-          cmake --build brass/build --config Release
-          echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
+        run: echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
 
       # doctest is the only default vcpkg dependency; clone vcpkg at the same
       # commit the manifest baseline pins so tool + ports + scripts agree.
@@ -137,4 +130,6 @@ jobs:
       # the 2 MB pixi bundle twice plus its gc-stress re-runs is ~80% of this job's
       # wall time on these runners; threejs stays per-push as the real-library smoke.
       - name: Test
-        run: ctest --preset dev -LE "pixi|cabi"
+        env:
+          BRONZE_TEST_JOBS: 4
+        run: ctest --preset dev --parallel 4 -LE "pixi|cabi"
