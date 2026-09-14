@@ -328,7 +328,6 @@ static brass::il::BronzeInstruction lowerInstruction(
         case il::Op::MethodDef:
             out.op = brass::il::BronzeOp::MethodDef;
             out.index = inst.keyIndex;
-            out.string_literal = getKeyString(inst.keyIndex);
             break;
         case il::Op::MethodDefComputed:
             out.op = brass::il::BronzeOp::MethodDefComputed;
