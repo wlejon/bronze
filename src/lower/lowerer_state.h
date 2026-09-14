@@ -118,6 +118,13 @@ struct EnvScopeInfo {
     // decided at exit, held as text for the reason `slotPinText` is.
     std::vector<bool> slotIsCensus;
     std::vector<std::string> slotCensusText;
+    // The native class (lower_native.cpp) of a `const` slot whose initializer
+    // the lowering saw make a handle of it — `const agent = new
+    // bro.ai.AIAgent()` captured by a closure. Only `const`: a slot written
+    // once holds that class for good, so a read of it from any nested
+    // function can be the direct native call. A `let`/`var` slot is never
+    // entered here, because a write from another function would not be seen.
+    std::unordered_map<uint32_t, std::string> slotNativeClass;
     // The STATIC CALL PLAN for this scope's slots (lower_scope.cpp
     // `planStableFunctionSlots`, spent by lower_call.cpp).
     //

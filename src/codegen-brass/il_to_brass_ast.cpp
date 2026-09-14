@@ -1,6 +1,7 @@
 #include "codegen-brass/il_to_brass_ast.h"
 #include "abi/bronze_abi.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -385,9 +386,11 @@ static brass::il::BronzeInstruction lowerInstruction(
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::GlobalGet:
-            out.op = brass::il::BronzeOp::GlobalGet;
-            out.index = inst.keyIndex;
-            out.string_literal = getKeyString(inst.keyIndex);
+            // A cached read: the thunk loads the module's cache slot for this
+            // key and only calls into the runtime while the slot is empty.
+            out.op = brass::il::BronzeOp::Call;
+            out.callee_name = globalReadThunkName(inst.keyIndex);
+            out.operands.clear();
             break;
         case il::Op::ResolveName:
             out.op = brass::il::BronzeOp::NameResolve;
@@ -562,12 +565,31 @@ static brass::il::BronzeInstruction lowerInstruction(
     return out;
 }
 
+std::string globalReadThunkName(uint32_t keyIndex) {
+    return "__bronze_global_read_k" + std::to_string(keyIndex);
+}
+
 brass::il::BronzeModuleAST lowerToBrassAst(
     const il::Module& module,
-    const std::vector<std::string>& uniqueNames
+    const std::vector<std::string>& uniqueNames,
+    std::vector<uint32_t>* globalReadKeys
 ) {
     brass::il::BronzeModuleAST ast;
     ast.name = module.name;
+
+    std::vector<uint32_t> readKeys;
+    for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
+        const auto& fn = module.functions[fnIdx];
+        if (fn.blocks.empty()) continue;
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op == il::Op::GlobalGet) readKeys.push_back(inst.keyIndex);
+            }
+        }
+    }
+    std::sort(readKeys.begin(), readKeys.end());
+    readKeys.erase(std::unique(readKeys.begin(), readKeys.end()), readKeys.end());
+    if (globalReadKeys) *globalReadKeys = readKeys;
 
     for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
         const auto& fn = module.functions[fnIdx];

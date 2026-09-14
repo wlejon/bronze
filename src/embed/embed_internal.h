@@ -10,12 +10,12 @@
 namespace bronze::embed {
 
 // Register `dtor(data)` to run when `cell` dies, through the same registry
-// the opaque native handles use (embed_handle.cpp, sweepFinalizers). The cell
-// may be ANY heap object — the external buffers register their
+// the opaque native handles use (runtime/native_handle.cpp, sweepFinalizers).
+// The cell may be ANY heap object — the external buffers register their
 // ArrayBufferHeader here — and the entry tracks it across relocations exactly
 // as a handle's is tracked. The caller must not allocate between obtaining
-// `cell`'s address and this call, for the reason makeHandleOnShape documents:
-// the entry records the address the collector will next see.
+// `cell`'s address and this call, for the reason rtMakeHandle documents: the
+// entry records the address the collector will next see.
 void registerHeapFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor,
                            Finalize when);
 

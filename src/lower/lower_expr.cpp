@@ -498,6 +498,9 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
                 if (cell.type == il::Type::Dynamic && provenNumber(*ident)) {
                     cell = unboxValueIfNeeded(cell, il::Type::F64, ilFn);
                 }
+                if (nativeManifest_) {
+                    cell.nativeClass = capturedConstNativeClass(ident->name);
+                }
                 return cell;
             }
             // A top-level function declaration used as a value rather than
@@ -572,7 +575,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             bound = unboxValueIfNeeded(bound, il::Type::F64, ilFn);
         }
         if (nativeManifest_) {
-            auto itCls = varNativeClasses_.find(ident->name);
+            auto itCls = varNativeClasses_.find(it->second);
             if (itCls != varNativeClasses_.end()) {
                 bound.nativeClass = itCls->second;
             }

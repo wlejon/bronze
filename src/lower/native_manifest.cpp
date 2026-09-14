@@ -1,5 +1,6 @@
 #include "lower/native_manifest.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -19,7 +20,6 @@ json::Units toUnits(std::string_view utf8) {
         size_t extra = 0;
         if (c < 0x80) {
             cp = c;
-            extra = 0;
         } else if ((c & 0xE0) == 0xC0) {
             cp = c & 0x1Fu;
             extra = 1;
@@ -103,344 +103,316 @@ const json::Value* findMember(const json::Value* obj, std::string_view key) {
     return nullptr;
 }
 
-std::string getStringMember(const json::Value* obj, std::string_view key) {
+// A string member, or a refusal: a member that is absent (when required) or
+// not a string is an error here, never "".
+bool stringMember(const json::Value* obj, std::string_view key, bool required, std::string& out,
+                  std::string& err) {
     const auto* v = findMember(obj, key);
-    if (!v || v->kind != json::Value::Kind::String) return "";
-    return toUtf8(v->text);
+    if (!v) {
+        if (required) {
+            err = "missing \"" + std::string(key) + "\"";
+            return false;
+        }
+        out.clear();
+        return true;
+    }
+    if (v->kind != json::Value::Kind::String) {
+        err = "\"" + std::string(key) + "\" must be a string";
+        return false;
+    }
+    out = toUtf8(v->text);
+    return true;
+}
+
+bool parseKind(std::string_view text, NativeKind& out) {
+    if (text == "function") { out = NativeKind::Function; return true; }
+    if (text == "method") { out = NativeKind::Method; return true; }
+    if (text == "constructor") { out = NativeKind::Constructor; return true; }
+    if (text == "getter") { out = NativeKind::Getter; return true; }
+    if (text == "setter") { out = NativeKind::Setter; return true; }
+    return false;
 }
 
 }  // namespace
 
-NativeTypeKind parseNativeTypeKind(std::string_view str) {
-    if (str == "void") return NativeTypeKind::Void;
-    if (str == "f64" || str == "number" || str == "float" || str == "double") return NativeTypeKind::F64;
-    if (str == "i32" || str == "int" || str == "int32") return NativeTypeKind::I32;
-    if (str == "bool" || str == "boolean") return NativeTypeKind::Bool;
-    if (str == "str" || str == "string") return NativeTypeKind::Str;
-    return NativeTypeKind::Dynamic;
-}
-
-il::Type nativeTypeToIl(NativeTypeKind kind) {
+const char* nativeKindName(NativeKind kind) {
     switch (kind) {
-        case NativeTypeKind::Void: return il::Type::Void;
-        case NativeTypeKind::F64: return il::Type::F64;
-        case NativeTypeKind::I32: return il::Type::I32;
-        case NativeTypeKind::Bool: return il::Type::Bool;
-        case NativeTypeKind::Str: return il::Type::Str;
-        case NativeTypeKind::Dynamic: return il::Type::Dynamic;
+        case NativeKind::Function: return "function";
+        case NativeKind::Method: return "method";
+        case NativeKind::Constructor: return "constructor";
+        case NativeKind::Getter: return "getter";
+        case NativeKind::Setter: return "setter";
     }
-    return il::Type::Dynamic;
+    return "?";
 }
 
-std::vector<il::Type> NativeFunctionSig::toIlParamTypes() const {
-    std::vector<il::Type> result;
-    result.reserve(paramTypes.size());
-    for (auto pt : paramTypes) {
-        result.push_back(nativeTypeToIl(pt));
+std::string NativeManifest::key(NativeKind kind, std::string_view path) {
+    return std::string(nativeKindName(kind)) + " " + std::string(path);
+}
+
+bool NativeManifest::add(NativeSig sig, std::string& err) {
+    const std::string k = key(sig.kind, sig.path);
+    if (index_.contains(k)) {
+        err = "'" + k + "' declared twice";
+        return false;
     }
-    return result;
+    if (sig.kind == NativeKind::Constructor) classes_.insert(sig.path);
+    const auto dot = sig.path.find('.');
+    const std::string root = (dot == std::string::npos) ? sig.path : sig.path.substr(0, dot);
+    if (dot != std::string::npos && std::find(roots_.begin(), roots_.end(), root) == roots_.end()) {
+        roots_.push_back(root);
+    }
+    index_[k] = entries_.size();
+    entries_.push_back(std::move(sig));
+    return true;
+}
+
+std::optional<NativeManifest> NativeManifest::parse(std::string_view text, std::string_view origin,
+                                                    std::string& err) {
+    auto fail = [&](const std::string& what) {
+        err = "native manifest " + std::string(origin) + ": " + what;
+        return std::nullopt;
+    };
+    std::string jsonErr;
+    json::ValuePtr root = json::parse(toUnits(text), jsonErr);
+    if (!root) return fail("invalid JSON: " + jsonErr);
+    if (root->kind != json::Value::Kind::Object) return fail("the top level must be an object");
+    for (const char* old : {"namespaces", "symbols"}) {
+        if (findMember(root.get(), old)) {
+            return fail(std::string("\"") + old +
+                        "\" is the prototype manifest form, which is no longer read; write the "
+                        "manifest with embed::writeNativeManifest (a flat \"natives\" array)");
+        }
+    }
+    if (const auto* classes = findMember(root.get(), "classes")) {
+        (void)classes;
+        return fail("\"classes\" is the prototype manifest form, which is no longer read; a class "
+                    "is its \"constructor\" entry in the flat \"natives\" array");
+    }
+    const auto* version = findMember(root.get(), "version");
+    if (!version || version->kind != json::Value::Kind::Number || version->number != 1.0) {
+        return fail("\"version\" must be 1");
+    }
+    const auto* natives = findMember(root.get(), "natives");
+    if (!natives || natives->kind != json::Value::Kind::Array) {
+        return fail("\"natives\" must be an array");
+    }
+
+    NativeManifest manifest;
+    // Two passes, so an entry may name a class whose constructor comes later
+    // in the file: the registry required constructor-first at registration,
+    // but a file is a snapshot and its order carries no meaning.
+    for (const auto& elem : natives->elements) {
+        if (!elem || elem->kind != json::Value::Kind::Object) {
+            return fail("every \"natives\" entry must be an object");
+        }
+        std::string path, kindText, memberErr;
+        if (!stringMember(elem.get(), "path", true, path, memberErr) ||
+            !stringMember(elem.get(), "kind", true, kindText, memberErr)) {
+            return fail("entry: " + memberErr);
+        }
+        if (kindText == "constructor") manifest.classes_.insert(path);
+    }
+
+    for (size_t idx = 0; idx < natives->elements.size(); ++idx) {
+        const json::Value* elem = natives->elements[idx].get();
+        NativeSig sig;
+        std::string kindText, returns, memberErr;
+        if (!stringMember(elem, "path", true, sig.path, memberErr) ||
+            !stringMember(elem, "kind", true, kindText, memberErr) ||
+            !stringMember(elem, "class", false, sig.className, memberErr) ||
+            !stringMember(elem, "returns", true, returns, memberErr) ||
+            !stringMember(elem, "returnClass", false, sig.returnClass, memberErr)) {
+            return fail("entry " + std::to_string(idx) + ": " + memberErr);
+        }
+        auto refuse = [&](const std::string& what) {
+            return fail("'" + sig.path + "' (" + kindText + "): " + what);
+        };
+        if (!abi::isNativeJsPath(sig.path)) return refuse("not a JS path");
+        if (!parseKind(kindText, sig.kind)) {
+            return refuse("unknown kind (function, method, constructor, getter, setter)");
+        }
+
+        auto resolveType = [&](const std::string& t, bool asParam, abi::NativeTypeRef& out,
+                               std::string& why) {
+            abi::NativeType scalar;
+            if (abi::parseNativeScalarType(t, scalar)) {
+                if (asParam && scalar == abi::NativeType::Void) {
+                    why = "a parameter cannot be 'void'";
+                    return false;
+                }
+                if (!asParam && abi::nativeTypeIsTypedArray(scalar)) {
+                    why = "a typed array ('" + t + "') is parameter-only";
+                    return false;
+                }
+                out.kind = scalar;
+                out.className.clear();
+                return true;
+            }
+            if (manifest.classes_.contains(t)) {
+                out.kind = abi::NativeType::Class;
+                out.className = t;
+                return true;
+            }
+            why = "unknown type '" + t + "': not a vocabulary keyword and no constructor in this "
+                  "manifest declares a class of that name";
+            return false;
+        };
+
+        std::string why;
+        if (sig.kind == NativeKind::Constructor) {
+            if (!sig.className.empty() && sig.className != sig.path) {
+                return refuse("a constructor's \"class\" is its own path");
+            }
+            sig.className = sig.path;
+            if (!returns.empty() && returns != sig.path) {
+                return refuse("a constructor returns its own class");
+            }
+            sig.returnType.kind = abi::NativeType::Class;
+            sig.returnType.className = sig.path;
+        } else {
+            if (manifest.classes_.contains(sig.path)) return refuse("the path is a class");
+            if (!resolveType(returns, false, sig.returnType, why)) return refuse("\"returns\": " + why);
+            if (sig.kind == NativeKind::Method && sig.className.empty()) {
+                return refuse("a method needs a \"class\"");
+            }
+            if (!sig.className.empty()) {
+                if (sig.kind == NativeKind::Function) {
+                    return refuse("\"class\" is only for method, getter, setter and constructor");
+                }
+                if (!manifest.classes_.contains(sig.className)) {
+                    return refuse("\"class\" '" + sig.className +
+                                  "' has no constructor entry in this manifest");
+                }
+                const std::string prefix = sig.className + ".";
+                if (sig.path.size() <= prefix.size() ||
+                    sig.path.compare(0, prefix.size(), prefix) != 0 ||
+                    sig.path.find('.', prefix.size()) != std::string::npos) {
+                    return refuse("a member's path must be '" + sig.className + ".<member>'");
+                }
+            } else if ((sig.kind == NativeKind::Getter || sig.kind == NativeKind::Setter) &&
+                       sig.path.find('.') == std::string::npos) {
+                return refuse("a namespace property needs a dotted path");
+            }
+        }
+
+        const auto* params = findMember(elem, "params");
+        if (!params || params->kind != json::Value::Kind::Array) {
+            return refuse("\"params\" must be an array of type strings");
+        }
+        for (const auto& p : params->elements) {
+            if (!p || p->kind != json::Value::Kind::String) {
+                return refuse("\"params\" must be an array of type strings");
+            }
+            abi::NativeTypeRef ref;
+            if (!resolveType(toUtf8(p->text), true, ref, why)) return refuse("\"params\": " + why);
+            sig.paramTypes.push_back(std::move(ref));
+        }
+        if (!sig.returnClass.empty()) {
+            if (sig.returnType.kind != abi::NativeType::Dynamic) {
+                return refuse("\"returnClass\" is only for \"returns\": \"dynamic\"");
+            }
+            if (!manifest.classes_.contains(sig.returnClass)) {
+                return refuse("\"returnClass\" '" + sig.returnClass + "' is not a class here");
+            }
+        }
+        if (sig.kind == NativeKind::Getter &&
+            (!sig.paramTypes.empty() || sig.returnType.kind == abi::NativeType::Void)) {
+            return refuse("a getter takes no parameters and returns a value");
+        }
+        if (sig.kind == NativeKind::Setter &&
+            (sig.paramTypes.size() != 1 || sig.returnType.kind != abi::NativeType::Void)) {
+            return refuse("a setter takes exactly one parameter and returns void");
+        }
+
+        sig.signature = abi::nativeSignatureText(sig.returnType, sig.hasSelf(), sig.paramTypes.data(),
+                                                 sig.paramTypes.size());
+        std::string declared;
+        if (!stringMember(elem, "signature", false, declared, memberErr)) {
+            return refuse(memberErr);
+        }
+        if (!declared.empty() && declared != sig.signature) {
+            return refuse("\"signature\" says " + declared + " but the types say " + sig.signature);
+        }
+        std::string addErr;
+        if (!manifest.add(std::move(sig), addErr)) return fail(addErr);
+    }
+    return manifest;
 }
 
 std::optional<NativeManifest> NativeManifest::loadFromFile(const std::string& path, std::string& err) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        err = "Cannot open native manifest file: " + path;
+        err = "cannot open native manifest file: " + path;
         return std::nullopt;
     }
-
     std::ostringstream ss;
     ss << in.rdbuf();
-    std::string text = ss.str();
-
-    std::string jsonErr;
-    json::ValuePtr root = json::parse(toUnits(text), jsonErr);
-    if (!root) {
-        err = "Invalid JSON in native manifest '" + path + "': " + jsonErr;
-        return std::nullopt;
-    }
-
-    NativeManifest manifest;
-
-    // 1. Parse namespaces
-    if (const auto* nsObj = findMember(root.get(), "namespaces")) {
-        if (nsObj->kind == json::Value::Kind::Object) {
-            for (const auto& nsMember : nsObj->members) {
-                std::string nsName = toUtf8(nsMember.key);
-                if (nsName.empty()) continue;
-
-                // Extract root namespace identifier (e.g. "bro" from "bro.math")
-                auto dotPos = nsName.find('.');
-                std::string rootNs = (dotPos != std::string::npos) ? nsName.substr(0, dotPos) : nsName;
-                manifest.namespaceRoots_.insert(rootNs);
-
-                const auto* nsVal = nsMember.value.get();
-                if (const auto* funcsObj = findMember(nsVal, "functions")) {
-                    if (funcsObj->kind == json::Value::Kind::Object) {
-                        for (const auto& fnMember : funcsObj->members) {
-                            std::string fnName = toUtf8(fnMember.key);
-                            const auto* fnVal = fnMember.value.get();
-                            if (!fnVal) continue;
-
-                            NativeFunctionSig sig;
-                            sig.symbol = getStringMember(fnVal, "symbol");
-                            sig.returnType = parseNativeTypeKind(getStringMember(fnVal, "returnType"));
-                            sig.returnClass = getStringMember(fnVal, "returnClass");
-
-                            if (const auto* paramsArr = findMember(fnVal, "paramTypes")) {
-                                if (paramsArr->kind == json::Value::Kind::Array) {
-                                    for (const auto& pElem : paramsArr->elements) {
-                                        if (pElem && pElem->kind == json::Value::Kind::String) {
-                                            sig.paramTypes.push_back(parseNativeTypeKind(toUtf8(pElem->text)));
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (!sig.symbol.empty()) {
-                                std::string qName = nsName + "." + fnName;
-                                manifest.functions_[qName] = sig;
-                            }
-                        }
-                    }
-                }
-
-                if (const auto* propsObj = findMember(nsVal, "properties")) {
-                    if (propsObj->kind == json::Value::Kind::Object) {
-                        for (const auto& pMember : propsObj->members) {
-                            std::string propName = toUtf8(pMember.key);
-                            const auto* pVal = pMember.value.get();
-                            if (!pVal) continue;
-
-                            NativePropertySig psig;
-                            psig.getterSymbol = getStringMember(pVal, "getter");
-                            psig.setterSymbol = getStringMember(pVal, "setter");
-                            psig.type = parseNativeTypeKind(getStringMember(pVal, "returnType"));
-
-                            std::string qName = nsName + "." + propName;
-                            manifest.namespaceProperties_[qName] = psig;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Parse classes
-    if (const auto* classesObj = findMember(root.get(), "classes")) {
-        if (classesObj->kind == json::Value::Kind::Object) {
-            for (const auto& clsMember : classesObj->members) {
-                std::string clsKey = toUtf8(clsMember.key);
-                const auto* clsVal = clsMember.value.get();
-                if (!clsVal) continue;
-
-                NativeClassSig clsSig;
-                clsSig.qualifiedName = clsKey;
-                clsSig.name = getStringMember(clsVal, "name");
-                if (clsSig.name.empty()) {
-                    auto dotPos = clsKey.rfind('.');
-                    clsSig.name = (dotPos != std::string::npos) ? clsKey.substr(dotPos + 1) : clsKey;
-                }
-
-                // Constructor
-                if (const auto* ctorVal = findMember(clsVal, "constructor")) {
-                    clsSig.constructor.symbol = getStringMember(ctorVal, "symbol");
-                    clsSig.constructor.returnType = parseNativeTypeKind(getStringMember(ctorVal, "returnType"));
-                    clsSig.constructor.returnClass = getStringMember(ctorVal, "returnClass");
-                    if (clsSig.constructor.returnClass.empty()) {
-                        clsSig.constructor.returnClass = clsSig.name;
-                    }
-                    if (const auto* paramsArr = findMember(ctorVal, "paramTypes")) {
-                        if (paramsArr->kind == json::Value::Kind::Array) {
-                            for (const auto& pElem : paramsArr->elements) {
-                                if (pElem && pElem->kind == json::Value::Kind::String) {
-                                    clsSig.constructor.paramTypes.push_back(parseNativeTypeKind(toUtf8(pElem->text)));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Destructor
-                if (const auto* dtorVal = findMember(clsVal, "destructor")) {
-                    clsSig.destructorSymbol = getStringMember(dtorVal, "symbol");
-                }
-
-                // Methods
-                if (const auto* methodsObj = findMember(clsVal, "methods")) {
-                    if (methodsObj->kind == json::Value::Kind::Object) {
-                        for (const auto& mMember : methodsObj->members) {
-                            std::string mName = toUtf8(mMember.key);
-                            const auto* mVal = mMember.value.get();
-                            if (!mVal) continue;
-
-                            NativeFunctionSig msig;
-                            msig.symbol = getStringMember(mVal, "symbol");
-                            msig.returnType = parseNativeTypeKind(getStringMember(mVal, "returnType"));
-                            msig.returnClass = getStringMember(mVal, "returnClass");
-                            if (const auto* paramsArr = findMember(mVal, "paramTypes")) {
-                                if (paramsArr->kind == json::Value::Kind::Array) {
-                                    for (const auto& pElem : paramsArr->elements) {
-                                        if (pElem && pElem->kind == json::Value::Kind::String) {
-                                            msig.paramTypes.push_back(parseNativeTypeKind(toUtf8(pElem->text)));
-                                        }
-                                    }
-                                }
-                            }
-                            if (!msig.symbol.empty()) {
-                                clsSig.methods[mName] = msig;
-                            }
-                        }
-                    }
-                }
-
-                // Properties
-                if (const auto* propsObj = findMember(clsVal, "properties")) {
-                    if (propsObj->kind == json::Value::Kind::Object) {
-                        for (const auto& pMember : propsObj->members) {
-                            std::string propName = toUtf8(pMember.key);
-                            const auto* pVal = pMember.value.get();
-                            if (!pVal) continue;
-
-                            NativePropertySig psig;
-                            psig.getterSymbol = getStringMember(pVal, "getter");
-                            psig.setterSymbol = getStringMember(pVal, "setter");
-                            psig.type = parseNativeTypeKind(getStringMember(pVal, "returnType"));
-                            psig.returnClass = getStringMember(pVal, "returnClass");
-                            clsSig.properties[propName] = psig;
-                        }
-                    }
-                }
-
-                manifest.knownClasses_.insert(clsSig.name);
-                manifest.classes_[clsKey] = clsSig;
-                if (!clsSig.name.empty() && clsSig.name != clsKey) {
-                    manifest.classes_[clsSig.name] = clsSig;
-                }
-            }
-        }
-    }
-
-    // 3. Parse flat symbols array
-    if (const auto* symbolsArr = findMember(root.get(), "symbols")) {
-        if (symbolsArr->kind == json::Value::Kind::Array) {
-            for (const auto& elem : symbolsArr->elements) {
-                if (!elem || elem->kind != json::Value::Kind::Object) continue;
-                std::string kind = getStringMember(elem.get(), "kind");
-                std::string jsPath = getStringMember(elem.get(), "jsPath");
-                if (jsPath.empty()) continue;
-
-                auto dotPos = jsPath.find('.');
-                std::string rootNs = (dotPos != std::string::npos) ? jsPath.substr(0, dotPos) : jsPath;
-                manifest.namespaceRoots_.insert(rootNs);
-
-                if (kind == "function") {
-                    NativeFunctionSig sig;
-                    sig.symbol = getStringMember(elem.get(), "symbol");
-                    sig.returnType = parseNativeTypeKind(getStringMember(elem.get(), "returnType"));
-                    sig.returnClass = getStringMember(elem.get(), "returnClass");
-
-                    if (const auto* paramsArr = findMember(elem.get(), "paramTypes")) {
-                        if (paramsArr->kind == json::Value::Kind::Array) {
-                            for (const auto& pElem : paramsArr->elements) {
-                                if (pElem && pElem->kind == json::Value::Kind::String) {
-                                    sig.paramTypes.push_back(parseNativeTypeKind(toUtf8(pElem->text)));
-                                }
-                            }
-                        }
-                    }
-                    if (!sig.symbol.empty()) {
-                        manifest.functions_[jsPath] = sig;
-                    }
-                } else if (kind == "property") {
-                    NativePropertySig psig;
-                    psig.getterSymbol = getStringMember(elem.get(), "getter");
-                    psig.setterSymbol = getStringMember(elem.get(), "setter");
-                    psig.type = parseNativeTypeKind(getStringMember(elem.get(), "returnType"));
-                    manifest.namespaceProperties_[jsPath] = psig;
-                }
-            }
-        }
-    }
-
-    return manifest;
+    return parse(ss.str(), path, err);
 }
 
-std::optional<NativeManifest> NativeManifest::loadFromDirectory(const std::string& dirPath, std::string& err) {
+std::optional<NativeManifest> NativeManifest::loadFromDirectory(const std::string& dirPath,
+                                                                std::string& err) {
     std::error_code ec;
-    if (!std::filesystem::exists(dirPath, ec) || !std::filesystem::is_directory(dirPath, ec)) {
-        err = "Directory does not exist: " + dirPath;
+    if (!std::filesystem::is_directory(dirPath, ec)) {
+        err = "native manifest directory does not exist: " + dirPath;
         return std::nullopt;
     }
-
-    NativeManifest combined;
-    bool foundAny = false;
+    std::vector<std::filesystem::path> files;
     for (const auto& entry : std::filesystem::directory_iterator(dirPath, ec)) {
-        if (!entry.is_regular_file(ec)) continue;
-        const auto p = entry.path();
-        if (p.extension() == ".json") {
-            std::string subErr;
-            auto subManifest = loadFromFile(p.string(), subErr);
-            if (subManifest) {
-                combined.merge(*subManifest);
-                foundAny = true;
-            }
+        if (entry.is_regular_file(ec) && entry.path().extension() == ".json") {
+            files.push_back(entry.path());
         }
     }
-
-    if (!foundAny) {
-        err = "No manifest JSON files found in " + dirPath;
+    if (files.empty()) {
+        err = "no *.json native manifests in " + dirPath;
         return std::nullopt;
     }
-
+    // Sorted, so the merged manifest — and the import table order it drives —
+    // does not depend on a directory listing's order.
+    std::sort(files.begin(), files.end());
+    NativeManifest combined;
+    for (const auto& file : files) {
+        auto part = loadFromFile(file.string(), err);
+        if (!part) return std::nullopt;
+        for (const auto& sig : part->entries()) {
+            std::string addErr;
+            if (!combined.add(sig, addErr)) {
+                err = "native manifest " + file.string() + ": " + addErr + " (across the directory)";
+                return std::nullopt;
+            }
+        }
+        // A class declared in one file and referenced in another resolves
+        // because each file was checked alone, and add() re-registers classes.
+    }
     return combined;
 }
 
-bool NativeManifest::merge(const NativeManifest& other) {
-    for (const auto& [k, v] : other.functions_) {
-        functions_[k] = v;
-    }
-    for (const auto& [k, v] : other.namespaceProperties_) {
-        namespaceProperties_[k] = v;
-    }
-    for (const auto& [k, v] : other.classes_) {
-        classes_[k] = v;
-    }
-    for (const auto& ns : other.namespaceRoots_) {
-        namespaceRoots_.insert(ns);
-    }
-    for (const auto& cls : other.knownClasses_) {
-        knownClasses_.insert(cls);
-    }
-    for (const auto& lib : other.extraLibPaths_) {
-        extraLibPaths_.push_back(lib);
-    }
-    return true;
+const NativeSig* NativeManifest::findFunction(std::string_view path) const {
+    auto it = index_.find(key(NativeKind::Function, path));
+    return it == index_.end() ? nullptr : &entries_[it->second];
 }
 
-const NativeFunctionSig* NativeManifest::findFunction(const std::string& qualifiedName) const {
-    auto it = functions_.find(qualifiedName);
-    if (it != functions_.end()) return &it->second;
-    return nullptr;
+const NativeSig* NativeManifest::findConstructor(std::string_view classPath) const {
+    auto it = index_.find(key(NativeKind::Constructor, classPath));
+    return it == index_.end() ? nullptr : &entries_[it->second];
 }
 
-const NativePropertySig* NativeManifest::findNamespaceProperty(const std::string& qualifiedName) const {
-    auto it = namespaceProperties_.find(qualifiedName);
-    if (it != namespaceProperties_.end()) return &it->second;
-    return nullptr;
+const NativeSig* NativeManifest::findMethod(std::string_view classPath, std::string_view member) const {
+    auto it = index_.find(key(NativeKind::Method, std::string(classPath) + "." + std::string(member)));
+    if (it == index_.end()) return nullptr;
+    const NativeSig& sig = entries_[it->second];
+    return sig.className == classPath ? &sig : nullptr;
 }
 
-const NativeClassSig* NativeManifest::findClass(const std::string& nameOrQualified) const {
-    auto it = classes_.find(nameOrQualified);
-    if (it != classes_.end()) return &it->second;
-    return nullptr;
+const NativeSig* NativeManifest::findGetter(std::string_view owner, std::string_view member) const {
+    auto it = index_.find(key(NativeKind::Getter, std::string(owner) + "." + std::string(member)));
+    return it == index_.end() ? nullptr : &entries_[it->second];
 }
 
-bool NativeManifest::isNamespaceRoot(const std::string& name) const {
-    return namespaceRoots_.contains(name);
-}
-
-bool NativeManifest::isKnownClass(const std::string& name) const {
-    return knownClasses_.contains(name);
+const NativeSig* NativeManifest::findSetter(std::string_view owner, std::string_view member) const {
+    auto it = index_.find(key(NativeKind::Setter, std::string(owner) + "." + std::string(member)));
+    return it == index_.end() ? nullptr : &entries_[it->second];
 }
 
 }  // namespace bronze::lower

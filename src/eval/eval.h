@@ -25,8 +25,9 @@ struct EvalOptions {
     std::filesystem::path entryResolvesAs = {};
     std::string pinsPath = {};
     std::string censusOutPath = {};
-    std::string nativeManifestPath = {};
-    std::string nativeLibPath = {};
+    // No native-manifest option: the evaluator reads the natives this thread's
+    // host registered (embed::registerNative) directly, and binds the program
+    // to them before it runs.
 };
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine

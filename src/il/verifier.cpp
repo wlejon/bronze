@@ -456,6 +456,15 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
 
 bool verify(const Module& module, DiagnosticSink& diags) {
     for (const auto& fn : module.functions) {
+        // A declaration has no body to check; its calls are checked from the
+        // caller's side like any other direct call.
+        if (fn.isExternal) {
+            if (!fn.blocks.empty()) {
+                diags.error(Span{}, "External function " + fn.name + " has blocks");
+                return false;
+            }
+            continue;
+        }
         if (!verifyFunction(fn, diags)) {
             return false;
         }

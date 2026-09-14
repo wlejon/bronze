@@ -38,7 +38,7 @@
  * A compiled module is not only an object for a host's own link step: with
  * `--emit-shared` it is a DLL/.so/.dylib a host LOADS at run time, and a
  * loader that cannot see the host's build has to learn everything it needs
- * from symbols. There are exactly three, all named after the module's entry
+ * from symbols. There are exactly four, all named after the module's entry
  * (`--entry-symbol`, default `bronze_main`), and this is the whole contract:
  *
  *   <entry>                    void(void) — the module's top level.
@@ -51,6 +51,35 @@
  *                                  uint32_t count;
  *                                  char     names[];  // `count` NUL-terminated
  *                                                     // UTF-8 names, back to back
+ *
+ *   <entry>_native_imports     WRITABLE, 8-byte aligned — the module's
+ *                              native import table:
+ *
+ *                                  uint32_t count;
+ *                                  uint32_t namesOffset; // from the table's first byte
+ *                                  uint64_t slots[count];
+ *                                  char     names[];     // at namesOffset: `count`
+ *                                                        // pairs of NUL-terminated
+ *                                                        // "name", "signature"
+ *
+ *                              One slot per native the module was compiled
+ *                              to call directly (`--native-manifest`), each
+ *                              named "<kind> <path>" — `function
+ *                              bro.mesh.box`, `method bro.ai.AIAgent.move`,
+ *                              `constructor bro.ai.AIAgent`, `getter
+ *                              bro.time.scale`, `setter bro.time.scale` — with
+ *                              the canonical signature text beside it, or
+ *                              "class <path>" with an empty signature for a
+ *                              slot that holds the class's tag. Every call
+ *                              site loads its slot and calls through it. The
+ *                              slots start as the address of
+ *                              bronze_native_unbound (class slots as 0) and
+ *                              are filled by name from the host's registry —
+ *                              by embed::bindNativeImports if the loader
+ *                              asks, and by the entry's own first call
+ *                              (bronze_native_bind) regardless. A module
+ *                              compiled against no natives defines the table
+ *                              with count 0.
  *
  * The manifest is what the module was compiled against — the `--host-globals`
  * list, verbatim and in the order the manifest gave it. It exists because
@@ -273,6 +302,20 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * program can reassign keep their scan-per-read semantics by never
      * reaching a cell. */ \
     X(bronze_global_get,          BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
+    /* The SLOW HALF of a cached provided-global read. Generated code reads a
+     * provided global through a per-module cache cell — one u64 per distinct
+     * name the module mentions, in the module's own .data, holding
+     * BRONZE_ABI_NO_EXCEPTION_BITS (the hole) until filled — and reaches this
+     * only when the cell is the hole: (key id, the module's cell array, its
+     * cell count, this name's slot). The helper registers the array as a root
+     * span the first time it sees it (so the collector forwards the cached
+     * Values in place, and so a host re-registering a global can put the hole
+     * back in every module's cell for it), resolves the name the way
+     * bronze_global_get does, and fills the slot for a builtin OR a
+     * host-registered answer — the host registry is what the cache exists to
+     * take off the per-read path. A `globalThis.x` the program assigned is
+     * still answered but never cached, because the program can assign again. */ \
+    X(bronze_global_get_cached,   BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_resolve_name,        BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
     X(bronze_immutable_assign,    BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     /* A `--pins` claim CONTRADICTED by a value the program actually produced
@@ -492,6 +535,59 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * touch, and a null one means the slot was never filled. */ \
     X(bronze_register_value_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     X(bronze_register_fn_slots,    BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+    /* ---- host natives (runtime/native_registry.cpp) ------------------------
+     *
+     * A native is a C function the HOST registered under a JS path
+     * (embed::registerNative) and the compiler lowered a call site to — a
+     * direct machine call with unboxed arguments, no dynamic dispatch. The
+     * module never names the function's symbol: it calls through a slot of
+     * its own import table (`<entry>_native_imports`, the loadable-module
+     * section below), which the runtime fills BY NAME from the registry at
+     * load time. Nothing about a native is resolved by a linker.
+     *
+     * `bronze_native_bind` fills the calling module's table from the current
+     * thread's registry, and is FATAL — naming every slot it could not fill —
+     * when a native the module was compiled against is unregistered or was
+     * registered with a different signature. The module's entry calls it
+     * first thing, so a host that never asked (embed::bindNativeImports is
+     * the soft form, for a loader that would rather refuse by name) still
+     * gets a named refusal rather than a jump through zero. Idempotent, so a
+     * loader that bound first costs the entry one no-op rebind.
+     *
+     * `bronze_native_unbound` is the trap a never-bound slot jumps to. */ \
+    X(bronze_native_bind,         BRONZE_ABI_VOID, (BRONZE_ABI_MU64)) \
+    X(bronze_native_unbound,      BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+    /* The receiver or a class-typed argument of a native: the raw data
+     * pointer of a handle whose class tag is `classInfo`, or a TypeError
+     * naming the class (and what arrived instead) with a null return. One
+     * compare — the tag is a word in the handle cell. `classInfo` arrives
+     * from a `class <path>` import slot. */ \
+    X(bronze_native_handle_data,  BRONZE_ABI_VPTR, (BRONZE_ABI_U64, BRONZE_ABI_CVPTR)) \
+    /* The `void*` a native constructor or class-returning native produced,
+     * as a handle of the class: born on the class's prototype, tagged, owing
+     * the class's destructor. A null pointer becomes `null`. ALLOCATES. */ \
+    X(bronze_native_wrap,         BRONZE_ABI_U64,  (BRONZE_ABI_VPTR, BRONZE_ABI_CVPTR)) \
+    /* A typed-array argument's element 0, for a native declared to take
+     * `<kind>[]` — the u32 is the ElementKind the declaration names. Not a
+     * typed array, another element kind, or a detached buffer: a TypeError
+     * and null. The pointer is valid until the next allocation, so the
+     * lowering takes it AFTER every argument's scalar coercion (ToInt32 can
+     * run user code) and immediately before the call, and the native must
+     * not allocate through the embed API while it holds it. */ \
+    X(bronze_native_typed_array_data,   BRONZE_ABI_VPTR, (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
+    X(bronze_native_typed_array_length, BRONZE_ABI_U32,  (BRONZE_ABI_U64)) \
+    /* A `str` argument as the NUL-terminated UTF-8 a C native takes: the
+     * value (ToString for a non-string; undefined, a missing argument, is
+     * "") copied into a per-thread scratch stack, whose top `count` entries
+     * `bronze_native_str_release` pops after the call. Nested native calls
+     * push and pop LIFO, so an outer native's text survives an inner call.
+     * ALLOCATES for a non-string, so the lowering converts every `str`
+     * before it takes any typed-array pointer. `bronze_native_str_from_utf8`
+     * is the return direction: the `const char*` a native answered, as a
+     * string value (null → ""). ALLOCATES. */ \
+    X(bronze_native_str_utf8,      BRONZE_ABI_CVPTR, (BRONZE_ABI_U64)) \
+    X(bronze_native_str_release,   BRONZE_ABI_VOID,  (BRONZE_ABI_U32)) \
+    X(bronze_native_str_from_utf8, BRONZE_ABI_U64,   (BRONZE_ABI_CVPTR)) \
     /* The module's METHOD-CALL sites, handed over at module init: `siteIndexes`
      * is `count` u64 site numbers into the module's IC table (`icTable` is its
      * base). Word BRONZE_ABI_METHOD_IC_ENV_WORD of each named site is the env
@@ -1419,6 +1515,8 @@ typedef struct bronze_gc_frame {
 #define BRONZE_ABI_TLSPTR bronze_tls_block*
 #define BRONZE_ABI_FRAMEPTR bronze_gc_frame*
 #define BRONZE_ABI_FNPTR  bronze_fn_code
+#define BRONZE_ABI_VPTR   void*
+#define BRONZE_ABI_CVPTR  const void*
 #define BRONZE_ABI_VOID   void
 #define BRONZE_ABI_NOARGS void
 
@@ -1440,6 +1538,8 @@ BRONZE_ABI_FUNCTIONS(BRONZE_ABI_DECLARE)
 #undef BRONZE_ABI_TLSPTR
 #undef BRONZE_ABI_FRAMEPTR
 #undef BRONZE_ABI_FNPTR
+#undef BRONZE_ABI_VPTR
+#undef BRONZE_ABI_CVPTR
 #undef BRONZE_ABI_VOID
 #undef BRONZE_ABI_NOARGS
 

@@ -16,7 +16,6 @@
 #include "ast/dump.h"
 #include "cli/link.h"
 #include "cli/link_order.h"
-#include "cli/native_manifest_resolve.h"
 #include "cli/run.h"
 #include "cli/usage.h"
 #include "codegen/backend.h"
@@ -26,6 +25,7 @@
 #include "lex/lexer.h"
 #include "lower/infer_stats.h"
 #include "lower/lower.h"
+#include "lower/native_manifest.h"
 #include "modules/modules.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
@@ -174,6 +174,35 @@ bool hasHostBoundary(const std::string& hostGlobalsPath, bool emitObj, bool emit
     return !hostGlobalsPath.empty() || emitObj || emitShared;
 }
 
+// `--native-manifest <path>`: the JSON `embed::writeNativeManifest` printed
+// (lower/native_manifest.h), or a directory of them. Empty path = no natives.
+// Every message is a fact about the invocation, reported before compiling.
+// The removed `--native-lib` (a link-time library, from the prototype that
+// resolved natives at link) arrives here only through a host calling
+// runBuild/runIl with the old positional argument, and is refused by name:
+// natives bind at load time from the host's registry now, and a library on
+// the link line would be a second, silent resolution path.
+bool loadNativeManifest(const std::string& manifestPath, const std::string& nativeLibPath,
+                        std::optional<lower::NativeManifest>& out, std::string& err) {
+    if (!nativeLibPath.empty()) {
+        err = "error: the native library argument (--native-lib) was removed: natives are "
+              "registered by the host (embed::registerNative) and bound when the module loads, "
+              "never linked\n";
+        return false;
+    }
+    if (manifestPath.empty()) return true;
+    std::error_code ec;
+    std::string loadErr;
+    out = std::filesystem::is_directory(manifestPath, ec)
+              ? lower::NativeManifest::loadFromDirectory(manifestPath, loadErr)
+              : lower::NativeManifest::loadFromFile(manifestPath, loadErr);
+    if (!out) {
+        err = "error: " + loadErr + "\n";
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 int runTypes(const std::string& sourcePath, std::string* outString,
@@ -228,19 +257,18 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
             return 1;
         }
     }
-    std::string nativeManifestErr;
-    auto nativeManifest = resolveNativeManifest(nativeManifestPath, nativeLibPath, nativeManifestErr);
-    if (!nativeManifestErr.empty()) {
-        if (outString) *outString = nativeManifestErr;
-        else std::fputs(nativeManifestErr.c_str(), stderr);
-        return 1;
+    std::optional<lower::NativeManifest> nativeManifest;
+    {
+        std::string nativeManifestErr;
+        if (!loadNativeManifest(nativeManifestPath, nativeLibPath, nativeManifest, nativeManifestErr)) {
+            if (outString) *outString = nativeManifestErr;
+            else std::fputs(nativeManifestErr.c_str(), stderr);
+            return 1;
+        }
     }
     if (nativeManifest) {
         for (const auto& root : nativeManifest->namespaceRoots()) {
             hostGlobals.push_back(root);
-        }
-        for (const auto& cls : nativeManifest->knownClasses()) {
-            hostGlobals.push_back(cls);
         }
     }
     types::PinManifest pins;
@@ -365,19 +393,18 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
             return 1;
         }
     }
-    std::string nativeManifestErr;
-    auto nativeManifest = resolveNativeManifest(nativeManifestPath, nativeLibPath, nativeManifestErr);
-    if (!nativeManifestErr.empty()) {
-        if (errOut) *errOut = nativeManifestErr;
-        else std::fputs(nativeManifestErr.c_str(), stderr);
-        return 1;
+    std::optional<lower::NativeManifest> nativeManifest;
+    {
+        std::string nativeManifestErr;
+        if (!loadNativeManifest(nativeManifestPath, nativeLibPath, nativeManifest, nativeManifestErr)) {
+            if (errOut) *errOut = nativeManifestErr;
+            else std::fputs(nativeManifestErr.c_str(), stderr);
+            return 1;
+        }
     }
     if (nativeManifest) {
         for (const auto& root : nativeManifest->namespaceRoots()) {
             hostGlobals.push_back(root);
-        }
-        for (const auto& cls : nativeManifest->knownClasses()) {
-            hostGlobals.push_back(cls);
         }
     }
     types::PinManifest pins;
@@ -518,11 +545,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     std::vector<std::string> linkInputs = objPaths;
-    if (nativeManifest) {
-        for (const auto& lib : nativeManifest->extraLibPaths()) {
-            linkInputs.push_back(lib);
-        }
-    }
 
     bool linked = emitShared ? linkSharedModule(linkInputs, outputPath, diags, entrySymbol)
                              : linkExecutable(linkInputs, outputPath, diags);
@@ -685,7 +707,6 @@ int runDriver(int argc, char** argv) {
         std::string censusOutPath;
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
-        std::string nativeLibPath;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
@@ -709,15 +730,6 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--native-manifest=", 0) == 0) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
-            } else if (arg == "--native-lib") {
-                if (i + 1 < argc) {
-                    nativeLibPath = argv[++i];
-                } else {
-                    return fail("error: missing argument for --native-lib\n");
-                }
-            } else if (arg.rfind("--native-lib=", 0) == 0) {
-                nativeLibPath = arg.substr(13);
-                if (nativeLibPath.empty()) return fail("error: missing argument for --native-lib\n");
             } else if (arg == "--pins") {
                 if (i + 1 < argc) {
                     pinsPath = argv[++i];
@@ -770,7 +782,7 @@ int runDriver(int argc, char** argv) {
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         return runIl(sourcePath, nullptr, infer, hostGlobalsPath, moduleRoots, importMapPath,
                      inferStats, assumeNoBigInt, pinsPath, censusOutPath, pinsAllowObserved,
-                     nativeManifestPath, nativeLibPath);
+                     nativeManifestPath);
     }
 
     if (command == "build") {
@@ -792,7 +804,6 @@ int runDriver(int argc, char** argv) {
         std::string censusOutPath;
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
-        std::string nativeLibPath;
         std::string linkFlagError;
 
         for (int i = 2; i < argc; ++i) {
@@ -839,15 +850,6 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--native-manifest=", 0) == 0) {
                 nativeManifestPath = arg.substr(18);
                 if (nativeManifestPath.empty()) return fail("error: missing argument for --native-manifest\n");
-            } else if (arg == "--native-lib") {
-                if (i + 1 < argc) {
-                    nativeLibPath = argv[++i];
-                } else {
-                    return fail("error: missing argument for --native-lib\n");
-                }
-            } else if (arg.rfind("--native-lib=", 0) == 0) {
-                nativeLibPath = arg.substr(13);
-                if (nativeLibPath.empty()) return fail("error: missing argument for --native-lib\n");
             } else if (arg == "--pins") {
                 if (i + 1 < argc) {
                     pinsPath = argv[++i];
@@ -908,7 +910,7 @@ int runDriver(int argc, char** argv) {
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
-                        censusOutPath, pinsAllowObserved, nativeManifestPath, nativeLibPath);
+                        censusOutPath, pinsAllowObserved, nativeManifestPath);
     }
 
     return fail(kUsage);

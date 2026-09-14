@@ -230,3 +230,47 @@ TEST_CASE("evalScript evaluates script with module imports") {
 
     std::filesystem::remove_all(tempDir, ec);
 }
+
+TEST_CASE("a compiled host-global read caches and sees re-registration") {
+    // A compiled `hostTick` read is a load of the module's cache cell once
+    // the first read has filled it. Re-registering the name must pour the
+    // hole back so the next read resolves again — a host that swaps a
+    // global (bro re-registers `document` per iframe) is not answered a
+    // stale value by a module compiled before the swap.
+    embed::registerGlobal("hostTick", embed::fromDouble(1.0));
+
+    embed::CallResult def = evalScript("function readHostTick() { return hostTick; }");
+    REQUIRE(!def.thrown);
+    embed::GlobalValue fnLookup = embed::globalValue("readHostTick");
+    REQUIRE(fnLookup.found);
+    embed::Persistent fn(fnLookup.value);
+
+    auto read = [&]() -> double {
+        embed::CallResult r = embed::call(fn.get(), embed::undefined(), {});
+        REQUIRE(!r.thrown);
+        REQUIRE(r.value.isNumber());
+        return r.value.asNumber();
+    };
+    CHECK(read() == 1.0);
+    CHECK(read() == 1.0);
+
+    embed::registerGlobal("hostTick", embed::fromDouble(2.0));
+    CHECK(read() == 2.0);
+
+    // A second module compiled after the swap gets its own cell, and both
+    // follow a further replacement.
+    embed::CallResult def2 = evalScript("function readHostTickAgain() { return hostTick + 10; }");
+    REQUIRE(!def2.thrown);
+    embed::GlobalValue fn2Lookup = embed::globalValue("readHostTickAgain");
+    REQUIRE(fn2Lookup.found);
+    embed::Persistent fn2(fn2Lookup.value);
+    embed::CallResult r2 = embed::call(fn2.get(), embed::undefined(), {});
+    REQUIRE(!r2.thrown);
+    CHECK(r2.value.asNumber() == 12.0);
+
+    embed::registerGlobal("hostTick", embed::fromDouble(3.0));
+    CHECK(read() == 3.0);
+    embed::CallResult r3 = embed::call(fn2.get(), embed::undefined(), {});
+    REQUIRE(!r3.thrown);
+    CHECK(r3.value.asNumber() == 13.0);
+}

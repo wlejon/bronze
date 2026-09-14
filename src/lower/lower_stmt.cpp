@@ -169,6 +169,7 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         return lowerPattern(*varDecl->pattern, boxValueIfNeeded(*initVal, ilFn), target, ilFn);
     }
 
+    std::string initNativeClass;
     if (varDecl->init) {
         std::optional<Value> initVal;
 
@@ -194,30 +195,10 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
             declType = initVal->type;
         }
 
-        if (nativeManifest_) {
-            if (!initVal->nativeClass.empty()) {
-                varNativeClasses_[varDecl->name] = initVal->nativeClass;
-            } else if (const auto* newExpr = dynamic_cast<const ast::NewExpr*>(varDecl->init.get())) {
-                std::string clsName;
-                if (const auto* id = dynamic_cast<const ast::Ident*>(newExpr->callee.get())) {
-                    clsName = id->name;
-                } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(newExpr->callee.get())) {
-                    clsName = mem->property;
-                }
-                if (nativeManifest_->isKnownClass(clsName)) {
-                    const auto* cls = nativeManifest_->findClass(clsName);
-                    if (!cls || (!explicitHostGlobals_.contains(cls->name) &&
-                                 !explicitHostGlobals_.contains(cls->qualifiedName))) {
-                        varNativeClasses_[varDecl->name] = clsName;
-                    }
-                }
-            } else if (const auto* rhsId = dynamic_cast<const ast::Ident*>(varDecl->init.get())) {
-                auto it = varNativeClasses_.find(rhsId->name);
-                if (it != varNativeClasses_.end()) {
-                    varNativeClasses_[varDecl->name] = it->second;
-                }
-            }
-        }
+        // What the initialiser is known to be a handle of, noted against the
+        // binding once it exists (below): a `new` of a native class, a native
+        // returning one, or a copy of a binding already known.
+        initNativeClass = initVal->nativeClass;
 
         // A binding inference proved numeric holds an unboxed f64, so the
         // arithmetic over it needs no unbox per use, the SSA joins it takes
@@ -292,6 +273,7 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         emitEnvSet(envDepthOf(bound.envScopeIndex), bound.envSlot,
                    Value{initId, declType}, ilFn);
     }
+    noteNativeClassOfBinding(varDecl->name, initNativeClass);
     return true;
 }
 

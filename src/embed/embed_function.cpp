@@ -121,12 +121,17 @@ Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name) {
     // CreateDynamicFunction must be able to spell it, and before this it could
     // not: setProperty refuses `name` by name (10.2.9 makes it slot-backed),
     // which is correct and left no way in at all.
+    // Rooted before the name is minted: that mint is a heap allocation, so it
+    // can collect, and the function it names would otherwise be written to —
+    // and returned from — its dead from-space address. (Found by the native
+    // suite's GC-stress run: every named host function came back as garbage.)
+    Rooted<Value> fnRoot{Value::fromObject(fnObj)};
     if (!name.empty()) {
         StringHeader* interned = StringHeader::internToArena(
             runtime::rtArena(), StringHeader::createFromUTF8(runtime::rtHeap(), name));
-        fnObj->name = interned;
+        fnRoot.get().asObject<FunctionHeader>()->name = interned;
     }
-    return Value::fromObject(fnObj);
+    return fnRoot.get();
 }
 
 }  // namespace bronze::embed

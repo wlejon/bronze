@@ -802,6 +802,12 @@ struct Function {
     bool returnPinned = false;
     uint32_t returnPinKeyIndex = 0;
     bool isExported = false;
+    // A DECLARATION rather than a definition: no blocks, and the name is a
+    // symbol the backend resolves — a runtime helper the lowering calls by
+    // name (the native argument helpers), or a native import thunk
+    // (`__bronze_native_<i>`, see Module::nativeImports). Skipped by the
+    // verifier's body checks and printed as an `extern` line.
+    bool isExternal = false;
     // The module's entry point. Everything else about a function is the same,
     // and one thing is not: it has no caller to propagate an exception to, so
     // its unwind path reports the value and exits instead of returning. A flag
@@ -971,6 +977,22 @@ struct Module {
     std::vector<CensusSiteEntry> censusSites;
     // Where the census run writes its manifest. Empty unless `--census`.
     std::string censusOutPath;
+    // THE NATIVE IMPORT TABLE (`--native-manifest`; bronze_abi.h's loadable-
+    // module section): one entry per native the program calls directly, in
+    // the order lowering first met them. Entry `i` is reached through the
+    // external IL function `__bronze_native_<i>`, whose parameter and return
+    // types are the native's C signature in IL terms (a typed array is two
+    // parameters, pointer then length; a handle or pointer is `Dynamic`, the
+    // 64-bit word). The backend emits the table as `<entry>_native_imports`
+    // and one thunk per entry that loads slot `i` and calls through it; a
+    // `class <path>` entry's thunk takes nothing and returns the slot itself,
+    // which is the class tag the argument helpers compare against.
+    struct NativeImport {
+        std::string name;       // "<kind> <path>", or "class <path>"
+        std::string signature;  // canonical text; empty for a class slot
+        uint32_t functionIndex = 0;  // the `__bronze_native_<i>` declaration
+    };
+    std::vector<NativeImport> nativeImports;
     // A deque, not a vector: lowering a function body can append nested
     // closures, and the body being lowered is itself an element. Only a
     // reference-stable container lets a recursive call read its own

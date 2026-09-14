@@ -28,6 +28,7 @@
 #include "runtime/gc.h"
 #include "runtime/host_globals.h"
 #include "runtime/iterator.h"
+#include "runtime/native_registry.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/promise.h"
@@ -267,6 +268,26 @@ struct ModuleSpan {
 static thread_local std::vector<ModuleSpan<Value>> g_moduleValueCells;
 static thread_local std::vector<ModuleSpan<FnSingletonSlot>> g_moduleFnSlots;
 
+// The provided-global CACHE spans: one per module, registered by the module's
+// first cache miss (bronze_global_get_cached below) rather than at module init,
+// which is why they are their own list and not entries in g_moduleValueCells —
+// the runtime has to be able to put the hole back into every one of them when
+// a host re-registers a global, and a walk of the value-cell spans would
+// overwrite template objects and environment cells it has no business
+// touching. Traced by the same root source; dropped by the same epoch.
+static thread_local std::vector<ModuleSpan<Value>> g_globalCacheSpans;
+
+// Every cached answer, in every module on this thread, becomes the hole
+// again. The next read of each name re-resolves through the ladder and
+// refills; a cell that was never filled is unchanged. Cheap because the
+// caller is a host REGISTERING a global — a handful of times at startup and
+// on a realm swap — and never a read.
+static void rtInvalidateGlobalCaches() {
+    for (const auto& span : g_globalCacheSpans) {
+        for (uint64_t i = 0; i < span.count; ++i) span.cells[i] = Value::fromHole();
+    }
+}
+
 static thread_local uint64_t g_moduleEpochCounter = 0;
 static thread_local uint64_t g_currentModuleEpoch = 0;
 
@@ -302,6 +323,8 @@ void rtDropModuleEpoch(uint64_t epoch) {
                   [epoch](const ModuleSpan<Value>& s) { return s.epoch == epoch; });
     std::erase_if(g_moduleFnSlots,
                   [epoch](const ModuleSpan<FnSingletonSlot>& s) { return s.epoch == epoch; });
+    std::erase_if(g_globalCacheSpans,
+                  [epoch](const ModuleSpan<Value>& s) { return s.epoch == epoch; });
     if (g_currentModuleEpoch == epoch) g_currentModuleEpoch = 0;
 }
 
@@ -340,12 +363,30 @@ static void registerThreadRootSources(Heap& heap) {
         for (const auto& span : g_moduleValueCells) {
             for (uint64_t i = 0; i < span.count; ++i) visit(span.cells[i]);
         }
+        for (const auto& span : g_globalCacheSpans) {
+            for (uint64_t i = 0; i < span.count; ++i) visit(span.cells[i]);
+        }
         for (auto& entry : g_hostGlobals) visit(entry.second);
         rtVisitArrayMethodRoots(visit);
     });
 }
 
 void rtRegisterHostGlobal(const std::string& name, Value value) {
+    // A name is a native or a host global, never both: `f(1)` compiled as a
+    // direct native call while `f` read as a host value would be two
+    // different things under one name. Refused loudly here and in
+    // rtRegisterNative, whichever comes second.
+    if (rtNativeBareNameRegistered(name)) {
+        fatal(("registerGlobal(\"" + name +
+               "\"): the name is a registered native (embed::registerNative); a name is a "
+               "native or a host global, not both")
+                  .c_str());
+    }
+    // Before the write, unconditionally: a REPLACED name has cells holding
+    // the old value, and a NEW name can have cells too — `performance` is a
+    // builtin until a host provides its own, and every module that read the
+    // builtin cached it.
+    rtInvalidateGlobalCaches();
     for (auto& entry : g_hostGlobals) {
         if (entry.first == name) {
             entry.second = value;
@@ -653,6 +694,47 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     // scan-per-read semantics. The cell belongs to the calling module; the
     // runtime's own callers pass none.
     if (cacheCell) *cacheCell = resolved.rawBits();
+    return resolved.rawBits();
+}
+
+uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t count,
+                                  uint32_t slot) {
+    recordPropCall("bronze_global_get_cached", keyIndex, nullptr);
+    // The span, registered on first contact with this module's array. A
+    // linear probe: a thread holds a handful of modules, and this runs once
+    // per (module, name) — the fast path in generated code never gets here
+    // again for a name that filled.
+    auto* valueCells = reinterpret_cast<Value*>(cells);
+    if (cells && count != 0 && slot < count) {
+        bool known = false;
+        for (const auto& span : g_globalCacheSpans) {
+            if (span.cells == valueCells) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) g_globalCacheSpans.push_back({valueCells, count, g_currentModuleEpoch});
+    }
+    const std::string& keyStr = rtKeyString(keyIndex);
+    // The same ladder as bronze_global_get, in the same order — `performance`
+    // is the one name a host may shadow, every other builtin wins, then the
+    // host registry, then the global object's own properties. The difference
+    // is WHICH answers fill the cell: builtins and host globals both, because
+    // both are stable until the host says otherwise (and rtRegisterHostGlobal
+    // says so by holing every span). A globalThis property is the program's
+    // to reassign at any moment and stays uncached.
+    Value resolved = Value::fromUndefined();
+    bool cacheable = false;
+    if (keyStr == "performance" && rtHostGlobalLookup(keyStr, resolved)) {
+        cacheable = true;
+    } else if (rtResolveBuiltinGlobal(keyStr, resolved)) {
+        cacheable = true;
+    } else if (rtHostGlobalLookup(keyStr, resolved)) {
+        cacheable = true;
+    } else if (!rtGlobalThisOwnLookup(keyStr, resolved)) {
+        fatal(("internal: no global named " + keyStr).c_str());
+    }
+    if (cacheable && cells && slot < count) valueCells[slot] = resolved;
     return resolved.rawBits();
 }
 

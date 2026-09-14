@@ -64,6 +64,8 @@ bronze_add_module(runtime
         builtin_wrappers.cpp
         inspect.cpp
         rt_state.cpp
+        native_handle.cpp
+        native_registry.cpp
         rt_convert.cpp
         rt_concat.cpp
         rt_members.cpp

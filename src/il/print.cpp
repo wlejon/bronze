@@ -223,6 +223,29 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
         }
         out += "}\n";
     }
+    // The native import table and the declarations that reach it, before any
+    // body: a call to `@__bronze_native_3` in a dump is only readable next to
+    // the line saying what slot 3 is.
+    if (!module.nativeImports.empty()) {
+        out += "native-imports {\n";
+        for (size_t i = 0; i < module.nativeImports.size(); ++i) {
+            const auto& imp = module.nativeImports[i];
+            out += "  [" + std::to_string(i) + "] \"" + imp.name + "\"";
+            if (!imp.signature.empty()) out += " " + imp.signature;
+            out += "\n";
+        }
+        out += "}\n";
+    }
+    for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
+        const auto& fn = module.functions[fnIdx];
+        if (!fn.isExternal) continue;
+        out += "extern func " + getFnName(fnIdx) + "(";
+        for (size_t i = 0; i < fn.params.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += typeName(fn.params[i].type);
+        }
+        out += ") -> " + std::string(typeName(fn.returnType)) + "\n";
+    }
     for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
         const auto& fn = module.functions[fnIdx];
         if (fn.blocks.empty()) continue;

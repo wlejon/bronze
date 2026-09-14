@@ -100,6 +100,10 @@ if(BRONZE_BUILD_TESTS)
     # The same two-object build, entered from two THREADS at once: the
     # generated-code half of per-thread runtime isolation.
     add_subdirectory(tests/threaded_modules)
+    # Natives registered by the host: the JIT doctests always, and a
+    # manifest → `--emit-shared` → loader round trip when the shared runtime
+    # is built (it gates itself).
+    add_subdirectory(tests/native)
     # The same pair plus the shared runtime itself, which is what the module is
     # linked against and what the harness loads it into.
     if(BRONZE_BUILD_SHARED_RUNTIME)
@@ -107,25 +111,6 @@ if(BRONZE_BUILD_TESTS)
         # The unload half of the same story: retire a loaded module, load its
         # replacement, one runtime throughout.
         add_subdirectory(tests/hot_swap)
-    endif()
-endif()
-
-if(BRONZE_IS_TOP_LEVEL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js")
-    set(CABI_EXE_DIR "${CMAKE_CURRENT_BINARY_DIR}")
-    if(MSVC)
-        set(CABI_EXE_DIR "${CMAKE_CURRENT_BINARY_DIR}/Release")
-    endif()
-    add_custom_target(test_cabi_lowering
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CABI_EXE_DIR}"
-        COMMAND $<TARGET_FILE:bronze> build "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.js" --native-manifest auto -o "${CABI_EXE_DIR}/test_cabi_lowering.exe"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CABI_EXE_DIR}/test_cabi_lowering.exe" "${CMAKE_CURRENT_SOURCE_DIR}/test_cabi_lowering.exe"
-        DEPENDS bronze
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        COMMENT "Compiling test_cabi_lowering.js via bronze CLI"
-    )
-    if(BRONZE_BUILD_TESTS AND EXISTS "${CABI_EXE_DIR}/test_cabi_lowering.exe")
-        add_test(NAME test_cabi_lowering COMMAND "${CABI_EXE_DIR}/test_cabi_lowering.exe")
-        set_tests_properties(test_cabi_lowering PROPERTIES LABELS cabi)
     endif()
 endif()
 

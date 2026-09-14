@@ -162,6 +162,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
 
     size_t outerBlockIdx = currentBlockIdx_;
     auto outerVarBindings = varBindings_;
+    auto outerVarNativeClasses = varNativeClasses_;
     auto outerActiveVarMap = activeVarMap_;
     // The `func.ref` memo is per IL FUNCTION: a `Value` in it names an
     // instruction result, and result ids are numbered within one function.
@@ -256,6 +257,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     generator_ = std::move(outerGenerator);
     strictCode_ = outerStrict;
     varBindings_ = outerVarBindings;
+    varNativeClasses_ = outerVarNativeClasses;
     activeVarMap_ = outerActiveVarMap;
     functionRefMap_ = outerFunctionRefMap;
     currentScopeDepth_ = outerScopeDepth;

@@ -631,7 +631,9 @@ bool linkSharedModule(const std::vector<std::string>& objPaths, const std::strin
     const std::string entry = entrySymbol.empty() ? "bronze_main" : entrySymbol;
     const std::string stamp = (entry == "bronze_main") ? "bronze_object_abi_fingerprint" : (entry + "_abi_fingerprint");
     const std::string globals = entry + "_host_globals";
-    const std::string exportFlags = " /EXPORT:" + entry + " /EXPORT:" + stamp + " /EXPORT:" + globals;
+    const std::string imports = entry + "_native_imports";
+    const std::string exportFlags = " /EXPORT:" + entry + " /EXPORT:" + stamp + " /EXPORT:" + globals +
+                                    " /EXPORT:" + imports;
 #endif
 
     auto makeCommand = [&](int index) -> std::string {

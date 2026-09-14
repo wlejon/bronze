@@ -452,6 +452,7 @@ bool Lowerer::lowerResumeBody(const std::vector<const ast::Stmt*>& stmts,
     // the top that a resume point does not make.
     openLexicalBindings(frameScope, ast::getLexicalDeclarations(stmts), {},
                         ast::getConstDeclarations(stmts), resumeFn);
+    planEnvSlotNativeClasses(frameScope, stmts);
 
     bool ok = lowerStmtList(stmts, resumeFn);
     if (ok && !currentBlockIsTerminated(resumeFn)) {

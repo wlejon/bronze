@@ -111,25 +111,21 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
         }
     }
 
+    // The natives this thread's host registered, as the manifest the lowerer
+    // reads — the SAME text an ahead-of-time build reads from a file, parsed
+    // by the same reader, so the JIT and AOT paths cannot disagree about a
+    // registration. A registry the reader refuses is a host bug the registry
+    // should already have refused; it is reported, not skipped.
     std::optional<lower::NativeManifest> nativeManifest;
-    if (!options.nativeManifestPath.empty()) {
+    if (!embed::hostNativeNames().empty()) {
         std::string err;
-        std::error_code ec;
-        if (std::filesystem::is_directory(options.nativeManifestPath, ec)) {
-            nativeManifest = lower::NativeManifest::loadFromDirectory(options.nativeManifestPath, err);
-        } else if (std::filesystem::exists(options.nativeManifestPath, ec)) {
-            nativeManifest = lower::NativeManifest::loadFromFile(options.nativeManifestPath, err);
+        nativeManifest = lower::NativeManifest::parse(embed::nativeManifestJson(), "<registry>", err);
+        if (!nativeManifest) {
+            diags.error(Span{}, err);
+            return nullptr;
         }
-        if (nativeManifest && !options.nativeLibPath.empty()) {
-            nativeManifest->addExtraLibPath(options.nativeLibPath);
-        }
-    }
-    if (nativeManifest) {
         for (const auto& root : nativeManifest->namespaceRoots()) {
             hostGlobals.push_back(root);
-        }
-        for (const auto& cls : nativeManifest->knownClasses()) {
-            hostGlobals.push_back(cls);
         }
     }
 
@@ -171,7 +167,25 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
     backend.setEntrySymbol(entrySym);
     backend.setHostGlobals(hostGlobals);
 
-    return backend.compileToJit(*ilModule, diags);
+    auto program = backend.compileToJit(*ilModule, diags);
+    if (!program) return nullptr;
+    // Bind the program's import table from the registry it was compiled
+    // against, before anything runs. The entry rebinds on its own first
+    // instruction and would be FATAL on a gap; doing it here first turns a
+    // native unregistered between compile and run into a diagnostic naming
+    // it instead.
+    if (!ilModule->nativeImports.empty()) {
+        void* table = program->symbolAddress(entrySym + "_native_imports");
+        std::vector<std::string> missing;
+        if (!table || !embed::bindNativeImports(table, &missing)) {
+            std::string msg = "native imports unbound: the host registered no native for";
+            for (const auto& m : missing) msg += "\n  " + m;
+            if (!table) msg += "\n  (the program's import table symbol is missing)";
+            diags.error(Span{}, msg);
+            return nullptr;
+        }
+    }
+    return program;
 }
 
 std::unique_ptr<BrassJitProgram> compileSourceToJit(

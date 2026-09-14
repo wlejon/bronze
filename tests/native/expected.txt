@@ -1,0 +1,21 @@
+host globals: hostTick nt
+imports: function nt.math.add f64(f64,f64) | function nt.math.bits i32(i32,i32) | function nt.math.flip bool(bool) | function nt.str.greet str(str) | function nt.str.len f64(str) | function nt.arr.sumU16 f64(u16[]) | function nt.arr.sumF64 f64(f64[]) | constructor nt.Agent nt.Agent(f64) | class nt.Agent | getter nt.Agent.hp f64(self) | setter nt.Agent.hp void(self,f64) | method nt.Agent.hit f64(self,f64) | method nt.Agent.id f64(self) | method nt.Agent.target nt.Target(self) | class nt.Target | method nt.Target.value f64(self) | method nt.Agent.label str(self) | setter nt.time.scale void(f64) | getter nt.time.scale f64() | function nt.peek f64(nt.Agent) | function nt.arr.sumF32 f64(f32[])
+abi: module stamp matches the runtime
+bound: 21 imports
+module: add=5 bits=8 flip=true
+module: greet=hi, shared len=4
+module: sumU16=6 sumF64=0.75
+module: agent hp=25 hit=20 id=1 target=60 label=agent#1
+module: scale=4
+module: TypeError: expected a nt.Agent handle, got an ordinary object
+module: TypeError: expected a Float32Array, got a Int8Array
+module: tick=7
+host: scale=4
+host: agents made=1
+host: readTick=7
+host: readTick after re-register=8
+host: agents freed=5 kept hp=20
+host: sumHost=6.5
+imports of second module: function nt.absent.ping
+refused: function nt.absent.ping (not registered)
+refused: second module not entered

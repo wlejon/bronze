@@ -62,6 +62,13 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
           const std::string& censusOutPath = {}, bool pinsAllowObserved = false,
           const std::string& nativeManifestPath = {},
           const std::string& nativeLibPath = {});
+// `nativeManifestPath` is `--native-manifest`: the JSON embed::writeNativeManifest
+// printed from a host's registry (or a directory of them), naming the JS paths
+// the program may call as direct native calls and their C signatures
+// (lower/native_manifest.h). `nativeLibPath` is the slot the removed
+// `--native-lib` occupied, kept so a host's positional call keeps compiling;
+// anything but empty is refused by name.
+//
 // `timings` prints per-phase wall time to stderr. It defaults off and no test
 // passes it: a duration is the one thing bronze emits that cannot be
 // deterministic, so it stays out of every path an expectation can see.

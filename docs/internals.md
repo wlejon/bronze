@@ -100,9 +100,9 @@ which defaults to `bronze_main`. `--emit-shared` links a loadable module
 instead of an executable (below). All four are lowering- and link-level facts,
 so `--no-infer` changes nothing about any of them.
 
-An object exports exactly three symbols — its entry, its ABI stamp and its
-host-globals manifest, the last two named after the entry — and everything
-else it defines is internal. That is
+An object exports exactly four symbols — its entry, its ABI stamp, its
+host-globals manifest and its native import table, the last three named after
+the entry — and everything else it defines is internal. That is
 what lets a host link **more than one** compiled module into one image and
 enter them in turn. The runtime is shared, and what each module owns privately
 is its inline-cache table, its key remap, its global cache, its
@@ -120,14 +120,57 @@ exceptions pinned byte-for-byte.
 `--emit-shared` links the object into a DLL/.so/.dylib against the SHARED
 bronze runtime (`bronze_runtime_shared`, `cmake/bronze_shared_runtime.cmake`)
 rather than into an executable against the static one. A host opens it at run
-time and learns everything it needs from three exported symbols, all named
-after the entry: `<entry>`, `<entry>_abi_fingerprint`, and
-`<entry>_host_globals` — the `--host-globals` manifest the module was compiled
-against, as a count and a run of NUL-terminated names. `src/abi/bronze_abi.h`
-is the contract for all three, including the layout. A loader checks the stamp
+time and learns everything it needs from four exported symbols, all named
+after the entry: `<entry>`, `<entry>_abi_fingerprint`, `<entry>_host_globals`
+— the `--host-globals` manifest the module was compiled against, as a count
+and a run of NUL-terminated names — and `<entry>_native_imports`, the table
+of host natives the module calls (below). `src/abi/bronze_abi.h` is the
+contract for all four, including the layouts. A loader checks the stamp
 against `embed::abiFingerprint()` before calling anything, diffs the manifest
-against what it has registered, and enters the module through
-`embed::runEntry`.
+against what it has registered, binds the import table
+(`embed::bindNativeImports`, which names every native it cannot fill), and
+enters the module through `embed::runEntry`.
+
+### Host natives: registered by the host, bound at load time
+
+A host exposes C functions to programs with `embed::registerNative(jsPath,
+fn, NativeSignature)` — `bro.mesh.box` as a function, `bro.time.scale` as a
+namespace property (a getter and a setter), `bro.ai.AIAgent` as a class whose
+constructor returns a `void*` the runtime wraps into a handle, with methods,
+getters and setters under `bro.ai.AIAgent.<member>`. The signature vocabulary
+(`src/abi/bronze_native_type.h`) is closed and checked at registration: `void
+f64 i32 bool str dynamic`, the typed arrays `f32[] f64[] i32[] u8[] u16[]
+u32[] i8[] i16[]` (parameter only, crossing as a `(T*, uint32_t)` pair valid
+for the call), and a registered class's path (a handle of that class,
+crossing as the `void*` its constructor returned, with a one-word tag compare
+at the call site and a TypeError naming the class for anything else). An
+unknown spelling is a refused registration, never `dynamic`. A bare name that
+is already a host global is refused too, and the reverse registration is
+fatal — the two registries never shadow each other.
+
+The lowering (`src/lower/lower_native.cpp`) turns `bro.mesh.box(w, h)`,
+`new bro.ai.AIAgent(1)`, `agent.move(dx)` on a binding it saw constructed
+(or a captured `const`), `agent.hp`, `agent.hp = v` and `bro.time.scale` into
+direct calls with the scalar coercions done in JS order, the pointers taken
+last (a str is copied into a per-call scratch, a typed array's bytes are
+checked for kind and detachment), and the result wrapped back — a class-typed
+return becomes a handle born on the class's prototype, owing the class's
+destructor.
+
+No native symbol is ever resolved by a linker. Each direct call goes through
+a slot of the module's import table, `<entry>_native_imports`: `u32 count;
+u32 namesOffset; u64 slots[count];` then `count` × `"<kind> <path>\0"
+"<signature>\0"` (or `"class <path>\0" "\0"` for the slot that carries a
+class's tag). Function slots start as the address of `bronze_native_unbound`
+(a trap that names the situation), class slots as 0. The JIT (`evalScript`)
+reads the thread's registry directly and binds the program before it runs;
+`bronze build --native-manifest <file>` reads the same registry printed by
+`embed::writeNativeManifest` (JSON: `{"version": 1, "natives": [{path,
+kind, class?, returns, returnClass?, params, signature}]}`), and the module's
+entry binds its own table as its first instruction — fatal, listing every
+missing native, if the loader did not bind it first. `tests/native` is the
+worked example of both paths, including the refusal of a module compiled
+against a native nobody registered.
 
 One runtime in the process is the whole point, and it is why a missing shared
 runtime is a diagnosed error rather than a fall back to the static archives: a

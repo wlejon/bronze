@@ -44,6 +44,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     ilFn.isGenerator = isGenerator;
     currentBlockIdx_ = 0;
     varBindings_.clear();
+    varNativeClasses_.clear();
     activeVarMap_.clear();
     currentScopeDepth_ = 0;
     varDeclCounter_ = 0;
@@ -162,6 +163,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
         openLexicalBindings(functionEnvScope_, ast::getLexicalDeclarations(stmts),
                             ast::getDefinitelyAssignedLexicalNames(stmts, &params),
                             ast::getConstDeclarations(stmts), ilFn);
+        planEnvSlotNativeClasses(functionEnvScope_, stmts);
     }
 
     if (!lowerStmtList(stmts, ilFn)) return false;

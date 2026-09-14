@@ -116,6 +116,55 @@ TEST_CASE("a registered host global answers bronze_global_get") {
     CHECK(replaced.asNumber() == 2.0);
 }
 
+// The cache cells a compiled module reads through: process-lifetime storage,
+// because the runtime registers the array as a root span keyed by the
+// current module epoch, and a stack array would dangle once the case returns.
+static uint64_t g_cachedReadCells[2] = {BRONZE_ABI_NO_EXCEPTION_BITS, BRONZE_ABI_NO_EXCEPTION_BITS};
+
+TEST_CASE("bronze_global_get_cached fills its cell and re-registration empties it") {
+    ShadowStackFrame frame;
+
+    embed::registerGlobal("cachedName", embed::fromUtf8("first"));
+    const uint32_t key = bronze_register_key_string("cachedName");
+    g_cachedReadCells[0] = BRONZE_ABI_NO_EXCEPTION_BITS;
+    g_cachedReadCells[1] = BRONZE_ABI_NO_EXCEPTION_BITS;
+
+    // The slow half of a compiled read: resolves, and fills slot 1 only.
+    Value v{bronze_global_get_cached(key, g_cachedReadCells, 2, 1)};
+    CHECK(v.isString());
+    CHECK(embed::toUtf8(v) == "first");
+    CHECK(g_cachedReadCells[1] == v.rawBits());
+    CHECK(g_cachedReadCells[0] == BRONZE_ABI_NO_EXCEPTION_BITS);
+
+    // The cell is a root: the string moves at a collection and the cell
+    // follows it, so the fast path (a plain load of the cell) stays valid.
+    runtime::rtHeap().collect();
+    Value moved{g_cachedReadCells[1]};
+    CHECK(moved.isString());
+    CHECK(embed::toUtf8(moved) == "first");
+
+    // registerGlobal on ANY name pours the hole back into every registered
+    // cell — invalidation is by registration, not by name, so a module that
+    // cached a builtin a host later overrides sees the override too.
+    embed::registerGlobal("someOtherName", embed::fromDouble(1.0));
+    CHECK(g_cachedReadCells[1] == BRONZE_ABI_NO_EXCEPTION_BITS);
+    Value again{bronze_global_get_cached(key, g_cachedReadCells, 2, 1)};
+    CHECK(embed::toUtf8(again) == "first");
+    CHECK(g_cachedReadCells[1] == again.rawBits());
+
+    // Replacing the cached name itself: the next slow read answers the
+    // replacement, and the cell holds it.
+    embed::registerGlobal("cachedName", embed::fromDouble(2.0));
+    CHECK(g_cachedReadCells[1] == BRONZE_ABI_NO_EXCEPTION_BITS);
+    Value replaced{bronze_global_get_cached(key, g_cachedReadCells, 2, 1)};
+    CHECK(replaced.isNumber());
+    CHECK(replaced.asNumber() == 2.0);
+    CHECK(g_cachedReadCells[1] == replaced.rawBits());
+
+    g_cachedReadCells[0] = BRONZE_ABI_NO_EXCEPTION_BITS;
+    g_cachedReadCells[1] = BRONZE_ABI_NO_EXCEPTION_BITS;
+}
+
 TEST_CASE("a registered host global overrides a runtime builtin") {
     ShadowStackFrame frame;
 
@@ -1199,4 +1248,131 @@ TEST_CASE("createExternalArrayBuffer reads host bytes in place and shares a live
     embed::collectGarbage();
     embed::drainFinalizers();
     CHECK(probe.freed == 1);
+}
+
+// ---- the native registry (tests/native holds the compiled-call suite) ------
+
+namespace {
+double embedTestScale(double a, double b) { return a * b; }
+void* embedTestProbeNew(double v) { return new double(v); }
+int embedTestProbeFreed = 0;
+void embedTestProbeFree(void* p) {
+    ++embedTestProbeFreed;
+    delete static_cast<double*>(p);
+}
+// The et.Probe class, registered by whichever of the two cases below runs
+// first: the registry is per thread and per process, and case order is free
+// (embed-gc-stress-shuffled).
+void ensureProbeClass() {
+    if (embed::nativeClassPrototype("et.Probe").found) return;
+    std::string err;
+    embed::NativeSignature ctor;
+    ctor.kind = embed::NativeKind::Constructor;
+    ctor.paramTypes = {"f64"};
+    ctor.destructor = &embedTestProbeFree;
+    REQUIRE_MESSAGE(embed::registerNative("et.Probe", reinterpret_cast<void*>(&embedTestProbeNew), ctor, &err), err);
+}
+}  // namespace
+
+TEST_CASE("registerNative checks the path, the vocabulary and the class graph") {
+    std::string err;
+    embed::NativeSignature sig;
+    sig.returnType = "f64";
+    sig.paramTypes = {"f64", "f64"};
+
+    // The refusals, each by message.
+    CHECK(!embed::registerNative("not a path", reinterpret_cast<void*>(&embedTestScale), sig, &err));
+    CHECK(err.find("not a JS path") != std::string::npos);
+    CHECK(!embed::registerNative("et.scale", nullptr, sig, &err));
+    CHECK(err.find("null function pointer") != std::string::npos);
+    sig.paramTypes = {"f64", "number"};
+    CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
+    CHECK(err.find("number") != std::string::npos);
+    sig.paramTypes = {"f64", "f64"};
+    sig.returnType = "u8[]";
+    CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
+    CHECK(err.find("u8[]") != std::string::npos);
+    sig.returnType = "f64";
+    sig.paramTypes = {"et.Ghost"};
+    CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
+    CHECK(err.find("et.Ghost") != std::string::npos);
+    sig.paramTypes = {"f64", "f64"};
+
+    // The acceptance, and what the registry then says about it.
+    REQUIRE(embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
+    CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
+    CHECK(err.find("already registered") != std::string::npos);
+    const auto names = embed::hostNativeNames();
+    CHECK(std::find(names.begin(), names.end(), "et.scale") != names.end());
+    CHECK(embed::nativeManifestJson().find("\"signature\": \"f64(f64,f64)\"") != std::string::npos);
+
+    // A class, and a member that names it.
+    ensureProbeClass();
+    CHECK(embed::nativeClassPrototype("et.Probe").found);
+    CHECK(!embed::nativeClassPrototype("et.Nothing").found);
+    embed::NativeSignature method;
+    method.kind = embed::NativeKind::Method;
+    method.className = "et.Probe";
+    method.returnType = "f64";
+    CHECK(!embed::registerNative("et.Other.read", reinterpret_cast<void*>(&embedTestScale), method, &err));
+    CHECK(err.find("et.Probe.<member>") != std::string::npos);
+    REQUIRE(embed::registerNative("et.Probe.read", reinterpret_cast<void*>(&embedTestScale), method, &err));
+    CHECK(embed::nativeManifestJson().find("\"signature\": \"f64(self)\"") != std::string::npos);
+    CHECK(embed::unregisterNative("et.Probe.read", embed::NativeKind::Method));
+
+    // A bare name a host global already holds.
+    embed::registerGlobal("etTaken", embed::fromDouble(1.0));
+    embed::NativeSignature bare;
+    bare.returnType = "f64";
+    CHECK(!embed::registerNative("etTaken", reinterpret_cast<void*>(&embedTestScale), bare, &err));
+    CHECK(err.find("host global") != std::string::npos);
+
+    CHECK(embed::unregisterNative("et.scale", embed::NativeKind::Function));
+    CHECK(!embed::unregisterNative("et.scale", embed::NativeKind::Function));
+}
+
+TEST_CASE("bronze_native_wrap makes a tagged handle the class's destructor reclaims") {
+    ensureProbeClass();
+    const void* tag = nullptr;
+    for (const auto& e : embed::hostNatives()) {
+        if (e.path == "et.Probe") CHECK(e.signature.destructor == &embedTestProbeFree);
+    }
+    // The class tag is what a bound `class et.Probe` import slot carries.
+    {
+        const std::string name = "class et.Probe";
+        std::vector<uint64_t> table(4, 0);
+        auto* bytes = reinterpret_cast<unsigned char*>(table.data());
+        const uint32_t count = 1;
+        const uint32_t namesOffset = 16;
+        std::memcpy(bytes, &count, 4);
+        std::memcpy(bytes + 4, &namesOffset, 4);
+        std::memcpy(bytes + namesOffset, name.c_str(), name.size() + 1);
+        bytes[namesOffset + name.size() + 1] = 0;
+        REQUIRE(embed::bindNativeImports(table.data()));
+        uint64_t slot = 0;
+        std::memcpy(&slot, bytes + 8, 8);
+        tag = reinterpret_cast<const void*>(static_cast<uintptr_t>(slot));
+    }
+    REQUIRE(tag != nullptr);
+
+    const int freedBefore = embedTestProbeFreed;
+    {
+        ShadowStackFrame frame;
+        embed::Persistent handle{Value{bronze_native_wrap(embedTestProbeNew(4.5), tag)}};
+        CHECK(embed::isObject(handle.get()));
+        CHECK(*static_cast<double*>(bronze_native_handle_data(handle.get().rawBits(), tag)) == 4.5);
+        // Born on the class's prototype.
+        embed::GlobalValue proto = embed::nativeClassPrototype("et.Probe");
+        CHECK(handle.get().asObject<ObjectHeader>()->shape->prototypeValue().rawBits() ==
+              proto.value.rawBits());
+        // A null pointer wraps to null, and never owes a destructor.
+        CHECK(embed::isNull(Value{bronze_native_wrap(nullptr, tag)}));
+        embed::collectGarbage();
+        CHECK(embedTestProbeFreed == freedBefore);
+    }
+    embed::collectGarbage();
+    embed::drainFinalizers();
+    embed::collectGarbage();
+    embed::drainFinalizers();
+    CHECK(embedTestProbeFreed == freedBefore + 1);
 }

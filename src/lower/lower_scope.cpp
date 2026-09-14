@@ -557,6 +557,7 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
     openLexicalBindings(envScopes_.size() - 1, lexical,
                         ast::getDefinitelyAssignedLexicalNames(stmts),
                         ast::getConstDeclarations(stmts), ilFn);
+    planEnvSlotNativeClasses(envScopes_.size() - 1, stmts);
 }
 
 void Lowerer::pushSyntheticEnv(std::vector<std::string> slots, il::Function& ilFn) {

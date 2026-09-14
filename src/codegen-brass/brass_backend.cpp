@@ -121,7 +121,8 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     }
 
     brass::DiagnosticReporter reporter;
-    auto ast = codegen::lowerToBrassAst(module, uniqueNames);
+    std::vector<uint32_t> globalReadKeys;
+    auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
     brass::il::TranslationResult res = brass::il::translate_bronze_ast(ast, options, &reporter);
     if (!res.success || !res.module || reporter.has_errors()) {
         std::string msg = reporter.has_errors() ? reporter.format_all() : res.error_message;
@@ -135,6 +136,137 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     if (entrySymbol_ != "main") {
         if (auto* fn = res.module->get_function("main")) {
             fn->set_name(res.module->string_pool().intern(entrySymbol_));
+        }
+    }
+
+    auto moduleSym = [&](const std::string& base) -> std::string {
+        if (entrySymbol_.empty() || entrySymbol_ == "main" || entrySymbol_ == "bronze_main") {
+            return base;
+        }
+        return base + "_" + entrySymbol_;
+    };
+
+    // Host-global read cache. One i64 cell per distinct key the module reads,
+    // in `__bronze_global_cache` (module-suffixed like the key map), every
+    // cell born as the hole. Each `global.get` calls the thunk for its key:
+    //
+    //   __bronze_global_read_k<k>():
+    //       v = cache[slot]
+    //       if v != HOLE: return v
+    //       return bronze_global_get_cached(keyMap[k], cache, count, slot)
+    //
+    // The runtime registers the cell array as a module root span on first
+    // sight, fills the slot for builtin and host answers, and pours the hole
+    // back into every registered cell when registerGlobal replaces a name —
+    // so the fast path is a load and a compare, and the resolve rules stay
+    // entirely in bronze_global_get_cached.
+    const std::string globalCacheSym = moduleSym("__bronze_global_cache");
+    const size_t globalCacheCount = globalReadKeys.size();
+    {
+        brass::Module& mod = *res.module;
+        mod.add_external_symbol(globalCacheSym);
+        mod.add_external_symbol("bronze_global_get_cached");
+        for (size_t slot = 0; slot < globalReadKeys.size(); ++slot) {
+            const uint32_t key = globalReadKeys[slot];
+            brass::Function* thunk = mod.create_function(codegen::globalReadThunkName(key), brass::Type::i64());
+            brass::Builder b(mod);
+            b.set_function(thunk);
+            brass::BasicBlock* entry = b.append_block("entry");
+            brass::BasicBlock* hit = b.append_block("hit");
+            brass::BasicBlock* miss = b.append_block("miss");
+            b.position_at_end(entry);
+            brass::Value* cells = b.build_func_addr(globalCacheSym);
+            brass::Value* cached = b.build_load(brass::Type::i64(), cells, static_cast<int32_t>(slot * sizeof(uint64_t)));
+            brass::Value* hole = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NO_EXCEPTION_BITS));
+            brass::Value* isHole = b.build_eq(cached, hole);
+            b.build_br_if(isHole, miss, hit);
+
+            b.position_at_end(hit);
+            b.build_ret(cached);
+
+            b.position_at_end(miss);
+            brass::Value* keyMap = b.build_func_addr(moduleSym("__bronze_key_map"));
+            brass::Value* keyId = b.build_load(brass::Type::i32(), keyMap, static_cast<int32_t>(key * sizeof(uint32_t)));
+            brass::Value* count = b.build_iconst_i64(static_cast<int64_t>(globalCacheCount));
+            brass::Value* slotVal = b.build_iconst_i32(static_cast<int32_t>(slot));
+            brass::Value* resolved = b.build_call("bronze_global_get_cached", brass::Type::i64(), {keyId, cells, count, slotVal});
+            b.build_ret(resolved);
+            thunk->rebuild_cfg_predecessors();
+        }
+    }
+
+    // The native import table and the thunks that call through it
+    // (bronze_abi.h, `<entry>_native_imports`). Lowering declared one external
+    // IL function per import, `__bronze_native_<i>`, typed as the native's C
+    // signature; each becomes
+    //
+    //   __bronze_native_<i>(args...):  callee = table.slots[i]; return callee(args...)
+    //   __bronze_native_<i>():         return table.slots[i]          (a class tag)
+    //   __bronze_native_bind():        bronze_native_bind(&table)
+    //
+    // so a call site is one load and one indirect call, and NOTHING in the
+    // object names a native's own symbol. A returned C `bool` is masked to
+    // its low bit: the ABI defines only `al` for it and the thunk's caller
+    // reads an i32.
+    const std::string importsSymbol = entrySymbol_ + "_native_imports";
+    const auto& imports = module.nativeImports;
+    {
+        brass::Module& mod = *res.module;
+        mod.add_external_symbol(importsSymbol);
+        mod.add_external_symbol("bronze_native_bind");
+        mod.add_external_symbol("bronze_native_unbound");
+        auto brassTypeOf = [](il::Type t) -> brass::Type {
+            switch (t) {
+                case il::Type::Void: return brass::Type::void_type();
+                case il::Type::Bool: return brass::Type::i32();
+                case il::Type::I32: return brass::Type::i32();
+                case il::Type::F64: return brass::Type::f64();
+                case il::Type::Str: return brass::Type::ptr();
+                case il::Type::Dynamic: return brass::Type::i64();
+            }
+            return brass::Type::i64();
+        };
+        for (size_t i = 0; i < imports.size(); ++i) {
+            const il::Function& decl = module.functions[imports[i].functionIndex];
+            const bool isClassSlot = imports[i].name.rfind("class ", 0) == 0;
+            std::vector<brass::Type> paramTypes;
+            for (const auto& p : decl.params) paramTypes.push_back(brassTypeOf(p.type));
+            const brass::Type retType = brassTypeOf(decl.returnType);
+            brass::Function* thunk = mod.create_function(
+                decl.name, retType, brass::Span<const brass::Type>(paramTypes.data(), paramTypes.size()));
+            brass::Builder b(mod);
+            b.set_function(thunk);
+            brass::BasicBlock* entry = b.append_block("entry");
+            std::vector<brass::Value*> args;
+            for (const auto& t : paramTypes) args.push_back(b.add_block_param(entry, t));
+            b.position_at_end(entry);
+            brass::Value* table = b.build_func_addr(importsSymbol);
+            const auto slotOffset = static_cast<int32_t>(8 + i * sizeof(uint64_t));
+            if (isClassSlot) {
+                b.build_ret(b.build_load(brass::Type::i64(), table, slotOffset));
+            } else {
+                brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
+                brass::Value* result = b.build_call_indirect(
+                    callee, retType, brass::Span<brass::Value* const>(args.data(), args.size()));
+                if (retType.is_void()) {
+                    b.build_ret_void();
+                } else if (decl.returnType == il::Type::Bool) {
+                    b.build_ret(b.build_and(result, b.build_iconst_i32(1)));
+                } else {
+                    b.build_ret(result);
+                }
+            }
+            thunk->rebuild_cfg_predecessors();
+        }
+        if (!imports.empty()) {
+            brass::Function* bind = mod.create_function("__bronze_native_bind", brass::Type::void_type());
+            brass::Builder b(mod);
+            b.set_function(bind);
+            b.append_block("entry");
+            brass::Value* table = b.build_func_addr(importsSymbol);
+            b.build_call("bronze_native_bind", brass::Type::void_type(), {table});
+            b.build_ret_void();
+            bind->rebuild_cfg_predecessors();
         }
     }
 
@@ -180,13 +312,6 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             }
         }
     }
-
-    auto moduleSym = [&](const std::string& base) -> std::string {
-        if (entrySymbol_.empty() || entrySymbol_ == "main" || entrySymbol_ == "bronze_main") {
-            return base;
-        }
-        return base + "_" + entrySymbol_;
-    };
 
     std::string roSecName = target.is_windows() ? ".rdata" : (target.is_macos() ? "__const" : ".rodata");
     brass::object::Section& roSec = obj.get_or_create_section(
@@ -452,12 +577,96 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         obj.add_symbol(std::move(tplSym));
     }
 
+    // The host-global read cache the thunks above index: one hole per slot.
+    dataSec.align_to(8);
+    const size_t cacheOffset = dataSec.data.size();
+    const size_t cacheCells = std::max<size_t>(globalCacheCount, 1);
+    const size_t cacheBytes = cacheCells * sizeof(uint64_t);
+    dataSec.data.resize(cacheOffset + cacheBytes);
+    for (size_t i = 0; i < cacheCells; ++i) {
+        *reinterpret_cast<uint64_t*>(&dataSec.data[cacheOffset + i * sizeof(uint64_t)]) = BRONZE_ABI_NO_EXCEPTION_BITS;
+    }
+    if (auto* sym = obj.find_symbol(globalCacheSym)) {
+        sym->section_index = obj.get_section_index(dataSecName);
+        sym->value = cacheOffset;
+        sym->size = cacheBytes;
+        sym->binding = brass::object::SymbolBinding::Local;
+        sym->type = brass::object::SymbolType::Object;
+    } else {
+        brass::object::ObjectSymbol cacheSymbol;
+        cacheSymbol.name = globalCacheSym;
+        cacheSymbol.section_index = obj.get_section_index(dataSecName);
+        cacheSymbol.value = cacheOffset;
+        cacheSymbol.size = cacheBytes;
+        cacheSymbol.binding = brass::object::SymbolBinding::Local;
+        cacheSymbol.type = brass::object::SymbolType::Object;
+        obj.add_symbol(std::move(cacheSymbol));
+    }
+
+    // The native import table: { u32 count; u32 namesOffset; u64 slots[];
+    // names... }. Every function slot starts as the address of
+    // bronze_native_unbound — an absolute relocation the loader resolves — so
+    // a call through a slot the bind never reached traps by name instead of
+    // jumping through zero; a class slot starts as 0 (the helpers that read
+    // one are fatal on null). Exported: the loader resolves it beside the
+    // entry, and defined for a module with no imports too, with count 0.
+    dataSec.align_to(8);
+    const size_t importsOffset = dataSec.data.size();
+    dataSec.emit32(static_cast<uint32_t>(imports.size()));
+    dataSec.emit32(static_cast<uint32_t>(8 + imports.size() * sizeof(uint64_t)));
+    for (size_t i = 0; i < imports.size(); ++i) {
+        const bool isClassSlot = imports[i].name.rfind("class ", 0) == 0;
+        if (!isClassSlot) {
+            brass::object::ObjectRelocation reloc;
+            reloc.offset = dataSec.data.size();
+            reloc.kind = brass::object::RelocKind::Abs64;
+            reloc.symbol_name = "bronze_native_unbound";
+            reloc.addend = 0;
+            dataSec.relocations.push_back(std::move(reloc));
+        }
+        dataSec.emit64(0);
+    }
+    for (const auto& imp : imports) {
+        dataSec.emit_bytes(reinterpret_cast<const uint8_t*>(imp.name.data()), imp.name.size());
+        dataSec.emit8(0);
+        dataSec.emit_bytes(reinterpret_cast<const uint8_t*>(imp.signature.data()), imp.signature.size());
+        dataSec.emit8(0);
+    }
+    const size_t importsSize = dataSec.data.size() - importsOffset;
+    if (auto* sym = obj.find_symbol(importsSymbol)) {
+        sym->section_index = obj.get_section_index(dataSecName);
+        sym->value = importsOffset;
+        sym->size = importsSize;
+        sym->binding = brass::object::SymbolBinding::Global;
+        sym->type = brass::object::SymbolType::Object;
+    } else {
+        brass::object::ObjectSymbol importsSym;
+        importsSym.name = importsSymbol;
+        importsSym.section_index = obj.get_section_index(dataSecName);
+        importsSym.value = importsOffset;
+        importsSym.size = importsSize;
+        importsSym.binding = brass::object::SymbolBinding::Global;
+        importsSym.type = brass::object::SymbolType::Object;
+        obj.add_symbol(std::move(importsSym));
+    }
+    if (!obj.find_symbol("bronze_native_unbound")) {
+        // The relocation target, declared undefined so the writers emit it
+        // as an import rather than refusing an unknown name.
+        brass::object::ObjectSymbol unbound;
+        unbound.name = "bronze_native_unbound";
+        unbound.section_index = brass::object::SECTION_UNDEF;
+        unbound.binding = brass::object::SymbolBinding::Global;
+        unbound.type = brass::object::SymbolType::Function;
+        obj.add_symbol(std::move(unbound));
+    }
+
     for (auto& sym : obj.symbols) {
         if (sym.section_index != brass::object::SECTION_UNDEF && sym.section_index >= 0) {
             if (sym.name != entrySymbol_ &&
                 sym.name != stampSymbol &&
                 sym.name != manifestSymbol &&
-                sym.name != keySymbol) {
+                sym.name != keySymbol &&
+                sym.name != importsSymbol) {
                 sym.binding = brass::object::SymbolBinding::Local;
             }
         }

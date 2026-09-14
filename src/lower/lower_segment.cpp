@@ -34,6 +34,7 @@ bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLeve
         // functionVarNames_ (a `var` nested in any top-level statement is
         // module-scoped wherever it is written), the env layout, strict mode.
         varBindings_.clear();
+        varNativeClasses_.clear();
         activeVarMap_.clear();
         currentScopeDepth_ = 0;
         varDeclCounter_ = 0;

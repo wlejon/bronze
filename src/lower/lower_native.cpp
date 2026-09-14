@@ -1,3 +1,13 @@
+// Direct calls to host natives (native_manifest.h). A call site the manifest
+// names lowers to a machine call through the module's import table: the
+// arguments are unboxed to the C signature here, the pointer-producing
+// conversions (a handle's data, a typed array's bytes) come LAST — after
+// every scalar coercion, since ToInt32 can run user code that allocates —
+// and the result is boxed, or wrapped into a handle of the class the native
+// returns. Nothing here resolves a symbol: the import function
+// `__bronze_native_<i>` is a declaration the backend turns into a thunk over
+// slot `i` of `<entry>_native_imports`.
+
 #include <string>
 #include <vector>
 
@@ -6,9 +16,43 @@
 
 namespace bronze::lower {
 
+namespace {
+
+il::Type nativeIlType(const abi::NativeTypeRef& ref) {
+    switch (ref.kind) {
+        case abi::NativeType::Void: return il::Type::Void;
+        case abi::NativeType::F64: return il::Type::F64;
+        case abi::NativeType::I32: return il::Type::I32;
+        case abi::NativeType::Bool: return il::Type::Bool;
+        default:
+            // dynamic, a handle (its data pointer), a typed array's data
+            // pointer, a str (the `const char*` the runtime made of it):
+            // all the 64-bit word.
+            return il::Type::Dynamic;
+    }
+}
+
+// The IL parameter list of an import: the receiver, then each parameter as
+// it crosses the call — a typed array is two (pointer, length).
+std::vector<il::Type> importParamTypes(const NativeSig& sig) {
+    std::vector<il::Type> out;
+    if (sig.hasSelf()) out.push_back(il::Type::Dynamic);
+    for (const auto& p : sig.paramTypes) {
+        if (abi::nativeTypeIsTypedArray(p.kind)) {
+            out.push_back(il::Type::Dynamic);
+            out.push_back(il::Type::I32);
+        } else {
+            out.push_back(nativeIlType(p));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
 std::string Lowerer::getDottedPath(const ast::Expr* expr) const {
     if (const auto* id = dynamic_cast<const ast::Ident*>(expr)) {
-        return id->name;
+        return isFreeIdentifier(id->name) ? id->name : std::string();
     }
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(expr)) {
         if (mem->isPrivate) return "";
@@ -19,60 +63,150 @@ std::string Lowerer::getDottedPath(const ast::Expr* expr) const {
     return "";
 }
 
+bool Lowerer::isFreeIdentifier(const std::string& name) const {
+    if (name.empty() || name[0] == '#') return false;
+    if (activeVarMap_.contains(name)) return false;
+    uint32_t depth = 0, index = 0;
+    if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar(name, depth, index)) return false;
+    if (functionIndices_.contains(name)) return false;
+    return true;
+}
+
 std::string Lowerer::getNativeClassOfExpr(const ast::Expr* expr) const {
     if (!nativeManifest_ || !expr) return "";
     if (const auto* id = dynamic_cast<const ast::Ident*>(expr)) {
-        auto it = varNativeClasses_.find(id->name);
-        if (it != varNativeClasses_.end()) return it->second;
-        return "";
+        auto it = activeVarMap_.find(id->name);
+        if (it == activeVarMap_.end()) {
+            // A captured binding of an enclosing function: known only when
+            // it is a `const` whose slot carries the class.
+            return capturedConstNativeClass(id->name);
+        }
+        auto cls = varNativeClasses_.find(it->second);
+        return cls == varNativeClasses_.end() ? std::string() : cls->second;
     }
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(expr)) {
-        std::string parentClass = getNativeClassOfExpr(mem->object.get());
-        if (!parentClass.empty()) {
-            const auto* cls = nativeManifest_->findClass(parentClass);
-            if (cls) {
-                auto pIt = cls->properties.find(mem->property);
-                if (pIt != cls->properties.end() && !pIt->second.returnClass.empty()) {
-                    return pIt->second.returnClass;
-                }
-                auto mIt = cls->methods.find(mem->property);
-                if (mIt != cls->methods.end() && !mIt->second.returnClass.empty()) {
-                    return mIt->second.returnClass;
-                }
+        if (mem->isPrivate) return "";
+        // A namespace getter that hands back a handle: `bro.time.clock`.
+        const std::string dotted = getDottedPath(mem);
+        if (!dotted.empty()) {
+            const auto dot = dotted.rfind('.');
+            if (const NativeSig* g = nativeManifest_->findGetter(dotted.substr(0, dot), dotted.substr(dot + 1))) {
+                return g->producedClass();
             }
+            return "";
+        }
+        const std::string owner = getNativeClassOfExpr(mem->object.get());
+        if (owner.empty()) return "";
+        if (const NativeSig* g = nativeManifest_->findGetter(owner, mem->property)) {
+            return g->producedClass();
         }
         return "";
     }
     if (const auto* call = dynamic_cast<const ast::Call*>(expr)) {
+        const std::string dotted = getDottedPath(call->callee.get());
+        if (!dotted.empty()) {
+            if (const NativeSig* f = nativeManifest_->findFunction(dotted)) return f->producedClass();
+            return "";
+        }
         if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
-            std::string parentClass = getNativeClassOfExpr(mem->object.get());
-            if (!parentClass.empty()) {
-                const auto* cls = nativeManifest_->findClass(parentClass);
-                if (cls) {
-                    auto mIt = cls->methods.find(mem->property);
-                    if (mIt != cls->methods.end() && !mIt->second.returnClass.empty()) {
-                        return mIt->second.returnClass;
-                    }
-                }
+            if (mem->isPrivate) return "";
+            const std::string owner = getNativeClassOfExpr(mem->object.get());
+            if (owner.empty()) return "";
+            if (const NativeSig* m = nativeManifest_->findMethod(owner, mem->property)) {
+                return m->producedClass();
             }
         }
-        std::string dotted = getDottedPath(call->callee.get());
-        if (!dotted.empty()) {
-            const auto* fn = nativeManifest_->findFunction(dotted);
-            if (fn) return fn->returnClass;
-        }
         return "";
+    }
+    if (const auto* newExpr = dynamic_cast<const ast::NewExpr*>(expr)) {
+        const std::string dotted = getDottedPath(newExpr->callee.get());
+        if (!dotted.empty() && nativeManifest_->findConstructor(dotted)) return dotted;
+        return "";
+    }
+    return "";
+}
+
+void Lowerer::noteNativeClassOfBinding(const std::string& name, const std::string& cls) {
+    if (!nativeManifest_) return;
+    auto it = activeVarMap_.find(name);
+    if (it == activeVarMap_.end()) return;
+    if (cls.empty()) {
+        varNativeClasses_.erase(it->second);
+    } else {
+        varNativeClasses_[it->second] = cls;
+    }
+    // A captured `const` carries its class on the environment slot too, so
+    // the closures that read it see the same handle class this scope does.
+    if (it->second < varBindings_.size()) {
+        const VarBinding& b = varBindings_[it->second];
+        if (b.inEnv && b.isConst && b.envScopeIndex < envScopes_.size()) {
+            auto& slots = envScopes_[b.envScopeIndex].slotNativeClass;
+            if (cls.empty()) {
+                slots.erase(b.envSlot);
+            } else {
+                slots[b.envSlot] = cls;
+            }
+        }
+    }
+}
+
+void Lowerer::planEnvSlotNativeClasses(size_t scopeIndex, const std::vector<const ast::Stmt*>& stmts) {
+    if (!nativeManifest_ || scopeIndex >= envScopes_.size()) return;
+    EnvScopeInfo& info = envScopes_[scopeIndex];
+    for (const ast::Stmt* s : stmts) {
+        const auto* vd = dynamic_cast<const ast::VarDecl*>(s);
+        if (!vd || !vd->isConst || vd->name.empty() || !vd->init) continue;
+        auto slot = info.slotOf.find(vd->name);
+        if (slot == info.slotOf.end()) continue;
+        // Only an initializer that names its class without going through
+        // another binding of THIS scope — a construction, or a call on a
+        // dotted namespace path. `const t = a.target()` is noted when the
+        // declaration itself is lowered (noteNativeClassOfBinding), which is
+        // before any closure written after it; what this pass adds is the
+        // hoisted function declared above the `const` it reads.
+        const ast::Expr* init = vd->init.get();
+        bool selfContained = dynamic_cast<const ast::NewExpr*>(init) != nullptr;
+        if (const auto* call = dynamic_cast<const ast::Call*>(init)) {
+            selfContained = !getDottedPath(call->callee.get()).empty();
+        } else if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(init)) {
+            selfContained = !getDottedPath(mem).empty();
+        }
+        if (!selfContained) continue;
+        const std::string cls = getNativeClassOfExpr(init);
+        if (!cls.empty()) info.slotNativeClass[slot->second] = cls;
+    }
+}
+
+void Lowerer::planEnvSlotNativeClasses(size_t scopeIndex, const std::vector<ast::StmtPtr>& stmts) {
+    if (!nativeManifest_) return;
+    std::vector<const ast::Stmt*> raw;
+    raw.reserve(stmts.size());
+    for (const auto& s : stmts) raw.push_back(s.get());
+    planEnvSlotNativeClasses(scopeIndex, raw);
+}
+
+std::string Lowerer::capturedConstNativeClass(const std::string& name) const {
+    if (!nativeManifest_) return "";
+    // The same walk as findEnclosingEnvVar, innermost scope first, stopping
+    // at the first scope that has the name — that is the binding the read
+    // resolves to, whether or not it carries a class.
+    for (size_t i = envScopes_.size(); i-- > 0;) {
+        auto it = envScopes_[i].slotOf.find(name);
+        if (it == envScopes_[i].slotOf.end()) continue;
+        auto cls = envScopes_[i].slotNativeClass.find(it->second);
+        return cls == envScopes_[i].slotNativeClass.end() ? std::string() : cls->second;
     }
     return "";
 }
 
 void Lowerer::initNativeManifestGlobals() {
     if (!nativeManifest_) return;
+    // The root of every dotted path is a name the program mentions as a free
+    // identifier. It joins the provided set so the accesses the lowering does
+    // NOT short-circuit (`bro.mesh` as a value, `x instanceof bro.ai.AIAgent`)
+    // read the host's object for it, exactly like any host global.
     for (const auto& root : nativeManifest_->namespaceRoots()) {
         hostGlobals_.insert(root);
-    }
-    for (const auto& cls : nativeManifest_->knownClasses()) {
-        hostGlobals_.insert(cls);
     }
 }
 
@@ -86,16 +220,67 @@ uint32_t Lowerer::registerExternalFunction(const std::string& symbol, il::Type r
     il::Function fn;
     fn.name = symbol;
     fn.returnType = returnType;
+    fn.isExternal = true;
     for (size_t i = 0; i < paramTypes.size(); ++i) {
         il::Param p;
         p.name = "arg" + std::to_string(i);
         p.type = paramTypes[i];
         fn.params.push_back(p);
     }
-    // blocks remains empty to mark an external C-ABI symbol declaration
     ilModule_.functions.push_back(std::move(fn));
     functionIndices_[symbol] = idx;
     return idx;
+}
+
+uint32_t Lowerer::nativeImportFunction(const NativeSig& sig) {
+    const std::string name = std::string(nativeKindName(sig.kind)) + " " + sig.path;
+    auto it = nativeImportIndex_.find(name);
+    if (it != nativeImportIndex_.end()) return ilModule_.nativeImports[it->second].functionIndex;
+    const auto slot = static_cast<uint32_t>(ilModule_.nativeImports.size());
+    const uint32_t fnIdx = registerExternalFunction("__bronze_native_" + std::to_string(slot),
+                                                    nativeIlType(sig.returnType), importParamTypes(sig));
+    ilModule_.nativeImports.push_back({name, sig.signature, fnIdx});
+    nativeImportIndex_[name] = slot;
+    return fnIdx;
+}
+
+uint32_t Lowerer::nativeClassTagFunction(const std::string& className) {
+    const std::string name = "class " + className;
+    auto it = nativeImportIndex_.find(name);
+    if (it != nativeImportIndex_.end()) return ilModule_.nativeImports[it->second].functionIndex;
+    const auto slot = static_cast<uint32_t>(ilModule_.nativeImports.size());
+    const uint32_t fnIdx = registerExternalFunction("__bronze_native_" + std::to_string(slot),
+                                                    il::Type::Dynamic, {});
+    ilModule_.nativeImports.push_back({name, std::string(), fnIdx});
+    nativeImportIndex_[name] = slot;
+    return fnIdx;
+}
+
+Lowerer::Value Lowerer::emitNativeClassTag(const std::string& className, il::Function& ilFn) {
+    il::ValueId res = ilFn.valueCount++;
+    il::Instruction inst;
+    inst.op = il::Op::Call;
+    inst.type = il::Type::Dynamic;
+    inst.result = res;
+    inst.calleeIndex = nativeClassTagFunction(className);
+    emitInst(ilFn, inst);
+    return Value{res, il::Type::Dynamic};
+}
+
+void Lowerer::emitNativeBindPrologue() {
+    if (ilModule_.nativeImports.empty()) return;
+    for (auto& fn : ilModule_.functions) {
+        if (!fn.isEntryPoint || fn.blocks.empty()) continue;
+        const uint32_t bindIdx = registerExternalFunction("__bronze_native_bind", il::Type::Void, {});
+        il::Instruction inst;
+        inst.op = il::Op::Call;
+        inst.type = il::Type::Void;
+        inst.result = il::kNoValue;
+        inst.calleeIndex = bindIdx;
+        auto& insts = fn.blocks[0].instructions;
+        insts.insert(insts.begin(), inst);
+        return;
+    }
 }
 
 Lowerer::Value Lowerer::emitDefaultValueForType(il::Type type, il::Function& ilFn) {
@@ -138,435 +323,353 @@ Lowerer::Value Lowerer::emitDefaultValueForType(il::Type type, il::Function& ilF
     return Value{res, inst.type};
 }
 
+std::optional<Lowerer::Value> Lowerer::emitNativeInvoke(const NativeSig& sig, const ast::Expr* selfExpr,
+                                                        std::optional<Value> selfValue,
+                                                        const std::vector<const ast::Expr*>& args,
+                                                        std::optional<Value> preLowered,
+                                                        il::Function& ilFn) {
+    // 1. Every operand expression, in source order, receiver first: the
+    // evaluation order the language gives the call, before any coercion.
+    std::optional<Value> self = selfValue;
+    if (sig.hasSelf() && !self) {
+        if (!selfExpr) return std::nullopt;
+        self = lowerExpr(*selfExpr, ilFn);
+        if (!self) return std::nullopt;
+    }
+    std::vector<std::optional<Value>> argVals(sig.paramTypes.size());
+    if (preLowered) {
+        argVals[0] = preLowered;
+    } else {
+        for (size_t i = 0; i < sig.paramTypes.size() && i < args.size(); ++i) {
+            auto v = lowerExpr(*args[i], ilFn);
+            if (!v) return std::nullopt;
+            argVals[i] = v;
+        }
+        // Trailing arguments beyond the signature: evaluated for their
+        // effects, then dropped, as a JS function drops them.
+        for (size_t i = sig.paramTypes.size(); i < args.size(); ++i) {
+            if (!lowerExpr(*args[i], ilFn)) return std::nullopt;
+        }
+    }
+
+    // 2. Scalar coercions, in parameter order. Each can run user code
+    // (valueOf, toString) and so allocate, which is why no pointer has been
+    // taken yet.
+    std::vector<Value> scalars(sig.paramTypes.size(), Value{});
+    uint32_t strCount = 0;
+    for (size_t i = 0; i < sig.paramTypes.size(); ++i) {
+        const auto& p = sig.paramTypes[i];
+        if (p.kind == abi::NativeType::Str) {
+            // The UTF-8 copy the C native reads: pushed on the runtime's
+            // scratch stack here, popped right after the call. Undefined (a
+            // missing argument) is "", anything else is ToString.
+            const uint32_t utf8Idx = registerExternalFunction(
+                "bronze_native_str_utf8", il::Type::Dynamic, {il::Type::Dynamic});
+            Value boxed = argVals[i] ? boxValueIfNeeded(*argVals[i], ilFn)
+                                     : Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+            il::ValueId textId = ilFn.valueCount++;
+            il::Instruction textInst;
+            textInst.op = il::Op::Call;
+            textInst.type = il::Type::Dynamic;
+            textInst.result = textId;
+            textInst.operands = {boxed.id};
+            textInst.calleeIndex = utf8Idx;
+            emitInst(ilFn, textInst);
+            scalars[i] = Value{textId, il::Type::Dynamic};
+            ++strCount;
+            continue;
+        }
+        if (p.kind == abi::NativeType::Class || abi::nativeTypeIsTypedArray(p.kind)) {
+            // A pointer-producing parameter: its VALUE is boxed now (an
+            // absent argument is undefined, which the helper reports as a
+            // TypeError naming what was expected), its pointer taken in 3.
+            scalars[i] = argVals[i] ? boxValueIfNeeded(*argVals[i], ilFn)
+                                    : Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+            continue;
+        }
+        const il::Type want = nativeIlType(p);
+        if (!argVals[i]) {
+            scalars[i] = emitDefaultValueForType(want, ilFn);
+            continue;
+        }
+        Value v = *argVals[i];
+        switch (p.kind) {
+            case abi::NativeType::F64: v = unboxValueIfNeeded(v, il::Type::F64, ilFn); break;
+            case abi::NativeType::I32: v = emitToInt32(v, ilFn); break;
+            case abi::NativeType::Bool: v = lowerConditionFromVal(v, ilFn); break;  // ToBoolean
+            default: v = boxValueIfNeeded(v, ilFn); break;
+        }
+        scalars[i] = v;
+    }
+
+    // 3. The pointers, immediately before the call: the receiver's data, then
+    // each handle's data and each typed array's (bytes, length), in order.
+    // Each helper raises a TypeError and answers null for a wrong value; the
+    // exception check after it takes the unwind path before the native runs.
+    std::vector<il::ValueId> operands;
+    const uint32_t handleDataIdx = registerExternalFunction(
+        "bronze_native_handle_data", il::Type::Dynamic, {il::Type::Dynamic, il::Type::Dynamic});
+    auto emitHandleData = [&](Value boxed, const std::string& cls) -> il::ValueId {
+        Value tag = emitNativeClassTag(cls, ilFn);
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::Call;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {boxed.id, tag.id};
+        inst.calleeIndex = handleDataIdx;
+        emitInst(ilFn, inst);
+        return res;
+    };
+    if (sig.hasSelf()) {
+        operands.push_back(emitHandleData(boxValueIfNeeded(*self, ilFn), sig.className));
+    }
+    for (size_t i = 0; i < sig.paramTypes.size(); ++i) {
+        const auto& p = sig.paramTypes[i];
+        if (p.kind == abi::NativeType::Class) {
+            operands.push_back(emitHandleData(scalars[i], p.className));
+        } else if (abi::nativeTypeIsTypedArray(p.kind)) {
+            const uint32_t dataIdx = registerExternalFunction(
+                "bronze_native_typed_array_data", il::Type::Dynamic, {il::Type::Dynamic, il::Type::I32});
+            const uint32_t lenIdx = registerExternalFunction(
+                "bronze_native_typed_array_length", il::Type::I32, {il::Type::Dynamic});
+            il::ValueId kindId = ilFn.valueCount++;
+            il::Instruction kindInst;
+            kindInst.op = il::Op::ConstI32;
+            kindInst.type = il::Type::I32;
+            kindInst.result = kindId;
+            kindInst.immI32 = static_cast<int32_t>(abi::nativeTypedArrayElementKind(p.kind));
+            emitInst(ilFn, kindInst);
+
+            il::ValueId dataId = ilFn.valueCount++;
+            il::Instruction dataInst;
+            dataInst.op = il::Op::Call;
+            dataInst.type = il::Type::Dynamic;
+            dataInst.result = dataId;
+            dataInst.operands = {scalars[i].id, kindId};
+            dataInst.calleeIndex = dataIdx;
+            emitInst(ilFn, dataInst);
+
+            il::ValueId lenId = ilFn.valueCount++;
+            il::Instruction lenInst;
+            lenInst.op = il::Op::Call;
+            lenInst.type = il::Type::I32;
+            lenInst.result = lenId;
+            lenInst.operands = {scalars[i].id};
+            lenInst.calleeIndex = lenIdx;
+            emitInst(ilFn, lenInst);
+            operands.push_back(dataId);
+            operands.push_back(lenId);
+        } else {
+            operands.push_back(scalars[i].id);
+        }
+    }
+
+    // 4. The call, through the import slot.
+    const il::Type retType = nativeIlType(sig.returnType);
+    il::ValueId res = (retType != il::Type::Void) ? ilFn.valueCount++ : il::kNoValue;
+    il::Instruction call;
+    call.op = il::Op::Call;
+    call.type = retType;
+    call.result = res;
+    call.operands = std::move(operands);
+    call.calleeIndex = nativeImportFunction(sig);
+    emitInst(ilFn, call);
+
+    // The str copies, popped now that the native has returned. On the
+    // exception path (the check after the call) they stay until the next
+    // release — a bounded leftover, never a dangling pointer, since a live
+    // outer call's entries sit below them.
+    if (strCount > 0) {
+        const uint32_t releaseIdx = registerExternalFunction(
+            "bronze_native_str_release", il::Type::Void, {il::Type::I32});
+        il::ValueId countId = ilFn.valueCount++;
+        il::Instruction countInst;
+        countInst.op = il::Op::ConstI32;
+        countInst.type = il::Type::I32;
+        countInst.result = countId;
+        countInst.immI32 = static_cast<int32_t>(strCount);
+        emitInst(ilFn, countInst);
+        il::Instruction release;
+        release.op = il::Op::Call;
+        release.type = il::Type::Void;
+        release.result = il::kNoValue;
+        release.operands = {countId};
+        release.calleeIndex = releaseIdx;
+        emitInst(ilFn, release);
+    }
+
+    // 5. The result, as the program sees it.
+    if (retType == il::Type::Void) {
+        return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
+    }
+    if (sig.returnType.kind == abi::NativeType::Class) {
+        // A raw pointer: wrapped into a handle of the class, which is what
+        // makes the class's methods, its prototype and its destructor apply.
+        const uint32_t wrapIdx = registerExternalFunction(
+            "bronze_native_wrap", il::Type::Dynamic, {il::Type::Dynamic, il::Type::Dynamic});
+        Value tag = emitNativeClassTag(sig.returnType.className, ilFn);
+        il::ValueId wrapped = ilFn.valueCount++;
+        il::Instruction wrap;
+        wrap.op = il::Op::Call;
+        wrap.type = il::Type::Dynamic;
+        wrap.result = wrapped;
+        wrap.operands = {res, tag.id};
+        wrap.calleeIndex = wrapIdx;
+        emitInst(ilFn, wrap);
+        return Value{wrapped, il::Type::Dynamic, sig.returnType.className};
+    }
+    if (sig.returnType.kind == abi::NativeType::Str) {
+        // The `const char*` the native answered, copied into a string value.
+        const uint32_t fromIdx = registerExternalFunction(
+            "bronze_native_str_from_utf8", il::Type::Dynamic, {il::Type::Dynamic});
+        il::ValueId strId = ilFn.valueCount++;
+        il::Instruction from;
+        from.op = il::Op::Call;
+        from.type = il::Type::Dynamic;
+        from.result = strId;
+        from.operands = {res};
+        from.calleeIndex = fromIdx;
+        emitInst(ilFn, from);
+        return Value{strId, il::Type::Dynamic};
+    }
+    if (retType == il::Type::I32) {
+        // An int32 is an intermediate the lattice has no element for
+        // (lower_expr_binary.cpp): read back as the number it denotes.
+        return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
+    }
+    return Value{res, retType, sig.returnClass};
+}
+
 std::optional<Lowerer::Value> Lowerer::tryLowerNativeCall(const ast::Call* call, il::Function& ilFn) {
     if (!nativeManifest_) return std::nullopt;
+    std::vector<const ast::Expr*> args;
+    args.reserve(call->args.size());
+    for (const auto& a : call->args) args.push_back(a.get());
 
-    // 1. Direct namespace/static functions, e.g. bro.math.lerp(...)
-    std::string dotted = getDottedPath(call->callee.get());
+    // 1. A namespace function, `bro.mesh.box(w, h)`: a dotted path rooted at
+    // a free identifier that the manifest names.
+    const std::string dotted = getDottedPath(call->callee.get());
     if (!dotted.empty()) {
-        auto dotPos = dotted.find('.');
-        std::string root = (dotPos != std::string::npos) ? dotted.substr(0, dotPos) : dotted;
-        if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(dotted)) return std::nullopt;
-        const auto* sig = nativeManifest_->findFunction(dotted);
-        if (sig) {
-            const auto expectedTypes = sig->toIlParamTypes();
-            std::vector<il::ValueId> argValIds;
-            for (size_t i = 0; i < sig->paramTypes.size(); ++i) {
-                il::Type expType = expectedTypes[i];
-                Value coerced{il::kNoValue, expType};
-                if (i < call->args.size()) {
-                    auto argVal = lowerExpr(*call->args[i], ilFn);
-                    if (!argVal) return std::nullopt;
-
-                    coerced = *argVal;
-                    if (expType == il::Type::F64) {
-                        coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-                    } else if (expType == il::Type::I32) {
-                        coerced = emitToInt32(coerced, ilFn);
-                    } else if (expType == il::Type::Bool) {
-                        coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-                    } else if (expType == il::Type::Str) {
-                        coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
-                    } else {
-                        coerced = boxValueIfNeeded(coerced, ilFn);
-                    }
-                } else {
-                    coerced = emitDefaultValueForType(expType, ilFn);
-                }
-                argValIds.push_back(coerced.id);
-            }
-
-            // Evaluate trailing arguments for side-effects
-            for (size_t i = sig->paramTypes.size(); i < call->args.size(); ++i) {
-                if (!lowerExpr(*call->args[i], ilFn)) return std::nullopt;
-            }
-
-            uint32_t calleeIdx = registerExternalFunction(sig->symbol, sig->toIlReturnType(), expectedTypes);
-            il::Type retType = sig->toIlReturnType();
-            il::ValueId res = (retType != il::Type::Void) ? ilFn.valueCount++ : il::kNoValue;
-
-            il::Instruction inst;
-            inst.op = il::Op::Call;
-            inst.type = retType;
-            inst.result = res;
-            inst.operands = std::move(argValIds);
-            inst.calleeIndex = calleeIdx;
-            emitInst(ilFn, inst);
-
-            if (retType == il::Type::Void) {
-                return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
-            }
-            if (retType == il::Type::Str) {
-                return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
-            }
-            if (retType == il::Type::I32) {
-                return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
-            }
-            return Value{res, retType, sig->returnClass};
+        if (const NativeSig* sig = nativeManifest_->findFunction(dotted)) {
+            return emitNativeInvoke(*sig, nullptr, std::nullopt, args, std::nullopt, ilFn);
         }
+        return std::nullopt;
     }
 
-    // 2. Method invocation on a native class instance, e.g. sh.insert(...)
+    // 2. A method on a binding known to hold a handle of a class.
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
-        std::string className = getNativeClassOfExpr(mem->object.get());
-
-        if (!className.empty()) {
-            const auto* cls = nativeManifest_->findClass(className);
-            if (cls && !explicitHostGlobals_.contains(cls->name) &&
-                !explicitHostGlobals_.contains(cls->qualifiedName)) {
-                auto mIt = cls->methods.find(mem->property);
-                if (mIt != cls->methods.end()) {
-                    const auto& msig = mIt->second;
-                    // First parameter of native method C-ABI is the 'self' handle (dynamic)
-                    auto objVal = lowerExpr(*mem->object, ilFn);
-                    if (!objVal) return std::nullopt;
-
-                    const auto expectedTypes = msig.toIlParamTypes();
-                    std::vector<il::ValueId> argValIds;
-                    // self argument
-                    argValIds.push_back(boxValueIfNeeded(*objVal, ilFn).id);
-
-                    // Method source arguments start from index 1 in expectedTypes
-                    size_t methodArgCount = expectedTypes.size() > 0 ? expectedTypes.size() - 1 : 0;
-                    for (size_t i = 0; i < methodArgCount; ++i) {
-                        il::Type expType = expectedTypes[i + 1];
-                        Value coerced{il::kNoValue, expType};
-                        if (i < call->args.size()) {
-                            auto argVal = lowerExpr(*call->args[i], ilFn);
-                            if (!argVal) return std::nullopt;
-
-                            coerced = *argVal;
-                            if (expType == il::Type::F64) {
-                                coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-                            } else if (expType == il::Type::I32) {
-                                coerced = emitToInt32(coerced, ilFn);
-                            } else if (expType == il::Type::Bool) {
-                                coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-                            } else if (expType == il::Type::Str) {
-                                coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
-                            } else {
-                                coerced = boxValueIfNeeded(coerced, ilFn);
-                            }
-                        } else {
-                            coerced = emitDefaultValueForType(expType, ilFn);
-                        }
-                        argValIds.push_back(coerced.id);
-                    }
-
-                    // Trailing extra arguments
-                    for (size_t i = methodArgCount; i < call->args.size(); ++i) {
-                        if (!lowerExpr(*call->args[i], ilFn)) return std::nullopt;
-                    }
-
-                    uint32_t calleeIdx = registerExternalFunction(msig.symbol, msig.toIlReturnType(), expectedTypes);
-                    il::Type retType = msig.toIlReturnType();
-                    il::ValueId res = (retType != il::Type::Void) ? ilFn.valueCount++ : il::kNoValue;
-
-                    il::Instruction inst;
-                    inst.op = il::Op::Call;
-                    inst.type = retType;
-                    inst.result = res;
-                    inst.operands = std::move(argValIds);
-                    inst.calleeIndex = calleeIdx;
-                    emitInst(ilFn, inst);
-
-                    if (retType == il::Type::Void) {
-                        return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
-                    }
-                    if (retType == il::Type::Str) {
-                        return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
-                    }
-                    if (retType == il::Type::I32) {
-                        return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
-                    }
-                    return Value{res, retType, msig.returnClass};
-                }
-            }
+        if (mem->isPrivate) return std::nullopt;
+        const std::string cls = getNativeClassOfExpr(mem->object.get());
+        if (cls.empty()) return std::nullopt;
+        if (const NativeSig* sig = nativeManifest_->findMethod(cls, mem->property)) {
+            return emitNativeInvoke(*sig, mem->object.get(), std::nullopt, args, std::nullopt, ilFn);
         }
     }
-
     return std::nullopt;
 }
 
 std::optional<Lowerer::Value> Lowerer::tryLowerNativeNew(const ast::NewExpr* newExpr, il::Function& ilFn) {
     if (!nativeManifest_) return std::nullopt;
-
-    std::string className;
-    if (const auto* id = dynamic_cast<const ast::Ident*>(newExpr->callee.get())) {
-        className = id->name;
-    } else {
-        className = getDottedPath(newExpr->callee.get());
-    }
-
-    if (className.empty()) return std::nullopt;
-    auto dotPos = className.find('.');
-    std::string root = (dotPos != std::string::npos) ? className.substr(0, dotPos) : className;
-    if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(className)) return std::nullopt;
-
-    const auto* cls = nativeManifest_->findClass(className);
-    if (!cls || cls->constructor.symbol.empty()) return std::nullopt;
-    if (explicitHostGlobals_.contains(cls->name) ||
-        explicitHostGlobals_.contains(cls->qualifiedName)) return std::nullopt;
-
-    const auto& ctor = cls->constructor;
-    const auto expectedTypes = ctor.toIlParamTypes();
-
-    std::vector<il::ValueId> argValIds;
-    for (size_t i = 0; i < expectedTypes.size(); ++i) {
-        il::Type expType = expectedTypes[i];
-        Value coerced{il::kNoValue, expType};
-        if (i < newExpr->args.size()) {
-            auto argVal = lowerExpr(*newExpr->args[i], ilFn);
-            if (!argVal) return std::nullopt;
-
-            coerced = *argVal;
-            if (expType == il::Type::F64) {
-                coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-            } else if (expType == il::Type::I32) {
-                coerced = emitToInt32(coerced, ilFn);
-            } else if (expType == il::Type::Bool) {
-                coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-            } else if (expType == il::Type::Str) {
-                coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
-            } else {
-                coerced = boxValueIfNeeded(coerced, ilFn);
-            }
-        } else {
-            coerced = emitDefaultValueForType(expType, ilFn);
-        }
-        argValIds.push_back(coerced.id);
-    }
-
-    for (size_t i = expectedTypes.size(); i < newExpr->args.size(); ++i) {
-        if (!lowerExpr(*newExpr->args[i], ilFn)) return std::nullopt;
-    }
-
-    uint32_t calleeIdx = registerExternalFunction(ctor.symbol, il::Type::Dynamic, expectedTypes);
-    il::ValueId res = ilFn.valueCount++;
-
-    il::Instruction inst;
-    inst.op = il::Op::Call;
-    inst.type = il::Type::Dynamic;
-    inst.result = res;
-    inst.operands = std::move(argValIds);
-    inst.calleeIndex = calleeIdx;
-    emitInst(ilFn, inst);
-
-    return Value{res, il::Type::Dynamic, className};
+    const std::string dotted = getDottedPath(newExpr->callee.get());
+    if (dotted.empty()) return std::nullopt;
+    const NativeSig* sig = nativeManifest_->findConstructor(dotted);
+    if (!sig) return std::nullopt;
+    std::vector<const ast::Expr*> args;
+    for (const auto& a : newExpr->args) args.push_back(a.get());
+    return emitNativeInvoke(*sig, nullptr, std::nullopt, args, std::nullopt, ilFn);
 }
 
 std::optional<Lowerer::Value> Lowerer::tryLowerNativePropertyGet(const ast::MemberAccess* mem,
                                                                 il::Function& ilFn, bool onSpine) {
     if (!nativeManifest_ || mem->isPrivate) return std::nullopt;
 
-    // 1. Namespace property access, e.g. bro.time.scale, bro.time.now
-    std::string dotted = getDottedPath(mem);
+    // 1. A namespace property, `bro.time.scale`.
+    const std::string dotted = getDottedPath(mem);
     if (!dotted.empty()) {
-        auto dotPos = dotted.find('.');
-        std::string root = (dotPos != std::string::npos) ? dotted.substr(0, dotPos) : dotted;
-        if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(dotted)) return std::nullopt;
-        const auto* psig = nativeManifest_->findNamespaceProperty(dotted);
-        if (psig && !psig->getterSymbol.empty()) {
-            il::Type retType = nativeTypeToIl(psig->type);
-            uint32_t calleeIdx = registerExternalFunction(psig->getterSymbol, retType, {});
-            il::ValueId res = (retType != il::Type::Void) ? ilFn.valueCount++ : il::kNoValue;
-            il::Instruction inst;
-            inst.op = il::Op::Call;
-            inst.type = retType;
-            inst.result = res;
-            inst.operands = {};
-            inst.calleeIndex = calleeIdx;
-            emitInst(ilFn, inst);
-            if (retType == il::Type::Void) {
-                return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
-            }
-            if (retType == il::Type::Str) {
-                return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
-            }
-            if (retType == il::Type::I32) {
-                return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
-            }
-            return Value{res, retType};
+        const auto dot = dotted.rfind('.');
+        if (const NativeSig* g = nativeManifest_->findGetter(dotted.substr(0, dot), dotted.substr(dot + 1))) {
+            return emitNativeInvoke(*g, nullptr, std::nullopt, {}, std::nullopt, ilFn);
         }
+        return std::nullopt;
     }
 
-    // 2. Class instance property access, e.g. smoother.current
-    std::string className = getNativeClassOfExpr(mem->object.get());
-    if (!className.empty()) {
-        const auto* cls = nativeManifest_->findClass(className);
-        if (cls && !explicitHostGlobals_.contains(cls->name) &&
-            !explicitHostGlobals_.contains(cls->qualifiedName)) {
-            auto pIt = cls->properties.find(mem->property);
-            if (pIt != cls->properties.end() && !pIt->second.getterSymbol.empty()) {
-                auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
-                if (!objVal) return std::nullopt;
-                il::Type retType = nativeTypeToIl(pIt->second.type);
-                uint32_t calleeIdx = registerExternalFunction(pIt->second.getterSymbol, retType, {il::Type::Dynamic});
-                il::ValueId res = ilFn.valueCount++;
-                il::Instruction inst;
-                inst.op = il::Op::Call;
-                inst.type = retType;
-                inst.result = res;
-                inst.operands = {boxValueIfNeeded(*objVal, ilFn).id};
-                inst.calleeIndex = calleeIdx;
-                emitInst(ilFn, inst);
-                if (retType == il::Type::Str) {
-                    return boxValueIfNeeded(Value{res, il::Type::Str}, ilFn);
-                }
-                if (retType == il::Type::I32) {
-                    return unboxValueIfNeeded(Value{res, il::Type::I32}, il::Type::F64, ilFn);
-                }
-                return Value{res, retType, pIt->second.returnClass};
-            }
-        }
-    }
-
-    return std::nullopt;
+    // 2. An instance property of a known class, `agent.position`.
+    const std::string cls = getNativeClassOfExpr(mem->object.get());
+    if (cls.empty()) return std::nullopt;
+    const NativeSig* g = nativeManifest_->findGetter(cls, mem->property);
+    if (!g) return std::nullopt;
+    auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
+    if (!objVal) return std::nullopt;
+    return emitNativeInvoke(*g, nullptr, objVal, {}, std::nullopt, ilFn);
 }
 
 std::optional<Lowerer::Value> Lowerer::tryLowerNativeAssignment(const ast::Binary* bin,
                                                                il::Function& ilFn) {
     if (!nativeManifest_) return std::nullopt;
-
     const auto* mem = dynamic_cast<const ast::MemberAccess*>(bin->lhs.get());
     if (!mem || mem->isPrivate) return std::nullopt;
 
-    // 1. Namespace property assignment, e.g. bro.time.scale = 2.0
-    std::string dotted = getDottedPath(mem);
+    // Which setter (and, for a compound assignment, which getter): a
+    // namespace property or an instance property of a known class.
+    std::string owner;
+    const NativeSig* setter = nullptr;
+    const NativeSig* getter = nullptr;
+    std::optional<Value> self;
+    const std::string dotted = getDottedPath(mem);
     if (!dotted.empty()) {
-        auto dotPos = dotted.find('.');
-        std::string root = (dotPos != std::string::npos) ? dotted.substr(0, dotPos) : dotted;
-        if (explicitHostGlobals_.contains(root) || explicitHostGlobals_.contains(dotted)) return std::nullopt;
-        const auto* psig = nativeManifest_->findNamespaceProperty(dotted);
-        if (psig) {
-            if (psig->setterSymbol.empty()) {
-                diags_.error(bin->lhs->span, "Cannot assign to read-only property '" + dotted + "'");
-                return std::nullopt;
-            }
-
-            il::Type propType = nativeTypeToIl(psig->type);
-
-            std::optional<Value> curVal;
-            if (bin->op != ast::BinaryOp::Assign) {
-                if (psig->getterSymbol.empty()) {
-                    diags_.error(bin->lhs->span, "Cannot read property for compound assignment '" + dotted + "'");
-                    return std::nullopt;
-                }
-                uint32_t getIdx = registerExternalFunction(psig->getterSymbol, propType, {});
-                il::ValueId curId = ilFn.valueCount++;
-                il::Instruction getInst;
-                getInst.op = il::Op::Call;
-                getInst.type = propType;
-                getInst.result = curId;
-                getInst.operands = {};
-                getInst.calleeIndex = getIdx;
-                emitInst(ilFn, getInst);
-                curVal = Value{curId, propType};
-            }
-
-            auto rhsVal = lowerExpr(*bin->rhs, ilFn);
-            if (!rhsVal) return std::nullopt;
-
-            Value combined = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, provenNumber(*bin), ilFn)
-                                    : *rhsVal;
-
-            Value coerced = combined;
-            if (propType == il::Type::F64) {
-                coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-            } else if (propType == il::Type::I32) {
-                coerced = emitToInt32(coerced, ilFn);
-            } else if (propType == il::Type::Bool) {
-                coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-            } else if (propType == il::Type::Str) {
-                coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
-            } else {
-                coerced = boxValueIfNeeded(coerced, ilFn);
-            }
-
-            uint32_t setIdx = registerExternalFunction(psig->setterSymbol, il::Type::Void, {propType});
-            il::Instruction setInst;
-            setInst.op = il::Op::Call;
-            setInst.type = il::Type::Void;
-            setInst.result = il::kNoValue;
-            setInst.operands = {coerced.id};
-            setInst.calleeIndex = setIdx;
-            emitInst(ilFn, setInst);
-
-            return boxValueIfNeeded(coerced, ilFn);
-        }
+        const auto dot = dotted.rfind('.');
+        owner = dotted.substr(0, dot);
+        setter = nativeManifest_->findSetter(owner, mem->property);
+        getter = nativeManifest_->findGetter(owner, mem->property);
+        if (!setter && !getter) return std::nullopt;
+    } else {
+        owner = getNativeClassOfExpr(mem->object.get());
+        if (owner.empty()) return std::nullopt;
+        setter = nativeManifest_->findSetter(owner, mem->property);
+        getter = nativeManifest_->findGetter(owner, mem->property);
+        if (!setter && !getter) return std::nullopt;
+    }
+    if (!setter) {
+        diags_.error(bin->lhs->span, "cannot assign to read-only native property '" + owner + "." +
+                                         mem->property + "'");
+        return std::nullopt;
+    }
+    const bool compound = bin->op != ast::BinaryOp::Assign;
+    if (compound && !getter) {
+        diags_.error(bin->lhs->span, "native property '" + owner + "." + mem->property +
+                                         "' has no getter, so it cannot be read for a compound assignment");
+        return std::nullopt;
+    }
+    if (compound && (bin->op == ast::BinaryOp::LogicalAndAssign ||
+                     bin->op == ast::BinaryOp::LogicalOrAssign ||
+                     bin->op == ast::BinaryOp::NullishAssign)) {
+        diags_.error(bin->lhs->span, "a logical assignment to native property '" + owner + "." +
+                                         mem->property + "' is not supported; write it out");
+        return std::nullopt;
     }
 
-    // 2. Class instance property assignment, e.g. obj.prop = val
-    std::string className = getNativeClassOfExpr(mem->object.get());
-    if (!className.empty()) {
-        const auto* cls = nativeManifest_->findClass(className);
-        if (cls) {
-            auto pIt = cls->properties.find(mem->property);
-            if (pIt != cls->properties.end()) {
-                const auto& prop = pIt->second;
-                if (prop.setterSymbol.empty()) {
-                    diags_.error(bin->lhs->span, "Cannot assign to read-only property '" + mem->property + "' on class '" + className + "'");
-                    return std::nullopt;
-                }
-
-                auto objVal = lowerExpr(*mem->object, ilFn);
-                if (!objVal) return std::nullopt;
-                auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
-
-                il::Type propType = nativeTypeToIl(prop.type);
-
-                std::optional<Value> curVal;
-                if (bin->op != ast::BinaryOp::Assign) {
-                    if (prop.getterSymbol.empty()) {
-                        diags_.error(bin->lhs->span, "Cannot read property for compound assignment '" + mem->property + "'");
-                        return std::nullopt;
-                    }
-                    uint32_t getIdx = registerExternalFunction(prop.getterSymbol, propType, {il::Type::Dynamic});
-                    il::ValueId curId = ilFn.valueCount++;
-                    il::Instruction getInst;
-                    getInst.op = il::Op::Call;
-                    getInst.type = propType;
-                    getInst.result = curId;
-                    getInst.operands = {objBoxed.id};
-                    getInst.calleeIndex = getIdx;
-                    emitInst(ilFn, getInst);
-                    curVal = Value{curId, propType};
-                }
-
-                auto rhsVal = lowerExpr(*bin->rhs, ilFn);
-                if (!rhsVal) return std::nullopt;
-
-                Value combined = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op, provenNumber(*bin), ilFn)
-                                        : *rhsVal;
-
-                Value coerced = combined;
-                if (propType == il::Type::F64) {
-                    coerced = unboxValueIfNeeded(coerced, il::Type::F64, ilFn);
-                } else if (propType == il::Type::I32) {
-                    coerced = emitToInt32(coerced, ilFn);
-                } else if (propType == il::Type::Bool) {
-                    coerced = unboxValueIfNeeded(coerced, il::Type::Bool, ilFn);
-                } else if (propType == il::Type::Str) {
-                    coerced = unboxValueIfNeeded(coerced, il::Type::Str, ilFn);
-                } else {
-                    coerced = boxValueIfNeeded(coerced, ilFn);
-                }
-
-                uint32_t setIdx = registerExternalFunction(prop.setterSymbol, il::Type::Void, {il::Type::Dynamic, propType});
-                il::Instruction setInst;
-                setInst.op = il::Op::Call;
-                setInst.type = il::Type::Void;
-                setInst.result = il::kNoValue;
-                setInst.operands = {objBoxed.id, coerced.id};
-                setInst.calleeIndex = setIdx;
-                emitInst(ilFn, setInst);
-
-                return boxValueIfNeeded(coerced, ilFn);
-            }
-        }
+    // The receiver once, shared by the read and the write.
+    if (setter->hasSelf()) {
+        self = lowerExpr(*mem->object, ilFn);
+        if (!self) return std::nullopt;
+        self = boxValueIfNeeded(*self, ilFn);
     }
 
-    return std::nullopt;
+    std::optional<Value> current;
+    if (compound) {
+        current = emitNativeInvoke(*getter, nullptr, self, {}, std::nullopt, ilFn);
+        if (!current) return std::nullopt;
+    }
+    auto rhs = lowerExpr(*bin->rhs, ilFn);
+    if (!rhs) return std::nullopt;
+    Value stored = compound ? emitCompoundCombine(*current, *rhs, bin->op, provenNumber(*bin), ilFn)
+                            : *rhs;
+    // The setter's one parameter, already lowered; the invoke coerces it.
+    if (!emitNativeInvoke(*setter, nullptr, self, {}, stored, ilFn)) return std::nullopt;
+    // An assignment's value is the RHS as assigned (13.15.2), not what the
+    // setter made of it.
+    return boxValueIfNeeded(stored, ilFn);
 }
 
 }  // namespace bronze::lower

@@ -203,6 +203,7 @@ std::optional<il::Module> Lowerer::lower() {
         // such a name resolved to a binding whose SSA value id names an
         // unrelated instruction in `main`.
         varBindings_.clear();
+        varNativeClasses_.clear();
         activeVarMap_.clear();
         functionRefMap_.clear();
         currentScopeDepth_ = 0;
@@ -272,6 +273,9 @@ std::optional<il::Module> Lowerer::lower() {
     }
 
     if (diags_.hasErrors()) return std::nullopt;
+    // Every import is known only now, so the entry's first instruction — the
+    // bind of the table the sites call through — goes in last.
+    emitNativeBindPrologue();
     // The census's one WHOLE-MODULE pass, and it must run before the key
     // constants are frozen because it can add rows (lower_census.cpp): a
     // `param`/`return` owner spelling that would govern two different IL
@@ -605,6 +609,9 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     info.envValue = il::kNoValue;
     envScopes_.push_back(std::move(info));
     moduleEnvScope_ = envScopes_.size() - 1;
+    // Here rather than beside openLexicalBindings, because the module
+    // functions that capture these slots are lowered before `main` opens them.
+    planEnvSlotNativeClasses(moduleEnvScope_, topLevelStmts);
 }
 
 // The top level of a LARGE module, lowered as segments: `main` still creates

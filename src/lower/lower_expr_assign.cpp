@@ -567,9 +567,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         } else {
             emitEnvSet(depth, index, stored, ilFn, /*assigning=*/true);
         }
-        if (nativeManifest_ && !stored.nativeClass.empty()) {
-            varNativeClasses_[ident->name] = stored.nativeClass;
-        }
+        // The binding now holds this: a handle of a known class, or — for
+        // anything else — no longer one.
+        noteNativeClassOfBinding(ident->name, stored.nativeClass);
         return stored;
     }
     // An array or object literal on the left never arrives here: the parser

@@ -24,6 +24,7 @@
 namespace bronze::lower {
 
 class NativeManifest;
+struct NativeSig;
 
 // Operators whose EVERY operand goes through ToNumeric on every branch. One
 // table, two consumers: the typed-element seam (lower_typed_elem.cpp, which
@@ -80,7 +81,6 @@ public:
         censusOutPath_ = censusOutPath;
         if (hostGlobals) {
             hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
-            explicitHostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
         }
         if (nativeManifest_) {
             initNativeManifestGlobals();
@@ -119,7 +119,6 @@ private:
     // provided-globals set. isProvidedGlobal consults it after the builtin
     // list, so a read of one lowers to `global.get` like a builtin's does.
     std::unordered_set<std::string> hostGlobals_;
-    std::unordered_set<std::string> explicitHostGlobals_;
     std::unordered_map<std::string, uint32_t> functionIndices_;
     std::unordered_map<uint32_t, Value> functionRefMap_;
     std::unordered_map<std::string, uint32_t> keyConstants_;
@@ -555,19 +554,59 @@ private:
     Value lowerCondition(const ast::Expr& expr, il::Function& ilFn);
     Value lowerConditionFromVal(Value val, il::Function& ilFn);
 
-    // --- lower_native.cpp: direct lowering of native C-ABI symbols ---
+    // --- lower_native.cpp: direct calls to host natives (native_manifest.h) ---
     const NativeManifest* nativeManifest_ = nullptr;
-    std::unordered_map<std::string, std::string> varNativeClasses_;
+    // Which BINDINGS (indices into varBindings_) hold a handle of a known
+    // native class — the static knowledge that turns `agent.move(1)` into a
+    // direct call. Per function body (cleared where varBindings_ is, restored
+    // where it is), keyed by binding rather than name so a shadowing inner
+    // `let` of the same name starts unknown. A wrong guess is never unsafe:
+    // the runtime checks the class tag at every direct call, so the worst a
+    // stale entry costs is a TypeError where a dynamic call would have
+    // dispatched.
+    std::unordered_map<size_t, std::string> varNativeClasses_;
+    // Import name ("<kind> <path>" / "class <path>") -> index into
+    // ilModule_.nativeImports, so a native called from ten sites gets one
+    // slot.
+    std::unordered_map<std::string, uint32_t> nativeImportIndex_;
     void initNativeManifestGlobals();
+    // A chain of plain identifiers rooted at a FREE name — `bro.mesh.box` when
+    // no binding in scope is called `bro` — or "" for anything else. A local
+    // `bro` shadows the whole native namespace under it, as it shadows a host
+    // global.
     std::string getDottedPath(const ast::Expr* expr) const;
+    bool isFreeIdentifier(const std::string& name) const;
     std::string getNativeClassOfExpr(const ast::Expr* expr) const;
+    // Record (or forget, for an empty class) what a binding now holds.
+    void noteNativeClassOfBinding(const std::string& name, const std::string& cls);
+    // The class a captured `const` binding's environment slot carries
+    // (EnvScopeInfo::slotNativeClass), or "" for a name that is not one.
+    std::string capturedConstNativeClass(const std::string& name) const;
+    // At scope entry, before any hoisted function of the scope is lowered:
+    // the class of every captured `const` whose initializer is a native
+    // construction or namespace call, onto its slot.
+    void planEnvSlotNativeClasses(size_t scopeIndex, const std::vector<const ast::Stmt*>& stmts);
+    void planEnvSlotNativeClasses(size_t scopeIndex, const std::vector<ast::StmtPtr>& stmts);
     std::optional<Value> tryLowerNativeCall(const ast::Call* call, il::Function& ilFn);
     std::optional<Value> tryLowerNativeNew(const ast::NewExpr* newExpr, il::Function& ilFn);
     std::optional<Value> tryLowerNativePropertyGet(const ast::MemberAccess* mem, il::Function& ilFn, bool onSpine);
     std::optional<Value> tryLowerNativeAssignment(const ast::Binary* bin, il::Function& ilFn);
+    // The call itself, shared by every kind: `self` for a member kind, the
+    // argument expressions (a getter's are none, a setter's is the one value
+    // — passed as an already-lowered Value through `preLowered`).
+    std::optional<Value> emitNativeInvoke(const NativeSig& sig, const ast::Expr* selfExpr,
+                                          std::optional<Value> selfValue,
+                                          const std::vector<const ast::Expr*>& args,
+                                          std::optional<Value> preLowered, il::Function& ilFn);
     Value emitDefaultValueForType(il::Type type, il::Function& ilFn);
+    Value emitNativeClassTag(const std::string& className, il::Function& ilFn);
+    uint32_t nativeImportFunction(const NativeSig& sig);
+    uint32_t nativeClassTagFunction(const std::string& className);
     uint32_t registerExternalFunction(const std::string& symbol, il::Type returnType,
                                       const std::vector<il::Type>& paramTypes);
+    // The first instruction of the entry, when the module imports anything:
+    // bind the table before any site can call through it.
+    void emitNativeBindPrologue();
 
     // --- lower_scope.cpp: scopes, environments, closures -----
     bool declareVariable(const std::string& name, il::Type type, bool isConst, bool isLet,
