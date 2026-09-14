@@ -11,6 +11,7 @@ elseif(NOT DEFINED BRASS_ROOT OR BRASS_ROOT STREQUAL "")
         get_filename_component(BRASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../brass" ABSOLUTE)
     endif()
 endif()
+file(TO_CMAKE_PATH "${BRASS_ROOT}" BRASS_ROOT)
 set(BRASS_ROOT "${BRASS_ROOT}" CACHE PATH "Path to Brass root directory" FORCE)
 
 add_library(bronze_codegen_brass STATIC
@@ -22,8 +23,6 @@ add_library(bronze::codegen_brass ALIAS bronze_codegen_brass)
 
 target_include_directories(bronze_codegen_brass PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-target_include_directories(bronze_codegen_brass SYSTEM PUBLIC
     ${BRASS_ROOT}/include
 )
 
