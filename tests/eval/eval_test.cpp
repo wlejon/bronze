@@ -207,3 +207,26 @@ TEST_CASE("evalFile evaluates script file and returns result") {
 
     std::filesystem::remove(tempPath);
 }
+
+TEST_CASE("evalScript evaluates script with module imports") {
+    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "bronze_test_modules";
+    std::error_code ec;
+    std::filesystem::create_directories(tempDir, ec);
+
+    std::filesystem::path helperPath = tempDir / "helper.js";
+    {
+        std::ofstream out(helperPath);
+        out << "export function add(a, b) { return a + b; }\n";
+    }
+
+    EvalOptions opts;
+    opts.filename = (tempDir / "main.js").string();
+    opts.entryResolvesAs = tempDir / "main.js";
+
+    std::string script = "import { add } from './helper.js'; add(19, 23);";
+    embed::CallResult r = evalScript(script, opts);
+    CHECK(!r.thrown);
+    CHECK(r.value.asNumber() == 42.0);
+
+    std::filesystem::remove_all(tempDir, ec);
+}

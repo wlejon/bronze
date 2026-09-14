@@ -75,6 +75,10 @@ struct Graph {
 bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink& diags,
                Graph& out, const ModuleOptions& options = {});
 
+bool loadGraphSource(const std::string& code, const std::string& entryPath,
+                     SourceSet& sources, DiagnosticSink& diags,
+                     Graph& out, const ModuleOptions& options = {});
+
 // The head/tail of a template-literal specifier, or false when the template is
 // not one this compiler can turn into a glob: no interpolation at all (then it
 // is just a string), a head that names no directory, a tail carrying a path

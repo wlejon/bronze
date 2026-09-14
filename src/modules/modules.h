@@ -62,6 +62,15 @@ std::unique_ptr<ast::Module> loadProgram(const std::string& entryPath, SourceSet
                                          DiagnosticSink& diags,
                                          const ModuleOptions& options = {});
 
+// Reads, parses and links the graph rooted at in-memory entry `code`.
+//
+// Null on a diagnosed error.
+std::unique_ptr<ast::Module> loadProgramSource(const std::string& code,
+                                               const std::string& entryPath,
+                                               SourceSet& sources,
+                                               DiagnosticSink& diags,
+                                               const ModuleOptions& options = {});
+
 // A specifier as written, and the file it was written in, to the file it names.
 // Relative (`./x.js`) or BARE (`lib`, `@scope/pkg/sub.js`, resolved by walking
 // `node_modules` upward and reading the package's `package.json`); an absolute

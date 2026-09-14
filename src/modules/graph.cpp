@@ -293,16 +293,33 @@ public:
             diags_.error(importSpan, "cannot read module " + path.generic_string());
             return false;
         }
+        return loadBuffer(path, buffer, importSpan, outId);
+    }
+
+    bool loadSource(const std::filesystem::path& path, const std::string& text, Span importSpan, uint16_t& outId) {
+        const std::string key = path.generic_string();
+        auto known = byPath_.find(key);
+        if (known != byPath_.end()) {
+            outId = known->second;
+            return true;
+        }
+
+        const SourceBuffer& buffer = sources_.add(path.generic_string(), text);
+        return loadBuffer(path, buffer, importSpan, outId);
+    }
+
+    bool loadBuffer(const std::filesystem::path& path, const SourceBuffer& buffer, Span importSpan, uint16_t& outId) {
         if (sources_.size() > kMaxModules) {
             diags_.error(importSpan, "module graph exceeds " + std::to_string(kMaxModules) +
                                          " files; bronze numbers files in 16 bits");
             return false;
         }
 
+        const std::string key = path.generic_string();
         auto file = std::make_unique<ModuleFile>();
         file->id = buffer.fileId();
         file->path = path;
-        file->displayName = path.generic_string();
+        file->displayName = key;
 
         // ECMA-262 11.2.2: module code is always strict mode code. Every file
         // but the entry is module code by construction — it was REACHED through
@@ -527,6 +544,41 @@ std::unique_ptr<ast::Module> loadProgram(const std::string& entryPath, SourceSet
                                          const ModuleOptions& options) {
     Graph graph;
     if (!loadGraph(entryPath, sources, diags, graph, options)) return nullptr;
+
+    auto merged = std::make_unique<ast::Module>();
+    merged->name = graph.modules[0]->displayName;
+    if (!linkGraph(graph, sources, diags, *merged)) return nullptr;
+    return merged;
+}
+
+bool loadGraphSource(const std::string& code, const std::string& entryPath,
+                     SourceSet& sources, DiagnosticSink& diags,
+                     Graph& out, const ModuleOptions& options) {
+    ModuleOptions effectiveOptions = options;
+    if (!effectiveOptions.importMapPath.empty()) {
+        std::string err;
+        if (!loadImportMap(effectiveOptions.importMapPath, effectiveOptions.moduleRoots, err)) {
+            sources.add(effectiveOptions.importMapPath, "");
+            diags.error(Span{}, err);
+            return false;
+        }
+    }
+    const std::string dispName = entryPath.empty() ? "<eval>" : entryPath;
+    std::filesystem::path entry(dispName);
+    uint16_t entryId = 0;
+    if (!Loader(sources, diags, out, effectiveOptions).loadSource(entry, code, Span{}, entryId)) {
+        return false;
+    }
+    return entryId == 0;
+}
+
+std::unique_ptr<ast::Module> loadProgramSource(const std::string& code,
+                                               const std::string& entryPath,
+                                               SourceSet& sources,
+                                               DiagnosticSink& diags,
+                                               const ModuleOptions& options) {
+    Graph graph;
+    if (!loadGraphSource(code, entryPath, sources, diags, graph, options)) return nullptr;
 
     auto merged = std::make_unique<ast::Module>();
     merged->name = graph.modules[0]->displayName;

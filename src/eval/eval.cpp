@@ -53,7 +53,7 @@ void transformEvalAst(ast::Module& astModule, const std::string& resName) {
     std::vector<ast::StmtPtr> exports;
     for (const auto& stmt : astModule.body) {
         if (auto* vd = dynamic_cast<ast::VarDecl*>(stmt.get())) {
-            if (vd->isVar && !vd->name.empty()) {
+            if (vd->isVar && !vd->name.empty() && vd->name.find('.') == std::string::npos) {
                 auto globalThisIdent = std::make_unique<ast::Ident>();
                 globalThisIdent->name = "globalThis";
                 auto member = std::make_unique<ast::MemberAccess>();
@@ -70,7 +70,7 @@ void transformEvalAst(ast::Module& astModule, const std::string& resName) {
                 exports.push_back(std::move(exportStmt));
             }
         } else if (auto* fd = dynamic_cast<ast::FunctionDecl*>(stmt.get())) {
-            if (!fd->name.empty()) {
+            if (!fd->name.empty() && fd->name.find('.') == std::string::npos) {
                 auto globalThisIdent = std::make_unique<ast::Ident>();
                 globalThisIdent->name = "globalThis";
                 auto member = std::make_unique<ast::MemberAccess>();
@@ -181,13 +181,11 @@ std::unique_ptr<BrassJitProgram> compileSourceToJit(
     DiagnosticSink& diags,
     SourceSet& sources) {
 
-    const auto& buffer = sources.add(options.filename, code);
-    Lexer lexer(buffer, diags);
-    auto tokens = lexer.lex();
-    if (diags.hasErrors()) return nullptr;
+    modules::ModuleOptions modOpts;
+    modOpts.moduleRoots = options.moduleRoots;
+    modOpts.entryResolvesAs = options.entryResolvesAs;
 
-    Parser parser(std::move(tokens), diags);
-    auto astModule = parser.parseModule(options.filename);
+    auto astModule = modules::loadProgramSource(code, options.filename, sources, diags, modOpts);
     if (diags.hasErrors() || !astModule) return nullptr;
 
     return compileAstToJit(std::move(astModule), options, resName, diags, sources);
