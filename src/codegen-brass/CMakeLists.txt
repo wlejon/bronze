@@ -1,18 +1,25 @@
-if(DEFINED ENV{BRASS_ROOT} AND NOT "$ENV{BRASS_ROOT}" STREQUAL "")
-    set(BRASS_ROOT "$ENV{BRASS_ROOT}")
-elseif(NOT DEFINED BRASS_ROOT OR BRASS_ROOT STREQUAL "")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../brass/include/brass/brass.hpp")
-        get_filename_component(BRASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../brass" ABSOLUTE)
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../brass/include/brass/brass.hpp")
-        get_filename_component(BRASS_ROOT "${CMAKE_SOURCE_DIR}/../brass" ABSOLUTE)
-    elseif(EXISTS "D:/projects/brass/include/brass/brass.hpp")
-        set(BRASS_ROOT "D:/projects/brass")
-    else()
-        get_filename_component(BRASS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../brass" ABSOLUTE)
+if(NOT TARGET brass)
+    if(DEFINED ENV{BRASS_ROOT} AND NOT "$ENV{BRASS_ROOT}" STREQUAL "")
+        set(BRASS_ROOT "$ENV{BRASS_ROOT}")
+    elseif(NOT DEFINED BRASS_ROOT OR BRASS_ROOT STREQUAL "")
+        foreach(_candidate
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../../brass"
+            "${CMAKE_SOURCE_DIR}/../brass"
+            "${CMAKE_SOURCE_DIR}/third_party/brass"
+            "D:/projects/brass"
+        )
+            if(EXISTS "${_candidate}/include/brass/brass.hpp")
+                get_filename_component(BRASS_ROOT "${_candidate}" ABSOLUTE)
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(EXISTS "${BRASS_ROOT}/CMakeLists.txt")
+        file(TO_CMAKE_PATH "${BRASS_ROOT}" BRASS_ROOT)
+        set(BRASS_ROOT "${BRASS_ROOT}" CACHE PATH "Path to Brass root directory" FORCE)
+        add_subdirectory("${BRASS_ROOT}" "${CMAKE_BINARY_DIR}/brass-build" EXCLUDE_FROM_ALL)
     endif()
 endif()
-file(TO_CMAKE_PATH "${BRASS_ROOT}" BRASS_ROOT)
-set(BRASS_ROOT "${BRASS_ROOT}" CACHE PATH "Path to Brass root directory" FORCE)
 
 add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
@@ -23,12 +30,20 @@ add_library(bronze::codegen_brass ALIAS bronze_codegen_brass)
 
 target_include_directories(bronze_codegen_brass PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
-    ${BRASS_ROOT}/include
 )
+if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")
+    target_include_directories(bronze_codegen_brass PUBLIC "${BRASS_ROOT}/include")
+endif()
 
 find_package(Threads REQUIRED)
 
-if(MSVC)
+if(TARGET brass)
+    set(BRASS_LIB brass)
+    set(PLATFORM_LIBS)
+    if(NOT MSVC)
+        set(PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
+    endif()
+elseif(MSVC)
     if(EXISTS "${BRASS_ROOT}/build_msvc/brass.lib")
         set(BRASS_LIB "${BRASS_ROOT}/build_msvc/brass.lib")
     elseif(EXISTS "${BRASS_ROOT}/build/Release/brass.lib")
