@@ -40,6 +40,14 @@ bool hasHostGlobal(std::string_view name) {
     return runtime::rtHostGlobalLookup(std::string(name), ignored);
 }
 
+std::vector<std::string> hostGlobalNames() {
+    const auto& entries = runtime::rtHostGlobalEntries();
+    std::vector<std::string> names;
+    names.reserve(entries.size());
+    for (const auto& entry : entries) names.push_back(entry.first);
+    return names;
+}
+
 GlobalValue globalValue(std::string_view name) {
     // A frame: the builtin ladder constructs its namespaces lazily, so the
     // first ask for "Math" in a process allocates it.

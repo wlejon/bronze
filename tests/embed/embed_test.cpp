@@ -8,6 +8,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -635,6 +636,26 @@ TEST_CASE("hasHostGlobal probes the registry and only the registry") {
     // host provided it. (Not `Math`: the globalValue case above registers
     // that name on purpose, and cases share one process.)
     CHECK(!embed::hasHostGlobal("JSON"));
+}
+
+TEST_CASE("hostGlobalNames enumerates the registry in registration order") {
+    // Cases share one process and one registry, so this asserts on what it
+    // adds relative to what it found rather than on the whole list.
+    const std::vector<std::string> before = embed::hostGlobalNames();
+    embed::registerGlobal("enumeratedFirst", embed::fromDouble(1.0));
+    embed::registerGlobal("enumeratedSecond", embed::undefined());
+    // Replacing keeps the name's first position: the list is a manifest, and
+    // a manifest names each global once.
+    embed::registerGlobal("enumeratedFirst", embed::fromDouble(2.0));
+    const std::vector<std::string> after = embed::hostGlobalNames();
+    REQUIRE(after.size() == before.size() + 2);
+    CHECK(std::equal(before.begin(), before.end(), after.begin()));
+    CHECK(after[before.size()] == "enumeratedFirst");
+    CHECK(after[before.size() + 1] == "enumeratedSecond");
+    // Every enumerated name answers the membership probe, and the builtins
+    // never appear: they are not the host's to declare.
+    for (const auto& name : after) CHECK(embed::hasHostGlobal(name));
+    CHECK(std::find(after.begin(), after.end(), "JSON") == after.end());
 }
 
 TEST_CASE("construct reaches a builtin constructor the way a compiled `new` does") {

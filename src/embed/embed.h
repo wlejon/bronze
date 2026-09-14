@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "runtime/host_globals.h"
 #include "runtime/value.h"
@@ -316,6 +317,16 @@ BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value);
 // manifest and probes here can refuse the module at load time with a message
 // naming the gap instead.
 BRONZE_EMBED_API bool hasHostGlobal(std::string_view name);
+
+// Every name in the host-global registry, in registration order, with a
+// replaced name keeping its first position. This is the compile side of
+// `--host-globals` read back off the run-time side: a host that has finished
+// registering can hand the result to `EvalOptions::hostGlobals`, or print it
+// as a manifest for an ahead-of-time `bronze build`, and the two lists cannot
+// drift because there is only one. Per-thread like the registry itself (the
+// threading contract above): a worker asking on its own thread sees what that
+// thread registered. Does not allocate on the JS heap.
+BRONZE_EMBED_API std::vector<std::string> hostGlobalNames();
 
 // The value a free read of `name` in compiled code would see: the builtin
 // ladder first (Math, the constructors — a host cannot shadow those, exactly
