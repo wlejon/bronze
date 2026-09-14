@@ -20,7 +20,7 @@ function(bronze_add_module name)
     add_library(bronze::${name} ALIAS bronze_${name})
     target_include_directories(bronze_${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
     if(MSVC)
-        target_compile_options(bronze_${name} PRIVATE /W4 /WX /permissive-)
+        target_compile_options(bronze_${name} PRIVATE /W4 /WX /permissive- /wd4324)
         # The CRT-deprecation opt-out (getenv and friends are standard C++),
         # not a blanket C4996 disable. Target-wide because a per-file #define
         # placed after the first include is silently too late.
@@ -45,7 +45,7 @@ function(bronze_add_module name)
             target_link_libraries(bronze_${name}_tests PRIVATE bronze::${dep})
         endforeach()
         if(MSVC)
-            target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive-)
+            target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive- /wd4324)
             target_compile_definitions(bronze_${name}_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
             target_link_options(bronze_${name}_tests PRIVATE /FORCE:MULTIPLE)
         else()

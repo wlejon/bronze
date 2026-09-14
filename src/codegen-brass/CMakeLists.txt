@@ -61,7 +61,7 @@ target_link_libraries(bronze_codegen_brass PUBLIC
 )
 
 if(MSVC)
-    target_compile_options(bronze_codegen_brass PRIVATE /W4 /WX /permissive-)
+    target_compile_options(bronze_codegen_brass PRIVATE /W4 /WX /permissive- /wd4324)
     target_compile_definitions(bronze_codegen_brass PRIVATE _CRT_SECURE_NO_WARNINGS)
 else()
     target_compile_options(bronze_codegen_brass PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs)

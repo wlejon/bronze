@@ -6,14 +6,14 @@ target_link_libraries(bronze_cli PUBLIC bronze::parse bronze::lex bronze::ast br
 add_dependencies(bronze_cli bronze_rt)
 
 if(MSVC)
-    target_compile_options(bronze_cli PRIVATE /W4 /WX /permissive-)
+    target_compile_options(bronze_cli PRIVATE /W4 /WX /permissive- /wd4324)
     target_compile_definitions(bronze_cli PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 add_executable(bronze main.cpp run.cpp)
 target_link_libraries(bronze PRIVATE bronze::cli bronze::eval)
 if(MSVC)
-    target_compile_options(bronze PRIVATE /W4 /WX /permissive-)
+    target_compile_options(bronze PRIVATE /W4 /WX /permissive- /wd4324)
     target_compile_definitions(bronze PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_link_options(bronze PRIVATE /FORCE:MULTIPLE)
 endif()
