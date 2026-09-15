@@ -232,6 +232,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
             const auto& imp = module.nativeImports[i];
             out += "  [" + std::to_string(i) + "] \"" + imp.name + "\"";
             if (!imp.signature.empty()) out += " " + imp.signature;
+            if (imp.bufferReturnKind != UINT32_MAX) {
+                out += " buffer-return kind=" + std::to_string(imp.bufferReturnKind);
+            }
             out += "\n";
         }
         out += "}\n";

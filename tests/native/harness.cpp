@@ -227,6 +227,19 @@ int main(int argc, char** argv) {
              " kept hp=" + num(embed::toDouble(callGlobal("agentHp", {}))));
     }
 
+    // ---- transferred blocks the module dropped, released by the host's collection
+
+    {
+        const int releasedBefore = nt_natives::g_bufReleased;
+        const Value four = embed::fromDouble(4.0);
+        callGlobal("makeBuffers", {&four, 1});
+        embed::collectGarbage();
+        embed::collectGarbage();
+        embed::drainFinalizers();
+        line("host: buffers released=" + std::to_string(nt_natives::g_bufReleased - releasedBefore) +
+             " kept length=" + num(embed::toDouble(callGlobal("ownedLength", {}))));
+    }
+
     // ---- a typed array the HOST built, into a native the MODULE calls ------
 
     {

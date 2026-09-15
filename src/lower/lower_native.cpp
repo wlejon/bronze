@@ -239,7 +239,13 @@ uint32_t Lowerer::nativeImportFunction(const NativeSig& sig) {
     const auto slot = static_cast<uint32_t>(ilModule_.nativeImports.size());
     const uint32_t fnIdx = registerExternalFunction("__bronze_native_" + std::to_string(slot),
                                                     nativeIlType(sig.returnType), importParamTypes(sig));
-    ilModule_.nativeImports.push_back({name, sig.signature, fnIdx});
+    // A typed-array return is a Dynamic to the program (the view the thunk
+    // wraps); the descriptor argument and the wrap are the thunk's own and
+    // never appear in the IL signature.
+    const uint32_t bufferKind = abi::nativeTypeIsTypedArray(sig.returnType.kind)
+                                    ? abi::nativeTypedArrayElementKind(sig.returnType.kind)
+                                    : UINT32_MAX;
+    ilModule_.nativeImports.push_back({name, sig.signature, fnIdx, bufferKind});
     nativeImportIndex_[name] = slot;
     return fnIdx;
 }

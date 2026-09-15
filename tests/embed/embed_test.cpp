@@ -1289,9 +1289,11 @@ TEST_CASE("registerNative checks the path, the vocabulary and the class graph") 
     CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
     CHECK(err.find("number") != std::string::npos);
     sig.paramTypes = {"f64", "f64"};
-    sig.returnType = "u8[]";
+    // A return spelling outside the vocabulary (a typed-array RETURN, `u8[]`,
+    // is IN it — tests/native covers that; `u8` alone is not).
+    sig.returnType = "u8";
     CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
-    CHECK(err.find("u8[]") != std::string::npos);
+    CHECK(err.find("u8") != std::string::npos);
     sig.returnType = "f64";
     sig.paramTypes = {"et.Ghost"};
     CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));

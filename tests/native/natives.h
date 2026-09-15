@@ -17,9 +17,18 @@
 //   nt.dyn.identity(dynamic) -> dynamic
 //   nt.arr.sum{F32,F64,I32,U8,U16,U32,I8,I16}(<kind>[]) -> f64
 //   nt.arr.fill(f64[], f64) -> void       (writes through the pointer)
+//   nt.buf.rangeF32(i32) -> f32[]         copy mode: 0..n-1 as floats
+//   nt.buf.squaresI32(i32) -> i32[]       copy mode: i*i
+//   nt.buf.ownedU8(i32) -> u8[]           TRANSFER mode: a malloc'd block
+//                                          the runtime views in place; its
+//                                          release is counted (g_bufReleased)
+//   nt.buf.empty() -> f64[]               the empty array (null data)
+//   nt.buf.throwAfterFill() -> u16[]      fills a transfer descriptor, then
+//                                          throws: the release must still run
 //   nt.time.scale                          namespace property (getter+setter)
 //   class nt.Agent(f64 hp): hit(f64)->f64, id()->f64, hp get/set,
-//                           target()->nt.Target, label()->str; destructor
+//                           target()->nt.Target, label()->str,
+//                           stats()->f64[] (copy: [hp, id]); destructor
 //   class nt.Target(f64):   value()->f64
 //   nt.peek(nt.Agent) -> f64               a function taking a class handle
 //   nt.absent.ping() -> f64                registered ONLY when the caller
@@ -30,6 +39,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -75,6 +85,66 @@ static double sumI8(const int8_t* d, uint32_t n) { return sumOf(d, n); }
 static double sumI16(const int16_t* d, uint32_t n) { return sumOf(d, n); }
 static void fillF64(double* d, uint32_t n, double v) {
     for (uint32_t i = 0; i < n; ++i) d[i] = v * static_cast<double>(i);
+}
+
+// ---- typed-array returns ---------------------------------------------------
+//
+// Copy mode (`release` left null): the descriptor names storage that is the
+// native's own and valid for this call only; the runtime copies. Both of
+// these hand out a static scratch, which is exactly the storage a copy is
+// FOR — the next call overwrites it, and the program's array does not care.
+
+static float g_rangeScratch[64];
+static void rangeF32(int32_t n, bronze_native_buffer* out) {
+    if (n < 0) n = 0;
+    if (n > 64) n = 64;
+    for (int32_t i = 0; i < n; ++i) g_rangeScratch[i] = static_cast<float>(i);
+    out->data = g_rangeScratch;
+    out->length = static_cast<uint32_t>(n);
+}
+
+static int32_t g_squaresScratch[64];
+static void squaresI32(int32_t n, bronze_native_buffer* out) {
+    if (n < 0) n = 0;
+    if (n > 64) n = 64;
+    for (int32_t i = 0; i < n; ++i) g_squaresScratch[i] = i * i;
+    out->data = g_squaresScratch;
+    out->length = static_cast<uint32_t>(n);
+}
+
+// Transfer mode: a fresh block the runtime views in place, released — freed,
+// and counted — when the program's buffer is collected. `ctx` is the block.
+static int g_bufMade = 0;
+static int g_bufReleased = 0;
+static void releaseOwned(void* ctx) {
+    ++g_bufReleased;
+    std::free(ctx);
+}
+static void ownedU8(int32_t n, bronze_native_buffer* out) {
+    if (n < 0) n = 0;
+    auto* block = static_cast<uint8_t*>(std::malloc(n > 0 ? static_cast<size_t>(n) : 1));
+    for (int32_t i = 0; i < n; ++i) block[i] = static_cast<uint8_t>(i * 3);
+    ++g_bufMade;
+    out->data = block;
+    out->length = static_cast<uint32_t>(n);
+    out->release = &releaseOwned;
+    out->ctx = block;
+}
+
+static void emptyF64(bronze_native_buffer* out) { (void)out; }
+
+// Fills a transfer descriptor and THEN throws through the embed API: the
+// runtime must run the release (the wrap never happens) and the program
+// must see the TypeError.
+static void throwAfterFill(bronze_native_buffer* out) {
+    auto* block = static_cast<uint16_t*>(std::malloc(4 * sizeof(uint16_t)));
+    for (int i = 0; i < 4; ++i) block[i] = static_cast<uint16_t>(i);
+    ++g_bufMade;
+    out->data = block;
+    out->length = 4;
+    out->release = &releaseOwned;
+    out->ctx = block;
+    bronze::embed::throwTypeError("filled, then refused");
 }
 
 // ---- a namespace property --------------------------------------------------
@@ -130,6 +200,15 @@ static void agentHpSet(void* self, double hp) { static_cast<Agent*>(self)->hp = 
 // to it is a view, and freeing through it would free the agent's member.
 static void* agentTarget(void* self) { return &static_cast<Agent*>(self)->target; }
 static const char* agentLabel(void* self) { return static_cast<Agent*>(self)->label.c_str(); }
+// A method answering a typed array in copy mode from a per-call scratch.
+static double g_agentStats[2];
+static void agentStats(void* self, bronze_native_buffer* out) {
+    auto* a = static_cast<Agent*>(self);
+    g_agentStats[0] = a->hp;
+    g_agentStats[1] = a->id;
+    out->data = g_agentStats;
+    out->length = 2;
+}
 
 static double peek(void* agent) { return static_cast<Agent*>(agent)->hp; }
 
@@ -188,6 +267,11 @@ inline bool registerAll(std::string& err, bool withAbsent = false) {
            fn("nt.arr.sumI8", reinterpret_cast<void*>(&sumI8), "f64", {"i8[]"}) &&
            fn("nt.arr.sumI16", reinterpret_cast<void*>(&sumI16), "f64", {"i16[]"}) &&
            fn("nt.arr.fill", reinterpret_cast<void*>(&fillF64), "void", {"f64[]", "f64"}) &&
+           fn("nt.buf.rangeF32", reinterpret_cast<void*>(&rangeF32), "f32[]", {"i32"}) &&
+           fn("nt.buf.squaresI32", reinterpret_cast<void*>(&squaresI32), "i32[]", {"i32"}) &&
+           fn("nt.buf.ownedU8", reinterpret_cast<void*>(&ownedU8), "u8[]", {"i32"}) &&
+           fn("nt.buf.empty", reinterpret_cast<void*>(&emptyF64), "f64[]", {}) &&
+           fn("nt.buf.throwAfterFill", reinterpret_cast<void*>(&throwAfterFill), "u16[]", {}) &&
            member(NativeKind::Getter, "", "nt.time.scale", reinterpret_cast<void*>(&timeScaleGet),
                   "f64", {}) &&
            member(NativeKind::Setter, "", "nt.time.scale", reinterpret_cast<void*>(&timeScaleSet),
@@ -208,6 +292,8 @@ inline bool registerAll(std::string& err, bool withAbsent = false) {
                   reinterpret_cast<void*>(&agentTarget), "nt.Target", {}) &&
            member(NativeKind::Method, "nt.Agent", "nt.Agent.label",
                   reinterpret_cast<void*>(&agentLabel), "str", {}) &&
+           member(NativeKind::Method, "nt.Agent", "nt.Agent.stats",
+                  reinterpret_cast<void*>(&agentStats), "f64[]", {}) &&
            fn("nt.peek", reinterpret_cast<void*>(&peek), "f64", {"nt.Agent"}) &&
            (!withAbsent || fn("nt.absent.ping", reinterpret_cast<void*>(&absentPing), "f64", {}));
 }

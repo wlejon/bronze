@@ -140,8 +140,12 @@ constructor returns a `void*` the runtime wraps into a handle, with methods,
 getters and setters under `bro.ai.AIAgent.<member>`. The signature vocabulary
 (`src/abi/bronze_native_type.h`) is closed and checked at registration: `void
 f64 i32 bool str dynamic`, the typed arrays `f32[] f64[] i32[] u8[] u16[]
-u32[] i8[] i16[]` (parameter only, crossing as a `(T*, uint32_t)` pair valid
-for the call), and a registered class's path (a handle of that class,
+u32[] i8[] i16[]` (as a parameter, crossing as a `(T*, uint32_t)` pair valid
+for the call; as a return, a `void` C function with one extra trailing
+`bronze_native_buffer* out` it fills — `release == NULL` and the runtime
+copies `length` elements into a fresh JS-owned array, `release != NULL` and
+the array is a zero-copy view over `data` owing `release(ctx)` when the
+buffer is collected), and a registered class's path (a handle of that class,
 crossing as the `void*` its constructor returned, with a one-word tag compare
 at the call site and a TypeError naming the class for anything else). An
 unknown spelling is a refused registration, never `dynamic`. A bare name that
@@ -155,7 +159,14 @@ direct calls with the scalar coercions done in JS order, the pointers taken
 last (a str is copied into a per-call scratch, a typed array's bytes are
 checked for kind and detachment), and the result wrapped back — a class-typed
 return becomes a handle born on the class's prototype, owing the class's
-destructor.
+destructor. A typed-array return is sequenced by the import thunk
+(`src/codegen-brass/brass_backend.cpp`), the same code for the JIT and an
+emitted object: `bronze_native_buffer_slot()` pushes a zeroed per-thread
+descriptor, the native is called with its address as the trailing argument,
+and `bronze_native_buffer_wrap(kind)` pops it and answers the view (copy or
+transfer by `release`); a native that threw through the embed API after
+filling a transfer descriptor still has its `release` run, since wrap sees
+the pending exception, releases, and answers undefined for the unwind.
 
 No native symbol is ever resolved by a linker. Each direct call goes through
 a slot of the module's import table, `<entry>_native_imports`: `u32 count;

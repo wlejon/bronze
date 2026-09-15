@@ -65,6 +65,7 @@ bronze_add_module(runtime
         inspect.cpp
         rt_state.cpp
         native_handle.cpp
+        external_store.cpp
         native_registry.cpp
         rt_convert.cpp
         rt_concat.cpp

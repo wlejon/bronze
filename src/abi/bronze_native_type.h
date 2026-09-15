@@ -33,7 +33,12 @@
 //                                            TypeError before the call; valid
 //                                            for the call only, and the
 //                                            native must not allocate through
-//                                            the embed API while holding it
+//                                            the embed API while holding it.
+//                                            As a RETURN type: the C function
+//                                            returns void and takes ONE extra
+//                                            trailing parameter,
+//                                            `bronze_native_buffer* out`
+//                                            (below), which it fills.
 //   <class>   a handle made by that class's  void* (the data the constructor
 //             constructor                    returned); a value of another
 //                                            class, a plain object, or a
@@ -43,12 +48,39 @@
 //                                            and the runtime wraps it in a
 //                                            handle of that class (null →
 //                                            null).
-//
-// Typed arrays are parameter-only: a native has no buffer to hand back.
 
 #include <cstdint>
 #include <string>
 #include <string_view>
+
+// The out-descriptor a native returning `T[]` fills. The runtime hands the
+// native a zeroed descriptor as its trailing argument, and reads it back
+// once — after the call — to build the typed array the program receives.
+// Two ownership modes, decided by `release` alone:
+//
+//   release == NULL   COPY. `data` is valid for the call only (a member of
+//                     the native's own object, a static, a vector that may
+//                     reallocate); the runtime copies `length` elements into
+//                     a fresh JS-owned buffer before returning to the program.
+//   release != NULL   TRANSFER. `data` is a block the native gives away: the
+//                     typed array is a view over those very bytes (no copy),
+//                     and `release(ctx)` runs when the JS ArrayBuffer is
+//                     collected — a Deferred finalizer, so it runs at the
+//                     host's `drainFinalizers` checkpoint on a plain stack,
+//                     never mid-collection. It runs exactly once, also when
+//                     the wrap never happens (the native threw after filling
+//                     the descriptor, or the length is out of range).
+//
+// `data` NULL with `length` 0 is the empty typed array in either mode. The
+// element count is `length`; the byte size is `length * sizeof(T)` for the
+// declared T, and a transferred `data` must be aligned for T. Nothing else:
+// no count-then-fill, no second call, no size negotiation.
+typedef struct bronze_native_buffer {
+    void* data;                   // element pointer, NULL with length 0 for empty
+    uint32_t length;              // element count
+    void (*release)(void* ctx);   // NULL = copy mode (see above)
+    void* ctx;                    // passed to release when the buffer dies
+} bronze_native_buffer;
 
 namespace bronze::abi {
 

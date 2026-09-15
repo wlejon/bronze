@@ -991,6 +991,11 @@ struct Module {
         std::string name;       // "<kind> <path>", or "class <path>"
         std::string signature;  // canonical text; empty for a class slot
         uint32_t functionIndex = 0;  // the `__bronze_native_<i>` declaration
+        // A native answering `T[]`: the ElementKind of T (the ABI's
+        // numbering, abi/bronze_native_type.h), and the thunk passes a
+        // descriptor slot as the C function's trailing argument and wraps
+        // it after the call. UINT32_MAX for every other return type.
+        uint32_t bufferReturnKind = UINT32_MAX;
     };
     std::vector<NativeImport> nativeImports;
     // A deque, not a vector: lowering a function body can append nested

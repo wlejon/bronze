@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "abi/bronze_native_type.h"  // bronze_native_buffer: a `T[]` return's out-descriptor
 #include "runtime/host_globals.h"
 #include "runtime/native_handle.h"
 #include "runtime/value.h"
@@ -395,8 +396,15 @@ BRONZE_EMBED_API GlobalValue globalValue(std::string_view name);
 //                 C parameters (T* data, uint32_t length). Wrong kind,
 //                 detached buffer or missing argument: TypeError. The
 //                 pointer is valid for the call only; the native must not
-//                 allocate through this API while it holds it. Parameter
-//                 only.
+//                 allocate through this API while it holds it. As a RETURN
+//                 type the C function returns void and takes one extra
+//                 trailing `bronze_native_buffer* out`
+//                 (abi/bronze_native_type.h) it fills: `release` null means
+//                 the runtime COPIES `length` elements into a fresh JS-owned
+//                 array, non-null means the array is a zero-copy view over
+//                 `data` and `release(ctx)` runs when the buffer is collected
+//                 (Deferred; at drainFinalizers). The runtime decides
+//                 nothing else — no count-then-fill, no second call.
 //   "<class>"     a handle made by that class's constructor, passed as the
 //                 void* the constructor returned. Any other value (another
 //                 class, a plain object, undefined) is a TypeError naming

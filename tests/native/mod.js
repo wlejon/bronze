@@ -37,6 +37,18 @@ try {
 console.log("module: tick=" + hostTick);
 globalThis.readTick = function () { return hostTick; };
 
+// Typed-array returns through the shared-object path: a copy (the native's
+// scratch, copied) and a transfer (the native's block, viewed in place and
+// released when the harness collects it).
+const owned = nt.buf.ownedU8(5);
+console.log("module: rangeF32=" + Array.from(nt.buf.rangeF32(3)).join(",") +
+            " ownedU8=" + owned.constructor.name + "[" + Array.from(owned).join(",") + "]" +
+            " empty=" + nt.buf.empty().length);
+globalThis.makeBuffers = function (n) {
+  for (let i = 0; i < n; i++) nt.buf.ownedU8(i + 1);
+};
+globalThis.ownedLength = function () { return owned.length; };
+
 globalThis.makeAgents = function (n) {
   for (let i = 0; i < n; i++) new nt.Agent(i);
 };

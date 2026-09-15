@@ -189,6 +189,77 @@ TEST_CASE("a native writes through a typed-array pointer") {
           "0,1.5,3,4.5");
 }
 
+// ---- typed-array returns ---------------------------------------------------
+
+TEST_CASE("a copy-mode return is a fresh JS-owned typed array of the declared kind") {
+    CHECK(text("(function () { const r = nt.buf.rangeF32(4);"
+               "return r.constructor.name + ':' + Array.from(r).join(','); })()") ==
+          "Float32Array:0,1,2,3");
+    CHECK(text("(function () { const s = nt.buf.squaresI32(5);"
+               "return s.constructor.name + ':' + Array.from(s).join(','); })()") ==
+          "Int32Array:0,1,4,9,16");
+    // JS-owned: the native's scratch is overwritten by the next call and the
+    // first array keeps its values; the buffer is an ordinary one.
+    CHECK(text("(function () { const a = nt.buf.rangeF32(3); const b = nt.buf.rangeF32(2);"
+               "return Array.from(a).join(',') + '|' + Array.from(b).join(',') + '|' +"
+               "a.buffer.byteLength; })()") == "0,1,2|0,1|12");
+    // The result is a value like any other, and a method answers one too.
+    CHECK(number("nt.buf.squaresI32(4).reduce((x, y) => x + y, 0)") == 14.0);
+    CHECK(text("(function () { const ag = new nt.Agent(40); ag.hit(4); const st = ag.stats();"
+               "return st.constructor.name + ':' + st[0] + ':' + (st[1] === ag.id()); })()") ==
+          "Float64Array:36:true");
+}
+
+TEST_CASE("an empty return is a zero-length typed array, not undefined") {
+    CHECK(text("(function () { const e = nt.buf.empty();"
+               "return e.constructor.name + ':' + e.length; })()") == "Float64Array:0");
+}
+
+TEST_CASE("a transfer-mode return views the native's block and releases it on collection") {
+    ensureRegistered();
+    const int madeBefore = nt_natives::g_bufMade;
+    const int releasedBefore = nt_natives::g_bufReleased;
+    CHECK(text("(function () { const o = nt.buf.ownedU8(6); globalThis.keptBuf = o;"
+               "return o.constructor.name + ':' + Array.from(o).join(',') + ':' +"
+               "o.buffer.byteLength; })()") == "Uint8Array:0,3,6,9,12,15:6");
+    // Writes land in the native's block (the view is over it, not a copy).
+    CHECK(number("keptBuf[2] = 200; new Uint8Array(keptBuf.buffer)[2]") == 200.0);
+    CHECK(nt_natives::g_bufMade - madeBefore == 1);
+    CHECK(nt_natives::g_bufReleased == releasedBefore);
+
+    embed::CallResult r =
+        evalScript("(function () { for (let i = 0; i < 8; i++) nt.buf.ownedU8(i + 1); })()");
+    REQUIRE(!r.thrown);
+    embed::collectGarbage();
+    embed::collectGarbage();
+    embed::drainFinalizers();
+    // The eight the program dropped are released; the kept one is not.
+    CHECK(nt_natives::g_bufReleased - releasedBefore >= 8);
+    CHECK(number("keptBuf.length") == 6.0);
+    CHECK(number("keptBuf[2]") == 200.0);
+
+    CHECK(number("globalThis.keptBuf = undefined; 0") == 0.0);
+    const int releasedKept = nt_natives::g_bufReleased;
+    embed::collectGarbage();
+    embed::collectGarbage();
+    embed::drainFinalizers();
+    CHECK(nt_natives::g_bufReleased > releasedKept);
+}
+
+TEST_CASE("a native that throws after filling a transfer descriptor still has its release run") {
+    ensureRegistered();
+    const int releasedBefore = nt_natives::g_bufReleased;
+    CHECK(contains(typeErrorOf("nt.buf.throwAfterFill()"), "filled, then refused"));
+    // Released synchronously by the wrap, no collection needed: the block
+    // was never given to a buffer.
+    CHECK(nt_natives::g_bufReleased - releasedBefore == 1);
+    // And the program is left in order: the next buffer return works.
+    CHECK(text("Array.from(nt.buf.rangeF32(2)).join(',')") == "0,1");
+    CHECK(text("(function () { try { nt.buf.throwAfterFill(); return 'no throw'; }"
+               "catch (e) { return e.message; } })()") == "filled, then refused");
+    CHECK(nt_natives::g_bufReleased - releasedBefore == 2);
+}
+
 // ---- classes ---------------------------------------------------------------
 
 TEST_CASE("a native class: constructor, method, getter, setter, zero-arg method") {
@@ -378,7 +449,7 @@ TEST_CASE("a bare name that is already a host global is refused") {
     CHECK(contains(err, "host global"));
 }
 
-TEST_CASE("a duplicate registration is refused and a typed array cannot be returned") {
+TEST_CASE("a duplicate registration is refused, and a typed-array return is accepted") {
     ensureRegistered();
     std::string err;
     embed::NativeSignature sig;
@@ -387,11 +458,16 @@ TEST_CASE("a duplicate registration is refused and a typed array cannot be retur
     CHECK(!embed::registerNative("nt.math.add", reinterpret_cast<void*>(&nt_natives::add), sig, &err));
     CHECK(contains(err, "already registered"));
 
+    // The same path twice with a `T[]` return: the SECOND refusal is the
+    // duplicate, not the return type, which proves the spelling passed
+    // resolution (nt.buf.rangeF32 registered with it in registerAll).
     sig.returnType = "f32[]";
-    sig.paramTypes = {};
+    sig.paramTypes = {"i32"};
     err.clear();
-    CHECK(!embed::registerNative("nt.bad.view", reinterpret_cast<void*>(&nt_natives::add), sig, &err));
-    CHECK(contains(err, "f32[]"));
+    CHECK(!embed::registerNative("nt.buf.rangeF32", reinterpret_cast<void*>(&nt_natives::rangeF32), sig,
+                                 &err));
+    CHECK(contains(err, "already registered"));
+    CHECK(!contains(err, "parameter-only"));
 }
 
 // ---- the registry as the manifest ------------------------------------------

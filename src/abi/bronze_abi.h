@@ -576,6 +576,22 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * not allocate through the embed API while it holds it. */ \
     X(bronze_native_typed_array_data,   BRONZE_ABI_VPTR, (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_native_typed_array_length, BRONZE_ABI_U32,  (BRONZE_ABI_U64)) \
+    /* A typed-array RETURN, for a native declared to answer `<kind>[]`: a C
+     * function returning void with one extra trailing `bronze_native_buffer*`
+     * parameter (abi/bronze_native_type.h). The thunk calls
+     * `bronze_native_buffer_slot` for a zeroed per-thread descriptor (a
+     * stack, so a native that re-enters the program and reaches another
+     * buffer-returning native never shares a slot), passes its address as
+     * the trailing argument, calls the native, then calls
+     * `bronze_native_buffer_wrap` with the ElementKind the declaration names;
+     * wrap pops the slot and answers the Value: a fresh JS-owned typed array
+     * holding a copy when `release` is null, a view over the native's own
+     * bytes owing `release(ctx)` at collection when it is not, the empty
+     * array for a null `data`. With an exception already pending (the native
+     * threw through the embed API) wrap releases a transferred block and
+     * answers undefined, so the unwind after the call sees no leak. ALLOCATES. */ \
+    X(bronze_native_buffer_slot,   BRONZE_ABI_VPTR, (BRONZE_ABI_NOARGS)) \
+    X(bronze_native_buffer_wrap,   BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     /* A `str` argument as the NUL-terminated UTF-8 a C native takes: the
      * value (ToString for a non-string; undefined, a missing argument, is
      * "") copied into a per-thread scratch stack, whose top `count` entries

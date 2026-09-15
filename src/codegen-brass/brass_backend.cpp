@@ -207,7 +207,18 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // so a call site is one load and one indirect call, and NOTHING in the
     // object names a native's own symbol. A returned C `bool` is masked to
     // its low bit: the ABI defines only `al` for it and the thunk's caller
-    // reads an i32.
+    // reads an i32. A native answering `T[]` (bufferReturnKind set) is the
+    // one thunk with more in it:
+    //
+    //   __bronze_native_<i>(args...):  slot = bronze_native_buffer_slot();
+    //                                  callee(args..., slot);
+    //                                  return bronze_native_buffer_wrap(kind)
+    //
+    // The IL still sees a Dynamic-returning call; the descriptor and the
+    // wrap are sequenced here, identically for the JIT and for an emitted
+    // object, and the exception check the IL places after the call is what
+    // unwinds when the native threw (wrap answered undefined, releasing a
+    // transferred block first).
     const std::string importsSymbol = entrySymbol_ + "_native_imports";
     const auto& imports = module.nativeImports;
     {
@@ -215,6 +226,8 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         mod.add_external_symbol(importsSymbol);
         mod.add_external_symbol("bronze_native_bind");
         mod.add_external_symbol("bronze_native_unbound");
+        mod.add_external_symbol("bronze_native_buffer_slot");
+        mod.add_external_symbol("bronze_native_buffer_wrap");
         auto brassTypeOf = [](il::Type t) -> brass::Type {
             switch (t) {
                 case il::Type::Void: return brass::Type::void_type();
@@ -244,6 +257,16 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             const auto slotOffset = static_cast<int32_t>(8 + i * sizeof(uint64_t));
             if (isClassSlot) {
                 b.build_ret(b.build_load(brass::Type::i64(), table, slotOffset));
+            } else if (imports[i].bufferReturnKind != UINT32_MAX) {
+                brass::Value* slot = b.build_call("bronze_native_buffer_slot", brass::Type::ptr());
+                std::vector<brass::Value*> withSlot = args;
+                withSlot.push_back(slot);
+                brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
+                b.build_call_indirect(callee, brass::Type::void_type(),
+                                      brass::Span<brass::Value* const>(withSlot.data(), withSlot.size()));
+                brass::Value* kind =
+                    b.build_iconst_i32(static_cast<int32_t>(imports[i].bufferReturnKind));
+                b.build_ret(b.build_call("bronze_native_buffer_wrap", brass::Type::i64(), {kind}));
             } else {
                 brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
                 brass::Value* result = b.build_call_indirect(

@@ -241,10 +241,6 @@ std::optional<NativeManifest> NativeManifest::parse(std::string_view text, std::
                     why = "a parameter cannot be 'void'";
                     return false;
                 }
-                if (!asParam && abi::nativeTypeIsTypedArray(scalar)) {
-                    why = "a typed array ('" + t + "') is parameter-only";
-                    return false;
-                }
                 out.kind = scalar;
                 out.className.clear();
                 return true;

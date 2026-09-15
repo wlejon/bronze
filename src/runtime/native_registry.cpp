@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -9,6 +10,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
+#include "runtime/external_store.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -46,11 +48,6 @@ bool resolveType(std::string_view text, bool asParam, abi::NativeTypeRef& out, s
     if (abi::parseNativeScalarType(text, scalar)) {
         if (asParam && scalar == abi::NativeType::Void) {
             err = "a parameter cannot be 'void'";
-            return false;
-        }
-        if (!asParam && abi::nativeTypeIsTypedArray(scalar)) {
-            err = "a typed array ('" + std::string(text) +
-                  "') is parameter-only: a native has no buffer to hand back";
             return false;
         }
         out.kind = scalar;
@@ -496,6 +493,93 @@ void bronze_native_str_release(uint32_t count) {
 uint64_t bronze_native_str_from_utf8(const void* utf8) {
     if (!utf8) return rtMakeString(std::string_view{}).rawBits();
     return rtMakeString(std::string_view{static_cast<const char*>(utf8)}).rawBits();
+}
+
+// The per-thread descriptors a `T[]`-returning native fills. A stack, for
+// the reason the str scratch is one: a native may re-enter the program, which
+// may reach another buffer-returning native before the outer wrap reads its
+// slot. Every slot() is matched by exactly one wrap(): the thunk emits them
+// as a pair around the call, and an exception the native raised does not
+// skip the wrap (the thunk has no unwind check between its own instructions;
+// the check after the thunk's call is the program's). A deque, so a push
+// never moves the descriptor an outer call handed its native.
+thread_local std::deque<bronze_native_buffer> g_bufferSlots;
+
+void* bronze_native_buffer_slot() {
+    g_bufferSlots.push_back(bronze_native_buffer{nullptr, 0, nullptr, nullptr});
+    return &g_bufferSlots.back();
+}
+
+namespace {
+
+// The transfer mode's deleter: the native's release, with its ctx, called
+// once the JS buffer dies. `user` carries the release pointer, `bytes` is
+// unused because the native's ctx names its own block.
+struct TransferRelease {
+    void (*release)(void* ctx);
+    void* ctx;
+};
+
+void runTransferRelease(void* user, uint8_t* bytes) {
+    (void)bytes;
+    auto* tr = static_cast<TransferRelease*>(user);
+    tr->release(tr->ctx);
+    delete tr;
+}
+
+}  // namespace
+
+uint64_t bronze_native_buffer_wrap(uint32_t kind) {
+    if (g_bufferSlots.empty()) fatal("bronze_native_buffer_wrap without a matching slot");
+    const bronze_native_buffer desc = g_bufferSlots.back();
+    g_bufferSlots.pop_back();
+    // A filled descriptor whose wrap cannot happen still owes its release:
+    // the block was given away the moment the native set `release`.
+    auto releaseNow = [&] {
+        if (desc.release) desc.release(desc.ctx);
+    };
+    if (rtExceptionPending()) {
+        releaseNow();
+        return Value::fromUndefined().rawBits();
+    }
+    const auto elementKind = static_cast<ElementKind>(kind);
+    const uint64_t bpe = elementKindInfo(elementKind).bytesPerElement;
+    const uint64_t byteLength = static_cast<uint64_t>(desc.length) * bpe;
+    ShadowStackFrame frame;
+    if (byteLength > kMaxByteLength) {
+        releaseNow();
+        return rtThrowRangeError(std::string("a native returned a ") +
+                                 elementKindInfo(elementKind).name + " of " +
+                                 std::to_string(desc.length) + " elements, over the buffer maximum")
+            .rawBits();
+    }
+    if (!desc.data || desc.length == 0) {
+        // Empty in either mode; a transferred empty block is released at
+        // once, since no buffer will ever own it.
+        releaseNow();
+        return Value::fromObject(TypedArrayHeader::create(rtHeap(), elementKind, 0)).rawBits();
+    }
+    if (!desc.release) {
+        // Copy mode: the native's pointer is valid for this call only.
+        auto* view = TypedArrayHeader::create(rtHeap(), elementKind, desc.length);
+        std::memcpy(view->bytes(), desc.data, static_cast<size_t>(byteLength));
+        return Value::fromObject(view).rawBits();
+    }
+    // Transfer mode: a buffer over the native's block, owing release(ctx).
+    auto* tr = new TransferRelease{desc.release, desc.ctx};
+    Rooted<Value> buffer{rtCreateExternalArrayBuffer(static_cast<uint8_t*>(desc.data),
+                                                     static_cast<uint32_t>(byteLength),
+                                                     runTransferRelease, tr)};
+    if (rtExceptionPending()) {
+        // Refused before any registration owned the block (the length ladder
+        // above already ran, so this is a refusal the store itself made).
+        delete tr;
+        releaseNow();
+        return Value::fromUndefined().rawBits();
+    }
+    return Value::fromObject(
+               TypedArrayHeader::createOverBuffer(rtHeap(), elementKind, buffer, 0, desc.length))
+        .rawBits();
 }
 
 }  // extern "C"
