@@ -476,6 +476,12 @@ BRONZE_EMBED_API std::vector<std::string> hostNativeNames();
 // name that is not a registered class.
 BRONZE_EMBED_API GlobalValue nativeClassPrototype(std::string_view className);
 
+// Wrap a host pointer as a tagged instance of a registered native class.
+// The handle is born on the class's prototype and carries the class's tag,
+// so native methods accept it as receiver. Returns null if data is null or
+// className is not a registered native class.
+BRONZE_EMBED_API Value wrapNative(void* data, std::string_view className);
+
 // The registry as JSON — the manifest an ahead-of-time `bronze build
 // --native-manifest <file>` compiles against. Deterministic for one
 // registration order. writeNativeManifest is the same text to a file

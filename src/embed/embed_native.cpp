@@ -9,6 +9,7 @@
 
 #include "embed/embed.h"
 #include "runtime/fatal.h"
+#include "runtime/native_handle.h"
 #include "runtime/native_registry.h"
 
 namespace bronze::embed {
@@ -122,6 +123,14 @@ GlobalValue nativeClassPrototype(std::string_view className) {
         return {cls->prototype, true};
     }
     return {Value::fromUndefined(), false};
+}
+
+Value wrapNative(void* data, std::string_view className) {
+    if (!data) return Value::fromNull();
+    if (runtime::NativeClassInfo* cls = runtime::rtFindNativeClass(className)) {
+        return runtime::rtMakeHandle(data, cls->destructor, cls->finalize, cls->prototype, cls);
+    }
+    return Value::fromNull();
 }
 
 // The manifest: one flat array, one entry per registration, every field the
