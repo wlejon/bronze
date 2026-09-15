@@ -297,6 +297,10 @@ uint64_t rtBeginModuleEpoch() {
     return g_currentModuleEpoch;
 }
 
+void rtEndModuleEpoch(uint64_t epoch) {
+    if (epoch != 0 && g_currentModuleEpoch == epoch) g_currentModuleEpoch = 0;
+}
+
 void rtDropModuleEpoch(uint64_t epoch) {
     if (epoch == 0) return;
     // The function singletons this module interned die with it. Their code

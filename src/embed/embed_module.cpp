@@ -59,6 +59,7 @@ void runEntry(ModuleEntry entry) {
 // embed.h carries it — the bracket discipline, the leak-the-image rule, and
 // what "unload" does and does not free.
 ModuleHandle beginModuleLoad() { return runtime::rtBeginModuleEpoch(); }
+void endModuleLoad(ModuleHandle module) { runtime::rtEndModuleEpoch(module); }
 void unloadModule(ModuleHandle module) { runtime::rtDropModuleEpoch(module); }
 
 void collectGarbage() { runtime::rtHeap().collect(); }

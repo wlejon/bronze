@@ -28,6 +28,17 @@ struct EvalOptions {
     // No native-manifest option: the evaluator reads the natives this thread's
     // host registered (embed::registerNative) directly, and binds the program
     // to them before it runs.
+    //
+    // When set, the program's entry runs inside a beginModuleLoad/endModuleLoad
+    // bracket (embed.h) and the handle is written here, so the host can later
+    // unloadModule it — the root spans the program registered stop being roots
+    // and its heap graph can die. This is what a host that swaps a whole
+    // program for a newer version of itself passes; an eval() or new Function()
+    // from inside a running program passes nothing and its registrations join
+    // whatever bracket is current, exactly as before. The machine code is
+    // retained either way (retainJitProgram): closures hold raw code pointers
+    // into it, and the unload contract keeps the image mapped.
+    embed::ModuleHandle* moduleHandleOut = nullptr;
 };
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine

@@ -219,6 +219,7 @@ BRONZE_EMBED_API void runEntry(ModuleEntry entry);
 //
 //     ModuleHandle h = beginModuleLoad();
 //     runEntry(entry);            // spans registered here carry the handle
+//     endModuleLoad(h);           // spans registered from here on are nobody's
 //     ...
 //     unloadModule(h);            // the spans stop being roots
 //
@@ -226,6 +227,17 @@ BRONZE_EMBED_API void runEntry(ModuleEntry entry);
 // nothing else runs a module entry in between: the bracket is what ties the
 // registrations to the handle. A host that never brackets (or a linked
 // program) gets permanent registrations, exactly as before.
+//
+// endModuleLoad CLOSES the bracket. Without it the handle stays current, and
+// every span registered on the thread afterwards — by a program the host
+// compiles and runs later, by a module whose first read of a provided global
+// happens in a callback — would carry this module's handle and die with it.
+// That is wrong in both directions: a later program is not this module, and
+// unloading this module must not unroot it. After endModuleLoad such spans
+// are epoch 0, permanent, which is the safe error: a stale cache cell keeps a
+// global alive, a dropped one keeps a running program's cells untraced.
+// Ending a handle that is not current is a no-op, so a host may end
+// unconditionally.
 //
 // WHAT UNLOAD MEANS — AND WHAT IT DOES NOT:
 //
@@ -252,6 +264,7 @@ BRONZE_EMBED_API void runEntry(ModuleEntry entry);
 // a host error, exactly as freeing any object mid-use is.
 using ModuleHandle = uint64_t;
 BRONZE_EMBED_API ModuleHandle beginModuleLoad();
+BRONZE_EMBED_API void endModuleLoad(ModuleHandle module);
 BRONZE_EMBED_API void unloadModule(ModuleHandle module);
 
 // Collect now. A host that has just released a large graph — a level torn

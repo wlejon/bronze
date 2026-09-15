@@ -65,7 +65,11 @@ void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
 // interned through the module's own fn slots — from the collector's roots.
 // Epoch 0 is "no bracket": spans registered outside any bracket (a linked
 // program's, a host that never unloads) are permanent, exactly as before.
+// Ending an epoch returns the thread to "no bracket" if that epoch is the
+// current one; spans registered after the entry has returned are then
+// permanent rather than tagged with a module they do not belong to.
 uint64_t rtBeginModuleEpoch();
+void rtEndModuleEpoch(uint64_t epoch);
 void rtDropModuleEpoch(uint64_t epoch);
 
 // Invalidate cached global cells across all modules on host global registration and realm switches.

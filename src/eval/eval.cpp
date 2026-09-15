@@ -224,7 +224,8 @@ std::unique_ptr<BrassJitProgram> compileFileToJit(
 
 embed::CallResult runJitProgramAndCollectResult(
     std::unique_ptr<BrassJitProgram> jitProgram,
-    const std::string& resName) {
+    const std::string& resName,
+    embed::ModuleHandle* moduleHandleOut) {
 
     auto* programPtr = jitProgram.get();
     retainJitProgram(std::move(jitProgram));
@@ -233,10 +234,20 @@ embed::CallResult runJitProgramAndCollectResult(
         runtime::rtClearException();
     }
 
+    // The bracket a host asked for: opened immediately before the entry, so
+    // the spans the entry registers carry the handle, and closed after the
+    // microtask checkpoint, so a later program's registrations do not. The
+    // handle is written even when the entry throws — a top level that got
+    // halfway registered its spans on the way, and they are still the host's
+    // to unload.
+    const embed::ModuleHandle handle = moduleHandleOut ? embed::beginModuleLoad() : 0;
+    if (moduleHandleOut) *moduleHandleOut = handle;
+
     using RawEntryFn = uint64_t (*)();
     auto entryFn = reinterpret_cast<RawEntryFn>(programPtr->entryPoint());
     uint64_t entryBits = entryFn ? entryFn() : 0;
     embed::drainMicrotasks();
+    embed::endModuleLoad(handle);
 
     if (runtime::rtExceptionPending()) {
         Value thrown(runtime::rtTls()->exception_cell);
@@ -290,7 +301,7 @@ embed::CallResult evalScript(std::string_view source, const EvalOptions& options
         return embed::CallResult{syntaxErr, /*thrown=*/true};
     }
 
-    return runJitProgramAndCollectResult(std::move(jitProgram), resName);
+    return runJitProgramAndCollectResult(std::move(jitProgram), resName, options.moduleHandleOut);
 }
 
 embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options) {
@@ -310,7 +321,7 @@ embed::CallResult evalFile(const std::string& filePath, const EvalOptions& optio
         return embed::CallResult{syntaxErr, /*thrown=*/true};
     }
 
-    return runJitProgramAndCollectResult(std::move(jitProgram), resName);
+    return runJitProgramAndCollectResult(std::move(jitProgram), resName, options.moduleHandleOut);
 }
 
 Value evalScriptDirect(std::string_view source, const EvalOptions& options) {
