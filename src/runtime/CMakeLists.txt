@@ -72,6 +72,7 @@ bronze_add_module(runtime
         rt_members.cpp
         native_base.cpp
         rt_object.cpp
+        realm.cpp
         rt_global.cpp
         rt_reflect.cpp
         rt_operator.cpp

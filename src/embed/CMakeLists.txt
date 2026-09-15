@@ -14,6 +14,7 @@ bronze_add_module(embed
         embed_typed_array.cpp
         embed_module.cpp
         embed_promise.cpp
+        embed_realm.cpp
     DEPS
         runtime
         abi
@@ -21,6 +22,7 @@ bronze_add_module(embed
     TEST_SOURCES
         ../../tests/embed/embed_test.cpp
         ../../tests/embed/embed_handle_scope_test.cpp
+        ../../tests/embed/embed_realm_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on —

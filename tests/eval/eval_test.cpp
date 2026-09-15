@@ -274,3 +274,46 @@ TEST_CASE("a compiled host-global read caches and sees re-registration") {
     REQUIRE(!r3.thrown);
     CHECK(r3.value.asNumber() == 13.0);
 }
+
+TEST_CASE("evalScript evaluates code within isolated realms") {
+    embed::Realm* realmA = embed::createRealm();
+    embed::Realm* realmB = embed::createRealm();
+
+    {
+        embed::RealmScope scopeA(realmA);
+        auto r1 = evalScript("var x = 100; var y = 20; x + y;");
+        CHECK(!r1.thrown);
+        CHECK(r1.value.asNumber() == 120.0);
+    }
+
+    {
+        embed::RealmScope scopeB(realmB);
+        // x and y should not exist in realmB!
+        auto r2 = evalScript("var x = 200; var y = 50; x + y;");
+        CHECK(!r2.thrown);
+        CHECK(r2.value.asNumber() == 250.0);
+    }
+
+    {
+        embed::RealmScope scopeA(realmA);
+        auto r3 = evalScript("x + y;");
+        CHECK(!r3.thrown);
+        CHECK(r3.value.asNumber() == 120.0);
+        auto r4 = evalScript("globalThis.x;");
+        CHECK(!r4.thrown);
+        CHECK(r4.value.asNumber() == 100.0);
+    }
+
+    {
+        embed::RealmScope scopeB(realmB);
+        auto r5 = evalScript("x + y;");
+        CHECK(!r5.thrown);
+        CHECK(r5.value.asNumber() == 250.0);
+        auto r6 = evalScript("globalThis.x;");
+        CHECK(!r6.thrown);
+        CHECK(r6.value.asNumber() == 200.0);
+    }
+
+    embed::destroyRealm(realmA);
+    embed::destroyRealm(realmB);
+}

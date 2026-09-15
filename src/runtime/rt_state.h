@@ -68,6 +68,9 @@ void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
 uint64_t rtBeginModuleEpoch();
 void rtDropModuleEpoch(uint64_t epoch);
 
+// Invalidate cached global cells across all modules on host global registration and realm switches.
+void rtInvalidateGlobalCaches();
+
 // BRONZE_NO_ENV_METHOD_IC=1 (read where every other seam is, heap.cpp's TLS
 // init) gates the INSTALL of the two env-capable method-IC forms — the
 // env-carrying direct latch and the own-slot latch — and nothing else, so one

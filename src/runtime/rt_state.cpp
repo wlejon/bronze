@@ -36,6 +36,7 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
+#include "runtime/realm.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
@@ -282,7 +283,7 @@ static thread_local std::vector<ModuleSpan<Value>> g_globalCacheSpans;
 // refills; a cell that was never filled is unchanged. Cheap because the
 // caller is a host REGISTERING a global — a handful of times at startup and
 // on a realm swap — and never a read.
-static void rtInvalidateGlobalCaches() {
+void rtInvalidateGlobalCaches() {
     for (const auto& span : g_globalCacheSpans) {
         for (uint64_t i = 0; i < span.count; ++i) span.cells[i] = Value::fromHole();
     }
@@ -368,6 +369,7 @@ static void registerThreadRootSources(Heap& heap) {
         }
         for (auto& entry : g_hostGlobals) visit(entry.second);
         rtVisitArrayMethodRoots(visit);
+        rtVisitRealmRoots(visit);
     });
 }
 
@@ -656,6 +658,9 @@ extern "C" {
 uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     recordPropCall("bronze_global_get", keyIndex, nullptr);
     const std::string& keyStr = rtKeyString(keyIndex);
+    if (keyStr == "globalThis") {
+        return rtGlobalThisObject().rawBits();
+    }
     // Host-registered globals take precedence for platform/host APIs (e.g. `performance`,
     // where a host provides its own clock bound to the engine's virtual / rAF frame seam
     // rather than the standalone runtime's default steady_clock namespace). Returned
@@ -725,7 +730,10 @@ uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t c
     // to reassign at any moment and stays uncached.
     Value resolved = Value::fromUndefined();
     bool cacheable = false;
-    if (keyStr == "performance" && rtHostGlobalLookup(keyStr, resolved)) {
+    if (keyStr == "globalThis") {
+        resolved = rtGlobalThisObject();
+        cacheable = false;
+    } else if (keyStr == "performance" && rtHostGlobalLookup(keyStr, resolved)) {
         cacheable = true;
     } else if (rtResolveBuiltinGlobal(keyStr, resolved)) {
         cacheable = true;
