@@ -21,6 +21,14 @@ public:
     void setHostGlobals(std::vector<std::string> names) { hostGlobals_ = std::move(names); }
     void setEmittedPathsOut(std::vector<std::string>* out) { emittedPathsOut_ = out; }
     void setPropagateExceptionsInEntry(bool val) { propagateExceptionsInEntry_ = val; }
+    // Off is the baseline tier: no MIR optimizer, no scheduling, no layout —
+    // the code the translator emits, selected and allocated as it stands.
+    // Same semantics either way; only how long the compile takes and how
+    // fast the result runs differ. BRONZE_NO_OPT=1 in the environment forces
+    // it off for every backend in the process, so any pipeline (the CLI, the
+    // oracle suite, a host's JIT) can be run in the baseline tier as a check.
+    void setOptimize(bool on) { optimize_ = on; }
+    bool optimize() const;
 
     std::optional<brass::object::ObjectFile> buildObjectFile(const il::Module& module,
                                                             DiagnosticSink& diags);
@@ -35,6 +43,7 @@ private:
     std::string entrySymbol_ = "bronze_main";
     bool sharedRuntime_ = false;
     bool propagateExceptionsInEntry_ = false;
+    bool optimize_ = true;
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;
 };

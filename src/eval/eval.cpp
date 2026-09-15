@@ -166,6 +166,7 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
     BrassBackend backend;
     backend.setEntrySymbol(entrySym);
     backend.setHostGlobals(hostGlobals);
+    backend.setOptimize(options.optimize);
 
     auto program = backend.compileToJit(*ilModule, diags);
     if (!program) return nullptr;

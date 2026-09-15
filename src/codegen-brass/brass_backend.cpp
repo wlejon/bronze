@@ -12,9 +12,15 @@
 #include <brass/object/object_writer.hpp>
 #include <brass/target/target.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 
 namespace bronze {
+
+bool BrassBackend::optimize() const {
+    static const bool forcedOff = std::getenv("BRONZE_NO_OPT") != nullptr;
+    return optimize_ && !forcedOff;
+}
 
 std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const il::Module& module, DiagnosticSink& diags) {
@@ -51,8 +57,9 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
+    const bool optimize = this->optimize();
     brass::il::TranslatorOptions options;
-    options.enable_optimizations = true;
+    options.enable_optimizations = optimize;
     options.enable_inlining = true;
     options.enable_speculative_inlining = true;
     options.enable_sroa = true;
@@ -296,10 +303,11 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     brass::Target target = brass::Target::host();
     brass::object::ModuleCompiler compiler(target);
     brass::codegen::SchedOptions schedOpts;
-    schedOpts.enable_post_ra = true;
-    schedOpts.enable_software_pipelining = true;
+    schedOpts.enable_post_ra = optimize;
+    schedOpts.enable_software_pipelining = optimize;
     compiler.set_sched_options(schedOpts);
-    compiler.set_enable_trace_layout(true);
+    compiler.set_enable_trace_layout(optimize);
+    compiler.set_enable_mir_opts(optimize);
     brass::object::ObjectFile obj = compiler.compile(*res.module);
 
     if (entrySymbol_ != "main") {

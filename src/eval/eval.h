@@ -39,6 +39,12 @@ struct EvalOptions {
     // retained either way (retainJitProgram): closures hold raw code pointers
     // into it, and the unload contract keeps the image mapped.
     embed::ModuleHandle* moduleHandleOut = nullptr;
+    // false compiles in the baseline tier (BrassBackend::setOptimize): the
+    // whole optimizer skipped, so a program is running a few hundred
+    // milliseconds after the source changed instead of seconds. Same
+    // semantics, slower code — the tier for a host's edit-and-reload loop,
+    // not for the build it ships.
+    bool optimize = true;
 };
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine
