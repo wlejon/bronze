@@ -727,12 +727,45 @@ void bronze_iter_close(uint64_t recBits, bool suppress) {
     if (rec->kindOf() < IterRecordHeader::Protocol || rec->done.asBool()) return;
     rec->done = Value::fromBool(true);
 
+    // 7.4.9 with a THROW completion already in flight. Generated code takes
+    // the pending value (ExcTake) before it closes and re-raises it after;
+    // the native callers — `Array.from` around its mapper, `new Map` around
+    // a bad entry, the promise combinators — reach here with the exception
+    // still in the cell. `return` has to run with the cell CLEAR: its own
+    // compiled body checks the cell after every call it makes and would
+    // unwind at the first one, so `return() { log(); ... }` never logged.
+    // And step 5 keeps the original completion, so whatever `return` did is
+    // discarded and the original is put back — where before, `suppress`
+    // cleared the original along with it and `Array.from(it, throwingMap)`
+    // returned normally.
+    const bool inFlight = rtExceptionPending();
+    Rooted<Value> inFlightValue{inFlight ? Value(rtTls()->exception_cell)
+                                         : Value::fromUndefined()};
+    if (inFlight) rtClearException();
+
     Rooted<Value> iterObj{rec->target};
     Rooted<Value> ret{namedProp(iterObj.get(), keyReturn())};
     // 7.4.9 step 4: an iterator with no `return` closes by doing nothing.
-    if (!isCallable(ret.get())) return;
-    ret.get().asObject<FunctionHeader>()->call(iterObj.get(), 0, nullptr);
-    if (suppress && rtExceptionPending()) rtClearException();
+    Rooted<Value> result{Value::fromUndefined()};
+    if (isCallable(ret.get())) {
+        result.set(ret.get().asObject<FunctionHeader>()->call(iterObj.get(), 0, nullptr));
+    } else if (!inFlight) {
+        return;
+    }
+    if (inFlight) {
+        rtClearException();
+        rtThrow(inFlightValue.get());
+        return;
+    }
+    if (suppress) {
+        if (rtExceptionPending()) rtClearException();
+        return;
+    }
+    // Step 7: a normal completion whose `return` answered a non-object is
+    // the TypeError, after an error `return` itself raised (step 6).
+    if (!rtExceptionPending() && !result.get().isObject()) {
+        rtThrowTypeError("iterator return() result is not an object");
+    }
 }
 
 // A rest element's value: everything the cursor has left, as a fresh array.

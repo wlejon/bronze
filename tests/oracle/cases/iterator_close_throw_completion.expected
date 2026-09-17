@@ -1,0 +1,11 @@
+from return ran number
+from: RangeError map
+map return ran number
+map: TypeError
+set: ok
+entries return ran number
+entries: TypeError
+break return ran number
+break: TypeError
+return threw: SyntaxError
+body threw: RangeError
