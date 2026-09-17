@@ -69,8 +69,13 @@ Value buildValue(const json::Value& node) {
                 // A repeated key overwrites in place, so the property keeps
                 // the position its FIRST appearance gave it — which is what
                 // 25.5.1's CreateDataProperty over an ordinary object does,
-                // and is observable through Object.keys.
-                bronze_elem_set(obj.get().rawBits(), key.get().rawBits(), value.get().rawBits(), /*strict=*/false);
+                // and is observable through Object.keys. A DEFINITION, not an
+                // assignment: `{"__proto__": 1}` makes an own data property
+                // named `__proto__`, and a Set would have run the inherited
+                // setter and changed the object's prototype instead.
+                obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, value,
+                                                            /*ic=*/nullptr, /*enumerable=*/true,
+                                                            /*defineOwn=*/true);
             }
             return obj.get();
         }

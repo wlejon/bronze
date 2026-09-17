@@ -26,3 +26,5 @@ x true null 3
 SyntaxError for an unquoted key
 SyntaxError for a trailing comma
 10
+true undefined 2 __proto__,y {"__proto__":{"x":1},"y":2}
+null true true

@@ -56,3 +56,11 @@ try {
 console.log(JSON.parse('{"n":1,"m":2}', function (k, v) {
   return typeof v === "number" ? v * 10 : v;
 }).n);
+// 25.5.1 step 10: each member is a CreateDataProperty, never a Set — so a
+// `__proto__` member is an own data property, and the prototype stays
+// Object.prototype rather than becoming whatever the JSON said.
+const withProto = JSON.parse('{"__proto__": {"x": 1}, "y": 2}');
+console.log(Object.getPrototypeOf(withProto) === Object.prototype, withProto.x, withProto.y,
+            Object.keys(withProto).join(","), JSON.stringify(withProto));
+const nullProto = JSON.parse('{"__proto__": null}');
+console.log(nullProto.__proto__, Object.hasOwn(nullProto, "__proto__"), Object.getPrototypeOf(nullProto) === Object.prototype);
