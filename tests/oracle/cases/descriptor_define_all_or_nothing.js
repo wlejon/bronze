@@ -1,6 +1,6 @@
-// BLOCKED: `Object.defineProperties` decodes and defines one descriptor at a
-// time, so a descriptor that throws part-way through leaves the keys before it
-// already defined.
+// `Object.defineProperties` is all-or-nothing with respect to its own
+// decoding: a descriptor that throws part-way through the batch leaves the
+// keys before it undefined.
 //
 // ECMA-262 20.1.2.3.1 ObjectDefineProperties is TWO loops, and the split is the
 // whole content of this case:
@@ -18,18 +18,12 @@
 // respect to its own decoding, which is what lets a program hand over a batch
 // of descriptors and know that a failure means none of them landed.
 //
-// bronze fuses the two loops: `rtObjectDefineFromDescriptors`
-// (builtin_object_descriptor.cpp) reads one descriptor and defines it before
-// reading the next, so the throw in `b` below arrives after `a` is already on
-// the object. Splitting them needs the decode half of `rtObjectDefineOwnProperty`
-// separated from the apply half and its three Values parked somewhere the
-// collector can see while the REMAINING descriptors' getters run and allocate —
-// which is the work this case is waiting on, not a missing member.
-//
-// `cases/descriptor_decode_order` lines 30-33 pin the half bronze does get
-// right: the error propagates, the descriptors after the failing one are
-// neither read nor defined, and a single `defineProperty` defines nothing at
-// all. The only line below bronze answers wrongly today is `a`.
+// `rtObjectDefineFromDescriptors` (builtin_object_descriptor.cpp) is those
+// two loops: the decode half of `defineProperty` runs over the whole batch
+// with each descriptor's three payloads parked in a rooted block, and only
+// then does the apply half run. `cases/descriptor_decode_order` pins the
+// other half of the same rule: the descriptors after the failing one are
+// neither read nor defined, and a single `defineProperty` defines nothing.
 //
 // What the expectation is derived from, line by line:
 //

@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -470,25 +471,17 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
 // over. The errors of the DECODE — a non-object target, a descriptor that is
 // not an object, a `get` that is not callable — are raised for both, and only
 // the REFUSAL is the boolean `throwOnRefusal` chooses the meaning of.
-bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal) {
-    RootedArgs args(argc, argv);
-    if (!rtObjectRequirePropertyTable(args[0], "defineProperty")) {
-        return false;
-    }
-    if (!rtObjectIsPlain(args[2])) {
+// ECMA-262 6.2.6.5 ToPropertyDescriptor on its own: the six reads and the
+// three checks, with the payloads left in the roots the caller handed in.
+// False with an exception pending on every failure. Separate from the apply
+// because 20.1.2.3.1 runs ALL of a batch's decodes before ANY apply, so the
+// decoded batch has to be parked between the two halves.
+static bool decodeDescriptor(Rooted<Value>& desc, DecodedDescriptor& d, Rooted<Value>& value,
+                             Rooted<Value>& getter, Rooted<Value>& setter) {
+    if (!rtObjectIsPlain(desc.get())) {
         rtThrowTypeError("Property description must be an object");
         return false;
     }
-    Rooted<Value> self{args[0]};
-    Rooted<Value> desc{args[2]};
-
-    Rooted<Value> target{self.get()};
-    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        rtEnsureFunctionProperties(self);
-        target.set(self.get().asObject<FunctionHeader>()->properties);
-    }
-
-    DecodedDescriptor d;
     Value wrapped;
     const bool ordinary = !rtStringWrapperData(desc.get(), wrapped);
     // 6.2.6.5 steps 3 through 8, in the order it states them. The order is
@@ -511,13 +504,13 @@ bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOn
     Rooted<Value> configurableV{
         readField(desc, DescField::Configurable, ordinary, d.hasConfigurable)};
     if (rtExceptionPending()) return false;
-    Rooted<Value> value{readField(desc, DescField::Value, ordinary, d.hasValue)};
+    value.set(readField(desc, DescField::Value, ordinary, d.hasValue));
     if (rtExceptionPending()) return false;
     Rooted<Value> writableV{readField(desc, DescField::Writable, ordinary, d.hasWritable)};
     if (rtExceptionPending()) return false;
-    Rooted<Value> getter{readField(desc, DescField::Get, ordinary, d.hasGet)};
+    getter.set(readField(desc, DescField::Get, ordinary, d.hasGet));
     if (rtExceptionPending()) return false;
-    Rooted<Value> setter{readField(desc, DescField::Set, ordinary, d.hasSet)};
+    setter.set(readField(desc, DescField::Set, ordinary, d.hasSet));
     if (rtExceptionPending()) return false;
 
     // 6.2.6.5 steps 7.c and 8.c: a `get` or `set` that is PRESENT and is
@@ -542,6 +535,33 @@ bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOn
     d.wantWritable = d.hasWritable && bronze_truthy(writableV.get().rawBits());
     d.wantEnumerable = d.hasEnumerable && bronze_truthy(enumerableV.get().rawBits());
     d.wantConfigurable = d.hasConfigurable && bronze_truthy(configurableV.get().rawBits());
+    return true;
+}
+
+// The object that HOLDS a target's properties: a function keeps its statics
+// in a side box, everything else is its own table.
+static Value propertyHolderOf(Rooted<Value>& self) {
+    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        rtEnsureFunctionProperties(self);
+        return self.get().asObject<FunctionHeader>()->properties;
+    }
+    return self.get();
+}
+
+bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal) {
+    RootedArgs args(argc, argv);
+    if (!rtObjectRequirePropertyTable(args[0], "defineProperty")) {
+        return false;
+    }
+    Rooted<Value> self{args[0]};
+    Rooted<Value> desc{args[2]};
+    Rooted<Value> target{propertyHolderOf(self)};
+
+    DecodedDescriptor d;
+    Rooted<Value> value{Value::fromUndefined()};
+    Rooted<Value> getter{Value::fromUndefined()};
+    Rooted<Value> setter{Value::fromUndefined()};
+    if (!decodeDescriptor(desc, d, value, getter, setter)) return false;
 
     // The key is built before the object is disturbed, and interned so the
     // entry can hold it forever.
@@ -765,20 +785,44 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
     Rooted<Value> keys{Value(bronze_object_keys(descriptors.get().rawBits()))};
     if (rtExceptionPending()) return false;
     const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
+
+    // 20.1.2.3.1 is TWO loops, and the split is observable: step 4 decodes
+    // every descriptor (each field may be a getter, and any of them may
+    // throw), step 5 defines them, and both are `?` — so the first abrupt
+    // completion of the decode ends the operation before ANYTHING has been
+    // defined. A batch either lands whole or not at all with respect to its
+    // own decoding. The three payloads of each descriptor are parked in one
+    // rooted block, because the remaining descriptors' getters run and
+    // allocate between a decode and its apply.
+    std::vector<DecodedDescriptor> decoded(count);
+    std::vector<PropertyKey> names(count);
+    RootedBlock payloads(count * 3);
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
         Rooted<Value> desc{
             Value(bronze_elem_get(descriptors.get().rawBits(), key.get().rawBits()))};
         if (rtExceptionPending()) return false;
-        // One implementation of DefineOwnProperty, reached through the same
-        // builtin a program would call: `defineProperties` is defined as a
-        // loop over `defineProperty` (20.1.2.3.1 step 4) and writing the
-        // descriptor decoding twice is how the two would come to disagree
-        // about a missing `enumerable`.
-        const uint64_t call[3] = {target.get().rawBits(), key.get().rawBits(),
-                                  desc.get().rawBits()};
-        rtObjectDefineProperty(0, 0, 3, call);
-        if (rtExceptionPending()) return false;
+        Rooted<Value> value{Value::fromUndefined()};
+        Rooted<Value> getter{Value::fromUndefined()};
+        Rooted<Value> setter{Value::fromUndefined()};
+        if (!decodeDescriptor(desc, decoded[i], value, getter, setter)) return false;
+        payloads.set(i * 3, value.get());
+        payloads.set(i * 3 + 1, getter.get());
+        payloads.set(i * 3 + 2, setter.get());
+        names[i] = rtInternPropertyKey(key.get());
+    }
+    Rooted<Value> holder{propertyHolderOf(target)};
+    for (uint32_t i = 0; i < count; ++i) {
+        // Re-read from the block each turn: the collector keeps those slots
+        // current across whatever the apply before this one allocated.
+        Rooted<Value> value{Value(payloads.data()[i * 3])};
+        Rooted<Value> getter{Value(payloads.data()[i * 3 + 1])};
+        Rooted<Value> setter{Value(payloads.data()[i * 3 + 2])};
+        // DefinePropertyOrThrow: 20.1.2.3.1 step 5.b.
+        if (!applyDecodedDescriptor(holder, names[i], decoded[i], value, getter, setter,
+                                    /*throwOnRefusal=*/true)) {
+            return false;
+        }
     }
     return true;
 }
