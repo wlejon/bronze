@@ -134,6 +134,28 @@ PatternPtr Parser::parseObjectPattern() {
                 return nullptr;
             }
             if (!parsePatternTarget(elem)) return nullptr;
+        } else if (check(TokenKind::NumberLiteral)) {
+            // `{ 0: first }`: 14.3.3.1 makes the key ToPropertyKey of the
+            // literal's VALUE, so `1.0`, `0x10` and `1e1` name "1", "16" and
+            // "10". Carried as a computed key holding the decoded number, the
+            // same shape the object-literal parser gives `{ 0: v }`, so the
+            // one ToPropertyKey in the lowering serves both and a hand-rolled
+            // canonical spelling here cannot drift from it.
+            const Token& numTok = advance();
+            if (hasBigIntSuffix(numTok.text)) {
+                diags_.error(numTok.span,
+                             "unsupported: a BigInt literal as an object pattern key (write "
+                             "[" + std::string(numTok.text) + "] to compute the key)");
+                return nullptr;
+            }
+            auto lit = std::make_unique<NumberLit>();
+            lit->span = numTok.span;
+            if (!decodeNumericLiteral(numTok.text, numTok.span, lit->value)) return nullptr;
+            elem.keyExpr = std::move(lit);
+            if (!expect(TokenKind::Colon, "':' after a numeric key in an object pattern")) {
+                return nullptr;
+            }
+            if (!parsePatternTarget(elem)) return nullptr;
         } else {
             const Token* keyTok = expectPropertyName("a property name in an object pattern");
             if (!keyTok) return nullptr;

@@ -605,9 +605,34 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
         fatal("object rest from a value that is not a plain object");
     }
 
-    // The exclusions are compared as STRINGS, after the same ToPropertyKey
-    // the pattern's own reads went through, so `{ [1]: v, ...rest }` excludes
-    // the property `"1"` the read actually took.
+    // The exclusions are compared as KEYS: 14.3.3.2 step 2 (and 13.15.5.6 for
+    // an assignment) puts each computed key through ToPropertyKey before the
+    // read and adds THAT to excludedNames, so `{ 0: v, ...rest }` and
+    // `{ [1]: v, ...rest }` exclude the properties "0" and "1" the reads took.
+    // The pattern's read already converted for itself; the array holds the
+    // key as the pattern wrote it, so the conversion is repeated here once
+    // per entry, ahead of the key walk. For a number, a boolean or a string
+    // that is the same pure ToString the read did. For an OBJECT it runs its
+    // `toString` a second time — a deviation the lowering cannot avoid
+    // without a ToPropertyKey op of its own, and `{ [obj]: v, ...rest }` is
+    // the only spelling that sees it.
+    if (isArray(excluded.get())) {
+        for (uint32_t i = 0;; ++i) {
+            // Re-read per entry: the conversion below can allocate, and a
+            // collection moves both the array and its element block.
+            auto* keys = excluded.get().asObject<ArrayHeader>();
+            if (i >= keys->length) break;
+            Rooted<Value> k{keys->getElem(i)};
+            if (k.get().isString() || k.get().isSymbol()) continue;
+            // Step 1 (ToPrimitive) for an object, then step 2's ToString for
+            // whatever primitive is left — two helpers because the first runs
+            // user code and the second only allocates.
+            Rooted<Value> prim{rtToPropertyKey(k)};
+            if (rtExceptionPending()) return out.get().rawBits();
+            const Value asKey = prim.get().isSymbol() ? prim.get() : rtElemKeyAsString(prim.get());
+            excluded.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, asKey);
+        }
+    }
     for (PropertyKey name : rtOwnKeysOrdered(src.get().asObject<ObjectHeader>())) {
         bool skip = false;
         if (isArray(excluded.get())) {

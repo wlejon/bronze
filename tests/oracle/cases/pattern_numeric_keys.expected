@@ -1,0 +1,27 @@
+const a b
+let x dflt
+var t
+spellings one sixteen ten half three seven
+mixed z2 z4 z3
+param q/p1d q/r
+arrow mp
+param default dd ee
+assign A B
+assign nested C
+assign value ["V"] V
+for-of k v
+for-of k2 v2
+for-of let a
+for-of let c
+for-of assign e f
+for-in h
+for-in w
+nested deep six
+nested arrays x0 x00
+rest zero {"1":"one","two":2}
+rest computed one two {"0":"zero","3":"three"}
+order 3,1.5,7,8 3 1.5 7 8
+catch caught
+class mv sv
+gen gy
+async ay
