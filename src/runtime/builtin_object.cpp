@@ -104,10 +104,6 @@ bool isPlainObject(Value v) { return rtObjectIsPlain(v); }
 // reader's dead end.
 const char* propertyStoreReason(Value v) {
     switch (v.asObject<HeapObjectHeader>()->flags) {
-        case HeapKind::Array:
-            return "its own keys are ELEMENTS and a `length` — neither of which bronze keeps "
-                   "in a shape a descriptor could be written to — plus the side object its "
-                   "NAMED properties live in, which is the only one that could be described";
         case HeapKind::Function:
             return "its own keys come from three places — a `prototype` slot, a `length` and a "
                    "`name` in the header, and a side object of statics — and only the last is a "
@@ -172,6 +168,11 @@ const char* proxyTrapFor(const std::string& member) {
 bool rtObjectRequirePropertyTable(Value v, const char* member) {
     if (isPlainObject(v)) return true;
     if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) return true;
+    // An array too: its elements and `length` are described and redefined by
+    // their own rules (10.4.2.1, builtin_object_descriptor.cpp's array arm)
+    // and its named properties live in a side object that is an ordinary
+    // shape.
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array) return true;
     if (!v.isObject()) {
         rtThrowTypeError(std::string("Object.") + member +
                          " called on a value that is not an object");
@@ -196,6 +197,7 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
         return ObjectOwnKeys::Function;
     }
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Array) return ObjectOwnKeys::Array;
     if (rtIsModuleNamespace(v)) return ObjectOwnKeys::Namespace;
     refuseObjectKind(v, member);
 }
@@ -335,34 +337,8 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     fatal("internal: a plain object whose root shape names no prototype");
 }
 
-// An array's own keys, for the one question that does not need them written
-// down: does this key name one?
-//
-// `rtObjectRequirePropertyTable` refused an array for every member alike, and its
-// reason — an array's own keys are its ELEMENTS and a `length` that lives
-// outside the shape — is true of DESCRIBING them and not of testing for one.
-// `hasElem` already answers for an index, and `length` is an own property of
-// every array (10.4.2). So this is the same three lines `in` runs
-// (rt_operator.cpp), which is deliberate: `Object.hasOwn(a, k)` and `k in a`
-// differ over the PROTOTYPE chain, and an array's own keys are not where they
-// are allowed to differ. `getOwnPropertyNames` of an array stays refused,
-// because listing the keys is the part that needs somewhere to put them.
-static bool arrayHasOwnKey(Value arrVal, const std::string& key) {
-    if (key == "length") return true;
-    uint32_t index = 0;
-    if (!rtIsIntegerLikeKey(key, index)) return false;
-    auto* arr = arrVal.asObject<ArrayHeader>();
-    // A HOLE is not an own key: `delete a[1]` takes index 1 out of them without
-    // moving `length`, which is the same set `Object.keys` and `for-in` report.
-    return arr->hasElem(index);
-}
-
-static bool isArray(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
-}
-
-// A function's own keys, for the same one question `arrayHasOwnKey` above
-// answers and for the same reason: LISTING them is what needs somewhere to put
+// A function's own keys, for the one question that does not need them written
+// down: does this key name one? LISTING them is what needs somewhere to put
 // them, and testing for one does not.
 //
 // The three that are not in the statics table: `prototype` (10.2.4, in its own
@@ -393,21 +369,22 @@ bool functionHasOwnKey(Rooted<Value>& fnVal, Value key) {
 // method can be shadowed by an own property of the object being asked about.
 uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (isArray(args[0])) {
-        // A symbol is never an own key of an array: bronze has nowhere on one
-        // to put a symbol-keyed property (rt_prop_write.cpp refuses the write),
-        // so the indices and `length` are the complete set.
-        if (args[1].isSymbol()) return Value::fromBool(false).rawBits();
-        const std::string key = rtObjectKeyTextOf(args[1]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        // args[0] re-read through RootedArgs: `rtObjectKeyTextOf` allocates.
-        return Value::fromBool(arrayHasOwnKey(args[0], key)).rawBits();
-    }
     switch (rtObjectOwnKeysOf(args[0], "hasOwn")) {
         case ObjectOwnKeys::Threw:
             return Value::fromUndefined().rawBits();
         case ObjectOwnKeys::None:
             return Value::fromBool(false).rawBits();
+        case ObjectOwnKeys::Array: {
+            // The one [[GetOwnProperty]] `hasOwnProperty` asks
+            // (builtin_object_proto.cpp): an element, `length`, or a named or
+            // symbol-keyed property of the side object. Asked there rather
+            // than answered here so the two spellings cannot drift.
+            Rooted<Value> self{args[0]};
+            bool enumerable = false;
+            const bool own = rtOwnPropertyOf(self, args[1], enumerable);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            return Value::fromBool(own).rawBits();
+        }
         case ObjectOwnKeys::Function: {
             Rooted<Value> fn{args[0]};
             return Value::fromBool(functionHasOwnKey(fn, args[1])).rawBits();
@@ -567,14 +544,16 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 // of it.
 uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    // An array's own names include `length`, which bronze stores outside the
-    // shape system entirely, so the answer would be incomplete rather than
-    // merely different — which is what the shared refusal says, by kind.
     switch (rtObjectOwnKeysOf(args[0], "getOwnPropertyNames")) {
         case ObjectOwnKeys::Threw:
             return Value::fromUndefined().rawBits();
         case ObjectOwnKeys::None:
             return bronze_create_array(0);
+        case ObjectOwnKeys::Array:
+            // 10.4.2's own order — the indices ascending, `length`, then the
+            // named properties — and `length` is here where `Object.keys`
+            // drops it, for the same reason as the string arm below.
+            return rtArrayOwnKeyNames(args[0], /*enumerableOnly=*/false).rawBits();
         case ObjectOwnKeys::StringChars:
             // 10.4.3.3's own order — the indices ascending and THEN `length` —
             // and `length` is here where `Object.keys` drops it, because this

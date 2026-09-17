@@ -44,6 +44,11 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
     } else if (hdr->flags == HeapKind::Function) {
         Value props = self.get().asObject<FunctionHeader>()->properties;
         if (props.isObject()) holder = props.asObject<ObjectHeader>();
+    } else if (hdr->flags == HeapKind::Array) {
+        // An array's symbol-keyed properties live beside its named ones, in
+        // the side object (rt_prop_write.cpp's symbol arm puts them there).
+        Value props = self.get().asObject<ArrayHeader>()->properties;
+        if (props.isObject()) holder = props.asObject<ObjectHeader>();
     }
     if (!holder) return bronze_create_array(0);
 
@@ -122,7 +127,11 @@ static Value toObjectForAssign(Value v) {
               "to be)");
     }
     if (rtObjectIsPlain(v)) return v;
-    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) return v;
+    const uint16_t kind = v.asObject<HeapObjectHeader>()->flags;
+    // A proxy's [[Set]] is its trap and an array's is the computed write;
+    // the copy loop (rt_spread.cpp's `copyProperty`) reaches each through
+    // its own path.
+    if (kind == HeapKind::Proxy || kind == HeapKind::Array) return v;
     refuseObjectKind(v, "assign");
 }
 

@@ -2,17 +2,11 @@
 // an own property of the object.
 //
 // An array's own keys are its ELEMENTS and a `length` that bronze keeps in the
-// array header rather than in a shape, and that fact is why
-// `Object.getOwnPropertyNames`, `Object.getOwnPropertyDescriptor` and
-// `Object.defineProperty` all refuse an array: there is nowhere to write a
-// descriptor and no key list to build. `hasOwn` needs neither. It needs the
-// existence test the `in` operator already runs -- so it was refused for a
-// reason true of its neighbours and not of it, and the language's answer to
-// `Object.hasOwn([1, 2], 0)` is `true`.
-//
-// Those neighbours are still refused, and that half cannot be shown here: it is
-// a hard error rather than a catchable one, so `tests/runtime/object_test.cpp`
-// holds it. This case is what a program can see.
+// array header rather than in a shape, plus whatever names a program assigned,
+// which live in a side object. `hasOwn` needs only the existence test the `in`
+// operator already runs, and the language's answer to `Object.hasOwn([1, 2],
+// 0)` is `true`. The members that DESCRIBE and REDEFINE those keys are pinned
+// in `cases/array_reflect_members`.
 //
 // What each line pins, from 10.4.2 (Array exotic objects) and 6.1.7.1:
 //

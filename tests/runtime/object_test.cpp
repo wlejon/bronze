@@ -199,12 +199,19 @@ TEST_CASE("an ordinary object's property add does not disturb proto caches") {
 //
 // The oracle case beside this one (`object_descriptor_receivers`) pins what a
 // PRIMITIVE receiver is told, which is a catchable TypeError. What it cannot
-// reach is the other half of the same fix: an array and a function are objects,
-// so telling them they are not was a false statement, and what they get now is
-// a hard error that names the kind and the storage reason. A hard error ends
-// the process, so it can only be observed here.
+// reach is the other half of the same fix: a typed array is an object, so
+// telling it it is not was a false statement, and what it gets now is a hard
+// error that names the kind and the storage reason. A hard error ends the
+// process, so it can only be observed here.
 //
-// The one member that has stopped refusing is `hasOwn` on a function, because
+// An ARRAY was on this list and has come off it entirely: its elements and
+// `length` are described and redefined by 10.4.2's own rules and its named
+// properties by the side object's shape, so every member here answers
+// (`cases/array_reflect_members`). What stays refused on one — an accessor at
+// an index, an element with an attribute its neighbours lack — is refused by
+// name inside the member, not at the door.
+//
+// The one member that has stopped refusing a FUNCTION is `hasOwn`, because
 // only a refusal that is still TRUE is a ratchet: `length` and `name` now have
 // somewhere to live, so the question has an answer.
 
@@ -243,34 +250,8 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
 
     // The kind is named, and so is what about it cannot be done — never "this
-    // is not an object", which is what an array used to be told.
-    CHECK_THROWS_WITH_AS(call("defineProperty", arr, 2),
-                         doctest::Contains("Object.defineProperty on an array"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("defineProperty", arr, 2),
-                         doctest::Contains("its own keys are ELEMENTS and a `length`"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("getOwnPropertyDescriptor", arr, 1),
-                         doctest::Contains("Object.getOwnPropertyDescriptor on an array"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("getOwnPropertyDescriptors", arr, 0),
-                         doctest::Contains("Object.getOwnPropertyDescriptors on an array"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("defineProperties", arr, 1),
-                         doctest::Contains("Object.defineProperties on an array"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("assign", arr, 0), doctest::Contains("Object.assign on an array"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", arr, 0),
-                         doctest::Contains("Object.getOwnPropertyNames on an array"),
-                         std::runtime_error);
-
-    // A function is the other receiver the old message lied about, and its
-    // reason is a different one: the storage is a slot and a side object. Every
-    // member that would have to WRITE one still refuses on it; `hasOwn`, which
-    // only tests, no longer does — see the bottom of this case.
-
-    // And a kind with no property table at all says exactly that.
+    // is not an object", which is what a typed array used to be told. And a
+    // kind with no property table at all says exactly that.
     CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", view, 0),
                          doctest::Contains("Object.getOwnPropertyNames on a typed array"),
                          std::runtime_error);
@@ -298,15 +279,10 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
                          doctest::Contains("Object.assign with a symbol as the target"),
                          std::runtime_error);
 
-    // `Object.hasOwn` was on the list above and has come off it. The refusal's
-    // REASON was accurate — an array's own keys are its elements and a `length`
-    // that lives outside the shape — but that is the reason bronze cannot
-    // DESCRIBE them, not the reason it cannot test for one. An existence test
-    // needs `hasElem` and nothing else, and `length` is an own property of
-    // every array (10.4.2), so the language's answer to `Object.hasOwn([1,2],
-    // 0)` is `true` and refusing it was a wrong answer given loudly.
-    // `getOwnPropertyNames` above stays refused: listing the keys is the part
-    // that needs somewhere to put them.
+    // `Object.hasOwn` on an array: an existence test over the elements,
+    // `length` and the side object, the same [[GetOwnProperty]] that
+    // `hasOwnProperty` asks. The language's answer to `Object.hasOwn([1,2],
+    // 0)` is `true`.
     auto hasOwn = [&](Rooted<Value>& recv, Rooted<Value>& key) {
         Rooted<Value> name{runtime::rtMakeString("hasOwn")};
         Rooted<Value> target{Value(bronze_elem_get(ns.get().rawBits(), name.get().rawBits()))};

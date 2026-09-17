@@ -57,6 +57,13 @@ Value rtKeyAsValue(const StringHeader* key);
 // between `Object.keys("ab")` and `Object.getOwnPropertyNames("ab")`.
 Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly);
 
+// The own string keys of an ARRAY, on the same terms: the indices it HAS
+// (a hole is not an own property) ascending, then `length` — created by
+// ArrayCreate before anything else and non-enumerable, so it is where
+// `enumerableOnly` cuts — then the named properties of the side object in
+// their insertion order, filtered by the same flag.
+Value rtArrayOwnKeyNames(Value arrVal, bool enumerableOnly);
+
 // Is this key an ARRAY INDEX spelled as a string? Enumeration order asks it and
 // so does console.log of an object, which reports the same order — one test, so
 // the two answers cannot drift.

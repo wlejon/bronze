@@ -273,6 +273,37 @@ Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly) {
     return out.get();
 }
 
+Value rtArrayOwnKeyNames(Value arrVal, bool enumerableOnly) {
+    Rooted<Value> src{arrVal};
+    // The indices it actually HAS, already in ascending order: a hole left by
+    // `delete a[i]` is not an own property, so the result can be shorter than
+    // `length`.
+    const uint32_t length = src.get().asObject<ArrayHeader>()->length;
+    Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), length ? length : 4))};
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < length; ++i) {
+        if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+        Rooted<Value> key{indexName(i)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    // `length` is where `Object.keys` and `getOwnPropertyNames` part: 10.4.2.2
+    // makes it non-enumerable, and it precedes every named property because
+    // ArrayCreate defines it before a program can assign one.
+    if (!enumerableOnly) {
+        Rooted<Value> key{rtMakeString("length")};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    // Then the named ones — the indices come first because they are
+    // integer-like keys, and own-key order puts those ahead of the rest. The
+    // keys are arena-interned and immortal, so the vector survives the
+    // allocations the copy below makes.
+    for (StringHeader* k : rtArrayOwnNamedKeys(src.get(), enumerableOnly)) {
+        Rooted<Value> key{rtKeyAsValue(k)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    return out.get();
+}
+
 Value rtKeyAsValue(const StringHeader* key) {
     // The ARENA key itself, not a copy — and that is the mechanism, not a
     // shortcut. Every caller hands this an arena-interned key (a shape key
@@ -620,24 +651,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     // ones it actually HAS: a hole left by `delete a[i]` is not an own
  // property, so the result is shorter than `length`.
     if (hdr->flags == HeapKind::Array) {
-        Rooted<Value> src{objVal};
-        uint32_t length = reinterpret_cast<ArrayHeader*>(hdr)->length;
-        Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), length ? length : 4))};
-        uint32_t at = 0;
-        for (uint32_t i = 0; i < length; ++i) {
-            if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
-            Rooted<Value> key{indexName(i)};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-        }
-        // Then the named ones — the indices come first because they are
-        // integer-like keys, and own-enumerable order puts those ahead of the
-        // rest. The keys are arena-interned and immortal, so the vector
-        // survives the allocations the copy below makes.
-        for (StringHeader* k : rtArrayOwnNamedKeys(src.get())) {
-            Rooted<Value> key{rtKeyAsValue(k)};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-        }
-        return out.get().rawBits();
+        return rtArrayOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
     }
     // A typed array's integer-indexed elements are own enumerable properties
     // (10.4.5.3 [[DefineOwnProperty]] gives one `enumerable: true`), so this is

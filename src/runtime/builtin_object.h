@@ -44,6 +44,7 @@ enum class ObjectOwnKeys {
     StringChars,  // a primitive string: 10.4.3 synthesises them from the characters
     Namespace,    // a module namespace: 10.4.6.2's sorted export names
     Function,     // a function: its statics are in FunctionHeader::properties
+    Array,        // an array: its elements, `length`, and ArrayHeader::properties
     None,         // a number, a boolean, a symbol: the box has no own property
     Threw,        // null or undefined: ToObject has no answer, and this raised it
 };

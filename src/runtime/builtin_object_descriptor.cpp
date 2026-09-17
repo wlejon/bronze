@@ -471,6 +471,148 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
 // over. The errors of the DECODE — a non-object target, a descriptor that is
 // not an object, a `get` that is not callable — are raised for both, and only
 // the REFUSAL is the boolean `throwOnRefusal` chooses the meaning of.
+// ECMA-262 10.4.2.1, an ARRAY's [[DefineOwnProperty]], over a decoded
+// descriptor. Three own-property stories, and only the last is ordinary:
+//
+//  - `length` is 10.4.2.4 ArraySetLength: the value is converted and checked
+//    (the RangeError) before anything else, the shrink deletes the elements
+//    above it, and `Object.freeze` is the only thing that has ever made it
+//    non-writable. It is non-configurable and non-enumerable from birth, so a
+//    descriptor asking for either is 10.1.6.3's refusal.
+//  - an ELEMENT is a value in a dense block, not a descriptor. Its attributes
+//    are all true, and the only thing that changes them is the array's
+//    integrity level, which changes all of them at once (integrity.h). So a
+//    descriptor that would leave one element with an attribute the others do
+//    not have — a non-enumerable index, a non-writable one, an accessor at an
+//    index — asks for storage bronze does not keep, and is refused BY NAME
+//    rather than defined as something else; one that agrees with what the
+//    element has is a value write, and one that asks a sealed or frozen
+//    array to change is the TypeError 10.1.6.3 gives.
+//  - anything else lives in the side object, which is an ordinary shape and
+//    takes the ordinary algorithm — and carries the array's integrity level,
+//    so a frozen array refuses a new named property there.
+static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
+                                 const DecodedDescriptor& d, Rooted<Value>& value,
+                                 Rooted<Value>& getter, Rooted<Value>& setter,
+                                 bool throwOnRefusal) {
+    const bool accessor = d.hasGet || d.hasSet;
+    uint32_t index = 0;
+    bool isLength = false;
+    bool isIndex = false;
+    if (name.isString()) {
+        const std::string key = rtUtf8Chars(name.string());
+        isLength = key == "length";
+        isIndex = !isLength && rtIsIntegerLikeKey(key, index);
+    }
+
+    if (isLength) {
+        if (accessor || (d.hasConfigurable && d.wantConfigurable) ||
+            (d.hasEnumerable && d.wantEnumerable)) {
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: length");
+        }
+        const bool frozen = rtIntegrityLevel(self.get()) == IntegrityLevel::Frozen;
+        if (d.hasWritable && d.wantWritable && frozen) {
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: length");
+        }
+        if (d.hasWritable && !d.wantWritable && !frozen) {
+            fatal("unsupported: Object.defineProperty(array, 'length', { writable: false }) "
+                  "(bronze records a non-writable `length` only as part of Object.freeze, "
+                  "which makes every element non-writable with it)");
+        }
+        if (d.hasValue) {
+            const SetRefusal refusal = rtArraySetLength(self, value.get());
+            if (rtExceptionPending()) return false;
+            if (refusal != SetRefusal::None) {
+                return refuseDefine(throwOnRefusal, "Cannot redefine property: length");
+            }
+        }
+        return true;
+    }
+
+    if (isIndex) {
+        if (accessor) {
+            fatal("unsupported: an accessor property at an array index (bronze keeps an "
+                  "array's elements as values in a block, and an element cannot be a "
+                  "getter/setter pair)");
+        }
+        auto* arr = self.get().asObject<ArrayHeader>();
+        if (arr->hasElem(index)) {
+            const bool writable =
+                rtArrayElementWriteRefusal(self.get(), index) == SetRefusal::None;
+            const bool configurable = rtArrayElementsConfigurable(self.get());
+            // An attribute the element has that the descriptor would take
+            // away is per-element storage bronze does not keep; one it lacks
+            // that the descriptor would restore is 10.1.6.3 step 4's refusal
+            // over a non-configurable property.
+            if ((d.hasEnumerable && !d.wantEnumerable) || (d.hasWritable && !d.wantWritable && writable) ||
+                (d.hasConfigurable && !d.wantConfigurable && configurable)) {
+                fatal("unsupported: an array element with an attribute its neighbours lack "
+                      "(bronze keeps one set of attributes per array, changed only by "
+                      "Object.seal and Object.freeze)");
+            }
+            if ((d.hasWritable && d.wantWritable && !writable) ||
+                (d.hasConfigurable && d.wantConfigurable && !configurable)) {
+                return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
+            }
+            if (d.hasValue) {
+                if (!writable) {
+                    // 4.e: a frozen element still accepts a redefinition that
+                    // changes nothing.
+                    if (!sameValue(arr->getElem(index), value.get())) {
+                        return refuseDefine(throwOnRefusal,
+                                            "Cannot redefine property: " + keyText(name));
+                    }
+                    return true;
+                }
+                arr->setElem(rtHeap(), index, value);
+            }
+            return true;
+        }
+        // A NEW element: 10.1.6.3 step 2 completes every absent attribute to
+        // false, and an element with any of the three false is the storage
+        // refused above.
+        if (!(d.hasWritable && d.wantWritable && d.hasEnumerable && d.wantEnumerable &&
+              d.hasConfigurable && d.wantConfigurable)) {
+            fatal("unsupported: defining a new array element with an attribute false "
+                  "(a descriptor that omits `writable`, `enumerable` or `configurable` "
+                  "defaults it to false, and bronze keeps an element's attributes only as "
+                  "the array's integrity level)");
+        }
+        if (rtArrayElementWriteRefusal(self.get(), index) == SetRefusal::NotExtensible) {
+            return refuseDefine(throwOnRefusal, "Cannot define property, object is not extensible");
+        }
+        if (index > arr->length) {
+            fatal("unsupported: defining an array element past `length` (a sparse array; "
+                  "bronze keeps elements in a dense block)");
+        }
+        Rooted<Value> stored{d.hasValue ? value.get() : Value::fromUndefined()};
+        self.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, stored);
+        return true;
+    }
+
+    Rooted<Value> holder{
+        Value::fromObject(ArrayHeader::ensureProperties(rtHeap(), rtArena(), self))};
+    return applyDecodedDescriptor(holder, name, d, value, getter, setter, throwOnRefusal);
+}
+
+// 10.1.6.3 or 10.4.2.1, by the receiver's kind, over a table the receiver
+// keeps somewhere: a function's statics box, an array's three stories above,
+// everything else its own shape.
+static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const DecodedDescriptor& d,
+                            Rooted<Value>& value, Rooted<Value>& getter, Rooted<Value>& setter,
+                            bool throwOnRefusal) {
+    const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
+    if (kind == HeapKind::Array) {
+        return applyArrayDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
+    }
+    Rooted<Value> holder{self.get()};
+    if (kind == HeapKind::Function) {
+        rtEnsureFunctionProperties(self);
+        holder.set(self.get().asObject<FunctionHeader>()->properties);
+    }
+    return applyDecodedDescriptor(holder, name, d, value, getter, setter, throwOnRefusal);
+}
+
 // ECMA-262 6.2.6.5 ToPropertyDescriptor on its own: the six reads and the
 // three checks, with the payloads left in the roots the caller handed in.
 // False with an exception pending on every failure. Separate from the apply
@@ -538,16 +680,6 @@ static bool decodeDescriptor(Rooted<Value>& desc, DecodedDescriptor& d, Rooted<V
     return true;
 }
 
-// The object that HOLDS a target's properties: a function keeps its statics
-// in a side box, everything else is its own table.
-static Value propertyHolderOf(Rooted<Value>& self) {
-    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        rtEnsureFunctionProperties(self);
-        return self.get().asObject<FunctionHeader>()->properties;
-    }
-    return self.get();
-}
-
 bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal) {
     RootedArgs args(argc, argv);
     if (!rtObjectRequirePropertyTable(args[0], "defineProperty")) {
@@ -555,7 +687,6 @@ bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOn
     }
     Rooted<Value> self{args[0]};
     Rooted<Value> desc{args[2]};
-    Rooted<Value> target{propertyHolderOf(self)};
 
     DecodedDescriptor d;
     Rooted<Value> value{Value::fromUndefined()};
@@ -566,7 +697,7 @@ bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOn
     // The key is built before the object is disturbed, and interned so the
     // entry can hold it forever.
     PropertyKey name = rtInternPropertyKey(args[1]);
-    return applyDecodedDescriptor(target, name, d, value, getter, setter, throwOnRefusal);
+    return applyToReceiver(self, name, d, value, getter, setter, throwOnRefusal);
 }
 
 // 20.1.2.4 Object.defineProperty: DefinePropertyOrThrow, so a refusal is the
@@ -711,6 +842,51 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             const uint64_t call[2] = {props.rawBits(), args[1].rawBits()};
             return rtObjectGetOwnPropertyDescriptor(0, 0, 2, call);
         }
+        case ObjectOwnKeys::Array: {
+            // Two own properties live in the header rather than in the side
+            // object: `length` (10.4.2.2: writable until `Object.freeze`,
+            // never enumerable or configurable) and each ELEMENT (defined by
+            // CreateDataProperty, so all three attributes true until
+            // `Object.seal` or `Object.freeze` takes the last two away — the
+            // same two questions an element write and delete ask, integrity.h).
+            // A hole is not an own property at all.
+            if (!args[1].isSymbol()) {
+                const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                Rooted<Value> self{args[0]};
+                uint32_t index = 0;
+                const bool isLength = key == "length";
+                const bool isIndex = !isLength && rtIsIntegerLikeKey(key, index);
+                if (isLength || isIndex) {
+                    auto* arr = self.get().asObject<ArrayHeader>();
+                    if (isIndex && !arr->hasElem(index)) return Value::fromUndefined().rawBits();
+                    Rooted<Value> value{isLength ? Value::fromDouble(arr->length)
+                                                 : arr->getElem(index)};
+                    const bool writable =
+                        isLength ? rtIntegrityLevel(self.get()) != IntegrityLevel::Frozen
+                                 : rtArrayElementWriteRefusal(self.get(), index) ==
+                                       SetRefusal::None;
+                    const bool configurable =
+                        isIndex && rtArrayElementsConfigurable(self.get());
+                    Rooted<Value> out{Value(bronze_create_object())};
+                    putField(out, "value", value);
+                    Rooted<Value> w{Value::fromBool(writable)};
+                    putField(out, "writable", w);
+                    Rooted<Value> e{Value::fromBool(isIndex)};
+                    putField(out, "enumerable", e);
+                    Rooted<Value> c{Value::fromBool(configurable)};
+                    putField(out, "configurable", c);
+                    return out.get().rawBits();
+                }
+            }
+            // Everything else is in the side object, an ordinary shape that
+            // answers with the ordinary walk below — through the same forward
+            // the function arm makes for its statics.
+            Value props = args[0].asObject<ArrayHeader>()->properties;
+            if (!props.isObject()) return Value::fromUndefined().rawBits();
+            const uint64_t call[2] = {props.rawBits(), args[1].rawBits()};
+            return rtObjectGetOwnPropertyDescriptor(0, 0, 2, call);
+        }
         case ObjectOwnKeys::Shape:
             break;
     }
@@ -811,7 +987,6 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         payloads.set(i * 3 + 2, setter.get());
         names[i] = rtInternPropertyKey(key.get());
     }
-    Rooted<Value> holder{propertyHolderOf(target)};
     for (uint32_t i = 0; i < count; ++i) {
         // Re-read from the block each turn: the collector keeps those slots
         // current across whatever the apply before this one allocated.
@@ -819,8 +994,8 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         Rooted<Value> getter{Value(payloads.data()[i * 3 + 1])};
         Rooted<Value> setter{Value(payloads.data()[i * 3 + 2])};
         // DefinePropertyOrThrow: 20.1.2.3.1 step 5.b.
-        if (!applyDecodedDescriptor(holder, names[i], decoded[i], value, getter, setter,
-                                    /*throwOnRefusal=*/true)) {
+        if (!applyToReceiver(target, names[i], decoded[i], value, getter, setter,
+                             /*throwOnRefusal=*/true)) {
             return false;
         }
     }
@@ -943,12 +1118,6 @@ void bronze_define_own_attr(uint64_t objBits, uint32_t keyIndex, uint64_t valBit
         return;
     }
 
-    Rooted<Value> target{self.get()};
-    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-        rtEnsureFunctionProperties(self);
-        target.set(self.get().asObject<FunctionHeader>()->properties);
-    }
-
     DecodedDescriptor d;
     d.hasValue = (mask & BRONZE_ABI_DESC_HAS_VALUE) != 0;
     d.hasWritable = (mask & BRONZE_ABI_DESC_HAS_WRITABLE) != 0;
@@ -964,8 +1133,8 @@ void bronze_define_own_attr(uint64_t objBits, uint32_t keyIndex, uint64_t valBit
     Rooted<Value> noSetter{Value::fromUndefined()};
     // 20.1.2.3.1 step 5 is DefinePropertyOrThrow, so a refusal is 20.1.2.4's
     // TypeError and the keys already defined stay defined.
-    applyDecodedDescriptor(target, PropertyKey::forString(keyHeader), d, value, noGetter,
-                           noSetter, /*throwOnRefusal=*/true);
+    applyToReceiver(self, PropertyKey::forString(keyHeader), d, value, noGetter, noSetter,
+                    /*throwOnRefusal=*/true);
 }
 
 }  // extern "C"

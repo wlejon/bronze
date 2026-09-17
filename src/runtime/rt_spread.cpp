@@ -242,6 +242,14 @@ void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name
         rtProxySet(target.get(), key.get(), val.get(), kSpreadWriteThrows);
         return;
     }
+    // An array target (`Object.assign(arr, ...)`) keeps an index in its
+    // block and a name in its side object; the computed write is the one
+    // path that knows which, and it reports its own refusals.
+    if (target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                        kSpreadWriteThrows);
+        return;
+    }
     SetRefusal refusal = SetRefusal::None;
     target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                    /*ic=*/nullptr, /*enumerable=*/true,

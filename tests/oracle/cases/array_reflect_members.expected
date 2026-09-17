@@ -1,0 +1,24 @@
+gopd index {"value":20,"writable":true,"enumerable":true,"configurable":true}
+gopd length {"value":3,"writable":true,"enumerable":false,"configurable":false}
+gopd named {"value":"n","writable":true,"enumerable":true,"configurable":true}
+gopd absent [null,null]
+gopd hole undefined
+names ["1","2","length","name"]
+keys ["1","2","name"]
+descriptors {"1":{"value":20,"writable":true,"enumerable":true,"configurable":true},"2":{"value":30,"writable":true,"enumerable":true,"configurable":true},"length":{"value":3,"writable":true,"enumerable":false,"configurable":false},"name":{"value":"n","writable":true,"enumerable":true,"configurable":true}}
+hasOwn [false,true,false,true,true,false]
+symbols [1,true,{"value":"sym","writable":true,"enumerable":true,"configurable":true}]
+define index [[1,99,3],{"value":99,"writable":true,"enumerable":true,"configurable":true}]
+define append [[1,99,3,4],4]
+define named ["t",["0","1","2","3"],{"value":"t","writable":false,"enumerable":false,"configurable":false}]
+define accessor [1,"function"]
+define length [[1,99],2]
+define length string [3,false]
+define length bad "RangeError"
+define length attrs ["TypeError","TypeError","TypeError",false]
+reflect define [true,"r"]
+defineProperties [[10,99,30],3,"n",{"value":99,"writable":true,"enumerable":true,"configurable":true},{"value":"n","writable":false,"enumerable":false,"configurable":false}]
+frozen describe [{"value":1,"writable":false,"enumerable":true,"configurable":false},{"value":2,"writable":false,"enumerable":false,"configurable":false},{"value":1,"writable":false,"enumerable":true,"configurable":false}]
+frozen define [true,false,false,false,false,"TypeError",[1,2],2]
+sealed define [[5,2,3],{"value":5,"writable":true,"enumerable":true,"configurable":false},false,3]
+assign [["a",2],5]
