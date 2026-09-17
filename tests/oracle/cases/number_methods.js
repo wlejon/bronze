@@ -22,7 +22,10 @@
 // 4. Above 1e21 toFixed gives up and returns ToString(x) — the one place the
 //    method changes format rather than precision.
 // 5. `toString(radix)` emits digits and a fraction in that radix, with the
-//    sign in front rather than in the digits.
+//    sign in front rather than in the digits. A power-of-two radix prints
+//    the dyadic fraction exactly; any other radix prints V8's digit count
+//    (stop below half the gap to the next double, round half-to-even with
+//    carry), so a random id's `.toString(36)` spells what Chromium spells.
 console.log((1.005).toFixed(2), (2.675).toFixed(2), (8.575).toFixed(2));
 console.log((1.5).toFixed(0), (2.5).toFixed(0), (-1.5).toFixed(0));
 console.log((1).toFixed(3), (0).toFixed(2), (-0.0004).toFixed(2));
@@ -32,3 +35,7 @@ console.log((123.456).toExponential(2), (0).toExponential(1));
 console.log((123.456).toPrecision(2), (123.456).toPrecision(6));
 console.log((255).toString(16), (255).toString(2), (0.5).toString(2));
 console.log((-255).toString(16), (3735928559).toString(16));
+console.log((0.1).toString(36), (0.5).toString(3), (1 / 3).toString(3));
+console.log((255.5).toString(36), (0.7).toString(36), (123.456).toString(7));
+console.log((-0.1).toString(36), (1e-7).toString(36), (0.9999999999999999).toString(3));
+console.log((0.5 + Number.EPSILON).toString(36), (1 - Number.EPSILON / 2).toString(36), (7 - Number.EPSILON * 4).toString(36));

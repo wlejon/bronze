@@ -18,6 +18,7 @@
 // to_chars round-trip: `(1.005).toFixed(2)` is "1.00" and any implementation
 // that answers "1.01" is wrong in exactly the code that calls toFixed.
 
+#include <algorithm>
 #include <cmath>
 #include <iterator>
 #include <string>
@@ -227,16 +228,64 @@ uint64_t numberToPrecision(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 
 bool isPowerOfTwo(int r) { return r >= 2 && (r & (r - 1)) == 0; }
 
+// The fraction of |x| in a radix where its expansion does not terminate,
+// with the digit count V8 uses (DoubleToRadixCString): emit digits while the
+// remaining fraction is still above half the gap between `x` and the next
+// double, rounding the last digit half-to-even and carrying into the digits
+// already written. That is the shortest string that pins the double at its
+// own precision, and it is byte-for-byte what Chromium prints, which is the
+// answer `Math.random().toString(36).slice(2)` and every id generator built
+// on it expect. Each step is one IEEE multiply by a small integer, so the
+// digits are deterministic on every platform. `carry` reports the one case
+// where rounding overflowed the fraction entirely and the integer part is one
+// more than trunc(x).
+std::string radixFractionDigits(double x, int radix, bool& carry) {
+    static const char kDigits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+    const double integer = std::floor(x);
+    double fraction = x - integer;
+    double delta = 0.5 * (std::nextafter(x, INFINITY) - x);
+    delta = std::max(std::nextafter(0.0, 1.0), delta);
+    std::string out;
+    carry = false;
+    if (fraction < delta) return out;
+    do {
+        fraction *= radix;
+        delta *= radix;
+        int digit = static_cast<int>(fraction);
+        out.push_back(kDigits[digit]);
+        fraction -= digit;
+        if (fraction > 0.5 || (fraction == 0.5 && (digit & 1))) {
+            if (fraction + delta > 1) {
+                // Round up, propagating the carry through the digits written.
+                while (true) {
+                    if (out.empty()) {
+                        carry = true;
+                        break;
+                    }
+                    const char c = out.back();
+                    out.pop_back();
+                    const int d = c > '9' ? (c - 'a' + 10) : (c - '0');
+                    if (d + 1 < radix) {
+                        out.push_back(kDigits[d + 1]);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    } while (fraction >= delta);
+    return out;
+}
+
 // 21.1.3.6 Number.prototype.toString(radix).
 //
 // Radix 10 is Number::toString and shares its one implementation. Any other
 // radix is a different algorithm over the value's own bits, and the spec
 // leaves the digit COUNT of a non-terminating fraction implementation-defined
-// ("implementation-approximated"). bronze answers only where the answer is
-// exact: an integer in any radix, and a fraction in a power-of-two radix,
-// where a double's dyadic fraction terminates. A fraction in radix 3 needs a
-// shortest-round-trip algorithm in that radix, which bronze has not written,
-// so it is a named error rather than a plausible-looking approximation.
+// ("implementation-approximated"). The integer part is exact in any radix,
+// and so is the fraction in a power-of-two radix, where a double's dyadic
+// fraction terminates. Any other radix takes V8's digit count above, so the
+// spelling agrees with Chromium rather than being merely plausible.
 uint64_t numberToString(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     double x = 0.0;
@@ -253,15 +302,16 @@ uint64_t numberToString(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
         s = "-";
         x = -x;
     }
-    const std::string whole = exactIntegerDigits(x, radix);
-    if (x == std::trunc(x)) return stringResult(s + whole).rawBits();
-    if (!isPowerOfTwo(radix)) {
-        fatal(("unsupported: Number.prototype.toString(" + std::to_string(radix) +
-               ") on a value with a fraction (the digit count of a non-terminating expansion "
-               "is not defined by exact arithmetic)")
-                  .c_str());
+    if (x == std::trunc(x)) return stringResult(s + exactIntegerDigits(x, radix)).rawBits();
+    if (isPowerOfTwo(radix)) {
+        return stringResult(s + exactIntegerDigits(x, radix) + "." + exactDyadicFractionDigits(x, radix))
+            .rawBits();
     }
-    return stringResult(s + whole + "." + exactDyadicFractionDigits(x, radix)).rawBits();
+    bool carry = false;
+    const std::string fraction = radixFractionDigits(x, radix, carry);
+    const std::string whole = exactIntegerDigits(carry ? std::trunc(x) + 1.0 : x, radix);
+    if (fraction.empty()) return stringResult(s + whole).rawBits();
+    return stringResult(s + whole + "." + fraction).rawBits();
 }
 
 uint64_t numberValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
