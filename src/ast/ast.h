@@ -339,6 +339,12 @@ struct SuperMember final : Expr {
     std::string baseName;
     ExprPtr baseExpr;
     std::string property;
+    // Written in a STATIC element — a static method, accessor, field
+    // initializer or block. The lookup then starts at the heritage itself,
+    // the constructor's [[Prototype]], where an instance element's starts at
+    // its `prototype` (13.3.7.1: HomeObject.[[GetPrototypeOf]](), and the
+    // home object of a static element is the constructor).
+    bool fromStatic = false;
     void accept(Visitor& v) const override;
 };
 

@@ -615,15 +615,44 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
                            BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
     }
     Value protoVal(protoBits);
-    if (!protoVal.isObject() ||
-        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        fatal("internal: super property read on a base whose prototype is not an object");
-    }
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("super property read with an unregistered key index");
 
     Rooted<Value> receiver{Value(thisBits)};
     Rooted<Value> protoRoot{protoVal};
+
+    // A STATIC element's `super.k`: the holder is the base CONSTRUCTOR, whose
+    // statics live in its property box and whose inherited statics live up
+    // that box's chain (`extends` links the boxes). A static found there runs
+    // with `this` as its receiver, the same as an instance read below; one
+    // found nowhere on the chain is answered by the function member ladder —
+    // an intrinsic's statics, `call`/`apply`/`bind`, `name` — on the holder's
+    // own terms, which is what `super.of()` in a subclass of Array reaches.
+    if (protoVal.isObject() && protoVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        Rooted<Value> props{protoVal.asObject<FunctionHeader>()->properties};
+        if (props.get().isObject()) {
+            const uint64_t objProtoBits = rtObjectPrototype().rawBits();
+            ObjectHeader* box = props.get().asObject<ObjectHeader>();
+            const PropertyKey pkey = PropertyKey::forString(keyHeader);
+            PropertyInfo info;
+            bool found = box->shape && box->shape->lookupProperty(pkey, info);
+            for (uint32_t depth = 1; !found && depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+                ObjectHeader* ancestor = box->protoAncestor(depth);
+                if (!ancestor || Value::fromObject(ancestor).rawBits() == objProtoBits) break;
+                found = ancestor->shape && ancestor->shape->lookupProperty(pkey, info);
+            }
+            if (found) {
+                Rooted<Value> key(Value::fromString(keyHeader));
+                return box->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr()).rawBits();
+            }
+        }
+        return rtFunctionMember(protoRoot.get(), rtKeyString(keyIndex), keyHeader, nullptr);
+    }
+
+    if (!protoVal.isObject() ||
+        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal("internal: super property read on a base whose prototype is not an object");
+    }
     Rooted<Value> key(Value::fromString(keyHeader));
     // No inline cache: an entry describes ONE shape, and this read has two
     // objects — the holder it walks from and the receiver it runs against.

@@ -51,6 +51,9 @@ private:
     std::string currentClassSuper_;
     const ast::Expr* currentClassSuperExpr_ = nullptr;
     bool inClassMethod_ = false;
+    // Whether the class element being parsed is `static`, which decides where
+    // a `super.x` inside it starts its lookup (ast::SuperMember::fromStatic).
+    bool inStaticElement_ = false;
     // Whether the operand `parseUnaryPrefix` just produced is an
     // unparenthesized unary expression, which is the one thing `**` may not
     // have on its left (ECMA-262 13.6: the left operand is an

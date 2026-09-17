@@ -392,12 +392,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         return storedBoxed;
     }
     if (const auto* sm = dynamic_cast<const ast::SuperMember*>(bin->lhs.get())) {
-        ast::Ident baseIdent;
-        baseIdent.name = sm->baseName;
-        baseIdent.span = sm->span;
-        auto baseVal = lowerExpr(baseIdent, ilFn);
-        if (!baseVal) return std::nullopt;
-        auto protoVal = emitPrototypeOf(boxValueIfNeeded(*baseVal, ilFn), ilFn);
+        auto protoOpt = lowerSuperLookupStart(*sm, ilFn);
+        if (!protoOpt) return std::nullopt;
+        const Value protoVal = *protoOpt;
         auto thisVal = lowerThisValue(sm->span, ilFn);
         if (!thisVal) return std::nullopt;
 

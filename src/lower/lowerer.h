@@ -939,6 +939,9 @@ private:
                                     const std::vector<ast::ClassMethod>& methods, Span span,
                                     il::Function& ilFn, bool bindsOwnName = false);
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
+    // Where a `super.x` starts its lookup: the heritage's `prototype` for an
+    // instance element, the heritage itself for a static one.
+    std::optional<Value> lowerSuperLookupStart(const ast::SuperMember& sm, il::Function& ilFn);
     // `return <val>` inside a derived constructor: the object `val` names, or
     // the receiver `super()` decided when it is not one. Terminates the
     // current block.

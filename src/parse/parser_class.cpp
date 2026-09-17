@@ -210,6 +210,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
     const std::string savedSuper = currentClassSuper_;
     const ast::Expr* savedSuperExpr = currentClassSuperExpr_;
     const bool savedInMethod = inClassMethod_;
+    const bool savedInStatic = inStaticElement_;
     currentClassSuper_ = superName;
     currentClassSuperExpr_ = superClass;
     inClassMethod_ = true;
@@ -239,6 +240,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             advance();
             member.isStatic = true;
         }
+        inStaticElement_ = member.isStatic;
         // `static { ... }` — a ClassStaticBlockDefinition (15.7). Its body is
         // held as a function because that is what it is: one body, evaluated
         // once, with the constructor as its `this`. It takes no parameters and
@@ -525,6 +527,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
     currentClassSuper_ = savedSuper;
     currentClassSuperExpr_ = savedSuperExpr;
     inClassMethod_ = savedInMethod;
+    inStaticElement_ = savedInStatic;
     if (!ok) return false;
     if (!expect(TokenKind::RBrace, "'}' to close a class body")) return false;
 

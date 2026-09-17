@@ -341,6 +341,7 @@ ExprPtr Parser::parseSuper() {
         mem->baseName = currentClassSuper_;
         if (currentClassSuperExpr_) mem->baseExpr = ast::cloneExpr(*currentClassSuperExpr_);
         mem->property = std::string(member->text);
+        mem->fromStatic = inStaticElement_;
         return mem;
     }
     error("super must be called or have a property read from it");

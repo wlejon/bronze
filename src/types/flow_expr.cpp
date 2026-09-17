@@ -510,6 +510,11 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     // goes to whatever `m` that base would find, and to the overrides below it,
     // exactly as an ordinary call on a base-typed receiver does.
     if (const auto* sup = dynamic_cast<const ast::SuperMember*>(c.callee.get())) {
+        // A static element's `super.m(...)` reaches the base's STATIC `m`,
+        // which the layouts below do not describe: they hold instance
+        // methods, and typing the call by one of those would be typing it by
+        // the wrong function.
+        if (sup->fromStatic) return Type::dynamic();
         const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
         if (here == nullptr || here->superName.empty()) {
             if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {

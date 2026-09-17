@@ -406,9 +406,13 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
         censusRecordAccess(CensusKind::SuperSet, thisBits, keyIndex, 0, nullptr,
                            BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/true, valBits);
     }
+    // A plain object for an instance element, the base CONSTRUCTOR for a
+    // static one (`static m() { super.k = v; }`) — the OrdinarySet below
+    // steps onto a function's statics box itself.
     Value protoVal(protoBits);
     if (!protoVal.isObject() ||
-        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        (protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN &&
+         protoVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function)) {
         fatal("internal: super property write on a base whose prototype is not an object");
     }
     StringHeader* keyHeader = rtKeyHeader(keyIndex);

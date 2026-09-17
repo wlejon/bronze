@@ -1,0 +1,13 @@
+Derived>Base.make(2) on Derived
+[kind of Derived]
+base+derived base
+Base.make(1) base
+0,10
+,k
+Derived>Base#m Base#m
+Third>Derived>Base.make(3) on Third
+base+derived+third
+Base.make(arrow) base
+List.of:3 2,4
+function
+undefined
