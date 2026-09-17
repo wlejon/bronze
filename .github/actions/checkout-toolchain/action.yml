@@ -1,0 +1,58 @@
+name: Check out the bronze toolchain
+description: >-
+  Check out bronze and brass beside the calling repository's checkout, the
+  same layout every bro sibling builds against locally (../bronze, ../brass).
+
+# Every bro sibling that owns a JavaScript binding (<name>_api) links
+# bronze_runtime_shared and compiles its src/api/js/*.js with the bronze CLI,
+# so its CI has to build bronze — and through it brass, bronze's only code
+# generator — from source. This action is the one place that layout is
+# written down.
+#
+# Use it from a job that checked itself out under its own name:
+#
+#   - uses: actions/checkout@v7
+#     with: { path: brotensor }
+#   - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
+#   - run: cmake -S brotensor -B build ...
+#
+# which leaves $GITHUB_WORKSPACE/{brotensor,bronze,brass}. The sibling's
+# CMake then finds ../bronze on its own, and bronze's CMake finds ../brass on
+# its own (src/codegen-brass/CMakeLists.txt: BRASS_ROOT, then <bronze>/../brass)
+# and add_subdirectory()s it, so nothing here is pre-built: brass and bronze
+# compile inside the sibling's own build tree, with the sibling's generator,
+# compiler, CRT and compiler launcher. That is deliberate — the sibling api is
+# bound across bronze's C++ embed boundary, which needs the same compiler and
+# CRT on both sides and cannot be checked at load time, so a prebuilt bronze
+# from a different job would be a silent ABI hazard.
+#
+# There is no build step and no BRASS_ROOT export here for the same reason:
+# with a bronze pre-built elsewhere, or a brass pointed at by BRASS_ROOT, the
+# sibling would no longer be testing the tree its own bro build uses.
+
+inputs:
+  bronze-ref:
+    description: Git ref of wlejon/bronze to check out
+    required: false
+    default: main
+  brass-ref:
+    description: Git ref of wlejon/brass to check out
+    required: false
+    default: main
+
+runs:
+  using: composite
+  steps:
+    - name: Check out bronze
+      uses: actions/checkout@v7
+      with:
+        repository: wlejon/bronze
+        ref: ${{ inputs.bronze-ref }}
+        path: bronze
+
+    - name: Check out brass
+      uses: actions/checkout@v7
+      with:
+        repository: wlejon/brass
+        ref: ${{ inputs.brass-ref }}
+        path: brass
