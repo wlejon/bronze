@@ -133,6 +133,11 @@ Value rtCapabilityPromise(Value capability);
 // no-capability reaction (the async driver's) and settles nothing.
 void rtSettleCapability(Rooted<Value>& capability, Rooted<Value>& value, bool reject);
 
+// IfAbruptRejectPromise: take the pending exception and reject the capability
+// with it. Every combinator wraps its iteration in this, and a native async
+// body (`Array.fromAsync`) ends each of its synchronous stretches with it.
+void rtRejectCapabilityWithPending(Rooted<Value>& capability);
+
 // 27.2.4.7.1 PromiseResolve(C, x) — the general form of `rtPromiseResolveValue`
 // above, which is its C = %Promise% arm. `ctor` undefined or %Promise% takes
 // that arm unchanged; anything else builds a capability over the constructor,

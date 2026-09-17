@@ -2,8 +2,19 @@
 1,2
 2,4
 a,b
+p,q
 1,2
+10,21
 true
 0
 function
-TypeError
+number 0
+escaped none
+null TypeError
+mapper TypeError
+element RangeError el
+closed true map
+sync closed true smap
+101,103
+true 2 1,2
+returned,map1,map2

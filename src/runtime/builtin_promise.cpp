@@ -352,11 +352,7 @@ uint64_t capReject(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) 
 
 // Take the pending exception and reject the capability with it — the
 // IfAbruptRejectPromise every combinator wraps its iteration in.
-void rejectWithPending(Rooted<Value>& cap) {
-    Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
-    rtClearException();
-    rtSettleCapability(cap, thrown, /*reject=*/true);
-}
+void rejectWithPending(Rooted<Value>& cap) { rtRejectCapabilityWithPending(cap); }
 
 // `ctor` is the combinator's `this` (27.2.4.1 step 1: "Let C be the this
 // value"), so `MyPromise.all([...])` answers a MyPromise and every element is
@@ -651,6 +647,12 @@ void ensurePromiseIntrinsics() {
 }
 
 }  // namespace
+
+void rtRejectCapabilityWithPending(Rooted<Value>& cap) {
+    Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
+    rtClearException();
+    rtSettleCapability(cap, thrown, /*reject=*/true);
+}
 
 Value rtPromisePrototype() {
     ensurePromiseIntrinsics();
