@@ -642,12 +642,12 @@ uint64_t objectProtoSetProto(uint64_t, uint64_t thisBits, uint32_t argc, const u
 }
 
 const NativeMethod kObjectProtoMethods[] = {
-    {"hasOwnProperty", objectProtoHasOwnProperty, 1},
-    {"isPrototypeOf", objectProtoIsPrototypeOf, 1},
-    {"propertyIsEnumerable", objectProtoPropertyIsEnumerable, 1},
-    {"toLocaleString", objectProtoToLocaleString, 0},
-    {"toString", rtObjectProtoToString, 0},
-    {"valueOf", objectProtoValueOf, 0},
+    {"hasOwnProperty", objectProtoHasOwnProperty, 1, 1},
+    {"isPrototypeOf", objectProtoIsPrototypeOf, 1, 1},
+    {"propertyIsEnumerable", objectProtoPropertyIsEnumerable, 1, 1},
+    {"toLocaleString", objectProtoToLocaleString, 0, 0},
+    {"toString", rtObjectProtoToString, 0, 0},
+    {"valueOf", objectProtoValueOf, 0, 0},
 };
 
 }  // namespace
@@ -666,8 +666,10 @@ void rtInstallObjectProtoMethods(Rooted<Value>& proto) {
     rtDefineMethods(proto, kObjectProtoMethods, std::size(kObjectProtoMethods));
     {
         Rooted<Value> key{rtMakeString("__proto__")};
-        Rooted<Value> getter{rtNativeFunction(objectProtoGetProto, 0)};
-        Rooted<Value> setter{rtNativeFunction(objectProtoSetProto, 1)};
+        // 10.2.9 step 5: an accessor's functions are named with the "get " /
+        // "set " prefix, and 20.1.3.8.1 / .2 give them length 0 and 1.
+        Rooted<Value> getter{rtNativeFunction(objectProtoGetProto, 0, "get __proto__", 0)};
+        Rooted<Value> setter{rtNativeFunction(objectProtoSetProto, 1, "set __proto__", 1)};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
                                      /*enumerable=*/false);
     }

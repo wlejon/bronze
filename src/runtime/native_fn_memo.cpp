@@ -56,14 +56,28 @@ bool rtNativeMemoEnabled() noexcept {
     return rtTls()->fn_singleton_cache_enabled != 0;
 }
 
-Value rtNativeSingleton(bronze_fn_code code, uint32_t arity) {
-    if (!code || !rtNativeMemoEnabled()) {
-        return Value(bronze_function_singleton(code, arity, /*length=*/0,
-                                               BRONZE_ABI_FN_NAME_NONE,
-                                               BRONZE_ABI_FN_FLAGS_ORDINARY |
-                                                   BRONZE_ABI_FN_FLAG_NATIVE,
-                                               /*slotCell=*/nullptr));
+namespace {
+
+// The vector's answer, or a fresh object when it has none. The name is
+// interned as a key ONLY when an object is made: `bronze_register_key_string`
+// is a mutex and a string-keyed map probe, and the memo exists so that a
+// repeat interning costs a hash and two loads — paying the key probe on every
+// memo collision would put a good part of that bill back.
+Value internedOrCreate(bronze_fn_code code, uint32_t arity, const char* name, uint32_t length) {
+    if (const uint32_t idx = rtFunctionSingletonIndexOf(code); idx != UINT32_MAX) {
+        const Value hit = rtFunctionSingletonAt(idx, code);
+        if (!hit.isUndefined()) return hit;
     }
+    const uint32_t nameKey = name ? bronze_register_key_string(name) : BRONZE_ABI_FN_NAME_NONE;
+    return Value(bronze_function_singleton(code, arity, name ? length : 0, nameKey,
+                                           BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE,
+                                           /*slotCell=*/nullptr));
+}
+
+}  // namespace
+
+Value rtNativeSingleton(bronze_fn_code code, uint32_t arity, const char* name, uint32_t length) {
+    if (!code || !rtNativeMemoEnabled()) return internedOrCreate(code, arity, name, length);
     CodeMemoEntry& e =
         g_codeMemo[static_cast<uint32_t>(mix64(reinterpret_cast<uintptr_t>(code))) &
                    (kCodeMemoEntries - 1)];
@@ -74,11 +88,7 @@ Value rtNativeSingleton(bronze_fn_code code, uint32_t arity) {
         const Value hit = rtFunctionSingletonAt(e.index, code);
         if (!hit.isUndefined()) return hit;
     }
-    const Value made = Value(bronze_function_singleton(code, arity, /*length=*/0,
-                                                       BRONZE_ABI_FN_NAME_NONE,
-                                                       BRONZE_ABI_FN_FLAGS_ORDINARY |
-                                                           BRONZE_ABI_FN_FLAG_NATIVE,
-                                                       /*slotCell=*/nullptr));
+    const Value made = internedOrCreate(code, arity, name, length);
     if (const uint32_t idx = rtFunctionSingletonIndexOf(code); idx != UINT32_MAX) {
         e.code = code;
         e.index = idx;

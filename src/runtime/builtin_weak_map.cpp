@@ -216,23 +216,19 @@ uint64_t weakSetConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* a
     return buildWeakCollection(arg, MapHeader::kWeakSetFlags);
 }
 
-struct Method {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using Method = NativeMethod;
 
 const Method kWeakMapMethods[] = {
-    {"get", weakMapGet, 1},
-    {"set", weakMapSet, 2},
-    {"has", weakMapHas, 1},
-    {"delete", weakMapDelete, 1},
+    {"get", weakMapGet, 1, 1},
+    {"set", weakMapSet, 2, 2},
+    {"has", weakMapHas, 1, 1},
+    {"delete", weakMapDelete, 1, 1},
 };
 
 const Method kWeakSetMethods[] = {
-    {"add", weakSetAdd, 1},
-    {"has", weakMapHas, 1},
-    {"delete", weakMapDelete, 1},
+    {"add", weakSetAdd, 1, 1},
+    {"has", weakMapHas, 1, 1},
+    {"delete", weakMapDelete, 1, 1},
 };
 
 // Real members of `WeakMap` / `WeakSet` that bronze has not built. `prototype`
@@ -250,8 +246,8 @@ const char* const kWeakSetUnimplemented[] = {
 }  // namespace
 
 Value rtWeakCollectionConstructor(const std::string& name) {
-    if (name == "WeakMap") return rtNativeFunction(weakMapConstructor, 0);
-    if (name == "WeakSet") return rtNativeFunction(weakSetConstructor, 0);
+    if (name == "WeakMap") return rtNativeFunction(weakMapConstructor, 0, "WeakMap", 0);
+    if (name == "WeakSet") return rtNativeFunction(weakSetConstructor, 0, "WeakSet", 0);
     return Value::fromUndefined();
 }
 
@@ -268,12 +264,12 @@ const char* rtWeakCollectionConstructorName(Value fn) {
 Value rtWeakCollectionMethod(bool isWeakSetReceiver, const std::string& key) {
     if (isWeakSetReceiver) {
         for (const Method& m : kWeakSetMethods) {
-            if (key == m.name) return rtNativeFunction(m.code, m.arity);
+            if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
         }
         return Value::fromUndefined();
     }
     for (const Method& m : kWeakMapMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity);
+        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
     }
     return Value::fromUndefined();
 }

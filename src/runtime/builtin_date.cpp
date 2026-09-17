@@ -275,8 +275,7 @@ uint64_t dateToPrimitive(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
 }
 
 constexpr const char* kAnnexBWhy =
-    "it is an Annex B legacy member; use the four-digit getFullYear / setFullYear pair, and "
-    "toUTCString in place of toGMTString";
+    "it is an Annex B legacy member; use the four-digit getFullYear / setFullYear pair";
 
 uint64_t dateGetYear(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     refuse("getYear", kAnnexBWhy);
@@ -284,23 +283,23 @@ uint64_t dateGetYear(uint64_t, uint64_t, uint32_t, const uint64_t*) {
 uint64_t dateSetYear(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     refuse("setYear", kAnnexBWhy);
 }
-uint64_t dateToGMTString(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    refuse("toGMTString", kAnnexBWhy);
-}
 
 const NativeMethod kStringMembers[] = {
-    {"toString", dateToText<dt::dateTimeString>, 0},
-    {"toDateString", dateToText<dt::dateOnlyString>, 0},
-    {"toTimeString", dateToText<dt::timeOnlyString>, 0},
-    {"toUTCString", dateToText<dt::utcString>, 0},
-    {"toISOString", dateToISOString, 0},
-    {"toJSON", dateToJSON, 0},
-    {"toLocaleString", dateToText<dt::localeDateTimeString>, 0},
-    {"toLocaleDateString", dateToText<dt::localeDateString>, 0},
-    {"toLocaleTimeString", dateToText<dt::localeTimeString>, 0},
-    {"getYear", dateGetYear, 0},
-    {"setYear", dateSetYear, 0},
-    {"toGMTString", dateToGMTString, 0},
+    {"toString", dateToText<dt::dateTimeString>, 0, 0},
+    {"toDateString", dateToText<dt::dateOnlyString>, 0, 0},
+    {"toTimeString", dateToText<dt::timeOnlyString>, 0, 0},
+    {"toUTCString", dateToText<dt::utcString>, 0, 0},
+    {"toISOString", dateToISOString, 0, 0},
+    {"toJSON", dateToJSON, 0, 1},
+    {"toLocaleString", dateToText<dt::localeDateTimeString>, 0, 0},
+    {"toLocaleDateString", dateToText<dt::localeDateString>, 0, 0},
+    {"toLocaleTimeString", dateToText<dt::localeTimeString>, 0, 0},
+    {"getYear", dateGetYear, 0, 0},
+    {"setYear", dateSetYear, 0, 1},
+    // B.2.3.3: `toGMTString` IS `toUTCString` — the same function object,
+    // named "toUTCString" — which the code-pointer interning gives once the
+    // row names the same body. Listed AFTER it so the canonical name creates.
+    {"toGMTString", dateToText<dt::utcString>, 0, 0},
 };
 
 // ---- assembling the intrinsics ----------------------------------------------
@@ -339,22 +338,23 @@ void ensureDateIntrinsics() {
         // above — but it is defined on the same terms: non-enumerable, and a
         // DEFINITION rather than an assignment.
         Rooted<Value> key{Value::fromSymbol(rtSymbolToPrimitive())};
-        Rooted<Value> val{rtNativeFunction(dateToPrimitive, 0)};
+        Rooted<Value> val{rtNativeFunction(dateToPrimitive, 0, "[Symbol.toPrimitive]", 1)};
         proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }
 
-    Rooted<Value> ctor{rtNativeFunction(dateConstructor, 0)};
+    // 21.4.3: `Date` has length 7, the seven fields of the component form.
+    Rooted<Value> ctor{rtNativeFunction(dateConstructor, 0, "Date", 7)};
     rtEnsureFunctionProperties(ctor);
     Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
     const NativeMethod statics[] = {
-        {"now", dateNow, 0},
-        {"parse", dateParse, 0},
-        {"UTC", dateUTC, 0},
+        {"now", dateNow, 0, 0},
+        {"parse", dateParse, 0, 1},
+        {"UTC", dateUTC, 0, 7},
     };
     for (const NativeMethod& s : statics) {
         Rooted<Value> key{rtMakeString(s.name)};
-        Rooted<Value> val{rtNativeFunction(s.code, s.arity)};
+        Rooted<Value> val{rtNativeFunction(s.code, s.arity, s.name, s.length)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }

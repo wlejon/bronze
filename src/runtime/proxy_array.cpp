@@ -137,7 +137,7 @@ Value rtProxyAdaptArrayMember(Rooted<Value>& targetRoot, Rooted<Value>& keyRoot,
     if (keyRoot.get().isSymbol()) {
         // 23.1.3.41: `[Symbol.iterator]` IS `Array.prototype.values`, and
         // both intern on one code pointer — identity is the membership test.
-        Rooted<Value> values{rtNativeFunction(rtArrayValuesBuiltin, 0)};
+        Rooted<Value> values{rtNativeFunction(rtArrayValuesBuiltin, 0, "values", 0)};
         if (values.get().rawBits() != forwardedRoot.get().rawBits()) {
             return forwardedRoot.get();
         }
@@ -154,15 +154,17 @@ Value rtProxyAdaptArrayMember(Rooted<Value>& targetRoot, Rooted<Value>& keyRoot,
         // no-get-trap [[Get]] is.
         return forwardedRoot.get();
     }
-    if (keyStr == "push") return rtNativeFunction(proxyArrayPush, 1);
-    if (keyStr == "sort") return rtNativeFunction(proxyArraySort, 1);
-    if (keyStr == "pop") return rtNativeFunction(proxyArrayPop, 0);
-    if (keyStr == "shift") return rtNativeFunction(proxyArrayShift, 0);
-    if (keyStr == "unshift") return rtNativeFunction(proxyArrayUnshift, 1);
-    if (keyStr == "splice") return rtNativeFunction(proxyArraySplice, 2);
-    if (keyStr == "reverse") return rtNativeFunction(proxyArrayReverse, 0);
-    if (keyStr == "fill") return rtNativeFunction(proxyArrayFill, 1);
-    if (keyStr == "copyWithin") return rtNativeFunction(proxyArrayCopyWithin, 2);
+    // Named and sized as the Array.prototype member each stands in for, since
+    // that is what the program asked for and what it reads off the result.
+    if (keyStr == "push") return rtNativeFunction(proxyArrayPush, 1, "push", 1);
+    if (keyStr == "sort") return rtNativeFunction(proxyArraySort, 1, "sort", 1);
+    if (keyStr == "pop") return rtNativeFunction(proxyArrayPop, 0, "pop", 0);
+    if (keyStr == "shift") return rtNativeFunction(proxyArrayShift, 0, "shift", 0);
+    if (keyStr == "unshift") return rtNativeFunction(proxyArrayUnshift, 1, "unshift", 1);
+    if (keyStr == "splice") return rtNativeFunction(proxyArraySplice, 2, "splice", 2);
+    if (keyStr == "reverse") return rtNativeFunction(proxyArrayReverse, 0, "reverse", 0);
+    if (keyStr == "fill") return rtNativeFunction(proxyArrayFill, 1, "fill", 1);
+    if (keyStr == "copyWithin") return rtNativeFunction(proxyArrayCopyWithin, 2, "copyWithin", 2);
     uint64_t thisArg = targetRoot.get().rawBits();
     return Value(rtFunctionBindBuiltin(0, forwardedRoot.get().rawBits(), 1, &thisArg));
 }

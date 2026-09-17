@@ -3,6 +3,6 @@ function foo(a, b) {
 }
 function () {}
 function () {}
-function () { [native code] }
+function call() { [native code] }
 TypeError
 TypeError

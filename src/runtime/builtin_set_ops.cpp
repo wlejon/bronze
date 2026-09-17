@@ -467,13 +467,13 @@ uint64_t setIsDisjointFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 const NativeMethod* rtSetOperationMethods(size_t& count) {
     // 24.2.4's seven, each with the spec's `length` of 1.
     static const NativeMethod kMethods[] = {
-        {"union", setUnion, 1},
-        {"intersection", setIntersection, 1},
-        {"difference", setDifference, 1},
-        {"symmetricDifference", setSymmetricDifference, 1},
-        {"isSubsetOf", setIsSubsetOf, 1},
-        {"isSupersetOf", setIsSupersetOf, 1},
-        {"isDisjointFrom", setIsDisjointFrom, 1},
+        {"union", setUnion, 1, 1},
+        {"intersection", setIntersection, 1, 1},
+        {"difference", setDifference, 1, 1},
+        {"symmetricDifference", setSymmetricDifference, 1, 1},
+        {"isSubsetOf", setIsSubsetOf, 1, 1},
+        {"isSupersetOf", setIsSupersetOf, 1, 1},
+        {"isDisjointFrom", setIsDisjointFrom, 1, 1},
     };
     count = sizeof(kMethods) / sizeof(kMethods[0]);
     return kMethods;

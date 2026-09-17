@@ -386,23 +386,19 @@ uint64_t atomicsIsLockFree(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     return Value::fromBool(lockFree).rawBits();
 }
 
-struct AtomicsFn {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using AtomicsFn = NativeMethod;
 
 const AtomicsFn kAtomicsFunctions[] = {
-    {"load", atomicsLoad, 2},
-    {"store", atomicsStore, 3},
-    {"add", atomicsRmw<Rmw::Add>, 3},
-    {"sub", atomicsRmw<Rmw::Sub>, 3},
-    {"and", atomicsRmw<Rmw::And>, 3},
-    {"or", atomicsRmw<Rmw::Or>, 3},
-    {"xor", atomicsRmw<Rmw::Xor>, 3},
-    {"exchange", atomicsRmw<Rmw::Exchange>, 3},
-    {"compareExchange", atomicsCompareExchange, 4},
-    {"isLockFree", atomicsIsLockFree, 1},
+    {"load", atomicsLoad, 2, 2},
+    {"store", atomicsStore, 3, 3},
+    {"add", atomicsRmw<Rmw::Add>, 3, 3},
+    {"sub", atomicsRmw<Rmw::Sub>, 3, 3},
+    {"and", atomicsRmw<Rmw::And>, 3, 3},
+    {"or", atomicsRmw<Rmw::Or>, 3, 3},
+    {"xor", atomicsRmw<Rmw::Xor>, 3, 3},
+    {"exchange", atomicsRmw<Rmw::Exchange>, 3, 3},
+    {"compareExchange", atomicsCompareExchange, 4, 4},
+    {"isLockFree", atomicsIsLockFree, 1, 1},
 };
 
 // The three 25.4 operations that are not a memory access but an AGENT
@@ -425,7 +421,9 @@ const char* const kAtomicsUnimplemented[] = {
 }  // namespace
 
 Value rtSharedArrayBufferConstructor(const std::string& name) {
-    if (name == "SharedArrayBuffer") return rtNativeFunction(sharedArrayBufferCtor, 1);
+    if (name == "SharedArrayBuffer") {
+        return rtNativeFunction(sharedArrayBufferCtor, 1, "SharedArrayBuffer", 1);
+    }
     return Value::fromUndefined();
 }
 
@@ -449,8 +447,8 @@ Value rtSharedArrayBufferMember(Value bufferVal, const std::string& key) {
     // not an operation the shared surface has.
     if (key == "maxByteLength") return Value::fromDouble(buf->maxByteLength);
     if (key == "growable") return Value::fromBool(buf->isResizable());
-    if (key == "grow") return rtNativeFunction(sharedArrayBufferGrow, 1);
-    if (key == "slice") return rtNativeFunction(sharedArrayBufferSlice, 2);
+    if (key == "grow") return rtNativeFunction(sharedArrayBufferGrow, 1, "grow", 1);
+    if (key == "slice") return rtNativeFunction(sharedArrayBufferSlice, 2, "slice", 2);
     if (key == "constructor") return rtSharedArrayBufferConstructor("SharedArrayBuffer");
     return Value::fromUndefined();
 }
@@ -471,7 +469,7 @@ Value rtAtomicsObject() {
 
     for (const AtomicsFn& fn : kAtomicsFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
 

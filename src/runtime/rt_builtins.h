@@ -58,28 +58,48 @@ bool rtGlobalThisOwnLookup(const std::string& name, Value& out);
 // index the creator was given. `BRONZE_ABI_FN_NAME_NONE` leaves both absent.
 void rtSetFunctionNameAndLength(struct FunctionHeader* fn, uint32_t nameKey, uint32_t length);
 
-// A NATIVE builtin as a function object, interned by code pointer.
+// A NATIVE builtin as a function object, interned by code pointer, carrying
+// the `name` (10.2.9) and `length` (10.2.10) its ECMA-262 clause gives it.
 //
-// It records NO `name` and NO `length`, and that is a decision rather than an
-// omission: `arity` in the tables these are built from is the count a short
-// call is padded to, which is not 10.2.10's `length` (`Object.assign` pads to 0
-// and has length 2), and a `length` copied from it would be a wrong answer
-// where none is a diagnosed missing one. So `Object.keys.name` stays the named
-// hard error it has always been while a function bronze COMPILED answers, which
-// is the split rt_members.cpp's tables already draw everywhere else.
-inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
+// The two are SEPARATE arguments from `arity` because they are separate
+// facts: `arity` in the tables these are built from is the count a short call
+// is padded to, which is not 10.2.10's `length` (`Object.assign` pads to 0 and
+// has length 2; `Array` pads to 0 so `new Array(3)` is three holes, and has
+// length 1). `length` is the clause's number, read off the clause, and `name`
+// is the clause's property key — `"get size"` for an accessor's getter (10.2.9
+// step 5), `""` for the anonymous ones such as %ThrowTypeError%.
+//
+// Interning is by code pointer, so the FIRST creation names the object and a
+// later call for the same code pointer changes nothing — which is the right
+// answer for the aliases the language makes one object (`Set.prototype.keys`
+// IS `values`, named "values"; `Array.prototype[Symbol.iterator]` IS `values`).
+// The table that lists the canonical name therefore has to be the one that
+// creates first, or list the canonical spelling first.
+inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity, const char* name,
+                              uint32_t length) {
     // No slot cell: a native builtin belongs to no compiled module, so there
     // is no module-local table to cache it in. The by-code-pointer map is the
     // authority regardless, and `rtNativeSingleton` is a direct-mapped memo in
     // front of it (runtime/native_fn_memo.h) — the same object, found without
     // an unordered_map probe or a cross-module call, which is what took this
-    // path off the top of the three.js bill.
+    // path off the top of the three.js bill. The name is interned only on the
+    // fill path, so a hit costs nothing it did not already.
     // BRONZE_ABI_FN_FLAGS_ORDINARY, because a native builtin has no syntax
     // behind it to say otherwise: `Array` and `Map` really are constructors,
     // and the tables these are built from do not record which of the rest are
     // not. So the constructibility of a NATIVE stays what it has always been,
     // and only functions bronze COMPILED carry the syntax's answer.
-    return rtNativeSingleton(code, arity);
+    return rtNativeSingleton(code, arity, name, length);
+}
+
+// The nameless form: the function object for `code` with no `name` and no
+// `length` recorded (`f.name` reads "" and `f.length` 0, and neither is an own
+// key). For a native that is NOT a program-visible builtin — a test
+// scaffold's comparator, a callback the runtime hands itself — and for
+// re-finding an already-named one where the caller has no table row in hand;
+// an already-interned code pointer keeps the name it was created with.
+inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity) {
+    return rtNativeSingleton(code, arity, nullptr, 0);
 }
 
 // ---- builtin namespaces ---------------------------------------------------
@@ -195,10 +215,15 @@ bool rtFunctionKindCheckMissingMember(Value obj, const std::string& key);
 // builtin_string.cpp, its pattern-taking ones in builtin_string_regexp.cpp — so
 // a member that lands or leaves changes the file it is written in and not a
 // registry somewhere else.
+//
+// `arity` is the count a short call is padded to (0 for a variadic); `length`
+// is 10.2.10's number, read off the member's clause. Every method table in the
+// runtime carries both columns for the reason `rtNativeFunction` gives.
 struct NativeMethod {
     const char* name;
     bronze_fn_code code;
     uint32_t arity;
+    uint32_t length;
 };
 
 // Define each as a NON-ENUMERABLE own property. That attribute is not tidiness:

@@ -256,11 +256,7 @@ uint64_t mathRandom(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return Value::fromDouble(x).rawBits();
 }
 
-struct MathFn {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using MathFn = NativeMethod;
 
 struct MathConst {
     const char* name;
@@ -271,31 +267,32 @@ const MathFn kMathFunctions[] = {
     // The six with exported code pointers (bronze_abi.h) are the ones a call
     // site can dispatch directly; the registration here is what makes the
     // guard's pointer compare mean "still the intrinsic".
-    {"abs", bronze_math_abs, 1},         {"floor", bronze_math_floor, 1},
-    {"ceil", bronze_math_ceil, 1},       {"trunc", mathUnary<unaryTrunc>, 1},
-    {"round", bronze_math_round, 1},    {"sign", mathUnary<jsSign>, 1},
-    {"sqrt", bronze_math_sqrt, 1},       {"cbrt", mathUnary<unaryCbrt>, 1},
-    {"exp", mathUnary<unaryExp>, 1},     {"expm1", mathUnary<unaryExpm1>, 1},
-    {"log", mathUnary<unaryLog>, 1},     {"log1p", mathUnary<unaryLog1p>, 1},
-    {"log2", mathUnary<unaryLog2>, 1},   {"log10", mathUnary<unaryLog10>, 1},
-    {"sin", bronze_math_sin, 1},         {"cos", bronze_math_cos, 1},
-    {"tan", mathUnary<unaryTan>, 1},     {"asin", mathUnary<unaryAsin>, 1},
-    {"acos", mathUnary<unaryAcos>, 1},   {"atan", mathUnary<unaryAtan>, 1},
-    {"sinh", mathUnary<unarySinh>, 1},   {"cosh", mathUnary<unaryCosh>, 1},
-    {"tanh", mathUnary<unaryTanh>, 1},   {"asinh", mathUnary<unaryAsinh>, 1},
-    {"acosh", mathUnary<unaryAcosh>, 1}, {"atanh", mathUnary<unaryAtanh>, 1},
-    {"fround", mathUnary<unaryFround>, 1},
-    {"f16round", mathUnary<unaryF16round>, 1},
-    {"clz32", mathClz32, 1},             {"imul", bronze_math_imul, 2},
-    {"atan2", mathAtan2, 2},             {"pow", mathPow, 2},
+    {"abs", bronze_math_abs, 1, 1},         {"floor", bronze_math_floor, 1, 1},
+    {"ceil", bronze_math_ceil, 1, 1},       {"trunc", mathUnary<unaryTrunc>, 1, 1},
+    {"round", bronze_math_round, 1, 1},     {"sign", mathUnary<jsSign>, 1, 1},
+    {"sqrt", bronze_math_sqrt, 1, 1},       {"cbrt", mathUnary<unaryCbrt>, 1, 1},
+    {"exp", mathUnary<unaryExp>, 1, 1},     {"expm1", mathUnary<unaryExpm1>, 1, 1},
+    {"log", mathUnary<unaryLog>, 1, 1},     {"log1p", mathUnary<unaryLog1p>, 1, 1},
+    {"log2", mathUnary<unaryLog2>, 1, 1},   {"log10", mathUnary<unaryLog10>, 1, 1},
+    {"sin", bronze_math_sin, 1, 1},         {"cos", bronze_math_cos, 1, 1},
+    {"tan", mathUnary<unaryTan>, 1, 1},     {"asin", mathUnary<unaryAsin>, 1, 1},
+    {"acos", mathUnary<unaryAcos>, 1, 1},   {"atan", mathUnary<unaryAtan>, 1, 1},
+    {"sinh", mathUnary<unarySinh>, 1, 1},   {"cosh", mathUnary<unaryCosh>, 1, 1},
+    {"tanh", mathUnary<unaryTanh>, 1, 1},   {"asinh", mathUnary<unaryAsinh>, 1, 1},
+    {"acosh", mathUnary<unaryAcosh>, 1, 1}, {"atanh", mathUnary<unaryAtanh>, 1, 1},
+    {"fround", mathUnary<unaryFround>, 1, 1},
+    {"f16round", mathUnary<unaryF16round>, 1, 1},
+    {"clz32", mathClz32, 1, 1},             {"imul", bronze_math_imul, 2, 2},
+    {"atan2", mathAtan2, 2, 2},             {"pow", mathPow, 2, 2},
     // Arity 0 is not "takes nothing": FunctionHeader::arity is the count a
     // short call is PADDED with undefined up to, and a variadic builtin
     // must see the real argc — `Math.min()` is Infinity, while the same
     // call padded to two undefineds is NaN. The three below are the
     // variadic ones; the rest declare their real parameter count so a short
-    // call reaches them as the language says, with undefined.
-    {"min", bronze_math_min, 0},         {"max", bronze_math_max, 0},
-    {"hypot", mathHypot, 0},             {"random", mathRandom, 0},
+    // call reaches them as the language says, with undefined. Their `length`
+    // is 21.3.2's 2 all the same (21.3.2.24, 21.3.2.25, 21.3.2.18).
+    {"min", bronze_math_min, 0, 2},         {"max", bronze_math_max, 0, 2},
+    {"hypot", mathHypot, 0, 2},             {"random", mathRandom, 0, 0},
 };
 
 const MathConst kMathConstants[] = {
@@ -404,13 +401,12 @@ Value rtMathObject() {
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
 
     for (const MathFn& fn : kMathFunctions) {
-        // A native builtin records no `name` (rt_builtins.h says why), so a
-        // profile of the runtime sees a bare code pointer where a bill wants
-        // "Math.cos". The table has the name in hand right here; the registry
-        // is profile-only and no-ops unless BRONZE_PROFILE=1.
+        // A profile of the runtime wants the QUALIFIED "Math.cos" where the
+        // function object's own `name` is the bare "cos"; the registry is
+        // profile-only and no-ops unless BRONZE_PROFILE=1.
         profileNameNative(reinterpret_cast<const void*>(fn.code), "Math", fn.name);
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
     for (const MathConst& c : kMathConstants) {

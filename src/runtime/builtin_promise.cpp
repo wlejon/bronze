@@ -603,26 +603,27 @@ void ensurePromiseIntrinsics() {
 
     // 27.2.5.4, 27.2.5.1, 27.2.5.3, with the spec's lengths.
     const NativeMethod methods[] = {
-        {"then", promiseThen, 2},
-        {"catch", promiseCatch, 1},
-        {"finally", promiseFinally, 1},
+        {"then", promiseThen, 2, 2},
+        {"catch", promiseCatch, 1, 1},
+        {"finally", promiseFinally, 1, 1},
     };
     rtDefineMethods(proto, methods, 3);
 
-    Rooted<Value> ctor{rtNativeFunction(promiseConstructorBody, 1)};
+    // 27.2.3: `Promise` has length 1 (the executor).
+    Rooted<Value> ctor{rtNativeFunction(promiseConstructorBody, 1, "Promise", 1)};
     rtEnsureFunctionProperties(ctor);
     Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
     // 27.2.4's function properties, non-enumerable like every intrinsic's.
     const NativeMethod statics[] = {
-        {"resolve", staticResolve, 1}, {"reject", staticReject, 1},
-        {"all", staticAll, 1},         {"allSettled", staticAllSettled, 1},
-        {"race", staticRace, 1},       {"any", staticAny, 1},
-        {"withResolvers", staticWithResolvers, 0},
-        {"try", staticTry, 1},
+        {"resolve", staticResolve, 1, 1}, {"reject", staticReject, 1, 1},
+        {"all", staticAll, 1, 1},         {"allSettled", staticAllSettled, 1, 1},
+        {"race", staticRace, 1, 1},       {"any", staticAny, 1, 1},
+        {"withResolvers", staticWithResolvers, 0, 0},
+        {"try", staticTry, 1, 1},
     };
     for (const NativeMethod& s : statics) {
         Rooted<Value> key{rtMakeString(s.name)};
-        Rooted<Value> val{rtNativeFunction(s.code, s.arity)};
+        Rooted<Value> val{rtNativeFunction(s.code, s.arity, s.name, s.length)};
         // DEFINED rather than assigned, and non-enumerable, for the reason
         // rtInstallNumberStatics gives about every intrinsic's statics:
         // `Object.keys(Promise)` is `[]`. The properties object is re-derived

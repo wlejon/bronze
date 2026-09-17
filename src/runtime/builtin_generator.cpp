@@ -146,21 +146,16 @@ uint64_t generatorThrow(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 }  // namespace
 
 void rtInstallGeneratorPrototype(Rooted<Value>& proto) {
-    struct Method {
-        const char* key;
-        NativeFunctionCode code;
-        uint32_t arity;
-    };
     // 27.5.1.2 through 27.5.1.4, in the order the spec lists them, each taking
     // one argument.
-    const Method methods[] = {
-        {"next", generatorNext, 1},
-        {"return", generatorReturn, 1},
-        {"throw", generatorThrow, 1},
+    const NativeMethod methods[] = {
+        {"next", generatorNext, 1, 1},
+        {"return", generatorReturn, 1, 1},
+        {"throw", generatorThrow, 1, 1},
     };
     for (const auto& method : methods) {
-        Rooted<Value> fn{rtNativeFunction(method.code, method.arity)};
-        Rooted<Value> key{rtMakeString(method.key)};
+        Rooted<Value> fn{rtNativeFunction(method.code, method.arity, method.name, method.length)};
+        Rooted<Value> key{rtMakeString(method.name)};
         proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn);
     }
 }

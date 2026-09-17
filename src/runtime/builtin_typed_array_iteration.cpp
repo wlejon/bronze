@@ -76,7 +76,7 @@ uint64_t makeTypedArrayIterator(uint64_t thisBits, uint32_t kind, const char* me
         return Value::fromUndefined().rawBits();
     }
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::Array)};
-    Rooted<Value> nextFn{rtNativeFunction(taIterNext, 0)};
+    Rooted<Value> nextFn{rtNativeFunction(taIterNext, 0, "next", 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     writeSlot(it, ArrayIteratorSlot::IteratedArrayLike, self.get());
@@ -418,6 +418,6 @@ uint64_t taEntries(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return makeTypedArrayIterator(thisBits, Entries, "entries");
 }
 
-Value rtTypedArrayIteratorMethod() { return rtNativeFunction(taValues, 0); }
+Value rtTypedArrayIteratorMethod() { return rtNativeFunction(taValues, 0, "values", 0); }
 
 }  // namespace bronze::runtime

@@ -218,20 +218,14 @@ uint64_t bigIntProtoToLocaleString(uint64_t, uint64_t, uint32_t, const uint64_t*
 }
 
 const NativeMethod kBigIntProtoMethods[] = {
-    {"toString", bigIntProtoToString, 0},
-    {"toLocaleString", bigIntProtoToLocaleString, 0},
-    {"valueOf", bigIntProtoValueOf, 0},
+    {"toString", bigIntProtoToString, 0, 0},
+    {"toLocaleString", bigIntProtoToLocaleString, 0, 0},
+    {"valueOf", bigIntProtoValueOf, 0, 0},
 };
 
-struct BigIntStatic {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
-
-const BigIntStatic kBigIntStatics[] = {
-    {"asIntN", bigIntAsIntN, 2},
-    {"asUintN", bigIntAsUintN, 2},
+const NativeMethod kBigIntStatics[] = {
+    {"asIntN", bigIntAsIntN, 2, 2},
+    {"asUintN", bigIntAsUintN, 2, 2},
 };
 
 // The two prototype members 21.2.3 defines that bronze does not answer from
@@ -280,7 +274,7 @@ Value rtBigIntConstructorObject() {
     // Arity 0, like every other native constructor here: a variadic native
     // must not be padded, or `BigInt()` would arrive with an `undefined` the
     // language says it was not given.
-    Rooted<Value> fn{rtNativeFunction(bigIntConstructorBody, 0)};
+    Rooted<Value> fn{rtNativeFunction(bigIntConstructorBody, 0, "BigInt", 1)};
     g_bigIntFunction = fn.get();
     rtHeap().add_permanent_root(&g_bigIntFunction);
 
@@ -296,9 +290,9 @@ Value rtBigIntConstructorObject() {
 
     rtEnsureFunctionProperties(fn);
     Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
-    for (const BigIntStatic& s : kBigIntStatics) {
+    for (const NativeMethod& s : kBigIntStatics) {
         Rooted<Value> key{rtMakeString(s.name)};
-        Rooted<Value> val{rtNativeFunction(s.code, s.arity)};
+        Rooted<Value> val{rtNativeFunction(s.code, s.arity, s.name, s.length)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }

@@ -514,18 +514,28 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 }
 
 // 22.1.3.28 toString and 22.1.3.35 valueOf are the SAME operation —
-// thisStringValue — which is why one function answers both names. For a String
-// object that is the [[StringData]] slot, and it is the step that makes
-// `String(new String("ab"))` and `new String("ab") + ""` the characters rather
-// than a named ToPrimitive error.
-uint64_t stringItself(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+// thisStringValue. For a String object that is the [[StringData]] slot, and
+// it is the step that makes `String(new String("ab"))` and `new String("ab") +
+// ""` the characters rather than a named ToPrimitive error. Two bodies all the
+// same, because they are two function OBJECTS: interning is by code pointer,
+// and one body would make `toString === valueOf` true and give `valueOf` the
+// wrong `name`.
+uint64_t thisStringValueOf(uint64_t thisBits, const char* method) {
     Value self;
     if (!rtThisStringValue(Value(thisBits), self)) {
-        return rtThrowTypeError(
-                   "String.prototype.toString called on a value that is not a string")
+        return rtThrowTypeError(std::string("String.prototype.") + method +
+                                " called on a value that is not a string")
             .rawBits();
     }
     return self.rawBits();
+}
+
+uint64_t stringToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    return thisStringValueOf(thisBits, "toString");
+}
+
+uint64_t stringValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    return thisStringValueOf(thisBits, "valueOf");
 }
 
 // 22.1.3.11 isWellFormed
@@ -643,36 +653,36 @@ uint64_t stringLocaleCompare(uint64_t, uint64_t thisBits, uint32_t argc, const u
 }
 
 const NativeMethod kStringMethods[] = {
-    {"at", stringAt, 1},
-    {"charAt", stringCharAt, 1},
-    {"charCodeAt", bronze_string_char_code_at, 1},
-    {"codePointAt", stringCodePointAt, 1},
-    {"concat", stringConcat, 0},
-    {"endsWith", stringEndsWith, 1},
-    {"includes", stringIncludes, 1},
-    {"indexOf", stringIndexOf, 1},
-    {"isWellFormed", stringIsWellFormed, 0},
-    {"lastIndexOf", stringLastIndexOf, 1},
-    {"localeCompare", stringLocaleCompare, 1},
-    {"normalize", stringNormalize, 0},
-    {"padEnd", stringPadImpl<false>, 1},
-    {"padStart", stringPadImpl<true>, 1},
-    {"repeat", stringRepeat, 1},
-    {"slice", stringSlice, 0},
-    {"split", stringSplit, 0},
-    {"startsWith", stringStartsWith, 1},
-    {"substr", stringSubstr, 2},
-    {"substring", stringSubstring, 0},
-    {"toLocaleLowerCase", stringCaseImpl<false, true>, 0},
-    {"toLocaleUpperCase", stringCaseImpl<true, true>, 0},
-    {"toLowerCase", stringCaseImpl<false>, 0},
-    {"toString", stringItself, 0},
-    {"toWellFormed", stringToWellFormed, 0},
-    {"toUpperCase", stringCaseImpl<true>, 0},
-    {"trim", stringTrimImpl<true, true>, 0},
-    {"trimEnd", stringTrimImpl<false, true>, 0},
-    {"trimStart", stringTrimImpl<true, false>, 0},
-    {"valueOf", stringItself, 0},
+    {"at", stringAt, 1, 1},
+    {"charAt", stringCharAt, 1, 1},
+    {"charCodeAt", bronze_string_char_code_at, 1, 1},
+    {"codePointAt", stringCodePointAt, 1, 1},
+    {"concat", stringConcat, 0, 1},
+    {"endsWith", stringEndsWith, 1, 1},
+    {"includes", stringIncludes, 1, 1},
+    {"indexOf", stringIndexOf, 1, 1},
+    {"isWellFormed", stringIsWellFormed, 0, 0},
+    {"lastIndexOf", stringLastIndexOf, 1, 1},
+    {"localeCompare", stringLocaleCompare, 1, 1},
+    {"normalize", stringNormalize, 0, 0},
+    {"padEnd", stringPadImpl<false>, 1, 1},
+    {"padStart", stringPadImpl<true>, 1, 1},
+    {"repeat", stringRepeat, 1, 1},
+    {"slice", stringSlice, 0, 2},
+    {"split", stringSplit, 0, 2},
+    {"startsWith", stringStartsWith, 1, 1},
+    {"substr", stringSubstr, 2, 2},
+    {"substring", stringSubstring, 0, 2},
+    {"toLocaleLowerCase", stringCaseImpl<false, true>, 0, 0},
+    {"toLocaleUpperCase", stringCaseImpl<true, true>, 0, 0},
+    {"toLowerCase", stringCaseImpl<false>, 0, 0},
+    {"toString", stringToString, 0, 0},
+    {"toWellFormed", stringToWellFormed, 0, 0},
+    {"toUpperCase", stringCaseImpl<true>, 0, 0},
+    {"trim", stringTrimImpl<true, true>, 0, 0},
+    {"trimEnd", stringTrimImpl<false, true>, 0, 0},
+    {"trimStart", stringTrimImpl<true, false>, 0, 0},
+    {"valueOf", stringValueOf, 0, 0},
 };
 
 }  // namespace

@@ -285,7 +285,10 @@ void ensureErrorClasses() {
     ensureExceptionRoots();
 
     for (ErrorClass& cls : g_errorClasses) {
-        Rooted<Value> ctor{rtNativeFunction(cls.code, 1)};
+        // 20.5.1 gives `Error` and each NativeError length 1; 20.5.7.1
+        // gives `AggregateError` 2 (errors, message).
+        const uint32_t length = cls.kind == ErrorKind::AggregateError ? 2 : 1;
+        Rooted<Value> ctor{rtNativeFunction(cls.code, 1, cls.name, length)};
         // `Error.prototype` and `TypeError.prototype` must be distinct objects
         // with the second's prototype pointing at the first, which is exactly
         // what `class TypeError extends Error` would build — so it is built the
@@ -344,7 +347,7 @@ void ensureErrorClasses() {
     {
         Rooted<Value> proto{g_errorClasses[0].prototype};
         Rooted<Value> key{rtMakeString("toString")};
-        Rooted<Value> fn{rtNativeFunction(errorProtoToString, 0)};
+        Rooted<Value> fn{rtNativeFunction(errorProtoToString, 0, "toString", 0)};
         proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
                                                       /*ic=*/nullptr, /*enumerable=*/false,
                                                       /*defineOwn=*/true);

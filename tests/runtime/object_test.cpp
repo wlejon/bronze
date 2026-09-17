@@ -325,14 +325,13 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     Rooted<Value> keyPrototype{runtime::rtMakeString("prototype")};
     CHECK(hasOwn(fn, keyPrototype).asBool());   // 10.2.4, the slot
     CHECK_FALSE(hasOwn(fn, keyName).asBool());  // "nope", in neither place
-    // `Object.keys` is a NATIVE builtin: no key index ever named it, so its
-    // header carries neither `name` nor `length`, and answering `true` here
-    // would be the plausible-but-wrong kind of answer. A function the COMPILER
-    // created has both — pinned by the `function_name_length` oracle case,
-    // which is where JS can actually run.
+    // `Object.keys` is a NATIVE builtin, and a native carries 10.2.9's `name`
+    // and 10.2.10's `length` in its header like a compiled function does —
+    // the `native_name_length` oracle case pins the values; this pins that
+    // the two are OWN keys, answered from the header and not a side object.
     Rooted<Value> keyFnName{runtime::rtMakeString("name")};
-    CHECK_FALSE(hasOwn(fn, keyFnName).asBool());
-    CHECK_FALSE(hasOwn(fn, keyLength).asBool());
+    CHECK(hasOwn(fn, keyFnName).asBool());
+    CHECK(hasOwn(fn, keyLength).asBool());
 
     setFatalHandler(nullptr);
     bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;

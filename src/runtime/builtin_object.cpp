@@ -572,12 +572,18 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             // 6.1.7.1 orders string keys by creation and
             // OrdinaryFunctionCreate makes them before any assignment can run.
             //
-            // `length` and `name` are reported for a function bronze COMPILED
-            // and not for a native builtin, which is the same split
-            // rt_builtins.h draws for reading them: a native has no key index
-            // to name it with, so claiming the key exists and then refusing the
-            // read would be worse than the honest short list.
+            // `length` and `name` are reported when the header carries them —
+            // every function bronze compiled and every native built through a
+            // named `rtNativeFunction` — and not for the nameless form, whose
+            // reads answer "" and 0 without there being a property to list.
             Rooted<Value> fn{args[0]};
+            // A global constructor's statics are answered BESIDE the function
+            // from a C table until something needs them written down — which a
+            // listing does. Both installers are idempotent and write the same
+            // interned objects the read path hands out, so materialising here
+            // changes what is listed and nothing about what is read.
+            rtInstallGlobalConstructorStatics(fn);
+            rtInstallMapStatics(fn);
             Rooted<Value> out{Value(bronze_create_array(0))};
             uint32_t at = 0;
             const FunctionHeader* header = fn.get().asObject<FunctionHeader>();
@@ -622,38 +628,36 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
 
 namespace {
 
-struct NamespaceFn {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using NamespaceFn = NativeMethod;
 
 const NamespaceFn kObjectFunctions[] = {
-    {"keys", objectKeys, 1},
-    {"values", objectValues, 1},
-    {"entries", objectEntries, 1},
-    {"assign", objectAssign, 0},
-    {"fromEntries", objectFromEntries, 1},
-    {"defineProperty", rtObjectDefineProperty, 3},
-    {"getOwnPropertyDescriptor", rtObjectGetOwnPropertyDescriptor, 2},
-    {"defineProperties", rtObjectDefineProperties, 2},
-    {"freeze", rtObjectFreeze, 1},
-    {"isFrozen", rtObjectIsFrozen, 1},
-    {"seal", rtObjectSeal, 1},
-    {"isSealed", rtObjectIsSealed, 1},
-    {"preventExtensions", rtObjectPreventExtensions, 1},
-    {"isExtensible", rtObjectIsExtensible, 1},
-    {"create", objectCreate, 2},
-    {"getPrototypeOf", objectGetPrototypeOf, 1},
-    {"setPrototypeOf", objectSetPrototypeOf, 2},
-    {"getOwnPropertyNames", rtObjectGetOwnPropertyNames, 1},
-    {"getOwnPropertyDescriptors", rtObjectGetOwnPropertyDescriptors, 1},
-    {"hasOwn", objectHasOwn, 2},
-    {"is", objectIs, 2},
-    {"getOwnPropertySymbols", objectGetOwnPropertySymbols, 1},
+    {"keys", objectKeys, 1, 1},
+    {"values", objectValues, 1, 1},
+    {"entries", objectEntries, 1, 1},
+    // Padded to 0 (variadic) and 20.1.2.1's length 2: the one row where the
+    // two columns differ most visibly.
+    {"assign", objectAssign, 0, 2},
+    {"fromEntries", objectFromEntries, 1, 1},
+    {"defineProperty", rtObjectDefineProperty, 3, 3},
+    {"getOwnPropertyDescriptor", rtObjectGetOwnPropertyDescriptor, 2, 2},
+    {"defineProperties", rtObjectDefineProperties, 2, 2},
+    {"freeze", rtObjectFreeze, 1, 1},
+    {"isFrozen", rtObjectIsFrozen, 1, 1},
+    {"seal", rtObjectSeal, 1, 1},
+    {"isSealed", rtObjectIsSealed, 1, 1},
+    {"preventExtensions", rtObjectPreventExtensions, 1, 1},
+    {"isExtensible", rtObjectIsExtensible, 1, 1},
+    {"create", objectCreate, 2, 2},
+    {"getPrototypeOf", objectGetPrototypeOf, 1, 1},
+    {"setPrototypeOf", objectSetPrototypeOf, 2, 2},
+    {"getOwnPropertyNames", rtObjectGetOwnPropertyNames, 1, 1},
+    {"getOwnPropertyDescriptors", rtObjectGetOwnPropertyDescriptors, 1, 1},
+    {"hasOwn", objectHasOwn, 2, 2},
+    {"is", objectIs, 2, 2},
+    {"getOwnPropertySymbols", objectGetOwnPropertySymbols, 1, 1},
     // 20.1.2.13, whose body is 7.3.35 shared with `Map.groupBy`
     // (builtin_group_by.cpp).
-    {"groupBy", rtObjectGroupBy, 2},
+    {"groupBy", rtObjectGroupBy, 2, 2},
 };
 
 // Real members of `Object` that bronze has not built. `groupBy` was the last
@@ -706,18 +710,11 @@ void ensureObjectIntrinsics() {
     // So it is a function singleton interned on the body's code pointer — the
     // same mechanism every other global constructor uses (builtin_constructors.cpp
     // says why one distinct C function per constructor is load-bearing) — and
-    // its statics go in the side object every function keeps them in.
-    //
-    // The name and length are recorded because they must be: a function whose
-    // `name` was never recorded makes `Object.name` a named hard error
-    // (rt_prop.cpp), and 20.1.1 gives this one "Object" and 1.
-    StringHeader* objectName =
-        StringHeader::internToArena(rtArena(), StringHeader::createFromUTF8(rtHeap(), "Object"));
-    Rooted<Value> ns{rtNativeFunction(objectConstructorBody, 0)};
+    // its statics go in the side object every function keeps them in. 20.1.1
+    // gives it the name "Object" and length 1.
+    Rooted<Value> ns{rtNativeFunction(objectConstructorBody, 0, "Object", 1)};
     {
         FunctionHeader* live = ns.get().asObject<FunctionHeader>();
-        live->name = objectName;
-        live->length = 1;
         // 20.1.2.1: `Object.prototype` is this function's `prototype` slot, and
         // filling it here is what stops the first `new Object()` from minting a
         // fresh empty object through `rtEnsureFunctionPrototype` — the same trap
@@ -737,7 +734,7 @@ void ensureObjectIntrinsics() {
 
     for (const NamespaceFn& fn : kObjectFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
         Rooted<Value> holder{ns.get().asObject<FunctionHeader>()->properties};
         holder.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }

@@ -23,6 +23,7 @@
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
 
@@ -68,8 +69,8 @@ TEST_CASE("the memo answers with the object the helper interned, not another one
     ShadowStackFrame frame;
     MemoOn memo;
 
-    const Value first = rtNativeSingleton(probeCodeA, 1);
-    const Value again = rtNativeSingleton(probeCodeA, 1);
+    const Value first = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
+    const Value again = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
     CHECK(first.rawBits() == again.rawBits());
 
     // And it is the same object the helper answers with when asked directly —
@@ -82,14 +83,41 @@ TEST_CASE("the memo answers with the object the helper interned, not another one
     // Two code pointers are two objects. A direct-mapped table whose guard was
     // the bucket rather than the code pointer would merge them, and function
     // identity is observable.
-    CHECK(rtNativeSingleton(probeCodeB, 0).rawBits() != first.rawBits());
+    CHECK(rtNativeSingleton(probeCodeB, 0, nullptr, 0).rawBits() != first.rawBits());
+}
+
+TEST_CASE("the first creation names the object and a later call cannot rename it") {
+    ShadowStackFrame frame;
+    MemoOn memo;
+
+    // A THIRD code pointer, so no earlier case in this binary has interned it
+    // nameless: interning is per thread for the thread's life. Its body is a
+    // constant no other probe in the binary returns, for the `/OPT:ICF`
+    // reason the two above differ — a folded body IS an earlier probe's code
+    // pointer, already interned without a name.
+    static auto probeCodeC = [](uint64_t, uint64_t, uint32_t argc, const uint64_t*) -> uint64_t {
+        return 0x7FF8C0DEC0DE0000ull + argc;
+    };
+    const Value named = rtNativeSingleton(probeCodeC, 0, "probe", 2);
+    const FunctionHeader* fn = named.asObject<FunctionHeader>();
+    REQUIRE(fn->name != nullptr);
+    CHECK(rtUtf8Chars(fn->name) == "probe");
+    CHECK(fn->length == 2);
+
+    // A nameless call for the same code pointer keeps what is there, and so
+    // does a differently-named one: the arguments are the CREATE path's only.
+    CHECK(rtNativeSingleton(probeCodeC, 0, nullptr, 0).rawBits() == named.rawBits());
+    CHECK(rtNativeSingleton(probeCodeC, 0, "other", 7).rawBits() == named.rawBits());
+    fn = named.asObject<FunctionHeader>();
+    CHECK(rtUtf8Chars(fn->name) == "probe");
+    CHECK(fn->length == 2);
 }
 
 TEST_CASE("a collection moves the function object and the memo still answers") {
     ShadowStackFrame frame;
     MemoOn memo;
 
-    (void)rtNativeSingleton(probeCodeA, 1);
+    (void)rtNativeSingleton(probeCodeA, 1, nullptr, 0);
     rtHeap().collect();
     rtHeap().collect();
 
@@ -98,7 +126,7 @@ TEST_CASE("a collection moves the function object and the memo still answers") {
     // the address the fill saw.
     const uint32_t idx = rtFunctionSingletonIndexOf(probeCodeA);
     REQUIRE(idx != UINT32_MAX);
-    CHECK(rtNativeSingleton(probeCodeA, 1).rawBits() ==
+    CHECK(rtNativeSingleton(probeCodeA, 1, nullptr, 0).rawBits() ==
           rtFunctionSingletonAt(idx, probeCodeA).rawBits());
 }
 
@@ -106,7 +134,7 @@ TEST_CASE("an index whose code pointer no longer matches answers nothing") {
     ShadowStackFrame frame;
     MemoOn memo;
 
-    (void)rtNativeSingleton(probeCodeA, 1);
+    (void)rtNativeSingleton(probeCodeA, 1, nullptr, 0);
     const uint32_t idx = rtFunctionSingletonIndexOf(probeCodeA);
     REQUIRE(idx != UINT32_MAX);
 
@@ -162,12 +190,12 @@ TEST_CASE("the seam makes both memos miss without changing what they would answe
     ShadowStackFrame frame;
     MemoOn memo;
 
-    const Value warm = rtNativeSingleton(probeCodeA, 1);
+    const Value warm = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
     const uint32_t key = bronze_register_key_string("size");
 
     bronze_tls_block_addr()->fn_singleton_cache_enabled = 0;
     CHECK(rtNativeMemberProbe(MapHeader::kMapFlags, key).isUndefined());
     // The singleton answer is the helper's either way — the seam removes the
     // shortcut, never the interning.
-    CHECK(rtNativeSingleton(probeCodeA, 1).rawBits() == warm.rawBits());
+    CHECK(rtNativeSingleton(probeCodeA, 1, nullptr, 0).rawBits() == warm.rawBits());
 }

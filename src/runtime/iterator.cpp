@@ -286,6 +286,17 @@ uint64_t iteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t
     return thisBits;
 }
 
+// 27.1.3.1: the same operation for %AsyncIteratorPrototype%, and a second
+// code pointer because it is a second function OBJECT with its own name
+// ("[Symbol.asyncIterator]") — interning is by code pointer. The profile
+// record is what keeps it a second pointer: MSVC's `/OPT:ICF` (on in the
+// Release the `dev` preset builds) folds two identical bodies into ONE
+// address, and a folded body would be the sync hook, name and identity both.
+uint64_t asyncIteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    recordHelperCall("asyncIteratorProtoSelf");
+    return thisBits;
+}
+
 // The per-kind prototypes plus %IteratorPrototype% / %AsyncIteratorPrototype%,
 // in one table indexed by `IteratorProto`.
 struct ProtoEntry {
@@ -307,7 +318,7 @@ Value iteratorPrototypeRoot() {
     Rooted<Value> obj{
         Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};
     Rooted<Value> key{rtIteratorKey()};
-    Rooted<Value> self{rtNativeFunction(iteratorProtoSelf, 0)};
+    Rooted<Value> self{rtNativeFunction(iteratorProtoSelf, 0, "[Symbol.iterator]", 0)};
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, self);
     // 27.1.4.1's eleven helpers. Rooted and installed BEFORE the static is
     // published, so nothing can observe a half-built %IteratorPrototype% — and
@@ -332,7 +343,7 @@ Value asyncIteratorPrototypeRoot() {
     Rooted<Value> obj{
         Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};
     Rooted<Value> key{rtAsyncIteratorKey()};
-    Rooted<Value> self{rtNativeFunction(iteratorProtoSelf, 0)};
+    Rooted<Value> self{rtNativeFunction(asyncIteratorProtoSelf, 0, "[Symbol.asyncIterator]", 0)};
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, self);
     root = obj.get();
     rtHeap().add_permanent_root(&root);

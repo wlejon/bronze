@@ -277,7 +277,7 @@ uint64_t rtArrayToStringBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
     Rooted<Value> joinKey{rtMakeString("join")};
     Value joinMethod = Value::fromUndefined();
     if (isArray(self.get())) {
-        joinMethod = rtNativeFunction(arrayJoin, 0);
+        joinMethod = rtNativeFunction(arrayJoin, 0, "join", 1);
     } else if (self.get().isObject() &&
                self.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
         joinMethod = rtTypedArrayMethod("join");

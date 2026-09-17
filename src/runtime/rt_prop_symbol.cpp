@@ -213,7 +213,7 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         if (obj.get().isObject() &&
             obj.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
             handled = true;
-            return rtNativeFunction(rtFunctionHasInstanceBuiltin, 1);
+            return rtNativeFunction(rtFunctionHasInstanceBuiltin, 1, "[Symbol.hasInstance]", 1);
         }
         return Value::fromUndefined();
     }
@@ -248,7 +248,7 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
             // `Array.prototype.values` — an IDENTITY, not a twin, and it holds
             // because both routes intern on the one code pointer.
             handled = true;
-            return rtNativeFunction(rtArrayValuesBuiltin, 0);
+            return rtNativeFunction(rtArrayValuesBuiltin, 0, "values", 0);
         case TypedArrayHeader::kFlags:
             handled = true;
             return rtTypedArrayIteratorMethod();

@@ -111,7 +111,7 @@ Value makeMapIterator(Rooted<Value>& map, uint32_t kind) {
     static thread_local Value s_mapIterNextFn = Value::fromUndefined();
     static thread_local Value s_keyNext = Value::fromUndefined();
     if (s_mapIterNextFn.isUndefined()) {
-        s_mapIterNextFn = rtNativeFunction(mapIterNext, 0);
+        s_mapIterNextFn = rtNativeFunction(mapIterNext, 0, "next", 0);
         rtHeap().add_permanent_root(&s_mapIterNextFn);
         s_keyNext = rtMakeString("next");
         rtHeap().add_permanent_root(&s_keyNext);
@@ -322,22 +322,22 @@ uint64_t setConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     return buildCollection(receiver, arg, MapHeader::kSetFlags);
 }
 
-struct Method {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using Method = NativeMethod;
 
 const Method kMapMethods[] = {
-    {"get", mapGet, 1},        {"set", mapSet, 2},         {"has", mapHas, 1},
-    {"delete", mapDelete, 1},  {"clear", mapClear, 0},     {"forEach", mapForEach, 1},
-    {"keys", mapKeys, 0},      {"values", mapValues, 0},   {"entries", mapEntries, 0},
+    {"get", mapGet, 1, 1},        {"set", mapSet, 2, 2},         {"has", mapHas, 1, 1},
+    {"delete", mapDelete, 1, 1},  {"clear", mapClear, 0, 0},     {"forEach", mapForEach, 1, 1},
+    {"keys", mapKeys, 0, 0},      {"values", mapValues, 0, 0},   {"entries", mapEntries, 0, 0},
 };
 
+// 24.2.3.8: `Set.prototype.keys` IS `Set.prototype.values` — the same function
+// object, named "values" — which the code-pointer interning gives for free
+// once both rows name `mapValues`. A Set's keys and values are one column, so
+// the body does not care which row reached it.
 const Method kSetMethods[] = {
-    {"add", setAdd, 1},        {"has", mapHas, 1},         {"delete", mapDelete, 1},
-    {"clear", mapClear, 0},    {"forEach", mapForEach, 1}, {"keys", mapKeys, 0},
-    {"values", mapValues, 0},  {"entries", mapEntries, 0},
+    {"add", setAdd, 1, 1},        {"has", mapHas, 1, 1},         {"delete", mapDelete, 1, 1},
+    {"clear", mapClear, 0, 0},    {"forEach", mapForEach, 1, 1}, {"values", mapValues, 0, 0},
+    {"keys", mapValues, 0, 0},    {"entries", mapEntries, 0, 0},
 };
 
 // Real members of `Map` / `Set` that bronze has not built. `prototype` is on
@@ -398,8 +398,8 @@ bool rtMapIteratorStep(Rooted<Value>& self, Value& produced) {
 bronze_fn_code rtMapIteratorNextCode() { return mapIterNext; }
 
 Value rtMapConstructor(const std::string& name) {
-    if (name == "Map") return rtNativeFunction(mapConstructor, 0);
-    if (name == "Set") return rtNativeFunction(setConstructor, 0);
+    if (name == "Map") return rtNativeFunction(mapConstructor, 0, "Map", 0);
+    if (name == "Set") return rtNativeFunction(setConstructor, 0, "Set", 0);
     return Value::fromUndefined();
 }
 
@@ -428,10 +428,11 @@ struct ConstructorStatic {
     const char* name;
     bronze_fn_code code;
     uint32_t arity;
+    uint32_t length;
 };
 
 const ConstructorStatic kMapStatics[] = {
-    {"Map", "groupBy", rtMapGroupBy, 2},
+    {"Map", "groupBy", rtMapGroupBy, 2, 2},
 };
 
 bool rtMapStatic(Value fn, const std::string& key, Value& out) {
@@ -439,7 +440,7 @@ bool rtMapStatic(Value fn, const std::string& key, Value& out) {
     if (!name) return false;
     for (const ConstructorStatic& s : kMapStatics) {
         if (std::string(name) != s.owner || key != s.name) continue;
-        out = rtNativeFunction(s.code, s.arity);
+        out = rtNativeFunction(s.code, s.arity, s.name, s.length);
         return true;
     }
     return false;
@@ -455,7 +456,7 @@ bool rtInstallMapStatics(Rooted<Value>& ctor) {
     for (const ConstructorStatic& s : kMapStatics) {
         if (owner != s.owner) continue;
         Rooted<Value> key{rtMakeString(s.name)};
-        Rooted<Value> fn{rtNativeFunction(s.code, s.arity)};
+        Rooted<Value> fn{rtNativeFunction(s.code, s.arity, s.name, s.length)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
                                                      /*ic=*/nullptr, /*enumerable=*/false,
                                                      /*defineOwn=*/true);
@@ -466,7 +467,7 @@ bool rtInstallMapStatics(Rooted<Value>& ctor) {
 Value rtMapMethod(bool isSetReceiver, const std::string& key) {
     if (isSetReceiver) {
         for (const Method& m : kSetMethods) {
-            if (key == m.name) return rtNativeFunction(m.code, m.arity);
+            if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
         }
         // 24.2.4's set operations, from the table beside their bodies — the
         // only members of a Set that read a second collection, and the reason
@@ -474,12 +475,14 @@ Value rtMapMethod(bool isSetReceiver, const std::string& key) {
         size_t opCount = 0;
         const NativeMethod* ops = rtSetOperationMethods(opCount);
         for (size_t i = 0; i < opCount; ++i) {
-            if (key == ops[i].name) return rtNativeFunction(ops[i].code, ops[i].arity);
+            if (const NativeMethod& m = ops[i]; key == m.name) {
+                return rtNativeFunction(m.code, m.arity, m.name, m.length);
+            }
         }
         return Value::fromUndefined();
     }
     for (const Method& m : kMapMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity);
+        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
     }
     return Value::fromUndefined();
 }
@@ -529,7 +532,8 @@ void rtCheckMapMember(bool isSetReceiver, const std::string& key) {
 }
 
 Value rtMapDefaultIterator(bool isSetReceiver) {
-    return rtNativeFunction(isSetReceiver ? mapValues : mapEntries, 0);
+    return isSetReceiver ? rtNativeFunction(mapValues, 0, "values", 0)
+                         : rtNativeFunction(mapEntries, 0, "entries", 0);
 }
 
 }  // namespace bronze::runtime

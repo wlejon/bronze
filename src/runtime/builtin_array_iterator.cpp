@@ -87,7 +87,7 @@ uint64_t makeArrayIterator(uint64_t thisBits, uint32_t kind, const char* method)
             .rawBits();
     }
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::Array)};
-    Rooted<Value> nextFn{rtNativeFunction(arrayIterNext, 0)};
+    Rooted<Value> nextFn{rtNativeFunction(arrayIterNext, 0, "next", 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     writeSlot(it, ArrayIteratorSlot::IteratedArrayLike, self.get());

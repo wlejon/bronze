@@ -170,15 +170,11 @@ uint64_t jsonStringify(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
     return rtJsonStringify(args[0], args[1], args[2]).rawBits();
 }
 
-struct NamespaceFn {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using NamespaceFn = NativeMethod;
 
 const NamespaceFn kJsonFunctions[] = {
-    {"parse", jsonParse, 2},
-    {"stringify", jsonStringify, 3},
+    {"parse", jsonParse, 2, 2},
+    {"stringify", jsonStringify, 3, 3},
 };
 
 // `JSON` has exactly two function members in ECMA-262, so the only real name
@@ -200,7 +196,7 @@ Value rtJsonNamespace() {
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
     for (const NamespaceFn& fn : kJsonFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
     // 25.5.3: `JSON[@@toStringTag]` is the string "JSON", an own property of

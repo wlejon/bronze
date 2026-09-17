@@ -44,10 +44,13 @@
 namespace bronze::runtime {
 
 // The interned function object for `code`, from the memo when it can be and
-// from `bronze_function_singleton` when it cannot. `arity` and the rest are
-// the helper's arguments, used only on the fill path — an already-interned
-// code pointer ignores them, exactly as the helper does.
-Value rtNativeSingleton(bronze_fn_code code, uint32_t arity);
+// from `bronze_function_singleton` when it cannot. `arity`, `name` and
+// `length` are the helper's arguments, used only on the CREATE path — an
+// already-interned code pointer ignores them, exactly as the helper does, so
+// the first creation names the object for the thread's life. `name` null
+// records no name at all (rt_builtins.h says when that is the right call);
+// the text is interned as a key only when an object is actually made.
+Value rtNativeSingleton(bronze_fn_code code, uint32_t arity, const char* name, uint32_t length);
 
 // The member memo: `(receiver kind, interned key index) -> that same interned
 // native`. Answers only for a receiver kind whose member ladder is a C table

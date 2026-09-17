@@ -321,11 +321,11 @@ uint64_t numberValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 }
 
 const NativeMethod kNumberProtoMethods[] = {
-    {"toFixed", numberToFixed, 1},
-    {"toExponential", numberToExponential, 1},
-    {"toPrecision", numberToPrecision, 1},
-    {"toString", numberToString, 1},
-    {"valueOf", numberValueOf, 0},
+    {"toFixed", numberToFixed, 1, 1},
+    {"toExponential", numberToExponential, 1, 1},
+    {"toPrecision", numberToPrecision, 1, 1},
+    {"toString", numberToString, 1, 1},
+    {"valueOf", numberValueOf, 0, 0},
 };
 
 // Number.prototype members ECMA-262 defines and bronze has not built.

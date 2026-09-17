@@ -525,11 +525,15 @@ uint64_t typedArrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 
 }  // namespace
 
+// Arity 0 for every constructor here: a variadic native must not be padded,
+// or `new Float64Array(buffer)` would arrive with two extra `undefined`s and
+// take the explicit-offset branch. `length` is the clause's: 25.1.4 gives
+// `ArrayBuffer` 1 and 23.2.6 gives each view 3.
 Value rtTypedArrayConstructor(const std::string& name) {
-    if (name == "ArrayBuffer") return rtNativeFunction(arrayBufferCtor, 0);
+    if (name == "ArrayBuffer") return rtNativeFunction(arrayBufferCtor, 0, "ArrayBuffer", 1);
     for (const CtorEntry& entry : kCtors) {
         if (name == elementKindInfo(entry.kind).name) {
-            return rtNativeFunction(entry.code, 0);
+            return rtNativeFunction(entry.code, 0, elementKindInfo(entry.kind).name, 3);
         }
     }
     return Value::fromUndefined();
@@ -549,43 +553,41 @@ const char* rtTypedArrayConstructorName(Value fn) {
 
 Value rtTypedArrayConstructorFor(ElementKind kind) {
     for (const CtorEntry& entry : kCtors) {
-        if (entry.kind == kind) return rtNativeFunction(entry.code, 0);
+        if (entry.kind == kind) {
+            return rtNativeFunction(entry.code, 0, elementKindInfo(entry.kind).name, 3);
+        }
     }
     fatal("internal: no constructor for this typed-array element kind");
 }
 
+// The constructors' own members beyond `name` and `length`, which the function
+// header answers like every other native's. `from` and `of` are one object
+// across all nine views (23.2.2.1 puts them on %TypedArray%, which each view
+// inherits from); `BYTES_PER_ELEMENT` is the one per-kind member.
 bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return false;
     }
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     if (code == arrayBufferCtor) {
-        if (key == "name") {
-            out = rtMakeString("ArrayBuffer");
-            return true;
-        }
         if (key == "isView") {
-            out = rtNativeFunction(arrayBufferIsView, 1);
+            out = rtNativeFunction(arrayBufferIsView, 1, "isView", 1);
             return true;
         }
         return false;
     }
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;
-        if (key == "name") {
-            out = rtMakeString(elementKindInfo(entry.kind).name);
-            return true;
-        }
         if (key == "BYTES_PER_ELEMENT") {
             out = Value::fromDouble(elementKindInfo(entry.kind).bytesPerElement);
             return true;
         }
         if (key == "from") {
-            out = rtNativeFunction(typedArrayFrom, 1);
+            out = rtNativeFunction(typedArrayFrom, 1, "from", 1);
             return true;
         }
         if (key == "of") {
-            out = rtNativeFunction(typedArrayOf, 0);
+            out = rtNativeFunction(typedArrayOf, 0, "of", 0);
             return true;
         }
         return false;
@@ -728,12 +730,12 @@ Value rtArrayBufferMember(Value bufferVal, const std::string& key) {
     if (key == "detached") {
         return Value::fromBool(buf->isDetached());
     }
-    if (key == "resize") return rtNativeFunction(arrayBufferResize, 1);
-    if (key == "transfer") return rtNativeFunction(arrayBufferTransfer, 0);
+    if (key == "resize") return rtNativeFunction(arrayBufferResize, 1, "resize", 1);
+    if (key == "transfer") return rtNativeFunction(arrayBufferTransfer, 0, "transfer", 0);
     if (key == "transferToFixedLength") {
-        return rtNativeFunction(arrayBufferTransferToFixedLength, 0);
+        return rtNativeFunction(arrayBufferTransferToFixedLength, 0, "transferToFixedLength", 0);
     }
-    if (key == "slice") return rtNativeFunction(arrayBufferSlice, 0);
+    if (key == "slice") return rtNativeFunction(arrayBufferSlice, 0, "slice", 2);
     if (key == "constructor") return rtTypedArrayConstructor("ArrayBuffer");
     return Value::fromUndefined();
 }

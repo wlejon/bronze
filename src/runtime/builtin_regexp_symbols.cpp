@@ -259,7 +259,7 @@ Value rtRegExpMatchAll(Rooted<Value>& re, Rooted<Value>& str) {
     // `[Symbol.iterator]` self-hook lives — inherited from %IteratorPrototype%,
     // so this object has no own symbol-keyed property.
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::RegExpString)};
-    Rooted<Value> nextFn{rtNativeFunction(matchAllNext, 0)};
+    Rooted<Value> nextFn{rtNativeFunction(matchAllNext, 0, "next", 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     writeSlot(it, RegExpStringIteratorSlot::IteratingRegExp, matcher.get());
@@ -471,14 +471,17 @@ struct RegExpSymbolMethod {
     SymbolHeader* (*key)();
     bronze_fn_code code;
     uint32_t arity;
+    // 10.2.9 step 4: a symbol-keyed function is named "[description]".
+    const char* name;
+    uint32_t length;
 };
 
 const RegExpSymbolMethod kRegExpSymbolMethods[] = {
-    {rtSymbolMatch, regexpSymbolMatch, 1},
-    {rtSymbolMatchAll, regexpSymbolMatchAll, 1},
-    {rtSymbolReplace, regexpSymbolReplace, 2},
-    {rtSymbolSearch, regexpSymbolSearch, 1},
-    {rtSymbolSplit, regexpSymbolSplit, 2},
+    {rtSymbolMatch, regexpSymbolMatch, 1, "[Symbol.match]", 1},
+    {rtSymbolMatchAll, regexpSymbolMatchAll, 1, "[Symbol.matchAll]", 1},
+    {rtSymbolReplace, regexpSymbolReplace, 2, "[Symbol.replace]", 2},
+    {rtSymbolSearch, regexpSymbolSearch, 1, "[Symbol.search]", 1},
+    {rtSymbolSplit, regexpSymbolSplit, 2, "[Symbol.split]", 2},
 };
 
 }  // namespace
@@ -490,7 +493,7 @@ Value rtRegExpSymbolMethod(Value symbolKey) {
         // Each `key()` interns its symbol on first use, which is why the
         // comparison is inside the loop rather than against a table built once:
         // the table holds the accessors, not their answers.
-        if (m.key() == wanted) return rtNativeFunction(m.code, m.arity);
+        if (m.key() == wanted) return rtNativeFunction(m.code, m.arity, m.name, m.length);
     }
     return Value::fromUndefined();
 }

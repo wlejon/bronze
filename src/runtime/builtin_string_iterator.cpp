@@ -101,7 +101,7 @@ uint64_t stringIterator(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
     }
     Rooted<Value> str{data};
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::String)};
-    Rooted<Value> nextFn{rtNativeFunction(stringIterNext, 0)};
+    Rooted<Value> nextFn{rtNativeFunction(stringIterNext, 0, "next", 0)};
     Rooted<Value> nk{rtMakeString("next")};
     it.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), nk, nextFn);
     writeSlot(it, StringIteratorSlot::IteratedString, str.get());
@@ -116,7 +116,7 @@ uint64_t stringIterator(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
 // 22.1.3.36 says the property is.
 void rtInstallStringIterator(Rooted<Value>& proto) {
     Rooted<Value> key{rtIteratorKey()};
-    Rooted<Value> fn{rtNativeFunction(stringIterator, 0)};
+    Rooted<Value> fn{rtNativeFunction(stringIterator, 0, "[Symbol.iterator]", 0)};
     proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
                                                   /*enumerable=*/false, /*defineOwn=*/true);
 }

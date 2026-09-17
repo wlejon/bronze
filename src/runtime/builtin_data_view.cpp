@@ -456,35 +456,34 @@ uint64_t dataViewCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 // ---- the member table -------------------------------------------------------
 
-struct Accessor {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;  // the `length` 25.3.4 gives the method
-};
+// The padding arity IS the `length` 25.3.4 gives each method here: a getter
+// takes (byteOffset [, littleEndian]) and a setter (byteOffset, value [,
+// littleEndian]), and the optional flag is read as absent-or-falsy either way.
+using Accessor = NativeMethod;
 
 const Accessor kAccessors[] = {
-    {"getInt8", dvGet<ElementKind::Int8>, 1},
-    {"getUint8", dvGet<ElementKind::Uint8>, 1},
-    {"getInt16", dvGet<ElementKind::Int16>, 1},
-    {"getUint16", dvGet<ElementKind::Uint16>, 1},
-    {"getInt32", dvGet<ElementKind::Int32>, 1},
-    {"getUint32", dvGet<ElementKind::Uint32>, 1},
-    {"getFloat32", dvGet<ElementKind::Float32>, 1},
-    {"getFloat64", dvGet<ElementKind::Float64>, 1},
-    {"setInt8", dvSet<ElementKind::Int8>, 2},
-    {"setUint8", dvSet<ElementKind::Uint8>, 2},
-    {"setInt16", dvSet<ElementKind::Int16>, 2},
-    {"setUint16", dvSet<ElementKind::Uint16>, 2},
-    {"setInt32", dvSet<ElementKind::Int32>, 2},
-    {"setUint32", dvSet<ElementKind::Uint32>, 2},
-    {"setFloat32", dvSet<ElementKind::Float32>, 2},
-    {"setFloat64", dvSet<ElementKind::Float64>, 2},
-    {"getBigInt64", dvGetBig<true>, 1},
-    {"getBigUint64", dvGetBig<false>, 1},
-    {"setBigInt64", dvSetBig<true>, 2},
-    {"setBigUint64", dvSetBig<false>, 2},
-    {"getFloat16", dvGet<ElementKind::Float16>, 1},
-    {"setFloat16", dvSet<ElementKind::Float16>, 2},
+    {"getInt8", dvGet<ElementKind::Int8>, 1, 1},
+    {"getUint8", dvGet<ElementKind::Uint8>, 1, 1},
+    {"getInt16", dvGet<ElementKind::Int16>, 1, 1},
+    {"getUint16", dvGet<ElementKind::Uint16>, 1, 1},
+    {"getInt32", dvGet<ElementKind::Int32>, 1, 1},
+    {"getUint32", dvGet<ElementKind::Uint32>, 1, 1},
+    {"getFloat32", dvGet<ElementKind::Float32>, 1, 1},
+    {"getFloat64", dvGet<ElementKind::Float64>, 1, 1},
+    {"setInt8", dvSet<ElementKind::Int8>, 2, 2},
+    {"setUint8", dvSet<ElementKind::Uint8>, 2, 2},
+    {"setInt16", dvSet<ElementKind::Int16>, 2, 2},
+    {"setUint16", dvSet<ElementKind::Uint16>, 2, 2},
+    {"setInt32", dvSet<ElementKind::Int32>, 2, 2},
+    {"setUint32", dvSet<ElementKind::Uint32>, 2, 2},
+    {"setFloat32", dvSet<ElementKind::Float32>, 2, 2},
+    {"setFloat64", dvSet<ElementKind::Float64>, 2, 2},
+    {"getBigInt64", dvGetBig<true>, 1, 1},
+    {"getBigUint64", dvGetBig<false>, 1, 1},
+    {"setBigInt64", dvSetBig<true>, 2, 2},
+    {"setBigUint64", dvSetBig<false>, 2, 2},
+    {"getFloat16", dvGet<ElementKind::Float16>, 1, 1},
+    {"setFloat16", dvSet<ElementKind::Float16>, 2, 2},
 };
 
 const char* accessorName(ElementKind kind, bool isGet) noexcept {
@@ -515,7 +514,7 @@ Value rtDataViewConstructor(const std::string& name) {
     // native must not be padded, or `new DataView(buffer)` would arrive with
     // two extra `undefined`s and take the explicit-length branch. Interned by
     // code pointer, so the bare name and `v.constructor` are the SAME object.
-    return rtNativeFunction(dataViewCtor, 0);
+    return rtNativeFunction(dataViewCtor, 0, "DataView", 1);
 }
 
 const char* rtDataViewConstructorName(Value fn) {
@@ -549,7 +548,7 @@ Value rtDataViewMember(Value viewVal, const std::string& key) {
     // read again.
     if (key == "constructor") return rtDataViewConstructor("DataView");
     for (const Accessor& a : kAccessors) {
-        if (key == a.name) return rtNativeFunction(a.code, a.arity);
+        if (key == a.name) return rtNativeFunction(a.code, a.arity, a.name, a.length);
     }
     return Value::fromUndefined();
 }

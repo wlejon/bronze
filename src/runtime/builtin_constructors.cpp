@@ -377,30 +377,27 @@ uint64_t booleanConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* a
 
 // ---- the registry -----------------------------------------------------------
 
-struct StaticFn {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using StaticFn = NativeMethod;
 
 // Arity 0 everywhere a builtin is variadic, for the reason a builtin is an
 // ordinary function object: `FunctionHeader::arity` is the count a short call
 // is PADDED to, so a variadic native declaring 2 would see `Array.of(1)` as
-// `(1, undefined)` and produce a two-element array.
+// `(1, undefined)` and produce a two-element array. The `length` column beside
+// it is the clause's number, which is why the two differ on every variadic.
 const StaticFn kArrayStatics[] = {
-    {"from", arrayFrom, 0},
-    {"fromAsync", rtArrayFromAsyncBuiltin, 0},
-    {"isArray", arrayIsArray, 1},
-    {"of", arrayOf, 0},
+    {"from", arrayFrom, 0, 1},
+    {"fromAsync", rtArrayFromAsyncBuiltin, 0, 1},
+    {"isArray", arrayIsArray, 1, 1},
+    {"of", arrayOf, 0, 0},
 };
 
 const StaticFn kStringStatics[] = {
-    {"fromCharCode", stringFromCharCode, 0},
-    {"fromCodePoint", stringFromCodePoint, 0},
+    {"fromCharCode", stringFromCharCode, 0, 1},
+    {"fromCodePoint", stringFromCodePoint, 0, 1},
     // Arity 0, not 1: `raw` is variadic and a short call padded to one argument
     // would hand it an `undefined` substitution that step 8.e would then
     // stringify into the result.
-    {"raw", stringRaw, 0},
+    {"raw", stringRaw, 0, 1},
 };
 
 // Real static members of each constructor that bronze has not built.
@@ -425,6 +422,9 @@ constexpr size_t kStringCtorUnimplementedCount = 0;
 struct CtorEntry {
     const char* name;
     bronze_fn_code code;
+    // 10.2.10's `length` for the constructor itself; the padding arity is 0 for
+    // every one of them, for the reason `ctorObject` gives.
+    uint32_t length;
     const StaticFn* statics;
     size_t staticCount;
     const char* const* unimplemented;
@@ -455,20 +455,20 @@ struct CtorEntry {
 // so the whole member is refused here, by name, rather than handed out as a
 // pair whose `revoke` would quietly do nothing.
 const StaticFn kProxyStatics[] = {
-    {"revocable", rtProxyRevocable, 2},
+    {"revocable", rtProxyRevocable, 2, 2},
 };
 
 const CtorEntry kCtors[] = {
-    {"Array", arrayConstructor, kArrayStatics, std::size(kArrayStatics),
+    {"Array", arrayConstructor, 1, kArrayStatics, std::size(kArrayStatics),
      kArrayCtorUnimplemented, kArrayCtorUnimplementedCount, nullptr, nullptr},
-    {"String", stringConstructor, kStringStatics, std::size(kStringStatics),
+    {"String", stringConstructor, 1, kStringStatics, std::size(kStringStatics),
      kStringCtorUnimplemented, kStringCtorUnimplementedCount, rtStringPrototype, nullptr},
-    {"Boolean", booleanConstructor, nullptr, 0, nullptr, 0, rtBooleanPrototype, nullptr},
+    {"Boolean", booleanConstructor, 1, nullptr, 0, nullptr, 0, rtBooleanPrototype, nullptr},
     // No unimplemented list: 21.1.2 names fifteen own properties and bronze
     // answers all fifteen (builtin_number.cpp says so at the table).
-    {"Number", rtNumberConstructorBody, nullptr, 0, nullptr, 0, rtNumberPrototype,
+    {"Number", rtNumberConstructorBody, 1, nullptr, 0, nullptr, 0, rtNumberPrototype,
      rtInstallNumberStatics},
-    {"Proxy", rtProxyConstructor, kProxyStatics, std::size(kProxyStatics), nullptr, 0, nullptr,
+    {"Proxy", rtProxyConstructor, 2, kProxyStatics, std::size(kProxyStatics), nullptr, 0, nullptr,
      nullptr},
 };
 
@@ -483,7 +483,7 @@ const CtorEntry kCtors[] = {
 // what `instanceof` would compare against, so a wrapper would not be an
 // `instanceof String`. Filling it here makes those one answer.
 Value ctorObject(const CtorEntry& entry) {
-    Rooted<Value> fn{rtNativeFunction(entry.code, 0)};
+    Rooted<Value> fn{rtNativeFunction(entry.code, 0, entry.name, entry.length)};
     if (entry.prototype && !fn.get().asObject<FunctionHeader>()->prototype.isObject()) {
         Rooted<Value> proto{entry.prototype()};
         FunctionHeader* live = fn.get().asObject<FunctionHeader>();
@@ -710,9 +710,8 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
             return true;
         }
         for (size_t i = 0; i < entry.staticCount; ++i) {
-            if (key == entry.statics[i].name) {
-                out = rtNativeFunction(entry.statics[i].code,
-                                                       entry.statics[i].arity);
+            if (const StaticFn& s = entry.statics[i]; key == s.name) {
+                out = rtNativeFunction(s.code, s.arity, s.name, s.length);
                 return true;
             }
         }
@@ -761,8 +760,9 @@ bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor) {
         for (size_t i = 0; i < entry.staticCount; ++i) {
             // The SAME interned function object the read path hands out, so
             // `Array.of === MyArr.of` however either was reached.
-            Rooted<Value> key{rtMakeString(entry.statics[i].name)};
-            Rooted<Value> fn{rtNativeFunction(entry.statics[i].code, entry.statics[i].arity)};
+            const StaticFn& s = entry.statics[i];
+            Rooted<Value> key{rtMakeString(s.name)};
+            Rooted<Value> fn{rtNativeFunction(s.code, s.arity, s.name, s.length)};
             props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn,
                                                          /*ic=*/nullptr, /*enumerable=*/false,
                                                          /*defineOwn=*/true);

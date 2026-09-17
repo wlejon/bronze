@@ -183,7 +183,9 @@ uint64_t rtProxyRevocable(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
     // arrangement with machinery bronze already has). It is therefore callable
     // with no receiver of its own, which is what `const { revoke } = pair;
     // revoke()` needs.
-    Rooted<Value> raw{rtNativeFunction(proxyRevoke, 0)};
+    // 28.2.2.1.1 creates the revoker anonymous with length 0; binding it
+    // prefixes "bound " to that, which is what a program reads off `revoke`.
+    Rooted<Value> raw{rtNativeFunction(proxyRevoke, 0, "", 0)};
     uint64_t boundThis = proxy.get().rawBits();
     Rooted<Value> revoke{Value(rtFunctionBindBuiltin(0, raw.get().rawBits(), 1, &boundThis))};
 

@@ -710,16 +710,19 @@ uint64_t iteratorProtoTagSet(uint64_t, uint64_t thisBits, uint32_t argc, const u
 
 void rtInstallIteratorPrototypeAccessors(Rooted<Value>& proto) {
     {
+        // 10.2.9 step 5's "get " / "set " prefix on an accessor's functions.
         Rooted<Value> key{rtMakeString("constructor")};
-        Rooted<Value> getter{rtNativeFunction(iteratorProtoConstructorGet, 0)};
-        Rooted<Value> setter{rtNativeFunction(iteratorProtoConstructorSet, 1)};
+        Rooted<Value> getter{rtNativeFunction(iteratorProtoConstructorGet, 0, "get constructor", 0)};
+        Rooted<Value> setter{rtNativeFunction(iteratorProtoConstructorSet, 1, "set constructor", 1)};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
                                      /*enumerable=*/false, /*configurable=*/true);
     }
     {
         Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
-        Rooted<Value> getter{rtNativeFunction(iteratorProtoTagGet, 0)};
-        Rooted<Value> setter{rtNativeFunction(iteratorProtoTagSet, 1)};
+        Rooted<Value> getter{
+            rtNativeFunction(iteratorProtoTagGet, 0, "get [Symbol.toStringTag]", 0)};
+        Rooted<Value> setter{
+            rtNativeFunction(iteratorProtoTagSet, 1, "set [Symbol.toStringTag]", 1)};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
                                      /*enumerable=*/false, /*configurable=*/true);
     }
@@ -729,33 +732,33 @@ void rtInstallIteratorPrototypeAccessors(Rooted<Value>& proto) {
 // `length`, except that a variadic member would take 0 — none here is variadic.
 void rtInstallIteratorHelpers(Rooted<Value>& proto) {
     const NativeMethod methods[] = {
-        {"map", iteratorMap, 1},
-        {"filter", iteratorFilter, 1},
-        {"take", iteratorTake, 1},
-        {"drop", iteratorDrop, 1},
-        {"flatMap", iteratorFlatMap, 1},
-        {"reduce", iterator_helpers::iteratorReduce, 1},
-        {"toArray", iterator_helpers::iteratorToArray, 0},
-        {"forEach", iterator_helpers::iteratorForEach, 1},
-        {"some", iterator_helpers::iteratorSome, 1},
-        {"every", iterator_helpers::iteratorEvery, 1},
-        {"find", iterator_helpers::iteratorFind, 1},
+        {"map", iteratorMap, 1, 1},
+        {"filter", iteratorFilter, 1, 1},
+        {"take", iteratorTake, 1, 1},
+        {"drop", iteratorDrop, 1, 1},
+        {"flatMap", iteratorFlatMap, 1, 1},
+        {"reduce", iterator_helpers::iteratorReduce, 1, 1},
+        {"toArray", iterator_helpers::iteratorToArray, 0, 0},
+        {"forEach", iterator_helpers::iteratorForEach, 1, 1},
+        {"some", iterator_helpers::iteratorSome, 1, 1},
+        {"every", iterator_helpers::iteratorEvery, 1, 1},
+        {"find", iterator_helpers::iteratorFind, 1, 1},
     };
     rtDefineMethods(proto, methods, std::size(methods));
 }
 
 void rtInstallIteratorHelperPrototype(Rooted<Value>& proto) {
     const NativeMethod methods[] = {
-        {"next", helperNext, 0},
-        {"return", helperReturn, 0},
+        {"next", helperNext, 0, 0},
+        {"return", helperReturn, 0, 0},
     };
     rtDefineMethods(proto, methods, std::size(methods));
 }
 
 void rtInstallIteratorWrapPrototype(Rooted<Value>& proto) {
     const NativeMethod methods[] = {
-        {"next", wrapNext, 0},
-        {"return", wrapReturn, 0},
+        {"next", wrapNext, 0, 0},
+        {"return", wrapReturn, 0, 0},
     };
     rtDefineMethods(proto, methods, std::size(methods));
 }
@@ -763,7 +766,8 @@ void rtInstallIteratorWrapPrototype(Rooted<Value>& proto) {
 Value rtIteratorConstructor(const std::string& name) {
     if (name != "Iterator") return Value::fromUndefined();
     if (g_iteratorCtor.isObject()) return g_iteratorCtor;
-    Rooted<Value> fn{rtNativeFunction(iteratorConstructorBody, 0)};
+    // 27.1.3.1: `Iterator` has length 0.
+    Rooted<Value> fn{rtNativeFunction(iteratorConstructorBody, 0, "Iterator", 0)};
     // Published BEFORE the decoration below, because `iteratorConstructorBody`
     // compares NewTarget against it and a subclass could be constructed while
     // the properties are still being installed.
@@ -787,7 +791,7 @@ Value rtIteratorConstructor(const std::string& name) {
     rtEnsureFunctionProperties(fn);
     Rooted<Value> props{fn.get().asObject<FunctionHeader>()->properties};
     Rooted<Value> key{rtMakeString("from")};
-    Rooted<Value> from{rtNativeFunction(iteratorFrom, 1)};
+    Rooted<Value> from{rtNativeFunction(iteratorFrom, 1, "from", 1)};
     props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, from, nullptr,
                                                   /*enumerable=*/false, /*defineOwn=*/true);
     g_iteratorCtor = fn.get();

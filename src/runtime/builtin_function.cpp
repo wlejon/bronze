@@ -71,21 +71,12 @@ static thread_local Value g_functionConstructor = Value::fromUndefined();
 void ensureFunctionIntrinsics() {
     if (g_functionPrototype.isObject()) return;
 
-    // Intern immortal arena strings FIRST, before allocating heap function objects.
-    StringHeader* emptyName = StringHeader::internToArena(
-        rtArena(), StringHeader::createFromUTF8(rtHeap(), ""));
-    StringHeader* fnName = StringHeader::internToArena(
-        rtArena(), StringHeader::createFromUTF8(rtHeap(), "Function"));
-
-    // 20.2.3: Function.prototype is a callable function object.
-    Rooted<Value> proto{rtNativeFunction(functionPrototypeBody, 0)};
-    proto.get().asObject<FunctionHeader>()->name = emptyName;
-    proto.get().asObject<FunctionHeader>()->length = 0;
+    // 20.2.3: Function.prototype is a callable function object, with 20.2.3's
+    // own `name` "" and `length` 0.
+    Rooted<Value> proto{rtNativeFunction(functionPrototypeBody, 0, "", 0)};
 
     // 20.2.1: Function constructor object.
-    Rooted<Value> ctor{rtNativeFunction(functionConstructorBody, 1)};
-    ctor.get().asObject<FunctionHeader>()->name = fnName;
-    ctor.get().asObject<FunctionHeader>()->length = 1;
+    Rooted<Value> ctor{rtNativeFunction(functionConstructorBody, 1, "Function", 1)};
     ctor.get().asObject<FunctionHeader>()->prototype = proto.get();
     ctor.get().asObject<FunctionHeader>()->instance_shape =
         rtRootShapeForPrototype(proto.get());
@@ -97,7 +88,8 @@ void ensureFunctionIntrinsics() {
 
     rtEnsureFunctionProperties(proto);
     Rooted<Value> hasInstKey{Value::fromSymbol(rtSymbolHasInstance())};
-    Rooted<Value> hasInstFn{rtNativeFunction(rtFunctionHasInstanceBuiltin, 1)};
+    Rooted<Value> hasInstFn{
+        rtNativeFunction(rtFunctionHasInstanceBuiltin, 1, "[Symbol.hasInstance]", 1)};
     proto.get().asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->setProp(
         rtHeap(), rtArena(), hasInstKey, hasInstFn, nullptr, /*enumerable=*/false, /*defineOwn=*/true);
 }
@@ -219,17 +211,13 @@ uint64_t functionToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*
     return rtMakeString("function () { [native code] }").rawBits();
 }
 
-struct FunctionMethod {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using FunctionMethod = NativeMethod;
 
 const FunctionMethod kFunctionMethods[] = {
-    {"apply", functionApply, 2},
-    {"bind", rtFunctionBindBuiltin, 1},
-    {"call", functionCall, 1},
-    {"toString", functionToString, 0},
+    {"apply", functionApply, 2, 2},
+    {"bind", rtFunctionBindBuiltin, 1, 1},
+    {"call", functionCall, 1, 1},
+    {"toString", functionToString, 0, 0},
 };
 
 }  // namespace
@@ -261,7 +249,7 @@ bool rtIsFunctionPrototype(Value fn) {
 Value rtFunctionMethod(const std::string& key) {
     if (key == "constructor") return rtFunctionConstructorObject();
     for (const FunctionMethod& m : kFunctionMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity);
+        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
     }
     return Value::fromUndefined();
 }

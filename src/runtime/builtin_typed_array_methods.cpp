@@ -498,50 +498,49 @@ uint64_t taAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) 
 
 namespace {
 
-struct Method {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+// The padding arity and, beside it, 23.2.3's `length` for each member.
+using Method = NativeMethod;
 
 const Method kMethods[] = {
-    {"at", taAt, 1},
-    {"copyWithin", taCopyWithin, 0},
-    {"entries", taEntries, 0},
-    {"every", taEvery, 1},
-    {"fill", taFill, 0},
-    {"filter", taFilter, 1},
-    {"find", taFind, 1},
-    {"findIndex", taFindIndex, 1},
-    {"findLast", taFindLast, 1},
-    {"findLastIndex", taFindLastIndex, 1},
-    {"forEach", taForEach, 1},
-    {"includes", taIncludes, 1},
-    {"indexOf", taIndexOf, 1},
-    {"join", taJoin, 0},
-    {"keys", taKeys, 0},
-    {"lastIndexOf", taLastIndexOf, 1},
-    {"map", taMap, 1},
-    {"reduce", taReduce, 0},
-    {"reduceRight", taReduceRight, 0},
-    {"reverse", taReverse, 0},
-    {"set", taSet, 0},
-    {"slice", taSlice, 0},
-    {"some", taSome, 1},
-    {"sort", taSort, 0},
-    {"subarray", taSubarray, 0},
-    {"toReversed", taToReversed, 0},
-    {"toSorted", taToSorted, 0},
-    {"toString", rtArrayToStringBuiltin, 0},
-    {"values", taValues, 0},
-    {"with", taWith, 2},
+    {"at", taAt, 1, 1},
+    {"copyWithin", taCopyWithin, 0, 2},
+    {"entries", taEntries, 0, 0},
+    {"every", taEvery, 1, 1},
+    {"fill", taFill, 0, 1},
+    {"filter", taFilter, 1, 1},
+    {"find", taFind, 1, 1},
+    {"findIndex", taFindIndex, 1, 1},
+    {"findLast", taFindLast, 1, 1},
+    {"findLastIndex", taFindLastIndex, 1, 1},
+    {"forEach", taForEach, 1, 1},
+    {"includes", taIncludes, 1, 1},
+    {"indexOf", taIndexOf, 1, 1},
+    {"join", taJoin, 0, 1},
+    {"keys", taKeys, 0, 0},
+    {"lastIndexOf", taLastIndexOf, 1, 1},
+    {"map", taMap, 1, 1},
+    {"reduce", taReduce, 0, 1},
+    {"reduceRight", taReduceRight, 0, 1},
+    {"reverse", taReverse, 0, 0},
+    {"set", taSet, 0, 1},
+    {"slice", taSlice, 0, 2},
+    {"some", taSome, 1, 1},
+    {"sort", taSort, 0, 1},
+    {"subarray", taSubarray, 0, 2},
+    {"toReversed", taToReversed, 0, 0},
+    {"toSorted", taToSorted, 0, 1},
+    // 23.2.3.32: the SAME function object as `Array.prototype.toString`,
+    // which the code-pointer interning gives.
+    {"toString", rtArrayToStringBuiltin, 0, 0},
+    {"values", taValues, 0, 0},
+    {"with", taWith, 2, 2},
 };
 
 }  // namespace
 
 Value rtTypedArrayMethod(const std::string& key) {
     for (const Method& m : kMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity);
+        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
     }
     return Value::fromUndefined();
 }

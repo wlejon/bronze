@@ -56,14 +56,10 @@ uint64_t performanceNow(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return Value::fromDouble(static_cast<double>(ns) / 1e6).rawBits();
 }
 
-struct PerformanceFn {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using PerformanceFn = NativeMethod;
 
 const PerformanceFn kPerformanceFunctions[] = {
-    {"now", performanceNow, 0},
+    {"now", performanceNow, 0, 0},
 };
 
 // Real members of `performance` that bronze has NOT built. Reading one must not
@@ -96,7 +92,7 @@ Value rtPerformanceNamespace() {
     for (const PerformanceFn& fn : kPerformanceFunctions) {
         profileNameNative(reinterpret_cast<const void*>(fn.code), "performance", fn.name);
         Rooted<Value> key{rtMakeString(fn.name)};
-        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity)};
+        Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
 

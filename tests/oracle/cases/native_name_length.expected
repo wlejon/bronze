@@ -1,0 +1,465 @@
+Object 1
+Function 1
+Array 1
+String 1
+Number 1
+Boolean 1
+Symbol 0
+BigInt 1
+Error 1
+TypeError 1
+RangeError 1
+SyntaxError 1
+ReferenceError 1
+URIError 1
+AggregateError 2
+Map 0
+Set 0
+WeakMap 0
+WeakSet 0
+WeakRef 1
+FinalizationRegistry 1
+Promise 1
+Date 7
+RegExp 2
+Proxy 2
+Iterator 0
+ArrayBuffer 1
+SharedArrayBuffer 1
+DataView 1
+Int8Array 3
+Uint8Array 3
+Uint8ClampedArray 3
+Int16Array 3
+Uint16Array 3
+Int32Array 3
+Uint32Array 3
+Float32Array 3
+Float64Array 3
+BigInt64Array 3
+BigUint64Array 3
+Array.prototype.at "at" 1
+Array.prototype.concat "concat" 1
+Array.prototype.copyWithin "copyWithin" 2
+Array.prototype.entries "entries" 0
+Array.prototype.every "every" 1
+Array.prototype.fill "fill" 1
+Array.prototype.filter "filter" 1
+Array.prototype.find "find" 1
+Array.prototype.findIndex "findIndex" 1
+Array.prototype.findLast "findLast" 1
+Array.prototype.findLastIndex "findLastIndex" 1
+Array.prototype.flat "flat" 0
+Array.prototype.flatMap "flatMap" 1
+Array.prototype.forEach "forEach" 1
+Array.prototype.includes "includes" 1
+Array.prototype.indexOf "indexOf" 1
+Array.prototype.join "join" 1
+Array.prototype.keys "keys" 0
+Array.prototype.lastIndexOf "lastIndexOf" 1
+Array.prototype.map "map" 1
+Array.prototype.pop "pop" 0
+Array.prototype.push "push" 1
+Array.prototype.reduce "reduce" 1
+Array.prototype.reduceRight "reduceRight" 1
+Array.prototype.reverse "reverse" 0
+Array.prototype.shift "shift" 0
+Array.prototype.slice "slice" 2
+Array.prototype.some "some" 1
+Array.prototype.sort "sort" 1
+Array.prototype.splice "splice" 2
+Array.prototype.toReversed "toReversed" 0
+Array.prototype.toSorted "toSorted" 1
+Array.prototype.toSpliced "toSpliced" 2
+Array.prototype.toString "toString" 0
+Array.prototype.unshift "unshift" 1
+Array.prototype.values "values" 0
+Array.prototype.with "with" 2
+Array.prototype[Symbol.iterator] "values" 0
+true
+Array.from "from" 1
+Array.fromAsync "fromAsync" 1
+Array.isArray "isArray" 1
+Array.of "of" 0
+String.prototype.at "at" 1
+String.prototype.charAt "charAt" 1
+String.prototype.charCodeAt "charCodeAt" 1
+String.prototype.codePointAt "codePointAt" 1
+String.prototype.concat "concat" 1
+String.prototype.endsWith "endsWith" 1
+String.prototype.includes "includes" 1
+String.prototype.indexOf "indexOf" 1
+String.prototype.isWellFormed "isWellFormed" 0
+String.prototype.lastIndexOf "lastIndexOf" 1
+String.prototype.localeCompare "localeCompare" 1
+String.prototype.normalize "normalize" 0
+String.prototype.padEnd "padEnd" 1
+String.prototype.padStart "padStart" 1
+String.prototype.repeat "repeat" 1
+String.prototype.slice "slice" 2
+String.prototype.split "split" 2
+String.prototype.startsWith "startsWith" 1
+String.prototype.substr "substr" 2
+String.prototype.substring "substring" 2
+String.prototype.toLocaleLowerCase "toLocaleLowerCase" 0
+String.prototype.toLocaleUpperCase "toLocaleUpperCase" 0
+String.prototype.toLowerCase "toLowerCase" 0
+String.prototype.toString "toString" 0
+String.prototype.toWellFormed "toWellFormed" 0
+String.prototype.toUpperCase "toUpperCase" 0
+String.prototype.trim "trim" 0
+String.prototype.trimEnd "trimEnd" 0
+String.prototype.trimStart "trimStart" 0
+String.prototype.valueOf "valueOf" 0
+String.prototype.match "match" 1
+String.prototype.matchAll "matchAll" 1
+String.prototype.replace "replace" 2
+String.prototype.replaceAll "replaceAll" 2
+String.prototype.search "search" 1
+String.prototype[Symbol.iterator] "[Symbol.iterator]" 0
+false
+String.fromCharCode "fromCharCode" 1
+String.fromCodePoint "fromCodePoint" 1
+String.raw "raw" 1
+Object.assign "assign" 2
+Object.create "create" 2
+Object.defineProperties "defineProperties" 2
+Object.defineProperty "defineProperty" 3
+Object.entries "entries" 1
+Object.freeze "freeze" 1
+Object.fromEntries "fromEntries" 1
+Object.getOwnPropertyDescriptor "getOwnPropertyDescriptor" 2
+Object.getOwnPropertyDescriptors "getOwnPropertyDescriptors" 1
+Object.getOwnPropertyNames "getOwnPropertyNames" 1
+Object.getOwnPropertySymbols "getOwnPropertySymbols" 1
+Object.getPrototypeOf "getPrototypeOf" 1
+Object.groupBy "groupBy" 2
+Object.hasOwn "hasOwn" 2
+Object.is "is" 2
+Object.isExtensible "isExtensible" 1
+Object.isFrozen "isFrozen" 1
+Object.isSealed "isSealed" 1
+Object.keys "keys" 1
+Object.preventExtensions "preventExtensions" 1
+Object.seal "seal" 1
+Object.setPrototypeOf "setPrototypeOf" 2
+Object.values "values" 1
+Object.prototype.hasOwnProperty "hasOwnProperty" 1
+Object.prototype.isPrototypeOf "isPrototypeOf" 1
+Object.prototype.propertyIsEnumerable "propertyIsEnumerable" 1
+Object.prototype.toLocaleString "toLocaleString" 0
+Object.prototype.toString "toString" 0
+Object.prototype.valueOf "valueOf" 0
+Object.prototype.__proto__ getter "get __proto__" 0
+Object.prototype.__proto__ setter "set __proto__" 1
+Number.isFinite "isFinite" 1
+Number.isInteger "isInteger" 1
+Number.isNaN "isNaN" 1
+Number.isSafeInteger "isSafeInteger" 1
+Number.parseFloat "parseFloat" 1
+Number.parseInt "parseInt" 2
+Number.prototype.toExponential "toExponential" 1
+Number.prototype.toFixed "toFixed" 1
+Number.prototype.toPrecision "toPrecision" 1
+Number.prototype.toString "toString" 1
+Number.prototype.valueOf "valueOf" 0
+global "parseInt" 2
+global "parseFloat" 1
+global "isNaN" 1
+global "isFinite" 1
+global "encodeURI" 1
+global "encodeURIComponent" 1
+global "decodeURI" 1
+global "decodeURIComponent" 1
+global "escape" 1
+global "unescape" 1
+true true
+Boolean.prototype.toString "toString" 0
+Boolean.prototype.valueOf "valueOf" 0
+Math.abs "abs" 1
+Math.acos "acos" 1
+Math.acosh "acosh" 1
+Math.asin "asin" 1
+Math.asinh "asinh" 1
+Math.atan "atan" 1
+Math.atan2 "atan2" 2
+Math.atanh "atanh" 1
+Math.cbrt "cbrt" 1
+Math.ceil "ceil" 1
+Math.clz32 "clz32" 1
+Math.cos "cos" 1
+Math.cosh "cosh" 1
+Math.exp "exp" 1
+Math.expm1 "expm1" 1
+Math.f16round "f16round" 1
+Math.floor "floor" 1
+Math.fround "fround" 1
+Math.hypot "hypot" 2
+Math.imul "imul" 2
+Math.log "log" 1
+Math.log10 "log10" 1
+Math.log1p "log1p" 1
+Math.log2 "log2" 1
+Math.max "max" 2
+Math.min "min" 2
+Math.pow "pow" 2
+Math.random "random" 0
+Math.round "round" 1
+Math.sign "sign" 1
+Math.sin "sin" 1
+Math.sinh "sinh" 1
+Math.sqrt "sqrt" 1
+Math.tan "tan" 1
+Math.tanh "tanh" 1
+Math.trunc "trunc" 1
+JSON.parse "parse" 2
+JSON.stringify "stringify" 3
+Reflect.apply "apply" 3
+Reflect.construct "construct" 2
+Reflect.defineProperty "defineProperty" 3
+Reflect.get "get" 2
+Reflect.getOwnPropertyDescriptor "getOwnPropertyDescriptor" 2
+Reflect.getPrototypeOf "getPrototypeOf" 1
+Reflect.has "has" 2
+Reflect.ownKeys "ownKeys" 1
+Reflect.set "set" 3
+Reflect.setPrototypeOf "setPrototypeOf" 2
+Atomics.add "add" 3
+Atomics.and "and" 3
+Atomics.compareExchange "compareExchange" 4
+Atomics.exchange "exchange" 3
+Atomics.isLockFree "isLockFree" 1
+Atomics.load "load" 2
+Atomics.or "or" 3
+Atomics.store "store" 3
+Atomics.sub "sub" 3
+Atomics.xor "xor" 3
+Promise.all "all" 1
+Promise.allSettled "allSettled" 1
+Promise.any "any" 1
+Promise.race "race" 1
+Promise.reject "reject" 1
+Promise.resolve "resolve" 1
+Promise.try "try" 1
+Promise.withResolvers "withResolvers" 0
+Promise.prototype.catch "catch" 1
+Promise.prototype.finally "finally" 1
+Promise.prototype.then "then" 2
+Map.prototype.clear "clear" 0
+Map.prototype.delete "delete" 1
+Map.prototype.entries "entries" 0
+Map.prototype.forEach "forEach" 1
+Map.prototype.get "get" 1
+Map.prototype.has "has" 1
+Map.prototype.keys "keys" 0
+Map.prototype.set "set" 2
+Map.prototype.values "values" 0
+Map.prototype[Symbol.iterator] "entries" 0
+true
+Map.groupBy "groupBy" 2
+Set.prototype.add "add" 1
+Set.prototype.clear "clear" 0
+Set.prototype.delete "delete" 1
+Set.prototype.difference "difference" 1
+Set.prototype.entries "entries" 0
+Set.prototype.forEach "forEach" 1
+Set.prototype.has "has" 1
+Set.prototype.intersection "intersection" 1
+Set.prototype.isDisjointFrom "isDisjointFrom" 1
+Set.prototype.isSubsetOf "isSubsetOf" 1
+Set.prototype.isSupersetOf "isSupersetOf" 1
+Set.prototype.keys "values" 0
+Set.prototype.symmetricDifference "symmetricDifference" 1
+Set.prototype.union "union" 1
+Set.prototype.values "values" 0
+Set.prototype[Symbol.iterator] "values" 0
+true true
+WeakMap.prototype.delete "delete" 1
+WeakMap.prototype.get "get" 1
+WeakMap.prototype.has "has" 1
+WeakMap.prototype.set "set" 2
+WeakSet.prototype.add "add" 1
+WeakSet.prototype.delete "delete" 1
+WeakSet.prototype.has "has" 1
+WeakRef.prototype.deref "deref" 0
+FinalizationRegistry.prototype.register "register" 2
+FinalizationRegistry.prototype.unregister "unregister" 1
+%TypedArray%.prototype.at "at" 1
+%TypedArray%.prototype.copyWithin "copyWithin" 2
+%TypedArray%.prototype.entries "entries" 0
+%TypedArray%.prototype.every "every" 1
+%TypedArray%.prototype.fill "fill" 1
+%TypedArray%.prototype.filter "filter" 1
+%TypedArray%.prototype.find "find" 1
+%TypedArray%.prototype.findIndex "findIndex" 1
+%TypedArray%.prototype.findLast "findLast" 1
+%TypedArray%.prototype.findLastIndex "findLastIndex" 1
+%TypedArray%.prototype.forEach "forEach" 1
+%TypedArray%.prototype.includes "includes" 1
+%TypedArray%.prototype.indexOf "indexOf" 1
+%TypedArray%.prototype.join "join" 1
+%TypedArray%.prototype.keys "keys" 0
+%TypedArray%.prototype.lastIndexOf "lastIndexOf" 1
+%TypedArray%.prototype.map "map" 1
+%TypedArray%.prototype.reduce "reduce" 1
+%TypedArray%.prototype.reduceRight "reduceRight" 1
+%TypedArray%.prototype.reverse "reverse" 0
+%TypedArray%.prototype.set "set" 1
+%TypedArray%.prototype.slice "slice" 2
+%TypedArray%.prototype.some "some" 1
+%TypedArray%.prototype.sort "sort" 1
+%TypedArray%.prototype.subarray "subarray" 2
+%TypedArray%.prototype.toReversed "toReversed" 0
+%TypedArray%.prototype.toSorted "toSorted" 1
+%TypedArray%.prototype.toString "toString" 0
+%TypedArray%.prototype.values "values" 0
+%TypedArray%.prototype.with "with" 2
+%TypedArray%.prototype[Symbol.iterator] "values" 0
+true true
+Uint8Array.from "from" 1
+Uint8Array.of "of" 0
+true 1
+ArrayBuffer.isView "isView" 1
+ArrayBuffer.prototype.resize "resize" 1
+ArrayBuffer.prototype.slice "slice" 2
+ArrayBuffer.prototype.transfer "transfer" 0
+ArrayBuffer.prototype.transferToFixedLength "transferToFixedLength" 0
+DataView.prototype.getInt8 "getInt8" 1
+DataView.prototype.getUint8 "getUint8" 1
+DataView.prototype.getInt16 "getInt16" 1
+DataView.prototype.getUint16 "getUint16" 1
+DataView.prototype.getInt32 "getInt32" 1
+DataView.prototype.getUint32 "getUint32" 1
+DataView.prototype.getFloat32 "getFloat32" 1
+DataView.prototype.getFloat64 "getFloat64" 1
+DataView.prototype.getBigInt64 "getBigInt64" 1
+DataView.prototype.getBigUint64 "getBigUint64" 1
+DataView.prototype.getFloat16 "getFloat16" 1
+DataView.prototype.setInt8 "setInt8" 2
+DataView.prototype.setUint8 "setUint8" 2
+DataView.prototype.setInt16 "setInt16" 2
+DataView.prototype.setUint16 "setUint16" 2
+DataView.prototype.setInt32 "setInt32" 2
+DataView.prototype.setUint32 "setUint32" 2
+DataView.prototype.setFloat32 "setFloat32" 2
+DataView.prototype.setFloat64 "setFloat64" 2
+DataView.prototype.setBigInt64 "setBigInt64" 2
+DataView.prototype.setBigUint64 "setBigUint64" 2
+DataView.prototype.setFloat16 "setFloat16" 2
+SharedArrayBuffer.prototype.grow "grow" 1
+SharedArrayBuffer.prototype.slice "slice" 2
+Function.prototype.apply "apply" 2
+Function.prototype.bind "bind" 1
+Function.prototype.call "call" 1
+Function.prototype.toString "toString" 0
+Function.prototype[Symbol.hasInstance] "[Symbol.hasInstance]" 1
+Function.prototype "" 0
+Symbol.for "for" 1
+Symbol.keyFor "keyFor" 1
+Symbol.prototype.toString "toString" 0
+Symbol.prototype.valueOf "valueOf" 0
+Symbol.prototype.description getter "get description" 0
+BigInt.asIntN "asIntN" 2
+BigInt.asUintN "asUintN" 2
+BigInt.prototype.toString "toString" 0
+BigInt.prototype.toLocaleString "toLocaleString" 0
+BigInt.prototype.valueOf "valueOf" 0
+Date.now "now" 0
+Date.parse "parse" 1
+Date.UTC "UTC" 7
+Date.prototype.getDate "getDate" 0
+Date.prototype.getDay "getDay" 0
+Date.prototype.getFullYear "getFullYear" 0
+Date.prototype.getHours "getHours" 0
+Date.prototype.getMilliseconds "getMilliseconds" 0
+Date.prototype.getMinutes "getMinutes" 0
+Date.prototype.getMonth "getMonth" 0
+Date.prototype.getSeconds "getSeconds" 0
+Date.prototype.getTime "getTime" 0
+Date.prototype.getTimezoneOffset "getTimezoneOffset" 0
+Date.prototype.getUTCDate "getUTCDate" 0
+Date.prototype.getUTCDay "getUTCDay" 0
+Date.prototype.getUTCFullYear "getUTCFullYear" 0
+Date.prototype.getUTCHours "getUTCHours" 0
+Date.prototype.getUTCMilliseconds "getUTCMilliseconds" 0
+Date.prototype.getUTCMinutes "getUTCMinutes" 0
+Date.prototype.getUTCMonth "getUTCMonth" 0
+Date.prototype.getUTCSeconds "getUTCSeconds" 0
+Date.prototype.getYear "getYear" 0
+Date.prototype.setDate "setDate" 1
+Date.prototype.setFullYear "setFullYear" 3
+Date.prototype.setHours "setHours" 4
+Date.prototype.setMilliseconds "setMilliseconds" 1
+Date.prototype.setMinutes "setMinutes" 3
+Date.prototype.setMonth "setMonth" 2
+Date.prototype.setSeconds "setSeconds" 2
+Date.prototype.setTime "setTime" 1
+Date.prototype.setUTCDate "setUTCDate" 1
+Date.prototype.setUTCFullYear "setUTCFullYear" 3
+Date.prototype.setUTCHours "setUTCHours" 4
+Date.prototype.setUTCMilliseconds "setUTCMilliseconds" 1
+Date.prototype.setUTCMinutes "setUTCMinutes" 3
+Date.prototype.setUTCMonth "setUTCMonth" 2
+Date.prototype.setUTCSeconds "setUTCSeconds" 2
+Date.prototype.setYear "setYear" 1
+Date.prototype.toDateString "toDateString" 0
+Date.prototype.toGMTString "toUTCString" 0
+Date.prototype.toISOString "toISOString" 0
+Date.prototype.toJSON "toJSON" 1
+Date.prototype.toLocaleDateString "toLocaleDateString" 0
+Date.prototype.toLocaleString "toLocaleString" 0
+Date.prototype.toLocaleTimeString "toLocaleTimeString" 0
+Date.prototype.toString "toString" 0
+Date.prototype.toTimeString "toTimeString" 0
+Date.prototype.toUTCString "toUTCString" 0
+Date.prototype.valueOf "valueOf" 0
+Date.prototype[Symbol.toPrimitive] "[Symbol.toPrimitive]" 1
+RegExp.prototype.exec "exec" 1
+RegExp.prototype.test "test" 1
+RegExp.prototype.toString "toString" 0
+RegExp.prototype[Symbol.match] "[Symbol.match]" 1
+RegExp.prototype[Symbol.matchAll] "[Symbol.matchAll]" 1
+RegExp.prototype[Symbol.replace] "[Symbol.replace]" 2
+RegExp.prototype[Symbol.search] "[Symbol.search]" 1
+RegExp.prototype[Symbol.split] "[Symbol.split]" 2
+RegExp.escape "escape" 1
+Error.prototype.toString "toString" 0
+Iterator.prototype.drop "drop" 1
+Iterator.prototype.every "every" 1
+Iterator.prototype.filter "filter" 1
+Iterator.prototype.find "find" 1
+Iterator.prototype.flatMap "flatMap" 1
+Iterator.prototype.forEach "forEach" 1
+Iterator.prototype.map "map" 1
+Iterator.prototype.reduce "reduce" 1
+Iterator.prototype.some "some" 1
+Iterator.prototype.take "take" 1
+Iterator.prototype.toArray "toArray" 0
+Iterator.prototype[Symbol.iterator] "[Symbol.iterator]" 0
+Iterator.from "from" 1
+%ArrayIteratorPrototype%.next "next" 0
+%MapIteratorPrototype%.next "next" 0
+%StringIteratorPrototype%.next "next" 0
+%GeneratorPrototype%.next "next" 1
+%GeneratorPrototype%.return "return" 1
+%GeneratorPrototype%.throw "throw" 1
+%AsyncGeneratorPrototype%.next "next" 1
+%AsyncGeneratorPrototype%.return "return" 1
+%AsyncGeneratorPrototype%.throw "throw" 1
+%AsyncIteratorPrototype%[Symbol.asyncIterator] "[Symbol.asyncIterator]" 0
+GeneratorFunction 1 AsyncGeneratorFunction AsyncFunction
+Array name "Array" false false true length 1 false false true
+Array.prototype.map name "map" false false true length 1 false false true
+Math.max name "max" false false true length 2 false false true
+parseInt name "parseInt" false false true length 2 false false true
+TypeError name "TypeError" false false true length 1 false false true
+Map name "Map" false false true length 0 false false true
+from,fromAsync,isArray,length,name,of,prototype
+length,name
+length,name
+true true 0
+push 1
+true
+TypeError Array Object Function RangeError String Number Boolean Symbol Date Promise Uint8Array ArrayBuffer DataView BigInt Error
+MyErr MyErr 0
+function push() { [native code] } function max() { [native code] } function () { [native code] }

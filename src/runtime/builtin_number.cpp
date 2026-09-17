@@ -180,20 +180,16 @@ uint64_t globalIsFinite(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
     return Value::fromBool(std::isfinite(rtToNumber(args[0]))).rawBits();
 }
 
-struct NamespaceFn {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using NamespaceFn = NativeMethod;
 
 // The two tables below are the whole of 21.1.2 but for `prototype`, which the
 // ctor table answers from the intrinsic — which is why this file has no
 // unimplemented-member list at all. `Boolean` has none for the same reason, and
 // its row in `kCtors` carries a null one.
 const NamespaceFn kNumberFunctions[] = {
-    {"isNaN", numberIsNaN, 1},           {"isFinite", numberIsFinite, 1},
-    {"isInteger", numberIsInteger, 1},   {"isSafeInteger", numberIsSafeInteger, 1},
-    {"parseFloat", numberParseFloat, 1}, {"parseInt", numberParseInt, 2},
+    {"isNaN", numberIsNaN, 1, 1},           {"isFinite", numberIsFinite, 1, 1},
+    {"isInteger", numberIsInteger, 1, 1},   {"isSafeInteger", numberIsSafeInteger, 1, 1},
+    {"parseFloat", numberParseFloat, 1, 1}, {"parseInt", numberParseInt, 2, 2},
 };
 
 struct NamespaceConst {
@@ -515,17 +511,17 @@ const NamespaceFn kGlobalFunctions[] = {
     // Function constructor (one dynamic-code story, two globals); its row is
     // here because this table IS "19.2's function properties of the global
     // object", and joining it is what makes the name a provided global.
-    {"eval", rtGlobalEvalBody, 1},
-    {"isNaN", globalIsNaN, 1},
-    {"isFinite", globalIsFinite, 1},
-    {"parseInt", numberParseInt, 2},
-    {"parseFloat", numberParseFloat, 1},
-    {"encodeURI", globalEncodeURI, 1},
-    {"encodeURIComponent", globalEncodeURIComponent, 1},
-    {"decodeURI", globalDecodeURI, 1},
-    {"decodeURIComponent", globalDecodeURIComponent, 1},
-    {"escape", globalEscape, 1},
-    {"unescape", globalUnescape, 1},
+    {"eval", rtGlobalEvalBody, 1, 1},
+    {"isNaN", globalIsNaN, 1, 1},
+    {"isFinite", globalIsFinite, 1, 1},
+    {"parseInt", numberParseInt, 2, 2},
+    {"parseFloat", numberParseFloat, 1, 1},
+    {"encodeURI", globalEncodeURI, 1, 1},
+    {"encodeURIComponent", globalEncodeURIComponent, 1, 1},
+    {"decodeURI", globalDecodeURI, 1, 1},
+    {"decodeURIComponent", globalDecodeURIComponent, 1, 1},
+    {"escape", globalEscape, 1, 1},
+    {"unescape", globalUnescape, 1, 1},
 };
 
 // Whether this function's statics have been installed. A plain bool and not a
@@ -539,7 +535,7 @@ thread_local bool g_numberStaticsInstalled = false;
 
 Value rtGlobalNumericFunction(const std::string& name) {
     for (const NamespaceFn& fn : kGlobalFunctions) {
-        if (name == fn.name) return rtNativeFunction(fn.code, fn.arity);
+        if (name == fn.name) return rtNativeFunction(fn.code, fn.arity, fn.name, fn.length);
     }
     return Value::fromUndefined();
 }
@@ -599,7 +595,7 @@ void rtInstallNumberStatics(Rooted<Value>& fn) {
     // (cases/blocked/intrinsic_property_attributes).
     for (const NamespaceFn& f : kNumberFunctions) {
         Rooted<Value> key{rtMakeString(f.name)};
-        Rooted<Value> val{rtNativeFunction(f.code, f.arity)};
+        Rooted<Value> val{rtNativeFunction(f.code, f.arity, f.name, f.length)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }

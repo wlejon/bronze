@@ -94,50 +94,48 @@ bool rtIsConcatSpreadable(Rooted<Value>& item) {
 
 namespace {
 
-struct ArrayMethod {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+// The columns are rt_builtins.h's `NativeMethod`: the padding arity and,
+// beside it, the `length` 23.1.3 gives each member.
+using ArrayMethod = NativeMethod;
 
 const ArrayMethod kArrayMethods[] = {
-    {"at", arrayAt, 1},
-    {"concat", arrayConcat, 0},
-    {"copyWithin", arrayCopyWithin, 0},
-    {"entries", rtArrayEntriesBuiltin, 0},
-    {"every", arrayEvery, 1},
-    {"fill", arrayFill, 0},
-    {"filter", arrayFilter, 1},
-    {"find", arrayFind, 1},
-    {"findIndex", arrayFindIndex, 1},
-    {"findLast", arrayFindLast, 1},
-    {"findLastIndex", arrayFindLastIndex, 1},
-    {"flat", arrayFlat, 0},
-    {"flatMap", arrayFlatMap, 1},
-    {"forEach", arrayForEach, 1},
-    {"includes", arrayIncludes, 1},
-    {"indexOf", arrayIndexOf, 1},
-    {"join", arrayJoin, 0},
-    {"keys", rtArrayKeysBuiltin, 0},
-    {"lastIndexOf", arrayLastIndexOf, 1},
-    {"map", arrayMap, 1},
-    {"pop", bronze_array_pop, 0},
-    {"push", bronze_array_push, 0},
-    {"reduce", arrayReduce, 0},
-    {"reduceRight", arrayReduceRight, 0},
-    {"reverse", arrayReverse, 0},
-    {"shift", bronze_array_shift, 0},
-    {"slice", arraySlice, 0},
-    {"some", arraySome, 1},
-    {"sort", rtArraySortBuiltin, 1},
-    {"splice", arraySplice, 0},
-    {"toReversed", arrayToReversed, 0},
-    {"toSorted", arrayToSorted, 1},
-    {"toSpliced", arrayToSpliced, 0},
-    {"toString", rtArrayToStringBuiltin, 0},
-    {"unshift", arrayUnshift, 0},
-    {"values", rtArrayValuesBuiltin, 0},
-    {"with", arrayWith, 2},
+    {"at", arrayAt, 1, 1},
+    {"concat", arrayConcat, 0, 1},
+    {"copyWithin", arrayCopyWithin, 0, 2},
+    {"entries", rtArrayEntriesBuiltin, 0, 0},
+    {"every", arrayEvery, 1, 1},
+    {"fill", arrayFill, 0, 1},
+    {"filter", arrayFilter, 1, 1},
+    {"find", arrayFind, 1, 1},
+    {"findIndex", arrayFindIndex, 1, 1},
+    {"findLast", arrayFindLast, 1, 1},
+    {"findLastIndex", arrayFindLastIndex, 1, 1},
+    {"flat", arrayFlat, 0, 0},
+    {"flatMap", arrayFlatMap, 1, 1},
+    {"forEach", arrayForEach, 1, 1},
+    {"includes", arrayIncludes, 1, 1},
+    {"indexOf", arrayIndexOf, 1, 1},
+    {"join", arrayJoin, 0, 1},
+    {"keys", rtArrayKeysBuiltin, 0, 0},
+    {"lastIndexOf", arrayLastIndexOf, 1, 1},
+    {"map", arrayMap, 1, 1},
+    {"pop", bronze_array_pop, 0, 0},
+    {"push", bronze_array_push, 0, 1},
+    {"reduce", arrayReduce, 0, 1},
+    {"reduceRight", arrayReduceRight, 0, 1},
+    {"reverse", arrayReverse, 0, 0},
+    {"shift", bronze_array_shift, 0, 0},
+    {"slice", arraySlice, 0, 2},
+    {"some", arraySome, 1, 1},
+    {"sort", rtArraySortBuiltin, 1, 1},
+    {"splice", arraySplice, 0, 2},
+    {"toReversed", arrayToReversed, 0, 0},
+    {"toSorted", arrayToSorted, 1, 1},
+    {"toSpliced", arrayToSpliced, 0, 2},
+    {"toString", rtArrayToStringBuiltin, 0, 0},
+    {"unshift", arrayUnshift, 0, 1},
+    {"values", rtArrayValuesBuiltin, 0, 0},
+    {"with", arrayWith, 2, 2},
 };
 
 thread_local Value g_arrayPrototype = Value::fromUndefined();
@@ -173,7 +171,8 @@ Value rtArrayMethodById(uint32_t id) {
             g_arrayMethodValues[0] = rtArrayConstructorObject();
         } else {
             const size_t idx = id - 1;
-            g_arrayMethodValues[id] = rtNativeFunction(kArrayMethods[idx].code, kArrayMethods[idx].arity);
+            const ArrayMethod& m = kArrayMethods[idx];
+            g_arrayMethodValues[id] = rtNativeFunction(m.code, m.arity, m.name, m.length);
         }
     }
     return g_arrayMethodValues[id];
@@ -189,7 +188,7 @@ Value rtArrayPrototypeObject() {
 
     for (const ArrayMethod& m : kArrayMethods) {
         Rooted<Value> key{rtMakeString(m.name)};
-        Rooted<Value> fn{rtNativeFunction(m.code, m.arity)};
+        Rooted<Value> fn{rtNativeFunction(m.code, m.arity, m.name, m.length)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
                                                     /*enumerable=*/false, /*defineOwn=*/true);
     }
@@ -227,7 +226,7 @@ Value rtArrayPrototypeObject() {
     }
     {
         Rooted<Value> key{rtIteratorKey()};
-        Rooted<Value> fn{rtNativeFunction(rtArrayValuesBuiltin, 0)};
+        Rooted<Value> fn{rtNativeFunction(rtArrayValuesBuiltin, 0, "values", 0)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
                                                     /*enumerable=*/false, /*defineOwn=*/true);
     }

@@ -490,16 +490,16 @@ Value rtReflectNamespace() {
         rtHeap().add_permanent_root(&g_reflectNamespace);
 
         const NativeMethod methods[] = {
-            {"apply", reflectApply, 3},
-            {"construct", reflectConstruct, 2},
-            {"get", reflectGet, 2},
-            {"set", reflectSet, 3},
-            {"has", reflectHas, 2},
-            {"ownKeys", reflectOwnKeys, 1},
-            {"getPrototypeOf", reflectGetPrototypeOf, 1},
-            {"setPrototypeOf", reflectSetPrototypeOf, 2},
-            {"getOwnPropertyDescriptor", reflectGetOwnPropertyDescriptor, 2},
-            {"defineProperty", reflectDefineProperty, 3},
+            {"apply", reflectApply, 3, 3},
+            {"construct", reflectConstruct, 2, 2},
+            {"get", reflectGet, 2, 2},
+            {"set", reflectSet, 3, 3},
+            {"has", reflectHas, 2, 2},
+            {"ownKeys", reflectOwnKeys, 1, 1},
+            {"getPrototypeOf", reflectGetPrototypeOf, 1, 1},
+            {"setPrototypeOf", reflectSetPrototypeOf, 2, 2},
+            {"getOwnPropertyDescriptor", reflectGetOwnPropertyDescriptor, 2, 2},
+            {"defineProperty", reflectDefineProperty, 3, 3},
         };
         rtDefineMethods(ns, methods, std::size(methods));
     }

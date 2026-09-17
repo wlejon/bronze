@@ -341,11 +341,11 @@ uint64_t stringReplacePattern(uint64_t, uint64_t thisBits, uint32_t argc, const 
 }
 
 const NativeMethod kPatternMethods[] = {
-    {"match", stringMatch, 1},
-    {"matchAll", stringMatchAll, 1},
-    {"replace", stringReplacePattern<false>, 2},
-    {"replaceAll", stringReplacePattern<true>, 2},
-    {"search", stringSearch, 1},
+    {"match", stringMatch, 1, 1},
+    {"matchAll", stringMatchAll, 1, 1},
+    {"replace", stringReplacePattern<false>, 2, 2},
+    {"replaceAll", stringReplacePattern<true>, 2, 2},
+    {"search", stringSearch, 1, 1},
 };
 
 }  // namespace

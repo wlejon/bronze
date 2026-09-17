@@ -267,19 +267,15 @@ uint64_t asyncGeneratorThrow(uint64_t, uint64_t thisBits, uint32_t argc, const u
 }  // namespace
 
 void rtInstallAsyncGeneratorPrototype(Rooted<Value>& proto) {
-    struct Method {
-        const char* key;
-        NativeFunctionCode code;
-        uint32_t arity;
-    };
-    const Method methods[] = {
-        {"next", asyncGeneratorNext, 1},
-        {"return", asyncGeneratorReturn, 1},
-        {"throw", asyncGeneratorThrow, 1},
+    // 27.6.1.2 through 27.6.1.4, each of length 1.
+    const NativeMethod methods[] = {
+        {"next", asyncGeneratorNext, 1, 1},
+        {"return", asyncGeneratorReturn, 1, 1},
+        {"throw", asyncGeneratorThrow, 1, 1},
     };
     for (const auto& method : methods) {
-        Rooted<Value> fn{rtNativeFunction(method.code, method.arity)};
-        Rooted<Value> key{rtMakeString(method.key)};
+        Rooted<Value> fn{rtNativeFunction(method.code, method.arity, method.name, method.length)};
+        Rooted<Value> key{rtMakeString(method.name)};
         proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn);
     }
 }

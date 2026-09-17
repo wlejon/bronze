@@ -134,13 +134,11 @@ void ensureKind(uint32_t slot) {
         rtHeap(), rtArena(), rtRootShapeForPrototype(rtFunctionPrototypeObject())))};
     proto.get().asObject<HeapObjectHeader>()->flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
 
+    // 27.3.2 / 27.7.2 / 27.4.2: each constructor has length 1.
     Rooted<Value> ctor{rtNativeFunction(slot == kGenerator ? dynamicFunctionRefusal<kGenerator>
                                         : slot == kAsync    ? dynamicFunctionRefusal<kAsync>
                                                      : dynamicFunctionRefusal<kAsyncGenerator>,
-                                        1)};
-    ctor.get().asObject<FunctionHeader>()->name =
-        StringHeader::internToArena(rtArena(), StringHeader::createFromUTF8(rtHeap(), name));
-    ctor.get().asObject<FunctionHeader>()->length = 1;
+                                        1, name, 1)};
     ctor.get().asObject<FunctionHeader>()->prototype = proto.get();
     // 27.3.2.2: the `prototype` of each of these is non-writable and
     // non-configurable, unlike an ordinary function's.

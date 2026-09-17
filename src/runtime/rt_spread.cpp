@@ -119,7 +119,8 @@ void installArgumentsCallee(Rooted<Value>& args, Value calleeVal, bool strict) {
     Rooted<Value> key{Value::fromString(calleeKey())};
     if (strict || !rtIsCallableValue(calleeVal)) {
         auto* code = strict ? &argumentsCalleePill : &argumentsCalleeCapturedPill;
-        Rooted<Value> pill{rtNativeFunction(reinterpret_cast<bronze_fn_code>(code), 0)};
+        // 10.2.4.1: %ThrowTypeError% has `name` "" and `length` 0.
+        Rooted<Value> pill{rtNativeFunction(reinterpret_cast<bronze_fn_code>(code), 0, "", 0)};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), props, key, pill, pill,
                                      /*enumerable=*/false);
     } else {

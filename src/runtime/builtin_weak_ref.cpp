@@ -140,19 +140,15 @@ uint64_t finalizationUnregister(uint64_t, uint64_t thisBits, uint32_t argc,
     return Value::fromBool(rtFinalizationUnregister(self, token)).rawBits();
 }
 
-struct Method {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using Method = NativeMethod;
 
 const Method kWeakRefMethods[] = {
-    {"deref", weakRefDeref, 0},
+    {"deref", weakRefDeref, 0, 0},
 };
 
 const Method kRegistryMethods[] = {
-    {"register", finalizationRegister, 2},
-    {"unregister", finalizationUnregister, 1},
+    {"register", finalizationRegister, 2, 2},
+    {"unregister", finalizationUnregister, 1, 1},
 };
 
 // `prototype` and `constructor` for the reason every other intrinsic in this
@@ -173,9 +169,9 @@ const char* const kRegistryUnimplemented[] = {
 }  // namespace
 
 Value rtWeakRefConstructor(const std::string& name) {
-    if (name == "WeakRef") return rtNativeFunction(weakRefConstructor, 1);
+    if (name == "WeakRef") return rtNativeFunction(weakRefConstructor, 1, "WeakRef", 1);
     if (name == "FinalizationRegistry") {
-        return rtNativeFunction(finalizationRegistryConstructor, 1);
+        return rtNativeFunction(finalizationRegistryConstructor, 1, "FinalizationRegistry", 1);
     }
     return Value::fromUndefined();
 }
@@ -199,11 +195,11 @@ Value rtWeakRefMember(Value self, const std::string& key) {
         self.asObject<HeapObjectHeader>()->flags == FinalizationRegistryHeader::kFlags;
     if (isRegistry) {
         for (const Method& m : kRegistryMethods) {
-            if (key == m.name) return rtNativeFunction(m.code, m.arity);
+            if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
         }
     } else {
         for (const Method& m : kWeakRefMethods) {
-            if (key == m.name) return rtNativeFunction(m.code, m.arity);
+            if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
         }
     }
     rtCheckWeakRefMember(isRegistry, key);

@@ -550,16 +550,12 @@ uint64_t regexpEscape(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return rtMakeString(out).rawBits();
 }
 
-struct RegExpMethod {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using RegExpMethod = NativeMethod;
 
 const RegExpMethod kRegExpMethods[] = {
-    {"exec", regexpExec, 1},
-    {"test", regexpTest, 1},
-    {"toString", regexpToString, 0},
+    {"exec", regexpExec, 1, 1},
+    {"test", regexpTest, 1, 1},
+    {"toString", regexpToString, 0, 0},
 };
 
 // RegExp.prototype, minus everything above and minus the flag accessors, which
@@ -623,7 +619,7 @@ const FlagMember kRegExpFlagMembers[] = {
 
 Value rtRegExpConstructor(const std::string& name) {
     if (name != "RegExp") return Value::fromUndefined();
-    return rtNativeFunction(regexpConstructor, 2);
+    return rtNativeFunction(regexpConstructor, 2, "RegExp", 2);
 }
 
 // Which function object is %RegExp%, asked WITHOUT building it. The obvious
@@ -653,13 +649,13 @@ bool rtIsRegExpConstructor(Value fn) {
 bool rtRegExpStatic(Value fn, const std::string& key, Value& out) {
     if (!rtIsRegExpConstructor(fn)) return false;
     if (key != "escape") return false;
-    out = rtNativeFunction(regexpEscape, 1);
+    out = rtNativeFunction(regexpEscape, 1, "escape", 1);
     return true;
 }
 
 Value rtRegExpMethod(const std::string& key) {
     for (const RegExpMethod& m : kRegExpMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity);
+        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
     }
     return Value::fromUndefined();
 }

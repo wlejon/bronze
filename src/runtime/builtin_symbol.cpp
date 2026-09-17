@@ -96,15 +96,11 @@ const char* const kSymbolUnimplemented[] = {
 thread_local Value g_symbolFunction = Value::fromUndefined();
 thread_local Value g_symbolPrototype = Value::fromUndefined();
 
-struct SymbolStatic {
-    const char* name;
-    bronze_fn_code code;
-    uint32_t arity;
-};
+using SymbolStatic = NativeMethod;
 
 const SymbolStatic kSymbolStatics[] = {
-    {"for", symbolForCall, 1},
-    {"keyFor", symbolKeyForCall, 1},
+    {"for", symbolForCall, 1, 1},
+    {"keyFor", symbolKeyForCall, 1, 1},
 };
 
 // The well-known symbols of 20.4.2, as ONE table rather than a block of
@@ -187,8 +183,8 @@ uint64_t symbolProtoDescription(uint64_t, uint64_t thisBits, uint32_t, const uin
 }
 
 const NativeMethod kSymbolProtoMethods[] = {
-    {"toString", symbolProtoToString, 0},
-    {"valueOf", symbolProtoValueOf, 0},
+    {"toString", symbolProtoToString, 0, 0},
+    {"valueOf", symbolProtoValueOf, 0, 0},
 };
 
 // 20.4.3, built on first use like every other intrinsic and PUBLISHED before it
@@ -207,7 +203,8 @@ void ensureSymbolPrototype() {
     rtDefineMethods(proto, kSymbolProtoMethods, std::size(kSymbolProtoMethods));
     {
         Rooted<Value> key{rtMakeString("description")};
-        Rooted<Value> getter{rtNativeFunction(symbolProtoDescription, 0)};
+        // 10.2.9 step 5: the getter is named "get description".
+        Rooted<Value> getter{rtNativeFunction(symbolProtoDescription, 0, "get description", 0)};
         Rooted<Value> setter{Value::fromUndefined()};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
                                      /*enumerable=*/false);
@@ -235,7 +232,8 @@ void ensureSymbolPrototype() {
 
 Value rtSymbolFunction() {
     if (g_symbolFunction.isObject()) return g_symbolFunction;
-    Rooted<Value> fn{rtNativeFunction(symbolCall, 1)};
+    // 20.4.1: `Symbol` has length 0 — its one parameter is optional.
+    Rooted<Value> fn{rtNativeFunction(symbolCall, 1, "Symbol", 0)};
     rtEnsureFunctionProperties(fn);
     // Published before the prototype is asked for, because `Symbol.prototype`'s
     // `constructor` asks for THIS object back and the two would otherwise
@@ -265,7 +263,7 @@ Value rtSymbolFunction() {
     // storage that does (cases/blocked/intrinsic_property_attributes).
     for (const SymbolStatic& s : kSymbolStatics) {
         Rooted<Value> key{rtMakeString(s.name)};
-        Rooted<Value> val{rtNativeFunction(s.code, s.arity)};
+        Rooted<Value> val{rtNativeFunction(s.code, s.arity, s.name, s.length)};
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }
