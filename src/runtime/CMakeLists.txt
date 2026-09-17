@@ -112,6 +112,7 @@ bronze_add_module(runtime
     builtin_weak_ref.cpp
         builtin_object.cpp
         builtin_object_descriptor.cpp
+        builtin_object_define.cpp
         builtin_object_methods.cpp
         builtin_object_proto.cpp
         builtin_number.cpp
