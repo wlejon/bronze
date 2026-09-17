@@ -64,15 +64,27 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // and must capture this record.
     const std::vector<PrivateElement> privateElements = collectPrivateElements(methods);
     bool hasStaticBlock = false;
-    for (const auto& m : methods) hasStaticBlock = hasStaticBlock || m.isStaticBlock;
+    bool hasStaticInitializer = false;
+    for (const auto& m : methods) {
+        hasStaticBlock = hasStaticBlock || m.isStaticBlock;
+        hasStaticInitializer = hasStaticInitializer || (m.isField && m.isStatic && m.init);
+    }
     // A class with neither private names nor a static block needs no record at
     // all, and gets exactly the IL it always had — unless it is a NAMED
     // EXPRESSION, whose name has nowhere else to live: `const K = class C {
     // static make() { return new C(); } }` binds `C` in this record and in no
     // enclosing scope (15.7.15 step 3), so without it the method read an
     // unrelated outer `C`, or the global object.
+    //
+    // A STATIC FIELD INITIALIZER needs the record for the same reason a static
+    // block does: it runs during the definition, at 15.7.14 step 33, when the
+    // class binding step 28 initialized is the one in THIS record — the outer
+    // binding a declaration makes (`lowerClassDecl`) is not written until the
+    // definition has been evaluated. `class C { static inst = new C(); }` read
+    // `C` in its dead zone without it.
     const bool hasPrivate = !privateElements.empty() || hasStaticBlock;
-    const bool hasScope = hasPrivate || (bindsOwnName && !name.empty());
+    const bool hasScope =
+        hasPrivate || (!name.empty() && (bindsOwnName || hasStaticInitializer));
     if (hasScope && !openClassScope(name, privateElements, ilFn)) return std::nullopt;
     // Everything from here on may leave through a `return std::nullopt`, and
     // the record must come off both stacks when it does.
@@ -485,19 +497,33 @@ void Lowerer::emitDerivedCtorReturn(Value val, il::Function& ilFn) {
 // be written as `this.m`: inside an override, `this.m` would find the override
 // again and recurse forever. The parent is named at the site, so this is two
 // ordinary property reads.
-std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* sm,
-                                                        il::Function& ilFn) {
+std::optional<Lowerer::Value> Lowerer::lowerSuperLookupStart(const ast::SuperMember& sm,
+                                                             il::Function& ilFn) {
     std::optional<Value> baseVal;
-    if (sm->baseExpr) {
-        baseVal = lowerExpr(*sm->baseExpr, ilFn);
+    if (sm.baseExpr) {
+        baseVal = lowerExpr(*sm.baseExpr, ilFn);
     } else {
         ast::Ident baseIdent;
-        baseIdent.name = sm->baseName;
-        baseIdent.span = sm->span;
+        baseIdent.name = sm.baseName;
+        baseIdent.span = sm.span;
         baseVal = lowerExpr(baseIdent, ilFn);
     }
     if (!baseVal) return std::nullopt;
-    auto protoVal = emitPrototypeOf(boxValueIfNeeded(*baseVal, ilFn), ilFn);
+    // 13.3.7.1 starts at the home object's [[Prototype]]. For a static
+    // element the home object is the constructor, whose [[Prototype]] is the
+    // heritage itself — `static m() { return super.m(); }` reads `Base.m`,
+    // and read `Base.prototype.m` (undefined, or an instance method) before
+    // the element's kind was carried here.
+    auto baseBoxed = boxValueIfNeeded(*baseVal, ilFn);
+    if (sm.fromStatic) return baseBoxed;
+    return emitPrototypeOf(baseBoxed, ilFn);
+}
+
+std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* sm,
+                                                        il::Function& ilFn) {
+    auto protoOpt = lowerSuperLookupStart(*sm, ilFn);
+    if (!protoOpt) return std::nullopt;
+    const Value protoVal = *protoOpt;
 
     // The receiver is `this`, not the prototype the lookup starts from
     // (13.3.7.3). Indistinguishable from an ordinary read for a method and not

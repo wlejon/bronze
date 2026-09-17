@@ -1,0 +1,7 @@
+true 1 2 4 Vecfunction
+true
+3 3
+a,block:Order,b Order
+true
+extends self: ReferenceError
+Derived:base Derived:base base
