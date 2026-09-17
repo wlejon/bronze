@@ -1,19 +1,16 @@
-// BLOCKED: `Hard runtime error: unsupported: Promise.try is not implemented`.
-//
 // `Promise.try(f, ...args)` (ES2025, ECMA-262 27.2.4.7) calls `f`
 // SYNCHRONOUSLY and wraps whatever it does in a promise: a return value
 // fulfils, a throw rejects, a returned promise is adopted. It exists because
 // the idiom it replaces — `Promise.resolve().then(f)` — delays `f` by a tick,
 // and `new Promise(r => r(f()))` reads as if a synchronous throw could escape.
 //
-// That synchronous shape is also why it is small work on top of what bronze
-// already has: NewPromiseCapability over `this`, one Call, and the same
-// resolve/reject pair the executor form already builds. It is refused by name
-// today rather than half-built; `Promise.withResolvers`, its ES2024 neighbour,
-// is implemented and pinned in cases/promise_with_resolvers.js.
+// That synchronous shape is why it is NewPromiseCapability over `this`, one
+// Call, and the same settle the executor form ends in (`staticTry`,
+// builtin_promise.cpp). `Promise.withResolvers`, its ES2024 neighbour, is
+// pinned in cases/promise_with_resolvers.js.
 //
-// The expectation below is what the member owes when it lands, and every line
-// of it is a spec consequence rather than an observation:
+// Every line of the expectation is a spec consequence rather than an
+// observation:
 //
 //   - `f` runs before `Promise.try` returns, so `order` holds `sync,after` by
 //     the time the synchronous phase ends.

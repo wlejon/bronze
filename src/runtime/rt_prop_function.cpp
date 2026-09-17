@@ -248,12 +248,6 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // built read `undefined` from the moment `Object` stopped being a
     // namespace.
     rtObjectCheckMissingMember(recv.get(), keyStr);
-    // The same step for `Promise`, whose statics live in the properties
-    // object read above — so a name 27.2.4 defines and bronze has not
-    // built (`try`) reaches here having missed, and is
-    // refused BY NAME rather than falling through to `undefined` the way
-    // every other unknown member of a function object does.
-    if (rtIsPromiseConstructor(recv.get())) rtCheckPromiseStaticMember(keyStr);
     // `constructor` for the three forms that do not inherit it from
     // %Function.prototype%: a generator function's is %GeneratorFunction%,
     // not `Function`, and the table below cannot tell them apart because

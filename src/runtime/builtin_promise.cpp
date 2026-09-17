@@ -549,6 +549,41 @@ uint64_t staticWithResolvers(uint64_t, uint64_t thisBits, uint32_t, const uint64
     return out.get().rawBits();
 }
 
+// 27.2.4.7 Promise.try(f, ...args): `f` is called SYNCHRONOUSLY, before this
+// returns, and whatever it does is captured into a promise — a return value
+// fulfils (a thenable is adopted), a throw rejects. Step 4 is
+// `Completion(Call(f, undefined, args))`, so a non-callable `f` takes the
+// same path as a throwing one: the TypeError `Call` raises is captured, and
+// `Promise.try(5)` rejects rather than throwing.
+//
+// The capability comes first (step 2), before `f` runs, so a subclass whose
+// constructor throws does so before any side effect of `f`.
+uint64_t staticTry(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args{argc, argv};
+    Rooted<Value> ctor{Value(thisBits)};
+    if (!ctor.get().isObject()) {
+        return rtThrowTypeError("Promise.try called on a value that is not a constructor")
+            .rawBits();
+    }
+    Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Rooted<Value> fn{args[0]};
+    Rooted<Value> receiver{Value::fromUndefined()};
+    // The trailing arguments, read from the rooted block: the collector keeps
+    // those slots current across whatever the constructor above allocated.
+    const uint32_t rest = argc > 0 ? argc - 1 : 0;
+    const uint64_t* restArgv = rest > 0 ? reinterpret_cast<const uint64_t*>(args.data() + 1)
+                                        : nullptr;
+    Rooted<Value> result{
+        Value(bronze_dynamic_call(fn.get().rawBits(), receiver.get().rawBits(), rest, restArgv))};
+    if (rtExceptionPending()) {
+        rejectWithPending(cap);
+    } else {
+        rtSettleCapability(cap, result, /*reject=*/false);
+    }
+    return rtCapabilityPromise(cap.get()).rawBits();
+}
+
 // ---- building the intrinsics ------------------------------------------------
 
 void ensurePromiseIntrinsics() {
@@ -587,6 +622,7 @@ void ensurePromiseIntrinsics() {
         {"all", staticAll, 1},         {"allSettled", staticAllSettled, 1},
         {"race", staticRace, 1},       {"any", staticAny, 1},
         {"withResolvers", staticWithResolvers, 0},
+        {"try", staticTry, 1},
     };
     for (const NativeMethod& s : statics) {
         Rooted<Value> key{rtMakeString(s.name)};
@@ -634,15 +670,6 @@ Value rtPromiseConstructor(const std::string& name) {
 
 bool rtIsPromiseConstructor(Value fn) {
     return g_promiseCtor.isObject() && fn.rawBits() == g_promiseCtor.rawBits();
-}
-
-void rtCheckPromiseStaticMember(const std::string& key) {
-    // The 27.2.4 members bronze has not built. `withResolvers` left this list
-    // when it landed above; `try` is ES2025 and is real, so it is refused by
-    // name rather than read as `undefined`.
-    static const char* const kMissing[] = {"try"};
-    rtCheckUnimplementedMember("Promise", kMissing, sizeof(kMissing) / sizeof(kMissing[0]),
-                               key);
 }
 
 }  // namespace bronze::runtime
