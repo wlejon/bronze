@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include "abi/bronze_abi.h"
 #include "runtime/bigint.h"
@@ -223,93 +224,177 @@ static bool isUriUnescaped(unsigned char c, bool component) {
     }
 }
 
-static std::string encodeUriImpl(const std::string& input, bool component) {
+static void pushPercentByte(std::string& out, unsigned byte) {
     static const char hexChars[] = "0123456789ABCDEF";
-    std::string result;
-    result.reserve(input.size() * 3);
-    for (unsigned char c : input) {
-        if (isUriUnescaped(c, component)) {
-            result.push_back(c);
+    out.push_back('%');
+    out.push_back(hexChars[(byte >> 4) & 0xF]);
+    out.push_back(hexChars[byte & 0xF]);
+}
+
+// 19.2.6.5 Encode. Over CODE UNITS, not bytes: a unit outside the unescaped
+// set is taken as a code point — a surrogate pair as one — and it is that
+// code point's UTF-8 bytes that are percent-escaped, so `é` is `%C3%A9` and
+// `💩` is four escapes. A lone surrogate has no UTF-8 spelling and is the
+// URIError step 4.d.ii names. (An 0xFF-for-anything-non-ASCII byte view of
+// the string encoded every accented letter as `%FF`.)
+static bool encodeUriImpl(const std::vector<uint16_t>& units, bool component,
+                          std::string& result) {
+    result.reserve(units.size() * 3);
+    for (size_t i = 0; i < units.size(); ++i) {
+        const uint16_t unit = units[i];
+        if (unit < 0x80 && isUriUnescaped(static_cast<unsigned char>(unit), component)) {
+            result.push_back(static_cast<char>(unit));
+            continue;
+        }
+        uint32_t cp = unit;
+        if (unit >= 0xDC00 && unit <= 0xDFFF) return false;
+        if (unit >= 0xD800 && unit <= 0xDBFF) {
+            if (i + 1 >= units.size() || units[i + 1] < 0xDC00 || units[i + 1] > 0xDFFF) {
+                return false;
+            }
+            cp = 0x10000 + ((static_cast<uint32_t>(unit) - 0xD800) << 10) +
+                 (static_cast<uint32_t>(units[i + 1]) - 0xDC00);
+            ++i;
+        }
+        if (cp < 0x80) {
+            pushPercentByte(result, cp);
+        } else if (cp < 0x800) {
+            pushPercentByte(result, 0xC0 | (cp >> 6));
+            pushPercentByte(result, 0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            pushPercentByte(result, 0xE0 | (cp >> 12));
+            pushPercentByte(result, 0x80 | ((cp >> 6) & 0x3F));
+            pushPercentByte(result, 0x80 | (cp & 0x3F));
         } else {
-            result.push_back('%');
-            result.push_back(hexChars[(c >> 4) & 0xF]);
-            result.push_back(hexChars[c & 0xF]);
+            pushPercentByte(result, 0xF0 | (cp >> 18));
+            pushPercentByte(result, 0x80 | ((cp >> 12) & 0x3F));
+            pushPercentByte(result, 0x80 | ((cp >> 6) & 0x3F));
+            pushPercentByte(result, 0x80 | (cp & 0x3F));
         }
     }
-    return result;
+    return true;
+}
+
+static uint64_t encodeUriEntry(uint32_t argc, const uint64_t* argv, bool component) {
+    RootedArgs args(argc, argv);
+    // Step 1 is ToString, and an absent argument is `undefined`.
+    Rooted<Value> input{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
+    std::string encoded;
+    if (!encodeUriImpl(units, component, encoded)) {
+        return rtThrowError(ErrorKind::URIError, "URI malformed").rawBits();
+    }
+    // ASCII by construction, so a UTF-8 std::string carries it exactly.
+    return rtMakeString(encoded).rawBits();
 }
 
 uint64_t globalEncodeURI(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
-    return rtMakeString(encodeUriImpl(s, /*component=*/false)).rawBits();
+    return encodeUriEntry(argc, argv, /*component=*/false);
 }
 
 uint64_t globalEncodeURIComponent(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
-    return rtMakeString(encodeUriImpl(s, /*component=*/true)).rawBits();
+    return encodeUriEntry(argc, argv, /*component=*/true);
 }
 
-static int hexVal(char c) {
+static int hexVal(uint16_t c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
 
-// 19.2.6.2 Decode. The two entry points differ in ONE set: `decodeURI` keeps
+// One `%XX` at `at`, or -1 for a truncated or non-hex escape.
+static int percentByteAt(const std::vector<uint16_t>& units, size_t at) {
+    if (at + 2 >= units.size() || units[at] != '%') return -1;
+    const int h1 = hexVal(units[at + 1]);
+    const int h2 = hexVal(units[at + 2]);
+    if (h1 < 0 || h2 < 0) return -1;
+    return (h1 << 4) | h2;
+}
+
+// 19.2.6.6 Decode. The two entry points differ in ONE set: `decodeURI` keeps
 // a reserved character's escape spelled as it was written — decoding `%2F`
 // would change where a path splits — while `decodeURIComponent` decodes
 // everything. A truncated or non-hex escape is the spec's URIError in both
-// (19.2.6.1.1), not a byte passed through: passing it through was a silent
-// wrong answer with the same shape as the reserved set being decoded.
-static bool decodeUriImpl(const std::string& input, bool preserveReserved,
-                          std::string& result) {
-    result.reserve(input.size());
-    const size_t len = input.size();
-    for (size_t i = 0; i < len; ++i) {
-        if (input[i] != '%') {
-            result.push_back(input[i]);
+// (step 5.d), and so is a byte sequence that is not the UTF-8 of one code
+// point: a lead byte with too few continuations, an overlong form, a
+// surrogate spelled in UTF-8, or a value past U+10FFFF (steps 5.h–5.j). The
+// decoded code point lands as UTF-16 units, one pair for an astral one.
+static bool decodeUriImpl(const std::vector<uint16_t>& units, bool preserveReserved,
+                          std::vector<uint16_t>& result) {
+    result.reserve(units.size());
+    for (size_t i = 0; i < units.size(); ++i) {
+        if (units[i] != '%') {
+            result.push_back(units[i]);
             continue;
         }
-        if (i + 2 >= len) return false;
-        const int h1 = hexVal(input[i + 1]);
-        const int h2 = hexVal(input[i + 2]);
-        if (h1 < 0 || h2 < 0) return false;
-        const char decoded = static_cast<char>((h1 << 4) | h2);
-        if (preserveReserved && !isUriUnescaped(static_cast<unsigned char>(decoded),
-                                                /*component=*/true) &&
-            isUriUnescaped(static_cast<unsigned char>(decoded), /*component=*/false)) {
-            // In the reserved set (uriReserved + '#'): the difference between
-            // the two isUriUnescaped answers IS that set.
-            result.append(input, i, 3);
-        } else {
-            result.push_back(decoded);
+        const int lead = percentByteAt(units, i);
+        if (lead < 0) return false;
+        if (lead < 0x80) {
+            const auto c = static_cast<unsigned char>(lead);
+            if (preserveReserved && !isUriUnescaped(c, /*component=*/true) &&
+                isUriUnescaped(c, /*component=*/false)) {
+                // In the reserved set (uriReserved + '#'): the difference
+                // between the two isUriUnescaped answers IS that set.
+                result.push_back(units[i]);
+                result.push_back(units[i + 1]);
+                result.push_back(units[i + 2]);
+            } else {
+                result.push_back(static_cast<uint16_t>(lead));
+            }
+            i += 2;
+            continue;
         }
-        i += 2;
+        size_t need;
+        uint32_t cp;
+        uint32_t minimum;
+        if ((lead & 0xE0) == 0xC0) {
+            need = 1; cp = lead & 0x1F; minimum = 0x80;
+        } else if ((lead & 0xF0) == 0xE0) {
+            need = 2; cp = lead & 0x0F; minimum = 0x800;
+        } else if ((lead & 0xF8) == 0xF0) {
+            need = 3; cp = lead & 0x07; minimum = 0x10000;
+        } else {
+            return false;
+        }
+        size_t at = i + 3;
+        for (size_t k = 0; k < need; ++k, at += 3) {
+            const int cont = percentByteAt(units, at);
+            if (cont < 0 || (cont & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (cont & 0x3F);
+        }
+        if (cp < minimum || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+        if (cp < 0x10000) {
+            result.push_back(static_cast<uint16_t>(cp));
+        } else {
+            const uint32_t v = cp - 0x10000;
+            result.push_back(static_cast<uint16_t>(0xD800 + (v >> 10)));
+            result.push_back(static_cast<uint16_t>(0xDC00 + (v & 0x3FF)));
+        }
+        i = at - 1;
     }
     return true;
 }
 
-uint64_t globalDecodeURI(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+static uint64_t decodeUriEntry(uint32_t argc, const uint64_t* argv, bool preserveReserved) {
     RootedArgs args(argc, argv);
-    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
-    std::string decoded;
-    if (!decodeUriImpl(s, /*preserveReserved=*/true, decoded)) {
+    Rooted<Value> input{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
+    std::vector<uint16_t> decoded;
+    if (!decodeUriImpl(units, preserveReserved, decoded)) {
         return rtThrowError(ErrorKind::URIError, "URI malformed").rawBits();
     }
-    return rtMakeString(decoded).rawBits();
+    return rtStringFromUnits(decoded).rawBits();
+}
+
+uint64_t globalDecodeURI(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return decodeUriEntry(argc, argv, /*preserveReserved=*/true);
 }
 
 uint64_t globalDecodeURIComponent(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    std::string s = args.count() > 0 ? textOf(args[0]) : "undefined";
-    std::string decoded;
-    if (!decodeUriImpl(s, /*preserveReserved=*/false, decoded)) {
-        return rtThrowError(ErrorKind::URIError, "URI malformed").rawBits();
-    }
-    return rtMakeString(decoded).rawBits();
+    return decodeUriEntry(argc, argv, /*preserveReserved=*/false);
 }
 
 // ---- Annex B B.2.1: escape / unescape ---------------------------------------

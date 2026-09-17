@@ -1,0 +1,25 @@
+%C3%A9 %F0%9F%92%A9 %E6%97%A5%E6%9C%AC%E8%AA%9E
+http://x/a%20b?q=1&r=%C3%A9#%C3%BC http%3A%2F%2Fx%2Fa%20b%3Fq%3D1%26r%3D%C3%A9%23%C3%BC
+-_.!~*'() ;,/?:@&=+$# %3B%2C%2F%3F%3A%40%26%3D%2B%24%23
+%C2%80 %DF%BF %E0%A0%80 %EF%BF%BF %F4%8F%BF%BF
+true true
+true true
+true true
+true true
+true true
+✓ ✓ 2
+a%2Fb%3Fc%23d e a/b?c#d e
+é%2F é/
+lone high URIError true
+lone low URIError true
+pair ok "%F0%9F%98%80"
+truncated URIError true
+short URIError true
+nonhex URIError true
+continuation URIError true
+lead URIError true
+overlong URIError true
+surrogate URIError true
+past max URIError true
+five byte URIError true
+no arg ["undefined","undefined","null","12"]
