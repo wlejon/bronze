@@ -205,8 +205,16 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
         (scopeIndex < envScopes_.size() && index < envScopes_[scopeIndex].slotNames.size())
             ? envScopes_[scopeIndex].slotNames[index]
             : "";
+    // "Effectively immutable": a slot of an OUTER scope that nothing in that
+    // scope's whole reach writes (EnvScopeInfo::deeplyAssigned). The owning
+    // scope's set and not this function's `assignedNames_`, which stops at
+    // this function's boundary and so cannot see the sibling closure a call
+    // below runs — the `let b = null; ens(); b.x` shape in lowerer_state.h.
     const bool isEffectivelyImmutable =
-        isOuterScope && !lexical && !slotName.empty() && !assignedNames_.contains(slotName);
+        isOuterScope && !lexical && !slotName.empty() && scopeIndex < envScopes_.size() &&
+        envScopes_[scopeIndex].rebindsKnown &&
+        !envScopes_[scopeIndex].deeplyAssigned.contains(slotName) &&
+        !assignedNames_.contains(slotName);
     const bool isImmutable =
         (!lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent)) ||
         isEffectivelyImmutable;
@@ -530,6 +538,7 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
     // body's (lower.cpp, `enterFunctionEnv`) — and never inside a machine body,
     // for the reason stated there.
     if (!generator_) planStableFunctionSlots(stmts, /*params=*/nullptr, info);
+    planScopeRebinds(stmts, /*params=*/nullptr, info);
     const il::ValueId parentRecord = generator_ ? currentEnv(ilFn) : il::kNoValue;
     const uint32_t parentChildSlot =
         generator_ ? envScopes_.back().childSlot : UINT32_MAX;
@@ -563,6 +572,11 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
 void Lowerer::pushSyntheticEnv(std::vector<std::string> slots, il::Function& ilFn) {
     currentScopeDepth_++;
     EnvScopeInfo info;
+    // No statements to scan, and none needed: every slot here (a class's
+    // inner name binding, its private-name tables and methods) is written
+    // once as the class evaluates and never rebound, so the empty set is the
+    // true answer and a method's read of one may be hoisted.
+    info.rebindsKnown = true;
     // The generator's downward link, for the reason `enterScope` adds one: a
     // resume edge defines no SSA value, so the chain of child slots is the only
     // way from the frame to the record innermost at a suspension point.

@@ -11,13 +11,21 @@ namespace {
 // disagreement is a missing join parameter.
 class AssignedVisitor final : public Visitor {
 public:
-    explicit AssignedVisitor(bool onlyInsideTry = false, bool deep = false)
-        : onlyInsideTry_(onlyInsideTry), deep_(deep) {}
+    explicit AssignedVisitor(bool onlyInsideTry = false, bool deep = false,
+                             bool skipDeclarations = false)
+        : onlyInsideTry_(onlyInsideTry), deep_(deep), skipDeclarations_(skipDeclarations) {}
 
     std::unordered_set<std::string> assigned;
 
     void record(const std::string& name) {
         if (!onlyInsideTry_ || tryDepth_ > 0) assigned.insert(name);
+    }
+    // A `var`/`let`/`const` declaration's own initializer, which the rebind
+    // question (`getDeeplyReboundNames`) leaves out: it can never run in the
+    // middle of a nested function's call — a declaration is the owning
+    // scope's own straight-line code — while every other write can.
+    void recordDeclaration(const std::string& name) {
+        if (!skipDeclarations_) record(name);
     }
 
     void visit(const NumberLit&) override {}
@@ -140,10 +148,10 @@ public:
 
     void visit(const VarDecl& v) override {
         if (v.pattern) {
-            for (const auto& name : patternBoundNames(*v.pattern)) record(name);
+            for (const auto& name : patternBoundNames(*v.pattern)) recordDeclaration(name);
             visitPatternExprs(*v.pattern);
         } else {
-            record(v.name);
+            recordDeclaration(v.name);
         }
         if (v.init) v.init->accept(*this);
     }
@@ -250,6 +258,7 @@ public:
 private:
     const bool onlyInsideTry_;
     const bool deep_ = false;
+    const bool skipDeclarations_ = false;
     int tryDepth_ = 0;
 
     // A nested function's parameters and body, walked in the same set. The
@@ -345,6 +354,28 @@ std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<StmtPtr
 
 std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<const Stmt*>& stmts) {
     AssignedVisitor v{/*onlyInsideTry=*/false, /*deep=*/true};
+    for (const auto* s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.assigned;
+}
+
+std::unordered_set<std::string> getDeeplyReboundNames(const Node& node) {
+    AssignedVisitor v{/*onlyInsideTry=*/false, /*deep=*/true, /*skipDeclarations=*/true};
+    node.accept(v);
+    return v.assigned;
+}
+
+std::unordered_set<std::string> getDeeplyReboundNames(const std::vector<StmtPtr>& stmts) {
+    AssignedVisitor v{/*onlyInsideTry=*/false, /*deep=*/true, /*skipDeclarations=*/true};
+    for (const auto& s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.assigned;
+}
+
+std::unordered_set<std::string> getDeeplyReboundNames(const std::vector<const Stmt*>& stmts) {
+    AssignedVisitor v{/*onlyInsideTry=*/false, /*deep=*/true, /*skipDeclarations=*/true};
     for (const auto* s : stmts) {
         if (s) s->accept(v);
     }

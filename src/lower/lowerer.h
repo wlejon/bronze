@@ -761,6 +761,15 @@ private:
     // The other half: the hoisting pass says which IL function the closure it
     // just made for `name` is, once, at the point the binding is created.
     void recordStableFunctionSlot(size_t scopeIndex, uint32_t slot, uint32_t fnIndex);
+    // Fills `info.deeplyAssigned` (lowerer_state.h) from the scope's whole
+    // lexical reach: `stmts` plus the parameter defaults, which are code of
+    // this scope too. Every record built from statements calls this, so a
+    // read of one of its slots from a nested function knows whether the load
+    // may be hoisted above the calls in between.
+    static void planScopeRebinds(const std::vector<const ast::Stmt*>& stmts,
+                                 const std::vector<ast::Param>* params, EnvScopeInfo& info);
+    static void planScopeRebinds(const std::vector<ast::StmtPtr>& stmts,
+                                 const std::vector<ast::Param>* params, EnvScopeInfo& info);
 
     // --- the closure PARAMETER proof (lower_scope.cpp) -----------------------
     //

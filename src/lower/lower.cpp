@@ -478,6 +478,10 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // created over. The two agree, but nothing here proves that they do, and a
     // generator is not what this exists for.
     if (!machineBody) planStableFunctionSlots(body, &params, info);
+    // For every body, machine or not: a closure written in a generator reads
+    // its frame's slots through the same `emitEnvGet` and asks the same
+    // question of them.
+    planScopeRebinds(body, &params, info);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
@@ -607,6 +611,11 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // which does not exist until every module function has been lowered.
     // Readers in those functions load it from the runtime instead.
     info.envValue = il::kNoValue;
+    // Over the WHOLE body, for the reason the capture scan above is: the
+    // top-level function declarations are not in `topLevelStmts`, and a
+    // write inside one of them is exactly the rebind a sibling's hoisted
+    // read must not step over.
+    planScopeRebinds(astModule_.body, /*params=*/nullptr, info);
     envScopes_.push_back(std::move(info));
     moduleEnvScope_ = envScopes_.size() - 1;
     // Here rather than beside openLexicalBindings, because the module

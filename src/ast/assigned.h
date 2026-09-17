@@ -51,4 +51,16 @@ std::unordered_set<std::string> getDeeplyAssignedNames(const Node& node);
 std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<StmtPtr>& stmts);
 std::unordered_set<std::string> getDeeplyAssignedNames(const std::vector<const Stmt*>& stmts);
 
+// `getDeeplyAssignedNames` minus the `var`/`let`/`const` declarations
+// themselves: "can anything REBIND this name while a call is in flight?" A
+// declaration's initializer is the owning scope's own straight-line code, so
+// it cannot run in the middle of a nested function's call; an assignment, an
+// update, a destructuring assignment, a for-in/of assignment head, a nested
+// function's parameters or a catch parameter can (or shadow, which is counted
+// the same way, in the safe direction). This is what licenses hoisting a
+// nested function's read of an outer slot above the calls in its body.
+std::unordered_set<std::string> getDeeplyReboundNames(const Node& node);
+std::unordered_set<std::string> getDeeplyReboundNames(const std::vector<StmtPtr>& stmts);
+std::unordered_set<std::string> getDeeplyReboundNames(const std::vector<const Stmt*>& stmts);
+
 }  // namespace bronze::ast

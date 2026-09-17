@@ -91,6 +91,36 @@ void Lowerer::planStableFunctionSlots(const std::vector<ast::StmtPtr>& stmts,
     planStableFunctionSlots(raw, params, info);
 }
 
+// The plan above's question asked for `emitEnvGet`, which hoists a load of an
+// outer slot to the reading function's entry only when nothing in the OWNING
+// scope's reach can write the slot while that function runs — the reader's own
+// statements say nothing about a sibling closure that does. Narrower than the
+// set the plan refuses on: a declaration is not a rebind here
+// (`getDeeplyReboundNames`), because a `let x = ...` is the owning scope's
+// straight-line code and cannot run in the middle of a nested call, whereas
+// a `var f` after a `function f` is exactly what the plan must refuse.
+void Lowerer::planScopeRebinds(const std::vector<const ast::Stmt*>& stmts,
+                               const std::vector<ast::Param>* params, EnvScopeInfo& info) {
+    info.deeplyAssigned = ast::getDeeplyReboundNames(stmts);
+    if (params != nullptr) {
+        for (const auto& p : *params) {
+            if (!p.defaultValue) continue;
+            for (auto& name : ast::getDeeplyReboundNames(*p.defaultValue)) {
+                info.deeplyAssigned.insert(std::move(name));
+            }
+        }
+    }
+    info.rebindsKnown = true;
+}
+
+void Lowerer::planScopeRebinds(const std::vector<ast::StmtPtr>& stmts,
+                               const std::vector<ast::Param>* params, EnvScopeInfo& info) {
+    std::vector<const ast::Stmt*> raw;
+    raw.reserve(stmts.size());
+    for (const auto& s : stmts) raw.push_back(s.get());
+    planScopeRebinds(raw, params, info);
+}
+
 // The point at which a slot's function becomes known — and, as a side effect
 // worth stating, the reason the edge graph is ACYCLIC.
 //

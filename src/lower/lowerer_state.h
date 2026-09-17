@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ast/ast.h"
@@ -141,6 +142,18 @@ struct EnvScopeInfo {
     // which every caller can reach by counting parent links.
     std::vector<bool> slotIsStableFn;
     std::vector<uint32_t> slotFnIndex;
+    // Every name anything in this scope's WHOLE lexical reach can rebind
+    // (`getDeeplyReboundNames` over the scope's statements) — the question a
+    // reader in a nested function has to ask before it hoists a load of one
+    // of these slots to its entry. The reader's own body is the wrong place
+    // to look: `let b = null; function ens() { b = make(); } function use()
+    // { ens(); b.x; }` assigns `b` in a sibling, and a `use` that answered
+    // from its own statements alone hoisted the load above the call and read
+    // the null. `rebindsKnown` is false for a record built without
+    // statements (`pushSyntheticEnv`), where the set says nothing and no
+    // hoist is licensed.
+    std::unordered_set<std::string> deeplyAssigned;
+    bool rebindsKnown = false;
     il::ValueId envValue = il::kNoValue;
     uint32_t childSlot = UINT32_MAX;
 };
