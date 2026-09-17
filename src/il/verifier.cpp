@@ -351,6 +351,31 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 if (!checkUse(opId, bIdx, iIdx)) return false;
             }
 
+            // The fixed-operand call forms end at sixteen arguments — the
+            // last helper of each ladder is `bronze_call_dynamic_16`,
+            // `bronze_construct_16`, `bronze_super_call_16` (abi/bronze_abi.h)
+            // — and brass answers a longer list with `undefined` and no call.
+            // The lowerer hands a longer list to the `*.spread` form as one
+            // array (`Lowerer::argsTakeArrayPath`); this is what says so.
+            {
+                size_t fixedPrefix = 0;
+                bool fixedForm = true;
+                switch (inst.op) {
+                    case Op::DynamicCall: fixedPrefix = 2; break;  // callee, this
+                    case Op::SuperCall: fixedPrefix = 2; break;    // base, this
+                    case Op::MethodCall: fixedPrefix = 1; break;   // receiver
+                    case Op::Construct: fixedPrefix = 1; break;    // constructor
+                    default: fixedForm = false; break;
+                }
+                if (fixedForm && inst.operands.size() > fixedPrefix + 16) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                            " passes " +
+                                            std::to_string(inst.operands.size() - fixedPrefix) +
+                                            " arguments; past 16 the spread form carries them");
+                    return false;
+                }
+            }
+
             if (inst.op == Op::Throw) {
                 if (inst.operands.size() != 1) {
                     diags.error(Span{}, "Function " + fn.name +
