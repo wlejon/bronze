@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ast/ast.h"
+#include "ast/queries.h"
 
 namespace bronze::ast::detail {
 
@@ -51,6 +52,12 @@ class IdentVisitor : public Visitor {
 public:
     std::unordered_set<std::string> names;
 
+    // Every name this walk records goes through here — a declaration's own
+    // name as much as a read — so a derivation that needs to know WHERE a
+    // mention sits (FreeNameVisitor, which drops the ones a scope it is
+    // inside binds) overrides one function rather than the whole walk.
+    virtual void mention(const std::string& name) { names.insert(name); }
+
     void visit(const NumberLit&) override {}
     void visit(const BigIntLit&) override {}
     void visit(const StringLit&) override {}
@@ -59,7 +66,7 @@ public:
     void visit(const NullLit&) override {}
     void visit(const UndefinedLit&) override {}
     void visit(const ThisExpr&) override {}
-    void visit(const Ident& i) override { names.insert(i.name); }
+    void visit(const Ident& i) override { mention(i.name); }
 
     void visit(const Unary& u) override { u.operand->accept(*this); }
     void visit(const Binary& b) override {
@@ -99,25 +106,25 @@ public:
     }
     void visit(const SuperCall& c) override {
         if (c.baseExpr) c.baseExpr->accept(*this);
-        else if (!c.baseName.empty()) names.insert(c.baseName);
+        else if (!c.baseName.empty()) mention(c.baseName);
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const SuperMember& m) override {
         if (m.baseExpr) m.baseExpr->accept(*this);
-        else if (!m.baseName.empty()) names.insert(m.baseName);
+        else if (!m.baseName.empty()) mention(m.baseName);
     }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }
     void visit(const YieldExpr& y) override { y.argument->accept(*this); }
     void visit(const DynamicImportExpr& d) override { if (d.specifier) d.specifier->accept(*this); }
     void visit(const DestructuringAssign& d) override {
-        for (const auto& n : patternBoundNames(*d.pattern)) names.insert(n);
+        for (const auto& n : patternBoundNames(*d.pattern)) mention(n);
         visitPatternExprs(d.pattern.get(), *this);
         d.value->accept(*this);
     }
     void visit(const ClassDecl& c) override {
-        names.insert(c.name);
+        mention(c.name);
         if (c.superClass) c.superClass->accept(*this);
-        else if (!c.superName.empty()) names.insert(c.superName);
+        else if (!c.superName.empty()) mention(c.superName);
         for (const auto& m : c.methods) {
             // A computed member name is an expression of the ENCLOSING scope,
             // evaluated where the class is defined rather than where the method
@@ -129,7 +136,7 @@ public:
     }
     void visit(const ClassExpr& c) override {
         if (c.superClass) c.superClass->accept(*this);
-        else if (!c.superName.empty()) names.insert(c.superName);
+        else if (!c.superName.empty()) mention(c.superName);
         for (const auto& m : c.methods) {
             if (m.keyExpr) m.keyExpr->accept(*this);
             if (m.fn) m.fn->accept(*this);
@@ -159,10 +166,10 @@ public:
     }
     void visit(const VarDecl& v) override {
         if (v.pattern) {
-            for (const auto& n : patternBoundNames(*v.pattern)) names.insert(n);
+            for (const auto& n : patternBoundNames(*v.pattern)) mention(n);
             visitPatternExprs(v.pattern.get(), *this);
         } else {
-            names.insert(v.name);
+            mention(v.name);
         }
         if (v.init) v.init->accept(*this);
     }
@@ -201,17 +208,23 @@ public:
     void visit(const LabeledStmt& n) override {
         if (n.body) n.body->accept(*this);
     }
+    // The head's name is a mention whether it declares or assigns — and when
+    // it assigns (`for (last of xs)`, 14.7.5.7 with lhsKind assignment) it is
+    // the ONLY mention of an outer binding a closure may hold, so leaving it
+    // out resolved the name against the global object and threw.
     void visit(const ForInStmt& n) override {
+        if (!n.name.empty()) mention(n.name);
         if (n.pattern) {
-            for (const auto& bound : patternBoundNames(*n.pattern)) names.insert(bound);
+            for (const auto& bound : patternBoundNames(*n.pattern)) mention(bound);
             visitPatternExprs(n.pattern.get(), *this);
         }
         if (n.object) n.object->accept(*this);
         for (const auto& s : n.body) s->accept(*this);
     }
     void visit(const ForOfStmt& n) override {
+        if (!n.name.empty()) mention(n.name);
         if (n.pattern) {
-            for (const auto& bound : patternBoundNames(*n.pattern)) names.insert(bound);
+            for (const auto& bound : patternBoundNames(*n.pattern)) mention(bound);
             visitPatternExprs(n.pattern.get(), *this);
         }
         if (n.iterable) n.iterable->accept(*this);
@@ -221,10 +234,10 @@ public:
         for (const auto& s : n.body) s->accept(*this);
         if (n.hasCatchParam) {
             if (n.catchPattern) {
-                for (const auto& bound : patternBoundNames(*n.catchPattern)) names.insert(bound);
+                for (const auto& bound : patternBoundNames(*n.catchPattern)) mention(bound);
                 visitPatternExprs(n.catchPattern.get(), *this);
             } else {
-                names.insert(n.catchName);
+                mention(n.catchName);
             }
         }
         for (const auto& s : n.catchBody) s->accept(*this);
@@ -234,7 +247,7 @@ public:
         if (n.value) n.value->accept(*this);
     }
     void visit(const FunctionDecl& f) override {
-        names.insert(f.name);
+        mention(f.name);
         visitParamExprs(f.params, *this);
         for (const auto& s : f.body) s->accept(*this);
     }
@@ -456,57 +469,207 @@ public:
     }
 };
 
-// Collects all identifier names declared anywhere within a scope (stopping at nested functions).
-class DeclaredNamesVisitor final : public CaptureVisitor {
+// The names a function reaches OUTSIDE itself: IdentVisitor's walk, with a
+// mention kept only when no scope it sits inside binds that name.
+//
+// "Inside" is the whole point. The previous form subtracted every name
+// declared ANYWHERE in the body from every mention in it, so `{ let x; }
+// return x;` in a closure lost the outer `x` — the inner block's binding hid
+// a read it never covered, and the read resolved against the global object.
+// Each list of statements is a scope here, holding the declarations
+// `getScopeDeclarations` gives it; a function adds its parameters, its own
+// name when it is a named expression, and the `var`s hoisted from every block
+// under it (8.6.2); a loop head, a catch parameter and a class name bind over
+// the body they front. Anything this walk does not know to be bound is free,
+// which errs toward a capture — the direction that costs a slot, never a wrong
+// resolution.
+class FreeNameVisitor final : public IdentVisitor {
 public:
-    std::unordered_set<std::string> names;
+    using IdentVisitor::visit;
 
-    void visit(const VarDecl& v) override {
-        std::vector<std::string> declared;
-        appendDeclaredNames(v, declared);
-        names.insert(declared.begin(), declared.end());
-    }
-    void visit(const FunctionDecl& f) override { names.insert(f.name); }
-    void visit(const ClassDecl& c) override { names.insert(c.name); }
-
-    void visit(const FunctionExpr&) override {}
-    void visit(const ClassExpr&) override {}
-
-    void visit(const TryStmt& t) override {
-        for (const auto& s : t.body) if (s) s->accept(*this);
-        if (t.catchPattern) {
-            for (const auto& b : patternBoundNames(*t.catchPattern)) names.insert(b);
+    void mention(const std::string& name) override {
+        for (const auto& scope : scopes_) {
+            if (scope.count(name) != 0) return;
         }
-        for (const auto& s : t.catchBody) if (s) s->accept(*this);
-        for (const auto& s : t.finallyBody) if (s) s->accept(*this);
+        names.insert(name);
     }
+
+    // The function whose free names are wanted: its parameters and body form
+    // the outermost scope of the walk, so a default like `(a, b = a)` binds.
+    void walkFunction(const std::vector<StmtPtr>& body, const std::vector<Param>* params,
+                      const std::string& ownName = {}) {
+        std::unordered_set<std::string> scope;
+        if (params) {
+            for (const auto& p : *params) {
+                if (!p.name.empty()) scope.insert(p.name);
+                if (p.pattern) {
+                    for (const auto& bound : patternBoundNames(*p.pattern)) scope.insert(bound);
+                }
+            }
+        }
+        if (!ownName.empty()) scope.insert(ownName);
+        for (const auto& name : getScopeDeclarations(body)) scope.insert(name);
+        for (const auto& name : getHoistedVarDeclarations(body)) scope.insert(name);
+        scopes_.push_back(std::move(scope));
+        if (params) visitParamExprs(*params, *this);
+        for (const auto& s : body) {
+            if (s) s->accept(*this);
+        }
+        scopes_.pop_back();
+    }
+
+    void visit(const FunctionExpr& f) override {
+        // `function fact() { … fact … }` sees itself (15.2.5). A method's node
+        // carries its property key as a name and binds nothing; the kind is
+        // what tells the two apart, exactly as lowering's `bindsOwnName` site
+        // does.
+        const bool ownName = f.kind == FunctionKind::Normal && !f.isArrow;
+        walkFunction(f.body, &f.params, ownName ? f.name : std::string{});
+    }
+    void visit(const FunctionDecl& f) override {
+        mention(f.name);
+        walkFunction(f.body, &f.params);
+    }
+    // A declaration's body resolves the class name to the DECLARATION's
+    // binding (lowering opens no inner record for it), so the name stays a
+    // mention of the enclosing scope; an expression's name lives only in the
+    // record the class opens for it, and binds over its body here.
+    void visit(const ClassDecl& c) override {
+        mention(c.name);
+        if (c.superClass) c.superClass->accept(*this);
+        else if (!c.superName.empty()) mention(c.superName);
+        walkClassBody(std::string{}, c.methods);
+    }
+    void visit(const ClassExpr& c) override {
+        if (c.superClass) c.superClass->accept(*this);
+        else if (!c.superName.empty()) mention(c.superName);
+        walkClassBody(c.name, c.methods);
+    }
+    void visit(const BlockStmt& b) override { walkList(b.stmts); }
+    void visit(const IfStmt& i) override {
+        i.condition->accept(*this);
+        walkList(i.thenBody);
+        walkList(i.elseBody);
+    }
+    void visit(const WhileStmt& w) override {
+        w.condition->accept(*this);
+        walkList(w.body);
+    }
+    void visit(const DoWhileStmt& d) override {
+        walkList(d.body);
+        d.condition->accept(*this);
+    }
+    // The head's declarations cover the condition, the update and the body.
+    void visit(const ForStmt& f) override {
+        scopes_.push_back(declaredIn(f.init));
+        for (const auto& s : f.init) s->accept(*this);
+        if (f.condition) f.condition->accept(*this);
+        if (f.update) f.update->accept(*this);
+        walkList(f.body);
+        scopes_.pop_back();
+    }
+    // The subject is evaluated OUTSIDE the head's scope (14.7.5.6 uses the
+    // TDZ environment only for the expression's own lookups of the head
+    // names, which bronze reports as a TDZ error either way); a declared head
+    // then binds over the body, and an assigning head is a mention.
+    void visit(const ForInStmt& n) override {
+        if (n.object) n.object->accept(*this);
+        walkIterationHead(n.name, n.pattern.get(), n.isConst || n.isLet || n.isVar, n.body);
+    }
+    void visit(const ForOfStmt& n) override {
+        if (n.iterable) n.iterable->accept(*this);
+        walkIterationHead(n.name, n.pattern.get(), n.isConst || n.isLet || n.isVar, n.body);
+    }
+    // The switch body is one block (14.12.2), so every case shares one scope.
+    void visit(const SwitchStmt& n) override {
+        if (n.discriminant) n.discriminant->accept(*this);
+        std::unordered_set<std::string> scope;
+        for (const auto& c : n.cases) {
+            for (const auto& name : getScopeDeclarations(c.body)) scope.insert(name);
+        }
+        scopes_.push_back(std::move(scope));
+        for (const auto& c : n.cases) {
+            if (c.test) c.test->accept(*this);
+            for (const auto& s : c.body) s->accept(*this);
+        }
+        scopes_.pop_back();
+    }
+    void visit(const TryStmt& n) override {
+        walkList(n.body);
+        std::unordered_set<std::string> scope = declaredIn(n.catchBody);
+        if (n.hasCatchParam) {
+            if (n.catchPattern) {
+                for (const auto& bound : patternBoundNames(*n.catchPattern)) scope.insert(bound);
+            } else {
+                scope.insert(n.catchName);
+            }
+        }
+        scopes_.push_back(std::move(scope));
+        if (n.catchPattern) visitPatternExprs(n.catchPattern.get(), *this);
+        for (const auto& s : n.catchBody) s->accept(*this);
+        scopes_.pop_back();
+        walkList(n.finallyBody);
+    }
+
+private:
+    static std::unordered_set<std::string> declaredIn(const std::vector<StmtPtr>& stmts) {
+        std::unordered_set<std::string> scope;
+        for (const auto& name : getScopeDeclarations(stmts)) scope.insert(name);
+        return scope;
+    }
+    void walkList(const std::vector<StmtPtr>& stmts) {
+        scopes_.push_back(declaredIn(stmts));
+        for (const auto& s : stmts) {
+            if (s) s->accept(*this);
+        }
+        scopes_.pop_back();
+    }
+    void walkIterationHead(const std::string& name, const BindingPattern* pattern, bool declares,
+                           const std::vector<StmtPtr>& body) {
+        std::unordered_set<std::string> scope;
+        if (declares) {
+            if (!name.empty()) scope.insert(name);
+            if (pattern) {
+                for (const auto& bound : patternBoundNames(*pattern)) scope.insert(bound);
+            }
+        } else {
+            if (!name.empty()) mention(name);
+            if (pattern) {
+                for (const auto& bound : patternBoundNames(*pattern)) mention(bound);
+            }
+        }
+        for (const auto& d : declaredIn(body)) scope.insert(d);
+        scopes_.push_back(std::move(scope));
+        if (pattern) visitPatternExprs(pattern, *this);
+        for (const auto& s : body) {
+            if (s) s->accept(*this);
+        }
+        scopes_.pop_back();
+    }
+    // A class's own name is bound inside its body; a computed member name is
+    // the enclosing scope's expression and is walked before that binding.
+    void walkClassBody(const std::string& name, const std::vector<ClassMethod>& methods) {
+        for (const auto& m : methods) {
+            if (m.keyExpr) m.keyExpr->accept(*this);
+        }
+        std::unordered_set<std::string> scope;
+        if (!name.empty()) scope.insert(name);
+        scopes_.push_back(std::move(scope));
+        for (const auto& m : methods) {
+            if (m.fn) m.fn->accept(*this);
+            if (m.init) m.init->accept(*this);
+        }
+        scopes_.pop_back();
+    }
+
+    std::vector<std::unordered_set<std::string>> scopes_;
 };
 
 inline void CaptureVisitor::addFunctionBody(const std::vector<StmtPtr>& body,
                                            const std::vector<Param>* params) {
-    IdentVisitor idents;
-    if (params) visitParamExprs(*params, idents);
-    for (const auto& s : body) {
-        if (s) s->accept(idents);
-    }
-    if (params) {
-        for (const auto& p : *params) {
-            if (!p.name.empty()) idents.names.erase(p.name);
-            if (p.pattern) {
-                for (const auto& bound : patternBoundNames(*p.pattern)) {
-                    idents.names.erase(bound);
-                }
-            }
-        }
-    }
-    DeclaredNamesVisitor decls;
-    for (const auto& s : body) {
-        if (s) s->accept(decls);
-    }
-    for (const auto& d : decls.names) {
-        idents.names.erase(d);
-    }
-    captured.insert(idents.names.begin(), idents.names.end());
+    FreeNameVisitor free;
+    free.walkFunction(body, params);
+    captured.insert(free.names.begin(), free.names.end());
 }
 
 // What one statement contributes to its scope's LEXICAL declarations. A

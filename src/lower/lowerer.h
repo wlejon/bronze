@@ -910,10 +910,14 @@ private:
     // --- lower_class.cpp: classes, desugared -------
     bool lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn);
     std::optional<Value> lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn);
+    // `bindsOwnName`: the class is an EXPRESSION, so its name — when it wrote
+    // one — is visible only inside the class (15.7.15 step 3) and the
+    // enclosing scope declares nothing. A declaration passes false: it binds
+    // the name outside as well, and the body resolves to that binding.
     std::optional<Value> lowerClass(const std::string& name, const ast::Expr* superClass,
                                     const std::string& superName,
                                     const std::vector<ast::ClassMethod>& methods, Span span,
-                                    il::Function& ilFn);
+                                    il::Function& ilFn, bool bindsOwnName = false);
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
 
     // --- lower_private.cpp: private class elements ------------------------

@@ -1,14 +1,13 @@
-// BLOCKED: `Uncaught ReferenceError: last is not defined`.
-//
 // A `for (name of iterable)` head whose target is a bare identifier is an
 // ASSIGNMENT to an existing binding (ECMA-262 14.7.5.7, ForIn/OfBodyEvaluation
 // with lhsKind assignment), not a declaration. When that binding is an outer
 // scope's environment slot — a module-level `let` the enclosing function
 // captured — the head must resolve it the way `name = value` would: through the
-// record, by depth and index. Today the head inside a FUNCTION resolves the
-// name as a global and throws, while the same head at the top level, and a
-// head over the function's own local, both work. The values pinned here are
-// what the assignment form leaves in the slot after the loop.
+// record, by depth and index. The capture walk once recorded no mention for a
+// bare head, so the module-level `let` got no slot and the head inside a
+// FUNCTION resolved the name as a global and threw, while the same head at the
+// top level, and a head over the function's own local, both worked. The values
+// pinned here are what the assignment form leaves in the slot after the loop.
 
 let last = "none";
 for (last of ["x", "y"]) {}

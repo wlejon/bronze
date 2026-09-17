@@ -1,0 +1,14 @@
+block: 1
+for-of head: 1
+pattern head: 1
+for-in head: 1
+for head: 1
+catch param: 1
+switch: 9 1
+nested param: 21
+var hoist: 3
+assigning head: q
+own name: 24 string
+class expr: function outer true string
+class expr self: true
+class decl: true

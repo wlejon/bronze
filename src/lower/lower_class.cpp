@@ -32,7 +32,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                                                   const ast::Expr* superClass,
                                                   const std::string& superName,
                                                   const std::vector<ast::ClassMethod>& methods,
-                                                  Span span, il::Function& ilFn) {
+                                                  Span span, il::Function& ilFn,
+                                                  bool bindsOwnName) {
     const ast::ClassMethod* ctor = nullptr;
     for (const auto& m : methods) {
         if (m.isConstructor) {
@@ -65,9 +66,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     bool hasStaticBlock = false;
     for (const auto& m : methods) hasStaticBlock = hasStaticBlock || m.isStaticBlock;
     // A class with neither private names nor a static block needs no record at
-    // all, and gets exactly the IL it always had.
+    // all, and gets exactly the IL it always had — unless it is a NAMED
+    // EXPRESSION, whose name has nowhere else to live: `const K = class C {
+    // static make() { return new C(); } }` binds `C` in this record and in no
+    // enclosing scope (15.7.15 step 3), so without it the method read an
+    // unrelated outer `C`, or the global object.
     const bool hasPrivate = !privateElements.empty() || hasStaticBlock;
-    if (hasPrivate && !openClassScope(name, privateElements, ilFn)) return std::nullopt;
+    const bool hasScope = hasPrivate || (bindsOwnName && !name.empty());
+    if (hasScope && !openClassScope(name, privateElements, ilFn)) return std::nullopt;
     // Everything from here on may leave through a `return std::nullopt`, and
     // the record must come off both stacks when it does.
     struct PrivateScopeGuard {
@@ -78,7 +84,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             self->privateScopes_.pop_back();
             self->exitScope();
         }
-    } privateGuard{this, hasPrivate};
+    } privateGuard{this, hasScope};
 
     // The heritage is READ before the class binding is initialized. 15.7.14
     // evaluates ClassHeritage at step 5 and initializes `classBinding` only at
@@ -286,7 +292,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // 15.7.14 step 28: the class binding is initialized once every method is
     // defined and before any static element is evaluated, which is what makes
     // `static { C.#x = 1 }` reach the class by name.
-    if (hasPrivate && !name.empty() && !initClassNameBinding(name, *ctorVal, span, ilFn)) {
+    if (hasScope && !name.empty() && !initClassNameBinding(name, *ctorVal, span, ilFn)) {
         return std::nullopt;
     }
 
@@ -390,7 +396,8 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn) {
-    return lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span, ilFn);
+    return lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span,
+                      ilFn, /*bindsOwnName=*/true);
 }
 
 // `super.m` — the lookup starts at the PARENT prototype, which is why it cannot

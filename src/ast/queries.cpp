@@ -193,6 +193,25 @@ public:
         }
         CaptureVisitor::visit(d);
     }
+    // An ASSIGNING loop head (`for (x of xs)`, no declarator) writes the name
+    // the same way; a declaring head binds a fresh one and mentions nothing.
+    void visit(const ForInStmt& f) override {
+        if (!f.isConst && !f.isLet && !f.isVar) noteHead(f.name, f.pattern.get());
+        CaptureVisitor::visit(f);
+    }
+    void visit(const ForOfStmt& f) override {
+        if (!f.isConst && !f.isLet && !f.isVar) noteHead(f.name, f.pattern.get());
+        CaptureVisitor::visit(f);
+    }
+
+private:
+    void noteHead(const std::string& name, const BindingPattern* pattern) {
+        if (name == name_) found = true;
+        if (!pattern) return;
+        for (const auto& bound : patternBoundNames(*pattern)) {
+            if (bound == name_) found = true;
+        }
+    }
 };
 
 bool functionFreelyReferences(const std::vector<Param>& params, const std::vector<StmtPtr>& body,
