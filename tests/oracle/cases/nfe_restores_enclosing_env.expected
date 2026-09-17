@@ -1,0 +1,5 @@
+nested: r,a,b,c
+direct: 3 2 1 0
+two records: 113
+top: 24
+outside: undefined inside: function

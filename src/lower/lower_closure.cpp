@@ -66,6 +66,13 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // function that the body does not contain) actually mentions the name. The
     // binding is unobservable otherwise, and paying a record per evaluation for
     // it would change the IL of every `function f() {}` in the program.
+    //
+    // The enclosing function's environment is saved HERE, before the record
+    // replaces it as the current one: the restore at the end of this function
+    // hands it back, and a save taken after the swap handed back the record —
+    // so the statement after `(function walk(n) { ... })(root)` read the
+    // enclosing function's first slot out of the record and got the closure.
+    const il::ValueId outerEnvValue = currentEnvValue_;
     il::ValueId nfeEnv = il::kNoValue;
     if (bindsOwnName && !isArrow && !declaredName.empty()) {
         auto referenced = ast::getReferencedNames(body);
@@ -200,7 +207,6 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     generator_.reset();
     auto outerHandler = currentHandler_;
     currentHandler_ = il::kNoBlock;
-    auto outerEnvValue = currentEnvValue_;
     auto outerEntryEnvValue = entryEnvValue_;
     auto outerImmutableEnvCache = std::move(immutableEnvCache_);
     auto outerAssignedNames = assignedNames_;
