@@ -36,6 +36,14 @@ bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLeve
         varBindings_.clear();
         varNativeClasses_.clear();
         activeVarMap_.clear();
+        // A `func.ref` is cached per IL function (lower_expr.cpp: one value
+        // per declaration), and a segment IS a new IL function: a top-level
+        // `function f` mentioned as a value in seg0 and again in seg2
+        // otherwise hands seg2 a value id that names seg0's instruction —
+        // "use of undefined value" here, "operand is null" from brass. The
+        // JIT path hit it first: its eval transform appends `globalThis.f = f`
+        // for every declaration, so every big enough program tripped it.
+        functionRefMap_.clear();
         currentScopeDepth_ = 0;
         varDeclCounter_ = 0;
         jumpStack_.clear();

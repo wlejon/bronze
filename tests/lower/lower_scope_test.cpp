@@ -7,11 +7,54 @@
 #include <doctest/doctest.h>
 
 #include "il/print.h"
+#include "il/verifier.h"
 #include "lower_fixture.h"
 
 using namespace bronze;
 using bronze::lower_test::inferAndLower;
 using bronze::lower_test::parseAndLower;
+
+TEST_CASE("a function mentioned as a value in two top-level segments gets a ref in each") {
+    // A top level of 128KB or more lowers as `main.seg<K>` functions
+    // (lower_segment.cpp), and the `func.ref` a value mention of a top-level
+    // declaration produces is cached per IL function. The cache was not reset
+    // between segments, so the second mention reused the first segment's
+    // value id — an operand naming an instruction of another function, which
+    // the verifier refuses. The JIT path hit it first: its eval transform
+    // appends `globalThis.f = f` for every declaration, so any big enough
+    // program with a function mentioned early tripped it at boot.
+    // Sized on statement spans, which exclude the separators, so the source
+    // is built comfortably past the 128KB line.
+    std::string src = "function f() { return 1; }\nlet a = f;\n";
+    while (src.size() < 160 * 1024) src += "a = a || f; a = a || f;\n";
+    src += "globalThis.f = f;\nconsole.log(typeof globalThis.f);\n";
+
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = parseAndLower(src, diags, buf);
+    REQUIRE(optMod.has_value());
+    CHECK_FALSE(diags.hasErrors());
+
+    const std::string text = il::print(*optMod);
+    REQUIRE(text.find("func main.seg1()") != std::string::npos);
+    CHECK(il::verify(*optMod, diags));
+    CHECK_FALSE(diags.hasErrors());
+
+    // Every segment mentions `f`, so every segment carries its own ref. The
+    // verifier alone does not see the stale id when the segment happens to
+    // define that number before the use; the ref count does.
+    const auto count = [&](std::string_view needle) {
+        size_t n = 0;
+        for (size_t at = text.find(needle); at != std::string::npos;
+             at = text.find(needle, at + needle.size())) {
+            ++n;
+        }
+        return n;
+    };
+    const size_t segments = count("func main.seg");
+    CHECK(segments >= 2);
+    CHECK(count("func.ref @f") >= segments);
+}
 
 TEST_CASE("an ordinary function that uses `arguments` takes it as a parameter") {
     // The arguments object is built from the caller's REAL argument list, so it
