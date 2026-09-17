@@ -32,6 +32,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
@@ -44,6 +45,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -612,7 +614,116 @@ uint64_t iteratorConstructorBody(uint64_t, uint64_t thisBits, uint32_t, const ui
         .rawBits();
 }
 
+// ---- 27.1.4.3 / 27.1.4.4: the two accessors on %Iterator.prototype% ---------
+//
+// Every other built-in prototype carries `constructor` as a writable data
+// property. %Iterator.prototype% does not, because it is a prototype user
+// code is expected to subclass, and a subclass's own `constructor` write must
+// land on the subclass rather than mutate the shared object. So both
+// properties are accessor pairs whose setter is
+// SetterThatIgnoresPrototypeProperties (27.1.4.3.1):
+//
+//   1. a receiver that is not an object is a TypeError;
+//   2. a receiver that IS the home object is a TypeError — the shared object
+//      is frozen in practice without being frozen in fact;
+//   3. any other receiver with no own property under the key gets an OWN data
+//      property (CreateDataPropertyOrThrow), and one that already has it gets
+//      an ordinary Set — either way the prototype is untouched.
+
+uint64_t iteratorProtoConstructorGet(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return rtIteratorConstructor("Iterator").rawBits();
+}
+
+uint64_t iteratorProtoTagGet(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return rtMakeString("Iterator").rawBits();
+}
+
+// `key` is built HERE, after the receiver and the arguments are rooted: the
+// receiver arrives as raw bits, and minting the key string before rooting it
+// handed the collector a chance to move the object out from under `thisBits`
+// (it did, under BRONZE_GC_STRESS=1).
+uint64_t setterIgnoringPrototype(uint64_t thisBits, uint32_t argc, const uint64_t* argv,
+                                 bool tag, const char* what) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    Rooted<Value> value{args[0]};
+    Rooted<Value> key{tag ? Value::fromSymbol(rtSymbolToStringTag()) : rtMakeString("constructor")};
+    if (!self.get().isObject()) {
+        return rtThrowTypeError(std::string("Cannot set ") + what +
+                                " on a value that is not an object")
+            .rawBits();
+    }
+    if (self.get().rawBits() == rtIteratorSharedPrototype().rawBits()) {
+        return rtThrowTypeError(std::string("Cannot assign to ") + what +
+                                " of Iterator.prototype (27.1.4.3.1 step 2)")
+            .rawBits();
+    }
+    bool enumerable = false;
+    const bool own = rtOwnPropertyOf(self, key.get(), enumerable);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (own) {
+        // Step 5: an ordinary Set on a receiver that already owns the key,
+        // which lands on that own property and never reaches this accessor
+        // again.
+        bronze_elem_set(self.get().rawBits(), key.get().rawBits(), value.get().rawBits(),
+                        /*strict=*/true);
+        return Value::fromUndefined().rawBits();
+    }
+    // Step 4: CreateDataPropertyOrThrow — a DEFINITION, so the write does not
+    // walk the chain back to this setter. A plain object's table is its own;
+    // a function's is its statics box.
+    Rooted<Value> holder{self.get()};
+    const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
+    if (kind == HeapKind::Function) {
+        rtEnsureFunctionProperties(self);
+        holder.set(self.get().asObject<FunctionHeader>()->properties);
+    } else if (kind != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        fatal((std::string("unsupported: defining ") + what +
+               " on a receiver that is neither a plain object nor a function (the "
+               "Iterator.prototype setter creates an own data property, and this kind "
+               "keeps its named properties somewhere the definition path does not reach)")
+                  .c_str());
+    }
+    SetRefusal refusal = SetRefusal::None;
+    holder.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, value,
+                                                   /*ic=*/nullptr, /*enumerable=*/true,
+                                                   /*defineOwn=*/true, /*receiver=*/nullptr,
+                                                   &refusal);
+    if (refusal != SetRefusal::None) {
+        return rtThrowTypeError(std::string("Cannot define ") + what +
+                                " on an object that is not extensible")
+            .rawBits();
+    }
+    return Value::fromUndefined().rawBits();
+}
+
+uint64_t iteratorProtoConstructorSet(uint64_t, uint64_t thisBits, uint32_t argc,
+                                     const uint64_t* argv) {
+    return setterIgnoringPrototype(thisBits, argc, argv, /*tag=*/false, "constructor");
+}
+
+uint64_t iteratorProtoTagSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return setterIgnoringPrototype(thisBits, argc, argv, /*tag=*/true, "Symbol.toStringTag");
+}
+
 }  // namespace
+
+void rtInstallIteratorPrototypeAccessors(Rooted<Value>& proto) {
+    {
+        Rooted<Value> key{rtMakeString("constructor")};
+        Rooted<Value> getter{rtNativeFunction(iteratorProtoConstructorGet, 0)};
+        Rooted<Value> setter{rtNativeFunction(iteratorProtoConstructorSet, 1)};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
+                                     /*enumerable=*/false, /*configurable=*/true);
+    }
+    {
+        Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
+        Rooted<Value> getter{rtNativeFunction(iteratorProtoTagGet, 0)};
+        Rooted<Value> setter{rtNativeFunction(iteratorProtoTagSet, 1)};
+        ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
+                                     /*enumerable=*/false, /*configurable=*/true);
+    }
+}
 
 // ECMA-262 27.1.4.1, in the spec's own order. Every arity is the spec's
 // `length`, except that a variadic member would take 0 — none here is variadic.

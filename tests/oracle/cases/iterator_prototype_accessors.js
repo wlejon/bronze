@@ -1,7 +1,4 @@
-// BLOCKED: `Iterator.prototype.constructor` and
-// `Iterator.prototype[Symbol.toStringTag]` are plain absences today —
-// `Iterator.prototype.constructor` is undefined and
-// `Object.prototype.toString.call(Iterator.prototype)` is `[object Object]`.
+// `Iterator.prototype.constructor` and `Iterator.prototype[Symbol.toStringTag]`.
 //
 // 27.1.4.3 and 27.1.4.4 make both of them ACCESSORS, which is unusual enough to
 // be the whole content of this case. Every other built-in prototype carries
@@ -17,13 +14,10 @@
 //   - a write through any other receiver creates an OWN data property on that
 //     receiver (step 4) and leaves %Iterator.prototype% untouched.
 //
-// bronze cannot express this yet: `rtDefineMethods` installs data properties on
-// native prototype boxes and there is no native accessor-pair installer, so the
-// pair is a missing piece of runtime machinery rather than two missing members.
-// The iterator helpers themselves are implemented and pinned in
-// cases/iterator_helpers.js — this is the metadata around them.
-//
-// The expectation below is what the pair owes when it lands.
+// The pair is `rtInstallIteratorPrototypeAccessors` (iterator_helpers.cpp), a
+// native getter and setter each, installed through the same `defineAccessor`
+// `Symbol.prototype.description` uses. The iterator helpers themselves are
+// pinned in cases/iterator_helpers.js — this is the metadata around them.
 console.log(Iterator.prototype.constructor === Iterator);
 console.log(Object.prototype.toString.call(Iterator.prototype));
 console.log(Iterator.prototype[Symbol.toStringTag]);

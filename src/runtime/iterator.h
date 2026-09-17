@@ -222,6 +222,14 @@ Value rtIteratorSharedPrototype();
 // gives all five the eleven methods.
 void rtInstallIteratorHelpers(Rooted<Value>& proto);
 
+// 27.1.4.3 and 27.1.4.4: `constructor` and `@@toStringTag` on
+// %IteratorPrototype% are ACCESSORS, not data — the getter answers %Iterator%
+// / "Iterator", and the setter is SetterThatIgnoresPrototypeProperties, which
+// refuses a write whose receiver is the prototype itself and turns any other
+// receiver's write into an own data property. Installed by the same
+// initializer, after the helpers.
+void rtInstallIteratorPrototypeAccessors(Rooted<Value>& proto);
+
 // %IteratorHelperPrototype% (27.1.4.2) and %WrapForValidIteratorPrototype%
 // (27.1.3.2.1): a `next` and a `return` each, installed onto the prototype
 // object `iteratorObjectShape` allocates for their kinds — the arrangement

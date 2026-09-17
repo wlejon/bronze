@@ -314,6 +314,11 @@ Value iteratorPrototypeRoot() {
     // published from `obj` afterwards, because every `setProp` inside can move
     // it.
     rtInstallIteratorHelpers(obj);
+    // 27.1.4.3 and 27.1.4.4, the two accessors. Their setter compares the
+    // receiver against this object through `rtIteratorSharedPrototype`, which
+    // reads the static published below — so they are installed before it is
+    // published, and no program can write through them until it is.
+    rtInstallIteratorPrototypeAccessors(obj);
     root = obj.get();
     rtHeap().add_permanent_root(&root);
     return root;
