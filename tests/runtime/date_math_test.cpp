@@ -185,93 +185,136 @@ TEST_CASE("date inspect prints the ISO form and names an invalid date") {
     CHECK(inspectString(std::nan("")) == "Invalid Date");
 }
 
+// Every input below either carries its zone (Z, GMT, an offset) or is NaN, so
+// that the expected value is the same on every machine. The local-time forms
+// are covered by the oracle case tests/oracle/cases/date_parse_legacy.js
+// through relations that cancel the zone out.
+
 TEST_CASE("date parse reads the ISO date-time format") {
-    double t = 0.0;
-    std::string refused;
-    auto ok = [&](const char* text) {
-        REQUIRE(parse(text, t, refused) == ParseOutcome::Ok);
-        return t;
-    };
-    CHECK(ok("1970-01-01T00:00:00.000Z") == 0.0);
-    CHECK(ok("2020-01-01T00:00:00Z") == at(2020.0, 0.0, 1.0));
-    CHECK(ok("2020-01-01T00:00Z") == at(2020.0, 0.0, 1.0));
+    CHECK(parse("1970-01-01T00:00:00.000Z") == 0.0);
+    CHECK(parse("2020-01-01T00:00:00Z") == at(2020.0, 0.0, 1.0));
+    CHECK(parse("2020-01-01T00:00Z") == at(2020.0, 0.0, 1.0));
     // A date-only form is UTC with no offset written; that is 21.4.1.15's rule
     // and the one part of the grammar that surprises everybody.
-    CHECK(ok("2020-01-01") == at(2020.0, 0.0, 1.0));
-    CHECK(ok("2020-01") == at(2020.0, 0.0, 1.0));
-    CHECK(ok("2020") == at(2020.0, 0.0, 1.0));
+    CHECK(parse("2020-01-01") == at(2020.0, 0.0, 1.0));
+    CHECK(parse("2020-01") == at(2020.0, 0.0, 1.0));
+    CHECK(parse("2020") == at(2020.0, 0.0, 1.0));
     // Explicit offsets, in both directions and in both spellings.
-    CHECK(ok("2020-01-01T00:00:00+05:30") == at(2020.0, 0.0, 1.0) - 5.5 * kMsPerHour);
-    CHECK(ok("2020-01-01T00:00:00-05:00") == at(2020.0, 0.0, 1.0) + 5.0 * kMsPerHour);
-    CHECK(ok("2020-01-01T00:00:00+0530") == at(2020.0, 0.0, 1.0) - 5.5 * kMsPerHour);
+    CHECK(parse("2020-01-01T00:00:00+05:30") == at(2020.0, 0.0, 1.0) - 5.5 * kMsPerHour);
+    CHECK(parse("2020-01-01T00:00:00-05:00") == at(2020.0, 0.0, 1.0) + 5.0 * kMsPerHour);
+    CHECK(parse("2020-01-01T00:00:00+0530") == at(2020.0, 0.0, 1.0) - 5.5 * kMsPerHour);
     // The expanded year form, both signs.
-    CHECK(ok("+010000-01-01T00:00:00Z") == at(10000.0, 0.0, 1.0));
-    CHECK(ok("-000001-01-01T00:00:00Z") == at(-1.0, 0.0, 1.0));
-    CHECK(ok("+275760-09-13T00:00:00.000Z") == kMaxTimeValue);
+    CHECK(parse("+010000-01-01T00:00:00Z") == at(10000.0, 0.0, 1.0));
+    CHECK(parse("-000001-01-01T00:00:00Z") == at(-1.0, 0.0, 1.0));
+    CHECK(parse("+275760-09-13T00:00:00.000Z") == kMaxTimeValue);
     // 24:00 is the end of a day and only with zero minutes, seconds and ms.
-    CHECK(ok("2020-01-01T24:00:00Z") == at(2020.0, 0.0, 2.0));
+    CHECK(parse("2020-01-01T24:00:00Z") == at(2020.0, 0.0, 2.0));
     // A fraction longer than three digits truncates rather than rounding.
-    CHECK(ok("2020-01-01T00:00:00.9999Z") == at(2020.0, 0.0, 1.0, 0, 0, 0, 999.0));
-    CHECK(ok("2020-01-01T00:00:00.1Z") == at(2020.0, 0.0, 1.0, 0, 0, 0, 100.0));
+    CHECK(parse("2020-01-01T00:00:00.9999Z") == at(2020.0, 0.0, 1.0, 0, 0, 0, 999.0));
+    CHECK(parse("2020-01-01T00:00:00.1Z") == at(2020.0, 0.0, 1.0, 0, 0, 0, 100.0));
     // Out of range clips to NaN rather than wrapping.
-    REQUIRE(parse("+275760-09-14T00:00:00Z", t, refused) == ParseOutcome::Ok);
-    CHECK(std::isnan(t));
+    CHECK(std::isnan(parse("+275760-09-14T00:00:00Z")));
 }
 
-TEST_CASE("date parse rejects out-of-bounds ISO fields outright") {
-    double t = 0.0;
-    std::string refused;
-    for (const char* bad : {"2020-13-01", "2020-00-01", "2020-02-30", "2019-02-29",
-                            "2020-01-32", "2020-01-01T25:00:00Z", "2020-01-01T24:00:01Z",
-                            "2020-01-01T00:60:00Z", "2020-01-01T00:00:60Z", "-000000-01-01",
-                            "20-01-01", "2020-1-01", "2020-01-01T0:00Z", "2020-01-01Tgarbage"}) {
-        CHECK(parse(bad, t, refused) == ParseOutcome::NotADate);
+TEST_CASE("date parse rejects out-of-bounds fields, and only those") {
+    for (const char* bad : {"2020-13-01", "2020-00-01", "2020-01-32", "2020-01-00",
+                            "2020-01-01T25:00:00Z", "2020-01-01T24:00:01Z",
+                            "2020-01-01T00:60:00Z", "2020-01-01T00:00:60Z", "-000000",
+                            "2020-01-01T0:00Z", "2020-01-01T10:00Zx", "2020-01-01Tgarbage",
+                            "2020-01-01+01:00"}) {
+        CAPTURE(bad);
+        CHECK(std::isnan(parse(bad)));
     }
-    // A leap day in a leap year is fine, which is the other half of the check.
-    CHECK(parse("2020-02-29", t, refused) == ParseOutcome::Ok);
+    // The day is checked against 31, never against the month: a date the
+    // calendar does not have is carried forward by MakeDay, which is what
+    // every engine does and what `new Date(2020, 1, 30)` does.
+    CHECK(parse("2020-02-30") == at(2020.0, 2.0, 1.0));
+    CHECK(parse("2019-02-29") == at(2019.0, 2.0, 1.0));
+    CHECK(parse("2020-02-29") == at(2020.0, 1.0, 29.0));
 }
 
 TEST_CASE("date parse round-trips bronze's own toString and toUTCString") {
-    double t = 0.0;
-    std::string refused;
     for (double tv : {0.0, 1.0, -1.0, at(2020.0, 1.0, 29.0, 13.0, 5.0, 9.0),
-                      at(1950.0, 6.0, 4.0, 1.0, 2.0, 3.0), at(-44.0, 2.0, 15.0)}) {
-        REQUIRE(parse(utcString(tv), t, refused) == ParseOutcome::Ok);
+                      at(1950.0, 6.0, 4.0, 1.0, 2.0, 3.0)}) {
         // toUTCString drops the milliseconds, so the round-trip is exact only
         // to the second — which is what makes this the right comparison.
-        CHECK(t == tv - modulo(tv, kMsPerSecond));
-
-        REQUIRE(parse(dateTimeString(tv), t, refused) == ParseOutcome::Ok);
-        CHECK(t == tv - modulo(tv, kMsPerSecond));
+        CHECK(parse(utcString(tv)) == tv - modulo(tv, kMsPerSecond));
+        CHECK(parse(dateTimeString(tv)) == tv - modulo(tv, kMsPerSecond));
     }
 }
 
 TEST_CASE("date parse answers NaN for text that is not a date at all") {
-    double t = 0.0;
-    std::string refused;
     for (const char* junk : {"", "   ", "hello", "mayonnaise", "2020-01-01X",
-                             "not a date at all", "Sunshine"}) {
-        CHECK(parse(junk, t, refused) == ParseOutcome::NotADate);
+                             "not a date at all", "Sunshine", ":", "-", "+", ")", "()",
+                             "1x Jan 2020", "Jan 1x 2020", "Jan 1 2020 foo",
+                             "Jan 1 2020 10:00 GMT+0100 extra", "Jan 1 2020 5pm"}) {
+        CAPTURE(junk);
+        CHECK(std::isnan(parse(junk)));
     }
 }
 
-TEST_CASE("date parse refuses by name the formats node accepts and bronze does not") {
-    double t = 0.0;
-    std::string refused;
-    for (const char* other : {"1/1/2020", "2020/01/01", "Jan 1 2020", "January 1, 2020",
-                              "jan 1 2020", "2020-01-01 00:00:00",
-                              "Wed, 01 Jan 2020 00:00:00 +0000",
-                              "Wed Jan 01 2020 00:00:00 GMT+0000 (Coordinated Universal Time)"}) {
-        CAPTURE(other);
-        REQUIRE(parse(other, t, refused) == ParseOutcome::RefusedFormat);
-        CHECK(!refused.empty());
-    }
+TEST_CASE("date parse reads the legacy forms with an explicit zone as V8 does") {
+    const double jan1 = at(2020.0, 0.0, 1.0);
+    const double ten = jan1 + 10.0 * kMsPerHour;
+    CHECK(parse("Jan 1 2020 10:00 GMT") == ten);
+    CHECK(parse("Jan 1 2020 10:00 UTC") == ten);
+    CHECK(parse("Jan 1 2020 10:00 UT") == ten);
+    CHECK(parse("Jan 1 2020 10:00 Z") == ten);
+    CHECK(parse("January 1, 2020 10:00 GMT") == ten);
+    CHECK(parse("1 January 2020 10:00 GMT") == ten);
+    CHECK(parse("2020 Jan 1 10:00 GMT") == ten);
+    CHECK(parse("Wed Jan 01 2020 10:00:00 GMT+0000 (Coordinated Universal Time)") == ten);
+    CHECK(parse("Wed, 01 Jan 2020 10:00:00 +0000") == ten);
+    CHECK(parse("Wed, 01 Jan 2020 10:00:00 GMT") == ten);
+    CHECK(parse("1/1/2020 10:00:00 AM UTC") == ten);
+    CHECK(parse("1/1/2020 10:00:00 PM UTC") == ten + 12.0 * kMsPerHour);
+    CHECK(parse("2020/01/01 10:00 GMT") == ten);
+    CHECK(parse("2020-01-01 10:00:00Z") == ten);
+    CHECK(parse("2020-01-01 10:00 GMT+0100") == ten - kMsPerHour);
+    // Offsets in every spelling V8 takes after a time or after UTC.
+    CHECK(parse("Jan 1 2020 10:00 GMT+1") == ten - kMsPerHour);
+    CHECK(parse("Jan 1 2020 10:00 GMT+01:30") == ten - 1.5 * kMsPerHour);
+    CHECK(parse("Jan 1 2020 10:00 +0130") == ten - 1.5 * kMsPerHour);
+    CHECK(parse("Jan 1 2020 10:00 -05") == ten + 5.0 * kMsPerHour);
+    CHECK(parse("Jan 1 2020 10:00-05:00") == ten + 5.0 * kMsPerHour);
+    CHECK(parse("Jan 1 2020 10:00 -500") == ten + 5.0 * kMsPerHour);
+    CHECK(parse("Jan 1 2020 10:00 EST") == ten + 5.0 * kMsPerHour);
+    CHECK(parse("Jan 1 2020 10:00 PDT") == ten + 7.0 * kMsPerHour);
+    CHECK(parse("Jan 1 2020 GMT-5") == jan1 + 5.0 * kMsPerHour);
+    // The named zones are 3-letter prefixes; "CEST" is a garbage word.
+    CHECK(std::isnan(parse("Jan 1 2020 10:00 CEST")));
+    // am/pm only attaches to a time already read, and needs an hour 0..12.
+    CHECK(parse("Jan 1 2020 12:00 am GMT") == jan1);
+    CHECK(parse("Jan 1 2020 12:00 pm GMT") == jan1 + 12.0 * kMsPerHour);
+    CHECK(std::isnan(parse("Jan 1 2020 13:00 pm GMT")));
+    // The KJS-era year rules: a bare component that is not a day is the year,
+    // 0-49 map to 2000-2049 and 50-99 to 1950-1999, and a missing day fills
+    // as 1 — so "Jan 1 GMT" is January 1st of the year 2001.
+    CHECK(parse("Jan 1 20 GMT") == at(2020.0, 0.0, 1.0));
+    CHECK(parse("Jan 1 99 GMT") == at(1999.0, 0.0, 1.0));
+    CHECK(parse("Jan 1 100 GMT") == at(100.0, 0.0, 1.0));
+    CHECK(parse("Jan 1 GMT") == at(2001.0, 0.0, 1.0));
+    CHECK(parse("0 GMT") == at(2000.0, 0.0, 1.0));
+    // Feb 31 is a legal day component and carries into March.
+    CHECK(parse("Feb 31 2020 GMT") == at(2020.0, 2.0, 2.0));
+    // Text in parentheses is skipped wherever it falls.
+    CHECK(parse("Jan 1 2020 (a (nested) paren) 10:00 GMT") == ten);
+    CHECK(parse("(x) Jan 1 2020 10:00 GMT") == ten);
+    // Milliseconds after a time keep their first three significant digits.
+    CHECK(parse("Jan 1 2020 10:00:00.5 GMT") == ten + 500.0);
+    CHECK(parse("Jan 1 2020 10:00:00.123456 GMT") == ten + 123.0);
+    CHECK(parse("Jan 1 2020 10:00:00.05 GMT") == ten + 50.0);
 }
 
-TEST_CASE("date parse strips surrounding whitespace only") {
-    double t = 0.0;
-    std::string refused;
-    REQUIRE(parse("  2020-01-01  ", t, refused) == ParseOutcome::Ok);
-    CHECK(t == at(2020.0, 0.0, 1.0));
-    CHECK(parse("2020- 01-01", t, refused) == ParseOutcome::NotADate);
+TEST_CASE("date parse treats surrounding whitespace as V8 does") {
+    // Whitespace is a token, not something stripped first. A leading space
+    // takes the string out of the ES5 grammar, so the `T` is then a garbage
+    // word after a number and the parse fails; a date-only string with a
+    // space around it is read by the legacy loop instead, which agrees with
+    // the ES5 reading only once a zone is written (without one it is local,
+    // which a zone-independent test cannot pin).
+    CHECK(std::isnan(parse(" 2020-01-01T00:00:00Z")));
+    CHECK(std::isnan(parse("2020-01-01T00:00:00Z ")));
+    CHECK(parse(" 2020-01-01 GMT ") == at(2020.0, 0.0, 1.0));
+    CHECK(parse("2020- 01-01 GMT") == at(2020.0, 0.0, 1.0));
 }

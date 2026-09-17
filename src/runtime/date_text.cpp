@@ -9,8 +9,10 @@
 
 #include "runtime/date.h"
 
+#include <climits>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -21,16 +23,6 @@ namespace {
 const char* const kWeekdayNames[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 const char* const kMonthNames[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-
-// The full English month names, for the REFUSAL recogniser alone. bronze never
-// prints one and never parses one; the list exists so that `new Date("January
-// 1, 2020")` — which node accepts — dies naming the format instead of quietly
-// answering NaN.
-const char* const kFullMonthNames[12] = {"january", "february", "march",     "april",
-                                         "may",     "june",     "july",      "august",
-                                         "september", "october", "november", "december"};
-
-bool isDigit(char c) { return c >= '0' && c <= '9'; }
 
 // A non-negative integral double as decimal, left-padded with zeros to at
 // least `width` characters. `std::to_string` on a double would print a
@@ -84,313 +76,718 @@ std::string timeZoneString(double tv) {
            pad(std::floor(modulo(abs, kMsPerHour) / kMsPerMinute), 2);
 }
 
-double daysInMonth(double month, double year) {
-    static const double kLengths[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    const int m = static_cast<int>(month);
-    if (m != 1) return kLengths[m];
-    const bool leap = daysInYear(year) == 366.0;
-    return leap ? 29.0 : 28.0;
-}
-
 // ---- the parser -------------------------------------------------------------
+//
+// 21.4.3.2 pins exactly one grammar — 21.4.1.15's date-time string format —
+// and says that any other string "may fall back to any implementation-specific
+// heuristics or implementation-specific date formats". Every program was
+// written against V8's heuristics, and a program that calls
+// `Date.parse("Jan 1 2020")` or `new Date("1/2/2020")` is entitled to the
+// answer node gives it, wrong-looking corners included: "Jan 1" is the year
+// 2001 (a missing day component fills as 1 and the 1 becomes the year), "0"
+// is the year 2000, "Feb 31 2020" is March 2nd, and a leading space turns an
+// ISO date-only string from UTC into local time because the legacy loop takes
+// over. So what follows is V8's `DateParser` (src/date/dateparser*.{h,cc}),
+// carried over step for step — the tokenizer, the ES5 pass, the legacy loop and
+// the three composers — with the names kept close enough that a divergence can
+// be checked against the original line by line. Nothing here is "what a date
+// parser should do"; it is what the engine every program was tested against
+// does, which is the only correctness there is for a heuristic.
+//
+// The shape, from V8's own comment:
+//   ES5 ISO 8601 dates:
+//     [('-'|'+')yy]yyyy[-MM[-DD]][THH:mm[:ss[.sss]][Z|(+|-)hh:mm]]
+//     with sss allowed more or fewer than three digits, hh:mm also as hhmm,
+//     and a missing zone meaning UTC for a date-only form, local otherwise.
+//   Legacy dates:
+//     any unrecognised word before the first number is ignored; parenthesised
+//     text is ignored; a number followed by ':' is a time, by '::' a time with
+//     a zero second, by '.' a time that must be followed by milliseconds; any
+//     other number is a date component; a word starting with a month's first
+//     three letters names the month; a zone word or a '(+|-)(hhmm|hh:)' after
+//     a time or UTC is an offset; extra signs or an unmatched ')' after the
+//     first number fail the parse.
+//   A string both grammars accept (e.g. 1970-01-01) is the ES5 reading.
 
-// A cursor over the text, in the house's recursive-descent style: every
-// production below either consumes what it matched or leaves the cursor where
-// it found it by failing the whole parse.
-struct Cursor {
-    std::string_view s;
-    size_t i = 0;
+constexpr int kNone = INT_MAX;
+constexpr int kMaxSignificantDigits = 9;
 
-    bool done() const { return i >= s.size(); }
-    char peek() const { return i < s.size() ? s[i] : '\0'; }
-    bool eat(char c) {
-        if (peek() != c) return false;
-        ++i;
-        return true;
-    }
-    bool eatLiteral(std::string_view lit) {
-        if (s.substr(i, lit.size()) != lit) return false;
-        i += lit.size();
-        return true;
-    }
-    // Exactly `count` digits, as a number.
-    bool fixedDigits(int count, double& out) {
-        if (i + static_cast<size_t>(count) > s.size()) return false;
-        double v = 0.0;
-        for (int k = 0; k < count; ++k) {
-            if (!isDigit(s[i + static_cast<size_t>(k)])) return false;
-            v = v * 10.0 + static_cast<double>(s[i + static_cast<size_t>(k)] - '0');
-        }
-        i += static_cast<size_t>(count);
-        out = v;
-        return true;
-    }
-    // At least `least` digits, greedily. The `toString` year field is four
-    // digits for the ordinary range and six for an expanded one, and both come
-    // out of the same production.
-    bool someDigits(int least, double& out) {
-        const size_t start = i;
-        double v = 0.0;
-        while (!done() && isDigit(peek())) {
-            v = v * 10.0 + static_cast<double>(peek() - '0');
-            ++i;
-        }
-        if (i - start < static_cast<size_t>(least)) {
-            i = start;
-            return false;
-        }
-        out = v;
-        return true;
-    }
-};
-
-int matchName(std::string_view text, const char* const* names, int count) {
-    for (int k = 0; k < count; ++k) {
-        if (text == names[k]) return k;
-    }
-    return -1;
+bool between(int x, int lo, int hi) {
+    return static_cast<unsigned>(x - lo) <= static_cast<unsigned>(hi - lo);
 }
 
-// 21.4.1.15's date-time string format, with two liberalisations that match
-// every engine and cost nothing: `T` and `Z` are accepted in either case, and
-// the offset's colon is optional. Nothing else is widened — in particular a
-// space in place of the `T` is REFUSED further down rather than accepted,
-// because that form is node's extension and not this grammar.
-bool parseIso(std::string_view text, double& out) {
-    Cursor c{text, 0};
-    double year = 0.0;
-    if (c.peek() == '+' || c.peek() == '-') {
-        const bool negative = c.peek() == '-';
-        ++c.i;
-        double magnitude = 0.0;
-        if (!c.fixedDigits(6, magnitude)) return false;
-        // "-000000" names no year: 21.4.1.15 excludes it explicitly, because
-        // there is no year zero to negate.
-        if (negative && magnitude == 0.0) return false;
-        year = negative ? -magnitude : magnitude;
-    } else if (!c.fixedDigits(4, year)) {
+bool isAsciiDigitCp(uint32_t c) { return c >= '0' && c <= '9'; }
+
+// V8's IsWhiteSpace: the Unicode Zs category plus tab, VT, FF and the BOM. Line
+// terminators are deliberately NOT here; the tokenizer treats them below.
+bool isWhiteSpaceCp(uint32_t c) {
+    switch (c) {
+        case 0x09: case 0x0B: case 0x0C: case 0x20: case 0xA0: case 0x1680:
+        case 0x2000: case 0x2001: case 0x2002: case 0x2003: case 0x2004: case 0x2005:
+        case 0x2006: case 0x2007: case 0x2008: case 0x2009: case 0x200A:
+        case 0x202F: case 0x205F: case 0x3000: case 0xFEFF:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isWhiteSpaceOrLineTerminatorCp(uint32_t c) {
+    return isWhiteSpaceCp(c) || c == 0x0A || c == 0x0D || c == 0x2028 || c == 0x2029;
+}
+
+uint32_t asciiAlphaToLower(uint32_t c) {
+    // V8's AsciiAlphaToLower is the bit trick, applied to EVERY code point —
+    // so a non-letter's prefix is perturbed the same way it is there.
+    return c | 0x20;
+}
+
+// V8's InputReader: the current code point in `ch`, 0 at the end (which is
+// also what a NUL in the text reads as, so a NUL ends the parse there too).
+// The text arrives as UTF-8 and is decoded here, because V8 walks code units
+// and the keyword and whitespace tests below are per character, not per byte.
+class Input {
+public:
+    explicit Input(std::string_view s) : s_(s) { next(); }
+
+    int position() const { return count_; }
+
+    void next() {
+        ++count_;
+        if (i_ >= s_.size()) {
+            ch_ = 0;
+            return;
+        }
+        const auto byte = [&](size_t k) { return static_cast<uint32_t>(static_cast<unsigned char>(s_[k])); };
+        const uint32_t b0 = byte(i_);
+        if (b0 < 0x80) {
+            ch_ = b0;
+            i_ += 1;
+        } else if ((b0 & 0xE0) == 0xC0 && i_ + 1 < s_.size()) {
+            ch_ = ((b0 & 0x1F) << 6) | (byte(i_ + 1) & 0x3F);
+            i_ += 2;
+        } else if ((b0 & 0xF0) == 0xE0 && i_ + 2 < s_.size()) {
+            ch_ = ((b0 & 0x0F) << 12) | ((byte(i_ + 1) & 0x3F) << 6) | (byte(i_ + 2) & 0x3F);
+            i_ += 3;
+        } else if ((b0 & 0xF8) == 0xF0 && i_ + 3 < s_.size()) {
+            ch_ = ((b0 & 0x07) << 18) | ((byte(i_ + 1) & 0x3F) << 12) |
+                  ((byte(i_ + 2) & 0x3F) << 6) | (byte(i_ + 3) & 0x3F);
+            i_ += 4;
+        } else {
+            ch_ = 0xFFFD;
+            i_ += 1;
+        }
+    }
+
+    // Leading zeros are skipped and do not count as significant; past nine
+    // significant digits the rest are consumed but dropped. The token's
+    // LENGTH still counts every character, which is how "000010" reads as
+    // the number 10 with length 6 and so is not a fixed-length-2 hour.
+    int readUnsignedNumeral() {
+        int n = 0;
+        int i = 0;
+        while (ch_ == '0') next();
+        while (isAsciiDigit()) {
+            if (i < kMaxSignificantDigits) n = n * 10 + static_cast<int>(ch_ - '0');
+            i++;
+            next();
+        }
+        return n;
+    }
+
+    int readWord(uint32_t* prefix, int prefixSize) {
+        int len;
+        for (len = 0; isAsciiAlphaOrAbove() && !isWhiteSpaceChar(); next(), len++) {
+            if (len < prefixSize) prefix[len] = asciiAlphaToLower(ch_);
+        }
+        for (int i = len; i < prefixSize; i++) prefix[i] = 0;
+        return len;
+    }
+
+    bool skip(uint32_t c) {
+        if (ch_ == c) {
+            next();
+            return true;
+        }
         return false;
     }
 
-    double month = 1.0;
-    double dayOfMonth = 1.0;
-    if (c.eat('-')) {
-        if (!c.fixedDigits(2, month)) return false;
-        if (month < 1.0 || month > 12.0) return false;
-        if (c.eat('-')) {
-            if (!c.fixedDigits(2, dayOfMonth)) return false;
-            // Out of bounds is a parse FAILURE, not a normalisation: the note
-            // under 21.4.1.15 makes an illegal value the same as a syntax
-            // error, so "2020-02-31" is NaN where `new Date(2020, 1, 31)` is
-            // March 2nd.
-            if (dayOfMonth < 1.0 || dayOfMonth > daysInMonth(month - 1.0, year)) return false;
-        }
-    }
-
-    double hour = 0.0, minute = 0.0, second = 0.0, millis = 0.0;
-    bool hasTime = false;
-    if (c.peek() == 'T' || c.peek() == 't') {
-        ++c.i;
-        hasTime = true;
-        if (!c.fixedDigits(2, hour)) return false;
-        if (!c.eat(':')) return false;
-        if (!c.fixedDigits(2, minute)) return false;
-        if (c.eat(':')) {
-            if (!c.fixedDigits(2, second)) return false;
-            if (c.eat('.')) {
-                const size_t start = c.i;
-                while (!c.done() && isDigit(c.peek())) ++c.i;
-                if (c.i == start) return false;
-                // The grammar spells exactly three digits. A longer fraction is
-                // accepted and TRUNCATED rather than rounded, which is what
-                // every engine does and what keeps a millisecond time value
-                // from being nudged by digits it cannot hold.
-                std::string frac(text.substr(start, c.i - start));
-                frac.resize(3, '0');
-                millis = (frac[0] - '0') * 100.0 + (frac[1] - '0') * 10.0 + (frac[2] - '0');
-            }
-        }
-        if (hour > 24.0 || minute > 59.0 || second > 59.0) return false;
-        // 24:00:00.000 is the one hour value past 23 the grammar allows, and
-        // only as the exact end of a day.
-        if (hour == 24.0 && (minute != 0.0 || second != 0.0 || millis != 0.0)) return false;
-    }
-
-    bool hasOffset = false;
-    double offset = 0.0;
-    if (c.peek() == 'Z' || c.peek() == 'z') {
-        ++c.i;
-        hasOffset = true;
-    } else if (c.peek() == '+' || c.peek() == '-') {
-        const bool negative = c.peek() == '-';
-        ++c.i;
-        double offsetHours = 0.0, offsetMinutes = 0.0;
-        if (!c.fixedDigits(2, offsetHours)) return false;
-        c.eat(':');
-        if (!c.fixedDigits(2, offsetMinutes)) return false;
-        if (offsetHours > 23.0 || offsetMinutes > 59.0) return false;
-        offset = offsetHours * kMsPerHour + offsetMinutes * kMsPerMinute;
-        if (negative) offset = -offset;
-        hasOffset = true;
-    }
-    if (!c.done()) return false;
-
-    double tv = makeDate(makeDay(year, month - 1.0, dayOfMonth),
-                         makeTime(hour, minute, second, millis));
-    if (hasOffset) {
-        tv -= offset;
-    } else if (hasTime) {
-        // 21.4.1.15: a date-time form with no offset is LOCAL time, while a
-        // date-only form is UTC. One grammar, two zones, and this is the line
-        // where that split lives.
-        tv = utcFromLocal(tv);
-    }
-    out = timeClip(tv);
-    return true;
-}
-
-// bronze's own `toString`: "Wed Jan 01 2020 00:00:00 GMT+0000".
-bool parseDateTimeString(std::string_view text, double& out) {
-    Cursor c{text, 0};
-    if (c.i + 3 > c.s.size()) return false;
-    if (matchName(text.substr(0, 3), kWeekdayNames, 7) < 0) return false;
-    c.i += 3;
-    if (!c.eat(' ')) return false;
-    const int month = matchName(text.substr(c.i, 3), kMonthNames, 12);
-    if (month < 0) return false;
-    c.i += 3;
-    if (!c.eat(' ')) return false;
-    double dayOfMonth = 0.0;
-    if (!c.fixedDigits(2, dayOfMonth)) return false;
-    if (!c.eat(' ')) return false;
-    const bool negativeYear = c.eat('-');
-    double year = 0.0;
-    if (!c.someDigits(4, year)) return false;
-    if (negativeYear) year = -year;
-    if (!c.eat(' ')) return false;
-    double hour = 0.0, minute = 0.0, second = 0.0;
-    if (!c.fixedDigits(2, hour) || !c.eat(':')) return false;
-    if (!c.fixedDigits(2, minute) || !c.eat(':')) return false;
-    if (!c.fixedDigits(2, second)) return false;
-    if (!c.eat(' ') || !c.eatLiteral("GMT")) return false;
-    const bool negativeOffset = c.peek() == '-';
-    if (!c.eat('+') && !c.eat('-')) return false;
-    double offsetHours = 0.0, offsetMinutes = 0.0;
-    if (!c.fixedDigits(2, offsetHours)) return false;
-    if (!c.fixedDigits(2, offsetMinutes)) return false;
-    if (!c.done()) return false;
-
-    double offset = offsetHours * kMsPerHour + offsetMinutes * kMsPerMinute;
-    if (negativeOffset) offset = -offset;
-    const double tv = makeDate(makeDay(year, static_cast<double>(month), dayOfMonth),
-                               makeTime(hour, minute, second, 0.0));
-    out = timeClip(tv - offset);
-    return true;
-}
-
-// bronze's own `toUTCString`: "Wed, 01 Jan 2020 00:00:00 GMT".
-bool parseUtcString(std::string_view text, double& out) {
-    Cursor c{text, 0};
-    if (c.i + 3 > c.s.size()) return false;
-    if (matchName(text.substr(0, 3), kWeekdayNames, 7) < 0) return false;
-    c.i += 3;
-    if (!c.eat(',') || !c.eat(' ')) return false;
-    double dayOfMonth = 0.0;
-    if (!c.fixedDigits(2, dayOfMonth)) return false;
-    if (!c.eat(' ')) return false;
-    const int month = matchName(text.substr(c.i, 3), kMonthNames, 12);
-    if (month < 0) return false;
-    c.i += 3;
-    if (!c.eat(' ')) return false;
-    const bool negativeYear = c.eat('-');
-    double year = 0.0;
-    if (!c.someDigits(4, year)) return false;
-    if (negativeYear) year = -year;
-    if (!c.eat(' ')) return false;
-    double hour = 0.0, minute = 0.0, second = 0.0;
-    if (!c.fixedDigits(2, hour) || !c.eat(':')) return false;
-    if (!c.fixedDigits(2, minute) || !c.eat(':')) return false;
-    if (!c.fixedDigits(2, second)) return false;
-    if (!c.eat(' ') || !c.eatLiteral("GMT")) return false;
-    if (!c.done()) return false;
-
-    const double tv = makeDate(makeDay(year, static_cast<double>(month), dayOfMonth),
-                               makeTime(hour, minute, second, 0.0));
-    out = timeClip(tv);
-    return true;
-}
-
-std::string lowered(std::string_view text) {
-    std::string out(text);
-    for (char& c : out) {
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return out;
-}
-
-// The formats node accepts and bronze does not. Recognising one is not an
-// attempt to parse it — it is the evidence needed to refuse BY NAME, because a
-// string that is obviously a date must never come back as NaN just because this
-// parser is narrower than V8's. A string these do not recognise really is not a
-// date, and NaN is then 21.4.3.2's own answer.
-bool refusedFormatOf(std::string_view text, std::string& name) {
-    const std::string low = lowered(text);
-    if (low.find('/') != std::string::npos) {
-        name = "the slash-separated date format (e.g. \"1/1/2020\" or \"2020/01/01\")";
-        return true;
-    }
-    // A leading month name, in either spelling: "Jan 1 2020", "January 1, 2020".
-    // Matched case-insensitively, because that is how the engines that accept
-    // the format match it — the refusal has to cover every spelling a program
-    // would otherwise get a wrong answer for, not just the tidy one.
-    //
-    // The name must be FOLLOWED by a separator, so that "mayonnaise" is not a
-    // date and still answers NaN: a refusal is a hard error, and one earned by
-    // a prefix coincidence would stop a program over a string nobody meant as a
-    // date.
-    auto separatorAfter = [&low](size_t at) {
-        if (at >= low.size()) return false;
-        const char c = low[at];
-        return c == ' ' || c == ',' || c == '.';
-    };
-    if (low.size() >= 3) {
-        for (const char* full : kFullMonthNames) {
-            const std::string_view spelled{full};
-            if (low.size() > spelled.size() && low.compare(0, spelled.size(), full) == 0 &&
-                separatorAfter(spelled.size())) {
-                name = "the month-name-first date format (e.g. \"January 1, 2020\")";
-                return true;
-            }
-        }
-        for (const char* abbrev : kMonthNames) {
-            if (low.compare(0, 3, lowered(abbrev)) == 0 && separatorAfter(3)) {
-                name = "the month-name-first date format (e.g. \"Jan 1 2020\")";
-                return true;
-            }
-        }
-    }
-    // "2020-01-01 00:00:00" — the ISO date and time joined by a space instead
-    // of a `T`. Not in 21.4.1.15's grammar; universally accepted in practice.
-    {
-        Cursor c{text, 0};
-        double y = 0.0, m = 0.0, d = 0.0;
-        if (c.fixedDigits(4, y) && c.eat('-') && c.fixedDigits(2, m) && c.eat('-') &&
-            c.fixedDigits(2, d) && c.eat(' ')) {
-            name = "the space-separated ISO date-time format (e.g. \"2020-01-01 00:00:00\"); "
-                   "write the `T` that ECMA-262 21.4.1.15 requires";
+    bool skipWhiteSpace() {
+        if (isWhiteSpaceOrLineTerminatorCp(ch_)) {
+            next();
             return true;
         }
+        return false;
     }
-    // A leading weekday name that neither round-trip parser accepted: the
-    // RFC 2822 family, which covers `toUTCString` variants with a numeric
-    // offset and `toString` output carrying a parenthesised zone name.
-    if (text.size() > 3 && matchName(text.substr(0, 3), kWeekdayNames, 7) >= 0 &&
-        separatorAfter(3)) {
-        name = "the RFC 2822 date-time format (e.g. \"Wed, 01 Jan 2020 00:00:00 +0000\"), and "
-               "the parenthesised time-zone-name suffix other engines print";
+
+    bool skipParentheses() {
+        if (ch_ != '(') return false;
+        int balance = 0;
+        do {
+            if (ch_ == ')') {
+                --balance;
+            } else if (ch_ == '(') {
+                ++balance;
+            }
+            next();
+        } while (balance > 0 && ch_);
         return true;
     }
-    return false;
+
+    bool isEnd() const { return ch_ == 0; }
+    bool isAsciiDigit() const { return isAsciiDigitCp(ch_); }
+    // Every code point from 'A' up is a word character unless it is a space:
+    // that is what makes "é" and U+2028 garbage words rather than separators.
+    bool isAsciiAlphaOrAbove() const { return ch_ >= 'A'; }
+    bool isWhiteSpaceChar() const { return isWhiteSpaceCp(ch_); }
+
+private:
+    std::string_view s_;
+    size_t i_ = 0;
+    int count_ = 0;
+    uint32_t ch_ = 0;
+};
+
+enum class KeywordType { Invalid, MonthName, TimeZoneName, TimeSeparator, AmPm };
+
+struct Token {
+    enum class Tag { Invalid, Unknown, WhiteSpace, Number, Symbol, EndOfInput, Keyword };
+
+    Tag tag = Tag::Invalid;
+    int length = 0;
+    int value = -1;
+    KeywordType keyword = KeywordType::Invalid;
+
+    bool isInvalid() const { return tag == Tag::Invalid; }
+    bool isNumber() const { return tag == Tag::Number; }
+    bool isSymbol() const { return tag == Tag::Symbol; }
+    bool isWhiteSpace() const { return tag == Tag::WhiteSpace; }
+    bool isEndOfInput() const { return tag == Tag::EndOfInput; }
+    bool isKeyword() const { return tag == Tag::Keyword; }
+    bool isSymbol(char symbol) const { return isSymbol() && value == symbol; }
+    bool isKeywordType(KeywordType type) const { return isKeyword() && keyword == type; }
+    bool isFixedLengthNumber(int n) const { return isNumber() && length == n; }
+    bool isAsciiSign() const { return isSymbol() && (value == '-' || value == '+'); }
+    // '+' is 43 and '-' is 45, so this is +1 and -1.
+    int asciiSign() const { return 44 - value; }
+    bool isKeywordZ() const { return isKeywordType(KeywordType::TimeZoneName) && length == 1 && value == 0; }
+
+    static Token number(int value, int length) { return {Tag::Number, length, value, KeywordType::Invalid}; }
+    static Token symbol(char symbol) { return {Tag::Symbol, 1, symbol, KeywordType::Invalid}; }
+    static Token keywordOf(KeywordType type, int value, int length) { return {Tag::Keyword, length, value, type}; }
+    static Token endOfInput() { return {Tag::EndOfInput, 0, -1, KeywordType::Invalid}; }
+    static Token whiteSpace(int length) { return {Tag::WhiteSpace, length, -1, KeywordType::Invalid}; }
+    static Token unknown() { return {Tag::Unknown, 1, -1, KeywordType::Invalid}; }
+    static Token invalid() { return {Tag::Invalid, 0, -1, KeywordType::Invalid}; }
+};
+
+// V8's KeywordTable: a word is classified by its first three letters, lowered.
+// A word longer than three letters matches only a month ("January", but also
+// "mayonnaise"); "utcc" and "gmtt" are garbage.
+struct KeywordEntry {
+    char prefix[3];
+    KeywordType type;
+    int value;
+};
+
+const KeywordEntry kKeywords[] = {
+    {{'j', 'a', 'n'}, KeywordType::MonthName, 1},
+    {{'f', 'e', 'b'}, KeywordType::MonthName, 2},
+    {{'m', 'a', 'r'}, KeywordType::MonthName, 3},
+    {{'a', 'p', 'r'}, KeywordType::MonthName, 4},
+    {{'m', 'a', 'y'}, KeywordType::MonthName, 5},
+    {{'j', 'u', 'n'}, KeywordType::MonthName, 6},
+    {{'j', 'u', 'l'}, KeywordType::MonthName, 7},
+    {{'a', 'u', 'g'}, KeywordType::MonthName, 8},
+    {{'s', 'e', 'p'}, KeywordType::MonthName, 9},
+    {{'o', 'c', 't'}, KeywordType::MonthName, 10},
+    {{'n', 'o', 'v'}, KeywordType::MonthName, 11},
+    {{'d', 'e', 'c'}, KeywordType::MonthName, 12},
+    {{'a', 'm', '\0'}, KeywordType::AmPm, 0},
+    {{'p', 'm', '\0'}, KeywordType::AmPm, 12},
+    {{'u', 't', '\0'}, KeywordType::TimeZoneName, 0},
+    {{'u', 't', 'c'}, KeywordType::TimeZoneName, 0},
+    {{'z', '\0', '\0'}, KeywordType::TimeZoneName, 0},
+    {{'g', 'm', 't'}, KeywordType::TimeZoneName, 0},
+    {{'c', 'd', 't'}, KeywordType::TimeZoneName, -5},
+    {{'c', 's', 't'}, KeywordType::TimeZoneName, -6},
+    {{'e', 'd', 't'}, KeywordType::TimeZoneName, -4},
+    {{'e', 's', 't'}, KeywordType::TimeZoneName, -5},
+    {{'m', 'd', 't'}, KeywordType::TimeZoneName, -6},
+    {{'m', 's', 't'}, KeywordType::TimeZoneName, -7},
+    {{'p', 'd', 't'}, KeywordType::TimeZoneName, -7},
+    {{'p', 's', 't'}, KeywordType::TimeZoneName, -8},
+    {{'t', '\0', '\0'}, KeywordType::TimeSeparator, 0},
+};
+
+constexpr int kPrefixLength = 3;
+
+const KeywordEntry* lookupKeyword(const uint32_t* pre, int len) {
+    for (const KeywordEntry& entry : kKeywords) {
+        int j = 0;
+        while (j < kPrefixLength && pre[j] == static_cast<uint32_t>(static_cast<unsigned char>(entry.prefix[j]))) {
+            j++;
+        }
+        if (j == kPrefixLength && (len <= kPrefixLength || entry.type == KeywordType::MonthName)) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+class Tokenizer {
+public:
+    explicit Tokenizer(Input* in) : in_(in), next_(scan()) {}
+
+    Token next() {
+        const Token result = next_;
+        next_ = scan();
+        return result;
+    }
+    Token peek() const { return next_; }
+    bool skipSymbol(char symbol) {
+        if (next_.isSymbol(symbol)) {
+            next_ = scan();
+            return true;
+        }
+        return false;
+    }
+
+private:
+    Token scan() {
+        const int prePos = in_->position();
+        if (in_->isEnd()) return Token::endOfInput();
+        if (in_->isAsciiDigit()) {
+            const int n = in_->readUnsignedNumeral();
+            const int length = in_->position() - prePos;
+            return Token::number(n, length);
+        }
+        if (in_->skip(':')) return Token::symbol(':');
+        if (in_->skip('-')) return Token::symbol('-');
+        if (in_->skip('+')) return Token::symbol('+');
+        if (in_->skip('.')) return Token::symbol('.');
+        if (in_->skip(')')) return Token::symbol(')');
+        if (in_->isAsciiAlphaOrAbove() && !in_->isWhiteSpaceChar()) {
+            uint32_t buffer[kPrefixLength] = {0, 0, 0};
+            const int length = in_->readWord(buffer, kPrefixLength);
+            const KeywordEntry* entry = lookupKeyword(buffer, length);
+            if (entry == nullptr) return Token::keywordOf(KeywordType::Invalid, 0, length);
+            return Token::keywordOf(entry->type, entry->value, length);
+        }
+        if (in_->skipWhiteSpace()) {
+            return Token::whiteSpace(in_->position() - prePos);
+        }
+        if (in_->skipParentheses()) {
+            return Token::unknown();
+        }
+        in_->next();
+        return Token::unknown();
+    }
+
+    Input* in_;
+    Token next_;
+};
+
+// The first three significant digits of a numeral read as a fraction of a
+// second, inferred from the value and the digit count: "5" is 500ms, "05" is
+// 50ms, "1234567890" is 123ms.
+int readMilliseconds(Token token) {
+    int number = token.value;
+    int length = token.length;
+    if (length < 3) {
+        if (length == 1) {
+            number *= 100;
+        } else if (length == 2) {
+            number *= 10;
+        }
+    } else if (length > 3) {
+        if (length > kMaxSignificantDigits) length = kMaxSignificantDigits;
+        int factor = 1;
+        do {
+            factor *= 10;
+            length--;
+        } while (length > 3);
+        number /= factor;
+    }
+    return number;
+}
+
+struct DateFields {
+    int year = 0;
+    int month = 0;  // 0-based, as MakeDay takes it
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    int millisecond = 0;
+    bool hasOffset = false;
+    int offsetSeconds = 0;
+};
+
+class TimeComposer {
+public:
+    bool isEmpty() const { return index_ == 0; }
+    bool isExpecting(int n) const {
+        return (index_ == 1 && isMinute(n)) || (index_ == 2 && isSecond(n)) ||
+               (index_ == 3 && isMillisecond(n));
+    }
+    bool add(int n) {
+        if (index_ >= kSize) return false;
+        comp_[index_++] = n;
+        return true;
+    }
+    bool addFinal(int n) {
+        if (!add(n)) return false;
+        while (index_ < kSize) comp_[index_++] = 0;
+        return true;
+    }
+    void setHourOffset(int n) { hourOffset_ = n; }
+
+    bool write(DateFields& out) {
+        while (index_ < kSize) comp_[index_++] = 0;
+        int& hour = comp_[0];
+        const int minute = comp_[1];
+        const int second = comp_[2];
+        const int millisecond = comp_[3];
+        if (hourOffset_ != kNone) {
+            if (!isHour12(hour)) return false;
+            hour %= 12;
+            hour += hourOffset_;
+        }
+        if (!isHour(hour) || !isMinute(minute) || !isSecond(second) || !isMillisecond(millisecond)) {
+            // A 24th hour is allowed if minutes, seconds and milliseconds are 0.
+            if (hour != 24 || minute != 0 || second != 0 || millisecond != 0) return false;
+        }
+        out.hour = hour;
+        out.minute = minute;
+        out.second = second;
+        out.millisecond = millisecond;
+        return true;
+    }
+
+    static bool isMinute(int x) { return between(x, 0, 59); }
+    static bool isHour(int x) { return between(x, 0, 23); }
+    static bool isSecond(int x) { return between(x, 0, 59); }
+
+private:
+    static bool isHour12(int x) { return between(x, 0, 12); }
+    static bool isMillisecond(int x) { return between(x, 0, 999); }
+
+    static constexpr int kSize = 4;
+    int comp_[kSize] = {0, 0, 0, 0};
+    int index_ = 0;
+    int hourOffset_ = kNone;
+};
+
+class TimeZoneComposer {
+public:
+    void set(int offsetInHours) {
+        sign_ = offsetInHours < 0 ? -1 : 1;
+        hour_ = offsetInHours * sign_;
+        minute_ = 0;
+    }
+    void setSign(int sign) { sign_ = sign < 0 ? -1 : 1; }
+    void setAbsoluteHour(int hour) { hour_ = hour; }
+    void setAbsoluteMinute(int minute) { minute_ = minute; }
+    bool isExpecting(int n) const {
+        return hour_ != kNone && minute_ == kNone && TimeComposer::isMinute(n);
+    }
+    bool isUtc() const { return hour_ == 0 && minute_ == 0; }
+    bool isEmpty() const { return hour_ == kNone; }
+
+    bool write(DateFields& out) {
+        if (sign_ == kNone) {
+            out.hasOffset = false;
+            return true;
+        }
+        if (hour_ == kNone) hour_ = 0;
+        if (minute_ == kNone) minute_ = 0;
+        // Unsigned so that "GMT+999999999:" cannot overflow on the way to
+        // being refused; the bound is V8's Smi range on a 64-bit node.
+        const unsigned totalSeconds = static_cast<unsigned>(hour_) * 3600U + static_cast<unsigned>(minute_) * 60U;
+        if (totalSeconds > static_cast<unsigned>(INT_MAX)) return false;
+        out.hasOffset = true;
+        out.offsetSeconds = sign_ < 0 ? -static_cast<int>(totalSeconds) : static_cast<int>(totalSeconds);
+        return true;
+    }
+
+private:
+    int sign_ = kNone;
+    int hour_ = kNone;
+    int minute_ = kNone;
+};
+
+class DayComposer {
+public:
+    bool isEmpty() const { return index_ == 0; }
+    bool add(int n) {
+        if (index_ >= kSize) return false;
+        comp_[index_++] = n;
+        return true;
+    }
+    void setNamedMonth(int n) { namedMonth_ = n; }
+    void setIsoDate() { isIsoDate_ = true; }
+    static bool isMonth(int x) { return between(x, 1, 12); }
+    static bool isDay(int x) { return between(x, 1, 31); }
+
+    bool write(DateFields& out) {
+        if (index_ < 1) return false;
+        // Day and month default to 1.
+        while (index_ < kSize) comp_[index_++] = 1;
+
+        int year = 0;  // Default year is 0 (=> 2000) for KJS compatibility.
+        int month = kNone;
+        int day = kNone;
+        if (namedMonth_ == kNone) {
+            if (isIsoDate_ || (index_ == 3 && !isDay(comp_[0]))) {
+                // YMD
+                year = comp_[0];
+                month = comp_[1];
+                day = comp_[2];
+            } else {
+                // MD(Y)
+                month = comp_[0];
+                day = comp_[1];
+                if (index_ == 3) year = comp_[2];
+            }
+        } else {
+            month = namedMonth_;
+            if (index_ == 1) {
+                // MD or DM
+                day = comp_[0];
+            } else if (!isDay(comp_[0])) {
+                // YMD, MYD, or YDM
+                year = comp_[0];
+                day = comp_[1];
+            } else {
+                // DMY, MDY, or DYM
+                day = comp_[0];
+                year = comp_[1];
+            }
+        }
+        if (!isIsoDate_) {
+            if (between(year, 0, 49)) {
+                year += 2000;
+            } else if (between(year, 50, 99)) {
+                year += 1900;
+            }
+        }
+        // No month-length check: "Feb 31" is a legal day component and
+        // MakeDay carries it into March, exactly as `new Date(2020, 1, 31)` does.
+        if (!isMonth(month) || !isDay(day)) return false;
+        out.year = year;
+        out.month = month - 1;
+        out.day = day;
+        return true;
+    }
+
+private:
+    static constexpr int kSize = 3;
+    int comp_[kSize] = {0, 0, 0};
+    int index_ = 0;
+    int namedMonth_ = kNone;
+    bool isIsoDate_ = false;
+};
+
+// The ES5 pass. Returns EndOfInput when the whole string was an ES5 date-time
+// string, Invalid when it committed to one (read a `T`) and then failed, and
+// otherwise the first token it did not consume, which the legacy loop starts
+// from with whatever date components were already banked.
+Token parseEs5DateTime(Tokenizer& scanner, DayComposer& day, TimeComposer& time, TimeZoneComposer& tz) {
+    // Parse mandatory date string: [('-'|'+')yy]yyyy[':'MM[':'DD]]
+    if (scanner.peek().isAsciiSign()) {
+        // Keep the sign token, so it can be passed back to the legacy parser
+        // if it goes unused. NOTE the six-digit number is consumed either way:
+        // "-000000" reads as a sign followed by nothing, and so is NaN.
+        const Token signToken = scanner.next();
+        if (!scanner.peek().isFixedLengthNumber(6)) return signToken;
+        const int sign = signToken.asciiSign();
+        const int year = scanner.next().value;
+        if (sign < 0 && year == 0) return signToken;
+        day.add(sign * year);
+    } else if (scanner.peek().isFixedLengthNumber(4)) {
+        day.add(scanner.next().value);
+    } else {
+        return scanner.next();
+    }
+    if (scanner.skipSymbol('-')) {
+        if (!scanner.peek().isFixedLengthNumber(2) || !DayComposer::isMonth(scanner.peek().value)) {
+            return scanner.next();
+        }
+        day.add(scanner.next().value);
+        if (scanner.skipSymbol('-')) {
+            if (!scanner.peek().isFixedLengthNumber(2) || !DayComposer::isDay(scanner.peek().value)) {
+                return scanner.next();
+            }
+            day.add(scanner.next().value);
+        }
+    }
+    // Check for optional time string: 'T'HH':'mm[':'ss['.'sss]]Z
+    if (!scanner.peek().isKeywordType(KeywordType::TimeSeparator)) {
+        if (!scanner.peek().isEndOfInput()) return scanner.next();
+    } else {
+        scanner.next();
+        if (!scanner.peek().isFixedLengthNumber(2) || !between(scanner.peek().value, 0, 24)) {
+            return Token::invalid();
+        }
+        // Allow 24:00[:00[.000]], but no other time starting with 24.
+        const bool hourIs24 = scanner.peek().value == 24;
+        time.add(scanner.next().value);
+        if (!scanner.skipSymbol(':')) return Token::invalid();
+        if (!scanner.peek().isFixedLengthNumber(2) || !TimeComposer::isMinute(scanner.peek().value) ||
+            (hourIs24 && scanner.peek().value > 0)) {
+            return Token::invalid();
+        }
+        time.add(scanner.next().value);
+        if (scanner.skipSymbol(':')) {
+            if (!scanner.peek().isFixedLengthNumber(2) || !TimeComposer::isSecond(scanner.peek().value) ||
+                (hourIs24 && scanner.peek().value > 0)) {
+                return Token::invalid();
+            }
+            time.add(scanner.next().value);
+            if (scanner.skipSymbol('.')) {
+                if (!scanner.peek().isNumber() || (hourIs24 && scanner.peek().value > 0)) {
+                    return Token::invalid();
+                }
+                // Allow more or less than the mandated three digits.
+                time.add(readMilliseconds(scanner.next()));
+            }
+        }
+        // Check for optional timezone designation: 'Z' | ('+'|'-')hh':'mm
+        if (scanner.peek().isKeywordZ()) {
+            scanner.next();
+            tz.set(0);
+        } else if (scanner.peek().isSymbol('+') || scanner.peek().isSymbol('-')) {
+            tz.setSign(scanner.next().value == '+' ? 1 : -1);
+            if (scanner.peek().isFixedLengthNumber(4)) {
+                // hhmm extension syntax.
+                const int hourmin = scanner.next().value;
+                const int hour = hourmin / 100;
+                const int min = hourmin % 100;
+                if (!TimeComposer::isHour(hour) || !TimeComposer::isMinute(min)) return Token::invalid();
+                tz.setAbsoluteHour(hour);
+                tz.setAbsoluteMinute(min);
+            } else {
+                // hh:mm standard syntax.
+                if (!scanner.peek().isFixedLengthNumber(2) || !TimeComposer::isHour(scanner.peek().value)) {
+                    return Token::invalid();
+                }
+                tz.setAbsoluteHour(scanner.next().value);
+                if (!scanner.skipSymbol(':')) return Token::invalid();
+                if (!scanner.peek().isFixedLengthNumber(2) || !TimeComposer::isMinute(scanner.peek().value)) {
+                    return Token::invalid();
+                }
+                tz.setAbsoluteMinute(scanner.next().value);
+            }
+        }
+        if (!scanner.peek().isEndOfInput()) return Token::invalid();
+    }
+    // Successfully parsed an ES5 date-time string. 21.4.1.15: "when the time
+    // zone offset is absent, date-only forms are interpreted as a UTC time and
+    // date-time forms are interpreted as a local time."
+    if (tz.isEmpty() && time.isEmpty()) tz.set(0);
+    day.setIsoDate();
+    return Token::endOfInput();
+}
+
+bool parseFields(std::string_view text, DateFields& out) {
+    Input in(text);
+    Tokenizer scanner(&in);
+    TimeZoneComposer tz;
+    TimeComposer time;
+    DayComposer day;
+
+    const Token nextUnhandled = parseEs5DateTime(scanner, day, time, tz);
+    if (nextUnhandled.isInvalid()) return false;
+    bool hasReadNumber = !day.isEmpty();
+    // If there's anything left, continue with the legacy parser.
+    for (Token token = nextUnhandled; !token.isEndOfInput(); token = scanner.next()) {
+        if (token.isNumber()) {
+            hasReadNumber = true;
+            const int n = token.value;
+            if (scanner.skipSymbol(':')) {
+                if (scanner.skipSymbol(':')) {
+                    // n + "::"
+                    if (!time.isEmpty()) return false;
+                    time.add(n);
+                    time.add(0);
+                } else {
+                    // n + ":"
+                    if (!time.add(n)) return false;
+                    if (scanner.peek().isSymbol('.')) scanner.next();
+                }
+            } else if (scanner.skipSymbol('.') && time.isExpecting(n)) {
+                time.add(n);
+                if (!scanner.peek().isNumber()) return false;
+                const int ms = readMilliseconds(scanner.next());
+                if (ms < 0) return false;
+                time.addFinal(ms);
+            } else if (tz.isExpecting(n)) {
+                tz.setAbsoluteMinute(n);
+            } else if (time.isExpecting(n)) {
+                time.addFinal(n);
+                // Require end, white space, "Z", "+" or "-" immediately after
+                // finalizing the time.
+                const Token peek = scanner.peek();
+                if (!peek.isEndOfInput() && !peek.isWhiteSpace() && !peek.isKeywordZ() && !peek.isAsciiSign()) {
+                    return false;
+                }
+            } else {
+                if (!day.add(n)) return false;
+                scanner.skipSymbol('-');
+            }
+        } else if (token.isKeyword()) {
+            const KeywordType type = token.keyword;
+            const int value = token.value;
+            if (type == KeywordType::AmPm && !time.isEmpty()) {
+                time.setHourOffset(value);
+            } else if (type == KeywordType::MonthName) {
+                day.setNamedMonth(value);
+                scanner.skipSymbol('-');
+            } else if (type == KeywordType::TimeZoneName && hasReadNumber) {
+                tz.set(value);
+            } else {
+                // Garbage words are illegal once a number has been read.
+                if (hasReadNumber) return false;
+                // The first number has to be separated from garbage words by
+                // whitespace or other separators.
+                if (scanner.peek().isNumber()) return false;
+            }
+        } else if (token.isAsciiSign() && (tz.isUtc() || !time.isEmpty())) {
+            // A UTC offset, only after UTC or a time.
+            tz.setSign(token.asciiSign());
+            // The following number may be empty.
+            int n = 0;
+            int length = 0;
+            if (scanner.peek().isNumber()) {
+                const Token nextToken = scanner.next();
+                length = nextToken.length;
+                n = nextToken.value;
+            }
+            hasReadNumber = true;
+            if (scanner.peek().isSymbol(':')) {
+                tz.setAbsoluteHour(n);
+                tz.setAbsoluteMinute(kNone);
+            } else if (length == 2 || length == 1) {
+                // Time zones like GMT-8.
+                tz.setAbsoluteHour(n);
+                tz.setAbsoluteMinute(0);
+            } else if (length == 4 || length == 3) {
+                // The hhmm form.
+                tz.setAbsoluteHour(n / 100);
+                tz.setAbsoluteMinute(n % 100);
+            } else {
+                // No need to accept time zones like GMT-12345.
+                return false;
+            }
+        } else if ((token.isAsciiSign() || token.isSymbol(')')) && hasReadNumber) {
+            // An extra sign or ')' is illegal once a number has been read.
+            return false;
+        } else {
+            // Ignore other characters and whitespace.
+        }
+    }
+    return day.write(out) && time.write(out) && tz.write(out);
 }
 
 }  // namespace
@@ -472,25 +869,28 @@ std::string inspectString(double tv) {
     return out;
 }
 
-ParseOutcome parse(std::string_view text, double& out, std::string& refusedFormat) {
-    // Surrounding whitespace is not in the grammar, and every engine strips it
-    // before parsing. Stripping is not a format extension: nothing about the
-    // string's meaning changes, so there is nothing here to diverge about.
-    size_t begin = 0;
-    size_t end = text.size();
-    auto isSpace = [](char c) {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
-    };
-    while (begin < end && isSpace(text[begin])) ++begin;
-    while (end > begin && isSpace(text[end - 1])) --end;
-    const std::string_view trimmed = text.substr(begin, end - begin);
-    if (trimmed.empty()) return ParseOutcome::NotADate;
-
-    if (parseIso(trimmed, out)) return ParseOutcome::Ok;
-    if (parseDateTimeString(trimmed, out)) return ParseOutcome::Ok;
-    if (parseUtcString(trimmed, out)) return ParseOutcome::Ok;
-    if (refusedFormatOf(trimmed, refusedFormat)) return ParseOutcome::RefusedFormat;
-    return ParseOutcome::NotADate;
+double parse(std::string_view text) {
+    // No trimming: surrounding whitespace is a token like any other, and it
+    // matters — " 2020-01-01" is not an ES5 string, so the legacy loop reads
+    // it, and a legacy date with no zone is LOCAL where the ES5 date-only
+    // form is UTC. That is V8's behaviour and a program that depends on it,
+    // knowingly or not, gets the same answer here.
+    DateFields fields;
+    if (!parseFields(text, fields)) return std::nan("");
+    const double dayValue = makeDay(fields.year, fields.month, fields.day);
+    const double timeValue = makeTime(fields.hour, fields.minute, fields.second, fields.millisecond);
+    double date = makeDate(dayValue, timeValue);
+    if (fields.hasOffset) {
+        date -= static_cast<double>(fields.offsetSeconds) * kMsPerSecond;
+    } else {
+        // Local time. V8 bounds the value it will convert to ten days either
+        // side of the time-value range, and answers NaN beyond that rather
+        // than asking the zone database about a date it cannot represent.
+        constexpr double kMaxTimeBeforeUtc = kMaxTimeValue + 10.0 * kMsPerDay;
+        if (!(date >= -kMaxTimeBeforeUtc && date <= kMaxTimeBeforeUtc)) return std::nan("");
+        date = utcFromLocal(date);
+    }
+    return timeClip(date);
 }
 
 }  // namespace bronze::runtime::datetime

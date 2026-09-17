@@ -123,20 +123,16 @@ std::string inspectString(double t);
 
 // ---- Date.parse (date_text.cpp) --------------------------------------------
 
-// Why a parse produced no time value. `NotADate` is 21.4.3.2's answer — NaN.
-// `RefusedFormat` is bronze's: the text is recognisably a date in a format node
-// accepts and this parser does not, and answering NaN there would be a silent
-// divergence from the engine every program was written against. The caller
-// turns it into a hard error naming the format, which `refusedFormat` holds.
-enum class ParseOutcome { Ok, NotADate, RefusedFormat };
-
-// Accepts the 21.4.1.15 date-time string format (date-only, date-time, `Z`,
-// `±HH:MM`, expanded ±YYYYYY years) and bronze's OWN `toString` and
-// `toUTCString` output, so every string a Date prints round-trips.
+// 21.4.3.2: the time value the text names, or NaN when it names none. The
+// grammar is 21.4.1.15's date-time string format first and, for everything
+// else, V8's legacy heuristics carried over step for step (date_text.cpp says
+// why and how) — so "Jan 1 2020", "1/2/2020 10:00 PM", "Wed, 01 Jan 2020
+// 00:00:00 GMT" and the rest of what node accepts answer what node answers,
+// including the corners nobody would design on purpose.
 //
-// A date-only form with no offset is UTC; a date-time form with no offset is
-// LOCAL. That split is 21.4.1.15's and is the one part of the grammar that
-// surprises everybody.
-ParseOutcome parse(std::string_view text, double& out, std::string& refusedFormat);
+// A date-only ISO form with no offset is UTC; a date-time form with no offset
+// is LOCAL. That split is 21.4.1.15's and is the one part of the grammar that
+// surprises everybody. A legacy-form date with no zone is local.
+double parse(std::string_view text);
 
 }  // namespace bronze::runtime::datetime

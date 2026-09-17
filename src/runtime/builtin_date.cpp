@@ -94,24 +94,9 @@ double timeValueOfArgument(Rooted<Value>& arg) {
     Rooted<Value> prim{rtToPrimitive(arg, ToPrimitiveHint::Default)};
     if (rtExceptionPending()) return std::nan("");
     if (prim.get().isString()) {
-        double parsed = std::nan("");
-        std::string refused;
-        const std::string text = rtUtf8Chars(prim.get().asString<StringHeader>());
-        switch (dt::parse(text, parsed, refused)) {
-            case dt::ParseOutcome::Ok:
-                return parsed;
-            case dt::ParseOutcome::NotADate:
-                return std::nan("");
-            case dt::ParseOutcome::RefusedFormat:
-                // NOT NaN. The string is recognisably a date written in a
-                // format node accepts, so answering "not a date" would be a
-                // silent divergence from the engine the program was written
-                // against — the one failure mode bronze refuses outright.
-                fatal(("unsupported: Date.parse of " + refused +
-                       " (bronze accepts the ECMA-262 21.4.1.15 date-time string format and "
-                       "the output of Date.prototype.toString / toUTCString)")
-                          .c_str());
-        }
+        // 21.4.2.1 step 4.b: the same parse as Date.parse, so `new Date(s)`
+        // and `new Date(Date.parse(s))` are the same Date.
+        return dt::parse(rtUtf8Chars(prim.get().asString<StringHeader>()));
     }
     return rtToNumber(prim.get());
 }
@@ -185,21 +170,7 @@ uint64_t dateParse(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     Rooted<Value> arg{args[0]};
     Rooted<Value> str{rtToStringValue(arg)};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    double parsed = std::nan("");
-    std::string refused;
-    const std::string text = rtUtf8Chars(str.get().asString<StringHeader>());
-    switch (dt::parse(text, parsed, refused)) {
-        case dt::ParseOutcome::Ok:
-            return Value::fromDouble(dt::timeClip(parsed)).rawBits();
-        case dt::ParseOutcome::NotADate:
-            return Value::fromDouble(std::nan("")).rawBits();
-        case dt::ParseOutcome::RefusedFormat:
-            fatal(("unsupported: Date.parse of " + refused +
-                   " (bronze accepts the ECMA-262 21.4.1.15 date-time string format and the "
-                   "output of Date.prototype.toString / toUTCString)")
-                      .c_str());
-    }
-    return Value::fromDouble(std::nan("")).rawBits();
+    return Value::fromDouble(dt::parse(rtUtf8Chars(str.get().asString<StringHeader>()))).rawBits();
 }
 
 // ---- the string members -----------------------------------------------------

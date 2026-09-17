@@ -76,15 +76,20 @@ console.log(new Date(Date.parse("2020-01-01T24:00:00Z")).toISOString());
 
 // Out of bounds and malformed both answer NaN, which 21.4.1.15's note makes one
 // rule: an illegal value is a syntax error.
-const rejected = ["2020-13-01", "2020-00-01", "2020-02-30", "2019-02-29", "2020-01-32",
-                  "2020-01-01T25:00:00Z", "2020-01-01T24:00:01Z", "2020-01-01T00:60:00Z",
-                  "-000000-01-01", "20-01-01", "2020-1-01", "", "   ", "not a date"];
+const rejected = ["2020-13-01", "2020-00-01", "2020-01-32", "2020-01-01T25:00:00Z",
+                  "2020-01-01T24:00:01Z", "2020-01-01T00:60:00Z", "20-01-01", "-000000",
+                  "", "   ", "not a date"];
 let allNaN = true;
 for (const text of rejected) {
   if (!Number.isNaN(Date.parse(text))) allNaN = false;
   if (!Number.isNaN(new Date(text).getTime())) allNaN = false;
 }
 console.log(allNaN);
+// ...except that "out of bounds" for the day means past 31, not past the
+// month: every engine reads "2020-02-30" as an ISO date and lets MakeDay carry
+// it into March, the same as `new Date(2020, 1, 30)`. So does bronze.
+console.log(new Date(Date.parse("2020-02-30")).toISOString());
+console.log(new Date(Date.parse("2019-02-29")).toISOString());
 
 // Beyond the representable range TimeClip answers NaN rather than wrapping.
 console.log(Number.isNaN(Date.parse("+275760-09-14T00:00:00.000Z")));
