@@ -922,6 +922,13 @@ uint64_t bronze_get_new_target() {
     return NewTargetScope::current().rawBits();
 }
 
+// The value of `super(...)` is the receiver the derived constructor continues
+// with (13.3.7.1 step 7, BindThisValue): the OBJECT the base returned when it
+// returned one — a base constructor may hand back something other than the
+// instance it was given, and `customElements.define` upgrading an element
+// obtained earlier is exactly that — and the receiver it was given otherwise.
+// Lowering stores this result into the derived constructor's `this` binding,
+// so what leaves here is the whole of the rebinding.
 uint64_t bronze_super_call(uint64_t baseBits, uint64_t thisBits, uint32_t argc,
                            const uint64_t* argvBits) {
     recordHelperCall("bronze_super_call");
@@ -930,8 +937,12 @@ uint64_t bronze_super_call(uint64_t baseBits, uint64_t thisBits, uint32_t argc,
         return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
     }
     auto* fn = baseVal.asObject<FunctionHeader>();
-    return fn->call(Value(thisBits), argc,
-                    const_cast<Value*>(reinterpret_cast<const Value*>(argvBits))).rawBits();
+    // Rooted, because it is handed back AFTER the call — which allocates —
+    // and the caller's own copy is the one the collector forwarded, not this.
+    Rooted<Value> self{Value(thisBits)};
+    const Value result =
+        fn->call(self.get(), argc, const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+    return result.isObject() ? result.rawBits() : self.get().rawBits();
 }
 
 uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t argsBits) {
@@ -942,11 +953,16 @@ uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t
         return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
     }
     auto* fn = baseVal.asObject<FunctionHeader>();
+    Rooted<Value> self{Value(thisBits)};
+    Value result;
     if (!argsVal.isObject() || argsVal.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
-        return fn->call(Value(thisBits), 0, nullptr).rawBits();
+        result = fn->call(self.get(), 0, nullptr);
+    } else {
+        auto* arr = argsVal.asObject<ArrayHeader>();
+        result = fn->call(self.get(), arr->length, arr->elementsData());
     }
-    auto* arr = argsVal.asObject<ArrayHeader>();
-    return fn->call(Value(thisBits), arr->length, arr->elementsData()).rawBits();
+    // The same receiver rule as `bronze_super_call`, rooted for the same reason.
+    return result.isObject() ? result.rawBits() : self.get().rawBits();
 }
 
 // 13.2.8.4 GetTemplateObject, minus the lookup: the SITE's cache cell is

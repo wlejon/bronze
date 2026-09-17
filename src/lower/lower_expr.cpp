@@ -795,6 +795,11 @@ std::optional<Lowerer::Value> Lowerer::lowerThisValue(Span /*span*/, il::Functio
         emitInst(ilFn, inst);
         return Value{res, il::Type::Dynamic};
     }
+    // A derived constructor's receiver is whatever `super()` last stored
+    // (lower_function.cpp's prologue): the binding, not the parameter.
+    if (derivedCtorThis_) {
+        return boxValueIfNeeded(readBinding(varBindings_[activeVarMap_.at("this")], ilFn), ilFn);
+    }
     return Value{currentThisValue_, il::Type::Dynamic};
 }
 

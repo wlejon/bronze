@@ -323,6 +323,14 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         if (!runCleanups(0, ilFn)) return false;
         if (currentBlockIsTerminated(ilFn)) return true;
 
+        // 10.2.2 step 10: a derived constructor returns the object it names,
+        // and its receiver for anything else. (A primitive is a TypeError
+        // there; bronze returns the receiver instead, as it does for `new`.)
+        if (derivedCtorThis_ && val->type == il::Type::Dynamic) {
+            emitDerivedCtorReturn(*val, ilFn);
+            return true;
+        }
+
         il::Instruction inst;
         inst.op = il::Op::Ret;
         inst.type = val->type;
@@ -348,6 +356,16 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         inst.op = il::Op::Ret;
         inst.type = il::Type::Void;
         inst.result = il::kNoValue;
+        // A derived constructor's `return;` returns its receiver (10.2.2
+        // step 10, the undefined case), which `super()` may have rebound.
+        if (derivedCtorThis_ && ilFn.returnType == il::Type::Dynamic) {
+            const Value self = boxValueIfNeeded(
+                readBinding(varBindings_[activeVarMap_.at("this")], ilFn), ilFn);
+            inst.type = self.type;
+            inst.operands = {self.id};
+            emitInst(ilFn, inst);
+            return true;
+        }
         // 14.10.1: `return;` returns UNDEFINED, which is a value — so in a
         // function whose calling convention says it returns one, this is not
         // a void return. Emitting one anyway produced a `ret void` in a

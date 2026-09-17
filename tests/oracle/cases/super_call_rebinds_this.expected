@@ -1,0 +1,11 @@
+plain: true plain 1 false false
+fields: 7 fields true
+arrows: arrows,arrows
+via arrow: via-arrow 2 true
+value: true
+branch: a b 1
+try: tried 3
+returns: true undef void
+ordinary: 3 true true
+two levels: mid true true true
+fn base: true 1 false

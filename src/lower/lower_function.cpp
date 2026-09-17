@@ -71,6 +71,13 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     }
     entryEnvValue_ = currentEnvValue_;
     currentThisValue_ = ilFn.needsThis ? (ilFn.needsEnv ? 1u : 0u) : il::kNoValue;
+    // Consumed here and nowhere else: `lowerClass` raises it for the
+    // constructor's closure, and the first body lowered after that IS the
+    // constructor — a nested function inside it is lowered from within this
+    // call, after the flag has already been taken.
+    const bool derivedCtor = pendingDerivedCtor_ && currentThisValue_ != il::kNoValue;
+    pendingDerivedCtor_ = false;
+    derivedCtorThis_ = false;
 
     std::vector<const ast::Stmt*> stmts;
     stmts.reserve(body.size());
@@ -94,6 +101,26 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
         }
         emitEnvSet(envDepthOf(functionEnvScope_), envScopes_[functionEnvScope_].slotOf.at("this"),
                    thisVal, ilFn);
+    }
+
+    // A derived constructor's receiver is a BINDING, declared under the
+    // keyword's own spelling so that no source name can collide with it and
+    // so that, where an arrow captures `this`, it lands in the very slot the
+    // arrow reads (the record already has one by that name). It starts as
+    // `__this` — the instance `new` allocated — and `super()` stores over it;
+    // `lowerThisValue` reads the binding whenever this flag is up.
+    if (derivedCtor) {
+        if (!declareVariable("this", il::Type::Dynamic, /*isConst=*/false, /*isLet=*/false,
+                             /*isVar=*/true, /*isInitialized=*/true, currentThisValue_, Span{})) {
+            return false;
+        }
+        derivedCtorThis_ = true;
+        // What the constructor RETURNS is the receiver (10.2.2 step 10 via
+        // 9.2.1's `return this` when the body's own return is not an
+        // object), so a body that never writes `return` still returns a
+        // value — `bronze_construct` takes an object result over the instance
+        // it allocated, and that is how the rebound receiver reaches `new`.
+        if (ilFn.returnType == il::Type::Void) ilFn.returnType = il::Type::Dynamic;
     }
 
     // The arguments object is a BINDING named `arguments`, not a keyword:
@@ -206,7 +233,12 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
             } else if (ilFn.returnType == il::Type::Dynamic ||
                        (!reachable && ilFn.returnType != il::Type::Str)) {
                 Value retVal{il::kNoValue, il::Type::Void};
-                if (ilFn.returnType == il::Type::Dynamic) {
+                if (derivedCtorThis_ && reachable) {
+                    // A derived constructor falling off its end returns the
+                    // receiver `super()` decided, not `undefined`.
+                    retVal = boxValueIfNeeded(
+                        readBinding(varBindings_[activeVarMap_.at("this")], ilFn), ilFn);
+                } else if (ilFn.returnType == il::Type::Dynamic) {
                     il::ValueId undefVal = ilFn.valueCount++;
                     il::Instruction constInst;
                     constInst.op = il::Op::ConstUndefined;

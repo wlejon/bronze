@@ -201,6 +201,15 @@ private:
     // Lowering an arrow body, where `this` resolves through the environment
     // rather than to a parameter.
     bool currentFunctionIsArrow_ = false;
+    // The body being lowered is a DERIVED class constructor: `this` is a
+    // rebindable binding named "this" rather than the `__this` parameter,
+    // because `super()` may hand back an object other than the one the
+    // constructor was entered with (13.3.7.1), and every read after it — and
+    // the value the constructor returns — must be that object. Set by the
+    // prologue from `pendingDerivedCtor_`, which `lowerClass` raises for the
+    // one closure that is the constructor.
+    bool derivedCtorThis_ = false;
+    bool pendingDerivedCtor_ = false;
     // Whether the code being lowered is STRICT (ECMA-262 11.2.2). Read off the
     // AST node the parser wrote it onto — a module or a function — and saved
     // and restored across every nested body: strictness only ever rises on the
@@ -919,6 +928,10 @@ private:
                                     const std::vector<ast::ClassMethod>& methods, Span span,
                                     il::Function& ilFn, bool bindsOwnName = false);
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
+    // `return <val>` inside a derived constructor: the object `val` names, or
+    // the receiver `super()` decided when it is not one. Terminates the
+    // current block.
+    void emitDerivedCtorReturn(Value val, il::Function& ilFn);
 
     // --- lower_private.cpp: private class elements ------------------------
     // The private names of each class body being lowered, innermost last. A

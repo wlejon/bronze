@@ -215,6 +215,9 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     auto outerThisValue = currentThisValue_;
     auto outerIsArrow = currentFunctionIsArrow_;
     currentFunctionIsArrow_ = isArrow;
+    // The prologue decides this for the body it opens; an arrow inside a
+    // derived constructor reaches the receiver through the record instead.
+    const bool outerDerivedCtorThis = derivedCtorThis_;
     // Strictness comes from the FUNCTION NODE, not from the enclosing code:
     // the parser has already resolved inheritance (a function inside strict
     // code is strict) and a body's own `"use strict"` (a strict function
@@ -283,6 +286,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     cachedTypedElemGet_ = outerCachedTypedElemGet;
     currentThisValue_ = outerThisValue;
     currentFunctionIsArrow_ = outerIsArrow;
+    derivedCtorThis_ = outerDerivedCtorThis;
     functionEnvBase_ = outerEnvBase;
     functionEnvScope_ = outerEnvScope;
     functionVarNames_ = outerVarNames;

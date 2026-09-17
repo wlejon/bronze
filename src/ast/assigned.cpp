@@ -109,7 +109,14 @@ public:
         if (deep_) descendIntoFunction(f.name, f.params, f.body);
     }
 
+    // `super(...)` WRITES the receiver: its value is the object the base
+    // constructor returned, or the one it was given (13.3.7.1 BindThisValue),
+    // and the derived constructor's `this` binding takes it. Recorded under
+    // the keyword's own spelling, which no source binding can collide with,
+    // so a loop or a `try` around the call carries the receiver like any
+    // other rebound name and a hoisted read of the slot is refused.
     void visit(const SuperCall& c) override {
+        record("this");
         for (const auto& arg : c.args) arg->accept(*this);
     }
     void visit(const SuperMember&) override {}

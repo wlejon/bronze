@@ -157,8 +157,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // keys into a vector that dies with this call, so an entry that outlived it
     // could be answered for a node the allocator later put at the same address.
     cloneOrigins_.push_back(&ctorOrigins);
+    // A derived constructor's receiver is rebindable — `super()` decides it —
+    // and the prologue of the closure lowered next is what makes it so.
+    pendingDerivedCtor_ = hasSuper;
     auto ctorVal = lowerClosure(*ctor->fn, name, name, ctor->fn->params,
                                 ctor->fn->returnType, ctorBody, span, ilFn);
+    pendingDerivedCtor_ = false;
     cloneOrigins_.pop_back();
     if (!ctorVal) return std::nullopt;
 
@@ -400,6 +404,83 @@ std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls,
                       ilFn, /*bindsOwnName=*/true);
 }
 
+// The object test is spelled with the ops the IL already has — `typeof` is
+// "object" and the value is not null, or `typeof` is "function" — rather than
+// a new instruction, because an explicit `return` in a derived constructor is
+// rare enough that four compares and three branches are the whole cost worth
+// paying for it. Both arms return; nothing joins.
+void Lowerer::emitDerivedCtorReturn(Value val, il::Function& ilFn) {
+    const auto emitTypeOfIs = [&](il::ValueId typeOfVal, const char* name) {
+        il::ValueId str = ilFn.valueCount++;
+        il::Instruction box;
+        box.op = il::Op::Box;
+        box.type = il::Type::Dynamic;
+        box.boxType = il::Type::Str;
+        box.result = str;
+        box.keyIndex = getKeyConstantIndex(name);
+        emitInst(ilFn, box);
+        il::ValueId eq = ilFn.valueCount++;
+        il::Instruction cmp;
+        cmp.op = il::Op::StrictEq;
+        cmp.type = il::Type::Bool;
+        cmp.result = eq;
+        cmp.operands = {typeOfVal, str};
+        emitInst(ilFn, cmp);
+        return eq;
+    };
+    const auto emitBranch = [&](il::ValueId cond, il::BlockId then, il::BlockId otherwise) {
+        il::Instruction br;
+        br.op = il::Op::Branch;
+        br.type = il::Type::Void;
+        br.result = il::kNoValue;
+        br.operands = {cond};
+        br.target = il::BlockTarget{.block = then, .args = {}};
+        br.elseTarget = il::BlockTarget{.block = otherwise, .args = {}};
+        emitInst(ilFn, br);
+    };
+    const auto emitRet = [&](Value v) {
+        il::Instruction ret;
+        ret.op = il::Op::Ret;
+        ret.type = v.type;
+        ret.result = il::kNoValue;
+        ret.operands = {v.id};
+        emitInst(ilFn, ret);
+    };
+
+    il::ValueId typeOfVal = ilFn.valueCount++;
+    il::Instruction typeOf;
+    typeOf.op = il::Op::TypeOf;
+    typeOf.type = il::Type::Dynamic;
+    typeOf.result = typeOfVal;
+    typeOf.operands = {val.id};
+    emitInst(ilFn, typeOf);
+
+    const il::BlockId bNullCheck = createBlock(ilFn);
+    const il::BlockId bFnCheck = createBlock(ilFn);
+    const il::BlockId bValue = createBlock(ilFn);
+    const il::BlockId bReceiver = createBlock(ilFn);
+    emitBranch(emitTypeOfIs(typeOfVal, "object"), bNullCheck, bFnCheck);
+
+    setCurrentBlock(bNullCheck);
+    il::ValueId nullish = ilFn.valueCount++;
+    il::Instruction isNullish;
+    isNullish.op = il::Op::IsNullish;
+    isNullish.type = il::Type::Bool;
+    isNullish.result = nullish;
+    isNullish.operands = {val.id};
+    emitInst(ilFn, isNullish);
+    emitBranch(nullish, bReceiver, bValue);
+
+    setCurrentBlock(bFnCheck);
+    emitBranch(emitTypeOfIs(typeOfVal, "function"), bValue, bReceiver);
+
+    setCurrentBlock(bValue);
+    emitRet(val);
+
+    setCurrentBlock(bReceiver);
+    emitRet(boxValueIfNeeded(readBinding(varBindings_[activeVarMap_.at("this")], ilFn), ilFn));
+}
+
 // `super.m` — the lookup starts at the PARENT prototype, which is why it cannot
 // be written as `this.m`: inside an override, `this.m` would find the override
 // again and recurse forever. The parent is named at the site, so this is two
@@ -480,7 +561,24 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
     inst.result = res;
     inst.operands = std::move(operands);
     emitInst(ilFn, inst);
-    return Value{res, il::Type::Dynamic};
+
+    // 13.3.7.1 step 7, BindThisValue: the call's value is the receiver from
+    // here on — the object the base returned, or the one it was given (the
+    // runtime already chose between the two). Stored into the derived
+    // constructor's `this` binding; from an arrow inside it, into the
+    // constructor's record slot the arrow reads `this` from, which is the
+    // same binding by another door.
+    const Value bound{res, il::Type::Dynamic};
+    if (derivedCtorThis_) {
+        writeBinding(varBindings_[activeVarMap_.at("this")], bound, ilFn);
+    } else if (currentFunctionIsArrow_) {
+        uint32_t depth = 0;
+        uint32_t index = 0;
+        if (currentEnvValue_ != il::kNoValue && findEnclosingEnvVar("this", depth, index)) {
+            emitEnvSet(depth, index, bound, ilFn, /*assigning=*/true);
+        }
+    }
+    return bound;
 }
 
 }  // namespace bronze::lower

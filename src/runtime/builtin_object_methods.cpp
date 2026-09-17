@@ -160,7 +160,23 @@ uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     return out.get().rawBits();
 }
 
-uint64_t objectConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t objectConstructorBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // 20.1.1.1 steps 1–2: reached through `super()` from a class that extends
+    // Object, NewTarget is that class and the result is
+    // OrdinaryCreateFromConstructor(NewTarget) — which is the receiver
+    // `bronze_construct` already allocated from it. `bronze_super_call` keeps
+    // an object result as the derived constructor's `this`, so returning a
+    // fresh `{}` here would swap the instance for one with the wrong
+    // prototype. The scope is what `new` pushes and a plain call clears, so a
+    // bare `Object()` inside a constructor still builds a new one.
+    if (const Value newTarget = NewTargetScope::current(); newTarget.isObject()) {
+        const auto* target = newTarget.asObject<HeapObjectHeader>();
+        if (target->flags == HeapKind::Function &&
+            reinterpret_cast<const FunctionHeader*>(target)->code != objectConstructorBody &&
+            Value(thisBits).isObject()) {
+            return thisBits;
+        }
+    }
     if (argc == 0) return bronze_create_object();
     Rooted<Value> value{Value(argv[0])};
     if (value.get().isUndefined() || value.get().isNull()) return bronze_create_object();
