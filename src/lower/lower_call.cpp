@@ -349,14 +349,18 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // A spread argument means the argument count is not known here, and a
     // direct call's operand list is exactly its parameter list. So a spread
     // call always takes the uniform path, where the argument vector is a real
-    // array the runtime unpacks.
-    const bool spreadArgs = listHasSpread(call->args);
+    // array the runtime unpacks — and so does a call with more arguments than
+    // the fixed-operand helpers take (`argsTakeArrayPath`). Only the spread
+    // rules the DIRECT path out, though: a direct call's operands are the
+    // callee's parameters however many there are.
+    const bool hasSpread = listHasSpread(call->args);
+    const bool spreadArgs = argsTakeArrayPath(call->args);
 
     // An OPTIONAL call never takes the direct path: the point of `f?.()` is
     // that the callee may be nullish, and a direct call names a module
     // function that cannot be.
     if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get());
-        calleeIdent && !spreadArgs && !call->optional) {
+        calleeIdent && !hasSpread && !call->optional) {
         // A local binding shadows a module-level function, and so does an
         // enclosing scope's environment slot: a nested function declaration
         // registers in functionIndices_ under its source name, but every
@@ -504,8 +508,10 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         if (!fnVal) return std::nullopt;
         calleeVal = boxValueIfNeeded(*fnVal, ilFn);
     } else if (const auto* calleeIdent = dynamic_cast<const ast::Ident*>(call->callee.get())) {
-        if (spreadArgs) {
+        if (hasSpread) {
             recordCall(call->span.file, false, "call has spread argument");
+        } else if (spreadArgs) {
+            recordCall(call->span.file, false, "call passes more than 16 arguments");
         } else if (call->optional) {
             recordCall(call->span.file, false, "optional call (?.)");
         } else {

@@ -905,6 +905,17 @@ private:
     // swallows the leftovers, and how few arguments a call may pass.
     static void applyParamShape(const std::vector<ast::Param>& params, il::Function& fn);
     static bool listHasSpread(const std::vector<ast::ExprPtr>& list);
+    // Whether a call's arguments travel as ONE ARRAY rather than as fixed
+    // operands: a spread makes the count a runtime fact, and a count past
+    // `kFixedArgOperandLimit` has no fixed-arity helper to land on —
+    // `bronze_call_dynamic_16`, `bronze_construct_16` and `bronze_super_call_16`
+    // are the last of their ladders (abi/bronze_abi.h), and brass answers a
+    // longer operand list with `undefined` and no call at all.
+    static constexpr size_t kFixedArgOperandLimit = 16;
+    static bool argsTakeArrayPath(const std::vector<ast::ExprPtr>& args);
+    // Already-lowered values as one array, for an emitter that has its
+    // arguments in hand and finds there are too many for fixed operands.
+    Value emitValuesAsArray(const std::vector<il::ValueId>& values, il::Function& ilFn);
     // Every element of `list` as one array, spreads expanded — the argument
     // vector of a call whose length is a runtime fact.
     std::optional<Value> lowerListToArray(const std::vector<ast::ExprPtr>& list,

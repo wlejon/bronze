@@ -538,7 +538,7 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
 
     // `super(...args)` is how a DERIVED CLASS WITH NO CONSTRUCTOR forwards, so
     // this path is not an edge case: it is the default one.
-    const bool spreadArgs = listHasSpread(sc->args);
+    const bool spreadArgs = argsTakeArrayPath(sc->args);
     std::vector<il::ValueId> operands;
     operands.push_back(boxValueIfNeeded(*baseVal, ilFn).id);
     operands.push_back(boxValueIfNeeded(*thisVal, ilFn).id);

@@ -338,20 +338,31 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         if (!tagVal) return std::nullopt;
         auto tagBoxed = boxValueIfNeeded(*tagVal, ilFn);
 
-        std::vector<il::ValueId> callOperands;
-        callOperands.push_back(tagBoxed.id);
-        callOperands.push_back(emitConstUndefined(ilFn));
-        callOperands.push_back(joinedId);
+        std::vector<il::ValueId> callArgs;
+        callArgs.push_back(joinedId);
 
         for (const auto& subExpr : tpl.exprs) {
             auto subVal = lowerExpr(*subExpr, ilFn);
             if (!subVal) return std::nullopt;
-            callOperands.push_back(boxValueIfNeeded(*subVal, ilFn).id);
+            callArgs.push_back(boxValueIfNeeded(*subVal, ilFn).id);
+        }
+
+        // The template object plus one argument per substitution: a template
+        // with sixteen or more `${}`s is past the fixed-operand helpers
+        // (`kFixedArgOperandLimit`) and hands the tag an array instead.
+        std::vector<il::ValueId> callOperands;
+        callOperands.push_back(tagBoxed.id);
+        callOperands.push_back(emitConstUndefined(ilFn));
+        const bool asArray = callArgs.size() > kFixedArgOperandLimit;
+        if (asArray) {
+            callOperands.push_back(emitValuesAsArray(callArgs, ilFn).id);
+        } else {
+            callOperands.insert(callOperands.end(), callArgs.begin(), callArgs.end());
         }
 
         il::ValueId callRes = ilFn.valueCount++;
         il::Instruction callInst;
-        callInst.op = il::Op::DynamicCall;
+        callInst.op = asArray ? il::Op::DynamicCallSpread : il::Op::DynamicCall;
         callInst.type = il::Type::Dynamic;
         callInst.result = callRes;
         callInst.operands = std::move(callOperands);

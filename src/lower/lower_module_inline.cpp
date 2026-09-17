@@ -268,11 +268,19 @@ Lowerer::Value Lowerer::emitInlineMethodCall(Value receiver, const std::string& 
     std::vector<il::ValueId> operands;
     operands.reserve(args.size() + 1);
     operands.push_back(receiver.id);
-    for (const auto& arg : args) operands.push_back(arg.id);
+    const bool asArray = args.size() > kFixedArgOperandLimit;
+    if (asArray) {
+        std::vector<il::ValueId> argIds;
+        argIds.reserve(args.size());
+        for (const auto& arg : args) argIds.push_back(arg.id);
+        operands.push_back(emitValuesAsArray(argIds, ilFn).id);
+    } else {
+        for (const auto& arg : args) operands.push_back(arg.id);
+    }
 
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::MethodCall;
+    inst.op = asArray ? il::Op::MethodCallSpread : il::Op::MethodCall;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = std::move(operands);

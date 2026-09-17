@@ -204,10 +204,15 @@ Lowerer::Value Lowerer::emitPrivateCall(Value fnVal, Value thisVal,
     std::vector<il::ValueId> operands;
     operands.push_back(fnVal.id);
     operands.push_back(thisVal.id);
-    for (il::ValueId a : args) operands.push_back(a);
+    const bool asArray = args.size() > kFixedArgOperandLimit;
+    if (asArray) {
+        operands.push_back(emitValuesAsArray(args, ilFn).id);
+    } else {
+        for (il::ValueId a : args) operands.push_back(a);
+    }
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = il::Op::DynamicCall;
+    inst.op = asArray ? il::Op::DynamicCallSpread : il::Op::DynamicCall;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = std::move(operands);

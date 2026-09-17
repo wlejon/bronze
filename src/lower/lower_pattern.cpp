@@ -611,6 +611,26 @@ bool Lowerer::listHasSpread(const std::vector<ast::ExprPtr>& list) {
     return false;
 }
 
+bool Lowerer::argsTakeArrayPath(const std::vector<ast::ExprPtr>& args) {
+    return args.size() > kFixedArgOperandLimit || listHasSpread(args);
+}
+
+Lowerer::Value Lowerer::emitValuesAsArray(const std::vector<il::ValueId>& values,
+                                          il::Function& ilFn) {
+    il::ValueId arr = ilFn.valueCount++;
+    il::Instruction createInst;
+    createInst.op = il::Op::CreateArray;
+    createInst.type = il::Type::Dynamic;
+    createInst.result = arr;
+    createInst.immI32 = 0;
+    emitInst(ilFn, createInst);
+    Value container{arr, il::Type::Dynamic};
+    for (il::ValueId v : values) {
+        emitContainerOp(il::Op::ArrayAppend, container, Value{v, il::Type::Dynamic}, ilFn);
+    }
+    return container;
+}
+
 // The elements of a list, spreads expanded, as one array. This is what a call
 // with a spread argument passes and what an array literal with one builds:
 // the length is not known where the code is generated, so the container is

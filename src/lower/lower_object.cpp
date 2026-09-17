@@ -388,7 +388,7 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
     auto calleeVal = lowerExpr(*newExpr->callee, ilFn);
     if (!calleeVal) return std::nullopt;
 
-    const bool spreadArgs = listHasSpread(newExpr->args);
+    const bool spreadArgs = argsTakeArrayPath(newExpr->args);
     std::vector<il::ValueId> operands;
     operands.push_back(boxValueIfNeeded(*calleeVal, ilFn).id);
     if (spreadArgs) {
