@@ -61,6 +61,7 @@ bronze_add_module(runtime
         builtin_function_kinds.cpp
         builtin_function_bind.cpp
         builtin_constructors.cpp
+        builtin_array_from_async.cpp
         builtin_wrappers.cpp
         inspect.cpp
         rt_state.cpp

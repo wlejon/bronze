@@ -17,15 +17,22 @@
 // One distinct C function per constructor is therefore load-bearing: two
 // constructors sharing a body with a kind parameter would intern to ONE object
 // and `Array === String` would be true.
+//
+// `Array.fromAsync` is builtin_array_from_async.cpp's: it is the one member
+// here that suspends, and its state machine is a file's worth on its own. The
+// construct-through-`this` protocol the three `Array` statics share is
+// builtin_constructors_internal.h's.
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <string>
 #include <vector>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_constructors_internal.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -35,7 +42,6 @@
 #include "runtime/number_format.h"
 #include "runtime/proxy.h"
 #include "runtime/object.h"
-#include "runtime/promise.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -50,73 +56,9 @@
 
 namespace bronze::runtime {
 
+using namespace ctor_internal;
+
 namespace {
-
-bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-}
-
-Value newEmptyArray() {
-    ArrayHeader* arr = ArrayHeader::create(rtHeap(), 4);
-    arr->length = 0;
-    return Value::fromObject(arr);
-}
-
-// Append through the root: growth reallocates the element block and can move
-// the array itself.
-void appendTo(Rooted<Value>& arrRoot, Rooted<Value>& val) {
-    const uint32_t at = arrRoot.get().asObject<ArrayHeader>()->length;
-    arrRoot.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, val);
-}
-
-// 23.1.2.1 step 4 and 23.1.2.2 step 4: `Array.of` and `Array.from` build their
-// result by CONSTRUCTING `this` when `this` is a constructor, which is the
-// whole reason `MyArr.of(1, 2, 3)` is a MyArr and not an Array.
-//
-// False takes the plain-array path, and covers the three cases where
-// constructing would be observably the same as ArrayCreate: `this` is absent
-// (a detached `const of = Array.of`), `this` is not a constructor at all, or
-// `this` IS %Array% — whose 23.1.1.1 over a single length argument is exactly
-// ArrayCreate(len). So the ordinary `Array.of(1, 2, 3)` never enters a
-// construction, and the guard is one call and one identity compare.
-bool buildsThroughThis(Value thisVal) {
-    return isCallable(thisVal) && !rtIsArrayConstructor(thisVal);
-}
-
-// Construct(C, « len ») or Construct(C), depending on whether the caller knows
-// the length yet — `Array.from` over an ITERATOR does not (step 5.b passes no
-// argument), and every other site does.
-Value constructThrough(Rooted<Value>& ctor, const uint32_t* len) {
-    if (!len) return Value(bronze_construct(ctor.get().rawBits(), 0, nullptr));
-    Rooted<Value> lenRoot{Value::fromDouble(*len)};
-    return Value(bronze_construct(ctor.get().rawBits(), 1,
-                                  reinterpret_cast<const uint64_t*>(lenRoot.slot_ptr())));
-}
-
-// CreateDataPropertyOrThrow(A, ToString(index), value), or the append that is
-// the same thing on an array being filled front to back. Kept as one call so
-// the two paths INTERLEAVE identically with the iteration around them: a
-// subclass with an index setter that throws must see the same prefix written
-// as a plain array would have had.
-void emitAt(Rooted<Value>& out, uint32_t index, Rooted<Value>& value, bool constructed) {
-    if (!constructed) {
-        appendTo(out, value);
-        return;
-    }
-    Rooted<Value> key{Value::fromDouble(index)};
-    bronze_elem_set(out.get().rawBits(), key.get().rawBits(), value.get().rawBits(),
-                    /*strict=*/true);
-}
-
-// The `Set(A, "length", n, true)` both members finish with. A no-op on the
-// fast path, where the array's length IS the count appended.
-void setResultLength(Rooted<Value>& out, uint32_t n, bool constructed) {
-    if (!constructed) return;
-    Rooted<Value> key{rtMakeString("length")};
-    Rooted<Value> value{Value::fromDouble(n)};
-    bronze_elem_set(out.get().rawBits(), key.get().rawBits(), value.get().rawBits(),
-                    /*strict=*/true);
-}
 
 // ---- Array (23.1) -----------------------------------------------------------
 
@@ -208,19 +150,6 @@ uint64_t arrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     return out.get().rawBits();
 }
 
-// Does 23.1.2.1 step 3's GetMethod(items, @@iterator) find something? The fast
-// kinds answer yes without a property read at all — `rtOpenIterator` steps an
-// array, a string, a typed array, a Map and a Set from a cursor — and anything
-// else is asked for the well-known key, because the answer decides between the
-// iterator path and the array-like one and getting it wrong turns
-// `Array.from(userIterable)` into an empty array.
-
-Value callMapper(Rooted<Value>& fn, Rooted<Value>& thisArg, Rooted<Value>& item, uint32_t index) {
-    Value block[2] = {item.get(), Value::fromDouble(static_cast<double>(index))};
-    return Value(bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), 2,
-                                     reinterpret_cast<const uint64_t*>(block)));
-}
-
 uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> src{args[0]};
@@ -287,380 +216,6 @@ uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     }
     setResultLength(out, len, constructed);
     return out.get().rawBits();
-}
-
-// ---- Array.fromAsync (23.1.2.1, ES2024) --------------------------------------
-//
-// `Array.from` over an ASYNC iterable, answering a promise for the array. The
-// spec writes it as an async abstract closure with an `await` at each of three
-// points — the result of `next()`, the value a sync source yields, and the
-// mapper's return — and a native builtin has no compiled state machine to
-// suspend at them. So the closure is written the way the machine would have
-// compiled it: one STATE record (a plain object with internal slots, invisible
-// to the program) holding everything the loop carries across a tick, and one
-// driver that runs the synchronous stretch between two awaits and subscribes
-// a continuation to the promise it stops at. Each continuation is a native
-// closure over the record, so no C++ frame lives across a job-queue turn and
-// nothing the collector moves is held anywhere but a slot it walks.
-//
-// Three sources, one loop:
-//   - an object with @@asyncIterator (mode 0): `next()` is called and its
-//     RESULT awaited; the value is used as it comes (step 5.k.i.5 does not
-//     await it again);
-//   - one with only @@iterator (mode 1): the spec wraps it in
-//     CreateAsyncFromSyncIterator, whose `next` awaits the sync result's
-//     VALUE. The wrapper is not built; the sync iterator is stepped directly
-//     and each value awaited, which is the same program with one fewer
-//     object per element;
-//   - anything else (mode 2): an array-like, each `Get(k)` awaited.
-// A mapper's return is awaited on every mode. Errors before the first await
-// reject the promise rather than throw (3's AsyncFunctionStart), so
-// `Array.fromAsync(null)` is a rejection and `Array.fromAsync(7)` — ToObject
-// of a number, length 0 — resolves with `[]`.
-
-namespace FromAsyncSlot {
-enum : uint32_t {
-    Capability,   // the promise the whole operation settles
-    Out,          // the array (or subclass instance) being filled
-    Constructed,  // 1 when `Out` came from Construct(C), 0 for ArrayCreate
-    Index,        // k
-    MapFn,        // undefined when not mapping
-    ThisArg,
-    Mode,         // 0 async iterator, 1 sync iterator record, 2 array-like
-    Iterator,     // mode 0: the iterator object; mode 1: the IterRecord
-    NextFn,       // mode 0: its `next`
-    Source,       // mode 2: the array-like
-    Length,       // mode 2: its length
-    kCount
-};
-}
-
-Value fromAsyncSlot(Rooted<Value>& state, uint32_t slot) {
-    return state.get().asObject<ObjectHeader>()->internalSlot(slot);
-}
-
-void setFromAsyncSlot(Rooted<Value>& state, uint32_t slot, Value v) {
-    state.get().asObject<ObjectHeader>()->setInternalSlot(slot, v);
-}
-
-uint32_t fromAsyncMode(Rooted<Value>& state) {
-    return static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Mode).asNumber());
-}
-
-void fromAsyncResume(Rooted<Value>& state);
-uint64_t fromAsyncOnNextResult(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv);
-uint64_t fromAsyncOnValue(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv);
-uint64_t fromAsyncOnMapped(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv);
-uint64_t fromAsyncOnRejectedClosing(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv);
-uint64_t fromAsyncOnRejected(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv);
-
-// IfAbruptCloseAsyncIterator / IfAbruptCloseIterator: the pending exception is
-// the completion the program sees, so the iterator's `return` runs with its own
-// errors discarded. An async `return` answers a promise the spec would await;
-// nothing observable of this operation depends on when it settles, so it is
-// not waited for.
-void fromAsyncCloseSource(Rooted<Value>& state) {
-    const uint32_t mode = fromAsyncMode(state);
-    if (mode == 1) {
-        Rooted<Value> rec{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
-        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
-        return;
-    }
-    if (mode != 0) return;
-    Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
-    rtClearException();
-    Rooted<Value> iter{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
-    Rooted<Value> key{rtMakeString("return")};
-    Rooted<Value> ret{Value(bronze_elem_get(iter.get().rawBits(), key.get().rawBits()))};
-    if (!rtExceptionPending() && isCallable(ret.get())) {
-        ret.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr);
-    }
-    rtClearException();
-    rtThrow(thrown.get());
-}
-
-void fromAsyncReject(Rooted<Value>& state) {
-    Rooted<Value> cap{fromAsyncSlot(state, FromAsyncSlot::Capability)};
-    rtRejectCapabilityWithPending(cap);
-}
-
-// `Await(v)`: PromiseResolve(%Promise%, v), then the two continuations. The
-// rejection side closes the source only where the spec's IfAbruptClose does
-// — around the mapper's await and the sync source's value — and not around
-// `next()` itself, whose rejection is the iterator's own.
-void fromAsyncAwait(Rooted<Value>& state, Rooted<Value>& v, NativeFunctionCode onFulfilled,
-                    bool closeOnReject) {
-    Rooted<Value> promise{rtPromiseResolveValue(v)};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return;
-    }
-    Rooted<Value> onF{rtMakeNativeClosure(onFulfilled, state, 1)};
-    Rooted<Value> onR{rtMakeNativeClosure(
-        closeOnReject ? fromAsyncOnRejectedClosing : fromAsyncOnRejected, state, 1)};
-    Rooted<Value> noCap{Value::fromUndefined()};
-    rtPerformPromiseThen(promise, onF, onR, noCap);
-}
-
-void fromAsyncFinish(Rooted<Value>& state) {
-    Rooted<Value> out{fromAsyncSlot(state, FromAsyncSlot::Out)};
-    const bool constructed = fromAsyncSlot(state, FromAsyncSlot::Constructed).asNumber() != 0;
-    const auto k = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Index).asNumber());
-    setResultLength(out, k, constructed);
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return;
-    }
-    Rooted<Value> cap{fromAsyncSlot(state, FromAsyncSlot::Capability)};
-    rtSettleCapability(cap, out, /*reject=*/false);
-}
-
-// The synchronous stretch that begins an element: ask the source for the
-// next one and stop at the first await.
-void fromAsyncResume(Rooted<Value>& state) {
-    const uint32_t mode = fromAsyncMode(state);
-    if (mode == 0) {
-        Rooted<Value> iter{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
-        Rooted<Value> next{fromAsyncSlot(state, FromAsyncSlot::NextFn)};
-        Rooted<Value> result{next.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr)};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return;
-        }
-        fromAsyncAwait(state, result, fromAsyncOnNextResult, /*closeOnReject=*/false);
-        return;
-    }
-    if (mode == 1) {
-        Rooted<Value> rec{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
-        const bool more = bronze_iter_step(rec.get().rawBits());
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return;
-        }
-        if (!more) {
-            fromAsyncFinish(state);
-            return;
-        }
-        Rooted<Value> value{Value(bronze_iter_value(rec.get().rawBits()))};
-        fromAsyncAwait(state, value, fromAsyncOnValue, /*closeOnReject=*/true);
-        return;
-    }
-    const auto k = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Index).asNumber());
-    const auto len = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Length).asNumber());
-    if (k >= len) {
-        fromAsyncFinish(state);
-        return;
-    }
-    Rooted<Value> source{fromAsyncSlot(state, FromAsyncSlot::Source)};
-    Rooted<Value> value{
-        Value(bronze_elem_get(source.get().rawBits(), Value::fromDouble(k).rawBits()))};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return;
-    }
-    fromAsyncAwait(state, value, fromAsyncOnValue, /*closeOnReject=*/false);
-}
-
-// Mode 0's continuation: the awaited `next()` result. 5.k.i.3: not an object
-// is a TypeError, and no close — the iterator gave a bad answer.
-uint64_t fromAsyncOnNextResult(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> state{Value(env)};
-    Rooted<Value> result{args[0]};
-    if (!result.get().isObject()) {
-        rtThrowTypeError("Array.fromAsync: the async iterator's next() result is not an object");
-        fromAsyncReject(state);
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> doneKey{rtMakeString("done")};
-    Rooted<Value> done{Value(bronze_elem_get(result.get().rawBits(), doneKey.get().rawBits()))};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return Value::fromUndefined().rawBits();
-    }
-    if (bronze_truthy(done.get().rawBits())) {
-        fromAsyncFinish(state);
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> valueKey{rtMakeString("value")};
-    Rooted<Value> value{Value(bronze_elem_get(result.get().rawBits(), valueKey.get().rawBits()))};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return Value::fromUndefined().rawBits();
-    }
-    const uint64_t one[1] = {value.get().rawBits()};
-    return fromAsyncOnValue(state.get().rawBits(), 0, 1, one);
-}
-
-// An element's value in hand: map it (and await the mapper) or store it.
-uint64_t fromAsyncOnValue(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> state{Value(env)};
-    Rooted<Value> value{args[0]};
-    Rooted<Value> mapFn{fromAsyncSlot(state, FromAsyncSlot::MapFn)};
-    if (mapFn.get().isUndefined()) {
-        const uint64_t one[1] = {value.get().rawBits()};
-        return fromAsyncOnMapped(state.get().rawBits(), 0, 1, one);
-    }
-    Rooted<Value> thisArg{fromAsyncSlot(state, FromAsyncSlot::ThisArg)};
-    const auto k = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Index).asNumber());
-    Rooted<Value> mapped{callMapper(mapFn, thisArg, value, k)};
-    if (rtExceptionPending()) {
-        // 5.k.i.5.b.ii / 6.e.iii.b.ii: the mapper threw, so the source is
-        // closed before the rejection.
-        fromAsyncCloseSource(state);
-        fromAsyncReject(state);
-        return Value::fromUndefined().rawBits();
-    }
-    fromAsyncAwait(state, mapped, fromAsyncOnMapped, /*closeOnReject=*/true);
-    return Value::fromUndefined().rawBits();
-}
-
-// The element is final: CreateDataPropertyOrThrow, advance, and resume.
-uint64_t fromAsyncOnMapped(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> state{Value(env)};
-    Rooted<Value> value{args[0]};
-    Rooted<Value> out{fromAsyncSlot(state, FromAsyncSlot::Out)};
-    const bool constructed = fromAsyncSlot(state, FromAsyncSlot::Constructed).asNumber() != 0;
-    const auto k = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Index).asNumber());
-    emitAt(out, k, value, constructed);
-    if (rtExceptionPending()) {
-        fromAsyncCloseSource(state);
-        fromAsyncReject(state);
-        return Value::fromUndefined().rawBits();
-    }
-    setFromAsyncSlot(state, FromAsyncSlot::Index, Value::fromDouble(k + 1));
-    fromAsyncResume(state);
-    return Value::fromUndefined().rawBits();
-}
-
-uint64_t fromAsyncOnRejectedClosing(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> state{Value(env)};
-    Rooted<Value> reason{args[0]};
-    rtThrow(reason.get());
-    fromAsyncCloseSource(state);
-    fromAsyncReject(state);
-    return Value::fromUndefined().rawBits();
-}
-
-uint64_t fromAsyncOnRejected(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> state{Value(env)};
-    Rooted<Value> reason{args[0]};
-    Rooted<Value> cap{fromAsyncSlot(state, FromAsyncSlot::Capability)};
-    rtSettleCapability(cap, reason, /*reject=*/true);
-    return Value::fromUndefined().rawBits();
-}
-
-uint64_t arrayFromAsync(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> ctor{Value(thisBits)};
-    Rooted<Value> src{args[0]};
-    Rooted<Value> mapFn{args[1]};
-    Rooted<Value> thisArg{args[2]};
-
-    // Step 2: the capability comes first, because every failure from here on
-    // is a rejection of it and not a throw.
-    Rooted<Value> cap{rtNewPromiseCapabilityForIntrinsic()};
-    Rooted<Value> promise{rtCapabilityPromise(cap.get())};
-
-    Rooted<Value> state{Value::fromObject(ObjectHeader::createWithInternalSlots(
-        rtHeap(), rtArena(), rtPlainObjectShape(), FromAsyncSlot::kCount))};
-    state.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
-    setFromAsyncSlot(state, FromAsyncSlot::Capability, cap.get());
-    setFromAsyncSlot(state, FromAsyncSlot::Index, Value::fromDouble(0));
-    setFromAsyncSlot(state, FromAsyncSlot::MapFn, mapFn.get());
-    setFromAsyncSlot(state, FromAsyncSlot::ThisArg, thisArg.get());
-
-    // 3.a-b: a mapper that is present and not callable.
-    if (!mapFn.get().isUndefined() && !isCallable(mapFn.get())) {
-        rtThrowTypeError("Array.fromAsync: the second argument is not a function");
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    // 3.c-d: GetMethod(asyncItems, @@asyncIterator), then @@iterator. GetMethod
-    // of null or undefined is the TypeError that makes `fromAsync(null)` a
-    // rejection.
-    if (src.get().isNull() || src.get().isUndefined()) {
-        rtThrowTypeError("Array.fromAsync requires an array-like or iterable object, not " +
-                         rtIterableKindName(src.get()));
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    Rooted<Value> asyncMethod{Value::fromUndefined()};
-    if (src.get().isObject()) {
-        Rooted<Value> key{rtAsyncIteratorKey()};
-        asyncMethod.set(Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits())));
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-    }
-    const bool constructed = buildsThroughThis(ctor.get());
-    setFromAsyncSlot(state, FromAsyncSlot::Constructed, Value::fromDouble(constructed ? 1 : 0));
-
-    if (isCallable(asyncMethod.get())) {
-        // 3.e-h: the async iterator, and Construct(C) with no length.
-        Rooted<Value> iter{asyncMethod.get().asObject<FunctionHeader>()->call(src.get(), 0, nullptr)};
-        if (!rtExceptionPending() && !iter.get().isObject()) {
-            rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
-        }
-        Rooted<Value> nextKey{rtMakeString("next")};
-        Rooted<Value> next{rtExceptionPending()
-                               ? Value::fromUndefined()
-                               : Value(bronze_elem_get(iter.get().rawBits(), nextKey.get().rawBits()))};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-        Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-        setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(0));
-        setFromAsyncSlot(state, FromAsyncSlot::Iterator, iter.get());
-        setFromAsyncSlot(state, FromAsyncSlot::NextFn, next.get());
-        setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
-        fromAsyncResume(state);
-        return promise.get().rawBits();
-    }
-    if (rtHasIteratorMethod(src)) {
-        Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-        Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-        setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(1));
-        setFromAsyncSlot(state, FromAsyncSlot::Iterator, rec.get());
-        setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
-        fromAsyncResume(state);
-        return promise.get().rawBits();
-    }
-    // 3.i-k: the array-like, and Construct(C, « len »).
-    const uint32_t len = rtArrayLikeLength(src);
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    Rooted<Value> out{constructed ? constructThrough(ctor, &len) : newEmptyArray()};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(2));
-    setFromAsyncSlot(state, FromAsyncSlot::Source, src.get());
-    setFromAsyncSlot(state, FromAsyncSlot::Length, Value::fromDouble(len));
-    setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
-    fromAsyncResume(state);
-    return promise.get().rawBits();
 }
 
 // ---- String (22.1) ----------------------------------------------------------
@@ -834,7 +389,7 @@ struct StaticFn {
 // `(1, undefined)` and produce a two-element array.
 const StaticFn kArrayStatics[] = {
     {"from", arrayFrom, 0},
-    {"fromAsync", arrayFromAsync, 0},
+    {"fromAsync", rtArrayFromAsyncBuiltin, 0},
     {"isArray", arrayIsArray, 1},
     {"of", arrayOf, 0},
 };
@@ -972,6 +527,12 @@ Value ctorObject(const CtorEntry& entry) {
 // 5.c). One answer to "is this iterable, and how long is it?" rather than four,
 // because four is how they would come to disagree about `{length: 2}`.
 
+// Does 23.1.2.1 step 3's GetMethod(items, @@iterator) find something? The fast
+// kinds answer yes without a property read at all — `rtOpenIterator` steps an
+// array, a string, a typed array, a Map and a Set from a cursor — and anything
+// else is asked for the well-known key, because the answer decides between the
+// iterator path and the array-like one and getting it wrong turns
+// `Array.from(userIterable)` into an empty array.
 bool rtHasIteratorMethod(Rooted<Value>& src) {
     if (src.get().isString()) return true;
     if (!src.get().isObject()) return false;
