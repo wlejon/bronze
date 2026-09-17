@@ -112,8 +112,11 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
         uint32_t next_slot = nextSlotIndex();
 
         if (next_slot + (is_accessor ? 1u : 0u) >= kDictionaryThreshold) {
-            fatal("object has too many properties for the shape transition tree; "
-                  "dictionary mode is not implemented");
+            // The add paths (setProp, defineAccessor) convert the object to
+            // dictionary mode before they get here, so this is a tripwire
+            // for a caller that minted a transition without asking.
+            fatal("internal: a shape transition past the dictionary threshold; "
+                  "the caller should have moved the object to dictionary mode");
         }
         if (next_slot >= kSlotReprLimit) desired = SlotRepr::Boxed;
 
@@ -182,6 +185,7 @@ std::vector<PropertyKey> Shape::ownKeysInInsertionOrder(bool enumerableOnly) con
     std::vector<PropertyKey> keys;
     if (isDictionary()) {
         for (const DictEntry& e : dict->entries) {
+            if (!e.live()) continue;
             if (enumerableOnly && !e.enumerable) continue;
             keys.push_back(e.key);
         }

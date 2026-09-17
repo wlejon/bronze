@@ -88,7 +88,10 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
         slot = own.slot;
     } else if (obj->shape->isDictionary()) {
         obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot);
-    } else if (hasOwn) {
+    } else if (hasOwn || obj->shape->nextSlotIndex() + 1 >= Shape::kDictionaryThreshold) {
+        // A redefinition the chain cannot express, or the map-sized object
+        // `setProp` moves for the same reason (a pair is two slots, so the
+        // test is on the second).
         toDictionary(arena, self);
         obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot);
     } else {

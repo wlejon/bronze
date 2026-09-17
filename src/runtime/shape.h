@@ -257,11 +257,17 @@ public:
     std::vector<PropertyKey> ownKeysInInsertionOrder(bool enumerableOnly = false) const;
 
     // Past this many own properties an object is a map, not a record, and
-    // the transition tree is the wrong structure for it. Reaching it is a
-    // named hard error: dictionary mode as built here is a linear entry
-    // vector, which is not an answer for an object with a thousand
-    // properties either ("not here").
-    static constexpr uint32_t kDictionaryThreshold = 65536;
+    // the transition tree is the wrong structure for it: a lookup walks the
+    // chain, so the thousandth key of `cache[id] = v` costs a thousand
+    // compares, and every one of those keys is a transition node the arena
+    // never frees. The add that would cross this moves the object to
+    // dictionary mode instead (`ObjectHeader::toDictionary`), whose hashed
+    // index answers in constant time. One way: a record never comes back.
+    //
+    // Well above what a record has — a class instance or a literal is a
+    // few dozen names, a builtin prototype a few hundred at most — so the
+    // objects the inline caches are for never convert.
+    static constexpr uint32_t kDictionaryThreshold = 1024;
 
     Value prototypeValue() const noexcept { return root ? root->prototype : Value::fromUndefined(); }
 };

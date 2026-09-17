@@ -142,6 +142,7 @@ bronze_add_module(runtime
         ../../tests/runtime/symbol_test.cpp
         ../../tests/runtime/global_statics_test.cpp
         ../../tests/runtime/shape_test.cpp
+        ../../tests/runtime/dictionary_test.cpp
         ../../tests/runtime/slot_repr_test.cpp
         ../../tests/runtime/object_test.cpp
         ../../tests/runtime/object_proto_chain_test.cpp

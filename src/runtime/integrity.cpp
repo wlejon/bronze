@@ -163,6 +163,7 @@ bool hasAnyElement(const ArrayHeader* arr) {
 // read-only".
 void stampEntries(Dictionary& d, bool frozen) {
     for (DictEntry& e : d.entries) {
+        if (!e.live()) continue;
         if (frozen && !e.accessor) e.writable = false;
         e.configurable = false;
     }
@@ -286,6 +287,7 @@ bool testIntegrity(Value receiver, bool frozen) {
     }
 
     for (const DictEntry& e : d->entries) {
+        if (!e.live()) continue;
         if (e.configurable) return false;
         if (frozen && !e.accessor && e.writable) return false;
     }

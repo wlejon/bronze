@@ -1,0 +1,16 @@
+sum 12497500 keys 5000
+first/last k0 k4999
+in true true false undefined
+overwrite zero k0
+after delete 2500 true false 3 undefined
+re-add k1 k2 2501
+for-in 2501 k1
+symbol/accessor sym 42 1 2501 2502
+json 2501 1 back undefined
+frozen 1 undefined true false 3
+proto 1999 0 1 true false
+late late
+proto delete undefined false
+class 3000 5998 true function 3001
+spread 3001 2468 3000
+assign 2000 late

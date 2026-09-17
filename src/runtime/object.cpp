@@ -561,7 +561,14 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     Rooted<Value> self{Value::fromObject(this)};
     uint32_t new_slot = 0;
     ObjectHeader* live = nullptr;
-    if (shape->isDictionary()) {
+    // Past the threshold the object is a MAP the program keys by id, and the
+    // transition tree is the wrong structure for it: every lookup that misses
+    // its cache walks a chain as long as the key count. The table it moves to
+    // is hashed (dictionary.h), and the move is one-way, exactly as a delete's.
+    if (!shape->isDictionary() && shape->nextSlotIndex() >= Shape::kDictionaryThreshold) {
+        toDictionary(arena, self);
+    }
+    if (self.get().asObject<ObjectHeader>()->shape->isDictionary()) {
         live = dictDefine(heap, arena, self, prop_name, enumerable, /*accessor=*/false, new_slot);
         DictEntry* entry = self.get().asObject<ObjectHeader>()->shape->dict->find(prop_name);
         if (entry) {
