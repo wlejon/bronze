@@ -297,7 +297,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
                     getter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
                     FunctionHeader* fn = getter.asObject<FunctionHeader>();
                     if (fn->code && fn->arity == 0) {
-                        return Value(fn->code(fn->env_record.rawBits(), self.get().rawBits(), 0, nullptr));
+                        return Value(rtEnterJs(fn->code, fn->env_record.rawBits(), self.get().rawBits(), 0, nullptr));
                     }
                 }
                 return callGetter(getter, self);
@@ -339,7 +339,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
                     getter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
                     FunctionHeader* fn = getter.asObject<FunctionHeader>();
                     if (fn->code && fn->arity == 0) {
-                        return Value(fn->code(fn->env_record.rawBits(), self.get().rawBits(), 0, nullptr));
+                        return Value(rtEnterJs(fn->code, fn->env_record.rawBits(), self.get().rawBits(), 0, nullptr));
                     }
                 }
                 return callGetter(getter, self);

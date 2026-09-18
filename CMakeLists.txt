@@ -57,6 +57,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# The runtime's C++ -> compiled-code trampoline is assembly
+# (src/runtime/enter_js*.{asm,S}). Enabled here rather than in src/runtime
+# because the shared runtime (cmake/bronze_shared_runtime.cmake) compiles the
+# same source from this directory's scope, and a language enabled in a
+# subdirectory is not known to its parent.
+if(MSVC)
+    enable_language(ASM_MASM)
+else()
+    enable_language(ASM)
+endif()
+
 include(cmake/bronze_module.cmake)
 
 # Every doctest binary, every add_test, and the oracle suite hang off this one

@@ -16,6 +16,10 @@ if(MSVC)
     target_compile_options(bronze PRIVATE /W4 /WX /permissive- /wd4324)
     target_compile_definitions(bronze PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_link_options(bronze PRIVATE /FORCE:MULTIPLE)
+    # 8 MB main-thread stack, like bro's: the 1 MB default caps JS recursion
+    # near 7,000 frames before the runtime's stack-limit check turns it
+    # into a RangeError.
+    target_link_options(bronze PRIVATE /STACK:8388608)
 endif()
 
 # Hand-rolled rather than through bronze_add_module (the library above is not

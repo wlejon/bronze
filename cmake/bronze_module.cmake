@@ -20,7 +20,10 @@ function(bronze_add_module name)
     add_library(bronze::${name} ALIAS bronze_${name})
     target_include_directories(bronze_${name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
     if(MSVC)
-        target_compile_options(bronze_${name} PRIVATE /W4 /WX /permissive- /wd4324)
+        # C/C++ only: the runtime carries a MASM source, and ml64 rejects
+        # these as command-line options.
+        target_compile_options(bronze_${name} PRIVATE
+            $<$<COMPILE_LANGUAGE:C,CXX>:/W4 /WX /permissive- /wd4324>)
         # The CRT-deprecation opt-out (getenv and friends are standard C++),
         # not a blanket C4996 disable. Target-wide because a per-file #define
         # placed after the first include is silently too late.

@@ -227,6 +227,13 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * thread's block once in its prologue and reaches every field by fixed\
      * offset from that base. */ \
     X(bronze_tls_block_addr,      BRONZE_ABI_TLSPTR, (BRONZE_ABI_NOARGS)) \
+    /* The same block, fetched by a module's entry function into the pinned\
+     * register (bronze_abi_tls.h), and the first fetch on a thread arms\
+     * `stack_limit`. `bronze_stack_overflow` is what a prologue calls when\
+     * its stack pointer is below that limit: it raises the RangeError, and\
+     * the function returns as if it had thrown. */ \
+    X(bronze_tls_enter,           BRONZE_ABI_VPTR, (BRONZE_ABI_NOARGS)) \
+    X(bronze_stack_overflow,      BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     X(bronze_truthy,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_is_nullish,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_strict_eq,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \

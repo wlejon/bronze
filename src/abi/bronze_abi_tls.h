@@ -52,6 +52,13 @@ typedef struct bronze_tls_block {
      * lowers it, and every such read then takes the shape walk it always
      * took. */
     uint64_t key_ic_enabled;
+    /* The lowest stack address compiled code may run at: every function's
+     * prologue compares its stack pointer against it and calls
+     * `bronze_stack_overflow` below it, which is how deep recursion becomes
+     * `RangeError: Maximum call stack size exceeded` rather than a fault.
+     * Armed by `bronze_tls_enter` the first time a thread enters compiled
+     * code; zero until then, which no stack pointer is below. */
+    uint64_t stack_limit;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -85,6 +92,27 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF     224
 #define BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF        232
 #define BRONZE_TLS_KEY_IC_ENABLED_OFF            240
+#define BRONZE_TLS_STACK_LIMIT_OFF               248
+
+/*
+ * ---- the pinned register -----------------------------------------------
+ *
+ * Compiled code keeps the address of this block in a callee-saved register
+ * (x64: R13, aarch64: X28) for the whole time it runs, and reads the fields
+ * above through it — the exception check after every call, the allocation
+ * fast path, the stack-limit check — instead of calling
+ * `bronze_tls_block_addr`. Two things keep the register right:
+ *
+ *   - a module's entry function loads it itself (`bronze_tls_enter`), so
+ *     the hosts that call an exported entry directly need to know nothing;
+ *   - every other way from C++ into compiled code goes through the runtime's
+ *     trampoline (`rtEnterJs`, fn.h), which saves the caller's register,
+ *     loads the block, calls, and restores.
+ *
+ * A compiled function never writes the register, and a C++ helper it calls
+ * preserves it by the calling convention, so it survives any depth of
+ * JS -> runtime -> JS nesting.
+ */
 
 /*
  * ---- the iteration record, as generated code reads it ---------------------

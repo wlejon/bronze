@@ -181,7 +181,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
                                 getter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
                                 FunctionHeader* fn = getter.asObject<FunctionHeader>();
                                 if (fn->code && fn->arity == 0) {
-                                    return fn->code(fn->env_record.rawBits(), objBits, 0, nullptr);
+                                    return rtEnterJs(fn->code, fn->env_record.rawBits(), objBits, 0, nullptr);
                                 }
                             }
                             Rooted<Value> self{objVal};

@@ -193,4 +193,21 @@ static_assert(offsetof(FunctionHeader, instance_shape) == BRONZE_ABI_FN_INSTANCE
 static_assert(offsetof(FunctionHeader, arity) == BRONZE_ABI_FN_ARITY_OFFSET);
 static_assert(offsetof(FunctionHeader, construct_vetted) == BRONZE_ABI_FN_CTOR_VETTED_OFFSET);
 
+// The trampoline (enter_js_msvc_x64.asm / enter_js.S): saves the caller's
+// pinned register, loads the TLS block into it, calls `code`, restores it.
+extern "C" uint64_t bronze_enter_js(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
+                                    uint32_t argc, const uint64_t* argv);
+
+// THE way the runtime invokes a function object's code — compiled or native,
+// it makes no difference to the caller. Compiled code reads the TLS block
+// through a register it expects its caller to have loaded (bronze_abi_tls.h,
+// "the pinned register"), and a C++ caller has not; a bare `fn->code(...)`
+// from C++ therefore runs the callee against whatever the register happens
+// to hold. The trampoline is the only C++ -> compiled entry besides the
+// module entry function, which loads the register itself.
+inline uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
+                          uint32_t argc, const uint64_t* argv) {
+    return bronze_enter_js(code, env_bits, this_bits, argc, argv);
+}
+
 }  // namespace bronze

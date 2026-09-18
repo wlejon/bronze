@@ -26,6 +26,7 @@
 #endif
 #include <windows.h>
 #else
+#include <pthread.h>
 #include <sys/mman.h>
 #endif
 
@@ -80,6 +81,7 @@ static_assert(offsetof(bronze_tls_block, truthy_inline_enabled) ==
 static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
               BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF);
 static_assert(offsetof(bronze_tls_block, key_ic_enabled) == BRONZE_TLS_KEY_IC_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, stack_limit) == BRONZE_TLS_STACK_LIMIT_OFF);
 
 namespace bronze::runtime {
 
@@ -123,12 +125,68 @@ thread_local bronze_tls_block g_tls_block = {
     /*truthy_inline_enabled=*/1,
     /*elem_set_cache_tbl=*/nullptr,
     /*key_ic_enabled=*/1,
+    /*stack_limit=*/0,
 };
+
+namespace {
+
+// The thread's stack, [low, high), from the OS; both zero when it cannot be
+// asked, which leaves the limit disarmed rather than wrong.
+void threadStackBounds(uintptr_t& low, uintptr_t& high) {
+    low = 0;
+    high = 0;
+#if defined(_WIN32)
+    ULONG_PTR lo = 0, hi = 0;
+    GetCurrentThreadStackLimits(&lo, &hi);
+    low = static_cast<uintptr_t>(lo);
+    high = static_cast<uintptr_t>(hi);
+#elif defined(__APPLE__)
+    void* addr = pthread_get_stackaddr_np(pthread_self());
+    size_t size = pthread_get_stacksize_np(pthread_self());
+    high = reinterpret_cast<uintptr_t>(addr);
+    low = high - size;
+#else
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        void* addr = nullptr;
+        size_t size = 0;
+        if (pthread_attr_getstack(&attr, &addr, &size) == 0) {
+            low = reinterpret_cast<uintptr_t>(addr);
+            high = low + size;
+        }
+        pthread_attr_destroy(&attr);
+    }
+#endif
+}
+
+// What the check leaves below the limit: room for the runtime to build the
+// RangeError — its message, its stack trace, the property store — and for
+// whatever the host does with it, all on the same stack. A quarter of a
+// small stack, so a 256 KB worker still gets three quarters of it.
+constexpr uintptr_t kStackReserveBytes = 256 * 1024;
+
+}  // namespace
 
 }  // namespace bronze::runtime
 
 extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
     return &bronze::runtime::g_tls_block;
+}
+
+extern "C" void* bronze_tls_enter(void) {
+    bronze_tls_block* tls = &bronze::runtime::g_tls_block;
+    if (BRONZE_UNLIKELY(tls->stack_limit == 0)) {
+        uintptr_t low = 0, high = 0;
+        bronze::runtime::threadStackBounds(low, high);
+        if (high > low) {
+            const uintptr_t size = high - low;
+            const uintptr_t reserve =
+                size >= 2 * bronze::runtime::kStackReserveBytes ? bronze::runtime::kStackReserveBytes
+                                                                 : size / 4;
+            tls->stack_limit = low + reserve;
+        }
+    }
+    return tls;
 }
 
 namespace {

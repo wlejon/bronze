@@ -681,7 +681,7 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
     }
     auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
     if (fn->arity == 0 || argc >= fn->arity) {
-        return fn->code(fn->env_record.rawBits(), thisBits, argc, argvBits);
+        return rtEnterJs(fn->code, fn->env_record.rawBits(), thisBits, argc, argvBits);
     }
     // argvBits already points into the caller's GC root frame, so it is rooted
     // exactly as long as the call needs it — copying it into a vector would

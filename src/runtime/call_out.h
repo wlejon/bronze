@@ -81,7 +81,7 @@ public:
     uint64_t call(Rooted<Value>& calleeRoot, uint64_t thisBits, uint32_t argc,
                   const uint64_t* argv) const {
         FunctionHeader* fn = calleeRoot.get().asObject<FunctionHeader>();
-        return fn->code(fn->env_record.rawBits(), thisBits, argc, argv);
+        return rtEnterJs(fn->code, fn->env_record.rawBits(), thisBits, argc, argv);
     }
 
 private:

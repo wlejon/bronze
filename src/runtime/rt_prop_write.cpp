@@ -189,7 +189,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                     FunctionHeader* fn = setter.asObject<FunctionHeader>();
                     if (fn->code && fn->arity == 1) {
                         uint64_t argBits = valVal.rawBits();
-                        fn->code(fn->env_record.rawBits(), objBits, 1, &argBits);
+                        rtEnterJs(fn->code, fn->env_record.rawBits(), objBits, 1, &argBits);
                         return;
                     }
                 }

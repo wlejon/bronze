@@ -579,6 +579,15 @@ uint64_t bronze_immutable_assign(void) {
     return rtThrowTypeError("Assignment to constant variable.").rawBits();
 }
 
+// A function prologue found the stack pointer below the thread's
+// `stack_limit` (bronze_abi_tls.h). The caller returns `undefined` straight
+// after, so this only has to leave the RangeError pending; the reserve below
+// the limit is what the Error's construction — message, stack trace, the
+// property store — runs on. The message is the one every engine gives.
+void bronze_stack_overflow(void) {
+    rtThrowRangeError("Maximum call stack size exceeded");
+}
+
 // A `--pins` claim contradicted by a value the program produced.
 //
 // The message names the manifest LINE and not the site, because the line is

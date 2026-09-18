@@ -1,5 +1,18 @@
+# The C++ -> compiled-code trampoline (fn.h, rtEnterJs): it loads the pinned
+# TLS register, which no C++ function can express, so it is assembly - one
+# MASM file for MSVC x64, one preprocessed .S for the SysV x64/aarch64 pair
+# (the languages are enabled by the top-level CMakeLists.txt). In the SOURCES
+# list, relative like the rest, because the shared runtime
+# (cmake/bronze_shared_runtime.cmake) rebuilds this target's list by name.
+if(MSVC)
+    set(_bronze_enter_js_source enter_js_msvc_x64.asm)
+else()
+    set(_bronze_enter_js_source enter_js.S)
+endif()
+
 bronze_add_module(runtime
     SOURCES
+        ${_bronze_enter_js_source}
         profile.cpp
         ic_log.cpp
         symbolize.cpp

@@ -81,6 +81,11 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     options.enable_allocation_sinking = true;
     options.enable_tlab = true;
     options.use_bronze_tlab = true;
+    // The TLS block rides in a callee-saved register (bronze_abi_tls.h): the
+    // entry loads it, the runtime's rtEnterJs trampoline loads it for every
+    // other way in, and generated code reads the exception cell, the
+    // allocation window and the stack limit through it without a call.
+    options.pin_tls_register = true;
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
     if (__builtin_cpu_supports("avx2")) {
