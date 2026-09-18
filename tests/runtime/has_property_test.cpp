@@ -143,8 +143,7 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
     }
 
     SUBCASE("a typed array") {
-        Rooted<Value> v{
-            Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 2))};
+        Rooted<Value> v{rtNewTypedArray(ElementKind::Uint8, 2)};
         CHECK(hasName("0", v));
         CHECK_FALSE(hasName("2", v));
         CHECK(hasName("byteLength", v));
@@ -153,15 +152,15 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
     }
 
     SUBCASE("an ArrayBuffer") {
-        Rooted<Value> b{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
+        Rooted<Value> b{rtNewArrayBuffer(8)};
         CHECK(hasName("byteLength", b));
         CHECK(hasName("constructor", b));
         CHECK_FALSE(hasName("missing", b));
     }
 
     SUBCASE("a DataView") {
-        Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
-        Rooted<Value> v{Value::fromObject(DataViewHeader::create(rtHeap(), buf, 0, 8))};
+        Rooted<Value> buf{rtNewArrayBuffer(8)};
+        Rooted<Value> v{rtNewDataView(buf, 0, 8)};
         CHECK(hasName("byteOffset", v));
         CHECK(hasName("getInt8", v));
         CHECK_FALSE(hasName("missing", v));
@@ -273,20 +272,20 @@ TEST_CASE("`in` does not stop at the member table a shapeless receiver answers f
 
     Rooted<Value> f{rtNativeFunction(nothing, 0)};
     Rooted<Value> a{Value(bronze_create_array(0))};
-    Rooted<Value> v{Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 1))};
-    Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
-    Rooted<Value> view{Value::fromObject(DataViewHeader::create(rtHeap(), buf, 0, 8))};
+    Rooted<Value> v{rtNewTypedArray(ElementKind::Uint8, 1)};
+    Rooted<Value> buf{rtNewArrayBuffer(8)};
+    Rooted<Value> view{rtNewDataView(buf, 0, 8)};
     Rooted<Value> m{rtNewMap()};
     Rooted<Value> s{rtNewSet()};
     Rooted<Value> src{rtMakeString("a")};
     Rooted<Value> re{rtRegExpFromParts(src, "g")};
 
     // These four and not the other two of 20.1.3, because the step is a WALK
-    // and a nearer prototype gets there first: `Array.prototype`,
-    // `%TypedArray%.prototype` and `Function.prototype` each define `toString`,
-    // and bronze has built none of the three — so `'toString' in a` is that
-    // prototype's named refusal rather than this object's `true`, which is the
-    // shadowing rule working and not a gap in it.
+    // and a nearer prototype gets there first: `Array.prototype` and
+    // `Function.prototype` each define `toString`, and bronze has built
+    // neither — so `'toString' in a` is that prototype's named refusal rather
+    // than this object's `true`, which is the shadowing rule working and not a
+    // gap in it.
     for (const char* name :
          {"hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "valueOf"}) {
         CHECK(hasName(name, f));
@@ -305,10 +304,12 @@ TEST_CASE("`in` does not stop at the member table a shapeless receiver answers f
     CHECK_FALSE(hasName("missing", re));
 
     // The other side of the shadowing rule: 24.1.3 gives `Map.prototype` no
-    // `toString`, so a Map reaches 20.1.3.6's, and 22.2.6.13 gives
-    // `RegExp.prototype` one bronze HAS built, so a RegExp stops there.
+    // `toString`, so a Map reaches 20.1.3.6's; 22.2.6.13 gives
+    // `RegExp.prototype` one bronze HAS built, so a RegExp stops there; and
+    // 23.2.3.32 puts one on `%TypedArray%.prototype`, a real object now.
     CHECK(hasName("toString", m));
     CHECK(hasName("toString", re));
+    CHECK(hasName("toString", v));
 
     // An index OUTSIDE a typed array's length is absent and not inherited
     // (10.4.5.2), so it must not be carried up to this step and answered there.
@@ -346,8 +347,7 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a symbol key") {
 
     SUBCASE("@@iterator is on the four iterable prototypes and no others") {
         Rooted<Value> a{Value(bronze_create_array(0))};
-        Rooted<Value> v{
-            Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 1))};
+        Rooted<Value> v{rtNewTypedArray(ElementKind::Uint8, 1)};
         Rooted<Value> m{rtNewMap()};
         Rooted<Value> s{rtNewSet()};
         // 23.1.3.34, 23.2.3.34, 24.1.3.12, 24.2.3.11.
@@ -358,8 +358,8 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a symbol key") {
         // A symbol the program made is on none of these: nothing added it.
         CHECK_FALSE(has(other.get(), m.get()));
 
-        Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
-        Rooted<Value> view{Value::fromObject(DataViewHeader::create(rtHeap(), buf, 0, 8))};
+        Rooted<Value> buf{rtNewArrayBuffer(8)};
+        Rooted<Value> view{rtNewDataView(buf, 0, 8)};
         Rooted<Value> src{rtMakeString("a")};
         Rooted<Value> re{rtRegExpFromParts(src, "")};
         Rooted<Value> ns{namespaceExporting("exported")};

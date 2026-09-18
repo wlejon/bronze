@@ -4,18 +4,21 @@
 // The seam is the one rt_prop_primitive.cpp already took — a receiver kind and
 // not a line count — read from the other side. A read asks every receiver the
 // same question and each kind answers it from different storage; a write asks
-// whether the receiver can hold the property AT ALL, and for most kinds the
-// answer is no. So this file is mostly refusals, one per storage story: a typed
-// array's named writes have nowhere to go, an ArrayBuffer has no property at
-// all, a DataView's bytes are written through its accessors. None of them may be
-// quietly discarded — a discarded write leaves the program believing it stored
-// something, which is the silent-wrong-answer shape the house rules rank below
-// process death.
+// whether the receiver can hold the property AT ALL, and for some kinds the
+// answer is no. So part of this file is refusals, one per storage story: a
+// regular expression's named writes have nowhere to go, a module namespace is
+// frozen. None of them may be quietly discarded — a discarded write leaves the
+// program believing it stored something, which is the silent-wrong-answer shape
+// the house rules rank below process death.
 //
 // An ARRAY is the receiver that stopped being one of them. It is an object, so
 // `a.foo = 1` and `a.length = 0` are ordinary JavaScript; both arms live in
 // rt_prop_array.cpp, beside every other path that has to agree about what an
-// array owns.
+// array owns. The byte-store family followed it: a typed array, an ArrayBuffer
+// and a DataView open with an ObjectHeader (typed_array.h), so a named write on
+// any of them is the ordinary tail — only a typed array's NUMERIC keys are
+// special, and 10.4.5.5 answers those (an element store, or a discard for a
+// canonical numeric string that is no valid index) before the tail is reached.
 //
 // The definition forms are here rather than beside the literal that spells
 // them because what separates each from an ordinary assignment is an ATTRIBUTE
@@ -155,7 +158,13 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // generated code: a write can transition the shape and grow the overflow
     // block, so the interesting half of the work is the miss, and the miss is
     // a call either way (inlines the read).
-    if (hdr->flags == HeapKind::Plain && ic && ic->cached_shape) {
+    //
+    // A typed array is the one shape-carrying kind kept OUT of this path: its
+    // numeric keys are elements (10.4.5.5), never slots, and an entry filled by
+    // a plain object sharing the view's root shape could otherwise answer a
+    // `v[0]` store with a slot write. Its arm below sorts the key first.
+    if (ic && ic->cached_shape && HeapKind::carriesShape(hdr->flags) &&
+        hdr->flags != TypedArrayHeader::kFlags) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
         if (ic->describesOwn(fastObj->shape)) {
             // `setSlot` for both halves now, where the inline arm used to write
@@ -239,21 +248,13 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             rtTypedArraySetElement(viewRoot, ki.elemIndex, Value(valBits));
             return;
         }
-        rtTypedArraySetAttached(objVal, rtKeyString(keyIndex), Value(valBits));
-        return;
-    }
-    if (hdr->flags == ArrayBufferHeader::kFlags) {
-        fatal("property writes on an ArrayBuffer are unsupported");
-    }
-    if (hdr->flags == DataViewHeader::kFlags) {
-        // 25.3 gives a DataView no writable property and no indexed access —
-        // its bytes are reached through `setUint8` and its siblings — and there
-        // is no shape here for a named one to go in. Diagnosed rather than
-        // discarded, which is what would leave a program believing it stored
-        // something.
-        fatal(("named property writes on a DataView are unsupported (its bytes are written "
-               "through setInt8/setFloat64 and the rest; tried to write `" + keyStr + "`)")
-                  .c_str());
+        // 10.4.5.5 step 1.b: a canonical numeric string that is not a valid
+        // index names nothing — the store is a no-op that reports success in
+        // both modes (10.4.5.16 TypedArraySetElement returns unused), which is
+        // the one place the language itself asks for a discarded write.
+        if (rtIsCanonicalNumericString(keyStr)) return;
+        // Any other name is an ordinary property of an ordinary object: the
+        // tail below.
     }
     if (hdr->flags == RegExpHeader::kFlags) {
         // `lastIndex` is the one writable property a RegExp has (22.2.6.9).
@@ -386,7 +387,7 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
     // steps onto a function's statics box itself.
     Value protoVal(protoBits);
     if (!protoVal.isObject() ||
-        (protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN &&
+        (!HeapKind::carriesShape(protoVal.asObject<HeapObjectHeader>()->flags) &&
          protoVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function)) {
         fatal("internal: super property write on a base whose prototype is not an object");
     }
@@ -814,15 +815,19 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // is the spec's silently-discarded store — never a named property.
         // Only an actual string key can name one.
         if (Value(idxBits).isNumber()) return;
-        if (!rtValueToElementIndex(Value(idxBits), idx)) {
-            Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-            const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
-            rtTypedArraySetAttached(objVal, keyText, Value(valBits));
+        if (rtValueToElementIndex(Value(idxBits), idx)) {
+            Rooted<Value> viewRoot{objVal};
+            rtTypedArraySetElement(viewRoot, idx, Value(valBits));
+            return;  // out-of-bounds typed-array writes are discarded, per spec
+        }
+        // A string that spells a canonical number without being a valid index
+        // is the same discarded store (10.4.5.5 step 1.b); every other string
+        // and every symbol is an ordinary property of the view, written by the
+        // shape-carrying tail below.
+        if (Value(idxBits).isString() &&
+            rtIsCanonicalNumericString(rtUtf8Chars(Value(idxBits).asString<StringHeader>()))) {
             return;
         }
-        Rooted<Value> viewRoot{objVal};
-        rtTypedArraySetElement(viewRoot, idx, Value(valBits));
-        return;  // out-of-bounds typed-array writes are discarded, per spec
     }
     if (hdr->flags == HeapKind::Function) {
         Rooted<Value> fnRoot{objVal};
@@ -865,7 +870,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         rtReportSetRefusal(refusal, strict, keyText);
         return;
     }
-    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (HeapKind::carriesShape(hdr->flags)) {
         Rooted<Value> objRoot{objVal};
         Rooted<Value> val{Value(valBits)};
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};

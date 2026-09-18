@@ -244,7 +244,19 @@ void Heap::collect() {
         auto* scan_hdr = reinterpret_cast<HeapObjectHeader*>(scan_ptr);
         size_t obj_size = scan_hdr->size;
 
-        if (payload_holds_values(scan_hdr->tag)) {
+        if (scan_hdr->tag == static_cast<uint16_t>(Tag::RawBytes) &&
+            scan_hdr->flags == HeapKind::ArrayBuffer) {
+            // An ArrayBuffer is raw bytes behind an ordinary-object PREFIX
+            // (typed_array.h): the shape word, the overflow word and the
+            // inline slots are Values the collector owes a scan, and nothing
+            // after them is — the length words, the flags, the external
+            // pointer and the bytes themselves must never be read as one.
+            // The prefix's size is the cut, and it is passed as the object's
+            // size so the plain scan stops exactly there.
+            constexpr size_t kPrefixBytes =
+                sizeof(ObjectHeader) + ObjectHeader::kInlineSlots * sizeof(Value);
+            scan_plain_object(reinterpret_cast<ObjectHeader*>(scan_hdr), kPrefixBytes);
+        } else if (payload_holds_values(scan_hdr->tag)) {
             const bool object_kind = scan_hdr->tag == static_cast<uint16_t>(Tag::Object);
             if (object_kind && scan_hdr->flags == HeapKind::SlotBlock) {
                 // Its OWNER scanned it, precisely, on the pass that copied it —
@@ -252,7 +264,14 @@ void Heap::collect() {
                 // optimization: this loop cannot know which of a block's words
                 // are doubles, because the shape that says so belongs to an
                 // object this header has no way back to.
-            } else if (object_kind && scan_hdr->flags == HeapKind::Plain) {
+            } else if (object_kind && HeapKind::carriesShape(scan_hdr->flags)) {
+                // A typed array and a DataView are an ObjectHeader with their
+                // own fields behind the inline slots (typed_array.h). Those
+                // fields are scanned as Values too, which is sound for the
+                // same reason it was when they had no prefix: a buffer
+                // reference IS a Value, and the packed {offset, length} and
+                // {kind, constructedLength} words are capped far below a
+                // pointer tag's range.
                 scan_plain_object(reinterpret_cast<ObjectHeader*>(scan_hdr), obj_size);
             } else {
                 uint8_t* payload_start = reinterpret_cast<uint8_t*>(scan_hdr->payload());

@@ -28,11 +28,15 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/native_base.h"
+#include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
+#include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -194,7 +198,11 @@ constexpr const char* kOutOfBounds = "Offset is outside the bounds of the DataVi
 // `const g = view.getUint16; g(0)` names what it is rather than reading whatever
 // `this` happened to be.
 bool requireDataView(Value v, const char* method) {
-    if (isDataView(v)) return true;
+    // A view a derived constructor's body reached BEFORE its `super()` ran
+    // has no buffer yet (runtime/native_base.h): the language makes `this`
+    // a ReferenceError there, and a member read off it is refused here
+    // rather than answered from a window that does not exist.
+    if (isDataView(v) && v.asObject<DataViewHeader>()->buffer.isObject()) return true;
     rtThrowTypeError(std::string("DataView.prototype.") + method +
                      " called on a value that is not a DataView");
     return false;
@@ -380,8 +388,18 @@ uint64_t dvSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
 
 // ---- the constructor (25.3.2.1) ---------------------------------------------
 
-uint64_t dataViewCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+// Step 1 is OrdinaryCreateFromConstructor over NewTarget, and bronze performs
+// it at the one allocation site every construction goes through
+// (runtime/native_base.h): `receiver` is ALREADY the DataView this body has to
+// fill, uninitialized, with the [[Prototype]] 10.1.14 derived — whether the
+// program wrote `new DataView(buf)` or `new (class extends DataView)(buf)`.
+uint64_t dataViewCtor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    Rooted<Value> receiver{Value(thisBits)};
+    if (!rtIsNativeConstructReceiver(receiver.get()) || !isDataView(receiver.get()) ||
+        receiver.get().asObject<DataViewHeader>()->buffer.isObject()) {
+        return rtThrowTypeError("Constructor DataView requires 'new'").rawBits();
+    }
     // Step 2, RequireInternalSlot(buffer, [[ArrayBufferData]]): a TypeError,
     // and the one rung of this ladder that is not a RangeError. The difference
     // is the spec's and it is the ordinary one — a wrong KIND of argument is a
@@ -450,11 +468,44 @@ uint64_t dataViewCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             return rtThrowRangeError("Invalid DataView length").rawBits();
         }
     }
-    return Value::fromObject(DataViewHeader::create(rtHeap(), buffer, offset, byteLength))
-        .rawBits();
+    receiver.get().asObject<DataViewHeader>()->initialize(buffer, offset, byteLength);
+    return receiver.get().rawBits();
 }
 
-// ---- the member table -------------------------------------------------------
+// ---- the three getters (25.3.4.1, .3, .4) ------------------------------------
+
+// The view's own slots and not the buffer's: a windowed view reports the
+// window. The two size getters THROW for a window its buffer left behind
+// (25.3.4.3 step 5, 25.3.4.4 step 5) — deliberately unlike a typed array's,
+// which answer 0 (23.2.4.2–.4) — while `buffer` always answers: the identity
+// outlives the window.
+uint64_t dvBufferGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireDataView(self, "buffer")) return Value::fromUndefined().rawBits();
+    return self.asObject<DataViewHeader>()->buffer.rawBits();
+}
+
+uint64_t dvByteLengthGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireDataView(self, "byteLength")) return Value::fromUndefined().rawBits();
+    const auto* view = self.asObject<DataViewHeader>();
+    if (view->isOutOfBounds()) {
+        return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer").rawBits();
+    }
+    return Value::fromDouble(view->trackedByteLength()).rawBits();
+}
+
+uint64_t dvByteOffsetGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireDataView(self, "byteOffset")) return Value::fromUndefined().rawBits();
+    const auto* view = self.asObject<DataViewHeader>();
+    if (view->isOutOfBounds()) {
+        return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer").rawBits();
+    }
+    return Value::fromDouble(view->byteOffset).rawBits();
+}
+
+// ---- the accessors, defined on `DataView.prototype` ------------------------
 
 // The padding arity IS the `length` 25.3.4 gives each method here: a getter
 // takes (byteOffset [, littleEndian]) and a setter (byteOffset, value [,
@@ -506,17 +557,75 @@ const char* accessorName(ElementKind kind, bool isGet) noexcept {
     fatal("internal: a DataView accessor named for an element type outside table 70");
 }
 
+// The intrinsic: `DataView`, `DataView.prototype` (25.3.4) and the instance
+// shape every construction allocates from. Permanent roots; built on first
+// use.
+struct DataViewIntrinsics {
+    Value ctor = Value::fromUndefined();
+    Value proto = Value::fromUndefined();
+    Shape* instanceShape = nullptr;
+};
+
+thread_local DataViewIntrinsics g_dataView;
+
+void defineDataViewGetter(Rooted<Value>& proto, const char* name, bronze_fn_code code,
+                          const char* getterName) {
+    Rooted<Value> key{rtMakeString(name)};
+    Rooted<Value> getter{rtNativeFunction(code, 0, getterName, 0)};
+    Rooted<Value> setter{Value::fromUndefined()};
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
+                                 /*enumerable=*/false);
+}
+
+void ensureDataViewIntrinsics() {
+    if (g_dataView.proto.isObject()) return;
+
+    Shape* protoShape = rtNewRootShape(rtObjectPrototype());
+    protoShape->used_as_prototype = true;
+    ObjectHeader* protoObj = ObjectHeader::create(rtHeap(), rtArena(), protoShape);
+    protoObj->header.flags = HeapKind::Plain;
+    Rooted<Value> proto{Value::fromObject(protoObj)};
+    g_dataView.proto = proto.get();
+    rtHeap().add_permanent_root(&g_dataView.proto);
+
+    // Arity 0 for the reason the view constructors take it: a variadic native
+    // must not be padded, or `new DataView(buffer)` would arrive with two
+    // extra `undefined`s and take the explicit-length branch. `length` is
+    // 25.3.2's 1.
+    Rooted<Value> ctor{rtNativeFunction(dataViewCtor, 0, "DataView", 1)};
+    g_dataView.ctor = ctor.get();
+    rtHeap().add_permanent_root(&g_dataView.ctor);
+    {
+        // 25.3.4.5, a DEFINITION so it does not write through.
+        Rooted<Value> key{rtMakeString("constructor")};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    rtDefineMethods(proto, kAccessors, std::size(kAccessors));
+    defineDataViewGetter(proto, "buffer", dvBufferGetter, "get buffer");
+    defineDataViewGetter(proto, "byteLength", dvByteLengthGetter, "get byteLength");
+    defineDataViewGetter(proto, "byteOffset", dvByteOffsetGetter, "get byteOffset");
+    // 25.3.4.28: non-writable, configurable.
+    rtDefineToStringTag(proto, "DataView");
+
+    FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
+    fn->prototype = proto.get();
+    // 25.3.3.1: non-writable, non-enumerable, non-configurable.
+    fn->prototype_readonly = true;
+    fn->native_base = NativeBase::DataView;
+    fn->instance_shape = rtNewRootShape(proto.get());
+    g_dataView.instanceShape = fn->instance_shape;
+}
+
 }  // namespace
 
 Value rtDataViewConstructor(const std::string& name) {
     if (name != "DataView") return Value::fromUndefined();
-    // Arity 0 for the reason the nine view constructors take it: a variadic
-    // native must not be padded, or `new DataView(buffer)` would arrive with
-    // two extra `undefined`s and take the explicit-length branch. Interned by
-    // code pointer, so the bare name and `v.constructor` are the SAME object.
-    return rtNativeFunction(dataViewCtor, 0, "DataView", 1);
+    ensureDataViewIntrinsics();
+    return g_dataView.ctor;
 }
 
+// By CODE POINTER: identifying an intrinsic must never build one.
 const char* rtDataViewConstructorName(Value fn) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return nullptr;
@@ -524,43 +633,14 @@ const char* rtDataViewConstructorName(Value fn) {
     return fn.asObject<FunctionHeader>()->code == dataViewCtor ? "DataView" : nullptr;
 }
 
-Value rtDataViewMember(Value viewVal, const std::string& key) {
-    auto* view = viewVal.asObject<DataViewHeader>();
-    // 25.3.4.1..25.3.4.3, which are the view's own slots and not the buffer's:
-    // a windowed view reports the window. The two size getters THROW for a
-    // window its buffer left behind (25.3.4.2 step 5, 25.3.4.3 step 5) —
-    // deliberately unlike a typed array's, which answer 0 (23.2.4.2–.4) —
-    // while `buffer` always answers: the identity outlives the window.
-    if (key == "byteLength") {
-        if (view->isOutOfBounds()) {
-            return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
-        }
-        return Value::fromDouble(view->trackedByteLength());
-    }
-    if (key == "byteOffset") {
-        if (view->isOutOfBounds()) {
-            return rtThrowTypeError("DataView is out of bounds of its ArrayBuffer");
-        }
-        return Value::fromDouble(view->byteOffset);
-    }
-    if (key == "buffer") return view->buffer;
-    // Everything below can allocate a function object, so `view` must not be
-    // read again.
-    if (key == "constructor") return rtDataViewConstructor("DataView");
-    for (const Accessor& a : kAccessors) {
-        if (key == a.name) return rtNativeFunction(a.code, a.arity, a.name, a.length);
-    }
-    return Value::fromUndefined();
+Shape* rtDataViewInstanceShape() {
+    ensureDataViewIntrinsics();
+    return g_dataView.instanceShape;
 }
 
-bool rtDataViewHasMember(const std::string& key) {
-    if (key == "byteLength" || key == "byteOffset" || key == "buffer" || key == "constructor") {
-        return true;
-    }
-    for (const Accessor& a : kAccessors) {
-        if (key == a.name) return true;
-    }
-    return false;
+Value rtNewDataView(Rooted<Value>& buffer, uint32_t byteOffset, uint32_t byteLength) {
+    return Value::fromObject(DataViewHeader::create(rtHeap(), rtDataViewInstanceShape(), buffer,
+                                                    byteOffset, byteLength));
 }
 
 }  // namespace bronze::runtime

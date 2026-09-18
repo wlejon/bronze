@@ -34,22 +34,6 @@ struct CodeMemoEntry {
 constexpr uint32_t kCodeMemoEntries = 512;
 thread_local CodeMemoEntry g_codeMemo[kCodeMemoEntries];
 
-// ---- the (kind, key) member memo -----------------------------------------
-
-struct MemberMemoEntry {
-    uint32_t keyIndex = UINT32_MAX;
-    uint16_t kind = 0;
-    // Into the interned-native vector, with the code pointer beside it so the
-    // read is validated the same way the code memo's is.
-    uint32_t index = 0;
-    bronze_fn_code code = nullptr;
-};
-
-// 256: four collection kinds times the dozen members three.js's renderer
-// actually reads, with room to spare.
-constexpr uint32_t kMemberMemoEntries = 256;
-thread_local MemberMemoEntry g_memberMemo[kMemberMemoEntries];
-
 }  // namespace
 
 bool rtNativeMemoEnabled() noexcept {
@@ -94,42 +78,6 @@ Value rtNativeSingleton(bronze_fn_code code, uint32_t arity, const char* name, u
         e.index = idx;
     }
     return made;
-}
-
-Value rtNativeMemberProbe(uint16_t kind, uint32_t keyIndex) {
-    if (keyIndex == UINT32_MAX || !rtNativeMemoEnabled()) return Value::fromUndefined();
-    const MemberMemoEntry& e =
-        g_memberMemo[static_cast<uint32_t>(mix64((static_cast<uint64_t>(kind) << 32) | keyIndex)) &
-                     (kMemberMemoEntries - 1)];
-    if (e.keyIndex != keyIndex || e.kind != kind || !e.code) return Value::fromUndefined();
-    return rtFunctionSingletonAt(e.index, e.code);
-}
-
-void rtNativeMemberFill(uint16_t kind, uint32_t keyIndex, Value resolved) {
-    if (keyIndex == UINT32_MAX || !rtNativeMemoEnabled()) return;
-    // Only a plain interned native is memoizable. A member whose answer is
-    // computed from the receiver (`size`) is not one, and neither is a member
-    // that does not exist — an absent name here is a DIAGNOSED name, and the
-    // diagnostic has to keep running.
-    if (!resolved.isObject()) return;
-    auto* hdr = resolved.asObject<HeapObjectHeader>();
-    if (hdr->flags != HeapKind::Function) return;
-    auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
-    if (!fn->code) return;
-    const uint32_t idx = rtFunctionSingletonIndexOf(fn->code);
-    if (idx == UINT32_MAX) return;
-    // The value the vector holds at that index must BE this value: an
-    // interned native is the vector's entry, and anything else reaching here
-    // (a bound function, a closure that happens to share a code pointer) is
-    // refused rather than memoized under a name it does not own.
-    if (rtFunctionSingletonAt(idx, fn->code).rawBits() != resolved.rawBits()) return;
-    MemberMemoEntry& e =
-        g_memberMemo[static_cast<uint32_t>(mix64((static_cast<uint64_t>(kind) << 32) | keyIndex)) &
-                     (kMemberMemoEntries - 1)];
-    e.keyIndex = keyIndex;
-    e.kind = kind;
-    e.index = idx;
-    e.code = fn->code;
 }
 
 }  // namespace bronze::runtime

@@ -55,7 +55,7 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
     }
     ObjectHeader* holder = nullptr;
     HeapObjectHeader* hdr = self.get().asObject<HeapObjectHeader>();
-    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (HeapKind::carriesShape(hdr->flags)) {
         holder = reinterpret_cast<ObjectHeader*>(hdr);
     } else if (hdr->flags == HeapKind::Function) {
         Value props = self.get().asObject<FunctionHeader>()->properties;

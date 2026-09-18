@@ -654,35 +654,9 @@ const char* rtIntrinsicConstructorName(Value fn) {
     return nullptr;
 }
 
-// The intrinsic constructors bronze builds NO prototype object for. Their
-// `prototype` is a named refusal on the property path (rt_prop.cpp), and the
-// answer holds only while the FunctionHeader slot stays EMPTY: generated code
-// reads that slot inline, so anything that fills it turns the refusal into a
-// fresh empty object silently.
-const char* rtNoPrototypeObjectIntrinsic(Value fn) {
-    const char* name = rtTypedArrayConstructorName(fn);
-    if (!name) name = rtSharedArrayBufferConstructorName(fn);
-    if (!name) name = rtDataViewConstructorName(fn);
-    return name;
-}
-
 bool rtIsArrayConstructor(Value fn) {
     return fn.isObject() && fn.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
            fn.asObject<FunctionHeader>()->code == kCtors[0].code;
-}
-
-bool rtIsArrayBufferConstructor(Value fn) {
-    if (const char* name = rtTypedArrayConstructorName(fn)) {
-        return std::strcmp(name, "ArrayBuffer") == 0;
-    }
-    return false;
-}
-
-bool rtIsTypedArrayConstructor(Value fn) {
-    if (const char* name = rtTypedArrayConstructorName(fn)) {
-        return std::strcmp(name, "ArrayBuffer") != 0;
-    }
-    return false;
 }
 
 // `rtIsRegExpConstructor` lives in builtin_regexp.cpp beside the body it

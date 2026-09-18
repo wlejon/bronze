@@ -21,6 +21,7 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
@@ -53,8 +54,7 @@ Value createArrayBuffer(size_t byteLength) {
         return runtime::rtThrowRangeError("ArrayBuffer: byte length exceeds maximum supported size");
     }
     ShadowStackFrame frame;
-    auto* buf = ArrayBufferHeader::create(runtime::rtHeap(), static_cast<uint32_t>(byteLength));
-    return Value::fromObject(buf);
+    return runtime::rtNewArrayBuffer(static_cast<uint32_t>(byteLength));
 }
 
 Value createArrayBuffer(std::span<const uint8_t> bytes) {
@@ -63,11 +63,11 @@ Value createArrayBuffer(std::span<const uint8_t> bytes) {
         return runtime::rtThrowRangeError("ArrayBuffer: byte length exceeds maximum supported size");
     }
     ShadowStackFrame frame;
-    auto* buf = ArrayBufferHeader::create(runtime::rtHeap(), static_cast<uint32_t>(bytes.size()));
+    Rooted<Value> buf{runtime::rtNewArrayBuffer(static_cast<uint32_t>(bytes.size()))};
     if (!bytes.empty()) {
-        std::memcpy(buf->data(), bytes.data(), bytes.size());
+        std::memcpy(buf.get().asObject<ArrayBufferHeader>()->data(), bytes.data(), bytes.size());
     }
-    return Value::fromObject(buf);
+    return buf.get();
 }
 
 // The kind constants embed.h spells for a host that includes only that header,
@@ -104,8 +104,7 @@ Value createTypedArray(ElementKind kind, uint32_t length) {
             "Array buffer allocation failed: " + std::to_string(byteLength) +
             " bytes does not fit in the heap");
     }
-    return Value::fromObject(
-        TypedArrayHeader::create(runtime::rtHeap(), kind, length));
+    return runtime::rtNewTypedArray(kind, length);
 }
 
 bool fillTypedArray(Value view, std::span<const uint8_t> bytes) {
@@ -184,8 +183,7 @@ Value createTypedArrayView(ElementKind kind, Value buffer, uint32_t byteOffset,
             "createTypedArrayView: window does not fit the buffer");
     }
     Rooted<Value> root{buffer};
-    return Value::fromObject(TypedArrayHeader::createOverBuffer(runtime::rtHeap(), kind, root,
-                                                                byteOffset, length));
+    return runtime::rtNewTypedArrayOverBuffer(kind, root, byteOffset, length, /*tracking=*/false);
 }
 
 Value typedArrayBuffer(Value view) {

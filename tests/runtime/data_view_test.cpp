@@ -33,6 +33,7 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -47,8 +48,17 @@ struct ClearCell {
     ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
 };
 
-Value newBuffer(uint32_t byteLength) {
-    return Value::fromObject(ArrayBufferHeader::create(rtHeap(), byteLength));
+Value newBuffer(uint32_t byteLength) { return rtNewArrayBuffer(byteLength); }
+
+// A named read through the same `bronze_prop_get` a compiled program issues:
+// `DataView.prototype` is a real object since the prototype-object work, so
+// the accessor a test calls is found by the ordinary chain walk and not by
+// any table this file could reach around. The receiver is rooted before the
+// key is registered because registering can allocate.
+Value readMember(Value receiver, const char* name) {
+    Rooted<Value> root{receiver};
+    const uint32_t key = bronze_register_key_string(name);
+    return Value(bronze_prop_get(root.get().rawBits(), key, nullptr));
 }
 
 // An argument vector held across an ALLOCATION, and put back afterwards.
@@ -60,10 +70,11 @@ Value newBuffer(uint32_t byteLength) {
 // one is a pre-collection address by the time the callee reads it, and the
 // symptom is `new DataView(buffer)` reporting that its first argument is not
 // an ArrayBuffer. `RootedBlock` is what the runtime uses for the same hazard
-// in `bronze_construct`; nothing between the copy-back and the call
-// allocates, so a plain block is safe from that line on.
+// in `bronze_construct`. The accessor call copies back and calls with nothing
+// allocating in between; the construction passes the block itself, because
+// `bronze_construct` allocates the instance BEFORE its body reads a thing.
 // A RootedBlock pushes pointers into its own storage, so it is built where it
-// is used and never moved; these two lines are spelled out at both sites for
+// is used and never moved; these lines are spelled out at both sites for
 // that reason rather than hidden behind a factory that would have to return
 // one.
 void fillBlock(RootedBlock& block, const std::vector<Value>& args) {
@@ -75,22 +86,25 @@ void refreshThroughRoots(std::vector<Value>& args, const RootedBlock& block) {
 }
 
 // `new DataView(...)` through the constructor the provided-global path hands
-// out, so these exercise the same code a compiled program reaches.
+// out and the [[Construct]] entry a compiled program reaches, so NewTarget is
+// the constructor itself (25.3.2.1 step 1 makes a plain call a TypeError).
+// The arguments go in from the ROOTED block: `bronze_construct` allocates the
+// instance before the body reads them (rt_object.cpp names the contract), and
+// a compiled caller's frame is rooted the same way.
 Value newDataView(std::vector<Value> args) {
     RootedBlock block(static_cast<uint32_t>(args.size()));
     fillBlock(block, args);
     Rooted<Value> ctor{rtDataViewConstructor("DataView")};
-    refreshThroughRoots(args, block);
-    return ctor.get().asObject<FunctionHeader>()->call(
-        Value::fromUndefined(), static_cast<uint32_t>(args.size()), args.data());
+    return Value(
+        bronze_construct(ctor.get().rawBits(), static_cast<uint32_t>(args.size()), block.data()));
 }
 
-// `view.name(...)`, reached by the member path rather than by a C++ pointer, so
-// the table that answers a property read is the one under test.
+// `view.name(...)`, reached by the property path rather than by a C++ pointer,
+// so the prototype object that answers a property read is the one under test.
 Value callAccessor(Rooted<Value>& view, const char* name, std::vector<Value> args) {
     RootedBlock block(static_cast<uint32_t>(args.size()));
     fillBlock(block, args);
-    Rooted<Value> fn{rtDataViewMember(view.get(), name)};
+    Rooted<Value> fn{readMember(view.get(), name)};
     REQUIRE(fn.get().isObject());
     refreshThroughRoots(args, block);
     return fn.get().asObject<FunctionHeader>()->call(view.get(), static_cast<uint32_t>(args.size()),
@@ -123,14 +137,18 @@ uint8_t byteAt(Rooted<Value>& view, uint32_t index) {
 
 }  // namespace
 
-TEST_CASE("a DataView header is a buffer Value and ONE scanned window word") {
-    // Three words: the object header, the buffer, and the pair. A fourth
-    // payload word would be scanned as a Value too, and would hold whatever the
+TEST_CASE("a DataView header is an object prefix, a buffer Value and ONE window word") {
+    // The ordinary-object prefix (header, shape, the inline slots a named
+    // property lands in), then the buffer, then the pair. A further payload
+    // word would be scanned as a Value too, and would hold whatever the
     // allocator last left there.
-    CHECK(sizeof(DataViewHeader) == 24);
-    CHECK(offsetof(DataViewHeader, buffer) == 8);
-    CHECK(offsetof(DataViewHeader, byteOffset) == 16);
-    CHECK(offsetof(DataViewHeader, byteLength) == 20);
+    constexpr size_t prefix = sizeof(ObjectHeader) + sizeof(Value) * ObjectHeader::kInlineSlots;
+    CHECK(offsetof(DataViewHeader, object) == 0);
+    CHECK(offsetof(DataViewHeader, inlineSlots) == sizeof(ObjectHeader));
+    CHECK(offsetof(DataViewHeader, buffer) == prefix);
+    CHECK(offsetof(DataViewHeader, byteOffset) == prefix + 8);
+    CHECK(offsetof(DataViewHeader, byteLength) == prefix + 12);
+    CHECK(sizeof(DataViewHeader) == prefix + 16);
     CHECK(DataViewHeader::kFlags == HeapKind::DataView);
     // A kind of its own, and not a number borrowed from a neighbour — which is
     // the collision the HeapKind registry exists to make impossible.
@@ -161,16 +179,20 @@ TEST_CASE("kMaxByteLength is what keeps the shared window word a non-pointer") {
 TEST_CASE("a DataView's buffer is forwarded, and its window survives collection") {
     Heap heap;
     ShadowStackFrame frame;
+    // A local heap with no runtime behind it: the shape is a bare root, since
+    // the collection and not the chain is what this case is about.
+    NonMovingArena arena;
+    Shape* shape = Shape::createRoot(arena, Value::fromNull());
 
-    Rooted<Value> buf(Value::fromObject(ArrayBufferHeader::create(heap, 32)));
-    Rooted<Value> view(Value::fromObject(DataViewHeader::create(heap, buf, 8, 16)));
+    Rooted<Value> buf(Value::fromObject(ArrayBufferHeader::create(heap, shape, 32)));
+    Rooted<Value> view(Value::fromObject(DataViewHeader::create(heap, shape, buf, 8, 16)));
     const uintptr_t before = reinterpret_cast<uintptr_t>(view.get().asObject<DataViewHeader>());
     view.get().asObject<DataViewHeader>()->bytes()[0] = 0xAB;
     view.get().asObject<DataViewHeader>()->bytes()[15] = 0xCD;
 
     // Something unreachable, so the collection has work to do and the survivors
     // land at different addresses.
-    ArrayBufferHeader::create(heap, 1024);
+    ArrayBufferHeader::create(heap, shape, 1024);
     heap.collect();
 
     auto* v = view.get().asObject<DataViewHeader>();
@@ -228,6 +250,7 @@ TEST_CASE("a one-byte accessor has no order to have, and the flag is ignored") {
 
     Rooted<Value> buf{newBuffer(2)};
     Rooted<Value> view{newDataView({buf.get()})};
+    REQUIRE(view.get().isObject());
     callAccessor(view, "setInt8", {num(0), num(-1), Value::fromBool(true)});
     CHECK(byteAt(view, 0) == 0xFF);
     CHECK(callAccessor(view, "getInt8", {num(0)}).asNumber() == -1);
@@ -249,8 +272,7 @@ TEST_CASE("the constructor's ladder: TypeError for the kind, RangeError for the 
     {
         // A typed array has [[ViewedArrayBuffer]] and not [[ArrayBufferData]],
         // so it is on this rung and its `.buffer` is not.
-        Rooted<Value> ta{
-            Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 8))};
+        Rooted<Value> ta{rtNewTypedArray(ElementKind::Uint8, 8)};
         newDataView({ta.get()});
         CHECK(pendingClass() == "TypeError");
         Rooted<Value> ok{newDataView({ta.get().asObject<TypedArrayHeader>()->buffer})};
@@ -309,7 +331,7 @@ TEST_CASE("an access past the window is a RangeError, and a wrong receiver a Typ
 
     // 25.3.1.1 step 1, RequireInternalSlot([[DataView]]).
     {
-        Rooted<Value> fn{rtDataViewMember(view.get(), "getUint8")};
+        Rooted<Value> fn{readMember(view.get(), "getUint8")};
         Value args[1] = {num(0)};
         fn.get().asObject<FunctionHeader>()->call(buf.get(), 1, args);
         CHECK(pendingClass() == "TypeError");
@@ -324,8 +346,7 @@ TEST_CASE("a DataView and a typed array over one buffer are one store") {
 
     Rooted<Value> buf{newBuffer(8)};
     Rooted<Value> view{newDataView({buf.get()})};
-    Rooted<Value> ta{Value::fromObject(
-        TypedArrayHeader::createOverBuffer(rtHeap(), ElementKind::Uint8, buf, 0, 8))};
+    Rooted<Value> ta{rtNewTypedArrayOverBuffer(ElementKind::Uint8, buf, 0, 8, /*tracking=*/false)};
 
     callAccessor(view, "setUint32", {num(0), num(16909060)});
     auto* elems = ta.get().asObject<TypedArrayHeader>();
@@ -394,7 +415,7 @@ TEST_CASE("the 64-bit accessors round-trip a value no double holds") {
     rtClearException();
 }
 
-TEST_CASE("the twenty accessors are twenty function objects, interned per name") {
+TEST_CASE("the twenty accessors are twenty function objects on one prototype") {
     ShadowStackFrame frame;
     ClearCell guard;
 
@@ -402,27 +423,24 @@ TEST_CASE("the twenty accessors are twenty function objects, interned per name")
     Rooted<Value> view{newDataView({buf.get()})};
     Rooted<Value> other{newDataView({buf.get(), num(4)})};
 
-    // Interned by code pointer: one function object per accessor, shared by
-    // every DataView, and a different one per width and per direction.
-    const uint64_t get16 = rtDataViewMember(view.get(), "getUint16").rawBits();
-    CHECK(get16 == rtDataViewMember(view.get(), "getUint16").rawBits());
-    CHECK(get16 == rtDataViewMember(other.get(), "getUint16").rawBits());
-    CHECK(get16 != rtDataViewMember(view.get(), "getUint32").rawBits());
-    CHECK(get16 != rtDataViewMember(view.get(), "getInt16").rawBits());
-    CHECK(get16 != rtDataViewMember(view.get(), "setUint16").rawBits());
+    // One function object per accessor, held by `DataView.prototype` and so
+    // shared by every DataView; a different one per width and per direction.
+    const uint64_t get16 = readMember(view.get(), "getUint16").rawBits();
+    CHECK(get16 == readMember(view.get(), "getUint16").rawBits());
+    CHECK(get16 == readMember(other.get(), "getUint16").rawBits());
+    CHECK(get16 != readMember(view.get(), "getUint32").rawBits());
+    CHECK(get16 != readMember(view.get(), "getInt16").rawBits());
+    CHECK(get16 != readMember(view.get(), "setUint16").rawBits());
 
     // A name 25.3.4 does not define really is absent.
-    CHECK(rtDataViewMember(view.get(), "getInt24").isUndefined());
-    CHECK_FALSE(rtDataViewHasMember("getInt24"));
-    // The four 64-bit accessors are ordinary members of the same table, so they
-    // intern per name exactly as the sixteen number accessors do.
-    CHECK(rtDataViewHasMember("getBigInt64"));
-    CHECK(rtDataViewHasMember("setBigUint64"));
-    const uint64_t getBig = rtDataViewMember(view.get(), "getBigInt64").rawBits();
-    CHECK(getBig == rtDataViewMember(other.get(), "getBigInt64").rawBits());
-    CHECK(getBig != rtDataViewMember(view.get(), "getBigUint64").rawBits());
-    CHECK(getBig != rtDataViewMember(view.get(), "setBigInt64").rawBits());
-    CHECK_FALSE(rtDataViewMember(view.get(), "setBigUint64").isUndefined());
+    CHECK(readMember(view.get(), "getInt24").isUndefined());
+    // The four 64-bit accessors are ordinary members of the same prototype, so
+    // they are shared per name exactly as the sixteen number accessors are.
+    const uint64_t getBig = readMember(view.get(), "getBigInt64").rawBits();
+    CHECK(getBig == readMember(other.get(), "getBigInt64").rawBits());
+    CHECK(getBig != readMember(view.get(), "getBigUint64").rawBits());
+    CHECK(getBig != readMember(view.get(), "setBigInt64").rawBits());
+    CHECK_FALSE(readMember(view.get(), "setBigUint64").isUndefined());
 }
 
 TEST_CASE("the slot accessors report the WINDOW, not the buffer") {
@@ -432,10 +450,10 @@ TEST_CASE("the slot accessors report the WINDOW, not the buffer") {
     Rooted<Value> buf{newBuffer(16)};
     Rooted<Value> view{newDataView({buf.get(), num(4), num(8)})};
 
-    CHECK(rtDataViewMember(view.get(), "byteLength").asNumber() == 8);
-    CHECK(rtDataViewMember(view.get(), "byteOffset").asNumber() == 4);
-    CHECK(rtDataViewMember(view.get(), "buffer").rawBits() == buf.get().rawBits());
-    CHECK(rtDataViewMember(view.get(), "constructor").rawBits() ==
+    CHECK(readMember(view.get(), "byteLength").asNumber() == 8);
+    CHECK(readMember(view.get(), "byteOffset").asNumber() == 4);
+    CHECK(readMember(view.get(), "buffer").rawBits() == buf.get().rawBits());
+    CHECK(readMember(view.get(), "constructor").rawBits() ==
           rtDataViewConstructor("DataView").rawBits());
     CHECK(std::string(rtDataViewConstructorName(rtDataViewConstructor("DataView"))) == "DataView");
     CHECK(rtDataViewConstructorName(buf.get()) == nullptr);

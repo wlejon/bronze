@@ -278,12 +278,14 @@ uint64_t rtArrayToStringBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
     Value joinMethod = Value::fromUndefined();
     if (isArray(self.get())) {
         joinMethod = rtNativeFunction(arrayJoin, 0, "join", 1);
-    } else if (self.get().isObject() &&
-               self.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
-        joinMethod = rtTypedArrayMethod("join");
     } else if (self.get().isObject()) {
-        joinMethod = self.get().asObject<ObjectHeader>()->getProp(rtHeap(), joinKey, nullptr,
-                                                                  self.slot_ptr());
+        // 23.1.3.36 step 2 is Get(array, "join") — for a typed array that is
+        // the ordinary walk to `%TypedArray%.prototype.join`, or to whatever a
+        // subclass put in its way. Through the generic funnel, which knows
+        // every receiver kind — a function, a proxy — where a direct shape read
+        // would trust a header this call has not checked.
+        joinMethod = Value(bronze_elem_get(self.get().rawBits(), joinKey.get().rawBits()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     if (isCallable(joinMethod)) {
         return bronze_dynamic_call(joinMethod.rawBits(), self.get().rawBits(), 0, nullptr);

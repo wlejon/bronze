@@ -159,14 +159,13 @@ TEST_CASE("a receiver with no shape still reaches Object.prototype") {
     }
 
     SUBCASE("a typed array, an ArrayBuffer and a DataView") {
-        Rooted<Value> v{
-            Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 2))};
+        Rooted<Value> v{rtNewTypedArray(ElementKind::Uint8, 2)};
         reaches(v);
         reachesValueOf(v);
-        Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
+        Rooted<Value> buf{rtNewArrayBuffer(8)};
         reaches(buf);
         reachesValueOf(buf);
-        Rooted<Value> view{Value::fromObject(DataViewHeader::create(rtHeap(), buf, 0, 8))};
+        Rooted<Value> view{rtNewDataView(buf, 0, 8)};
         reaches(view);
         reachesValueOf(view);
     }
@@ -277,8 +276,7 @@ TEST_CASE("hasOwnProperty and propertyIsEnumerable answer for a receiver with no
     }
 
     SUBCASE("a typed array: 10.4.5's indices, and nothing that reads like one") {
-        Rooted<Value> v{
-            Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 2))};
+        Rooted<Value> v{rtNewTypedArray(ElementKind::Uint8, 2)};
         CHECK(hasOwn(v, "0"));
         CHECK_FALSE(hasOwn(v, "5"));
         CHECK(enumerableOwn(v, "0"));
@@ -296,9 +294,9 @@ TEST_CASE("hasOwnProperty and propertyIsEnumerable answer for a receiver with no
         CHECK_FALSE(hasOwn(m, "get"));
         Rooted<Value> s{rtNewSet()};
         CHECK_FALSE(hasOwn(s, "size"));
-        Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
+        Rooted<Value> buf{rtNewArrayBuffer(8)};
         CHECK_FALSE(hasOwn(buf, "byteLength"));
-        Rooted<Value> view{Value::fromObject(DataViewHeader::create(rtHeap(), buf, 0, 8))};
+        Rooted<Value> view{rtNewDataView(buf, 0, 8)};
         CHECK_FALSE(hasOwn(view, "byteOffset"));
     }
 

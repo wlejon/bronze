@@ -156,18 +156,25 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         return rtArrayOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
     }
     // A typed array's integer-indexed elements are own enumerable properties
-    // (10.4.5.3 [[DefineOwnProperty]] gives one `enumerable: true`), so this is
-    // the one receiver below whose answer is not empty — and the reason the
-    // whole group could not be answered with `[]` and a comment. There are no
-    // holes: 23.2.5.1 allocates every element, so the keys are exactly
-    // `0..length-1`. `length`, `buffer` and `byteOffset` are accessors on
+    // (10.4.5.3 [[DefineOwnProperty]] gives one `enumerable: true`). There are
+    // no holes: 23.2.5.1 allocates every element, so the keys are exactly
+    // `0..length-1`, and 10.4.5.7 [[OwnPropertyKeys]] lists them ahead of the
+    // ordinary string keys the view's shape holds (a subclass field, an
+    // expando). `length`, `buffer` and `byteOffset` are accessors on
     // %TypedArray%.prototype and own properties of nothing.
     if (hdr->flags == TypedArrayHeader::kFlags) {
         const uint32_t length = reinterpret_cast<TypedArrayHeader*>(hdr)->length;
-        Rooted<Value> out{Value(bronze_create_array(length))};
+        const std::vector<StringHeader*> named =
+            rtOwnStringKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
+        Rooted<Value> out{Value(bronze_create_array(length + static_cast<uint32_t>(named.size())))};
         for (uint32_t i = 0; i < length; ++i) {
             Rooted<Value> key{indexName(i)};
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
+        }
+        uint32_t at = length;
+        for (StringHeader* name : named) {
+            Rooted<Value> key{rtKeyAsValue(name)};
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }
         return out.get().rawBits();
     }
@@ -207,14 +214,14 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
-    if (hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
-        hdr->flags == DataViewHeader::kFlags) {
-        // None of these has an own enumerable string-keyed property, and that
-        // is a fact about the LANGUAGE rather than about bronze's storage: a
-        // RegExp's `lastIndex` is an own property but non-enumerable
-        // (22.2.6.9), and an ArrayBuffer's and a DataView's `byteLength` and
-        // friends are accessors on their prototypes. So `[]` is the complete
-        // answer, and refusing it named bronze's coverage instead.
+    if (hdr->flags == RegExpHeader::kFlags) {
+        // A RegExp has no own enumerable string-keyed property, and that is a
+        // fact about the LANGUAGE rather than about bronze's storage: its
+        // `lastIndex` is an own property but non-enumerable (22.2.6.9). So `[]`
+        // is the complete answer, and refusing it named bronze's coverage
+        // instead. (A buffer and a DataView carry a shape and take the ordinary
+        // tail: their `byteLength` and friends are accessors on the prototype,
+        // so only an expando is ever listed.)
         return bronze_create_array(0);
     }
     if (hdr->flags == ProxyHeader::kFlags) {
@@ -243,7 +250,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
-    if (hdr->flags != HeapKind::Plain) {
+    if (!HeapKind::carriesShape(hdr->flags)) {
         // An iteration record and an environment record are the remainder, and
         // nothing hands a program either — so reaching here is a lowering bug
         // rather than something a program did.

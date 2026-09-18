@@ -1,31 +1,44 @@
-// The JS surface of the nine views: the constructor objects, the four
-// construction paths of 23.2.5.1, and the members an instance answers. The
-// METHODS live next door in builtin_typed_array_methods.cpp, `ArrayBuffer`
-// itself in builtin_array_buffer.cpp; the representation lives in
-// typed_array.{h,cpp}.
+// The JS surface of the typed-array family (ECMA-262 23.2): the abstract
+// `%TypedArray%` (23.2.1) with its statics (23.2.2) and `%TypedArray%.prototype`
+// (23.2.3), the twelve view constructors (23.2.6) and their prototypes
+// (23.2.7), and the two questions the property path still answers from the
+// KIND rather than by a walk. Construction is builtin_typed_array_construct.cpp,
+// the method bodies builtin_typed_array_methods.cpp and
+// builtin_typed_array_iteration.cpp, `ArrayBuffer` builtin_array_buffer.cpp,
+// and the representation typed_array.{h,cpp}.
+//
+// A typed array is an ORDINARY OBJECT with a real prototype chain, built here
+// exactly as 23.2 lays it out: `Uint8Array.prototype` holds `constructor` and
+// `BYTES_PER_ELEMENT` and nothing else, its [[Prototype]] is
+// `%TypedArray%.prototype` where every method and the four accessors live, and
+// `Uint8Array`'s own [[Prototype]] is `%TypedArray%`, from which it inherits
+// `from`, `of` and `@@species`. A NAMED read of a view is the ordinary shape
+// walk, cached at the site like any prototype method; what stays exotic is the
+// integer index (10.4.5) and, on a pristine chain, the four accessors — both
+// answered from the header in rt_prop.cpp with the kind as the guard, because
+// `v[i]` and `v.length` are what a typed array is measured on.
 
-#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <string>
-#include <unordered_map>
 
 #include "abi/bronze_abi.h"
-#include "runtime/array.h"
 #include "runtime/bigint.h"
 #include "runtime/builtin_typed_array_internal.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
-#include "runtime/iterator.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
-#include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -33,194 +46,67 @@ namespace bronze::runtime {
 
 namespace {
 
-Value fromLength(ElementKind kind, uint32_t length) {
-    const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
-    if (!checkAllocatable(length * bpe)) return Value::fromUndefined();
-    return Value::fromObject(TypedArrayHeader::create(rtHeap(), kind, length));
-}
+constexpr size_t kKindCount = static_cast<size_t>(ElementKind::Count);
 
-Value fromBuffer(ElementKind kind, Rooted<Value>& buffer, Value offsetVal, Value lengthVal) {
-    const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
-    // 23.2.5.1 runs ToIndex on the offset before it even looks at the length,
-    // and ToIndex is ToNumber: `new Int32Array(buf, {valueOf(){…}}, {valueOf(){…}})`
-    // runs user code between the two reads, so the length argument needs a root
-    // of its own — the caller's copy is a local the collector cannot update.
-    Rooted<Value> offsetRoot{offsetVal};
-    Rooted<Value> lengthRoot{lengthVal};
-    uint32_t offset = 0;
-    if (!toIndex(offsetRoot.get(), "byte offset", 1, offset)) return Value::fromUndefined();
-    if (offset % bpe != 0) {
-        rtThrowRangeError("start offset of " + std::string(elementKindInfo(kind).name) +
-                          " should be a multiple of " + std::to_string(bpe));
-        return Value::fromUndefined();
-    }
+// One record per view kind. Every Value is a permanent root: the first use of
+// any member of the family builds all of it, and every later use reads it.
+// The PRISTINE fields are the witnesses the two fast paths compare against —
+// the shape each object was left with when the family was built, and the slot
+// its `constructor` sits in — so a program that redefines any of it is seen.
+struct ViewIntrinsics {
+    Value ctor = Value::fromUndefined();
+    Value proto = Value::fromUndefined();
+    Shape* instanceShape = nullptr;
+    Shape* protoPristineShape = nullptr;
+    Shape* ctorBoxPristineShape = nullptr;
+    uint32_t constructorSlot = 0;
+};
 
-    // 23.2.5.1 -> InitializeTypedArrayFromArrayBuffer runs ToIndex(length)
-    // BEFORE it tests the buffer (its steps 4..6), so both conversions'
-    // `valueOf`s have run by the time the buffer is measured — a length whose
-    // conversion detaches or resizes it is judged against the buffer as it is
-    // NOW, not as it was. That is why the detach test and the byteLength read
-    // sit below the conversion and re-derive through the root.
-    const bool hasLength = !lengthRoot.get().isUndefined();
-    uint32_t length = 0;
-    if (hasLength && !toIndex(lengthRoot.get(), "typed array", bpe, length)) {
-        return Value::fromUndefined();
-    }
-    auto* buf = buffer.get().asObject<ArrayBufferHeader>();
-    if (buf->isDetached()) {
-        rtThrowTypeError("ArrayBuffer is detached");
-        return Value::fromUndefined();
-    }
-    const uint32_t bufferLength = buf->byteLength;
-    if (offset > bufferLength) {
-        rtThrowRangeError("Start offset " + std::to_string(offset) +
-                          " is outside the bounds of the buffer");
-        return Value::fromUndefined();
-    }
+// `%TypedArray%` and its prototype, with the four accessor getters and the
+// slots they occupy — what `rtTypedArrayChainPristine` re-verifies.
+struct FamilyIntrinsics {
+    Value ctor = Value::fromUndefined();
+    Value proto = Value::fromUndefined();
+    Shape* protoPristineShape = nullptr;
+    Shape* ctorBoxPristineShape = nullptr;
+    static constexpr size_t kAccessorCount = 4;
+    uint32_t accessorSlot[kAccessorCount] = {};
+    Value accessorGetter[kAccessorCount] = {Value::fromUndefined(), Value::fromUndefined(),
+                                            Value::fromUndefined(), Value::fromUndefined()};
+    // `[Symbol.iterator]`'s slot and the `values` it holds when untouched. A
+    // DATA property, so a program overwrites it in place — no shape change,
+    // no epoch bump — and the value has to be compared on every ask rather
+    // than latched with the accessors above.
+    uint32_t iteratorSlot = 0;
+    Value iteratorValues = Value::fromUndefined();
+    // The epoch the chain was last verified at, and the verdict. A changed
+    // epoch means SOME prototype somewhere changed; the thirteen shapes say
+    // whether it was one of ours.
+    uint64_t pristineEpoch = 0;
+    bool pristine = false;
+    // `ArrayBuffer`'s instance shape, immortal and never replaced (25.1.5.2
+    // makes the prototype non-writable), kept here so `new Float32Array(n)`
+    // does not cross into builtin_array_buffer.cpp's `ensure` for it.
+    Shape* bufferInstanceShape = nullptr;
+};
 
-    if (!hasLength) {
-        // No length argument: over a resizable buffer (a growable
-        // SharedArrayBuffer included) that is 10.4.5's length-TRACKING view —
-        // [[ArrayLength]] is auto, recomputed by every resize, and there is
-        // no divisibility condition on the tail (the length floors instead).
-        // Over a fixed buffer the rest of the bytes must divide evenly and
-        // the count is fixed here, once.
-        if (buf->isResizable()) {
-            return Value::fromObject(TypedArrayHeader::createOverBuffer(
-                rtHeap(), kind, buffer, offset, (bufferLength - offset) / bpe,
-                /*tracking=*/true));
-        }
-        if ((bufferLength - offset) % bpe != 0) {
-            rtThrowRangeError("byte length of " + std::string(elementKindInfo(kind).name) +
-                              " should be a multiple of " + std::to_string(bpe));
-            return Value::fromUndefined();
-        }
-        length = (bufferLength - offset) / bpe;
-    } else if (static_cast<uint64_t>(offset) + static_cast<uint64_t>(length) * bpe >
-               bufferLength) {
-        rtThrowRangeError("Invalid typed array length: " + std::to_string(length));
-        return Value::fromUndefined();
-    }
-    return Value::fromObject(
-        TypedArrayHeader::createOverBuffer(rtHeap(), kind, buffer, offset, length));
-}
+thread_local ViewIntrinsics g_views[kKindCount];
+thread_local FamilyIntrinsics g_family;
 
-Value fromTypedArray(ElementKind kind, Rooted<Value>& source) {
-    const ElementKind srcKind = source.get().asObject<TypedArrayHeader>()->elementKind();
-    // 23.2.5.1 step 5 -> InitializeTypedArrayFromTypedArray step 5: mixing a
-    // BigInt view with a Number one is a TypeError, because there is no
-    // conversion between the two content types at all (23.2.5.13 goes through
-    // ToBigInt and 23.2.5.14 through ToNumber, and neither accepts the other's
-    // values).
-    if (isBigIntElementKind(kind) != isBigIntElementKind(srcKind)) {
-        return rtThrowTypeError(std::string("Cannot construct a ") +
-                                elementKindInfo(kind).name + " from a " +
-                                elementKindInfo(srcKind).name +
-                                " (one holds BigInts and the other Numbers)");
-    }
-    const uint32_t length = source.get().asObject<TypedArrayHeader>()->length;
-    Rooted<Value> out{fromLength(kind, length)};
-    if (rtExceptionPending()) return Value::fromUndefined();
-    for (uint32_t i = 0; i < length; ++i) {
-        if (isBigIntElementKind(kind)) {
-            // Both views are 8 bytes wide and the stored bits are the same 64
-            // whichever signedness each has, so this is a copy and never a
-            // conversion — which is also why it cannot allocate.
-            const uint64_t bits = source.get().asObject<TypedArrayHeader>()->rawBits64(i);
-            out.get().asObject<TypedArrayHeader>()->setRawBits64(i, bits);
-            continue;
-        }
-        const double v = source.get().asObject<TypedArrayHeader>()->get(i);
-        out.get().asObject<TypedArrayHeader>()->set(i, v);
-    }
-    return out.get();
-}
+void ensureTypedArrayIntrinsics();
 
-Value fromArrayLike(ElementKind kind, Rooted<Value>& source) {
-    if (isArray(source.get())) {
-        const uint32_t length = source.get().asObject<ArrayHeader>()->length;
-        Rooted<Value> out{fromLength(kind, length)};
-        if (rtExceptionPending()) return Value::fromUndefined();
-        for (uint32_t i = 0; i < length; ++i) {
-            Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
-            // The store's conversion is the element kind's, so a Number in a
-            // BigInt view's source array is the TypeError 7.1.13 names rather
-            // than a truncation.
-            rtTypedArraySetElement(out, i, elem.get());
-            if (rtExceptionPending()) return Value::fromUndefined();
-        }
-        return out.get();
-    }
-
-    // 23.2.5.1 step 5: usingIterator is GetMethod(object, @@iterator), and when
-    // it is undefined the constructor falls to step 5.c —
-    // InitializeTypedArrayFromArrayLike, which reads `length` and the indices
-    // and never asks for an iterator at all. Without this arm every object
-    // without @@iterator was "not iterable", which is a TypeError the language
-    // does not raise: `new Float64Array({length: 2, 0: 1.5, 1: 2.5})` is a
-    // two-element view, and an object with no `length` at all is a length-0
-    // one rather than an error.
-    if (!rtHasIteratorMethod(source)) {
-        const uint32_t length = rtArrayLikeLength(source);
-        if (rtExceptionPending()) return Value::fromUndefined();
-        Rooted<Value> out{fromLength(kind, length)};
-        if (rtExceptionPending()) return Value::fromUndefined();
-        for (uint32_t i = 0; i < length; ++i) {
-            // Both the element read and the ToNumber under it can run user
-            // code, so the view is reached through its root each time rather
-            // than through a pointer taken before the loop.
-            Rooted<Value> elem{rtArrayLikeElement(source, i)};
-            if (rtExceptionPending()) return Value::fromUndefined();
-            rtTypedArraySetElement(out, i, elem.get());
-            if (rtExceptionPending()) return Value::fromUndefined();
-        }
-        return out.get();
-    }
-
-    Rooted<Value> collected{Value(bronze_create_array(0))};
-    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
-    while (bronze_iter_step(rec.get().rawBits())) {
-        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-        bronze_array_append(collected.get().rawBits(), item.get().rawBits());
-        if (rtExceptionPending()) break;
-    }
-    if (rtExceptionPending()) {
-        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
-        return Value::fromUndefined();
-    }
-    return fromArrayLike(kind, collected);
-}
-
-Value constructTypedArray(ElementKind kind, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> arg{args[0]};
-
-    if (arg.get().isUndefined()) return fromLength(kind, 0);
-    if (arg.get().isNumber()) {
-        uint32_t length = 0;
-        if (!toIndex(arg.get(), "typed array", elementKindInfo(kind).bytesPerElement, length)) {
-            return Value::fromUndefined();
-        }
-        return fromLength(kind, length);
-    }
-    if (isBuffer(arg.get())) return fromBuffer(kind, arg, args[1], args[2]);
-    if (arg.get().isObject()) {
-        const uint16_t flags = arg.get().asObject<HeapObjectHeader>()->flags;
-        if (flags == TypedArrayHeader::kFlags) return fromTypedArray(kind, arg);
-        if (flags == HeapKind::Function) {
-            return rtThrowTypeError(std::string(elementKindInfo(kind).name) +
-                                    " constructor: a function is not iterable");
-        }
-        return fromArrayLike(kind, arg);
-    }
-    return rtThrowTypeError(std::string(elementKindInfo(kind).name) +
-                            " constructor requires a length, a buffer, an array or an iterable");
-}
+// ---- the constructors --------------------------------------------------------
 
 template <ElementKind K>
-uint64_t typedArrayCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return constructTypedArray(K, argc, argv).rawBits();
+uint64_t viewCtor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> receiver{Value(thisBits)};
+    return rtTypedArrayConstructBody(K, receiver, argc, argv).rawBits();
+}
+
+// 23.2.1.1 %TypedArray%(): a TypeError whether called or constructed — it
+// exists to be the [[Prototype]] of the twelve and to hold what they share.
+uint64_t typedArrayAbstractCtor(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return rtThrowTypeError("Abstract class TypedArray not directly constructable").rawBits();
 }
 
 struct CtorEntry {
@@ -229,194 +115,507 @@ struct CtorEntry {
 };
 
 const CtorEntry kCtors[] = {
-    {ElementKind::Int8, typedArrayCtor<ElementKind::Int8>},
-    {ElementKind::Uint8, typedArrayCtor<ElementKind::Uint8>},
-    {ElementKind::Uint8Clamped, typedArrayCtor<ElementKind::Uint8Clamped>},
-    {ElementKind::Int16, typedArrayCtor<ElementKind::Int16>},
-    {ElementKind::Uint16, typedArrayCtor<ElementKind::Uint16>},
-    {ElementKind::Int32, typedArrayCtor<ElementKind::Int32>},
-    {ElementKind::Uint32, typedArrayCtor<ElementKind::Uint32>},
-    {ElementKind::Float32, typedArrayCtor<ElementKind::Float32>},
-    {ElementKind::Float64, typedArrayCtor<ElementKind::Float64>},
-    {ElementKind::Float16, typedArrayCtor<ElementKind::Float16>},
-    {ElementKind::BigInt64, typedArrayCtor<ElementKind::BigInt64>},
-    {ElementKind::BigUint64, typedArrayCtor<ElementKind::BigUint64>},
+    {ElementKind::Int8, viewCtor<ElementKind::Int8>},
+    {ElementKind::Uint8, viewCtor<ElementKind::Uint8>},
+    {ElementKind::Uint8Clamped, viewCtor<ElementKind::Uint8Clamped>},
+    {ElementKind::Int16, viewCtor<ElementKind::Int16>},
+    {ElementKind::Uint16, viewCtor<ElementKind::Uint16>},
+    {ElementKind::Int32, viewCtor<ElementKind::Int32>},
+    {ElementKind::Uint32, viewCtor<ElementKind::Uint32>},
+    {ElementKind::Float32, viewCtor<ElementKind::Float32>},
+    {ElementKind::Float64, viewCtor<ElementKind::Float64>},
+    {ElementKind::Float16, viewCtor<ElementKind::Float16>},
+    {ElementKind::BigInt64, viewCtor<ElementKind::BigInt64>},
+    {ElementKind::BigUint64, viewCtor<ElementKind::BigUint64>},
 };
 
-static_assert(std::size(kCtors) == static_cast<size_t>(ElementKind::Count),
+static_assert(std::size(kCtors) == kKindCount,
               "the constructor table has drifted from the ElementKind enum");
 
-const char* const kTypedArrayUnimplemented[] = {
-    "toLocaleString",
-};
+// ---- the accessors (23.2.3.1–.3, 23.2.3.18, 23.2.3.35) ----------------------
 
-const char* const kTypedArraySlotMembers[] = {
-    "length", "byteLength", "byteOffset", "buffer", "BYTES_PER_ELEMENT", "constructor",
-};
-
-// %TypedArray%.from
-uint64_t typedArrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Value ctorVal(thisBits);
-    ElementKind kind = ElementKind::Float64;
-    bool found = false;
-    for (const CtorEntry& entry : kCtors) {
-        if (ctorVal.isObject() && ctorVal.asObject<FunctionHeader>()->code == entry.code) {
-            kind = entry.kind;
-            found = true;
-            break;
-        }
+// 23.2.3's four getters open with RequireInternalSlot: a foreign receiver is a
+// TypeError, never a lookup. A view whose constructor has not run yet (a
+// derived class reading `this` before `super()`) has no buffer to answer
+// from and is refused on the same terms.
+bool requireViewReceiver(Value self, const char* getter) {
+    if (!isTypedArray(self) || !self.asObject<TypedArrayHeader>()->buffer.isObject()) {
+        rtThrowTypeError(std::string("get %TypedArray%.prototype.") + getter +
+                         " called on incompatible receiver");
+        return false;
     }
-    if (!found) {
-        return rtThrowTypeError("%TypedArray%.from called on non-TypedArray constructor").rawBits();
-    }
-    Rooted<Value> source{args[0]};
-    Rooted<Value> mapFn{args[1]};
-    Rooted<Value> thisArg{args[2]};
-    const bool hasMap = !mapFn.get().isUndefined();
-    if (hasMap && !isCallable(mapFn.get())) {
-        return rtThrowTypeError("mapFn is not callable").rawBits();
-    }
-
-    if (isTypedArray(source.get())) {
-        const uint32_t len = lengthOf(source.get());
-        Rooted<Value> out{fromLength(kind, len)};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        for (uint32_t i = 0; i < len; ++i) {
-            Rooted<Value> val{rtTypedArrayElement(source.get(), i)};
-            if (hasMap) {
-                val.set(callBack(mapFn, thisArg, val, i, source));
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-            }
-            rtTypedArraySetElement(out, i, val.get());
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        }
-        return out.get().rawBits();
-    }
-
-    if (isArray(source.get())) {
-        const uint32_t len = source.get().asObject<ArrayHeader>()->length;
-        Rooted<Value> out{fromLength(kind, len)};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        for (uint32_t i = 0; i < len; ++i) {
-            Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
-            if (hasMap) {
-                elem.set(callBack(mapFn, thisArg, elem, i, source));
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-            }
-            rtTypedArraySetElement(out, i, elem.get());
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        }
-        return out.get().rawBits();
-    }
-
-    Rooted<Value> collected{Value(bronze_create_array(0))};
-    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    while (bronze_iter_step(rec.get().rawBits())) {
-        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-        bronze_array_append(collected.get().rawBits(), item.get().rawBits());
-        if (rtExceptionPending()) break;
-    }
-    if (rtExceptionPending()) {
-        bronze_iter_close(rec.get().rawBits(), true);
-        return Value::fromUndefined().rawBits();
-    }
-    const uint64_t block[3] = {collected.get().rawBits(), mapFn.get().rawBits(),
-                               thisArg.get().rawBits()};
-    return typedArrayFrom(0, thisBits, 3, block);
+    return true;
 }
 
-// %TypedArray%.of
-uint64_t typedArrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Value ctorVal(thisBits);
-    ElementKind kind = ElementKind::Float64;
-    bool found = false;
-    for (const CtorEntry& entry : kCtors) {
-        if (ctorVal.isObject() && ctorVal.asObject<FunctionHeader>()->code == entry.code) {
-            kind = entry.kind;
-            found = true;
-            break;
-        }
+// 23.2.3.1: the identity outlives the window — a detached buffer is still the
+// answer.
+uint64_t bufferGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireViewReceiver(self, "buffer")) return Value::fromUndefined().rawBits();
+    return self.asObject<TypedArrayHeader>()->buffer.rawBits();
+}
+
+// 23.2.3.2: 0 for a view its buffer left behind, through the maintained
+// window alone (typed_array.h, `length`).
+uint64_t byteLengthGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireViewReceiver(self, "byteLength")) return Value::fromUndefined().rawBits();
+    return Value::fromDouble(self.asObject<TypedArrayHeader>()->byteLength()).rawBits();
+}
+
+// 23.2.3.3: +0 out of bounds — the one length-family answer the maintained
+// window cannot carry, because the stored offset survives the closing.
+uint64_t byteOffsetGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireViewReceiver(self, "byteOffset")) return Value::fromUndefined().rawBits();
+    const auto* view = self.asObject<TypedArrayHeader>();
+    return Value::fromDouble(view->isOutOfBounds() ? 0.0 : view->byteOffset).rawBits();
+}
+
+// 23.2.3.18.
+uint64_t lengthGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireViewReceiver(self, "length")) return Value::fromUndefined().rawBits();
+    return Value::fromDouble(self.asObject<TypedArrayHeader>()->length).rawBits();
+}
+
+// 23.2.3.35 get %TypedArray%.prototype[@@toStringTag]: [[TypedArrayName]] for
+// a view, `undefined` — NOT a throw — for anything else, which is what keeps
+// `Object.prototype.toString.call(Uint8Array.prototype)` "[object Object]".
+uint64_t toStringTagGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!isTypedArray(self)) return Value::fromUndefined().rawBits();
+    return rtMakeString(self.asObject<TypedArrayHeader>()->kindName()).rawBits();
+}
+
+// 23.2.3.31 toLocaleString, refused by name rather than aliased to `join`:
+// its element format is `Number.prototype.toLocaleString`'s, which bronze
+// refuses for want of locale data, so the member is a function that says so
+// instead of a `undefined` a program would feature-test away. The same
+// arrangement as `BigInt.prototype.toLocaleString`.
+uint64_t toLocaleStringRefusal(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    fatal("unsupported: %TypedArray%.prototype.toLocaleString is not implemented (its "
+          "elements format through Number.prototype.toLocaleString, which needs locale data "
+          "bronze does not carry)");
+}
+
+// ---- assembling the family ----------------------------------------------------
+
+// A DEFINITION of a non-enumerable data property — the terms `rtDefineMethods`
+// uses — with the attributes spelled out, because 23.2.7.1's
+// `BYTES_PER_ELEMENT` is the rare property that is neither writable nor
+// configurable.
+void defineData(Rooted<Value>& obj, Rooted<Value>& key, Rooted<Value>& val, bool writable,
+                bool configurable) {
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, /*ic=*/nullptr,
+                                                /*enumerable=*/false, /*defineOwn=*/true,
+                                                /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                writable, configurable);
+}
+
+void defineGetter(Rooted<Value>& proto, Rooted<Value>& key, bronze_fn_code code,
+                  const char* name) {
+    // 10.2.9 step 5: an accessor's getter is named with the "get " prefix.
+    Rooted<Value> getter{rtNativeFunction(code, 0, name, 0)};
+    Rooted<Value> setter{Value::fromUndefined()};
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
+                                 /*enumerable=*/false);
+}
+
+uint32_t slotOf(Value obj, PropertyKey key) {
+    PropertyInfo info;
+    if (!obj.asObject<ObjectHeader>()->shape->lookupProperty(key, info)) {
+        fatal("internal: a typed-array intrinsic lost a property it just defined");
     }
-    if (!found) {
-        return rtThrowTypeError("%TypedArray%.of called on non-TypedArray constructor").rawBits();
+    return info.slot;
+}
+
+ObjectHeader* newPlainObject(Value proto) {
+    Shape* shape = rtNewRootShape(proto);
+    shape->used_as_prototype = true;
+    ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), shape);
+    obj->header.flags = HeapKind::Plain;
+    return obj;
+}
+
+// %TypedArray% and %TypedArray%.prototype, in the order 23.2.3 lists them
+// where the order is observable. Publishes each object into the record the
+// moment it exists, because every install below allocates.
+void buildFamily() {
+    Rooted<Value> proto{Value::fromObject(newPlainObject(rtObjectPrototype()))};
+    g_family.proto = proto.get();
+    rtHeap().add_permanent_root(&g_family.proto);
+
+    Rooted<Value> ctor{rtNativeFunction(typedArrayAbstractCtor, 0, "TypedArray", 0)};
+    g_family.ctor = ctor.get();
+    rtHeap().add_permanent_root(&g_family.ctor);
+    {
+        // 23.2.3.5, a DEFINITION so it does not write through.
+        Rooted<Value> key{rtMakeString("constructor")};
+        defineData(proto, key, ctor, /*writable=*/true, /*configurable=*/true);
     }
-    Rooted<Value> out{fromLength(kind, args.count())};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    for (uint32_t i = 0; i < args.count(); ++i) {
-        rtTypedArraySetElement(out, i, args[i]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    size_t methodCount = 0;
+    const NativeMethod* methods = rtTypedArrayMethodTable(methodCount);
+    rtDefineMethods(proto, methods, methodCount);
+    {
+        Rooted<Value> key{rtMakeString("toLocaleString")};
+        Rooted<Value> fn{rtNativeFunction(toLocaleStringRefusal, 0, "toLocaleString", 0)};
+        defineData(proto, key, fn, /*writable=*/true, /*configurable=*/true);
     }
-    return out.get().rawBits();
+    {
+        // Before `[Symbol.iterator]`, because 23.2.3 fixes no order for the two
+        // symbol keys and node reports them in this one.
+        Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
+        defineGetter(proto, key, toStringTagGetter, "get [Symbol.toStringTag]");
+    }
+    {
+        // 23.2.3.34: `[Symbol.iterator]` IS `values` — one function object
+        // under two keys, which the interning on the code pointer gives.
+        Rooted<Value> key{Value::fromSymbol(rtSymbolIterator())};
+        Rooted<Value> values{rtNativeFunction(taValues, 0, "values", 0)};
+        defineData(proto, key, values, /*writable=*/true, /*configurable=*/true);
+        g_family.iteratorValues = values.get();
+        rtHeap().add_permanent_root(&g_family.iteratorValues);
+        g_family.iteratorSlot =
+            slotOf(proto.get(), PropertyKey::forSymbol(key.get().asSymbol<SymbolHeader>()));
+    }
+
+    struct Accessor {
+        const char* name;
+        bronze_fn_code code;
+        const char* getterName;
+    };
+    const Accessor accessors[FamilyIntrinsics::kAccessorCount] = {
+        {"buffer", bufferGetter, "get buffer"},
+        {"byteLength", byteLengthGetter, "get byteLength"},
+        {"byteOffset", byteOffsetGetter, "get byteOffset"},
+        {"length", lengthGetter, "get length"},
+    };
+    for (size_t i = 0; i < FamilyIntrinsics::kAccessorCount; ++i) {
+        Rooted<Value> key{rtMakeString(accessors[i].name)};
+        defineGetter(proto, key, accessors[i].code, accessors[i].getterName);
+        g_family.accessorGetter[i] = rtNativeFunction(accessors[i].code, 0);
+        rtHeap().add_permanent_root(&g_family.accessorGetter[i]);
+        g_family.accessorSlot[i] =
+            slotOf(proto.get(), PropertyKey::forString(key.get().asString<StringHeader>()));
+    }
+
+    // 23.2.2: the statics, ordinary own properties of the constructor's box —
+    // where a view constructor reaches them by the chain `extends` builds
+    // between the boxes, exactly as a class reaches an inherited static.
+    // 23.2.2.4's `@@species` is a real accessor there too, so a subclass
+    // inherits it and `Object.getOwnPropertyDescriptor` can describe it.
+    rtEnsureFunctionProperties(ctor);
+    {
+        Rooted<Value> box{ctor.get().asObject<FunctionHeader>()->properties};
+        const NativeMethod statics[] = {
+            {"from", rtTypedArrayFromBody, 1, 1},
+            {"of", rtTypedArrayOfBody, 0, 0},
+        };
+        rtDefineMethods(box, statics, std::size(statics));
+        rtDefineSpeciesGetter(ctor);
+    }
+
+    FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
+    fn->prototype = proto.get();
+    // 23.2.2.3: `{ [[Writable]]: false, [[Enumerable]]: false,
+    // [[Configurable]]: false }`.
+    fn->prototype_readonly = true;
+    fn->instance_shape = rtNewRootShape(proto.get());
+    g_family.protoPristineShape = proto.get().asObject<ObjectHeader>()->shape;
+}
+
+// One view: its constructor, its prototype (23.2.7: `constructor` and
+// `BYTES_PER_ELEMENT`, nothing else), the chain links to the family, and the
+// instance shape every `new` allocates from.
+void buildView(ElementKind kind, bronze_fn_code code) {
+    ViewIntrinsics& out = g_views[static_cast<size_t>(kind)];
+    const ElementKindInfo& info = elementKindInfo(kind);
+
+    Rooted<Value> proto{Value::fromObject(newPlainObject(g_family.proto))};
+    out.proto = proto.get();
+    rtHeap().add_permanent_root(&out.proto);
+
+    // Arity 0: a variadic native must not be padded, or `new Float64Array(buf)`
+    // would arrive with two extra `undefined`s and take the explicit-offset
+    // branch. `length` is 23.2.6's 3.
+    Rooted<Value> ctor{rtNativeFunction(code, 0, info.name, 3)};
+    out.ctor = ctor.get();
+    rtHeap().add_permanent_root(&out.ctor);
+    {
+        Rooted<Value> key{rtMakeString("constructor")};
+        defineData(proto, key, ctor, /*writable=*/true, /*configurable=*/true);
+        out.constructorSlot =
+            slotOf(proto.get(), PropertyKey::forString(key.get().asString<StringHeader>()));
+    }
+    Rooted<Value> bpeKey{rtMakeString("BYTES_PER_ELEMENT")};
+    Rooted<Value> bpe{Value::fromDouble(info.bytesPerElement)};
+    // 23.2.7.1 and 23.2.6.1: non-writable, non-enumerable, non-configurable
+    // on the prototype and on the constructor alike.
+    defineData(proto, bpeKey, bpe, /*writable=*/false, /*configurable=*/false);
+
+    // The statics box, chained to `%TypedArray%`'s so `Uint8Array.from` is
+    // found by the walk `MyArr.of` is found by (runtime/native_base.h).
+    Rooted<Value> familyBox{g_family.ctor.asObject<FunctionHeader>()->properties};
+    ObjectHeader* box = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(familyBox.get()));
+    box->header.flags = HeapKind::Plain;
+    Rooted<Value> boxRoot{Value::fromObject(box)};
+    defineData(boxRoot, bpeKey, bpe, /*writable=*/false, /*configurable=*/false);
+    // Marked as a prototype's shape would be, though nothing inherits from it
+    // yet: the mark is what makes a mutation of the box — a `@@species` a
+    // program defines on `Uint8Array` itself — bump the epoch that
+    // reverifyPristine latches on, so the species fast path can trust the
+    // latch instead of re-reading this shape on every `slice`.
+    boxRoot.get().asObject<ObjectHeader>()->shape->used_as_prototype = true;
+
+    FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
+    fn->prototype = proto.get();
+    // 23.2.6.2: non-writable, non-enumerable, non-configurable.
+    fn->prototype_readonly = true;
+    fn->properties = boxRoot.get();
+    // 23.2.6: the constructor's own [[Prototype]] is %TypedArray%.
+    fn->parent = g_family.ctor;
+    // Which native object `new` allocates — recorded on the intrinsic itself
+    // and copied down every `extends` link from it.
+    fn->native_base = static_cast<uint8_t>(NativeBase::TypedArrayFirst + static_cast<uint8_t>(kind));
+    // Last: an instance cannot exist before there is a shape to build one
+    // from, and `rtAllocateNativeBaseInstance` reads this slot for every
+    // construction — the intrinsic's own and a subclass's alike.
+    fn->instance_shape = rtNewRootShape(proto.get());
+    out.instanceShape = fn->instance_shape;
+    out.protoPristineShape = proto.get().asObject<ObjectHeader>()->shape;
+    out.ctorBoxPristineShape = boxRoot.get().asObject<ObjectHeader>()->shape;
+}
+
+void ensureTypedArrayIntrinsics() {
+    if (g_family.proto.isObject()) return;
+    buildFamily();
+    for (const CtorEntry& entry : kCtors) buildView(entry.kind, entry.code);
+    // The family box's shape is captured LAST: each view's box chains to it
+    // (rtNewRootShape marks the link, and can move a shared shape to a
+    // dedicated one when it does), so the pristine shape is whatever the
+    // twelve links left it.
+    g_family.ctorBoxPristineShape =
+        g_family.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape;
+    g_family.bufferInstanceShape = rtArrayBufferInstanceShape();
+    g_family.pristineEpoch = protoMutationEpoch();
+    g_family.pristine = true;
+}
+
+// Re-verify the thirteen prototype shapes, the four getter slots, the
+// thirteen statics-box shapes and the twelve `extends` links. Called only
+// when the epoch moved, which any add, delete, redefinition or prototype swap
+// on ANY object serving as a prototype does — the boxes are marked as such
+// in buildView exactly so that a `@@species` defined on one moves it — so the
+// common case is one compare against the latched epoch.
+bool reverifyPristine() {
+    const auto* proto = g_family.proto.asObject<ObjectHeader>();
+    bool ok = proto->shape == g_family.protoPristineShape;
+    for (size_t i = 0; ok && i < FamilyIntrinsics::kAccessorCount; ++i) {
+        ok = proto->getSlot(g_family.accessorSlot[i]).rawBits() ==
+             g_family.accessorGetter[i].rawBits();
+    }
+    ok = ok && g_family.ctor.asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->shape ==
+                   g_family.ctorBoxPristineShape;
+    for (size_t k = 0; ok && k < kKindCount; ++k) {
+        const ViewIntrinsics& kind = g_views[k];
+        const auto* ctor = kind.ctor.asObject<FunctionHeader>();
+        ok = kind.proto.asObject<ObjectHeader>()->shape == kind.protoPristineShape &&
+             ctor->parent.rawBits() == g_family.ctor.rawBits() &&
+             ctor->properties.asObject<ObjectHeader>()->shape == kind.ctorBoxPristineShape;
+    }
+    g_family.pristine = ok;
+    g_family.pristineEpoch = protoMutationEpoch();
+    return ok;
+}
+
+// 7.3.22 SpeciesConstructor(O, defaultConstructor).
+Value speciesConstructor(Rooted<Value>& exemplar, Value defaultCtor) {
+    Rooted<Value> fallback{defaultCtor};
+    Rooted<Value> ctorKey{rtMakeString("constructor")};
+    Rooted<Value> ctor{Value(bronze_elem_get(exemplar.get().rawBits(), ctorKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (ctor.get().isUndefined()) return fallback.get();
+    if (!ctor.get().isObject()) {
+        return rtThrowTypeError("the constructor of this typed array is not an object");
+    }
+    Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
+    Rooted<Value> species{
+        Value(bronze_elem_get(ctor.get().rawBits(), speciesKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (species.get().isUndefined() || species.get().isNull()) return fallback.get();
+    if (!rtIsConstructorValue(species.get())) {
+        return rtThrowTypeError("[Symbol.species] of this typed array is not a constructor");
+    }
+    return species.get();
+}
+
+// Is the exemplar's species its own kind's intrinsic, with no `Get`
+// performed? Its shape is the intrinsic instance shape (no own `constructor`
+// and the intrinsic prototype), the chain and the statics boxes are as built
+// (the epoch latch), and that prototype's `constructor` slot still holds the
+// intrinsic — a DATA property a program overwrites in place, no shape change
+// and no epoch bump, so it is the one value compared on every ask.
+bool speciesPristine(const TypedArrayHeader* view) {
+    if (!rtTypedArrayChainPristine(view)) return false;
+    const ViewIntrinsics& kind = g_views[view->kind];
+    return kind.proto.asObject<ObjectHeader>()->getSlot(kind.constructorSlot).rawBits() ==
+           kind.ctor.rawBits();
+}
+
+// 23.2.4.1 step 3: the species may not change the content type.
+bool sameContentType(Value made, ElementKind kind) {
+    if (isBigIntElementKind(kindOf(made)) == isBigIntElementKind(kind)) return true;
+    rtThrowTypeError("the species constructor built a typed array of the other content type "
+                     "(BigInt where Number was expected, or the reverse)");
+    return false;
 }
 
 }  // namespace
 
-// Arity 0 for every constructor here: a variadic native must not be padded,
-// or `new Float64Array(buffer)` would arrive with two extra `undefined`s and
-// take the explicit-offset branch. `length` is the clause's: 23.2.6 gives each
-// view 3. `ArrayBuffer` is answered under this name too, from its own file.
+// ---- the intrinsics, by name and by identity ----------------------------------
+
 Value rtTypedArrayConstructor(const std::string& name) {
     if (name == "ArrayBuffer") return rtArrayBufferConstructor(name);
     for (const CtorEntry& entry : kCtors) {
-        if (name == elementKindInfo(entry.kind).name) {
-            return rtNativeFunction(entry.code, 0, elementKindInfo(entry.kind).name, 3);
-        }
+        if (name == elementKindInfo(entry.kind).name) return rtTypedArrayConstructorFor(entry.kind);
     }
     return Value::fromUndefined();
 }
 
-const char* rtTypedArrayConstructorName(Value fn) {
-    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
-        return nullptr;
-    }
-    if (const char* buffer = rtArrayBufferConstructorName(fn)) return buffer;
-    const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
-    for (const CtorEntry& entry : kCtors) {
-        if (entry.code == code) return elementKindInfo(entry.kind).name;
-    }
-    return nullptr;
-}
-
 Value rtTypedArrayConstructorFor(ElementKind kind) {
-    for (const CtorEntry& entry : kCtors) {
-        if (entry.kind == kind) {
-            return rtNativeFunction(entry.code, 0, elementKindInfo(entry.kind).name, 3);
-        }
-    }
-    fatal("internal: no constructor for this typed-array element kind");
+    ensureTypedArrayIntrinsics();
+    return g_views[static_cast<size_t>(kind)].ctor;
 }
 
-// The constructors' own members beyond `name` and `length`, which the function
-// header answers like every other native's. `from` and `of` are one object
-// across all nine views (23.2.2.1 puts them on %TypedArray%, which each view
-// inherits from); `BYTES_PER_ELEMENT` is the one per-kind member.
-bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
+// By CODE POINTER and never by interning a constructor and comparing bits:
+// identifying an intrinsic must not build one, because this is asked from
+// paths where an unexpected allocation retires a pointer mid-lookup.
+bool rtTypedArrayConstructorKind(Value fn, ElementKind& out) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return false;
     }
-    if (rtArrayBufferConstructorName(fn)) return rtArrayBufferStatic(fn, key, out);
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;
-        if (key == "BYTES_PER_ELEMENT") {
-            out = Value::fromDouble(elementKindInfo(entry.kind).bytesPerElement);
-            return true;
-        }
-        if (key == "from") {
-            out = rtNativeFunction(typedArrayFrom, 1, "from", 1);
-            return true;
-        }
-        if (key == "of") {
-            out = rtNativeFunction(typedArrayOf, 0, "of", 0);
-            return true;
-        }
-        return false;
+        out = entry.kind;
+        return true;
     }
     return false;
 }
+
+const char* rtTypedArrayConstructorName(Value fn) {
+    ElementKind kind = ElementKind::Int8;
+    return rtTypedArrayConstructorKind(fn, kind) ? elementKindInfo(kind).name : nullptr;
+}
+
+bool rtIsTypedArrayIntrinsic(Value fn) {
+    return fn.isObject() && fn.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+           fn.asObject<FunctionHeader>()->code == typedArrayAbstractCtor;
+}
+
+bool rtIsIntrinsicTypedArrayIterator(Value fn) {
+    return fn.isObject() && fn.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+           fn.asObject<FunctionHeader>()->code == taValues;
+}
+
+Shape* rtTypedArrayInstanceShape(ElementKind kind) {
+    ensureTypedArrayIntrinsics();
+    return g_views[static_cast<size_t>(kind)].instanceShape;
+}
+
+// ---- allocation ---------------------------------------------------------------
+
+// One `ensure` and the shapes read straight off the records: these two sit
+// under every allocating method, and each `rt*InstanceShape` getter would
+// re-ask its own `ensure` on the way to the same immortal pointer.
+Value rtNewTypedArray(ElementKind kind, uint32_t length) {
+    ensureTypedArrayIntrinsics();
+    return Value::fromObject(TypedArrayHeader::create(rtHeap(),
+                                                      g_views[static_cast<size_t>(kind)].instanceShape,
+                                                      g_family.bufferInstanceShape, kind, length));
+}
+
+Value rtNewTypedArrayOverBuffer(ElementKind kind, Rooted<Value>& buffer, uint32_t byteOffset,
+                                uint32_t length, bool tracking) {
+    ensureTypedArrayIntrinsics();
+    return Value::fromObject(TypedArrayHeader::createOverBuffer(
+        rtHeap(), g_views[static_cast<size_t>(kind)].instanceShape, kind, buffer, byteOffset,
+        length, tracking));
+}
+
+Value rtTypedArraySpeciesCreate(Rooted<Value>& exemplar, uint32_t length) {
+    const ElementKind kind = kindOf(exemplar.get());
+    if (!checkAllocatable(length * elementKindInfo(kind).bytesPerElement)) {
+        return Value::fromUndefined();
+    }
+    if (speciesPristine(exemplar.get().asObject<TypedArrayHeader>())) {
+        return rtNewTypedArray(kind, length);
+    }
+    Rooted<Value> ctor{speciesConstructor(exemplar, g_views[static_cast<size_t>(kind)].ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    Rooted<Value> made{rtTypedArrayCreateFromConstructor(ctor, length)};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (!sameContentType(made.get(), kind)) return Value::fromUndefined();
+    return made.get();
+}
+
+Value rtTypedArraySpeciesCreateOverBuffer(Rooted<Value>& exemplar, Rooted<Value>& buffer,
+                                          uint32_t byteOffset, uint32_t length, bool tracking) {
+    const ElementKind kind = kindOf(exemplar.get());
+    if (speciesPristine(exemplar.get().asObject<TypedArrayHeader>())) {
+        return rtNewTypedArrayOverBuffer(kind, buffer, byteOffset, length, tracking);
+    }
+    Rooted<Value> ctor{speciesConstructor(exemplar, g_views[static_cast<size_t>(kind)].ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    // 23.2.3.30 step 13-14: « buffer, beginByteOffset » for a tracking result,
+    // « buffer, beginByteOffset, newLength » otherwise.
+    RootedBlock block(tracking ? 2 : 3);
+    block.set(0, buffer.get());
+    block.set(1, Value::fromDouble(static_cast<double>(byteOffset)));
+    if (!tracking) block.set(2, Value::fromDouble(static_cast<double>(length)));
+    Rooted<Value> made{Value(bronze_construct(ctor.get().rawBits(), block.count(), block.data()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    // 23.2.4.4 ValidateTypedArray on what came back.
+    if (!requireTypedArray(made.get(), "subarray")) return Value::fromUndefined();
+    if (!sameContentType(made.get(), kind)) return Value::fromUndefined();
+    return made.get();
+}
+
+// ---- the two kind-answered questions ----------------------------------------------
+
+bool rtTypedArrayChainPristine(const TypedArrayHeader* view) noexcept {
+    if (view->object.shape != g_views[view->kind].instanceShape) return false;
+    if (g_family.pristineEpoch == protoMutationEpoch()) return g_family.pristine;
+    return reverifyPristine();
+}
+
+bool rtTypedArrayIteratorPristine(const TypedArrayHeader* view) noexcept {
+    if (!rtTypedArrayChainPristine(view)) return false;
+    // The chain's shapes are the intrinsic ones, so the slot IS
+    // `[Symbol.iterator]`'s; whether it still holds `values` is the value
+    // compare a data property needs (an in-place overwrite moves nothing else).
+    return g_family.proto.asObject<ObjectHeader>()->getSlot(g_family.iteratorSlot).rawBits() ==
+           g_family.iteratorValues.rawBits();
+}
+
+bool rtIsCanonicalNumericString(const std::string& key) {
+    if (key.empty()) return false;
+    // The first character filters every ordinary name — `set`, `subarray`,
+    // `length` — before a conversion is attempted: a canonical numeric string
+    // starts with a digit, a sign, or the first letter of NaN / Infinity.
+    const char c = key[0];
+    if (!((c >= '0' && c <= '9') || c == '-' || c == 'N' || c == 'I')) return false;
+    if (key == "-0") return true;
+    Rooted<Value> str{rtMakeString(key)};
+    const double n = rtToNumber(str.get());
+    char buf[32];
+    const size_t len = formatJsNumber(n, buf);
+    return key.size() == len && std::memcmp(key.data(), buf, len) == 0;
+}
+
+// ---- the element funnel ------------------------------------------------------------
 
 // One element as a JS VALUE, which is where the two BigInt views stop being
 // "two more widths": ten kinds answer a Number and these two answer a BigInt, so
@@ -459,87 +658,6 @@ void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value) {
     if (rtExceptionPending()) return;
     auto* live = view.get().asObject<TypedArrayHeader>();
     if (index < live->length) live->set(index, num);
-}
-
-static std::unordered_map<const void*, std::unordered_map<std::string, Value>> g_typedArrayAttached;
-static bool g_typedArrayRootRegistered = false;
-
-void rtTypedArraySetAttached(Value viewVal, const std::string& key, Value val) {
-    if (!viewVal.isObject()) return;
-    auto* hdr = viewVal.asObject<HeapObjectHeader>();
-    if (hdr->flags != TypedArrayHeader::kFlags) return;
-    auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-    if (!g_typedArrayRootRegistered) {
-        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
-            for (auto& [ptr, props] : g_typedArrayAttached) {
-                for (auto& [k, v] : props) {
-                    visit(v);
-                }
-            }
-        });
-        g_typedArrayRootRegistered = true;
-    }
-    g_typedArrayAttached[view->bytes()][key] = val;
-}
-
-Value rtTypedArrayGetAttached(Value viewVal, const std::string& key) {
-    if (!viewVal.isObject()) return Value::fromUndefined();
-    auto* hdr = viewVal.asObject<HeapObjectHeader>();
-    if (hdr->flags != TypedArrayHeader::kFlags) return Value::fromUndefined();
-    auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
-    auto it = g_typedArrayAttached.find(view->bytes());
-    if (it != g_typedArrayAttached.end()) {
-        auto propIt = it->second.find(key);
-        if (propIt != it->second.end()) {
-            return propIt->second;
-        }
-    }
-    return Value::fromUndefined();
-}
-
-Value rtTypedArrayMember(Value viewVal, const std::string& key) {
-    auto* view = viewVal.asObject<TypedArrayHeader>();
-    // `length` and `byteLength` answer 0 for a view its buffer left behind
-    // (23.2.4.2–.3) through the maintained window alone; `byteOffset` still
-    // has to ask (23.2.4.4 answers +0 out of bounds, and a closed view's
-    // stored offset survives the closing). `buffer` below always answers —
-    // the identity outlives the window.
-    if (key == "length") return Value::fromDouble(view->length);
-    if (key == "byteLength") return Value::fromDouble(view->byteLength());
-    if (key == "byteOffset") {
-        return Value::fromDouble(view->isOutOfBounds() ? 0.0 : view->byteOffset);
-    }
-    if (key == "buffer") return view->buffer;
-    if (key == "BYTES_PER_ELEMENT") return Value::fromDouble(view->bytesPerElement());
-    if (key == "constructor") return rtTypedArrayConstructorFor(view->elementKind());
-
-    const char* kindName = view->kindName();
-    // 23.2.3's methods answer BOTH element content types: their loops move raw
-    // 64-bit payloads for the two BigInt kinds and doubles for the other ten,
-    // and a BigInt VALUE is built only where one crosses into JS — a callback
-    // argument, `at`, an iterator result (builtin_typed_array_methods.cpp and
-    // builtin_typed_array_iteration.cpp carry the per-method stories).
-    Value method = rtTypedArrayMethod(key);
-    if (!method.isUndefined()) return method;
-    Value attached = rtTypedArrayGetAttached(viewVal, key);
-    if (!attached.isUndefined()) return attached;
-    rtCheckTypedArrayMember(kindName, key);
-    return Value::fromUndefined();
-}
-
-void rtCheckTypedArrayMember(const char* kindName, const std::string& key) {
-    const std::string receiver = std::string(kindName) + ".prototype";
-    rtCheckUnimplementedMember(receiver.c_str(), kTypedArrayUnimplemented,
-                               std::size(kTypedArrayUnimplemented), key);
-}
-
-bool rtTypedArrayHasMember(const char* kindName, const std::string& key) {
-    for (const char* name : kTypedArraySlotMembers) {
-        if (key == name) return true;
-    }
-    if (rtTypedArrayHasMethod(key)) return true;
-    rtCheckTypedArrayMember(kindName, key);
-    return false;
 }
 
 }  // namespace bronze::runtime

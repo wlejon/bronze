@@ -308,81 +308,119 @@ void TypedArrayHeader::setRawBits64(uint32_t index, uint64_t bits) noexcept {
     std::memcpy(bytes() + static_cast<size_t>(index) * 8, &bits, sizeof bits);
 }
 
-ArrayBufferHeader* ArrayBufferHeader::create(Heap& heap, uint32_t byte_length) {
-    size_t payload_bytes = (sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader)) + byte_length;
+namespace {
+
+// The ordinary-object prefix every header here begins with, written the way
+// `ObjectHeader::createWithInternalSlots` writes a plain object's: the kind,
+// the shape, an empty overflow word and `undefined` in every inline slot.
+// Every one of those words is scanned by the collector, so none may be left
+// holding what the semispace last had there.
+void initObjectPrefix(ObjectHeader& object, uint16_t kind, Shape* shape) {
+    if (!shape) fatal("view creation without a shape (the shape carries the prototype)");
+    object.header.flags = kind;
+    object.shape = shape;
+    object.overflow = Value::fromUndefined();
+    Value* slots = object.slotsData();
+    for (uint32_t i = 0; i < ObjectHeader::kInlineSlots; ++i) slots[i] = Value::fromUndefined();
+}
+
+ArrayBufferHeader* allocateBuffer(Heap& heap, Shape* shape, uint32_t reserve) {
+    size_t payload_bytes = (sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader)) + reserve;
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::RawBytes);
     auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
-    buf->header.flags = kFlags;
+    initObjectPrefix(buf->object, ArrayBufferHeader::kFlags, shape);
+    buf->reserved = 0;
+    buf->externalPtrBits = 0;
+    return buf;
+}
+
+}  // namespace
+
+ArrayBufferHeader* ArrayBufferHeader::create(Heap& heap, Shape* shape, uint32_t byte_length) {
+    ArrayBufferHeader* buf = allocateBuffer(heap, shape, byte_length);
     buf->byteLength = byte_length;
     buf->maxByteLength = byte_length;
     buf->bufferFlags = 0;
-    buf->reserved = 0;
-    buf->externalPtrBits = 0;
     std::memset(buf->data(), 0, byte_length);
     return buf;
 }
 
-ArrayBufferHeader* ArrayBufferHeader::createResizable(Heap& heap, uint32_t byte_length,
+ArrayBufferHeader* ArrayBufferHeader::createResizable(Heap& heap, Shape* shape,
+                                                      uint32_t byte_length,
                                                       uint32_t max_byte_length) {
-    size_t payload_bytes =
-        (sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader)) + max_byte_length;
-    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::RawBytes);
-    auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
-    buf->header.flags = kFlags;
+    ArrayBufferHeader* buf = allocateBuffer(heap, shape, max_byte_length);
     buf->byteLength = byte_length;
     buf->maxByteLength = max_byte_length;
     buf->bufferFlags = kFlagResizable;
-    buf->reserved = 0;
-    buf->externalPtrBits = 0;
     std::memset(buf->data(), 0, max_byte_length);
     return buf;
 }
 
-ArrayBufferHeader* ArrayBufferHeader::createShared(Heap& heap, uint32_t byte_length,
+ArrayBufferHeader* ArrayBufferHeader::createShared(Heap& heap, Shape* shape, uint32_t byte_length,
                                                    uint32_t max_byte_length) {
     // The GROWABLE case reserves the maximum immediately, for the reason
     // createResizable does: a view holds a byte offset into this block and the
     // block cannot be reallocated under it.
     const uint32_t reserve = max_byte_length > byte_length ? max_byte_length : byte_length;
-    size_t payload_bytes = (sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader)) + reserve;
-    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::RawBytes);
-    auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
-    buf->header.flags = kFlags;
+    ArrayBufferHeader* buf = allocateBuffer(heap, shape, reserve);
     buf->byteLength = byte_length;
     buf->maxByteLength = reserve;
     // `kFlagResizable` rides along when it can grow: `grow` is `resize` that
     // refuses to shrink, and one bit answering "is this block bigger than its
     // current length" keeps the two from disagreeing about the reservation.
     buf->bufferFlags = kFlagShared | (reserve > byte_length ? kFlagResizable : 0u);
-    buf->reserved = 0;
-    buf->externalPtrBits = 0;
     std::memset(buf->data(), 0, reserve);
     return buf;
 }
 
-TypedArrayHeader* TypedArrayHeader::create(Heap& heap, ElementKind kind, uint32_t length) {
-    const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
-    // The buffer must be rooted across the view's own allocation.
-    Rooted<Value> buf(Value::fromObject(ArrayBufferHeader::create(heap, length * bpe)));
-    return createOverBuffer(heap, kind, buf, 0, length);
+ArrayBufferHeader* ArrayBufferHeader::createExternal(Heap& heap, Shape* shape,
+                                                     uint32_t byte_length) {
+    ArrayBufferHeader* buf = allocateBuffer(heap, shape, 0);
+    buf->byteLength = byte_length;
+    buf->maxByteLength = byte_length;
+    buf->bufferFlags = 0;
+    return buf;
 }
 
-TypedArrayHeader* TypedArrayHeader::createOverBuffer(Heap& heap, ElementKind kind,
+TypedArrayHeader* TypedArrayHeader::create(Heap& heap, Shape* shape, Shape* bufferShape,
+                                           ElementKind kind, uint32_t length) {
+    const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
+    // The buffer must be rooted across the view's own allocation.
+    Rooted<Value> buf(Value::fromObject(ArrayBufferHeader::create(heap, bufferShape, length * bpe)));
+    return createOverBuffer(heap, shape, kind, buf, 0, length);
+}
+
+TypedArrayHeader* TypedArrayHeader::createOverBuffer(Heap& heap, Shape* shape, ElementKind kind,
                                                      Rooted<Value>& buffer_val, uint32_t byteOffset,
                                                      uint32_t length, bool tracking) {
-    size_t payload_bytes = sizeof(TypedArrayHeader) - sizeof(HeapObjectHeader);
-    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
-    auto* view = reinterpret_cast<TypedArrayHeader*>(raw_hdr);
-    view->header.flags = kFlags;
+    TypedArrayHeader* view = createUninitialized(heap, shape, kind);
     // Read the buffer through the ROOT, after the allocation above: that
     // allocation may have moved it, and a copy taken before it would name
     // dead from-space.
-    view->buffer = buffer_val.get();
-    view->byteOffset = byteOffset;
-    view->length = length;
-    view->kind = static_cast<uint32_t>(kind);
-    view->constructedLength = tracking ? kAutoLength : length;
+    view->initialize(buffer_val, byteOffset, length, tracking);
     return view;
+}
+
+TypedArrayHeader* TypedArrayHeader::createUninitialized(Heap& heap, Shape* shape,
+                                                        ElementKind kind) {
+    size_t payload_bytes = sizeof(TypedArrayHeader) - sizeof(HeapObjectHeader);
+    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
+    auto* view = reinterpret_cast<TypedArrayHeader*>(raw_hdr);
+    initObjectPrefix(view->object, kFlags, shape);
+    view->buffer = Value::fromUndefined();
+    view->byteOffset = 0;
+    view->length = 0;
+    view->kind = static_cast<uint32_t>(kind);
+    view->constructedLength = 0;
+    return view;
+}
+
+void TypedArrayHeader::initialize(Rooted<Value>& buffer_val, uint32_t byteOffset_,
+                                  uint32_t length_, bool tracking) noexcept {
+    buffer = buffer_val.get();
+    byteOffset = byteOffset_;
+    length = length_;
+    constructedLength = tracking ? kAutoLength : length_;
 }
 
 void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val) {
@@ -400,23 +438,39 @@ void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val) {
             return;
         }
         auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
+        // A view allocated for a derived constructor and not yet initialized
+        // (its body has not run) holds `undefined` here, not a buffer.
+        if (!view->buffer.isObject()) return;
         if (view->buffer.asObject<ArrayBufferHeader>() != buf) return;
         view->refreshLength();
     });
 }
 
-DataViewHeader* DataViewHeader::create(Heap& heap, Rooted<Value>& buffer_val, uint32_t byteOffset,
-                                       uint32_t byteLength) {
+DataViewHeader* DataViewHeader::create(Heap& heap, Shape* shape, Rooted<Value>& buffer_val,
+                                       uint32_t byteOffset, uint32_t byteLength) {
+    DataViewHeader* view = createUninitialized(heap, shape);
+    // Read the buffer through the ROOT, after the allocation above, for the
+    // reason createOverBuffer does: that allocation may have moved it.
+    view->initialize(buffer_val, byteOffset, byteLength);
+    return view;
+}
+
+DataViewHeader* DataViewHeader::createUninitialized(Heap& heap, Shape* shape) {
     size_t payload_bytes = sizeof(DataViewHeader) - sizeof(HeapObjectHeader);
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
     auto* view = reinterpret_cast<DataViewHeader*>(raw_hdr);
-    view->header.flags = kFlags;
-    // Read the buffer through the ROOT, after the allocation above, for the
-    // reason createOverBuffer does: that allocation may have moved it.
-    view->buffer = buffer_val.get();
-    view->byteOffset = byteOffset;
-    view->byteLength = byteLength;
+    initObjectPrefix(view->object, kFlags, shape);
+    view->buffer = Value::fromUndefined();
+    view->byteOffset = 0;
+    view->byteLength = 0;
     return view;
+}
+
+void DataViewHeader::initialize(Rooted<Value>& buffer_val, uint32_t byteOffset_,
+                                uint32_t byteLength_) noexcept {
+    buffer = buffer_val.get();
+    byteOffset = byteOffset_;
+    byteLength = byteLength_;
 }
 
 }  // namespace bronze

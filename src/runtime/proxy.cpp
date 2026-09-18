@@ -21,6 +21,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/bigint.h"
 #include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -130,6 +131,16 @@ bool rtIsCallableValue(Value v) {
     if (kind != ProxyHeader::kFlags) return false;
     return v.asObject<ProxyHeader>()->callable.isBool() &&
            v.asObject<ProxyHeader>()->callable.asBool();
+}
+
+bool rtIsConstructorValue(Value v) {
+    if (!v.isObject()) return false;
+    const HeapObjectHeader* h = v.asObject<HeapObjectHeader>();
+    if (h->flags == ProxyHeader::kFlags) return v.asObject<ProxyHeader>()->constructible.asBool();
+    if (h->flags != HeapKind::Function) return false;
+    // 21.2.1.1: `BigInt` is callable and carries no [[Construct]], and it is
+    // the one native whose function object says otherwise.
+    return v.asObject<FunctionHeader>()->hasConstruct() && !rtIsBigIntConstructor(v);
 }
 
 bool rtProxyRefuseIfRevoked(Value proxyVal, const char* operation) {

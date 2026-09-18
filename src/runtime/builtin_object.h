@@ -45,6 +45,7 @@ enum class ObjectOwnKeys {
     Namespace,    // a module namespace: 10.4.6.2's sorted export names
     Function,     // a function: its statics are in FunctionHeader::properties
     Array,        // an array: its elements, `length`, and ArrayHeader::properties
+    TypedArray,   // a typed array: its elements (10.4.5.7), then its shape's keys
     Proxy,        // a Proxy: 10.5.11's `ownKeys` trap, or the target's, per ask
     None,         // a number, a boolean, a symbol: the box has no own property
     Threw,        // null or undefined: ToObject has no answer, and this raised it

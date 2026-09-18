@@ -33,6 +33,7 @@ bronze_add_module(runtime
         typed_array.cpp
         builtin_array_buffer.cpp
         builtin_typed_array.cpp
+        builtin_typed_array_construct.cpp
         builtin_typed_array_methods.cpp
         builtin_typed_array_iteration.cpp
         builtin_data_view.cpp

@@ -42,6 +42,7 @@
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -116,7 +117,7 @@ FieldFound lookupField(Value descVal, PropertyKey name, Value& out) {
         auto* holder = reinterpret_cast<ObjectHeader*>(hdr);
         PropertyInfo info;
         if (holder->shape != nullptr && holder->shape->lookupProperty(name, info)) {
-            if (info.accessor || hdr->flags != HeapKind::Plain) return FieldFound::Generic;
+            if (info.accessor || !HeapKind::carriesShape(hdr->flags)) return FieldFound::Generic;
             out = holder->getSlot(info.slot);
             return FieldFound::Present;
         }
@@ -464,6 +465,32 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             if (!props.isObject()) return Value::fromUndefined().rawBits();
             const uint64_t call[2] = {props.rawBits(), args[1].rawBits()};
             return rtObjectGetOwnPropertyDescriptor(0, 0, 2, call);
+        }
+        case ObjectOwnKeys::TypedArray: {
+            // 10.4.5.1 [[GetOwnProperty]]: a numeric key is an element —
+            // `{ value, writable: true, enumerable: true, configurable: true }`
+            // within the length, absent outside it — and never the shape's;
+            // any other key is the ordinary walk below over the view's shape.
+            if (!args[1].isSymbol()) {
+                const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                uint32_t index = 0;
+                if (rtIsIntegerLikeKey(key, index)) {
+                    if (index >= args[0].asObject<TypedArrayHeader>()->length) {
+                        return Value::fromUndefined().rawBits();
+                    }
+                    Rooted<Value> value{rtTypedArrayElement(args[0], index)};
+                    Rooted<Value> out{Value(bronze_create_object())};
+                    putField(out, "value", value);
+                    Rooted<Value> t{Value::fromBool(true)};
+                    putField(out, "writable", t);
+                    putField(out, "enumerable", t);
+                    putField(out, "configurable", t);
+                    return out.get().rawBits();
+                }
+                if (rtIsCanonicalNumericString(key)) return Value::fromUndefined().rawBits();
+            }
+            break;
         }
         case ObjectOwnKeys::Shape:
             break;

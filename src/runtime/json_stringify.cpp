@@ -378,21 +378,22 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             // value — which is why `Object.entries` was right about both while
             // this reported them empty.
             //
-            // A Map, a Set, the weak pair, a WeakRef and a FinalizationRegistry
-            // are plain objects here too: their ENTRIES and targets live in
-            // internal slots and are not properties, so 25.5.2.4's
-            // EnumerableOwnPropertyNames never sees them and `{}` is what an
-            // empty one serializes to — the classic surprise in every engine.
-            // An ordinary property ASSIGNED to the collection IS an own
-            // enumerable key and does appear, which is why the object
-            // serializer is the whole answer rather than a literal `{}`.
+            // A Map, a Set, the weak pair, a WeakRef, a FinalizationRegistry,
+            // an ArrayBuffer and a DataView are plain objects here too: their
+            // ENTRIES, targets and bytes live in internal slots and are not
+            // properties, so 25.5.2.4's EnumerableOwnPropertyNames never sees
+            // them and `{}` is what an empty one serializes to — the classic
+            // surprise in every engine. An ordinary property ASSIGNED to the
+            // collection IS an own enumerable key and does appear, which is
+            // why the object serializer is the whole answer rather than a
+            // literal `{}`.
             case BRONZE_ABI_OBJ_FLAGS_PLAIN:
             case ModuleNamespaceHeader::kFlags:
             case TypedArrayHeader::kFlags:
-                return serializeObject(state, value, out);
-            case HeapKind::RegExp:
             case ArrayBufferHeader::kFlags:
             case DataViewHeader::kFlags:
+                return serializeObject(state, value, out);
+            case HeapKind::RegExp:
                 appendAscii(out, "{}");
                 return true;
             // A Proxy is whatever its target chain says it is, read through

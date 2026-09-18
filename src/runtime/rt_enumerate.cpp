@@ -87,7 +87,7 @@ bool indexedLength(Value v, uint32_t& outLength) {
 ObjectHeader* namedPropertyHolder(Value v) {
     if (!v.isObject()) return nullptr;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
-    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (HeapKind::carriesShape(hdr->flags)) {
         return reinterpret_cast<ObjectHeader*>(hdr);
     }
     if (hdr->flags == HeapKind::Function) {
@@ -123,7 +123,7 @@ bool chainHasProxyLink(const ObjectHeader* holder) {
         if (!proto.isObject()) return false;
         const auto* hdr = proto.asObject<HeapObjectHeader>();
         if (hdr->flags == ProxyHeader::kFlags) return true;
-        if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
+        if (!HeapKind::carriesShape(hdr->flags)) return false;
         holder = reinterpret_cast<const ObjectHeader*>(hdr);
     }
     return false;
@@ -136,8 +136,29 @@ Value nextLinkOf(ObjectHeader* holder) {
     const Value proto = holder->shape->prototypeValue();
     if (!proto.isObject()) return Value::fromNull();
     const uint16_t kind = proto.asObject<HeapObjectHeader>()->flags;
-    if (kind == ProxyHeader::kFlags || kind == BRONZE_ABI_OBJ_FLAGS_PLAIN) return proto;
+    if (kind == ProxyHeader::kFlags || HeapKind::carriesShape(kind)) return proto;
     return Value::fromNull();
+}
+
+// The string keys of `holder` and every ordinary link above it, nearest level
+// first, each name once. Arena-interned shape keys only, which are immortal and
+// non-moving, so the walk allocates nothing and no raw pointer here has to
+// survive a collection.
+void collectChainStringKeys(ObjectHeader* holder, std::vector<StringHeader*>& keys) {
+    for (uint32_t depth = 0; depth <= kMaxPrototypeDepth && holder != nullptr; ++depth) {
+        // String keys only: 14.7.5.6 EnumerateObjectProperties yields
+        // property names, and a symbol key is not one. It is the same filter
+        // `Object.keys` applies, asked in the same place, so the two cannot
+        // disagree about what a `for-in` visits.
+        for (StringHeader* key : rtOwnStringKeysOrdered(holder)) {
+            // A key redefined further up the chain is visited once, at the
+            // level nearest the receiver — the level whose value a read would
+            // find (ECMA-262 14.7.5.6).
+            if (!alreadySeen(keys, key)) keys.push_back(key);
+        }
+        if (depth == kMaxPrototypeDepth) fatal("prototype chain too deep (a cycle?)");
+        holder = holder->protoAncestor(1);
+    }
 }
 
 // 14.7.5.6 EnumerateObjectProperties spelled out over the INTERNAL METHODS,
@@ -362,11 +383,11 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
         }
         // An array's own named properties, AFTER its indices — 6.1.7.1's order,
         // which needs no sort here because an integer-like key names an element
-        // and can never have reached the named storage. A string and a typed
-        // array have none, and the prototype step below is skipped for all
-        // three: `Array.prototype`'s members are answered beside the value
-        // rather than by an object with enumerable properties, and 23.2.3 and
-        // 22.1.3 put nothing enumerable on the other two either.
+        // and can never have reached the named storage. A string has none, and
+        // the prototype step below is skipped for it and for the array:
+        // `Array.prototype`'s members are answered beside the value rather than
+        // by an object with enumerable properties, and 22.1.3 puts nothing
+        // enumerable on a string's.
         if (isArray) {
             // The keys are arena-interned and immortal, so the vector survives
             // the allocations `setElem` makes — and the array is handed the
@@ -376,6 +397,21 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
             for (StringHeader* named : rtArrayOwnNamedKeys(src.get())) {
                 Rooted<Value> key{rtKeyAsValue(named)};
                 out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+            }
+        }
+        // A typed array carries a shape: its named own properties (a subclass
+        // field, an expando) come after the indices (10.4.5.7), and the chain
+        // above it is walked like any ordinary object's — nothing 23.2.3 puts
+        // there is enumerable, but a program may have added something. No
+        // enumeration cache: the keys are a function of the elements' count as
+        // well as of the shape.
+        if (src.get().isObject() &&
+            src.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
+            std::vector<StringHeader*> named;
+            collectChainStringKeys(src.get().asObject<ObjectHeader>(), named);
+            for (StringHeader* key : named) {
+                Rooted<Value> keyVal{rtKeyAsValue(key)};
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, keyVal);
             }
         }
         return out.get().rawBits();
@@ -429,20 +465,7 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     // non-moving. That is what lets the whole chain be walked before a single
     // allocation happens: no raw object pointer here has to survive one.
     std::vector<StringHeader*> keys;
-    for (uint32_t depth = 0; depth <= kMaxPrototypeDepth && holder != nullptr; ++depth) {
-        // String keys only: 14.7.5.6 EnumerateObjectProperties yields
-        // property names, and a symbol key is not one. It is the same filter
-        // `Object.keys` applies, asked in the same place, so the two cannot
-        // disagree about what a `for-in` visits.
-        for (StringHeader* key : rtOwnStringKeysOrdered(holder)) {
-            // A key redefined further up the chain is visited once, at the
-            // level nearest the receiver — the level whose value a read would
-            // find (ECMA-262 14.7.5.6).
-            if (!alreadySeen(keys, key)) keys.push_back(key);
-        }
-        if (depth == kMaxPrototypeDepth) fatal("prototype chain too deep (a cycle?)");
-        holder = holder->protoAncestor(1);
-    }
+    collectChainStringKeys(holder, keys);
 
     // The fill: exactly what the walk just proved, under the decision taken
     // before it ran. The epoch could not have moved in between — phase one

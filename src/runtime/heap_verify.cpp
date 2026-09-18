@@ -85,7 +85,12 @@ void Heap::verify_space(const Semispace& space) const {
     // bug class needs reported: the struct type whose scanned word is dirty.
     for (uint64_t addr : headers) {
         auto* hdr = reinterpret_cast<const HeapObjectHeader*>(addr);
-        if (!payload_holds_values(hdr->tag)) {
+        // An ArrayBuffer's raw bytes are not scanned, but its ordinary-object
+        // prefix is (heap_collect.cpp cuts the scan at exactly this size), so
+        // the prefix is held to the same standard as any object's words.
+        const bool bufferPrefix = hdr->tag == static_cast<uint16_t>(Tag::RawBytes) &&
+                                  hdr->flags == HeapKind::ArrayBuffer;
+        if (!payload_holds_values(hdr->tag) && !bufferPrefix) {
             continue;
         }
         // THE STAGE R1 REPRESENTATION INVARIANT, checked where the collector's
@@ -97,7 +102,8 @@ void Heap::verify_space(const Semispace& space) const {
         // ask (llvm_prop_set.cpp, llvm_static_slot.cpp). Such a
         // store is invisible in ordinary running (the bits are still a legal
         // Value) and a type confusion the moment stage R2 loads them as an f64.
-        if (hdr->tag == static_cast<uint16_t>(Tag::Object) && hdr->flags == HeapKind::Plain) {
+        if (HeapKind::carriesShape(hdr->flags) &&
+            (hdr->tag == static_cast<uint16_t>(Tag::Object) || bufferPrefix)) {
             const auto* obj = reinterpret_cast<const ObjectHeader*>(hdr);
             const Shape* shape = obj->shape;
             if (shape != nullptr && shape->double_slots != 0) {
@@ -120,7 +126,10 @@ void Heap::verify_space(const Semispace& space) const {
             }
         }
         const Value* slots = hdr->payload<const Value>();
-        const size_t num_slots = (hdr->size - sizeof(HeapObjectHeader)) / sizeof(Value);
+        const size_t num_slots =
+            bufferPrefix ? (sizeof(ObjectHeader) - sizeof(HeapObjectHeader)) / sizeof(Value) +
+                               ObjectHeader::kInlineSlots
+                         : (hdr->size - sizeof(HeapObjectHeader)) / sizeof(Value);
         for (size_t i = 0; i < num_slots; ++i) {
             const Value v = slots[i];
             if (v.isNumber()) {

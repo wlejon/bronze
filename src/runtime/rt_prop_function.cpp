@@ -156,21 +156,11 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
         if (rtIsFunctionConstructor(recv.get())) {
             return rtFunctionPrototypeObject().rawBits();
         }
-        // The guard above only covers `kCtors`. SharedArrayBuffer, DataView
-        // and the nine views are interned function singletons of their own,
-        // so without this they reached the on-demand slot below and
-        // `Float64Array.prototype` answered a fresh empty object — the exact
-        // lie the comment above says the ordering exists to prevent, told
-        // about every intrinsic that is not one of the three. Named here
-        // rather than by adding `prototype` to nine more tables, because
-        // the property is absent for the same one reason each time.
-        const char* intrinsic = rtNoPrototypeObjectIntrinsic(recv.get());
-        if (intrinsic) {
-            fatal((std::string("unsupported: ") + intrinsic +
-                   ".prototype is not implemented (bronze has no prototype OBJECT for this "
-                   "intrinsic; its methods are answered by the property path)")
-                      .c_str());
-        }
+        // Every other intrinsic constructor (%TypedArray%, the twelve views,
+        // the two buffers, DataView, the collections) writes its real
+        // prototype object into the slot when it is built, so the read below
+        // is exact for it too.
+        //
         // An arrow, a method, an accessor and an async function have NO
         // `prototype` property at all (15.3.4, 15.4.4, 15.8.4 build them
         // with no CreateMethodProperty step for it), so the read is
@@ -224,8 +214,6 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // method wins. An assignment could not have put anything there, so the
     // only thing this order can find first is a definition that really did
     // replace the property.
-    if (Value stat; rtTypedArrayStatic(recv.get(), keyStr, stat)) return stat.rawBits();
-
     if (const FunctionHeader* fn = recv.get().asObject<FunctionHeader>(); fn->name) {
         if (keyStr == "length") return Value::fromDouble(fn->length).rawBits();
         if (keyStr == "name") return rtKeyAsValue(fn->name).rawBits();

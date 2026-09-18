@@ -6,6 +6,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 #include "runtime/value.h"
 
 namespace bronze {
@@ -14,6 +15,19 @@ namespace bronze {
 // not ten: an element kind is DATA in the view, so every path below —
 // construction, the conversion on store, printing, iteration — is written once
 // and reads a table.
+//
+// Each of the three headers here BEGINS WITH AN ORDINARY OBJECT — the shape
+// word, the overflow word and the inline property slots an `ObjectHeader`
+// lays out — and carries its own state after them, exactly as a Map does
+// (runtime/map.h). The shape is what gives an instance a real [[Prototype]]
+// (23.2.7 `%TypedArray%.prototype%`, 25.1.6 `ArrayBuffer.prototype`, 25.3.5
+// `DataView.prototype`, or a subclass's), and the slots are where an expando
+// lives, so `Object.getPrototypeOf`, `instanceof`, a subclass method, an
+// inline cache and `Object.keys` all take the ordinary path over one. What
+// stays exotic is the KIND: `HeapObjectHeader::flags` still names a view, a
+// buffer and a DataView apart from a plain object, because the integer-
+// indexed element access of 10.4.5 — the one path a typed array is measured
+// on — is a kind check and a bounds compare and must not become a walk.
 
 // ECMA-262 table 71's element types. The first nine are in the order the
 // specification lists them and the last three are APPENDED, which is a
@@ -77,10 +91,13 @@ double toUint8Clamp(double number) noexcept;
 inline constexpr uint32_t kMaxByteLength = 1u << 28;  // 256 MiB
 
 // Raw byte storage (Tag::RawBytes: the collector forwards the object and
-// copies its bytes, but never scans the payload as Values). flags == kFlags
-// discriminates it from a plain object in the dynamic helpers.
+// copies its bytes, but never scans the BYTES as Values — the ordinary-object
+// prefix it does scan, by the shape, exactly as it scans a plain object's:
+// heap_collect.cpp's arm for this kind). flags == kFlags discriminates it from
+// a plain object in the dynamic helpers.
 struct ArrayBufferHeader {
-    HeapObjectHeader header;
+    ObjectHeader object;
+    Value inlineSlots[ObjectHeader::kInlineSlots];
     uint32_t byteLength;
     uint32_t maxByteLength;
     uint32_t bufferFlags;
@@ -116,15 +133,24 @@ struct ArrayBufferHeader {
 
     // Zero-filled, as 25.1.3.1 AllocateArrayBuffer requires. `byte_length` is
     // the caller's business to validate; this allocates what it is asked for.
-    static ArrayBufferHeader* create(Heap& heap, uint32_t byte_length);
-    static ArrayBufferHeader* createResizable(Heap& heap, uint32_t byte_length,
+    // `shape` decides the [[Prototype]] (10.1.13 OrdinaryCreateFromConstructor
+    // hands it in from NewTarget; the runtime's own allocations pass the
+    // intrinsic's instance shape, rt_receivers.h), and every field of the
+    // ordinary prefix is initialized here so no scanned word is left holding
+    // semispace residue.
+    static ArrayBufferHeader* create(Heap& heap, Shape* shape, uint32_t byte_length);
+    static ArrayBufferHeader* createResizable(Heap& heap, Shape* shape, uint32_t byte_length,
                                               uint32_t max_byte_length);
     // 25.2.3.1 AllocateSharedArrayBuffer. `max_byte_length` equal to
     // `byte_length` means not growable; anything larger reserves the maximum up
     // front, exactly as a resizable ArrayBuffer does, because a moving collector
     // cannot hand out a block that later moves under a view.
-    static ArrayBufferHeader* createShared(Heap& heap, uint32_t byte_length,
+    static ArrayBufferHeader* createShared(Heap& heap, Shape* shape, uint32_t byte_length,
                                            uint32_t max_byte_length);
+    // A header over bytes that live OUTSIDE the heap (external_store.cpp): the
+    // prefix and the fields, no inline bytes, `externalPtrBits` left for the
+    // caller to point at the store.
+    static ArrayBufferHeader* createExternal(Heap& heap, Shape* shape, uint32_t byte_length);
 
     bool isResizable() const noexcept { return (bufferFlags & kFlagResizable) != 0; }
     bool isDetached() const noexcept { return (bufferFlags & kFlagDetached) != 0; }
@@ -147,12 +173,13 @@ struct ArrayBufferHeader {
 };
 
 // A view over an ArrayBufferHeader (flags == kFlags). The buffer is held as a
-// Value so the generic GC payload scan keeps it alive AND forwards it; the data
-// address is recomputed from that Value on every access, never cached across
-// anything that can allocate. That is the whole of the GC design and the one
-// rule every method here must keep.
+// Value so the object scan keeps it alive AND forwards it; the data address is
+// recomputed from that Value on every access, never cached across anything
+// that can allocate. That is the whole of the GC design and the one rule every
+// method here must keep.
 struct TypedArrayHeader {
-    HeapObjectHeader header;
+    ObjectHeader object;
+    Value inlineSlots[ObjectHeader::kInlineSlots];
     Value buffer;
     uint32_t byteOffset;
     uint32_t length;    // in ELEMENTS, not bytes — the CURRENT window, see below
@@ -259,21 +286,38 @@ struct TypedArrayHeader {
     uint64_t rawBits64(uint32_t index) const noexcept;
     void setRawBits64(uint32_t index, uint64_t bits) noexcept;
 
-    // A view over a fresh zero-filled buffer of `length` elements.
-    static TypedArrayHeader* create(Heap& heap, ElementKind kind, uint32_t length);
+    // A view over a fresh zero-filled buffer of `length` elements. Both shapes
+    // decide a [[Prototype]]: the view's, and the buffer's — the buffer is an
+    // object of its own and `view.buffer` hands it to the program.
+    static TypedArrayHeader* create(Heap& heap, Shape* shape, Shape* bufferShape,
+                                    ElementKind kind, uint32_t length);
     // A view over an EXISTING buffer. The buffer arrives through a root
     // because allocating the view can move it; the offset and length are the
     // caller's to validate (23.2.5.1 has the whole ladder). `tracking` makes
     // a length-TRACKING view: `length` is still the live window as of now —
     // the caller computes 10.4.5.12's answer — but `constructedLength`
     // becomes kAutoLength, so every later resize recomputes it.
-    static TypedArrayHeader* createOverBuffer(Heap& heap, ElementKind kind,
+    static TypedArrayHeader* createOverBuffer(Heap& heap, Shape* shape, ElementKind kind,
                                               Rooted<Value>& buffer_val, uint32_t byteOffset,
                                               uint32_t length, bool tracking = false);
+    // A view with NO buffer yet — every field of the prefix and the window
+    // initialized, `buffer` undefined, `length` 0 — for 10.1.13's allocate-
+    // then-initialize order: `new (class extends Float32Array)(n)` allocates
+    // the receiver before any constructor body runs, and 23.2.5.1's body then
+    // fills it through `initialize`. A view in this state is never handed to
+    // a program (the construction that made it either finishes it or throws),
+    // and every path that could meet one asks `buffer.isObject()` first.
+    static TypedArrayHeader* createUninitialized(Heap& heap, Shape* shape, ElementKind kind);
+    // 23.2.5.1's steps 4-7 on a view `createUninitialized` made: point it at
+    // `buffer_val` with the window given. No allocation.
+    void initialize(Rooted<Value>& buffer_val, uint32_t byteOffset, uint32_t length,
+                    bool tracking) noexcept;
 };
 
-// Generated code inlines dynamic-index element access on float views
-// (llvm_elem.cpp), so this layout — and the two float kinds' numbers — is ABI.
+// The runtime's element helpers read these offsets through the struct; the
+// ABI header carries them so the layout is pinned where every other heap
+// layout is, and so a host reading a view's bytes (embed.h) has one place to
+// learn it from.
 static_assert(offsetof(TypedArrayHeader, buffer) == BRONZE_ABI_TA_BUFFER_OFFSET);
 static_assert(offsetof(TypedArrayHeader, byteOffset) == BRONZE_ABI_TA_BYTEOFFSET_OFFSET);
 static_assert(offsetof(TypedArrayHeader, length) == BRONZE_ABI_TA_LENGTH_OFFSET);
@@ -326,11 +370,12 @@ void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val);
 // above 0xFFF1_0000 would present a valid pointer tag and be "relocated",
 // overwriting the window's length with an address. The cap is three orders of
 // magnitude below that, and it binds here because a DataView can only ever be
-// built over a buffer the cap already admitted. There is no third word to
-// worry about: the two fields fill it, so no padding is left holding whatever
-// the allocator last wrote there.
+// built over a buffer the cap already admitted. There is no further word to
+// worry about: the two fields fill theirs, so no padding is left holding
+// whatever the allocator last wrote there.
 struct DataViewHeader {
-    HeapObjectHeader header;
+    ObjectHeader object;
+    Value inlineSlots[ObjectHeader::kInlineSlots];
     Value buffer;
     uint32_t byteOffset;
     uint32_t byteLength;
@@ -384,14 +429,19 @@ struct DataViewHeader {
 
     // The buffer arrives through a root because allocating the view can move
     // it; the offset and length are the caller's to validate (25.3.2.1 has the
-    // whole ladder).
-    static DataViewHeader* create(Heap& heap, Rooted<Value>& buffer_val, uint32_t byteOffset,
-                                  uint32_t byteLength);
+    // whole ladder). `shape` decides the [[Prototype]], as a typed array's does.
+    static DataViewHeader* create(Heap& heap, Shape* shape, Rooted<Value>& buffer_val,
+                                  uint32_t byteOffset, uint32_t byteLength);
+    // The allocate-then-initialize pair, on TypedArrayHeader's terms: 25.3.2.1
+    // step 9 creates the object from NewTarget before the window is written.
+    static DataViewHeader* createUninitialized(Heap& heap, Shape* shape);
+    void initialize(Rooted<Value>& buffer_val, uint32_t byteOffset, uint32_t byteLength) noexcept;
 };
 
-static_assert(sizeof(DataViewHeader) == 24,
-              "a DataView is a header, a buffer Value and ONE scanned {byteOffset, byteLength} "
-              "word; a third payload word would be scanned as a Value too");
+static_assert(sizeof(DataViewHeader) == sizeof(ObjectHeader) +
+                                            ObjectHeader::kInlineSlots * sizeof(Value) + 16,
+              "a DataView is the ordinary prefix, a buffer Value and ONE scanned {byteOffset, "
+              "byteLength} word; a further payload word would be scanned as a Value too");
 
 // The narrowing conversions of 7.1.6..7.1.11, exposed because construction
 // from another typed array converts element by element without materialising

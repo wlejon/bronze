@@ -83,12 +83,8 @@ extern "C" {
 // key the compiler registered, one with the key ToPropertyKey just produced -
 // and a second copy of this dispatch would be a second answer to "does this
 // member exist?", which is the question rt_members.cpp exists to keep one of.
-// `keyIndex` is the interned key id when the caller has one — the named read
-// does, the computed read does not (its key is a value, and BRONZE_ABI_KEY_NONE
-// says so). Nothing in the walk needs it; the native-member memo does, because
-// an integer key is the only key a table that holds no heap pointers can have.
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                              InlineCacheSite* site, uint32_t keyIndex);
+                              InlineCacheSite* site);
 
 static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
     recordPropCall("bronze_prop_get", keyIndex, icEntry);
@@ -103,7 +99,54 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
     // overflow-slot case.
     if (objVal.isObject()) {
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
-        if (fastHdr->flags == HeapKind::Plain) {
+        if (fastHdr->flags == TypedArrayHeader::kFlags) {
+            // The two questions a typed array answers from its KIND before the
+            // ordinary walk below (10.4.5): an integer index is an element,
+            // and `length` — with `byteLength`, `byteOffset` and `buffer` —
+            // is read off the header when the chain is pristine, which is
+            // every view a program has not subclassed, decorated or
+            // redefined an accessor of (rt_receivers.h). Anything else falls
+            // through to the shaped path: a view carries a shape, so a method
+            // read is a site-cached prototype hit like any object's.
+            const KeyInfo& ki = rtKeyInfo(keyIndex);
+            if (ki.isElemIndex) {
+                // Through rtTypedArrayElement rather than `view->get`, because
+                // a BigInt64/BigUint64 element is a BigInt and has to be
+                // allocated: one funnel, so no read path can come to believe
+                // every element is a double.
+                return rtTypedArrayElement(Value(objBits), ki.elemIndex).rawBits();
+            }
+            const auto* view = reinterpret_cast<const TypedArrayHeader*>(fastHdr);
+            if (ki.isLength) {
+                if (rtTypedArrayChainPristine(view)) {
+                    return Value::fromDouble(view->length).rawBits();
+                }
+            } else {
+                StringHeader* keyHeader = rtKeyHeader(keyIndex);
+                if (keyHeader && keyHeader->isLatin1()) {
+                    const size_t kLen = keyHeader->getLength();
+                    const char* kData = keyHeader->latin1Data();
+                    if (kLen == 10 && std::memcmp(kData, "byteLength", 10) == 0 &&
+                        rtTypedArrayChainPristine(view)) {
+                        return Value::fromDouble(view->byteLength()).rawBits();
+                    }
+                    if (kLen == 10 && std::memcmp(kData, "byteOffset", 10) == 0 &&
+                        rtTypedArrayChainPristine(view)) {
+                        // 23.2.3.3: +0 for a view its buffer left behind —
+                        // the one length-family answer the maintained window
+                        // cannot carry, because the stored offset survives
+                        // the closing.
+                        return Value::fromDouble(view->isOutOfBounds() ? 0.0 : view->byteOffset)
+                            .rawBits();
+                    }
+                    if (kLen == 6 && std::memcmp(kData, "buffer", 6) == 0 &&
+                        rtTypedArrayChainPristine(view)) {
+                        return view->buffer.rawBits();
+                    }
+                }
+            }
+        }
+        if (HeapKind::carriesShape(fastHdr->flags)) {
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
             // A site that brought no entry — every site the brass backend
             // emits — reads and fills the KEY's site instead (rt_state.h), so
@@ -168,37 +211,6 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             if (ki.isLength) {
                 return Value::fromDouble(reinterpret_cast<const ArrayHeader*>(fastHdr)->length).rawBits();
             }
-        } else if (fastHdr->flags == TypedArrayHeader::kFlags) {
-            const KeyInfo& ki = rtKeyInfo(keyIndex);
-            if (ki.isElemIndex) {
-                // Through rtTypedArrayElement rather than `view->get`, because
-                // a BigInt64/BigUint64 element is a BigInt and has to be
-                // allocated: one funnel, so no read path can come to believe
-                // every element is a double.
-                return rtTypedArrayElement(Value(objBits), ki.elemIndex).rawBits();
-            }
-            if (ki.isLength) {
-                return Value::fromDouble(reinterpret_cast<const TypedArrayHeader*>(fastHdr)->length).rawBits();
-            }
-            StringHeader* keyHeader = rtKeyHeader(keyIndex);
-            if (keyHeader && keyHeader->isLatin1()) {
-                const size_t kLen = keyHeader->getLength();
-                const char* kData = keyHeader->latin1Data();
-                const auto* view = reinterpret_cast<const TypedArrayHeader*>(fastHdr);
-                if (kLen == 10 && std::memcmp(kData, "byteLength", 10) == 0) {
-                    return Value::fromDouble(view->byteLength()).rawBits();
-                }
-                if (kLen == 10 && std::memcmp(kData, "byteOffset", 10) == 0) {
-                    // 23.2.4.4: +0 for a view its buffer left behind — the
-                    // one length-family answer the maintained window cannot
-                    // carry, because the stored offset survives the closing.
-                    return Value::fromDouble(view->isOutOfBounds() ? 0.0 : view->byteOffset)
-                        .rawBits();
-                }
-                if (kLen == 6 && std::memcmp(kData, "buffer", 6) == 0) {
-                    return view->buffer.rawBits();
-                }
-            }
         }
     } else if (objVal.isString()) {
         // A STRING receiver, which generated code's inline IC can never hit
@@ -236,7 +248,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
         }
     }
 
-    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site, keyIndex);
+    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
 }
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
@@ -259,7 +271,7 @@ uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry)
 }
 
 static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHeader* keyHeader,
-                              InlineCacheSite* ic, uint32_t keyIndex) {
+                              InlineCacheSite* ic) {
     // The interned key is needed by more than the plain-object branch now, so
     // its registration is checked once at the top rather than where it is
     // first read.
@@ -338,60 +350,14 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         return rtObjectProtoMember(recv, keyStr).rawBits();
     }
     if (hdr->flags == TypedArrayHeader::kFlags) {
-        // The index is tried FIRST: `v[0]` is the whole point of a typed array
-        // and must not walk a member table on the way to the element.
-        if (rtKeyAsIndex(keyStr, idx)) {
-            // Out of range is `undefined` and not an error — a typed array has
-            // no elements outside its length and nowhere to continue the search
-            // (10.4.5.4 makes a canonical numeric string absent rather than
-            // inherited, which is why this returns instead of falling through
-            // to the chain below).
-            return rtTypedArrayElement(objVal, idx).rawBits();
-        }
-        // The memo, METHOD-TABLE answers only. A view has no own-property box
-        // at all (TypedArrayHeader stores nothing named), so there is no
-        // own-property read to order this after — but the fill is gated on the
-        // method table's name-only check because the ladder's OTHER answers
-        // (`length`, `buffer`, `constructor`, ...) are computed from the
-        // receiver: `constructor` differs per element kind while the memo key
-        // is (TypedArray, name), one entry for all nine views. The methods are
-        // the one shared table (rtTypedArrayMethod serves every view), which
-        // is exactly the invariant the memo exists to exploit — three.js's
-        // WebGLUniforms reads `.set` off its matrix upload arrays 6,000 times
-        // a frame, every one of them walking the ladder to the same interned
-        // native.
-        if (Value memo = rtNativeMemberProbe(TypedArrayHeader::kFlags, keyIndex);
-            !memo.isUndefined()) {
-            return memo.rawBits();
-        }
-        Rooted<Value> recv{objVal};
-        const Value found = rtTypedArrayMember(recv.get(), keyStr);
-        if (!found.isUndefined()) {
-            if (rtTypedArrayHasMethod(keyStr)) {
-                rtNativeMemberFill(TypedArrayHeader::kFlags, keyIndex, found);
-            }
-            return found.rawBits();
-        }
-        return rtObjectProtoMember(recv, keyStr).rawBits();
-    }
-    if (hdr->flags == ArrayBufferHeader::kFlags) {
-        Rooted<Value> recv{objVal};
-        const Value found = rtArrayBufferMember(recv.get(), keyStr);
-        if (!found.isUndefined()) return found.rawBits();
-        return rtObjectProtoMember(recv, keyStr).rawBits();
-    }
-    if (hdr->flags == DataViewHeader::kFlags) {
-        // No index branch above this one, unlike a typed array's: 25.3 defines
-        // no integer-indexed access at all, so `view[0]` is an ordinary
-        // property name that DataView does not define and the chain answers.
-        Rooted<Value> recv{objVal};
-        const Value found = rtDataViewMember(recv.get(), keyStr);
-        // The size getters THROW for an out-of-bounds window (25.3.4.2–.3),
-        // and a throw answers as undefined — which must not fall through into
-        // the prototype chain as if the view simply lacked the property.
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        if (!found.isUndefined()) return found.rawBits();
-        return rtObjectProtoMember(recv, keyStr).rawBits();
+        // 10.4.5.4 [[Get]]: a NUMERIC key is an element or an absence — never
+        // a name the chain answers. The integer index is tried FIRST, because
+        // `v[0]` is the whole point of a typed array; out of range is
+        // `undefined` and not an error. A canonical numeric string that is
+        // not a valid index ("1.5", "-0", "NaN") is the same absence. Every
+        // other name is the ordinary walk below: the view carries a shape.
+        if (rtKeyAsIndex(keyStr, idx)) return rtTypedArrayElement(objVal, idx).rawBits();
+        if (rtIsCanonicalNumericString(keyStr)) return BRONZE_ABI_UNDEFINED_BITS;
     }
     if (hdr->flags == RegExpHeader::kFlags) {
         // Every member of a RegExp is computed from the header and the
@@ -443,8 +409,9 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // plain-object tail would be read through an ObjectHeader it is not, so the
     // cast is guarded rather than trusted. `bronze_elem_get` used to hold this
     // guarantee for the computed path and lost it when that path was folded
-    // into this one.
-    if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    // into this one. The byte-store family (a view, a buffer, a DataView) opens
+    // with an ObjectHeader and is read through it like any ordinary object.
+    if (!HeapKind::carriesShape(hdr->flags)) {
         char buf[128];
         std::snprintf(buf, sizeof(buf),
                       "internal: a property read on an unknown object kind: flags=%u, key='%.*s'",
@@ -559,7 +526,7 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
     }
 
     if (!protoVal.isObject() ||
-        protoVal.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+        !HeapKind::carriesShape(protoVal.asObject<HeapObjectHeader>()->flags)) {
         fatal("internal: super property read on a base whose prototype is not an object");
     }
     Rooted<Value> key(Value::fromString(keyHeader));
@@ -759,8 +726,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
         if (!probe.entry) {
             StringHeader* plainKey = key.get().asString<StringHeader>();
-            return propGetByName(objRoot.get(), rtUtf8Chars(plainKey), plainKey, /*ic=*/nullptr,
-                                 BRONZE_ABI_KEY_NONE);
+            return propGetByName(objRoot.get(), rtUtf8Chars(plainKey), plainKey, /*ic=*/nullptr);
         }
         // A single-entry site on the STACK. The walk fills it by its own rules
         // — the dictionary refusal, `chainIsCacheable`, the diagnostic claims —
@@ -770,8 +736,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         InlineCacheSite site{};
         StringHeader* keyHeader = key.get().asString<StringHeader>();
         const uint64_t result =
-            propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, &site,
-                          BRONZE_ABI_KEY_NONE);
+            propGetByName(objRoot.get(), rtUtf8Chars(keyHeader), keyHeader, &site);
         if (site.ways[0].isRealShape()) {
             // Filled only once the walk has proven the answer cacheable —
             // including ABSENCE, which reaches way 0 only through

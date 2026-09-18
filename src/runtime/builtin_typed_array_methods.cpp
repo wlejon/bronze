@@ -140,7 +140,6 @@ uint64_t taSubarray(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     // validated below against the buffer as it is NOW, with the constructor's
     // errors: the specification reaches them through TypedArraySpeciesCreate.
     auto* view = self.get().asObject<TypedArrayHeader>();
-    const ElementKind kind = view->elementKind();
     const uint32_t bpe = view->bytesPerElement();
     const uint32_t byteOffset = view->byteOffset + begin * bpe;
     Rooted<Value> buffer{view->buffer};
@@ -153,10 +152,12 @@ uint64_t taSubarray(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
                                  " is outside the bounds of the buffer")
             .rawBits();
     }
+    // Step 15: TypedArraySpeciesCreate over the same buffer — a subclass's
+    // `subarray` is a subclass instance.
     if (trackingResult) {
-        return Value::fromObject(TypedArrayHeader::createOverBuffer(
-                                     rtHeap(), kind, buffer, byteOffset,
-                                     (buf->byteLength - byteOffset) / bpe, /*tracking=*/true))
+        return rtTypedArraySpeciesCreateOverBuffer(self, buffer, byteOffset,
+                                                   (buf->byteLength - byteOffset) / bpe,
+                                                   /*tracking=*/true)
             .rawBits();
     }
     if (static_cast<uint64_t>(byteOffset) + static_cast<uint64_t>(count) * bpe >
@@ -164,8 +165,7 @@ uint64_t taSubarray(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
         return rtThrowRangeError("Invalid typed array length: " + std::to_string(count))
             .rawBits();
     }
-    return Value::fromObject(
-               TypedArrayHeader::createOverBuffer(rtHeap(), kind, buffer, byteOffset, count))
+    return rtTypedArraySpeciesCreateOverBuffer(self, buffer, byteOffset, count, /*tracking=*/false)
         .rawBits();
 }
 
@@ -181,21 +181,37 @@ uint64_t taSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     relativeArg(args[1], len, end, len);
     const uint32_t count = end > begin ? end - begin : 0;
 
-    Rooted<Value> out{newViewLike(self.get(), count)};
-    // Same kind on both sides, so the elements move as BYTES — which is also
-    // the only road a BigInt element has: a double cannot carry it. The copy
-    // is clamped to the source's window as it is NOW, because relativeArg's
-    // ToNumber can run user code that shrank it; the tail of a clamped copy
-    // stays the zero-fill the allocation gave it, as 23.2.3.27's re-validation
-    // leaves it.
+    // Step 9: TypedArraySpeciesCreate, which can run a subclass constructor.
+    Rooted<Value> out{rtTypedArraySpeciesCreate(self, count)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    // The copy is clamped to the source's window as it is NOW, because
+    // relativeArg's ToNumber and the species constructor can both run user
+    // code that shrank it; the tail of a clamped copy stays the zero-fill the
+    // allocation gave it, as 23.2.3.27's re-validation leaves it.
     auto* src = self.get().asObject<TypedArrayHeader>();
     auto* dst = out.get().asObject<TypedArrayHeader>();
     const uint32_t copyable =
         src->length > begin ? std::min(count, src->length - begin) : 0;
-    if (copyable > 0) {
+    if (copyable == 0) return out.get().rawBits();
+    if (src->elementKind() == dst->elementKind()) {
+        // Step 14.a: same kind on both sides, so the elements move as BYTES —
+        // which is also the only road a BigInt element has: a double cannot
+        // carry it.
         const uint32_t bpe = src->bytesPerElement();
         std::memcpy(dst->bytes(), src->bytes() + static_cast<size_t>(begin) * bpe,
                     static_cast<size_t>(copyable) * bpe);
+        return out.get().rawBits();
+    }
+    // Step 14.b: a species of another kind (of the same content type, which
+    // the create step checked) takes each element through its own store.
+    for (uint32_t i = 0; i < copyable; ++i) {
+        auto* liveSrc = self.get().asObject<TypedArrayHeader>();
+        auto* liveDst = out.get().asObject<TypedArrayHeader>();
+        if (isBigIntElementKind(liveSrc->elementKind())) {
+            liveDst->setRawBits64(i, liveSrc->rawBits64(begin + i));
+        } else {
+            liveDst->set(i, liveSrc->get(begin + i));
+        }
     }
     return out.get().rawBits();
 }
@@ -538,18 +554,9 @@ const Method kMethods[] = {
 
 }  // namespace
 
-Value rtTypedArrayMethod(const std::string& key) {
-    for (const Method& m : kMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
-    }
-    return Value::fromUndefined();
-}
-
-bool rtTypedArrayHasMethod(const std::string& key) {
-    for (const Method& m : kMethods) {
-        if (key == m.name) return true;
-    }
-    return false;
+const NativeMethod* rtTypedArrayMethodTable(size_t& count) {
+    count = std::size(kMethods);
+    return kMethods;
 }
 
 }  // namespace bronze::runtime

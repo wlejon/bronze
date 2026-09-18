@@ -124,16 +124,30 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         if (!probe.isArrayMethod()) return false;
         auxOffset = offsetof(ArrayHeader, properties);
     } else if (kind == TypedArrayHeader::kFlags) {
-        // Memo-keyed (the fill is gated on the shared method table,
-        // rt_prop.cpp's typed-array branch). A view carries no
-        // named-property box AT ALL, so no shadowing channel exists and the
-        // guard's box clause only needs a word that can never read as
-        // Object-tagged: the {byteOffset, length} word, whose top 16 bits
-        // stay far below a pointer tag by construction (typed_array.h keeps
-        // that word scan-safe for the collector, which is the same property).
-        const Value memo = rtNativeMemberProbe(kind, keyIndex);
-        if (memo.isUndefined() || memo.rawBits() != fnVal.rawBits()) return false;
-        auxOffset = offsetof(TypedArrayHeader, byteOffset);
+        // A view is a shape-carrying object whose methods live on
+        // %TypedArray%.prototype, two links up — the plain DIRECT form's
+        // depth >= 1 case exactly, and it takes the plain form's soundness
+        // argument: the receiver's shape fixes its [[Prototype]] and so the
+        // holder and the function, and an own-property add or a prototype
+        // swap transitions that shape. Generated code's shape arm is Plain
+        // receivers only, so the same guard is spelled in the EXOTIC encoding
+        // with the CODE-guard clause: the u64 at the view's SHAPE word must
+        // equal the latched Shape* in the aux word. A Shape is immortal and
+        // non-moving, so the raw pointer is a sound witness, and the aux word
+        // is never a Value.
+        //
+        // The probe must be the fill the read just made for THIS shape from
+        // the chain (a depth-0 own data property is a per-instance function
+        // the SLOT form exists for; the view's own slots hold no method the
+        // read could have found there except an expando, and that is the case
+        // it declines).
+        if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent()) return false;
+        if (probe.realDepth() == 0) return false;
+        const auto* view = reinterpret_cast<const TypedArrayHeader*>(objHdr);
+        if (probe.cached_shape != view->object.shape) return false;
+        icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(view->object.shape);
+        auxOffset = offsetof(TypedArrayHeader, object.shape);
+        guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
     } else if (kind == HeapKind::Function) {
         // A global constructor's static (`Array.isArray`, `String.raw`):
         // answered FIRST on the function-receiver ladder from a fixed C table

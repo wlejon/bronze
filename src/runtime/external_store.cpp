@@ -14,6 +14,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/native_handle.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/typed_array.h"
 
@@ -104,7 +105,7 @@ ExternalWindow rtExternalizeArrayBuffer(Value bufferOrView) {
         buf->externalPtrBits = reinterpret_cast<uint64_t>(bytes);
         // No bronze allocation between reading the header's address and the
         // registration — malloc is the host's heap, not this one.
-        rtRegisterHeapFinalizer(&buf->header, store, dropBufferRef, Finalize::Deferred);
+        rtRegisterHeapFinalizer(&buf->object.header, store, dropBufferRef, Finalize::Deferred);
     }
     rtRetainExternalStore(store);
     return {store->bytes + winOff, winLen, store};
@@ -135,20 +136,18 @@ Value rtCreateExternalArrayBuffer(uint8_t* bytes, uint32_t byteLength,
         rtRetainExternalStore(store);
         if (deleter) deleter(user, bytes);
     }
-    size_t payload_bytes = sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader);
-    HeapObjectHeader* raw_hdr = rtHeap().allocate(payload_bytes, Tag::RawBytes);
-    auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
-    buf->header.flags = ArrayBufferHeader::kFlags;
-    buf->byteLength = byteLength;
-    buf->maxByteLength = byteLength;
-    buf->bufferFlags = 0;
-    buf->reserved = 0;
+    // An ordinary `ArrayBuffer` to the program — `ArrayBuffer.prototype` on its
+    // chain, `instanceof ArrayBuffer` true — whose bytes happen to live in the
+    // host's block. The intrinsic's instance shape says so; the bytes are the
+    // external word below, and the header carries no inline byte at all.
+    ArrayBufferHeader* buf =
+        ArrayBufferHeader::createExternal(rtHeap(), rtArrayBufferInstanceShape(), byteLength);
     buf->externalPtrBits = reinterpret_cast<uint64_t>(bytes);
     if (!store) {
         store = new ExternalStore{{1}, bytes, deleter, user};
         g_externalStores.emplace(reinterpret_cast<uint64_t>(bytes), store);
     }
-    rtRegisterHeapFinalizer(&buf->header, store, dropBufferRef, Finalize::Deferred);
+    rtRegisterHeapFinalizer(&buf->object.header, store, dropBufferRef, Finalize::Deferred);
     return Value::fromObject(buf);
 }
 

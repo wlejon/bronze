@@ -988,12 +988,12 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * shape at all — so generated code's function arm refuses a zero high half and
  * takes the helper.
  *
- * The EXOTIC form serves the receivers whose flags are NOT Plain — an Array,
- * one of the four collections (Map/Set/WeakMap/WeakSet), a typed-array
- * view, or a global-constructor FUNCTION (`Array.isArray(x)`) — whose
- * methods are native builtins answered from an immutable C table beside the
- * value rather than from any shape-indexed slot. Word 0 then holds, instead
- * of a shape:
+ * The EXOTIC form serves the receivers whose flags are NOT Plain — an Array
+ * or a global-constructor FUNCTION (`Array.isArray(x)`), whose methods are
+ * native builtins answered from an immutable C table beside the value rather
+ * than from any shape-indexed slot, and a typed-array view, whose shape word
+ * generated code's Plain arm never reads. Word 0 then holds, instead of a
+ * shape:
  *
  *      (auxOffset << BRONZE_ABI_METHOD_IC_BOX_SHIFT)
  *    | (receiver kind << BRONZE_ABI_METHOD_IC_KIND_SHIFT)
@@ -1020,27 +1020,33 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  *   an own named property (`a.push = f`) lives in it, and a subclass
  *   instance's [[Prototype]] chain hangs off it (runtime/native_base.h) —
  *   so a receiver carrying one takes the helper, which walks the box first
- *   exactly as the read path does. A typed-array view has no box AT ALL, so
- *   its latch points auxOffset at the {byteOffset, length} word, which by
- *   construction never carries a pointer tag in its top 16 bits
- *   (typed_array.h) and therefore always passes. The table itself cannot
- *   change: decorating `Array.prototype` is a hard error by construction
- *   (rt_prop_write.cpp), and the collections have no prototype object at
- *   all — their members ARE the C ladder (rt_prop.cpp), which
- *   `Object.prototype` sits below, never above.
+ *   exactly as the read path does. The table itself cannot change:
+ *   decorating `Array.prototype` is a hard error by construction
+ *   (rt_prop_write.cpp).
  *
  *   bit 1 set (CODE guard): the loaded word must EQUAL word
- *   BRONZE_ABI_METHOD_IC_AUX_WORD of the site. Latched for a Function
- *   receiver whose callee is a global constructor's static
- *   (builtin_constructors.cpp's kCtors): `auxOffset` is the FunctionHeader
- *   code offset and the aux word is the constructor's own code pointer, the
- *   one identity a moving collector never rewrites. No box clause is needed
- *   at all, because the statics table is consulted FIRST on the
- *   function-receiver ladder, ahead even of the own-property box
- *   (rt_prop.cpp) — nothing can shadow it, so the answer is a pure function
- *   of (receiver code, key). The aux word is a raw C function pointer,
- *   never a Value: the collector must not touch it, and it never does — a
- *   module's method-site registration covers word 3 only.
+ *   BRONZE_ABI_METHOD_IC_AUX_WORD of the site. Two latches use it:
+ *
+ *   - a Function receiver whose callee is a global constructor's static
+ *     (builtin_constructors.cpp's kCtors): `auxOffset` is the FunctionHeader
+ *     code offset and the aux word is the constructor's own code pointer,
+ *     the one identity a moving collector never rewrites. No box clause is
+ *     needed at all, because the statics table is consulted FIRST on the
+ *     function-receiver ladder, ahead even of the own-property box
+ *     (rt_prop.cpp) — nothing can shadow it, so the answer is a pure
+ *     function of (receiver code, key).
+ *
+ *   - a typed-array VIEW, an ordinary shape-carrying object whose methods
+ *     live on %TypedArray%.prototype: `auxOffset` is its shape word
+ *     (BRONZE_ABI_OBJ_SHAPE_OFFSET) and the aux word the Shape* latched
+ *     against, so the guard is the plain DIRECT form's own shape compare —
+ *     with the plain form's depth >= 1 envelope — spelled for a receiver
+ *     generated code's Plain arm does not take. A Shape is an immortal,
+ *     non-moving arena allocation.
+ *
+ *   The aux word is a raw C pointer either way, never a Value: the collector
+ *   must not touch it, and it never does — a module's method-site
+ *   registration covers word 3 only.
  *
  * Words 1–3 are the DIRECT form's: the native's code pointer (a C function
  * in the runtime image, immortal), its arity with a zero high half, and
@@ -1285,19 +1291,20 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * through it. Pinned in runtime/object.h. */
 #define BRONZE_ABI_HDR_BYTES             8
 
-/* TypedArrayHeader (runtime/typed_array.h): the buffer Value, the window,
- * and the element kind. BUF_EXTPTR_OFFSET is the buffer's external-storage
- * word: zero for an ordinary buffer (bytes inline, starting at
- * BUF_DATA_OFFSET == sizeof(ArrayBufferHeader)), or the address of a
- * NON-MOVING host byte store (embed.h externalizeArrayBuffer) — the inline
- * element paths select between the two, which is the whole cost of shareable
- * buffers. The two float kinds are the ones the dynamic-index element fast
- * path inlines; every other kind keeps the helper's conversion ladder.
- * Pinned in runtime/typed_array.h. */
-#define BRONZE_ABI_TA_BUFFER_OFFSET      8
-#define BRONZE_ABI_TA_BYTEOFFSET_OFFSET 16
-#define BRONZE_ABI_TA_LENGTH_OFFSET     20
-#define BRONZE_ABI_TA_KIND_OFFSET       24
+/* TypedArrayHeader (runtime/typed_array.h): the ordinary-object prefix (the
+ * shape word, the overflow word and BRONZE_ABI_OBJ_INLINE_SLOTS property
+ * slots, laid out exactly as a plain object's so a view carries a real
+ * [[Prototype]] and own properties), then the buffer Value, the window, and
+ * the element kind. BUF_EXTPTR_OFFSET is the buffer's external-storage word,
+ * after the same prefix: zero for an ordinary buffer (bytes inline, starting
+ * at BUF_DATA_OFFSET == sizeof(ArrayBufferHeader)), or the address of a
+ * NON-MOVING host byte store (embed.h externalizeArrayBuffer) — the element
+ * paths select between the two, which is the whole cost of shareable
+ * buffers. Pinned in runtime/typed_array.h. */
+#define BRONZE_ABI_TA_BUFFER_OFFSET     56
+#define BRONZE_ABI_TA_BYTEOFFSET_OFFSET 64
+#define BRONZE_ABI_TA_LENGTH_OFFSET     68
+#define BRONZE_ABI_TA_KIND_OFFSET       72
 #define BRONZE_ABI_TA_KIND_INT8          0
 #define BRONZE_ABI_TA_KIND_UINT8         1
 #define BRONZE_ABI_TA_KIND_UINT8CLAMPED  2
@@ -1314,8 +1321,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * BigInt kind the same store still owes the ToBigInt that throws for a
  * Number value, so it must reach the helper. kind < BIGINT64 is that test. */
 #define BRONZE_ABI_TA_KIND_BIGINT64     10
-#define BRONZE_ABI_BUF_EXTPTR_OFFSET    24
-#define BRONZE_ABI_BUF_DATA_OFFSET      32
+#define BRONZE_ABI_BUF_EXTPTR_OFFSET    72
+#define BRONZE_ABI_BUF_DATA_OFFSET      80
 
 /* ObjectHeader: the shape word, then the out-of-line overflow Value, then
  * kInlineSlots inline Values. */

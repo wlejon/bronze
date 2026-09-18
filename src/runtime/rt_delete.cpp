@@ -47,12 +47,41 @@ namespace {
 ObjectHeader* namedPropertyOwner(Value v) {
     if (!v.isObject()) return nullptr;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
-    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
+    if (HeapKind::carriesShape(hdr->flags)) return reinterpret_cast<ObjectHeader*>(hdr);
     if (hdr->flags == HeapKind::Function) {
         Value props = v.asObject<FunctionHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;
+}
+
+// 10.4.5.4 [[Delete]] on a typed array, for the NUMERIC half of its keys: a
+// valid index names an element, which is non-configurable, so the delete
+// answers false; any other canonical numeric string names nothing and answers
+// true. Neither reaches the shape. Returns false with `answered` clear for a
+// key that is a name, which the ordinary delete then handles. Allocates
+// nothing: the key text is derived here rather than through ToString.
+bool typedArrayNumericDelete(Value objVal, Value keyVal, bool& answered) {
+    answered = false;
+    auto* view = objVal.asObject<TypedArrayHeader>();
+    uint32_t idx = 0;
+    if (keyVal.isNumber()) {
+        // Every number is a canonical numeric string of itself (7.1.21), so
+        // this half never reaches the shape.
+        answered = true;
+        return !(rtValueToElementIndex(keyVal, idx) && idx < view->length);
+    }
+    if (!keyVal.isString()) return false;
+    const std::string text = rtUtf8Chars(keyVal.asString<StringHeader>());
+    if (rtIsIntegerLikeKey(text, idx)) {
+        answered = true;
+        return idx >= view->length;
+    }
+    if (rtIsCanonicalNumericString(text)) {
+        answered = true;
+        return true;
+    }
+    return false;
 }
 
 // `delete a[i]` on an array leaves a HOLE: `length` is a separate own
@@ -177,6 +206,11 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
         return reportRefusedDelete(
             deleteArrayProperty(arrRoot, Value::fromString(keyHeader), keyText), strict, keyText);
     }
+    if (objVal.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
+        bool answered = false;
+        const bool removed = typedArrayNumericDelete(objVal, Value::fromString(keyHeader), answered);
+        if (answered) return reportRefusedDelete(removed, strict, rtKeyString(keyIndex));
+    }
 
     // 10.4.6.10: deleting an EXPORTED name answers false — a namespace property
     // is non-configurable — and deleting anything else answers true, because it
@@ -229,6 +263,16 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
         Rooted<Value> arrRoot{objVal};
         std::string keyText;
         return reportRefusedDelete(deleteArrayProperty(arrRoot, idxVal, keyText), strict, keyText);
+    }
+    if (objVal.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
+        bool answered = false;
+        const bool removed = typedArrayNumericDelete(objVal, idxVal, answered);
+        if (answered) {
+            return reportRefusedDelete(
+                removed, strict,
+                idxVal.isString() ? rtUtf8Chars(idxVal.asString<StringHeader>())
+                                  : rtUtf8Chars(rtValueToString(idxVal).asString<StringHeader>()));
+        }
     }
 
     if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {

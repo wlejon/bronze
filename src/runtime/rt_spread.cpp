@@ -30,6 +30,7 @@
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -51,10 +52,6 @@ Value newArray() {
 void appendTo(Rooted<Value>& arrRoot, Rooted<Value>& val) {
     const uint32_t at = arrRoot.get().asObject<ArrayHeader>()->length;
     arrRoot.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, val);
-}
-
-bool isPlainObject(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN;
 }
 
 // %ThrowTypeError% (ECMA-262 10.2.4), as far as bronze can honestly go.
@@ -528,12 +525,32 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     }
     // Every PRIMITIVE now has an answer, so what is left is an object kind
     // whose own keys are not in a shape. It is named rather than reported
-    // empty, because "no properties" is a wrong answer about a typed array
-    // with elements in it and not a missing one.
-    if (!isPlainObject(srcVal)) {
+    // empty, because "no properties" is a wrong answer about a receiver with
+    // elements in it and not a missing one.
+    if (!HeapKind::carriesShape(srcVal.asObject<HeapObjectHeader>()->flags)) {
         fatal((std::string("object spread of ") + rtObjectKindName(srcVal) +
                " (its own keys are not in a property table a spread could read)")
                   .c_str());
+    }
+    // A typed array's elements are own enumerable properties that come AHEAD
+    // of its named keys (10.4.5.7), and they live in the view's window rather
+    // than in its shape — so they are copied here, index by index, before the
+    // shape walk below takes the names. Each read goes through `bronze_elem_get`
+    // so the element kind's conversion is the one every other read makes.
+    if (srcVal.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
+        for (uint32_t i = 0;; ++i) {
+            if (i >= src.get().asObject<TypedArrayHeader>()->length) break;
+            if (stringTarget.get().isString() &&
+                stringTargetRefuses(stringTarget.get(), std::to_string(i))) {
+                return;
+            }
+            Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
+            Rooted<Value> val{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+            if (rtExceptionPending()) return;
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                            kSpreadWriteThrows);
+            if (rtExceptionPending()) return;
+        }
     }
     // Own enumerable keys of BOTH kinds: 7.3.25 CopyDataProperties takes
     // OwnPropertyKeys, not the string half of it, so `{ ...o }` and
@@ -571,8 +588,16 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
     Rooted<Value> excluded{Value(excludedBits)};
     Rooted<Value> out{Value(bronze_create_object())};
     if (src.get().isUndefined() || src.get().isNull()) return out.get().rawBits();
-    if (!isPlainObject(src.get())) {
-        fatal("object rest from a value that is not a plain object");
+    // A buffer and a DataView are ordinary objects with internal slots, so the
+    // shape walk below is their whole answer. A typed array is not: its
+    // elements are own keys ahead of the names (10.4.5.7) and live outside the
+    // shape, and a rest pattern over one is refused by name until that walk
+    // takes them — the alternative is a rest object silently missing them.
+    if (!HeapKind::carriesShape(src.get().asObject<HeapObjectHeader>()->flags) ||
+        src.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
+        fatal((std::string("object rest from ") + rtObjectKindName(src.get()) +
+               " is unsupported (only a receiver whose own keys are all in its shape)")
+                  .c_str());
     }
 
     // The exclusions are compared as KEYS: 14.3.3.2 step 2 (and 13.15.5.6 for

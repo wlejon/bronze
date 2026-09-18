@@ -18,6 +18,7 @@
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -557,13 +558,14 @@ uint64_t bronze_native_buffer_wrap(uint32_t kind) {
         // Empty in either mode; a transferred empty block is released at
         // once, since no buffer will ever own it.
         releaseNow();
-        return Value::fromObject(TypedArrayHeader::create(rtHeap(), elementKind, 0)).rawBits();
+        return rtNewTypedArray(elementKind, 0).rawBits();
     }
     if (!desc.release) {
         // Copy mode: the native's pointer is valid for this call only.
-        auto* view = TypedArrayHeader::create(rtHeap(), elementKind, desc.length);
-        std::memcpy(view->bytes(), desc.data, static_cast<size_t>(byteLength));
-        return Value::fromObject(view).rawBits();
+        Rooted<Value> view{rtNewTypedArray(elementKind, desc.length)};
+        std::memcpy(view.get().asObject<TypedArrayHeader>()->bytes(), desc.data,
+                    static_cast<size_t>(byteLength));
+        return view.get().rawBits();
     }
     // Transfer mode: a buffer over the native's block, owing release(ctx).
     auto* tr = new TransferRelease{desc.release, desc.ctx};
@@ -577,8 +579,7 @@ uint64_t bronze_native_buffer_wrap(uint32_t kind) {
         releaseNow();
         return Value::fromUndefined().rawBits();
     }
-    return Value::fromObject(
-               TypedArrayHeader::createOverBuffer(rtHeap(), elementKind, buffer, 0, desc.length))
+    return rtNewTypedArrayOverBuffer(elementKind, buffer, 0, desc.length, /*tracking=*/false)
         .rawBits();
 }
 

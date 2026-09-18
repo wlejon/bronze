@@ -5,10 +5,10 @@
 #include "abi/bronze_abi.h"
 #include "runtime/value.h"
 
-// Two memos over the same table, for the two shapes of "give me the builtin
-// function object for this name".
+// A memo over the interned-native table: "give me the builtin function object
+// for this code pointer".
 //
-// The bill they exist for, measured on `many_meshes` (360 frames, 70.94 M
+// The bill it exists for, measured on `many_meshes` (360 frames, 70.94 M
 // helper invocations). `bronze_function_singleton` was 10.81 M entries —
 // 15.2 %, the third largest line item — and NONE of them came from generated
 // code: a compiled module's mention of a function declaration is answered from
@@ -20,26 +20,28 @@
 //
 // What was asking. Sitting directly above them in the same profile:
 // `bronze_prop_get` with `.get` at three sites and `.set` at one, 1.80 M
-// entries each — 5,000 a frame, one per mesh. That is three.js's
+// entries each — 5,000 a frame, one per mesh. That was three.js's
 // `WebGLProperties` / `WebGLAttributes` reading `.get` and `.set` off a
-// WeakMap, and a WeakMap is not a plain object, so no inline cache can hold
-// the answer and the read walks a hardcoded member ladder to a fresh
-// interning every single time. The two line items are one event.
+// WeakMap back when a WeakMap answered its members from a hardcoded ladder
+// that re-interned the native on every read. Every such receiver is an
+// ordinary object with a real prototype now, so the inline cache holds those
+// answers and the (kind, key) member memo that once sat beside this one is
+// gone; what remains is the runtime's own `rtNativeFunction` calls.
 //
 // Identity is NOT at risk here, and that is worth saying plainly because
 // function identity is observable. Nothing below MERGES two function objects:
 // `bronze_function_singleton` already interns on the code pointer and already
 // returns one object per native builtin for the life of the thread —
-// `m.get === m.get` was true before this file existed. All these memos change
+// `m.get === m.get` was true before this file existed. All the memo changes
 // is how many instructions it takes to find the object that already exists.
 //
-// GC: both tables hold a code pointer (immortal module text), a key INDEX
-// (an integer), and an index into the runtime's interned-native vector — never
-// a Value. The vector is a root source; these are not scanned, and never need
-// to be. An entry that has gone stale (a module unload renumbers the vector)
-// is caught by `rtFunctionSingletonAt`'s identity check and refilled.
+// GC: the table holds a code pointer (immortal module text) and an index into
+// the runtime's interned-native vector — never a Value. The vector is a root
+// source; this is not scanned, and never needs to be. An entry that has gone
+// stale (a module unload renumbers the vector) is caught by
+// `rtFunctionSingletonAt`'s identity check and refilled.
 //
-// Seam: BRONZE_NO_FN_SINGLETON_CACHE=1 makes both memos always miss.
+// Seam: BRONZE_NO_FN_SINGLETON_CACHE=1 makes the memo always miss.
 
 namespace bronze::runtime {
 
@@ -51,22 +53,6 @@ namespace bronze::runtime {
 // records no name at all (rt_builtins.h says when that is the right call);
 // the text is interned as a key only when an object is actually made.
 Value rtNativeSingleton(bronze_fn_code code, uint32_t arity, const char* name, uint32_t length);
-
-// The member memo: `(receiver kind, interned key index) -> that same interned
-// native`. Answers only for a receiver kind whose member ladder is a C table
-// with no object behind it — today the typed-array views alone, whose METHOD
-// table is one shared table across all nine (the fill site gates on it by
-// name so the per-kind members like `constructor` never land here) — and only
-// for a receiver carrying no own-property box, so an expando can never be
-// shadowed by one of these answers. A Map, Set, WeakMap and WeakSet used to be
-// answered here too; each is a plain object with a real prototype now, so the
-// ordinary method IC holds their answers and the ladder is gone.
-//
-// `kind` is the receiver's `HeapObjectHeader::flags`. Returns undefined on a
-// miss, which is also what it returns for a key whose answer is not a plain
-// interned native (`size` is a number; an absent member is a diagnosed error).
-Value rtNativeMemberProbe(uint16_t kind, uint32_t keyIndex);
-void rtNativeMemberFill(uint16_t kind, uint32_t keyIndex, Value resolved);
 
 // BRONZE_NO_FN_SINGLETON_CACHE=1, read through the per-thread ABI block.
 bool rtNativeMemoEnabled() noexcept;

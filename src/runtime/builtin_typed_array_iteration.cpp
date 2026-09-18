@@ -264,26 +264,20 @@ uint64_t taMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     Rooted<Value> thisArg{args[1]};
 
     const uint32_t len = lengthOf(self.get());
-    const bool big = isBigIntView(self.get());
-    Rooted<Value> out{newViewLike(self.get(), len)};
+    // 23.2.3.22 step 6: TypedArraySpeciesCreate — a subclass's `map` is a
+    // subclass instance, and the store below converts with the RESULT view's
+    // content type (23.2.4.1 step 3 guarantees it is the source's).
+    Rooted<Value> out{rtTypedArraySpeciesCreate(self, len)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> mapped{callBack(fn, thisArg, elem, i, self)};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        // The result converts with the RESULT view's content type — ToBigInt
-        // here (a Number mapped into a BigInt view is 7.1.13's TypeError),
-        // ToNumber for the other ten kinds.
-        if (big) {
-            uint64_t bits = 0;
-            if (!rtBigIntToRawBits64(mapped.get(), bits)) {
-                return Value::fromUndefined().rawBits();
-            }
-            out.get().asObject<TypedArrayHeader>()->setRawBits64(i, bits);
-        } else {
-            const double v = rtToNumber(mapped.get());
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-            out.get().asObject<TypedArrayHeader>()->set(i, v);
-        }
+        // ToBigInt for a BigInt result view (a Number mapped into one is
+        // 7.1.13's TypeError), ToNumber for the other ten kinds — the funnel
+        // decides, and re-derives the view after the conversion.
+        rtTypedArraySetElement(out, i, mapped.get());
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return out.get().rawBits();
 }
@@ -313,7 +307,12 @@ uint64_t taFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
             kept.push_back(raw);
         }
     }
-    Rooted<Value> out{newViewLike(self.get(), static_cast<uint32_t>(kept.size()))};
+    // 23.2.3.11 step 9: TypedArraySpeciesCreate, whose result is of the
+    // source's content type (23.2.4.1 step 3) — so a staged BigInt payload
+    // goes in as the eight bytes it is, and a staged double through the
+    // result kind's own narrowing.
+    Rooted<Value> out{rtTypedArraySpeciesCreate(self, static_cast<uint32_t>(kept.size()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     auto* dst = out.get().asObject<TypedArrayHeader>();
     for (uint32_t i = 0; i < kept.size(); ++i) {
         if (big) {
@@ -417,7 +416,5 @@ uint64_t taValues(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 uint64_t taEntries(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return makeTypedArrayIterator(thisBits, Entries, "entries");
 }
-
-Value rtTypedArrayIteratorMethod() { return rtNativeFunction(taValues, 0, "values", 0); }
 
 }  // namespace bronze::runtime

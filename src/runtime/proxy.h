@@ -62,6 +62,12 @@ uint64_t rtProxyRevocable(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 // the question is not `flags == HeapKind::Function`.
 bool rtIsCallableValue(Value v);
 
+// ECMA-262 7.2.4 IsConstructor, over the same value model: a function object
+// with [[Construct]] (10.2.2 gives an arrow, a method and the generator forms
+// none; 21.2.1.1 gives `BigInt` none), or a Proxy whose target was a
+// constructor when it was created.
+bool rtIsConstructorValue(Value v);
+
 // [[Get]] (10.5.8): the `get` trap if the handler has one, else the target's
 // own read through the ordinary funnel.
 //

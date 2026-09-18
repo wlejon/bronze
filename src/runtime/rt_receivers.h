@@ -22,6 +22,8 @@
 
 namespace bronze::runtime {
 
+struct NativeMethod;
+
 // ---- the module namespace exotic object (ECMA-262 10.4.6) ------------------
 //
 // One receiver kind, four questions, and they are gathered here rather than
@@ -79,81 +81,117 @@ bool rtModuleNamespaceOwnProperty(Value nsVal, Value keyVal, Value& outValue);
 // way to say so.
 bool rtModuleNamespaceWriteRefused(Value nsVal, const std::string& key, bool strict);
 
-// ---- typed arrays ----------------------------------------------
+// ---- typed arrays (ECMA-262 23.2), ArrayBuffer (25.1), SharedArrayBuffer
+// ---- (25.2) and DataView (25.3)
+//
+// Every one of these is an ORDINARY OBJECT with a real prototype object now
+// (typed_array.h): `%TypedArray%.prototype` carries the shared methods and the
+// four accessors, each view's `prototype` carries `constructor` and
+// `BYTES_PER_ELEMENT` and nothing else (23.2.7), and `ArrayBuffer.prototype`,
+// `SharedArrayBuffer.prototype` and `DataView.prototype` are what their
+// clauses list. A NAMED read of any of them is the ordinary shape walk; what
+// this section exposes is the constructors by name, the instance shapes the
+// runtime's own allocations use, the element funnel, and the two questions
+// the property path still answers from the KIND — the integer index and the
+// four accessors on a pristine chain.
 
-// `ArrayBuffer` and the nine views, by the name lowering resolved; `undefined`
-// for anything else. One function object per name, interned by code pointer, so
-// the bare name and `v.constructor` are the SAME object — which is what `switch
-// (array.constructor)` needs.
+// The twelve view constructors and `ArrayBuffer`, by the name lowering
+// resolved; `undefined` for anything else. Building the first one builds the
+// whole family — `%TypedArray%`, every view and every prototype — because the
+// views share one parent and one prototype chain.
 Value rtTypedArrayConstructor(const std::string& name);
 Value rtTypedArrayConstructorFor(ElementKind kind);
-// The name of the view (or `"ArrayBuffer"`) this function object constructs,
-// else nullptr — the counterpart of `rtMapConstructorName`, for the same
-// reason.
+// The name of the view this function object constructs (never `ArrayBuffer`:
+// `rtArrayBufferConstructorName` answers that), else nullptr. By CODE POINTER,
+// so nothing is built to answer.
 const char* rtTypedArrayConstructorName(Value fn);
+// The view kind this function object constructs, or false. What
+// `rtNativeBaseOf` asks (runtime/native_base.h).
+bool rtTypedArrayConstructorKind(Value fn, ElementKind& out);
+// Is `fn` the abstract `%TypedArray%` (23.2.1)? It is a constructor in name
+// only — 23.2.1.1 throws from every call — and it carries no NativeBase.
+bool rtIsTypedArrayIntrinsic(Value fn);
 
-// `BYTES_PER_ELEMENT` off a constructor (23.2.6.2). Answers false — leaving
-// `out` alone — when the function is not one of the nine, so the caller falls
-// through to the ordinary function-member path.
-bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out);
-
-// A member of a typed-array or ArrayBuffer INSTANCE by name. The caller has
-// already tried the key as an index; what reaches here is `length`, `buffer`,
-// `constructor`, a method, or a name that is diagnosed and then read as
-// `undefined`.
-Value rtTypedArrayMember(Value view, const std::string& key);
-Value rtArrayBufferMember(Value buffer, const std::string& key);
-// The same two questions asked for EXISTENCE, which is `in`'s. Both walk the
-// lists their readers walk and end at the same named refusal, and neither
-// allocates — so a caller may hold a header across the call. The typed-array
-// one takes the receiver's constructor name for the same reason
-// `rtCheckTypedArrayMember` does.
-bool rtTypedArrayHasMember(const char* kindName, const std::string& key);
-bool rtArrayBufferHasMember(bool shared, const std::string& key);
-
-// ---- SharedArrayBuffer (ECMA-262 25.2) -------------------------------------
-//
-// The same two questions for the SHARED brand, which is a flag on the same
-// header and a different member set: `grow`/`growable` where a plain buffer has
-// `resize`/`resizable`/`transfer`/`detached`. `rtArrayBufferMember` delegates
-// here, so nothing outside builtin_shared_memory.cpp needs to know which is
-// which.
-Value rtSharedArrayBufferMember(Value buffer, const std::string& key);
-bool rtSharedArrayBufferHasMember(const std::string& key);
 // %SharedArrayBuffer% by name for the global ladder, and its identity by CODE
-// POINTER for `instanceof`, `@@toStringTag` and `@@species` -- never by building
-// one to compare against.
+// POINTER — never by building one to compare against.
 Value rtSharedArrayBufferConstructor(const std::string& name);
 const char* rtSharedArrayBufferConstructorName(Value fn);
-// `undefined` for a name that is not an implemented method, so the property
-// path can fall through to the unimplemented-member table.
-Value rtTypedArrayMethod(const std::string& key);
-// The same table by name alone: no function object is built, so this is what
-// an existence question asks.
-bool rtTypedArrayHasMethod(const std::string& key);
-// `v[Symbol.iterator]`, which 23.2.3.34 makes the same function object as
-// `values`. By key and not by name, because the key is a symbol.
-Value rtTypedArrayIteratorMethod();
-
-// ---- DataView (ECMA-262 25.3) ----------------------------------------------
-//
-// A separate object from the nine views and so a separate set of entry points:
-// its accessors choose a width and a byte order per CALL, which is the whole
-// reason it is not a tenth element kind.
-
 // `DataView` by the name lowering resolved; `undefined` for anything else.
 Value rtDataViewConstructor(const std::string& name);
-// `"DataView"` when this function object IS that constructor, else nullptr —
-// the counterpart of `rtTypedArrayConstructorName`, for the same reason.
 const char* rtDataViewConstructorName(Value fn);
-// A member of a DataView INSTANCE by name: `buffer`, `byteLength`,
-// `byteOffset`, `constructor`, or one of the sixteen accessors. A BigInt
-// accessor is diagnosed by name here rather than read as `undefined`; anything
-// else really is absent.
-Value rtDataViewMember(Value view, const std::string& key);
-// Whether 25.3.4 defines `key` on a DataView at all — what `in` asks, and
-// which must agree with the function above about every name.
-bool rtDataViewHasMember(const std::string& key);
+
+// The memoized root shape of each intrinsic's OWN prototype — what
+// 10.1.13 OrdinaryCreateFromConstructor derives when NewTarget is the
+// intrinsic itself, and what every allocation the runtime makes on its own
+// behalf (a `slice`, a `subarray`, an embedder's view) passes to the header's
+// `create`. Each builds its family on first use.
+Shape* rtTypedArrayInstanceShape(ElementKind kind);
+Shape* rtArrayBufferInstanceShape();
+Shape* rtSharedArrayBufferInstanceShape();
+Shape* rtDataViewInstanceShape();
+
+// The allocations, with the intrinsic prototypes above: a view over a fresh
+// zero-filled buffer, a view over an existing (rooted) buffer, the three
+// buffer flavours, and a DataView. The offset and length are the caller's to
+// validate — 23.2.5.1 and 25.3.2.1 carry the ladders — and every one ALLOCATES,
+// so the result is rooted by the caller before anything else runs.
+Value rtNewTypedArray(ElementKind kind, uint32_t length);
+Value rtNewTypedArrayOverBuffer(ElementKind kind, Rooted<Value>& buffer, uint32_t byteOffset,
+                                uint32_t length, bool tracking);
+Value rtNewArrayBuffer(uint32_t byteLength);
+Value rtNewResizableArrayBuffer(uint32_t byteLength, uint32_t maxByteLength);
+Value rtNewSharedArrayBuffer(uint32_t byteLength, uint32_t maxByteLength);
+Value rtNewDataView(Rooted<Value>& buffer, uint32_t byteOffset, uint32_t byteLength);
+
+// 23.2.4.1 TypedArraySpeciesCreate for the `length` argument list: the view
+// `exemplar`'s species constructor builds, validated (23.2.4.4) and checked
+// for the same content type (step 3). RUNS USER CODE — a subclass's
+// constructor — and can throw, answering `undefined` with the exception
+// pending. When the exemplar's chain is pristine (its own prototype's
+// `constructor` and `%TypedArray%[@@species]` untouched) the answer is a
+// fresh intrinsic view of the exemplar's kind with no `Get` performed: that
+// is the path every `map`, `filter` and `slice` in a renderer's frame takes.
+Value rtTypedArraySpeciesCreate(Rooted<Value>& exemplar, uint32_t length);
+// The buffer-argument form (23.2.3.30 `subarray` step 15).
+Value rtTypedArraySpeciesCreateOverBuffer(Rooted<Value>& exemplar, Rooted<Value>& buffer,
+                                          uint32_t byteOffset, uint32_t length, bool tracking);
+
+// Is `fn` the intrinsic `%TypedArray%.prototype.values` (which 23.2.3.34 makes
+// `[Symbol.iterator]` too)? What for-of asks before stepping a view's elements
+// from a cursor instead of running the protocol. Reads two words.
+bool rtIsIntrinsicTypedArrayIterator(Value fn);
+
+// 23.2.3's members whose bodies live beside their tables
+// (builtin_typed_array_methods.cpp, builtin_typed_array_iteration.cpp), from
+// which `%TypedArray%.prototype` is populated.
+const NativeMethod* rtTypedArrayMethodTable(size_t& count);
+
+// May the four accessors of 23.2.3 — `buffer`, `byteLength`, `byteOffset`,
+// `length` — be answered for this view from its header WITHOUT a walk? True
+// when the chain is pristine: the view's shape is the intrinsic's own
+// instance shape (so no own property shadows a name and its prototype is the
+// view's own `prototype`, untouched), and nothing on any of the thirteen
+// prototype objects has been added, deleted or redefined since the family was
+// built. False means "walk": a subclass instance, a view with an expando, a
+// program that redefined `length`. One shape compare and one epoch compare on
+// the hit; a changed epoch re-verifies the thirteen shapes and the four getter
+// slots once and latches the answer.
+bool rtTypedArrayChainPristine(const TypedArrayHeader* view) noexcept;
+
+// The above, plus: does `%TypedArray%.prototype[Symbol.iterator]` still hold
+// the intrinsic `values`? What for-of asks before stepping a view's elements
+// from a cursor with no property read at all (7.4.2 GetIterator would find
+// exactly that function). A data property is overwritten in place, so this is
+// a value compare each time rather than a latch.
+bool rtTypedArrayIteratorPristine(const TypedArrayHeader* view) noexcept;
+
+// 7.1.21 CanonicalNumericIndexString, the half of it a typed array's
+// [[Get]]/[[Set]]/[[HasProperty]]/[[Delete]] need: is this string key a
+// NUMERIC index that is not a valid integer one — "-0", "1.5", "NaN",
+// "Infinity" — which 10.4.5 makes absent (read `undefined`, discard the
+// write, `in` false, `delete` true) rather than a name the chain answers?
+// An integer index has already been tried by every caller.
+bool rtIsCanonicalNumericString(const std::string& key);
 
 // ---- regular expressions ---------------------------------------
 
@@ -162,9 +200,8 @@ bool rtIsRegExp(Value v);
 Value rtRegExpConstructor(const std::string& name);
 // A static of the `RegExp` constructor object — `RegExp.escape` (22.2.5.2).
 // True with `out` filled when this function IS `RegExp` and the key names one;
-// the property path asks it beside `rtTypedArrayStatic`, because the
-// constructor is an interned singleton with no property object to install
-// statics into.
+// the property path asks it because the constructor is an interned singleton
+// with no property object to install statics into.
 bool rtRegExpStatic(Value fn, const std::string& key, Value& out);
 // A member of a RegExp instance by name: the flag accessors, `source`,
 // `flags`, `lastIndex`, and the three methods. A name ECMA-262 defines and

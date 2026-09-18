@@ -42,8 +42,11 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/string.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -111,12 +114,29 @@ enum class ReceiverRoute {
 
 static ReceiverRoute receiverRoute(Value target) {
     if (!target.isObject()) return ReceiverRoute::Unobservable;
-    switch (target.asObject<HeapObjectHeader>()->flags) {
-        case BRONZE_ABI_OBJ_FLAGS_PLAIN: return ReceiverRoute::Plain;
+    const uint16_t kind = target.asObject<HeapObjectHeader>()->flags;
+    // The byte-store family carries a shape and holds its accessors on an
+    // ordinary chain, so it takes the plain route — for a NAME. A typed
+    // array's numeric keys never reach its shape (10.4.5.4 answers them from
+    // the elements), and `typedArrayNumericKey` below diverts those first.
+    if (HeapKind::carriesShape(kind)) return ReceiverRoute::Plain;
+    switch (kind) {
         case HeapKind::Function: return ReceiverRoute::Function;
         case HeapKind::Proxy: return ReceiverRoute::Proxy;
         default: return ReceiverRoute::Unobservable;
     }
+}
+
+// Is `key` (already a property key) one a typed array `target` answers from
+// its elements rather than its shape: a number, or a canonical numeric string
+// (10.4.5.4 step 1.b). False for any other target.
+static bool typedArrayNumericKey(Value target, Value key) {
+    if (!target.isObject() ||
+        target.asObject<HeapObjectHeader>()->flags != TypedArrayHeader::kFlags) {
+        return false;
+    }
+    if (key.isNumber()) return true;
+    return key.isString() && rtIsCanonicalNumericString(rtUtf8Chars(key.asString<StringHeader>()));
 }
 
 // 10.1.9.2 OrdinarySetWithOwnDescriptor, reduced to the one question bronze's
@@ -305,6 +325,10 @@ static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     Rooted<Value> target{Value(argv[0])};
     Rooted<Value> key{Value(argv[1])};
     Rooted<Value> receiver{Value(argv[2])};
+    // An element read has no accessor for a receiver to matter to.
+    if (typedArrayNumericKey(target.get(), key.get())) {
+        return bronze_elem_get(target.get().rawBits(), key.get().rawBits());
+    }
     switch (receiverRoute(target.get())) {
         case ReceiverRoute::Proxy:
             return rtProxyGet(target.get(), key.get(), receiver.get()).rawBits();
@@ -360,6 +384,21 @@ static uint64_t reflectSet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     Rooted<Value> receiver{argc > 3 ? Value(argv[3]) : Value(argv[0])};
     key.set(rtToPropertyKey(key));
     if (rtExceptionPending()) return Value::fromBool(false).rawBits();
+
+    // 10.4.5.5 step 1.b: a typed array's numeric key is an element store when
+    // the receiver IS the view (1.b.i), a successful no-op when the index is
+    // invalid (1.b.ii), and only otherwise the ordinary algorithm below.
+    if (typedArrayNumericKey(target.get(), key.get())) {
+        if (receiver.get().rawBits() == target.get().rawBits()) {
+            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                            /*strict=*/false);
+            return Value::fromBool(!rtExceptionPending()).rawBits();
+        }
+        uint32_t idx = 0;
+        const bool valid = rtValueToElementIndex(key.get(), idx) &&
+                           idx < target.get().asObject<TypedArrayHeader>()->length;
+        if (!valid) return Value::fromBool(true).rawBits();
+    }
 
     if (receiverRoute(target.get()) == ReceiverRoute::Proxy) {
         // 10.5.9 hands the receiver to the trap and stops there: a proxy's
@@ -507,18 +546,7 @@ static uint64_t reflectPreventExtensions(uint64_t, uint64_t, uint32_t argc,
     return Value::fromBool(true).rawBits();
 }
 
-static bool isConstructor(Value v) {
-    if (!v.isObject()) return false;
-    const HeapObjectHeader* h = v.asObject<HeapObjectHeader>();
-    if (h->flags == ProxyHeader::kFlags) {
-        return v.asObject<ProxyHeader>()->constructible.asBool();
-    }
-    if (h->flags == HeapKind::Function) {
-        const FunctionHeader* fn = v.asObject<FunctionHeader>();
-        return fn->hasConstruct() && !rtIsBigIntConstructor(v);
-    }
-    return false;
-}
+static bool isConstructor(Value v) { return rtIsConstructorValue(v); }
 
 static uint64_t reflectConstruct(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (argc < 2) {

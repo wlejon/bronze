@@ -34,6 +34,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
@@ -231,25 +232,42 @@ TEST_CASE("a sealed function keeps its prototype writable") {
 
 TEST_CASE("a receiver bronze cannot record a level for is refused by name") {
     ShadowStackFrame frame;
-    Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
+    Rooted<Value> src{rtMakeString("a")};
+    Rooted<Value> re{rtRegExpFromParts(src, "")};
 
     // The predicates still answer, and their answers are correct BECAUSE the
-    // mutators refuse: nothing can have made this buffer non-extensible.
-    CHECK(isExtensible(buf.get()));
-    CHECK_FALSE(isFrozen(buf.get()));
-    CHECK_FALSE(isSealed(buf.get()));
+    // mutators refuse: nothing can have made this RegExp non-extensible.
+    CHECK(isExtensible(re.get()));
+    CHECK_FALSE(isFrozen(re.get()));
+    CHECK_FALSE(isSealed(re.get()));
 
     {
         FatalGuard guard([](const char* msg) { throw std::runtime_error(msg); });
-        CHECK_THROWS_WITH_AS(freeze(buf.get()),
-                             doctest::Contains("Object.freeze on an ArrayBuffer"),
+        CHECK_THROWS_WITH_AS(freeze(re.get()), doctest::Contains("Object.freeze on a RegExp"),
                              std::runtime_error);
-        CHECK_THROWS_WITH_AS(seal(buf.get()), doctest::Contains("Object.seal on an ArrayBuffer"),
+        CHECK_THROWS_WITH_AS(seal(re.get()), doctest::Contains("Object.seal on a RegExp"),
                              std::runtime_error);
-        CHECK_THROWS_WITH_AS(preventExtensions(buf.get()),
-                             doctest::Contains("Object.preventExtensions on an ArrayBuffer"),
+        CHECK_THROWS_WITH_AS(preventExtensions(re.get()),
+                             doctest::Contains("Object.preventExtensions on a RegExp"),
                              std::runtime_error);
     }
+}
+
+// An ArrayBuffer is an ordinary object with internal slots (25.1.6): it has a
+// shape of its own since the prototype-object work, so its level is recorded
+// there exactly as a plain object's is, and freezing it neither touches nor
+// needs the bytes.
+TEST_CASE("an ArrayBuffer records its level like any ordinary object") {
+    ShadowStackFrame frame;
+    Rooted<Value> buf{rtNewArrayBuffer(8)};
+    CHECK(isExtensible(buf.get()));
+    CHECK_FALSE(isFrozen(buf.get()));
+
+    freeze(buf.get());
+    CHECK_FALSE(isExtensible(buf.get()));
+    CHECK(isFrozen(buf.get()));
+    CHECK(isSealed(buf.get()));
+    CHECK(buf.get().asObject<ArrayBufferHeader>()->byteLength == 8);
 }
 
 // A Map is a plain object whose entries are not properties, so freezing one is
@@ -276,7 +294,7 @@ TEST_CASE("freezing a typed array with elements is the TypeError 10.4.5.3 gives"
     ShadowStackFrame frame;
     ClearCell guard;
 
-    Rooted<Value> view{Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 2))};
+    Rooted<Value> view{rtNewTypedArray(ElementKind::Uint8, 2)};
     CHECK(isExtensible(view.get()));
 
     freeze(view.get());

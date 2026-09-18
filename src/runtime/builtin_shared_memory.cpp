@@ -27,14 +27,18 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/native_base.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -50,37 +54,91 @@ bool isSharedBuffer(Value v) {
 
 // ---- 25.2 SharedArrayBuffer ------------------------------------------------
 
+// The intrinsic: `SharedArrayBuffer`, its prototype, and the instance shape
+// every construction allocates from. Permanent roots; built on first use.
+struct SharedBufferIntrinsics {
+    Value ctor = Value::fromUndefined();
+    Value proto = Value::fromUndefined();
+    Shape* instanceShape = nullptr;
+};
+
+thread_local SharedBufferIntrinsics g_shared;
+
+void ensureSharedArrayBufferIntrinsics();
+
 // 25.2.3.1. `{maxByteLength}` makes it GROWABLE, which is the shared spelling
 // of resizable; a plain `new SharedArrayBuffer(n)` is fixed.
-uint64_t sharedArrayBufferCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+//
+// The receiver is a zero-byte PLACEHOLDER carrying NewTarget's prototype, for
+// the reason builtin_array_buffer.cpp gives: the byte count is an argument
+// converted after the allocation site has run. The real buffer is built here
+// with the placeholder's shape and RETURNED, which is what `new` answers.
+uint64_t sharedArrayBufferCtor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    Rooted<Value> receiver{Value(thisBits)};
+    if (!rtIsNativeConstructReceiver(receiver.get()) || !isSharedBuffer(receiver.get())) {
+        return rtThrowTypeError("Constructor SharedArrayBuffer requires 'new'").rawBits();
+    }
     uint32_t byteLength = 0;
     if (!toIndex(args[0], "shared array buffer", 1, byteLength)) {
         return Value::fromUndefined().rawBits();
     }
     if (!checkAllocatable(byteLength)) return Value::fromUndefined().rawBits();
 
+    uint32_t maxByteLength = byteLength;
     if (args.count() > 1 && args[1].isObject()) {
         Rooted<Value> opts{args[1]};
         Rooted<Value> mblKey{rtMakeString("maxByteLength")};
-        Value mblVal = opts.get().asObject<ObjectHeader>()->getProp(rtHeap(), mblKey, nullptr,
-                                                                   opts.slot_ptr());
-        if (!mblVal.isUndefined()) {
-            uint32_t maxByteLength = 0;
-            if (!toIndex(mblVal, "maxByteLength", 1, maxByteLength)) {
+        Rooted<Value> mblVal{
+            Value(bronze_elem_get(opts.get().rawBits(), mblKey.get().rawBits()))};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (!mblVal.get().isUndefined()) {
+            if (!toIndex(mblVal.get(), "maxByteLength", 1, maxByteLength)) {
                 return Value::fromUndefined().rawBits();
             }
             if (maxByteLength < byteLength) {
                 return rtThrowRangeError("maxByteLength must be >= byteLength").rawBits();
             }
             if (!checkAllocatable(maxByteLength)) return Value::fromUndefined().rawBits();
-            return Value::fromObject(
-                       ArrayBufferHeader::createShared(rtHeap(), byteLength, maxByteLength))
-                .rawBits();
         }
     }
-    return Value::fromObject(ArrayBufferHeader::createShared(rtHeap(), byteLength, byteLength))
+    // Read AFTER every conversion above: each can allocate and move the
+    // placeholder, and the shape is what carries NewTarget's answer.
+    Shape* shape = receiver.get().asObject<ArrayBufferHeader>()->object.shape;
+    return Value::fromObject(
+               ArrayBufferHeader::createShared(rtHeap(), shape, byteLength, maxByteLength))
         .rawBits();
+}
+
+// 25.2.5's getters open with RequireInternalSlot and then REQUIRE the shared
+// brand (step 3 of each): an ArrayBuffer is a TypeError here, as a
+// SharedArrayBuffer is on the other prototype.
+bool requireSharedBuffer(Value v, const char* member) {
+    if (isSharedBuffer(v)) return true;
+    rtThrowTypeError(std::string("SharedArrayBuffer.prototype.") + member +
+                     " called on incompatible receiver");
+    return false;
+}
+
+// 25.2.5.1 get byteLength.
+uint64_t sharedByteLengthGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireSharedBuffer(self, "byteLength")) return Value::fromUndefined().rawBits();
+    return Value::fromDouble(self.asObject<ArrayBufferHeader>()->byteLength).rawBits();
+}
+
+// 25.2.5.5 get maxByteLength.
+uint64_t sharedMaxByteLengthGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireSharedBuffer(self, "maxByteLength")) return Value::fromUndefined().rawBits();
+    return Value::fromDouble(self.asObject<ArrayBufferHeader>()->maxByteLength).rawBits();
+}
+
+// 25.2.5.3 get growable.
+uint64_t sharedGrowableGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    const Value self{Value(thisBits)};
+    if (!requireSharedBuffer(self, "growable")) return Value::fromUndefined().rawBits();
+    return Value::fromBool(self.asObject<ArrayBufferHeader>()->isResizable()).rawBits();
 }
 
 // 25.2.5.4 SharedArrayBuffer.prototype.grow. `resize` with one difference that
@@ -120,7 +178,46 @@ uint64_t sharedArrayBufferGrow(uint64_t, uint64_t thisBits, uint32_t argc, const
     return Value::fromUndefined().rawBits();
 }
 
-// 25.2.5.3 SharedArrayBuffer.prototype.slice. Allocates a SHARED buffer, which
+// 25.2.5.6 steps 12-19: SpeciesConstructor(O, %SharedArrayBuffer%) and
+// `new ctor(len)`, with the checks on what came back. A buffer of the
+// intrinsic's own shape — no own `constructor`, the intrinsic prototype —
+// skips the two `Get`s: a subclass instance or a decorated one takes them.
+Value sharedSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
+    if (self.get().asObject<ArrayBufferHeader>()->object.shape == g_shared.instanceShape) {
+        return rtNewSharedArrayBuffer(newLen, newLen);
+    }
+    Rooted<Value> ctorKey{rtMakeString("constructor")};
+    Rooted<Value> ctor{Value(bronze_elem_get(self.get().rawBits(), ctorKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (ctor.get().isUndefined()) ctor.set(g_shared.ctor);
+    if (!ctor.get().isObject()) {
+        return rtThrowTypeError("the constructor of this SharedArrayBuffer is not an object");
+    }
+    Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
+    Rooted<Value> species{
+        Value(bronze_elem_get(ctor.get().rawBits(), speciesKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (species.get().isUndefined() || species.get().isNull()) species.set(g_shared.ctor);
+    if (!rtIsConstructorValue(species.get())) {
+        return rtThrowTypeError("[Symbol.species] of this SharedArrayBuffer is not a constructor");
+    }
+    RootedBlock block(1);
+    block.set(0, Value::fromDouble(static_cast<double>(newLen)));
+    Rooted<Value> made{Value(bronze_construct(species.get().rawBits(), 1, block.data()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (!isSharedBuffer(made.get())) {
+        return rtThrowTypeError("the species constructor did not return a SharedArrayBuffer");
+    }
+    if (made.get().rawBits() == self.get().rawBits()) {
+        return rtThrowTypeError("the species constructor returned the same SharedArrayBuffer");
+    }
+    if (made.get().asObject<ArrayBufferHeader>()->byteLength < newLen) {
+        return rtThrowTypeError("the species constructor returned a too-small SharedArrayBuffer");
+    }
+    return made.get();
+}
+
+// 25.2.5.6 SharedArrayBuffer.prototype.slice. Allocates a SHARED buffer, which
 // is the one line that keeps this from being ArrayBuffer.prototype.slice: the
 // brand has to survive the copy or `sab.slice(0).grow` disappears.
 uint64_t sharedArrayBufferSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -141,8 +238,8 @@ uint64_t sharedArrayBufferSlice(uint64_t, uint64_t thisBits, uint32_t argc, cons
         final = relativeIndex(toInteger(rtToNumber(args[1])), len);
     }
     const uint32_t newLen = final > first ? final - first : 0;
-    Rooted<Value> newBufVal{
-        Value::fromObject(ArrayBufferHeader::createShared(rtHeap(), newLen, newLen))};
+    Rooted<Value> newBufVal{sharedSpeciesNew(self, newLen)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
     auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
     if (newLen > 0) std::memcpy(newBuf->data(), oldBuf->data() + first, newLen);
@@ -418,13 +515,81 @@ const char* const kAtomicsUnimplemented[] = {
     "notify",
 };
 
+void defineSharedGetter(Rooted<Value>& proto, const char* name, bronze_fn_code code,
+                        const char* getterName) {
+    Rooted<Value> key{rtMakeString(name)};
+    Rooted<Value> getter{rtNativeFunction(code, 0, getterName, 0)};
+    Rooted<Value> setter{Value::fromUndefined()};
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), proto, key, getter, setter,
+                                 /*enumerable=*/false);
+}
+
+// 25.2.5: the growable pair, and NOT `resizable`/`resize` — a
+// SharedArrayBuffer has neither, nor `detached`, `transfer` or
+// `transferToFixedLength`, because detaching memory another agent holds is
+// not an operation the shared surface has.
+const NativeMethod kSharedMethods[] = {
+    {"grow", sharedArrayBufferGrow, 1, 1},
+    {"slice", sharedArrayBufferSlice, 0, 2},
+};
+
+// `SharedArrayBuffer` and `SharedArrayBuffer.prototype`, on the terms
+// builtin_array_buffer.cpp builds the plain pair.
+void ensureSharedArrayBufferIntrinsics() {
+    if (g_shared.proto.isObject()) return;
+
+    Shape* protoShape = rtNewRootShape(rtObjectPrototype());
+    protoShape->used_as_prototype = true;
+    ObjectHeader* protoObj = ObjectHeader::create(rtHeap(), rtArena(), protoShape);
+    protoObj->header.flags = HeapKind::Plain;
+    Rooted<Value> proto{Value::fromObject(protoObj)};
+    g_shared.proto = proto.get();
+    rtHeap().add_permanent_root(&g_shared.proto);
+
+    // Arity 0: a variadic native must not be padded. `length` is 25.2.3's 1.
+    Rooted<Value> ctor{rtNativeFunction(sharedArrayBufferCtor, 0, "SharedArrayBuffer", 1)};
+    g_shared.ctor = ctor.get();
+    rtHeap().add_permanent_root(&g_shared.ctor);
+    {
+        // 25.2.5.2, a DEFINITION so it does not write through.
+        Rooted<Value> key{rtMakeString("constructor")};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    rtDefineMethods(proto, kSharedMethods, std::size(kSharedMethods));
+    defineSharedGetter(proto, "byteLength", sharedByteLengthGetter, "get byteLength");
+    defineSharedGetter(proto, "growable", sharedGrowableGetter, "get growable");
+    defineSharedGetter(proto, "maxByteLength", sharedMaxByteLengthGetter, "get maxByteLength");
+    // 25.2.5.8: non-writable, configurable.
+    rtDefineToStringTag(proto, "SharedArrayBuffer");
+    // 25.2.4: no statics but 25.2.4.2's `@@species` accessor.
+    rtDefineSpeciesGetter(ctor);
+
+    FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
+    fn->prototype = proto.get();
+    // 25.2.4.1: non-writable, non-enumerable, non-configurable.
+    fn->prototype_readonly = true;
+    fn->native_base = NativeBase::SharedArrayBuffer;
+    fn->instance_shape = rtNewRootShape(proto.get());
+    g_shared.instanceShape = fn->instance_shape;
+}
+
 }  // namespace
 
 Value rtSharedArrayBufferConstructor(const std::string& name) {
-    if (name == "SharedArrayBuffer") {
-        return rtNativeFunction(sharedArrayBufferCtor, 1, "SharedArrayBuffer", 1);
-    }
-    return Value::fromUndefined();
+    if (name != "SharedArrayBuffer") return Value::fromUndefined();
+    ensureSharedArrayBufferIntrinsics();
+    return g_shared.ctor;
+}
+
+Shape* rtSharedArrayBufferInstanceShape() {
+    ensureSharedArrayBufferIntrinsics();
+    return g_shared.instanceShape;
+}
+
+Value rtNewSharedArrayBuffer(uint32_t byteLength, uint32_t maxByteLength) {
+    return Value::fromObject(ArrayBufferHeader::createShared(
+        rtHeap(), rtSharedArrayBufferInstanceShape(), byteLength, maxByteLength));
 }
 
 const char* rtSharedArrayBufferConstructorName(Value fn) {
@@ -436,26 +601,6 @@ const char* rtSharedArrayBufferConstructorName(Value fn) {
     // allocation retires the box being looked up.
     if (fn.asObject<FunctionHeader>()->code == sharedArrayBufferCtor) return "SharedArrayBuffer";
     return nullptr;
-}
-
-Value rtSharedArrayBufferMember(Value bufferVal, const std::string& key) {
-    auto* buf = bufferVal.asObject<ArrayBufferHeader>();
-    if (key == "byteLength") return Value::fromDouble(buf->byteLength);
-    // 25.2.5.1/25.2.5.2: the growable pair, and NOT `resizable`/`resize` — a
-    // SharedArrayBuffer has neither, nor `detached`, `transfer` or
-    // `transferToFixedLength`, because detaching memory another agent holds is
-    // not an operation the shared surface has.
-    if (key == "maxByteLength") return Value::fromDouble(buf->maxByteLength);
-    if (key == "growable") return Value::fromBool(buf->isResizable());
-    if (key == "grow") return rtNativeFunction(sharedArrayBufferGrow, 1, "grow", 1);
-    if (key == "slice") return rtNativeFunction(sharedArrayBufferSlice, 2, "slice", 2);
-    if (key == "constructor") return rtSharedArrayBufferConstructor("SharedArrayBuffer");
-    return Value::fromUndefined();
-}
-
-bool rtSharedArrayBufferHasMember(const std::string& key) {
-    return key == "byteLength" || key == "maxByteLength" || key == "growable" || key == "grow" ||
-           key == "slice" || key == "constructor";
 }
 
 Value rtAtomicsObject() {

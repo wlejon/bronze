@@ -34,6 +34,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/symbol.h"
@@ -128,7 +129,7 @@ Value namedProp(Value obj, StringHeader* key) {
         Rooted<Value> keyRoot{rtKeyAsValue(key)};
         return rtProxyGet(objRoot.get(), keyRoot.get(), objRoot.get());
     }
-    if (kind != BRONZE_ABI_OBJ_FLAGS_PLAIN) return Value::fromUndefined();
+    if (!HeapKind::carriesShape(kind)) return Value::fromUndefined();
     Rooted<Value> objRoot{obj};
     Rooted<Value> keyRoot{Value::fromString(key)};
     return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
@@ -178,7 +179,7 @@ Value iteratorMethodOf(Value v) {
     if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return proxyMethodOf(v, rtIteratorKey());
     }
-    if (v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (!HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
         return Value::fromUndefined();
     }
     Rooted<Value> objRoot{v};
@@ -563,7 +564,31 @@ Value rtOpenIterator(Value source) {
     } else if (source.isObject()) {
         switch (source.asObject<HeapObjectHeader>()->flags) {
             case 1: kind = IterRecordHeader::Array; break;
-            case TypedArrayHeader::kFlags: kind = IterRecordHeader::TypedArray; break;
+            case TypedArrayHeader::kFlags: {
+                // 23.2.3.34 puts `[Symbol.iterator]` on `%TypedArray%.prototype`
+                // as a real property, and the cursor kind steps the elements
+                // directly — which is what 7.4.2 GetIterator would do only
+                // while that hook is still the intrinsic `values`. A pristine
+                // chain proves it without a read (rt_receivers.h); otherwise
+                // the hook is read ONCE, as for a Map below.
+                if (rtTypedArrayIteratorPristine(source.asObject<TypedArrayHeader>())) {
+                    kind = IterRecordHeader::TypedArray;
+                    break;
+                }
+                Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
+                if (!rtExceptionPending() && rtIsIntrinsicTypedArrayIterator(method.get())) {
+                    kind = IterRecordHeader::TypedArray;
+                    break;
+                }
+                if (rtExceptionPending() || !isCallable(method.get())) {
+                    if (!rtExceptionPending()) {
+                        rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
+                    }
+                    return Value::fromObject(
+                        IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol));
+                }
+                return rtGetIteratorFromMethod(srcRoot, method);
+            }
             case BRONZE_ABI_OBJ_FLAGS_PLAIN:
                 // A Map or a Set is a plain object whose `[Symbol.iterator]`
                 // is a real property of its prototype (24.1.3.12, 24.2.3.11),
@@ -926,7 +951,7 @@ Value asyncIteratorMethodOf(Value v) {
     if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return proxyMethodOf(v, rtAsyncIteratorKey());
     }
-    if (v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (!HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
         return Value::fromUndefined();
     }
     Rooted<Value> objRoot{v};

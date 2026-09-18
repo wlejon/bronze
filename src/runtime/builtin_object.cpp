@@ -51,6 +51,7 @@
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -92,7 +93,11 @@ bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key) {
 }
 
 bool rtObjectIsPlain(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN;
+    // The byte-store family opens with an ObjectHeader (typed_array.h), so
+    // for every question about a SHAPE it is a plain object. A typed array's
+    // elements are the one thing outside its shape, and the own-key walks
+    // below list them by hand (`ObjectOwnKeys::TypedArray`).
+    return v.isObject() && HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags);
 }
 
 namespace {
@@ -171,6 +176,9 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
     if (v.isString()) return ObjectOwnKeys::StringChars;
     if (Value data; rtStringWrapperData(v, data)) return ObjectOwnKeys::StringChars;
     if (!v.isObject()) return ObjectOwnKeys::None;
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray) {
+        return ObjectOwnKeys::TypedArray;
+    }
     if (isPlainObject(v)) return ObjectOwnKeys::Shape;
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
         return ObjectOwnKeys::Function;
@@ -297,8 +305,7 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
             return rtProxyGetPrototypeOf(args[0]).rawBits();
         }
         // What is left is a kind whose prototype IS an intrinsic bronze has
-        // never built as an object: `Map.prototype`, `Set.prototype`,
-        // `RegExp.prototype` and the typed-array pair are answered by the
+        // never built as an object: `RegExp.prototype` is answered by the
         // property path from a C table beside the value, so there is no object
         // to hand back and `null` would be a lie about a chain that works.
         fatal((std::string("unsupported: Object.getPrototypeOf of ") +
@@ -354,6 +361,7 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         case ObjectOwnKeys::None:
             return Value::fromBool(false).rawBits();
         case ObjectOwnKeys::Array:
+        case ObjectOwnKeys::TypedArray:
         case ObjectOwnKeys::Proxy: {
             // The one [[GetOwnProperty]] `hasOwnProperty` asks
             // (builtin_object_proto.cpp): an element, `length`, or a named or
@@ -635,6 +643,7 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             }
             return out.get().rawBits();
         }
+        case ObjectOwnKeys::TypedArray:
         case ObjectOwnKeys::Shape:
             break;
     }
@@ -644,8 +653,17 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
     // language precisely so that neither ever reports the other's keys.
     const std::vector<StringHeader*> ordered =
         rtOwnStringKeysOrdered(self.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
-    Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(ordered.size())))};
+    // 10.4.5.7: a typed array's elements come first, every index within the
+    // length ascending, ahead of the string keys its shape holds.
+    const uint32_t elements = self.get().asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray
+                                  ? self.get().asObject<TypedArrayHeader>()->length
+                                  : 0;
+    Rooted<Value> out{Value(bronze_create_array(elements + static_cast<uint32_t>(ordered.size())))};
     uint32_t at = 0;
+    for (uint32_t i = 0; i < elements; ++i) {
+        Rooted<Value> key{rtMakeString(std::to_string(i))};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
     for (StringHeader* name : ordered) {
         Rooted<Value> key{rtKeyAsValue(name)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);

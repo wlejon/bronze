@@ -17,6 +17,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/typed_array.h"
 
@@ -30,7 +31,11 @@ namespace {
 // fallbacks. (setProperty widened past this to function receivers; the other
 // two stay narrow until a host needs them wider.)
 ObjectHeader* requirePlainObject(Value v, const char* who) {
-    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
+    // A typed array, a buffer and a DataView open with the same ObjectHeader a
+    // plain object has (typed_array.h), so a host's named expando on a view
+    // is an ordinary own property of it — the same write a program's
+    // `view.foo = 1` makes.
+    if (!v.isObject() || !HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
         fatal((std::string("embed: ") + who + " needs a plain object receiver").c_str());
     }
     return v.asObject<ObjectHeader>();
@@ -91,10 +96,16 @@ Value setProperty(Value obj, std::string_view key, Value v) {
         return self.get();
     }
 
+    // A NUMERIC key on a typed array names an element (10.4.5.3), never a
+    // property — a host wanting one written goes through setElement. Refused
+    // by name so the define below cannot land it in the view's shape as a
+    // property that every read then skips.
     if (self.get().isObject() &&
-        self.get().asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray) {
-        runtime::rtTypedArraySetAttached(self.get(), std::string(key), val.get());
-        return self.get();
+        self.get().asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray &&
+        runtime::rtIsCanonicalNumericString(std::string(key))) {
+        fatal((std::string("embed: setProperty on a typed array with the numeric key `") +
+               std::string(key) + "` (an element is written with setElement)")
+                  .c_str());
     }
 
     requirePlainObject(self.get(), "setProperty");

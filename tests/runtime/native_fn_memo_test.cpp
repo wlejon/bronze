@@ -1,13 +1,13 @@
-// The native-function memos (runtime/native_fn_memo.h) at the level JS cannot
-// see them.
+// The native-function memo (runtime/native_fn_memo.h) at the level JS cannot
+// see it.
 //
 // tests/oracle/cases/native_member_memo.js pins the ANSWERS — one object per
 // member, an own property shadowing it, a member behaving for its own kind.
 // What that case cannot show is whether an answer came from the MEMO or from
-// the ladder-and-unordered_map walk it replaces: a memo that never fills passes
-// every one of its scenarios. So this file asks the tables directly.
+// the unordered_map walk it replaces: a memo that never fills passes every one
+// of its scenarios. So this file asks the table directly.
 //
-// It also pins the two things that make the tables safe to hold no `Value`:
+// It also pins the two things that make the table safe to hold no `Value`:
 // an entry stores an INDEX into the runtime's interned-native vector, and the
 // vector is a root source — so a collection between a fill and a hit moves the
 // function object and the entry keeps answering, because the entry never named
@@ -146,59 +146,13 @@ TEST_CASE("an index whose code pointer no longer matches answers nothing") {
     CHECK(rtFunctionSingletonAt(idx + 100000u, probeCodeA).isUndefined());
 }
 
-TEST_CASE("the member memo is keyed on the kind as well as the key") {
-    ShadowStackFrame frame;
-    MemoOn memo;
-
-    // Filled through the read path rather than by hand, because what is being
-    // pinned is that the read path fills it. A typed array's `set` and `fill`
-    // are the shared method table's, so both land in the memo.
-    Rooted<Value> view{Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 4))};
-    const uint32_t setKey = bronze_register_key_string("set");
-    const uint32_t fillKey = bronze_register_key_string("fill");
-
-    for (int i = 0; i < 4; ++i) {
-        (void)bronze_prop_get(view.get().rawBits(), setKey, nullptr);
-        (void)bronze_prop_get(view.get().rawBits(), fillKey, nullptr);
-    }
-
-    const Value viewSet = rtNativeMemberProbe(TypedArrayHeader::kFlags, setKey);
-    CHECK_FALSE(viewSet.isUndefined());
-    CHECK_FALSE(rtNativeMemberProbe(TypedArrayHeader::kFlags, fillKey).isUndefined());
-    // No read of another kind filled that pair — a Map's `set` is found on
-    // `Map.prototype` by the ordinary walk and never reaches the memo — and
-    // the view's entry must not answer for it.
-    Rooted<Value> map{rtNewMap()};
-    for (int i = 0; i < 4; ++i) (void)bronze_prop_get(map.get().rawBits(), setKey, nullptr);
-    CHECK(rtNativeMemberProbe(HeapKind::Plain, setKey).isUndefined());
-    CHECK(rtNativeMemberProbe(HeapKind::Array, setKey).isUndefined());
-}
-
-TEST_CASE("the member memo refuses a value that is not an interned native") {
-    ShadowStackFrame frame;
-    MemoOn memo;
-
-    const uint32_t key = bronze_register_key_string("notANative");
-    rtNativeMemberFill(TypedArrayHeader::kFlags, key, Value::fromDouble(2.0));
-    CHECK(rtNativeMemberProbe(TypedArrayHeader::kFlags, key).isUndefined());
-
-    // A plain object is not one either, and neither is `undefined` — `length`
-    // reaches the fill as a number and an absent member never reaches it at
-    // all, which is what keeps a diagnosed name diagnosed.
-    Rooted<Value> obj{Value(bronze_create_object())};
-    rtNativeMemberFill(TypedArrayHeader::kFlags, key, obj.get());
-    CHECK(rtNativeMemberProbe(TypedArrayHeader::kFlags, key).isUndefined());
-}
-
-TEST_CASE("the seam makes both memos miss without changing what they would answer") {
+TEST_CASE("the seam makes the memo miss without changing what it would answer") {
     ShadowStackFrame frame;
     MemoOn memo;
 
     const Value warm = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
-    const uint32_t key = bronze_register_key_string("set");
 
     bronze_tls_block_addr()->fn_singleton_cache_enabled = 0;
-    CHECK(rtNativeMemberProbe(TypedArrayHeader::kFlags, key).isUndefined());
     // The singleton answer is the helper's either way — the seam removes the
     // shortcut, never the interning.
     CHECK(rtNativeSingleton(probeCodeA, 1, nullptr, 0).rawBits() == warm.rawBits());

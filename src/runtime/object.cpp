@@ -206,7 +206,7 @@ ObjectHeader* ObjectHeader::protoAncestor(uint32_t depth) noexcept {
         Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return nullptr;
         auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (hdr->flags != HeapKind::Plain) return nullptr;
+        if (!HeapKind::carriesShape(hdr->flags)) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
     }
     return cur;
@@ -227,7 +227,7 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
         Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return nullptr;
         auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return nullptr;
+        if (!HeapKind::carriesShape(hdr->flags)) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
         if (cur->shape && cur->shape->isDictionary()) {
             crossedDictionary = true;
@@ -244,7 +244,7 @@ bool ObjectHeader::chainIsCacheable() const noexcept {
         const Value proto = cur->shape->prototypeValue();
         if (!proto.isObject()) return true;  // the chain ENDS here
         const auto* hdr = proto.asObject<HeapObjectHeader>();
-        if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
+        if (!HeapKind::carriesShape(hdr->flags)) return false;
         cur = reinterpret_cast<const ObjectHeader*>(hdr);
         if (!cur->shape || cur->shape->isDictionary()) return false;
         if (!cur->shape->used_as_prototype) return false;
@@ -379,7 +379,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
             const Value self = receiver ? *receiver : Value::fromObject(this);
             return runtime::rtProxyGet(proto, key.get(), self);
         }
-        if (protoHdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return Value::fromUndefined();
+        if (!HeapKind::carriesShape(protoHdr->flags)) return Value::fromUndefined();
         holder = reinterpret_cast<ObjectHeader*>(protoHdr);
     }
     fatal("prototype chain too deep (a cycle?)");

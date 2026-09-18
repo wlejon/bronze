@@ -75,7 +75,16 @@ enum class Target {
 Target targetOf(Value v) {
     if (!v.isObject()) return Target::NotAnObject;
     switch (v.asObject<HeapObjectHeader>()->flags) {
-        case BRONZE_ABI_OBJ_FLAGS_PLAIN: return Target::Plain;
+        // The byte-store family opens with an ObjectHeader and records its
+        // level in its own shape like any plain object. A typed array's
+        // ELEMENTS are the one thing its dictionary does not list, and the two
+        // callers below answer for them by hand (10.4.5.1 reports every one
+        // writable and configurable).
+        case BRONZE_ABI_OBJ_FLAGS_PLAIN:
+        case TypedArrayHeader::kFlags:
+        case ArrayBufferHeader::kFlags:
+        case DataViewHeader::kFlags:
+            return Target::Plain;
         case HeapKind::Array: return Target::Array;
         case HeapKind::Function: return Target::Function;
         case ModuleNamespaceHeader::kFlags: return Target::ModuleNamespace;
@@ -205,23 +214,21 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
         }
         return self.get().rawBits();
     }
-    if (target == Target::Refused) {
-        // A typed array is the one refused kind with a SPECIFIED answer rather
-        // than a bronze gap: 10.4.5.3 [[DefineOwnProperty]] refuses any
-        // descriptor that asks an integer-indexed element to stop being
-        // configurable or writable, so 7.3.14's DefinePropertyOrThrow throws
-        // for both `seal` and `freeze` the moment the view has one element.
-        // That is the language's answer, and bronze can give it exactly.
-        if (want != IntegrityLevel::Open &&
-            receiver.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags &&
-            receiver.asObject<TypedArrayHeader>()->length > 0) {
-            return rtThrowTypeError(
-                       std::string("Cannot ") + operation +
-                       " a typed array that has elements: an integer-indexed property cannot "
-                       "be made non-configurable or non-writable")
-                .rawBits();
-        }
-        refuseKind(receiver, operation);
+    if (target == Target::Refused) refuseKind(receiver, operation);
+    // A typed array's elements have a SPECIFIED answer: 10.4.5.3
+    // [[DefineOwnProperty]] refuses any descriptor that asks an
+    // integer-indexed element to stop being configurable or writable, so
+    // 7.3.14's DefinePropertyOrThrow throws for both `seal` and `freeze` the
+    // moment the view has one element. `preventExtensions` is ordinary
+    // (10.1.4) and falls through to the dictionary below.
+    if (want != IntegrityLevel::Open &&
+        receiver.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags &&
+        receiver.asObject<TypedArrayHeader>()->length > 0) {
+        return rtThrowTypeError(
+                   std::string("Cannot ") + operation +
+                   " a typed array that has elements: an integer-indexed property cannot "
+                   "be made non-configurable or non-writable")
+            .rawBits();
     }
 
     Rooted<Value> self{receiver};
@@ -266,6 +273,13 @@ bool testIntegrity(Value receiver, bool frozen) {
     // Nothing can have made one of these non-extensible — every route is the
     // hard error above — so `false` here is the correct answer and not a guess.
     if (target == Target::Refused) return false;
+    // 7.3.15 step 5-6 over a typed array's elements: 10.4.5.1 reports each
+    // one configurable and writable, so a view with any is neither sealed nor
+    // frozen whatever its dictionary says.
+    if (receiver.asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags &&
+        receiver.asObject<TypedArrayHeader>()->length > 0) {
+        return false;
+    }
 
     const Dictionary* d = rtIntegrityTable(receiver);
     if (!d || d->extensible) return false;  // step 3

@@ -16,6 +16,7 @@
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -53,7 +54,10 @@ inline bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_
 }
 
 inline bool checkAllocatable(uint32_t byteLength) {
-    const size_t semispace = rtHeap().reserved_size() / 2;
+    // The semispace is fixed for the life of the thread's heap, and this sits
+    // on every allocating method (`slice`, `map`, `toReversed`, ...) — so it is
+    // read once rather than through the `rtHeap()` call each time.
+    static thread_local const size_t semispace = rtHeap().reserved_size() / 2;
     if (byteLength >= kMaxByteLength || byteLength + 64 >= semispace) {
         rtThrowRangeError("Array buffer allocation failed: " + std::to_string(byteLength) +
                           " bytes does not fit in the heap");
@@ -77,8 +81,17 @@ inline bool requireTypedArray(Value v, const char* method) {
         return false;
     }
     auto* view = v.asObject<TypedArrayHeader>();
-    if (view->buffer.isObject() &&
-        view->buffer.asObject<ArrayBufferHeader>()->isDetached()) {
+    // A view a derived constructor's body reached BEFORE its `super()` ran
+    // has no buffer yet (runtime/native_base.h): the language makes `this`
+    // a ReferenceError there, and a member read off it here is refused
+    // rather than answered from a window that does not exist.
+    if (!view->buffer.isObject()) {
+        rtThrowTypeError(std::string("%TypedArray%.prototype.") + method +
+                         " called on a typed array whose constructor has not run "
+                         "(`this` before `super()`)");
+        return false;
+    }
+    if (view->buffer.asObject<ArrayBufferHeader>()->isDetached()) {
         rtThrowTypeError("ArrayBuffer is detached");
         return false;
     }
@@ -124,8 +137,16 @@ inline void relativeArg(Value v, uint32_t len, uint32_t& out, uint32_t fallback)
     out = v.isUndefined() ? fallback : relativeIndex(toInteger(rtToNumber(v)), len);
 }
 
+// 23.2.4.3 TypedArrayCreateSameType: the INTRINSIC constructor of the model's
+// kind, never its species — what `toReversed`, `toSorted` and `with` build,
+// where `map`, `filter`, `slice` and `subarray` go through
+// `rtTypedArraySpeciesCreate` (rt_receivers.h).
 inline Value newViewLike(Value model, uint32_t length) {
-    return Value::fromObject(TypedArrayHeader::create(rtHeap(), kindOf(model), length));
+    const ElementKind kind = kindOf(model);
+    if (!checkAllocatable(length * elementKindInfo(kind).bytesPerElement)) {
+        return Value::fromUndefined();
+    }
+    return rtNewTypedArray(kind, length);
 }
 
 inline bool isCallable(Value v) {
@@ -164,7 +185,16 @@ using namespace typed_array_internal;
 // file forwards the buffer's questions here.
 Value rtArrayBufferConstructor(const std::string& name);
 const char* rtArrayBufferConstructorName(Value fn);
-bool rtArrayBufferStatic(Value fn, const std::string& key, Value& out);
+
+// The construction paths (builtin_typed_array_construct.cpp). The body fills
+// the view `bronze_construct` allocated and handed in as the receiver; the
+// two statics build through 23.2.4.2 so a subclass constructor gets its
+// `new`; the create-from-constructor step is shared with species creation.
+Value rtTypedArrayConstructBody(ElementKind kind, Rooted<Value>& receiver, uint32_t argc,
+                                const uint64_t* argv);
+Value rtTypedArrayCreateFromConstructor(Rooted<Value>& ctor, uint32_t length);
+uint64_t rtTypedArrayFromBody(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t rtTypedArrayOfBody(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 
 // Transform & Mutator declarations:
 uint64_t taSet(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);

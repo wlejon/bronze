@@ -174,43 +174,26 @@ static_assert(HeapKind::Count == 20,
 //
 // `in` can say yes even where a READ of it is a named hard error — an array's
 // @@iterator is, because 23.1.3.34 makes it the same function object as
-// `Array.prototype.values` and neither is built. That split is the one
-// `rtDataViewHasMember` already makes: the member exists, and its value is what
-// bronze has not got. Answering `false` instead is what this used to do, and it
-// contradicted `m[Symbol.iterator]`, which hands back `Map.prototype.entries`.
+// `Array.prototype.values` and neither is built. That split is the one the
+// member tables make: the member exists, and its value is what bronze has not
+// got. Answering `false` instead is what this used to do, and it contradicted
+// `m[Symbol.iterator]`, which hands back `Map.prototype.entries`.
 //
 // Both halves answer from the same place their READ answers from — the
 // @@iterator table in rt_prop.cpp's `wellKnownSymbolMember` and the tag switch
 // beside it — which is the rule every other arm of these switches follows.
 bool shapelessHasSymbol(uint16_t kind, Value key) {
     if (key.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
-        switch (kind) {
-            // 23.2.3.35, 25.1.6.6, 25.3.4.25 put it on the prototype;
-            // 10.4.6.1 puts it on the namespace itself, which is the one of
-            // these that is an OWN property.
-            case HeapKind::TypedArray:
-            case HeapKind::ArrayBuffer:
-            case HeapKind::DataView:
-            case HeapKind::ModuleNamespace:
-                return true;
-            // An array and a RegExp: 23.1.3 and 22.2.6 define none, which is
-            // why 20.1.3.6 keeps a builtin-tag list for them.
-            default:
-                return false;
-        }
+        // 10.4.6.1 puts it on the namespace itself, an OWN property. An array
+        // and a RegExp: 23.1.3 and 22.2.6 define none, which is why 20.1.3.6
+        // keeps a builtin-tag list for them.
+        return kind == HeapKind::ModuleNamespace;
     }
     if (key.asSymbol<SymbolHeader>() != rtSymbolIterator()) return false;
-    switch (kind) {
-        // 23.1.3.34, 23.2.3.34.
-        case HeapKind::Array:
-        case HeapKind::TypedArray:
-            return true;
-        // An ArrayBuffer, a DataView and a RegExp are not iterable, and a
-        // module namespace exports no name that could be one (10.4.6.4 is "is
-        // this an export", and @@toStringTag above is its only other key).
-        default:
-            return false;
-    }
+    // 23.1.3.34. A RegExp is not iterable, and a module namespace exports no
+    // name that could be one (10.4.6.4 is "is this an export", and
+    // @@toStringTag above is its only other key).
+    return kind == HeapKind::Array;
 }
 
 // `sym in obj`, for a key that is a Symbol. Only a receiver with a SHAPE can
@@ -220,7 +203,13 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
     const uint16_t kind = objRoot.get().asObject<HeapObjectHeader>()->flags;
     ObjectHeader* holder = nullptr;
     switch (kind) {
+        // A plain object, and the byte-store family (a view, a buffer, a
+        // DataView) that opens with the same ObjectHeader: 10.4.5.2 sends every
+        // symbol key of a typed array to OrdinaryHasProperty.
         case HeapKind::Plain:
+        case HeapKind::TypedArray:
+        case HeapKind::ArrayBuffer:
+        case HeapKind::DataView:
             holder = reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
             break;
         case HeapKind::Function: {
@@ -232,9 +221,6 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
             break;
         }
         case HeapKind::Array:
-        case HeapKind::TypedArray:
-        case HeapKind::ArrayBuffer:
-        case HeapKind::DataView:
         case HeapKind::RegExp:
         case HeapKind::ModuleNamespace:
             return shapelessHasSymbol(kind, key);
@@ -311,28 +297,29 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             break;
         }
         case HeapKind::TypedArray: {
-            // The index first, and against the LENGTH: 10.4.5.2 makes a
+            // The numeric keys first, and against the LENGTH: 10.4.5.2 makes a
             // canonical numeric string outside the range absent rather than
-            // INHERITED — so this arm returns for an index either way and is
-            // the one place the fall-through below must not be reached from.
+            // INHERITED — so this arm returns for one either way, and only a
+            // name reaches the ordinary walk below (step 2 is
+            // OrdinaryHasProperty, over the shape the view carries).
             auto* view = reinterpret_cast<TypedArrayHeader*>(hdr);
             if (rtIsIntegerLikeKey(key, index)) return index < view->length;
-            if (rtTypedArrayHasMember(view->kindName(), key)) return true;
-            if (!rtTypedArrayGetAttached(objRoot.get(), key).isUndefined()) return true;
-            break;
+            if (rtIsCanonicalNumericString(key)) return false;
+            [[fallthrough]];
         }
+        // A buffer and a DataView are ordinary objects with internal slots
+        // (25.1.4, 25.3.4): the walk answers, exactly as for a plain object.
         case HeapKind::ArrayBuffer:
-            if (rtArrayBufferHasMember(reinterpret_cast<ArrayBufferHeader*>(hdr)->isShared(),
-                                       key)) {
-                return true;
-            }
-            break;
-        // A DataView's members all live on its prototype, which bronze answers
-        // on the property path — so `in`, which walks the chain, must ask the
-        // same table the reads come from rather than report the object empty.
         case HeapKind::DataView:
-            if (rtDataViewHasMember(key)) return true;
-            break;
+        case HeapKind::Plain: {
+            if (Value data; rtStringWrapperData(objRoot.get(), data)) {
+                if (rtStringDataHasOwnKey(data, key)) return true;
+            }
+            Rooted<Value> keyStr{rtMakeString(key)};
+            auto* holder =
+                reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
+            return plainObjectHas(holder, keyStr.get().asString<StringHeader>());
+        }
         case HeapKind::RegExp:
             if (rtRegExpHasMember(key)) return true;
             break;
@@ -366,9 +353,6 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
                 objRoot.get().asObject<FunctionHeader>()->name != nullptr) {
                 return true;
             }
-            if (Value stat; rtTypedArrayStatic(objRoot.get(), key, stat)) {
-                return true;
-            }
             Rooted<Value> keyStr{rtMakeString(key)};
             Value props = objRoot.get().asObject<FunctionHeader>()->properties;
             if (props.isObject() && plainObjectHas(props.asObject<ObjectHeader>(),
@@ -376,15 +360,6 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
                 return true;
             }
             break;
-        }
-        case HeapKind::Plain: {
-            if (Value data; rtStringWrapperData(objRoot.get(), data)) {
-                if (rtStringDataHasOwnKey(data, key)) return true;
-            }
-            Rooted<Value> keyStr{rtMakeString(key)};
-            auto* holder =
-                reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
-            return plainObjectHas(holder, keyStr.get().asString<StringHeader>());
         }
         case HeapKind::Iterator:
         case HeapKind::Env:
@@ -655,29 +630,9 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         if (rtIsRegExpConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::RegExp;
         }
-        // 25.2 gives a SharedArrayBuffer its own prototype, so it is NOT an
-        // `instanceof ArrayBuffer` -- the two brands share a header in bronze and
-        // nothing else.
-        if (rtSharedArrayBufferConstructorName(ctorRoot.get())) {
-            auto* sabHdr = objRoot.get().asObject<HeapObjectHeader>();
-            return sabHdr->flags == ArrayBufferHeader::kFlags &&
-                   reinterpret_cast<ArrayBufferHeader*>(sabHdr)->isShared();
-        }
-        if (const char* name = rtTypedArrayConstructorName(ctorRoot.get())) {
-            const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
-            if (std::strcmp(name, "ArrayBuffer") == 0) {
-                return flags == ArrayBufferHeader::kFlags &&
-                       !objRoot.get().asObject<ArrayBufferHeader>()->isShared();
-            }
-            if (flags == TypedArrayHeader::kFlags) {
-                auto* view = objRoot.get().asObject<TypedArrayHeader>();
-                return std::strcmp(view->kindName(), name) == 0;
-            }
-            return false;
-        }
-        if (rtDataViewConstructorName(ctorRoot.get())) {
-            return objRoot.get().asObject<HeapObjectHeader>()->flags == DataViewHeader::kFlags;
-        }
+        // The byte-store family needs no arm: a view, a buffer and a DataView
+        // carry a shape, so the chain walk below answers `instanceof` for the
+        // intrinsic constructors and a subclass alike (7.3.22 step 4).
         if (rtIsFunctionConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function;
         }
@@ -701,7 +656,7 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
     }
 
     const uint16_t objKind = objRoot.get().asObject<HeapObjectHeader>()->flags;
-    if (objKind != HeapKind::Plain && objKind != HeapKind::Proxy) {
+    if (!HeapKind::carriesShape(objKind) && objKind != HeapKind::Proxy) {
         if (protoRoot.get().rawBits() == rtObjectPrototype().rawBits()) {
             return true;
         }
@@ -739,7 +694,7 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
         Value next = Value::fromUndefined();
         const uint16_t kind = cur.get().asObject<HeapObjectHeader>()->flags;
-        if (kind == HeapKind::Plain) {
+        if (HeapKind::carriesShape(kind)) {
             Shape* shape = cur.get().asObject<ObjectHeader>()->shape;
             next = shape ? shape->prototypeValue() : Value::fromUndefined();
         } else if (kind == HeapKind::Proxy) {

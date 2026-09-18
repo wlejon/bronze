@@ -196,6 +196,15 @@ bool rtObjectProtoHasMember(const std::string& key);
 // it.
 void rtDefineToStringTag(Rooted<Value>& obj, const char* tag);
 
+// `get [@@species]() { return this }` as a real accessor on a constructor's
+// own properties (23.2.2.4, 25.1.5.3, 25.2.4.2: `{ [[Enumerable]]: false,
+// [[Configurable]]: true }`, no setter), so `Object.getOwnPropertyDescriptor
+// (C, Symbol.species)` describes it and a subclass reaches it through the
+// static chain `extends` builds — which is what makes `A[@@species]` answer
+// `A`. The intrinsics rt_prop_symbol.cpp still answers virtually are the
+// ones with no property box of their own to hold it.
+void rtDefineSpeciesGetter(Rooted<Value>& ctor);
+
 // The intrinsics a function of a NON-ORDINARY form reports (27.3, 27.4, 27.7):
 // its `constructor` — %GeneratorFunction%, %AsyncFunction% or
 // %AsyncGeneratorFunction% — and its [[Prototype]], which is that
@@ -412,14 +421,6 @@ bool rtIsIntrinsicCollectionIterator(Value fn, bool isSet);
 // collection, through the set-like protocol rather than another Set's table.
 const NativeMethod* rtSetOperationMethods(size_t& count);
 
-// The intrinsic constructors bronze builds no prototype OBJECT for — the nine
-// views, SharedArrayBuffer, DataView — by name, else nullptr. One list,
-// because two facts depend on it: the property path answers `X.prototype`
-// with a named refusal, and `rtEnsureFunctionPrototype` must leave the
-// FunctionHeader slot empty so that generated code's inline read of it misses
-// and reaches that refusal instead of a fresh empty object.
-const char* rtNoPrototypeObjectIntrinsic(Value fn);
-
 // `WeakMap` / `WeakSet` (builtin_weak_map.cpp), in exactly the Map/Set
 // arrangement: a constructor by name for the global ladder, the constructor's
 // name back from the function object, the brand tests, and the allocators a
@@ -443,8 +444,6 @@ Value rtNewWeakCollectionWithShape(class Shape* shape, bool isWeakSet);
 // so can run user code and can throw, which is why it takes the view rooted.
 Value rtTypedArrayElement(Value viewVal, uint32_t index);
 void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value);
-void rtTypedArraySetAttached(Value viewVal, const std::string& key, Value val);
-Value rtTypedArrayGetAttached(Value viewVal, const std::string& key);
 
 // Rows of builtin_array.cpp's method table whose bodies live in a translation
 // unit of their own — `sort` (builtin_array_sort.cpp) and the three iterator
@@ -564,8 +563,6 @@ bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor);
 // refuse a base whose instances it cannot actually produce.
 const char* rtIntrinsicConstructorName(Value fn);
 bool rtIsArrayConstructor(Value fn);
-bool rtIsArrayBufferConstructor(Value fn);
-bool rtIsTypedArrayConstructor(Value fn);
 bool rtIsRegExpConstructor(Value fn);
 bool rtOrdinaryHasInstance(Value ctor, Value obj);
 uint64_t rtFunctionHasInstanceBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,

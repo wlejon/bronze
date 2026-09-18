@@ -141,21 +141,6 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
         return;
     }
 
-    // An intrinsic bronze builds no prototype object for must keep an EMPTY
-    // slot: generated code reads `f.prototype` straight out of it, so minting
-    // one here would answer `Float64Array.prototype` with a fresh empty object
-    // instead of reaching rt_prop.cpp's refusal — and would do it from the
-    // first `new Float64Array()` onwards, silently. Only the instance shape is
-    // built, which is all `bronze_construct` needs from this function; nothing
-    // is ever allocated from it, because each of these constructors returns
-    // its own exotic object and the ordinary instance is discarded.
-    if (rtNoPrototypeObjectIntrinsic(fnVal.get())) {
-        if (!fn->instance_shape) {
-            fn->instance_shape = rtRootShapeForPrototype(Value::fromNull());
-        }
-        return;
-    }
-
     Shape* protoShape = rtNewRootShape(rtObjectPrototype());
     protoShape->used_as_prototype = true;
     ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), protoShape);
@@ -375,14 +360,13 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // MyMap` allocates a Map exactly as `class MyMap extends Map` does.
     rtInheritNativeBase(derived, base);
 
-    // A base whose `prototype` slot is EMPTY — the typed-array family, whose
-    // prototype object bronze has not built (rt_builtins.h says why the slot
-    // must stay so) — gives the subclass nothing above it to link to, and its
-    // chain ends at NULL. Spelling it `undefined` — which is what an empty
-    // base slot used to produce — made the chain unwalkable instead of finite.
-    // Unreachable today (every such base is refused by name above), and kept
-    // as the finite answer rather than a fatal because the refusal list is
-    // native_base.cpp's to shorten.
+    // A base whose `prototype` slot is EMPTY gives the subclass nothing above
+    // it to link to, and its chain ends at NULL. Spelling it `undefined` —
+    // which is what an empty base slot used to produce — made the chain
+    // unwalkable instead of finite. Every intrinsic constructor writes its
+    // prototype object into the slot when it is built and the ordinary ones
+    // just had theirs ensured, so this is the finite answer for a base a
+    // program emptied by hand (`F.prototype = 1` in sloppy code).
     Rooted<Value> baseProto{base.get().asObject<FunctionHeader>()->prototype};
     if (!baseProto.get().isObject()) baseProto.set(Value::fromNull());
     ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(baseProto.get()));

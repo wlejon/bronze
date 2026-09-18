@@ -7,10 +7,10 @@
 // found by `rtSymbolKeyHolder` — so the interesting question moves to the other
 // end: `@@toStringTag`, `@@species`, `@@iterator`, `@@hasInstance` and the five
 // string/regexp keys of 22.2.6 are properties of intrinsic PROTOTYPE OBJECTS
-// that bronze does not build, so for an array, a typed array, an ArrayBuffer,
-// a DataView or a RegExp there is no object for the walk to find them on, and
-// this file stands in for those objects. A Map, a Set, the weak pair, a
-// WeakRef and a FinalizationRegistry are NOT among them: each has a real
+// that bronze does not build, so for an array or a RegExp there is no object
+// for the walk to find them on, and this file stands in for those objects. A
+// Map, a Set, the weak pair, a WeakRef, a FinalizationRegistry, a typed
+// array, an ArrayBuffer and a DataView are NOT among them: each has a real
 // prototype carrying its tag and its iterator, found by the ordinary walk.
 //
 // Nothing here overrides what a program installs. Every answer is guarded by
@@ -58,14 +58,14 @@ namespace bronze::runtime {
 // 20.4.2.14 `@@toStringTag` for a receiver that has NO PROTOTYPE OBJECT to
 // carry it.
 //
-// This is an approximation of the MECHANISM and not of the bytes. ECMA-262
-// puts the tag on a prototype — `%TypedArray%.prototype`'s is an accessor
-// over [[TypedArrayName]] (23.2.3.35), `ArrayBuffer.prototype`'s is
-// "ArrayBuffer" (25.1.6.6), `DataView.prototype`'s is "DataView" (25.3.4.25)
-// — and bronze has none of those objects, so the property a walk would find
-// is answered from the heap kind at the one place that sees both the receiver
-// and the key. The VALUE is the one the specification's property holds, so
-// `Object.prototype.toString.call(new DataView(buf))` is the spec's bytes.
+// This is an approximation of the MECHANISM and not of the bytes: ECMA-262
+// puts a tag on a prototype object, and for the kinds below bronze has none,
+// so the property a walk would find is answered from the heap kind at the one
+// place that sees both the receiver and the key. The byte-store family is not
+// among them any more — `%TypedArray%.prototype`'s accessor (23.2.3.35),
+// `ArrayBuffer.prototype`'s "ArrayBuffer" (25.1.6.6) and
+// `DataView.prototype`'s "DataView" (25.3.4.25) are real properties of real
+// objects on the receiver's chain.
 //
 // Nothing a program installs is overridden by this, because it answers only for
 // receivers that have no shape to install anything on: a plain object's and a
@@ -83,26 +83,6 @@ namespace bronze::runtime {
 static Value toStringTagOf(Value objVal, bool& handled) {
     if (!objVal.isObject()) return Value::fromUndefined();
     switch (objVal.asObject<HeapObjectHeader>()->flags) {
-        case TypedArrayHeader::kFlags: {
-            // 23.2.3.35 is an ACCESSOR whose answer is [[TypedArrayName]], so
-            // nine views give nine tags rather than one shared "TypedArray".
-            const char* kind =
-                reinterpret_cast<TypedArrayHeader*>(objVal.asObject<HeapObjectHeader>())
-                    ->kindName();
-            handled = true;
-            return rtMakeString(kind);
-        }
-        case ArrayBufferHeader::kFlags:
-            handled = true;
-            // 25.1.6.6 and 25.2.5.6 are two different accessors on two
-            // different prototypes, and bronze's one header carries both -- so
-            // the tag follows the FLAG, not the kind.
-            return rtMakeString(objVal.asObject<ArrayBufferHeader>()->isShared()
-                                    ? "SharedArrayBuffer"
-                                    : "ArrayBuffer");
-        case DataViewHeader::kFlags:
-            handled = true;
-            return rtMakeString("DataView");
         case ModuleNamespaceHeader::kFlags:
             handled = true;
             return rtMakeString("Module");
@@ -176,13 +156,18 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         // `rtNativeBaseOf` BUILDS an intrinsic on first use to compare against,
         // and the receiver is read again afterwards — both by the chain walk and
         // by the answer itself — so `obj` being a root is what keeps every read
-        // current. The other three probes identify their constructor by code
-        // pointer and allocate nothing.
-        const bool inheritsSpecies = rtNativeBaseOf(obj.get()) != NativeBase::None ||
-                                     rtIsArrayBufferConstructor(obj.get()) ||
-                                     rtSharedArrayBufferConstructorName(obj.get()) != nullptr ||
-                                     rtIsTypedArrayConstructor(obj.get()) ||
-                                     rtIsRegExpConstructor(obj.get());
+        // current. The other probes identify their constructor by code pointer
+        // and allocate nothing.
+        //
+        // The byte-store family is NOT answered here: `%TypedArray%`,
+        // `ArrayBuffer` and `SharedArrayBuffer` carry 23.2.2.4, 25.1.5.3 and
+        // 25.2.4.2 as real accessors on their own boxes
+        // (rtDefineSpeciesGetter), which the twelve views and every subclass
+        // reach through the static chain — and the walk below finds them
+        // before this arm could. 25.3 defines no `DataView[@@species]` at all.
+        const uint8_t base = rtNativeBaseOf(obj.get());
+        const bool ordinaryBase = base != NativeBase::None && base < NativeBase::ArrayBuffer;
+        const bool inheritsSpecies = ordinaryBase || rtIsRegExpConstructor(obj.get());
         if (inheritsSpecies && !symbolKeyOnChain(obj.get(), rtSymbolSpecies())) {
             handled = true;
             return obj.get();
@@ -229,20 +214,18 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
             // because both routes intern on the one code pointer.
             handled = true;
             return rtNativeFunction(rtArrayValuesBuiltin, 0, "values", 0);
-        case TypedArrayHeader::kFlags:
-            handled = true;
-            return rtTypedArrayIteratorMethod();
         default:
             return Value::fromUndefined();
     }
 }
 
-// The plain object a receiver keeps SYMBOL-keyed properties on: itself, or —
-// for a function / array — the side object its properties live in.
+// The plain object a receiver keeps SYMBOL-keyed properties on: itself (a
+// plain object, or one of the shape-carrying byte-store kinds), or — for a
+// function / array — the side object its properties live in.
 ObjectHeader* rtSymbolKeyHolder(Value objVal) {
     if (!objVal.isObject()) return nullptr;
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-    if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
+    if (HeapKind::carriesShape(hdr->flags)) return reinterpret_cast<ObjectHeader*>(hdr);
     if (hdr->flags == HeapKind::Function) {
         Value props = objVal.asObject<FunctionHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;

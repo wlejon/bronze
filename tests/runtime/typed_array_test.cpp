@@ -8,18 +8,34 @@
 
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/shape.h"
 #include "runtime/typed_array.h"
 
 using namespace bronze;
 
+namespace {
+
+// These cases run on a LOCAL heap with no runtime behind it, so the shape every
+// header here carries (typed_array.h: a view, a buffer and a DataView open with
+// an ObjectHeader) is a bare root with no prototype — the layout is what is
+// under test, not the chain.
+struct LocalShapes {
+    NonMovingArena arena;
+    Shape* shape = Shape::createRoot(arena, Value::fromNull());
+};
+
+}  // namespace
+
 TEST_CASE("Float32Array basics: zeroed storage, element access, buffer view") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
-    Rooted<Value> view(Value::fromObject(TypedArrayHeader::create(heap, ElementKind::Float32, 8)));
+    Rooted<Value> view(Value::fromObject(
+        TypedArrayHeader::create(heap, shapes.shape, shapes.shape, ElementKind::Float32, 8)));
     auto* v = view.get().asObject<TypedArrayHeader>();
     CHECK(v->length == 8);
-    CHECK(v->header.flags == 3);
+    CHECK(v->object.header.flags == 3);
     for (uint32_t i = 0; i < 8; ++i) {
         CHECK(v->get(i) == 0.0);
     }
@@ -31,14 +47,16 @@ TEST_CASE("Float32Array basics: zeroed storage, element access, buffer view") {
 
     auto* buf = v->buffer.asObject<ArrayBufferHeader>();
     CHECK(buf->byteLength == 32);
-    CHECK(buf->header.flags == 4);
+    CHECK(buf->object.header.flags == 4);
 }
 
 TEST_CASE("RawBytes buffers survive collection and are never scanned as Values") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
-    Rooted<Value> view(Value::fromObject(TypedArrayHeader::create(heap, ElementKind::Float32, 4)));
+    Rooted<Value> view(Value::fromObject(
+        TypedArrayHeader::create(heap, shapes.shape, shapes.shape, ElementKind::Float32, 4)));
 
     // Plant float bit patterns whose containing 64-bit word looks exactly
     // like an Object-tagged NaN-boxed pointer (upper half 0xFFF1xxxx). If
@@ -130,13 +148,14 @@ TEST_CASE("store conversions at the boundaries") {
 
 TEST_CASE("two views over one buffer see each other's bytes") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
-    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::create(heap, 4)));
-    Rooted<Value> f32(Value::fromObject(
-        TypedArrayHeader::createOverBuffer(heap, ElementKind::Float32, buffer, 0, 1)));
-    Rooted<Value> u32(Value::fromObject(
-        TypedArrayHeader::createOverBuffer(heap, ElementKind::Uint32, buffer, 0, 1)));
+    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::create(heap, shapes.shape, 4)));
+    Rooted<Value> f32(Value::fromObject(TypedArrayHeader::createOverBuffer(
+        heap, shapes.shape, ElementKind::Float32, buffer, 0, 1)));
+    Rooted<Value> u32(Value::fromObject(TypedArrayHeader::createOverBuffer(
+        heap, shapes.shape, ElementKind::Uint32, buffer, 0, 1)));
 
     f32.get().asObject<TypedArrayHeader>()->set(0, 1.0f);
     // The IEEE-754 single-precision encoding of 1.0.
@@ -154,21 +173,22 @@ TEST_CASE("two views over one buffer see each other's bytes") {
 
 TEST_CASE("a view at a byte offset addresses only its own window") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
-    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::create(heap, 8)));
-    Rooted<Value> low(Value::fromObject(
-        TypedArrayHeader::createOverBuffer(heap, ElementKind::Uint8, buffer, 0, 4)));
-    Rooted<Value> high(Value::fromObject(
-        TypedArrayHeader::createOverBuffer(heap, ElementKind::Uint8, buffer, 4, 4)));
+    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::create(heap, shapes.shape, 8)));
+    Rooted<Value> low(Value::fromObject(TypedArrayHeader::createOverBuffer(
+        heap, shapes.shape, ElementKind::Uint8, buffer, 0, 4)));
+    Rooted<Value> high(Value::fromObject(TypedArrayHeader::createOverBuffer(
+        heap, shapes.shape, ElementKind::Uint8, buffer, 4, 4)));
 
     for (uint32_t i = 0; i < 4; ++i) low.get().asObject<TypedArrayHeader>()->set(i, i + 1);
     for (uint32_t i = 0; i < 4; ++i) high.get().asObject<TypedArrayHeader>()->set(i, 100 + i);
 
     heap.collect();
 
-    Rooted<Value> whole(Value::fromObject(
-        TypedArrayHeader::createOverBuffer(heap, ElementKind::Uint8, buffer, 0, 8)));
+    Rooted<Value> whole(Value::fromObject(TypedArrayHeader::createOverBuffer(
+        heap, shapes.shape, ElementKind::Uint8, buffer, 0, 8)));
     auto* w = whole.get().asObject<TypedArrayHeader>();
     CHECK(w->get(0) == 1);
     CHECK(w->get(3) == 4);
@@ -180,12 +200,13 @@ TEST_CASE("a view at a byte offset addresses only its own window") {
 
 TEST_CASE("a zero-length buffer is a real object with a real header") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
-    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::create(heap, 0)));
+    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::create(heap, shapes.shape, 0)));
     CHECK(buffer.get().asObject<ArrayBufferHeader>()->byteLength == 0);
-    Rooted<Value> view(Value::fromObject(
-        TypedArrayHeader::createOverBuffer(heap, ElementKind::Float64, buffer, 0, 0)));
+    Rooted<Value> view(Value::fromObject(TypedArrayHeader::createOverBuffer(
+        heap, shapes.shape, ElementKind::Float64, buffer, 0, 0)));
     CHECK(view.get().asObject<TypedArrayHeader>()->length == 0);
     heap.collect();
     CHECK(view.get().asObject<TypedArrayHeader>()->buffer.asObject<ArrayBufferHeader>()
@@ -194,14 +215,16 @@ TEST_CASE("a zero-length buffer is a real object with a real header") {
 
 TEST_CASE("a shared buffer is the same storage with a different brand") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
     // 25.2's SharedArrayBuffer is `kFlagShared` on the ordinary buffer header,
     // so the brand has to be readable off the header and must NOT be readable
     // off a plain one — that predicate is what splits the two member surfaces.
-    Rooted<Value> fixed(Value::fromObject(ArrayBufferHeader::createShared(heap, 8, 8)));
+    Rooted<Value> fixed(
+        Value::fromObject(ArrayBufferHeader::createShared(heap, shapes.shape, 8, 8)));
     auto* f = fixed.get().asObject<ArrayBufferHeader>();
-    CHECK(f->header.flags == ArrayBufferHeader::kFlags);
+    CHECK(f->object.header.flags == ArrayBufferHeader::kFlags);
     CHECK(f->isShared());
     CHECK_FALSE(f->isResizable());  // not growable: max == length
     CHECK_FALSE(f->isDetached());
@@ -211,13 +234,14 @@ TEST_CASE("a shared buffer is the same storage with a different brand") {
         CHECK(f->data()[i] == 0);
     }
 
-    Rooted<Value> plain(Value::fromObject(ArrayBufferHeader::create(heap, 8)));
+    Rooted<Value> plain(Value::fromObject(ArrayBufferHeader::create(heap, shapes.shape, 8)));
     CHECK_FALSE(plain.get().asObject<ArrayBufferHeader>()->isShared());
 
     // A GROWABLE one reserves its maximum up front, for the reason a resizable
     // ArrayBuffer does: a view holds a byte offset into this block, and a
     // moving collector cannot reallocate it under the view.
-    Rooted<Value> growable(Value::fromObject(ArrayBufferHeader::createShared(heap, 4, 12)));
+    Rooted<Value> growable(
+        Value::fromObject(ArrayBufferHeader::createShared(heap, shapes.shape, 4, 12)));
     auto* g = growable.get().asObject<ArrayBufferHeader>();
     CHECK(g->isShared());
     CHECK(g->isResizable());
@@ -281,8 +305,10 @@ TEST_CASE("binary16 rounds to nearest even and is computed from the double") {
 
     // A Float16Array element agrees with the free functions by construction.
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
-    Rooted<Value> view(Value::fromObject(TypedArrayHeader::create(heap, ElementKind::Float16, 4)));
+    Rooted<Value> view(Value::fromObject(
+        TypedArrayHeader::create(heap, shapes.shape, shapes.shape, ElementKind::Float16, 4)));
     auto* v = view.get().asObject<TypedArrayHeader>();
     CHECK(v->bytesPerElement() == 2);
     v->set(0, witness);
@@ -309,14 +335,16 @@ TEST_CASE("binary16 rounds to nearest even and is computed from the double") {
 // why its value keeps it out of the pointer-tag range).
 TEST_CASE("a tracking view recomputes its window at every refresh (10.4.5)") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
-    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::createResizable(heap, 4, 16)));
+    Rooted<Value> buffer(
+        Value::fromObject(ArrayBufferHeader::createResizable(heap, shapes.shape, 4, 16)));
     CHECK(buffer.get().asObject<ArrayBufferHeader>()->isResizable());
 
     // Offset 2 into a 4-byte buffer, 2-byte elements: one element now.
     Rooted<Value> view(Value::fromObject(TypedArrayHeader::createOverBuffer(
-        heap, ElementKind::Uint16, buffer, 2, 1, /*tracking=*/true)));
+        heap, shapes.shape, ElementKind::Uint16, buffer, 2, 1, /*tracking=*/true)));
     CHECK(view.get().asObject<TypedArrayHeader>()->isTracking());
     CHECK(view.get().asObject<TypedArrayHeader>()->length == 1);
 
@@ -365,11 +393,13 @@ TEST_CASE("a tracking view recomputes its window at every refresh (10.4.5)") {
 // -word constraint, so the collection check repeats here on purpose.
 TEST_CASE("an auto-length DataView measures its buffer when asked (25.3.1)") {
     Heap heap;
+    LocalShapes shapes;
     ShadowStackFrame frame;
 
-    Rooted<Value> buffer(Value::fromObject(ArrayBufferHeader::createResizable(heap, 8, 32)));
-    Rooted<Value> view(Value::fromObject(
-        DataViewHeader::create(heap, buffer, 2, DataViewHeader::kAutoByteLength)));
+    Rooted<Value> buffer(
+        Value::fromObject(ArrayBufferHeader::createResizable(heap, shapes.shape, 8, 32)));
+    Rooted<Value> view(Value::fromObject(DataViewHeader::create(
+        heap, shapes.shape, buffer, 2, DataViewHeader::kAutoByteLength)));
     CHECK(view.get().asObject<DataViewHeader>()->isAutoLength());
     CHECK(view.get().asObject<DataViewHeader>()->trackedByteLength() == 6);
 

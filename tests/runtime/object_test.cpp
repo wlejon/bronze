@@ -15,11 +15,11 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
-#include "runtime/typed_array.h"
 
 using namespace bronze;
 
@@ -229,8 +229,10 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     Rooted<Value> fn{Value(bronze_elem_get(ns.get().rawBits(), keysKey.get().rawBits()))};
     REQUIRE(fn.get().isObject());
     REQUIRE(fn.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function);
-    Rooted<Value> view{
-        Value::fromObject(TypedArrayHeader::create(runtime::rtHeap(), ElementKind::Uint8, 1))};
+    // A RegExp is the kind still without a property table of its own; a typed
+    // array, an ArrayBuffer and a DataView carry a shape now and answer.
+    Rooted<Value> src{runtime::rtMakeString("a")};
+    Rooted<Value> re{runtime::rtRegExpFromParts(src, "")};
 
     // The receiver is read from its ROOT after the two lookups below, which
     // both allocate: under BRONZE_GC_STRESS every allocation moves the live
@@ -252,10 +254,10 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     // The kind is named, and so is what about it cannot be done — never "this
     // is not an object", which is what a typed array used to be told. And a
     // kind with no property table at all says exactly that.
-    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", view, 0),
-                         doctest::Contains("Object.getOwnPropertyNames on a typed array"),
+    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", re, 0),
+                         doctest::Contains("Object.getOwnPropertyNames on a RegExp"),
                          std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", view, 0),
+    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", re, 0),
                          doctest::Contains("keeps no property table"), std::runtime_error);
 
     // A NUMBER target for `Object.assign`, which is the one member here whose

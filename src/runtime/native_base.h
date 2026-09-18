@@ -57,7 +57,19 @@ enum : uint8_t {
     WeakSet,
     WeakRef,
     FinalizationRegistry,
-    Count,
+    // The byte-store family (typed_array.h). A buffer's bytes are inline and
+    // their count is a constructor ARGUMENT, so what `new` allocates for the
+    // two buffer kinds is a zero-byte placeholder carrying NewTarget's
+    // prototype; the body allocates the real buffer with that prototype and
+    // returns it (builtin_array_buffer.cpp says why). A view and a DataView
+    // are fixed-size and are allocated uninitialized, for the body to fill.
+    ArrayBuffer,
+    SharedArrayBuffer,
+    DataView,
+    // The twelve view kinds, one per ElementKind, in the enum's order:
+    // `TypedArrayFirst + kind`.
+    TypedArrayFirst,
+    Count = TypedArrayFirst + 12,
 };
 }
 

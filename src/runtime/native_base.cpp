@@ -20,6 +20,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/typed_array.h"
 #include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
@@ -134,7 +135,23 @@ Value rtAllocateNativeBaseInstance(uint8_t kind, Rooted<Value>& ctor) {
             return rtNewWeakRefWithShape(shape, /*isRegistry=*/true);
         case NativeBase::Promise:
             return rtNewPromiseWithShape(shape);
+        // The byte-store family (native_base.h): a zero-byte placeholder for
+        // either buffer, whose body allocates the real one with this shape
+        // and returns it; an uninitialized view or DataView for the body to
+        // fill. Their brand is the heap kind, so no symbol is minted.
+        case NativeBase::ArrayBuffer:
+            return Value::fromObject(ArrayBufferHeader::create(rtHeap(), shape, 0));
+        case NativeBase::SharedArrayBuffer:
+            return Value::fromObject(ArrayBufferHeader::createShared(rtHeap(), shape, 0, 0));
+        case NativeBase::DataView:
+            return Value::fromObject(DataViewHeader::createUninitialized(rtHeap(), shape));
         default:
+            if (kind >= NativeBase::TypedArrayFirst && kind < NativeBase::Count) {
+                const auto elementKind =
+                    static_cast<ElementKind>(kind - NativeBase::TypedArrayFirst);
+                return Value::fromObject(
+                    TypedArrayHeader::createUninitialized(rtHeap(), shape, elementKind));
+            }
             fatal("internal: unknown native base kind at construction");
     }
 }
@@ -190,23 +207,15 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
         fatal("extending `Date` is unsupported (a Date's [[DateValue]] is created by the "
               "runtime's own constructor, so a subclass's instances would not carry one)");
     }
-    if (rtIsArrayBufferConstructor(base.get())) {
-        fatal("extending `ArrayBuffer` is unsupported (its instances carry [[ArrayBufferData]] "
-              "— the raw block itself, not a Value on an ordinary object — which bronze "
-              "allocates only for the intrinsic, so a subclass's would carry none)");
-    }
-    if (const char* name = rtTypedArrayConstructorName(base.get())) {
-        fatal((std::string("extending `") + name +
-               "` is unsupported (its instances carry [[ViewedArrayBuffer]] and the length "
-               "and offset beside it, which bronze allocates only for the intrinsic, so a "
-               "subclass's would carry none)")
-                  .c_str());
-    }
-    if (const char* name = rtDataViewConstructorName(base.get())) {
-        fatal((std::string("extending `") + name +
-               "` is unsupported (its instances carry [[ViewedArrayBuffer]], which bronze "
-               "allocates only for the intrinsic, so a subclass's would carry none)")
-                  .c_str());
+    // `%TypedArray%` itself is subclassable in the language — `class V extends
+    // TypedArray {}` is legal, and `new V()` is the TypeError 23.2.1.1 throws
+    // — but bronze has no instance to allocate for it (its byte is None) and
+    // the twelve views are what a program extends. Refused by name rather
+    // than left to build a plain object that answers `undefined` to 23.2.3.
+    if (rtIsTypedArrayIntrinsic(base.get())) {
+        fatal("extending the abstract `%TypedArray%` is unsupported (23.2.1.1 makes its "
+              "constructor throw, so a subclass could never be instantiated; extend one of "
+              "the twelve views instead)");
     }
     if (rtIsRegExpConstructor(base.get())) {
         fatal("extending `RegExp` is unsupported (a RegExp's [[RegExpMatcher]] and the "

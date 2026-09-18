@@ -256,18 +256,34 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             return true;
         }
         case HeapKind::TypedArray: {
-            // 10.4.5: an integer index within the length is the ONLY own
-            // property a typed array has. `length`, `buffer`, `byteLength`,
-            // `byteOffset` and `BYTES_PER_ELEMENT` all read like own properties
-            // on the property path and are not: 23.2.3 makes the first four
-            // accessors on `%TypedArray%.prototype` and 23.2.6.2 puts
-            // `BYTES_PER_ELEMENT` on the constructor's prototype.
-            if (!name.isString() || !rtIsIntegerLikeKey(key, index)) return false;
-            if (index >= self.get().asObject<TypedArrayHeader>()->length) return false;
-            // 10.4.5.3 gives an integer-indexed property all three attributes,
-            // which is the struct's default; the value is not reported because
-            // a BigInt element's would allocate.
-            out.enumerable = true;
+            // 10.4.5.1: a NUMERIC key is an element within the length or
+            // nothing — `length`, `buffer`, `byteLength`, `byteOffset` and
+            // `BYTES_PER_ELEMENT` all read like own properties on the property
+            // path and are not: 23.2.3 makes the first four accessors on
+            // `%TypedArray%.prototype` and 23.2.6.2 puts `BYTES_PER_ELEMENT`
+            // on the constructor's prototype. Any other key is the ordinary
+            // question of the shape the view carries (a subclass field, an
+            // expando).
+            if (name.isString() && rtIsIntegerLikeKey(key, index)) {
+                if (index >= self.get().asObject<TypedArrayHeader>()->length) return false;
+                // 10.4.5.1 gives an integer-indexed property all three
+                // attributes, which is the struct's default; the value is not
+                // reported because a BigInt element's would allocate.
+                out.enumerable = true;
+                return true;
+            }
+            if (name.isString() && rtIsCanonicalNumericString(key)) return false;
+            [[fallthrough]];
+        }
+        case HeapKind::ArrayBuffer:
+        case HeapKind::DataView: {
+            // 25.1.6 and 25.3.4 put every member on a prototype — `byteLength`
+            // included, which is an accessor — so what the shape holds is only
+            // what a program put there.
+            auto* obj = self.get().asObject<ObjectHeader>();
+            PropertyInfo info;
+            if (!obj->shape || !obj->shape->lookupProperty(name, info)) return false;
+            fillFromShape(obj, info, out);
             return true;
         }
         case HeapKind::RegExp:
@@ -279,12 +295,6 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             // `flags`, `global` and the rest — is an accessor on the prototype,
             // however much bronze's header-backed answers look like own data.
             return key == "lastIndex";
-        case HeapKind::ArrayBuffer:
-        case HeapKind::DataView:
-            // 25.1.6 and 25.3.4 put every member on a prototype. Both carry
-            // internal slots and no own property at all — `byteLength`
-            // included, which is an accessor.
-            return false;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.1: an export is own, writable and ENUMERABLE, and
             // `@@toStringTag` is the one own key that is not an export.
@@ -399,7 +409,7 @@ uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
             nextVal = rtProxyGetPrototypeOf(walker.get());
             if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             if (!nextVal.isObject()) return Value::fromBool(false).rawBits();
-        } else if (kind != HeapKind::Plain) {
+        } else if (!HeapKind::carriesShape(kind)) {
             return Value::fromBool(target == objectProto).rawBits();
         } else {
             Shape* shape = walker.get().asObject<ObjectHeader>()->shape;
@@ -551,11 +561,11 @@ uint64_t rtObjectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint
     // "[object Object]" and not "[object 42]".
     //
     // For a receiver with no shape the walk has nowhere to go, and the answer
-    // comes from rt_prop.cpp's `toStringTagOf` — the switch over heap kinds
-    // that stands in for the `Map.prototype` and `%TypedArray%.prototype`
-    // objects bronze does not have. The order is what makes that sound: this
-    // read runs first and unconditionally, so anything a program installed is
-    // consulted before any stand-in can be.
+    // comes from rt_prop_symbol.cpp's `toStringTagOf` — the switch over heap
+    // kinds that stands in for the prototype objects bronze does not have.
+    // The order is what makes that sound: this read runs first and
+    // unconditionally, so anything a program installed is consulted before
+    // any stand-in can be.
     Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
     Rooted<Value> found{
         Value(bronze_elem_get(receiver.get().rawBits(), key.get().rawBits()))};
@@ -622,7 +632,7 @@ uint64_t objectProtoSetProto(uint64_t, uint64_t thisBits, uint32_t argc, const u
     // prototype the object already has. Delegating rather than restating is
     // what keeps `a.__proto__ = Array.prototype` and
     // `Object.setPrototypeOf(a, Array.prototype)` from disagreeing.
-    if (self.get().asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN &&
+    if (!HeapKind::carriesShape(self.get().asObject<HeapObjectHeader>()->flags) &&
         !rtSamePrototypeAsCurrent(self.get(), protoVal)) {
         fatal((std::string("unsupported: __proto__ write on ") +
                rtObjectKindName(self.get()) +
@@ -643,7 +653,20 @@ const NativeMethod kObjectProtoMethods[] = {
     {"valueOf", objectProtoValueOf, 0, 0},
 };
 
+// Every `@@species` getter the specification defines has this one body.
+uint64_t speciesGetter(uint64_t, uint64_t self, uint32_t, const uint64_t*) { return self; }
+
 }  // namespace
+
+void rtDefineSpeciesGetter(Rooted<Value>& ctor) {
+    rtEnsureFunctionProperties(ctor);
+    Rooted<Value> box{ctor.get().asObject<FunctionHeader>()->properties};
+    Rooted<Value> key{Value::fromSymbol(rtSymbolSpecies())};
+    Rooted<Value> getter{rtNativeFunction(speciesGetter, 0, "get [Symbol.species]", 0)};
+    Rooted<Value> setter{Value::fromUndefined()};
+    ObjectHeader::defineAccessor(rtHeap(), rtArena(), box, key, getter, setter,
+                                 /*enumerable=*/false);
+}
 
 void rtDefineToStringTag(Rooted<Value>& obj, const char* tag) {
     Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
@@ -694,14 +717,12 @@ void rtObjectProtoCheckMissingMember(const std::string&) {}
 //
 // Skipping the intermediate prototype is exact rather than an approximation,
 // and the reason is a property of those tables rather than luck. A name
-// ECMA-262 puts on `Array.prototype`, `Function.prototype`, `Map.prototype`,
-// `Set.prototype`, `RegExp.prototype`, `%TypedArray%.prototype`,
-// `ArrayBuffer.prototype` or `DataView.prototype` is either answered by that
-// receiver's table or refused by name from it — which is why
-// `Array.prototype.toString` and `%TypedArray%.prototype.toLocaleString` are on
-// their unimplemented lists — so nothing that would SHADOW a member of this
-// object can reach this step. What arrives here is what the intermediate does
-// not define, which is what an ordinary walk would have brought here anyway.
+// ECMA-262 puts on `Array.prototype`, `Function.prototype` or
+// `RegExp.prototype` is either answered by that receiver's table or refused by
+// name from it — which is why `Array.prototype.toString` is on its
+// unimplemented list — so nothing that would SHADOW a member of this object
+// can reach this step. What arrives here is what the intermediate does not
+// define, which is what an ordinary walk would have brought here anyway.
 //
 // The receiver is threaded through so that an accessor found here would run
 // against the value the program wrote rather than against this object. No

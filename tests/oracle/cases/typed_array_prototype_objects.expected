@@ -1,0 +1,62 @@
+function TypedArray 0 true true true
+true true true true
+true TypeError true TypeError true TypeError true TypeError
+at,buffer,byteLength,byteOffset,constructor,copyWithin,entries,every,fill,filter,find,findIndex,findLast,findLastIndex,forEach,includes,indexOf,join,keys,lastIndexOf,length,map,reduce,reduceRight,reverse,set,slice,some,sort,subarray,toLocaleString,toReversed,toSorted,toString,values,with
+from,length,name,of,prototype true true
+value:object w:false e:false c:false value:function w:true e:false c:true value:function w:true e:false c:true get:get length/set:undefined w:undefined e:false c:true get:get buffer/set:undefined w:undefined e:false c:true get:get byteLength/set:undefined w:undefined e:false c:true get:get byteOffset/set:undefined w:undefined e:false c:true
+get:get [Symbol.toStringTag]/set:undefined w:undefined e:false c:true value:function w:true e:false c:true get:get [Symbol.species]/set:undefined w:undefined e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true
+true true undefined true
+Symbol(Symbol.toStringTag),Symbol(Symbol.iterator) Symbol(Symbol.species)
+at:true:true copyWithin:true:true entries:true:true every:true:true fill:true:true filter:true:true find:true:true findIndex:true:true findLast:true:true findLastIndex:true:true forEach:true:true includes:true:true indexOf:true:true join:true:true keys:true:true lastIndexOf:true:true map:true:true reduce:true:true reduceRight:true:true reverse:true:true set:true:true slice:true:true some:true:true sort:true:true subarray:true:true toLocaleString:true:true toReversed:true:true toSorted:true:true values:true:true with:true:true
+values 1 0 from of
+get length get buffer get [Symbol.toStringTag]
+0 undefined Int16Array undefined
+Int8Array 3 1 1 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Int8Array] Int8Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Uint8Array 3 1 1 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Uint8Array] Uint8Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Uint8ClampedArray 3 1 1 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Uint8ClampedArray] Uint8ClampedArray value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Int16Array 3 2 2 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Int16Array] Int16Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Uint16Array 3 2 2 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Uint16Array] Uint16Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Int32Array 3 4 4 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Int32Array] Int32Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Uint32Array 3 4 4 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Uint32Array] Uint32Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Float32Array 3 4 4 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Float32Array] Float32Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+Float64Array 3 8 8 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object Float64Array] Float64Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+BigInt64Array 3 8 8 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object BigInt64Array] BigInt64Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+BigUint64Array 3 8 8 BYTES_PER_ELEMENT,length,name,prototype BYTES_PER_ELEMENT,constructor true true true [object BigUint64Array] BigUint64Array value:number w:false e:false c:false value:number w:false e:false c:false value:function w:true e:false c:true true true
+2
+true true true false
+true TypeError true TypeError true TypeError
+[object Object] [object Object] undefined undefined
+3 3 0 true 3 false true false true false false false true
+0,1,2 0,1,2 {"value":2,"writable":true,"enumerable":true,"configurable":true} undefined undefined
+expando undefined undefined undefined 3 0,1,2,tag 0,1,2,tag {"0":1,"1":2,"2":3,"tag":"expando"} {"v":{"0":1,"1":2,"2":3,"tag":"expando"}}
+false true true true 1 undefined 0,1,2
+0,1,2,hidden 3 false
+true TypeError true TypeError true TypeError 42 7
+0;1;2;
+{"0":4,"1":5} 0,1 true false 7 true 9 true true false
+true TypeError true TypeError true false false false
+5 undefined false
+3-1-2 6,2,4 2 2 true 6
+3 12 2 true
+true TypeError true TypeError true TypeError true TypeError
+true TypeError true TypeError true TypeError true TypeError
+true TypeError true TypeError true TypeError undefined
+true TypeError true TypeError true TypeError undefined [object Object]
+true TypeError true TypeError 1,2 true 0,3 2
+true true true 3.5 4 4 4 true true
+true true 7.5 true true true true false false false
+true true 3 [object Float32Array] Float32Array {"0":1.5,"1":0,"2":0,"3":2} 1.5,0,0,2
+2 2,1 true true 2,4
+false true true true
+true false undefined 0+0 2 [object Object]
+true TypeError no throw 0 0
+true [object Array Iterator] {"value":7,"done":false} [[0,1],[1,2]] 0,1
+custom 1,2 custom 1,2
+3,2,1 5,4 1,2
+swapped swapped
+9,8 true
+null undefined 2 undefined 1,2 2
+true function true TypeError true TypeError undefined 0
+true false true true
+2,4 undefined true BYTES_PER_ELEMENT,constructor,double
+undefined BYTES_PER_ELEMENT,constructor

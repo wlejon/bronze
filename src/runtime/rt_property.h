@@ -89,12 +89,6 @@ void rtCheckFunctionMember(const std::string& key);
 // the property EXISTS and only its value is missing — where a READ of the same
 // name is the hard error above.
 bool rtArrayMemberUnimplemented(const std::string& key);
-// The typed-array table takes the RECEIVER's constructor name, so the message
-// says `Uint8Array.prototype.sort` and not `%TypedArray%.prototype.sort`: nine
-// views share one implementation, and a diagnostic that forgot which one the
-// program was holding would be a worse message for the sake of the
-// implementation's convenience.
-void rtCheckTypedArrayMember(const char* kindName, const std::string& key);
 
 // ToPropertyKey (7.1.19) into the immortal arena form a DictEntry can hold, and
 // own-property existence over it. Both are shared by the `Object` statics and

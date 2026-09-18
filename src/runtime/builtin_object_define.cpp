@@ -39,11 +39,13 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -471,15 +473,52 @@ static Value descriptorObjectOf(const DecodedDescriptor& d, Rooted<Value>& value
     return out.get();
 }
 
-// 10.1.6.3, 10.4.2.1 or 10.5.6, by the receiver's kind, over a table the
-// receiver keeps somewhere: a function's statics box, an array's three stories
-// above, a proxy's `defineProperty` trap, everything else its own shape.
+// 10.4.5.3 [[DefineOwnProperty]] on a typed array, for the NUMERIC half of
+// its keys. A valid index takes a data descriptor whose attributes do not
+// contradict the element's fixed `{ writable, enumerable, configurable: true }`
+// and stores the value (step 1.b.iv-ix); an accessor, or any attribute set to
+// false, is refused; an invalid index is refused outright (1.b.i). Returns
+// false with `answered` clear for a name, which the shape then takes.
+static bool applyTypedArrayDescriptor(Rooted<Value>& self, PropertyKey name,
+                                      const DecodedDescriptor& d, Rooted<Value>& value,
+                                      bool throwOnRefusal, bool& answered) {
+    answered = false;
+    if (!name.isString()) return false;
+    const std::string key = rtUtf8Chars(name.string());
+    uint32_t index = 0;
+    const bool isIndex = rtIsIntegerLikeKey(key, index);
+    if (!isIndex && !rtIsCanonicalNumericString(key)) return false;
+    answered = true;
+    if (!isIndex || index >= self.get().asObject<TypedArrayHeader>()->length) {
+        return refuseDefine(throwOnRefusal, "Cannot define property " + key +
+                                                ": a typed array has no such element");
+    }
+    if (d.hasGet || d.hasSet || (d.hasConfigurable && !d.wantConfigurable) ||
+        (d.hasEnumerable && !d.wantEnumerable) || (d.hasWritable && !d.wantWritable)) {
+        return refuseDefine(throwOnRefusal, "Cannot redefine property: " + key);
+    }
+    if (d.hasValue) {
+        rtTypedArraySetElement(self, index, value.get());
+        if (rtExceptionPending()) return false;
+    }
+    return true;
+}
+
+// 10.1.6.3, 10.4.2.1, 10.4.5.3 or 10.5.6, by the receiver's kind, over a table
+// the receiver keeps somewhere: a function's statics box, an array's three
+// stories above, a typed array's elements, a proxy's `defineProperty` trap,
+// everything else its own shape.
 static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const DecodedDescriptor& d,
                             Rooted<Value>& value, Rooted<Value>& getter, Rooted<Value>& setter,
                             bool throwOnRefusal) {
     const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
     if (kind == HeapKind::Array) {
         return applyArrayDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
+    }
+    if (kind == HeapKind::TypedArray) {
+        bool answered = false;
+        const bool ok = applyTypedArrayDescriptor(self, name, d, value, throwOnRefusal, answered);
+        if (answered) return ok;
     }
     if (kind == HeapKind::Proxy) {
         // The key as an ordinary heap string for the trap to hold, not the
