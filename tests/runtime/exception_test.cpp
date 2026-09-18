@@ -180,11 +180,11 @@ TEST_CASE("an error message survives a collection") {
 }
 
 TEST_CASE("stack trace formatter over a synthetic call frame chain") {
-    bronze_fn_desc descBottom{"bottom", "app.js", 10, 2, 0};
-    bronze_fn_desc descMiddle{"Greeter.greet", "greeter.js", 20, 5, 0};
-    bronze_fn_desc descCtor{"Maker", "maker.js", 30, 1, BRONZE_FN_DESC_CONSTRUCTOR};
-    bronze_fn_desc descBuiltin{"Array.forEach", "", 0, 0, BRONZE_FN_DESC_BUILTIN};
-    bronze_fn_desc descAnon{"", "anon.js", 40, 8, 0};
+    bronze_fn_desc descBottom{"bottom", "app.js", 10, 2, 0, 0, nullptr};
+    bronze_fn_desc descMiddle{"Greeter.greet", "greeter.js", 20, 5, 0, 0, nullptr};
+    bronze_fn_desc descCtor{"Maker", "maker.js", 30, 1, BRONZE_FN_DESC_CONSTRUCTOR, 0, nullptr};
+    bronze_fn_desc descBuiltin{"Array.forEach", "", 0, 0, BRONZE_FN_DESC_BUILTIN, 0, nullptr};
+    bronze_fn_desc descAnon{"", "anon.js", 40, 8, 0, 0, nullptr};
 
     bronze_call_frame f1{nullptr, &descBottom, 0, 0};
     bronze_call_frame f2{&f1, &descMiddle, 22, 10};

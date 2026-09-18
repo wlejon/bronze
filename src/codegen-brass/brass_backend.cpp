@@ -629,11 +629,21 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         roSec.emit32(fn.descFlags);
         roSec.emit32(0);
 
+        brass::object::ObjectRelocation codeReloc;
+        codeReloc.offset = roSec.data.size();
+        codeReloc.symbol_name = (uniqueNames[i] == "main")
+            ? (entrySymbol_.empty() ? "main" : entrySymbol_)
+            : ("__wrapper_" + uniqueNames[i]);
+        codeReloc.kind = brass::object::RelocKind::Abs64;
+        codeReloc.addend = 0;
+        roSec.relocations.push_back(codeReloc);
+        roSec.emit64(0);
+
         std::string descSymName = moduleSym("__bronze_fn_desc_" + uniqueNames[i]);
         if (auto* sym = obj.find_symbol(descSymName)) {
             sym->section_index = obj.get_section_index(roSecName);
             sym->value = descOffset;
-            sym->size = 32;
+            sym->size = 40;
             sym->binding = brass::object::SymbolBinding::Global;
             sym->type = brass::object::SymbolType::Object;
         } else {
@@ -641,7 +651,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             descSym.name = descSymName;
             descSym.section_index = obj.get_section_index(roSecName);
             descSym.value = descOffset;
-            descSym.size = 32;
+            descSym.size = 40;
             descSym.binding = brass::object::SymbolBinding::Global;
             descSym.type = brass::object::SymbolType::Object;
             obj.add_symbol(std::move(descSym));

@@ -540,8 +540,8 @@ void rtRunThenableJob(Rooted<Value>& promise, Rooted<Value>& thenable, Rooted<Va
 
 std::string rtPromiseRejectionText(Value promise) {
     const Value reason = readSlot(promise, PromiseSlot::Result);
-    if (std::string text; rtIsErrorInstance(reason) && rtErrorText(reason, text)) {
-        return text;
+    if (rtIsErrorInstance(reason)) {
+        return rtInspectErrorWithStack(reason);
     }
     // A non-Error reason is reported the way console.log would show it, for
     // the reason rtUncaughtText gives: `reject(7)` and `reject('7')` are

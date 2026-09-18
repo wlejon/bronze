@@ -786,8 +786,6 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_exception_pending,   BRONZE_ABI_I32,  (BRONZE_ABI_NOARGS)) \
     X(bronze_gc_frame_push,       BRONZE_ABI_FRAMEPTR, (BRONZE_ABI_U32)) \
     X(bronze_gc_frame_pop,        BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
-    X(bronze_call_frame_push,     BRONZE_ABI_VOID, (BRONZE_ABI_VPTR)) \
-    X(bronze_call_frame_pop,      BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     X(bronze_register_key_manifest, BRONZE_ABI_VOID, (BRONZE_ABI_PU8, BRONZE_ABI_MU32)) \
     X(bronze_print_f64,           BRONZE_ABI_VOID, (BRONZE_ABI_F64)) \
     X(bronze_print_i32,           BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
@@ -1476,6 +1474,7 @@ typedef struct bronze_fn_desc {
     uint32_t def_col;
     uint32_t flags;
     uint32_t reserved;
+    const void* code;
 } bronze_fn_desc;
 
 typedef struct bronze_call_frame {

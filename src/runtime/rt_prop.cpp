@@ -231,7 +231,14 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
         }
         if (!site) site = rtKeyCacheSite(keyIndex);
         if (!ki.isElemIndex && site && site->ways[0].isRealShape()) {
+            // The filled way is usually the intrinsic's own, but a site that
+            // saw a plain object first may meet its first string before any
+            // string walk built `String.prototype` — and building it
+            // allocates, so the receiver (a movable heap string) is rooted
+            // across the fetch and re-read after it.
+            Rooted<Value> self{objVal};
             const Value proto = rtStringPrototype();
+            objVal = self.get();
             if (proto.isObject()) {
                 auto* holder = proto.asObject<ObjectHeader>();
                 InlineCache* hit = site->find(holder->shape, rtIcWayLimit());

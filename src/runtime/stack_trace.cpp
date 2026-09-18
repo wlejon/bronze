@@ -99,10 +99,10 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
 
     if (skipFn.isObject() && skipFn.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
         FunctionHeader* fn = skipFn.asObject<FunctionHeader>();
-        std::string targetName = fn->name ? rtUtf8Chars(fn->name) : "";
+        const void* targetCode = reinterpret_cast<const void*>(fn->code);
         bronze_call_frame* match = nullptr;
         for (bronze_call_frame* f = cur; f != nullptr; f = f->prev) {
-            if (f->desc && f->desc->name && targetName == f->desc->name) {
+            if (f->desc && targetCode != nullptr && f->desc->code == targetCode) {
                 match = f;
                 break;
             }
