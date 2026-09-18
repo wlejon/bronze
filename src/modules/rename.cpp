@@ -336,6 +336,7 @@ private:
         } else if (auto* sm = dynamic_cast<ast::SuperMember*>(&e)) {
             if (sm->baseExpr) expr(*sm->baseExpr);
             else rewrite(sm->baseName);
+            if (sm->propertyExpr) expr(*sm->propertyExpr);
         } else if (auto* spr = dynamic_cast<ast::SpreadElement*>(&e)) {
             expr(*spr->argument);
         } else if (auto* y = dynamic_cast<ast::YieldExpr*>(&e)) {

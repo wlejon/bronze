@@ -499,6 +499,26 @@ void Lowerer::emitDerivedCtorReturn(Value val, il::Function& ilFn) {
 // ordinary property reads.
 std::optional<Lowerer::Value> Lowerer::lowerSuperLookupStart(const ast::SuperMember& sm,
                                                              il::Function& ilFn) {
+    if (sm.fromObjectLiteral) {
+        uint32_t depth = 0;
+        uint32_t index = 0;
+        if (!findEnclosingEnvVar(sm.baseName, depth, index)) {
+            diags_.error(sm.span, "internal: no environment slot for home object '" + sm.baseName + "'");
+            return std::nullopt;
+        }
+        auto homeVal = emitEnvGet(depth, index, ilFn);
+        const uint32_t protoFnIdx = registerExternalFunction(
+            "bronze_get_prototype_of", il::Type::Dynamic, {il::Type::Dynamic});
+        il::ValueId protoRes = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::Call;
+        inst.type = il::Type::Dynamic;
+        inst.result = protoRes;
+        inst.operands = {homeVal.id};
+        inst.calleeIndex = protoFnIdx;
+        emitInst(ilFn, inst);
+        return Value{protoRes, il::Type::Dynamic};
+    }
     std::optional<Value> baseVal;
     if (sm.baseExpr) {
         baseVal = lowerExpr(*sm.baseExpr, ilFn);
@@ -531,6 +551,25 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* 
     // `prop.get` when accessors landed.
     auto thisVal = lowerThisValue(sm->span, ilFn);
     if (!thisVal) return std::nullopt;
+
+    if (sm->propertyExpr != nullptr) {
+        auto keyOpt = lowerExpr(*sm->propertyExpr, ilFn);
+        if (!keyOpt) return std::nullopt;
+        auto keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+
+        const uint32_t elemGetFnIdx = registerExternalFunction(
+            "bronze_super_elem_get", il::Type::Dynamic,
+            {il::Type::Dynamic, il::Type::Dynamic, il::Type::Dynamic});
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::Call;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = {protoVal.id, keyBoxed.id, boxValueIfNeeded(*thisVal, ilFn).id};
+        inst.calleeIndex = elemGetFnIdx;
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::Dynamic};
+    }
 
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;

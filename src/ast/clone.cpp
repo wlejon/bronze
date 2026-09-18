@@ -227,7 +227,9 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         res->baseName = sm->baseName;
         if (sm->baseExpr) res->baseExpr = cloneExpr(*sm->baseExpr, origins);
         res->property = sm->property;
+        if (sm->propertyExpr) res->propertyExpr = cloneExpr(*sm->propertyExpr, origins);
         res->fromStatic = sm->fromStatic;
+        res->fromObjectLiteral = sm->fromObjectLiteral;
         return res;
     }
     if (const auto* y = dynamic_cast<const YieldExpr*>(&expr)) {
@@ -259,6 +261,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         res->span = obj->span;
         res->parenthesized = obj->parenthesized;
         res->isModuleNamespace = obj->isModuleNamespace;
+        res->homeName = obj->homeName;
         for (const auto& p : obj->props) {
             ObjectProp prop;
             prop.key = p.key;

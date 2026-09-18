@@ -484,6 +484,9 @@ public:
         for (const auto& a : n.args) a->accept(*this);
     }
     void visit(const ast::SuperMember& n) override {
+        if (n.propertyExpr) {
+            n.propertyExpr->accept(*this);
+        }
         if (revealsConstructor(n.property)) {
             const auto* id = classIdent(n.baseExpr.get());
             poison(id != nullptr ? id->name : n.baseName,

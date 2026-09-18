@@ -108,6 +108,7 @@ public:
     }
     void visit(const ast::SuperMember& n) override {
         if (n.baseExpr) n.baseExpr->accept(*this);
+        if (n.propertyExpr) n.propertyExpr->accept(*this);
     }
     void visit(const ast::SpreadElement& n) override { n.argument->accept(*this); }
     void visit(const ast::YieldExpr& n) override { n.argument->accept(*this); }

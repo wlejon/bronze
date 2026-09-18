@@ -154,6 +154,7 @@ public:
     }
     void visit(const ast::SuperMember& s) override {
         if (s.baseExpr) scan(s.baseExpr.get());
+        if (s.propertyExpr) scan(s.propertyExpr.get());
     }
     void visit(const ast::YieldExpr& y) override { scan(y.argument.get()); }
     void visit(const ast::DynamicImportExpr& di) override {

@@ -339,12 +339,17 @@ struct SuperMember final : Expr {
     std::string baseName;
     ExprPtr baseExpr;
     std::string property;
+    ExprPtr propertyExpr;
     // Written in a STATIC element — a static method, accessor, field
     // initializer or block. The lookup then starts at the heritage itself,
     // the constructor's [[Prototype]], where an instance element's starts at
     // its `prototype` (13.3.7.1: HomeObject.[[GetPrototypeOf]](), and the
     // home object of a static element is the constructor).
     bool fromStatic = false;
+    // Written inside an object-literal method. The lookup starts at the
+    // runtime prototype of the literal itself (dynamic HomeObject.[[GetPrototypeOf]]()),
+    // and baseName is the closure-environment slot holding the home object.
+    bool fromObjectLiteral = false;
     void accept(Visitor& v) const override;
 };
 
@@ -454,6 +459,9 @@ struct ObjectLit final : Expr {
     // instruction over its result. Nothing but src/modules/link.cpp sets it,
     // and no source syntax can.
     bool isModuleNamespace = false;
+    // When non-empty, methods inside this object literal access `super`, and
+    // this names the synthetic closure environment variable holding the home object.
+    std::string homeName;
     void accept(Visitor& v) const override;
 };
 

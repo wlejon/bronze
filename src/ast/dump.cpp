@@ -191,7 +191,13 @@ public:
         emit(")");
     }
     void visit(const SuperMember& n) override {
-        emit("(super-member " + n.baseName + "." + n.property + ")");
+        if (n.propertyExpr) {
+            emit("(super-member-computed " + n.baseName);
+            indented([&] { n.propertyExpr->accept(*this); });
+            emit(")");
+        } else {
+            emit("(super-member " + n.baseName + "." + n.property + ")");
+        }
     }
     void visit(const ClassDecl& n) override {
         emit("(class " + n.name + (n.superName.empty() ? "" : " extends " + n.superName));

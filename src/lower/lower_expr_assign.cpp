@@ -400,16 +400,39 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         const bool compound = bin->op != ast::BinaryOp::Assign;
         std::optional<Value> curVal;
-        if (compound) {
-            il::ValueId readId = ilFn.valueCount++;
-            il::Instruction readInst;
-            readInst.op = il::Op::SuperGet;
-            readInst.type = il::Type::Dynamic;
-            readInst.result = readId;
-            readInst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id};
-            readInst.keyIndex = getKeyConstantIndex(sm->property);
-            emitInst(ilFn, readInst);
-            curVal = Value{readId, il::Type::Dynamic};
+        std::optional<Value> keyBoxed;
+
+        if (sm->propertyExpr != nullptr) {
+            auto keyOpt = lowerExpr(*sm->propertyExpr, ilFn);
+            if (!keyOpt) return std::nullopt;
+            keyBoxed = boxValueIfNeeded(*keyOpt, ilFn);
+
+            if (compound) {
+                const uint32_t elemGetFnIdx = registerExternalFunction(
+                    "bronze_super_elem_get", il::Type::Dynamic,
+                    {il::Type::Dynamic, il::Type::Dynamic, il::Type::Dynamic});
+                il::ValueId readId = ilFn.valueCount++;
+                il::Instruction readInst;
+                readInst.op = il::Op::Call;
+                readInst.type = il::Type::Dynamic;
+                readInst.result = readId;
+                readInst.operands = {protoVal.id, keyBoxed->id, boxValueIfNeeded(*thisVal, ilFn).id};
+                readInst.calleeIndex = elemGetFnIdx;
+                emitInst(ilFn, readInst);
+                curVal = Value{readId, il::Type::Dynamic};
+            }
+        } else {
+            if (compound) {
+                il::ValueId readId = ilFn.valueCount++;
+                il::Instruction readInst;
+                readInst.op = il::Op::SuperGet;
+                readInst.type = il::Type::Dynamic;
+                readInst.result = readId;
+                readInst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id};
+                readInst.keyIndex = getKeyConstantIndex(sm->property);
+                emitInst(ilFn, readInst);
+                curVal = Value{readId, il::Type::Dynamic};
+            }
         }
 
         auto rhsVal = lowerExpr(*bin->rhs, ilFn);
@@ -419,17 +442,39 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                                : *rhsVal;
         auto storedBoxed = boxValueIfNeeded(stored, ilFn);
 
-        il::Instruction setInst;
-        setInst.op = il::Op::SuperSet;
-        setInst.type = il::Type::Void;
-        setInst.result = il::kNoValue;
-        setInst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id, storedBoxed.id};
-        setInst.keyIndex = getKeyConstantIndex(sm->property);
-        // The reference this write goes through is strict exactly when the code
-        // it was written in is, which for `super.k = v` is every class body
-        // (15.7) and any other body a directive raised.
-        setInst.immI32 = strictFlag();
-        emitInst(ilFn, setInst);
+        if (sm->propertyExpr != nullptr) {
+            const uint32_t elemSetFnIdx = registerExternalFunction(
+                "bronze_super_elem_set", il::Type::Void,
+                {il::Type::Dynamic, il::Type::Dynamic, il::Type::Dynamic, il::Type::Dynamic, il::Type::Bool});
+            il::ValueId strictVal = ilFn.valueCount++;
+            il::Instruction boolInst;
+            boolInst.op = il::Op::ConstBool;
+            boolInst.type = il::Type::Bool;
+            boolInst.result = strictVal;
+            boolInst.immI32 = strictFlag() ? 1 : 0;
+            emitInst(ilFn, boolInst);
+
+            il::Instruction setInst;
+            setInst.op = il::Op::Call;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {protoVal.id, keyBoxed->id, boxValueIfNeeded(*thisVal, ilFn).id,
+                                storedBoxed.id, strictVal};
+            setInst.calleeIndex = elemSetFnIdx;
+            emitInst(ilFn, setInst);
+        } else {
+            il::Instruction setInst;
+            setInst.op = il::Op::SuperSet;
+            setInst.type = il::Type::Void;
+            setInst.result = il::kNoValue;
+            setInst.operands = {protoVal.id, boxValueIfNeeded(*thisVal, ilFn).id, storedBoxed.id};
+            setInst.keyIndex = getKeyConstantIndex(sm->property);
+            // The reference this write goes through is strict exactly when the code
+            // it was written in is, which for `super.k = v` is every class body
+            // (15.7) and any other body a directive raised.
+            setInst.immI32 = strictFlag();
+            emitInst(ilFn, setInst);
+        }
         return storedBoxed;
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {

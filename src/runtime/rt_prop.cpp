@@ -492,8 +492,20 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("super property read with an unregistered key index");
 
+    if (protoVal.isNull() || protoVal.isUndefined()) {
+        return rtThrowTypeError("Cannot read properties of " +
+                                std::string(protoVal.isNull() ? "null" : "undefined") +
+                                " (reading '" + std::string(rtKeyString(keyIndex)) + "')")
+            .rawBits();
+    }
+
     Rooted<Value> receiver{Value(thisBits)};
     Rooted<Value> protoRoot{protoVal};
+
+    if (protoVal.isObject() && protoVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        Rooted<Value> key(Value::fromString(keyHeader));
+        return rtProxyGet(protoRoot.get(), key.get(), receiver.get()).rawBits();
+    }
 
     // A STATIC element's `super.k`: the holder is the base CONSTRUCTOR, whose
     // statics live in its property box and whose inherited statics live up
@@ -533,6 +545,59 @@ uint64_t bronze_super_get(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBi
     return protoRoot.get()
         .asObject<ObjectHeader>()
         ->getProp(rtHeap(), key, /*ic=*/nullptr, receiver.slot_ptr())
+        .rawBits();
+}
+
+uint64_t bronze_super_elem_get(uint64_t protoBits, uint64_t keyBits, uint64_t thisBits) {
+    Value protoVal(protoBits);
+    if (protoVal.isNull() || protoVal.isUndefined()) {
+        return rtThrowTypeError("Cannot read properties of " +
+                                std::string(protoVal.isNull() ? "null" : "undefined"))
+            .rawBits();
+    }
+    Rooted<Value> protoRoot{protoVal};
+    Rooted<Value> keyRoot{Value(keyBits)};
+    Rooted<Value> receiver{Value(thisBits)};
+
+    keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    if (protoVal.isObject() && protoVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        return rtProxyGet(protoRoot.get(), keyRoot.get(), receiver.get()).rawBits();
+    }
+
+    if (protoVal.isObject() && protoVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        Rooted<Value> props{protoVal.asObject<FunctionHeader>()->properties};
+        if (props.get().isObject()) {
+            const uint64_t objProtoBits = rtObjectPrototype().rawBits();
+            ObjectHeader* box = props.get().asObject<ObjectHeader>();
+            const PropertyKey pkey = PropertyKey::fromValue(keyRoot.get());
+            PropertyInfo info;
+            bool found = box->shape && box->shape->lookupProperty(pkey, info);
+            for (uint32_t depth = 1; !found && depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+                ObjectHeader* ancestor = box->protoAncestor(depth);
+                if (!ancestor || Value::fromObject(ancestor).rawBits() == objProtoBits) break;
+                found = ancestor->shape && ancestor->shape->lookupProperty(pkey, info);
+            }
+            if (found) {
+                return box->getProp(rtHeap(), keyRoot, /*ic=*/nullptr, receiver.slot_ptr()).rawBits();
+            }
+        }
+        if (keyRoot.get().isString()) {
+            StringHeader* sh = keyRoot.get().asObject<StringHeader>();
+            return rtFunctionMember(protoRoot.get(), rtUtf8Chars(sh), sh, nullptr);
+        }
+        return Value::fromUndefined().rawBits();
+    }
+
+    if (!protoVal.isObject() ||
+        !HeapKind::carriesShape(protoVal.asObject<HeapObjectHeader>()->flags)) {
+        return bronze_elem_get(protoRoot.get().rawBits(), keyRoot.get().rawBits());
+    }
+
+    return protoRoot.get()
+        .asObject<ObjectHeader>()
+        ->getProp(rtHeap(), keyRoot, /*ic=*/nullptr, receiver.slot_ptr())
         .rawBits();
 }
 

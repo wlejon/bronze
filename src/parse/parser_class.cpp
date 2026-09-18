@@ -207,6 +207,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
 
     // Every `super` inside a method belongs to THIS class, and the parser is
     // the only place that knows which class that is.
+    const SuperBindingKind savedSuperKind = superBindingKind_;
     const std::string savedSuper = currentClassSuper_;
     const ast::Expr* savedSuperExpr = currentClassSuperExpr_;
     const bool savedInMethod = inClassMethod_;
@@ -214,6 +215,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
     currentClassSuper_ = superName;
     currentClassSuperExpr_ = superClass;
     inClassMethod_ = true;
+    superBindingKind_ = SuperBindingKind::Class;
 
     // A ClassElementName is a PropertyName OR a PrivateIdentifier (15.7), and
     // the four places a member name is read all need both spellings.
@@ -528,6 +530,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
     currentClassSuperExpr_ = savedSuperExpr;
     inClassMethod_ = savedInMethod;
     inStaticElement_ = savedInStatic;
+    superBindingKind_ = savedSuperKind;
     if (!ok) return false;
     if (!expect(TokenKind::RBrace, "'}' to close a class body")) return false;
 

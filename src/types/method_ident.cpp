@@ -201,6 +201,7 @@ public:
 
         if (const auto* sup = dynamic_cast<const ast::SuperMember*>(n.callee.get())) {
             if (sup->baseExpr) consume(*sup->baseExpr);
+            if (sup->propertyExpr) consume(*sup->propertyExpr);
             return;
         }
         if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.callee.get())) {
@@ -248,6 +249,7 @@ public:
             }
         }
         if (n.baseExpr) consume(*n.baseExpr);
+        if (n.propertyExpr) consume(*n.propertyExpr);
     }
 
     void visit(const ast::Unary& n) override { consume(*n.operand); }

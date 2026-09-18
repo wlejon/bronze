@@ -241,7 +241,9 @@ ExprPtr Parser::parseAsyncArrow() {
 std::unique_ptr<ast::FunctionExpr> Parser::parseAsyncMethodTail(const std::string& name,
                                                                 Span defSpan,
                                                                 bool clearSuper,
-                                                                bool isGenerator) {
+                                                                bool isGenerator,
+                                                                const std::string& homeName,
+                                                                bool* usedSuper) {
     auto fn = std::make_unique<FunctionExpr>();
     // The `async` keyword's span, not the name's: 15.8's MethodDefinition
     // starts there, and so does the text `toString` returns.
@@ -250,17 +252,35 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAsyncMethodTail(const std::strin
     fn->isGenerator = isGenerator;
     fn->kind = ast::FunctionKind::Method;
 
+    const auto savedSuperKind = superBindingKind_;
+    const auto savedHomeName = currentHomeObjectName_;
+    auto* savedHomeUsed = currentHomeObjectUsedSuper_;
     const bool savedInClassMethod = inClassMethod_;
     const std::string savedClassSuper = currentClassSuper_;
+    const auto* savedSuperExpr = currentClassSuperExpr_;
     if (clearSuper) {
+        if (!homeName.empty()) {
+            superBindingKind_ = SuperBindingKind::ObjectLiteral;
+            currentHomeObjectName_ = homeName;
+            currentHomeObjectUsedSuper_ = usedSuper;
+        } else {
+            superBindingKind_ = SuperBindingKind::None;
+            currentHomeObjectName_.clear();
+            currentHomeObjectUsedSuper_ = nullptr;
+        }
         inClassMethod_ = false;
         currentClassSuper_.clear();
+        currentClassSuperExpr_ = nullptr;
     }
     GeneratorScopeGuard guard(*this);
     const bool ok = parseAsyncFnTail(*fn);
     if (clearSuper) {
+        superBindingKind_ = savedSuperKind;
+        currentHomeObjectName_ = savedHomeName;
+        currentHomeObjectUsedSuper_ = savedHomeUsed;
         inClassMethod_ = savedInClassMethod;
         currentClassSuper_ = savedClassSuper;
+        currentClassSuperExpr_ = savedSuperExpr;
     }
     if (!ok || diags_.hasErrors()) return nullptr;
     return fn;

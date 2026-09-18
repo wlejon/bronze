@@ -839,3 +839,8 @@ bool rtObjectCheckMissingMember(Value obj, const std::string& key) {
 }
 
 }  // namespace bronze::runtime
+
+extern "C" uint64_t bronze_get_prototype_of(uint64_t objBits) {
+    uint64_t argv[1] = {objBits};
+    return bronze::runtime::objectGetPrototypeOf(0, 0, 1, argv);
+}

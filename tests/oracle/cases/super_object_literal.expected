@@ -1,0 +1,21 @@
+hello from obj!
+10
+10
+hello from obj via computed
+40
+21 true
+42 true
+99 true
+1
+NaN
+hello from obj from arrow
+protoA
+greetings from obj!
+50
+80
+Base.methodA:42
+55 true
+20
+7
+8
+resolved-async-super

@@ -465,6 +465,9 @@ ExprPtr Parser::parseObjectLit() {
     auto obj = std::make_unique<ObjectLit>();
     obj->span.begin = openToken.span.begin;
 
+    const std::string homeName = "__home_" + std::to_string(objectHomeOrdinal_++);
+    bool objectUsesSuper = false;
+
     auto methodName = [this](const std::string& key) {
         std::string prefix = fileId_ == 0 ? "obj." : "obj." + std::to_string(fileId_) + ".";
         return prefix + std::to_string(objectMethodOrdinal_++) + "." + key;
@@ -491,7 +494,10 @@ ExprPtr Parser::parseObjectLit() {
             fn->span.begin = star.span.begin;
             fn->kind = ast::FunctionKind::Method;
             fn->name = methodName(prop.key.empty() ? "computed" : prop.key);
-            if (!parseGeneratorTail(*fn)) return nullptr;
+            {
+                ObjectMethodSuperScopeGuard superGuard(*this, homeName, &objectUsesSuper);
+                if (!parseGeneratorTail(*fn)) return nullptr;
+            }
             prop.isMethod = true;
             prop.value = std::move(fn);
             obj->props.push_back(std::move(prop));
@@ -523,7 +529,7 @@ ExprPtr Parser::parseObjectLit() {
                 }
                 auto method = parseAsyncMethodTail(
                     methodName(prop.key.empty() ? "computed" : prop.key), asyncKwSpan,
-                    /*clearSuper=*/true, /*isGenerator=*/true);
+                    /*clearSuper=*/true, /*isGenerator=*/true, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
@@ -540,7 +546,7 @@ ExprPtr Parser::parseObjectLit() {
                     return nullptr;
                 }
                 auto method = parseAsyncMethodTail(methodName("computed"), asyncKwSpan,
-                                                   /*clearSuper=*/true);
+                                                   /*clearSuper=*/true, false, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
@@ -563,7 +569,7 @@ ExprPtr Parser::parseObjectLit() {
                 // so the enclosing class's `super` must not leak in — the
                 // same rule parseMethodTail applies to the plain shorthand.
                 auto method = parseAsyncMethodTail(methodName(prop.key), asyncKwSpan,
-                                                   /*clearSuper=*/true);
+                                                   /*clearSuper=*/true, false, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
@@ -583,7 +589,7 @@ ExprPtr Parser::parseObjectLit() {
             if (!prop.keyExpr) return nullptr;
             if (!expect(TokenKind::RBracket, "']' after a computed property key")) return nullptr;
             if (check(TokenKind::LParen)) {
-                auto method = parseMethodTail(methodName("computed"), openBracket.span);
+                auto method = parseMethodTail(methodName("computed"), openBracket.span, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
@@ -611,6 +617,7 @@ ExprPtr Parser::parseObjectLit() {
                 // FOLLOWING property name makes this an accessor.
                 const AccessorKind kind =
                     prop.key == "get" ? AccessorKind::Getter : AccessorKind::Setter;
+                ObjectMethodSuperScopeGuard superGuard(*this, homeName, &objectUsesSuper);
                 auto accessorFn = parseAccessorMember(kind, prop.key, &prop.keyExpr);
                 if (!accessorFn) return nullptr;
                 prop.accessor = kind;
@@ -626,7 +633,7 @@ ExprPtr Parser::parseObjectLit() {
                 // ordinary function object. The one thing that is not the
                 // same is `super`, and parseMethodTail is where that is dealt
                 // with.
-                auto method = parseMethodTail(methodName(prop.key), nameTok.span);
+                auto method = parseMethodTail(methodName(prop.key), nameTok.span, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
@@ -677,7 +684,7 @@ ExprPtr Parser::parseObjectLit() {
             prop.key = decodeStringLiteral(nameTok.text.substr(1, nameTok.text.size() - 2),
                                            nameTok.span);
             if (check(TokenKind::LParen)) {
-                auto method = parseMethodTail(methodName(prop.key), nameTok.span);
+                auto method = parseMethodTail(methodName(prop.key), nameTok.span, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
@@ -708,7 +715,7 @@ ExprPtr Parser::parseObjectLit() {
             if (!decodeNumericLiteral(numTok.text, numTok.span, lit->value)) return nullptr;
             prop.keyExpr = std::move(lit);
             if (check(TokenKind::LParen)) {
-                auto method = parseMethodTail(methodName("computed"), numTok.span);
+                auto method = parseMethodTail(methodName("computed"), numTok.span, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
                 prop.value = std::move(method);
@@ -736,6 +743,9 @@ ExprPtr Parser::parseObjectLit() {
     }
 
     if (!expect(TokenKind::RBrace, "'}' after object literal")) return nullptr;
+    if (objectUsesSuper) {
+        obj->homeName = homeName;
+    }
     obj->span.end = peek().span.begin;
     return obj;
 }

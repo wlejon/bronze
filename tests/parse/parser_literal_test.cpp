@@ -74,14 +74,19 @@ TEST_CASE("object method shorthand is an ordinary property holding a function") 
 }
 
 TEST_CASE("a method's `super` belongs to its own home object, not the class around it") {
-    // An object literal inside a class method is a different home object, so
-    // `super` in one of its methods does not mean the enclosing class's
-    // parent. bronze has no home-object model, so the honest answer is the
-    // error — not a silent binding to the wrong parent.
+    // An object literal inside a class method has its own home object, so
+    // `super` in one of its methods resolves against that object's prototype.
     const auto out = parseAndDump(
         "class A extends B { m() { const o = { go() { return super.m(); } }; return o; } }\n");
-    CHECK(out.substr(0, 7) == "ERRORS:");
-    CHECK(out.find("super outside a class method") != std::string::npos);
+    CHECK(out.substr(0, 7) != "ERRORS:");
+    CHECK(out.find("(super-member") != std::string::npos);
+
+    // A function expression assigned to a property has no home object (ECMA-262 15.3.3),
+    // so super inside it remains rejected.
+    const auto bad = parseAndDump(
+        "class A extends B { m() { const o = { go: function() { return super.m(); } }; return o; } }\n");
+    CHECK(bad.substr(0, 7) == "ERRORS:");
+    CHECK(bad.find("super outside a class method") != std::string::npos);
 }
 
 TEST_CASE("an object literal accessor is one property with two halves") {

@@ -46,11 +46,22 @@ private:
     uint16_t fileId_ = 0;
     size_t pos_ = 0;
     // Which class a `super` in the body being parsed belongs to, and whether
-    // there is one at all. A class body is the only place `super` is legal, and
-    // the parent it names is known here and nowhere later.
+    // there is one at all. A class body or an object literal method is where
+    // `super` is legal.
+    enum class SuperBindingKind {
+        None,
+        Class,
+        ObjectLiteral,
+    };
+    SuperBindingKind superBindingKind_ = SuperBindingKind::None;
     std::string currentClassSuper_;
     const ast::Expr* currentClassSuperExpr_ = nullptr;
     bool inClassMethod_ = false;
+    // For object literal methods: the name of the synthetic closure slot
+    // holding the home object, and pointer to the outer literal's usage flag.
+    std::string currentHomeObjectName_;
+    bool* currentHomeObjectUsedSuper_ = nullptr;
+    size_t objectHomeOrdinal_ = 0;
     // Whether the class element being parsed is `static`, which decides where
     // a `super.x` inside it starts its lookup (ast::SuperMember::fromStatic).
     bool inStaticElement_ = false;
@@ -254,7 +265,77 @@ private:
     // the '('. The tail is the same production in an object literal and in a
     // class body (ECMA-262 15.4 MethodDefinition), so there is one copy;
     // what differs is what the caller does with the result.
-    std::unique_ptr<ast::FunctionExpr> parseMethodTail(const std::string& name, Span nameSpan);
+    std::unique_ptr<ast::FunctionExpr> parseMethodTail(const std::string& name, Span nameSpan,
+                                                       const std::string& homeName = "",
+                                                       bool* usedSuper = nullptr);
+
+    struct ObjectMethodSuperScopeGuard {
+        Parser& p;
+        SuperBindingKind savedKind;
+        std::string savedHome;
+        bool* savedUsed;
+        bool savedInClass;
+        std::string savedClassSuper;
+        const ast::Expr* savedClassSuperExpr;
+
+        ObjectMethodSuperScopeGuard(Parser& parser, const std::string& homeName, bool* usedSuper)
+            : p(parser),
+              savedKind(p.superBindingKind_),
+              savedHome(p.currentHomeObjectName_),
+              savedUsed(p.currentHomeObjectUsedSuper_),
+              savedInClass(p.inClassMethod_),
+              savedClassSuper(p.currentClassSuper_),
+              savedClassSuperExpr(p.currentClassSuperExpr_) {
+            p.superBindingKind_ = SuperBindingKind::ObjectLiteral;
+            p.currentHomeObjectName_ = homeName;
+            p.currentHomeObjectUsedSuper_ = usedSuper;
+            p.inClassMethod_ = false;
+            p.currentClassSuper_.clear();
+            p.currentClassSuperExpr_ = nullptr;
+        }
+        ~ObjectMethodSuperScopeGuard() {
+            p.superBindingKind_ = savedKind;
+            p.currentHomeObjectName_ = savedHome;
+            p.currentHomeObjectUsedSuper_ = savedUsed;
+            p.inClassMethod_ = savedInClass;
+            p.currentClassSuper_ = savedClassSuper;
+            p.currentClassSuperExpr_ = savedClassSuperExpr;
+        }
+    };
+
+    struct FunctionSuperScopeGuard {
+        Parser& p;
+        SuperBindingKind savedKind;
+        std::string savedHome;
+        bool* savedUsed;
+        bool savedInClass;
+        std::string savedClassSuper;
+        const ast::Expr* savedClassSuperExpr;
+
+        explicit FunctionSuperScopeGuard(Parser& parser)
+            : p(parser),
+              savedKind(p.superBindingKind_),
+              savedHome(p.currentHomeObjectName_),
+              savedUsed(p.currentHomeObjectUsedSuper_),
+              savedInClass(p.inClassMethod_),
+              savedClassSuper(p.currentClassSuper_),
+              savedClassSuperExpr(p.currentClassSuperExpr_) {
+            p.superBindingKind_ = SuperBindingKind::None;
+            p.currentHomeObjectName_.clear();
+            p.currentHomeObjectUsedSuper_ = nullptr;
+            p.inClassMethod_ = false;
+            p.currentClassSuper_.clear();
+            p.currentClassSuperExpr_ = nullptr;
+        }
+        ~FunctionSuperScopeGuard() {
+            p.superBindingKind_ = savedKind;
+            p.currentHomeObjectName_ = savedHome;
+            p.currentHomeObjectUsedSuper_ = savedUsed;
+            p.inClassMethod_ = savedInClass;
+            p.currentClassSuper_ = savedClassSuper;
+            p.currentClassSuperExpr_ = savedClassSuperExpr;
+        }
+    };
 
     // --- parser_generator.cpp: generators ---------------------- The parameter
     // list and body of a generator, with the cursor on the '(' and the `*`
@@ -335,7 +416,9 @@ private:
     // TEXT begins even though its name is already consumed.
     std::unique_ptr<ast::FunctionExpr> parseAsyncMethodTail(const std::string& name,
                                                             Span defSpan, bool clearSuper,
-                                                            bool isGenerator = false);
+                                                            bool isGenerator = false,
+                                                            const std::string& homeName = "",
+                                                            bool* usedSuper = nullptr);
 
     // --- parser_strict.cpp: the Directive Prologue and the early errors -----
     // Restores `strict_` on the way out of a body that may have raised it.

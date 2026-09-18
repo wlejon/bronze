@@ -514,7 +514,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         // which the layouts below do not describe: they hold instance
         // methods, and typing the call by one of those would be typing it by
         // the wrong function.
-        if (sup->fromStatic) return Type::dynamic();
+        if (sup->fromStatic || sup->fromObjectLiteral || sup->propertyExpr != nullptr) return Type::dynamic();
         const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
         if (here == nullptr || here->superName.empty()) {
             if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {

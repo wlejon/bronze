@@ -112,6 +112,7 @@ public:
     void visit(const SuperMember& m) override {
         if (m.baseExpr) m.baseExpr->accept(*this);
         else if (!m.baseName.empty()) mention(m.baseName);
+        if (m.propertyExpr) m.propertyExpr->accept(*this);
     }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }
     void visit(const YieldExpr& y) override { y.argument->accept(*this); }
@@ -330,6 +331,7 @@ public:
     }
     void visit(const SuperMember& m) override {
         if (m.baseExpr) m.baseExpr->accept(*this);
+        if (m.propertyExpr) m.propertyExpr->accept(*this);
     }
     void visit(const SpreadElement& s) override { s.argument->accept(*this); }
     void visit(const DestructuringAssign& d) override {

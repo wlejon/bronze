@@ -8,7 +8,9 @@ namespace bronze {
 
 using namespace ast;
 
+
 StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultName) {
+    FunctionSuperScopeGuard superGuard(*this);
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionDecl>();
     fn->span.begin = kw.span.begin;
@@ -285,7 +287,9 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
 // for the body, which turns that into the existing "super outside a class
 // method" error.
 std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& name,
-                                                           Span nameSpan) {
+                                                           Span nameSpan,
+                                                           const std::string& homeName,
+                                                           bool* usedSuper) {
     auto fn = std::make_unique<FunctionExpr>();
     fn->span.begin = nameSpan.begin;
     fn->name = name;
@@ -295,14 +299,9 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
     if (!expect(TokenKind::RParen, "')' after method parameters")) return nullptr;
     if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
 
-    const bool savedInClassMethod = inClassMethod_;
-    const std::string savedClassSuper = currentClassSuper_;
-    inClassMethod_ = false;
-    currentClassSuper_.clear();
+    ObjectMethodSuperScopeGuard superGuard(*this, homeName, usedSuper);
     GeneratorScopeGuard guard(*this);
     fn->body = parseFunctionBody(fn->strict);
-    inClassMethod_ = savedInClassMethod;
-    currentClassSuper_ = savedClassSuper;
 
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     if (diags_.hasErrors()) return nullptr;
@@ -310,15 +309,49 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
     return fn;
 }
 
-// `super(...)` and `super.m` - only inside a class method, and only in a
-// class that has a parent, which is where the name they resolve against
-// comes from.
+// `super(...)`, `super.m` and `super[e]` — legal inside a class method (with extends)
+// or inside an object-literal method.
 ExprPtr Parser::parseSuper() {
     const Token& kw = advance();  // 'super'
-    if (!inClassMethod_) {
+    if (superBindingKind_ == SuperBindingKind::None) {
         error("unsupported construct: super outside a class method");
         return nullptr;
     }
+    if (superBindingKind_ == SuperBindingKind::ObjectLiteral) {
+        if (check(TokenKind::LParen)) {
+            error("unsupported construct: super() in an object literal method");
+            return nullptr;
+        }
+        if (currentHomeObjectUsedSuper_) {
+            *currentHomeObjectUsedSuper_ = true;
+        }
+        if (match(TokenKind::Dot)) {
+            const Token* member = expectPropertyName("property name after 'super.'");
+            if (!member) return nullptr;
+            auto mem = std::make_unique<SuperMember>();
+            mem->span = {kw.span.begin, member->span.end};
+            mem->baseName = currentHomeObjectName_;
+            mem->property = std::string(member->text);
+            mem->fromObjectLiteral = true;
+            return mem;
+        }
+        if (match(TokenKind::LBracket)) {
+            auto keyExpr = parseAssign();
+            if (!keyExpr || !expect(TokenKind::RBracket, "']' after computed super member")) {
+                return nullptr;
+            }
+            auto mem = std::make_unique<SuperMember>();
+            mem->span = {kw.span.begin, previous().span.end};
+            mem->baseName = currentHomeObjectName_;
+            mem->propertyExpr = std::move(keyExpr);
+            mem->fromObjectLiteral = true;
+            return mem;
+        }
+        error("super must have a property read from it");
+        return nullptr;
+    }
+
+    // superBindingKind_ == SuperBindingKind::Class
     if (currentClassSuper_.empty() && !currentClassSuperExpr_) {
         error("super in a class with no 'extends'");
         return nullptr;
@@ -344,6 +377,19 @@ ExprPtr Parser::parseSuper() {
         mem->fromStatic = inStaticElement_;
         return mem;
     }
+    if (match(TokenKind::LBracket)) {
+        auto keyExpr = parseAssign();
+        if (!keyExpr || !expect(TokenKind::RBracket, "']' after computed super member")) {
+            return nullptr;
+        }
+        auto mem = std::make_unique<SuperMember>();
+        mem->span = {kw.span.begin, previous().span.end};
+        mem->baseName = currentClassSuper_;
+        if (currentClassSuperExpr_) mem->baseExpr = ast::cloneExpr(*currentClassSuperExpr_);
+        mem->propertyExpr = std::move(keyExpr);
+        mem->fromStatic = inStaticElement_;
+        return mem;
+    }
     error("super must be called or have a property read from it");
     return nullptr;
 }
@@ -361,6 +407,7 @@ ExprPtr Parser::parseFunctionExpr() {
         fn->name = std::string(nameTok.text);
     }
 
+    FunctionSuperScopeGuard superGuard(*this);
     GeneratorScopeGuard guard(*this);
     if (isGenerator) {
         if (!parseGeneratorTail(*fn)) return nullptr;

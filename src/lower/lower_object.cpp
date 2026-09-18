@@ -38,12 +38,25 @@ const std::string* devirtualizedKey(const types::InferenceResult* inference,
 
 std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objLit,
                                                       il::Function& ilFn) {
+    const bool needsHomeEnv = !objLit->homeName.empty();
+    if (needsHomeEnv) {
+        pushSyntheticEnv({objLit->homeName}, ilFn);
+    }
+    struct EnvGuard {
+        Lowerer* self;
+        ~EnvGuard() { if (self) self->exitScope(); }
+    } envGuard{needsHomeEnv ? this : nullptr};
+
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = il::Op::CreateObject;
     inst.type = il::Type::Dynamic;
     inst.result = res;
     emitInst(ilFn, inst);
+
+    if (needsHomeEnv) {
+        emitEnvSet(0, 0, Value{res, il::Type::Dynamic}, ilFn);
+    }
 
     for (const auto& prop : objLit->props) {
         // `{ x = 1 }` parses only because `{ x = 1 } = o` might follow: it is

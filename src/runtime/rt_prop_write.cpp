@@ -388,6 +388,12 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
     // static one (`static m() { super.k = v; }`) — the OrdinarySet below
     // steps onto a function's statics box itself.
     Value protoVal(protoBits);
+    if (protoVal.isNull() || protoVal.isUndefined()) {
+        rtThrowTypeError("Cannot set properties of " +
+                         std::string(protoVal.isNull() ? "null" : "undefined") +
+                         " (setting '" + std::string(rtKeyString(keyIndex)) + "')");
+        return;
+    }
     if (!protoVal.isObject() ||
         (!HeapKind::carriesShape(protoVal.asObject<HeapObjectHeader>()->flags) &&
          protoVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function)) {
@@ -402,6 +408,29 @@ void bronze_super_set(uint64_t protoBits, uint32_t keyIndex, uint64_t thisBits,
     Rooted<Value> val{Value(valBits)};
     const SetRefusal refusal = rtOrdinarySetWithReceiver(protoRoot, key, val, receiver);
     rtReportSetRefusal(refusal, strict, rtKeyString(keyIndex));
+}
+
+void bronze_super_elem_set(uint64_t protoBits, uint64_t keyBits, uint64_t thisBits,
+                           uint64_t valBits, bool strict) {
+    Value protoVal(protoBits);
+    if (!protoVal.isObject()) {
+        rtThrowTypeError("Cannot set properties of " +
+                         std::string(protoVal.isNull() ? "null" : "undefined"));
+        return;
+    }
+    Rooted<Value> protoRoot{protoVal};
+    Rooted<Value> keyRoot{Value(keyBits)};
+    Rooted<Value> receiver{Value(thisBits)};
+    Rooted<Value> val{Value(valBits)};
+
+    keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return;
+
+    const SetRefusal refusal = rtOrdinarySetWithReceiver(protoRoot, keyRoot, val, receiver);
+    std::string keyStr = keyRoot.get().isString()
+                             ? std::string(rtUtf8Chars(keyRoot.get().asObject<StringHeader>()))
+                             : "symbol";
+    rtReportSetRefusal(refusal, strict, keyStr);
 }
 
 // A class method, installed on a prototype (or, for a `static`, on the
