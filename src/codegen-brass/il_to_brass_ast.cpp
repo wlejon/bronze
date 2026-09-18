@@ -593,17 +593,23 @@ brass::il::BronzeModuleAST lowerToBrassAst(
 
     for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
         const auto& fn = module.functions[fnIdx];
-        if (fn.blocks.empty()) continue;
 
         brass::il::BronzeFunction bfn;
         bfn.name = (fnIdx < uniqueNames.size() && !uniqueNames[fnIdx].empty())
                        ? uniqueNames[fnIdx]
                        : fn.name;
-        bfn.return_type = mapType(fn.returnType);
+        bfn.return_type = (fn.returnType == il::Type::Bool)
+                              ? brass::il::BronzeType::I32
+                              : mapType(fn.returnType);
         bfn.is_exported = fn.isExported;
 
         for (size_t p = 0; p < fn.params.size(); ++p) {
             bfn.params.push_back({static_cast<uint32_t>(p), mapType(fn.params[p].type)});
+        }
+
+        if (fn.blocks.empty()) {
+            ast.functions.push_back(std::move(bfn));
+            continue;
         }
 
         for (const auto& block : fn.blocks) {

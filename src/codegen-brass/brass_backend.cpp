@@ -238,7 +238,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         auto brassTypeOf = [](il::Type t) -> brass::Type {
             switch (t) {
                 case il::Type::Void: return brass::Type::void_type();
-                case il::Type::Bool: return brass::Type::i32();
+                case il::Type::Bool: return brass::Type::i8();
                 case il::Type::I32: return brass::Type::i32();
                 case il::Type::F64: return brass::Type::f64();
                 case il::Type::Str: return brass::Type::ptr();
@@ -251,9 +251,14 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             const bool isClassSlot = imports[i].name.rfind("class ", 0) == 0;
             std::vector<brass::Type> paramTypes;
             for (const auto& p : decl.params) paramTypes.push_back(brassTypeOf(p.type));
-            const brass::Type retType = brassTypeOf(decl.returnType);
-            brass::Function* thunk = mod.create_function(
-                decl.name, retType, brass::Span<const brass::Type>(paramTypes.data(), paramTypes.size()));
+            const brass::Type retType = decl.returnType == il::Type::Bool
+                                            ? brass::Type::i32()
+                                            : brassTypeOf(decl.returnType);
+            brass::Function* thunk = mod.get_function(decl.name);
+            if (!thunk) {
+                thunk = mod.create_function(
+                    decl.name, retType, brass::Span<const brass::Type>(paramTypes.data(), paramTypes.size()));
+            }
             brass::Builder b(mod);
             b.set_function(thunk);
             brass::BasicBlock* entry = b.append_block("entry");
