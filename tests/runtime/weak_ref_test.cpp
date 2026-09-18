@@ -67,9 +67,7 @@ void quiesce() {
     g_lastHeldText.clear();
 }
 
-Value weakRefTargetSlot(Rooted<Value>& wr) {
-    return wr.get().asObject<WeakRefHeader>()->target();
-}
+Value weakRefTargetSlot(Rooted<Value>& wr) { return rtWeakRefTarget(wr.get()); }
 
 }  // namespace
 
@@ -78,7 +76,7 @@ TEST_CASE("a WeakRef's target survives every collection while something else hol
     quiesce();
 
     Rooted<Value> target{Value(bronze_create_object())};
-    Rooted<Value> wr{rtMakeWeakRef(target)};
+    Rooted<Value> wr{rtNewWeakRef(target)};
 
     for (int i = 0; i < 3; ++i) rtHeap().collect();
 
@@ -96,7 +94,7 @@ TEST_CASE("the weak slot is FORWARDED across a collection, not merely left reada
     quiesce();
 
     Rooted<Value> target{Value(bronze_create_object())};
-    Rooted<Value> wr{rtMakeWeakRef(target)};
+    Rooted<Value> wr{rtNewWeakRef(target)};
     const uint64_t before = weakRefTargetSlot(wr).rawBits();
 
     rtHeap().collect();
@@ -115,7 +113,7 @@ TEST_CASE("KeepDuringJob: a deref'd target outlives its last reference until the
     Rooted<Value> wr{Value::fromUndefined()};
     {
         Rooted<Value> target{Value(bronze_create_object())};
-        wr.set(rtMakeWeakRef(target));
+        wr.set(rtNewWeakRef(target));
         // 26.1.1.1 step 4 and 26.1.3.2 both add the target to [[KeptAlive]].
         CHECK(rtKeptObjectCount() >= 1);
         CHECK(rtWeakRefDeref(wr.get()).rawBits() == target.get().rawBits());
@@ -142,7 +140,7 @@ TEST_CASE("a WeakRef that itself dies leaves the sweep table") {
     const size_t before = rtWeakRefCellCount();
     {
         Rooted<Value> target{Value(bronze_create_object())};
-        Rooted<Value> wr{rtMakeWeakRef(target)};
+        Rooted<Value> wr{rtNewWeakRef(target)};
         CHECK(rtWeakRefCellCount() == before + 1);
     }
     rtClearKeptObjects();
@@ -167,7 +165,7 @@ TEST_CASE("an unregistered symbol can be held weakly and a registered one cannot
     CHECK_FALSE(rtCanBeHeldWeakly(Value::fromDouble(1.0)));
     CHECK_FALSE(rtCanBeHeldWeakly(Value::fromNull()));
 
-    Rooted<Value> wr{rtMakeWeakRef(fresh)};
+    Rooted<Value> wr{rtNewWeakRef(fresh)};
     rtHeap().collect();
     CHECK(weakRefTargetSlot(wr).rawBits() == fresh.get().rawBits());
 }
@@ -177,7 +175,7 @@ TEST_CASE("FinalizationRegistry: a dead target parks its held value, and a JOB c
     quiesce();
 
     Rooted<Value> cb{rtNativeFunction(recordCleanup, 1)};
-    Rooted<Value> reg{rtMakeFinalizationRegistry(cb)};
+    Rooted<Value> reg{rtNewFinalizationRegistry(cb)};
     Rooted<Value> held{Value::fromDouble(42.0)};
     Rooted<Value> noToken{Value::fromUndefined()};
     const size_t cellsBefore = rtFinalizationCellCount();
@@ -218,7 +216,7 @@ TEST_CASE("a held value is retained STRONGLY until its callback has run") {
     quiesce();
 
     Rooted<Value> cb{rtNativeFunction(recordCleanup, 1)};
-    Rooted<Value> reg{rtMakeFinalizationRegistry(cb)};
+    Rooted<Value> reg{rtNewFinalizationRegistry(cb)};
     {
         Rooted<Value> target{Value(bronze_create_object())};
         Rooted<Value> held{
@@ -243,7 +241,7 @@ TEST_CASE("unregister removes a cell before it can ever fire") {
     quiesce();
 
     Rooted<Value> cb{rtNativeFunction(recordCleanup, 1)};
-    Rooted<Value> reg{rtMakeFinalizationRegistry(cb)};
+    Rooted<Value> reg{rtNewFinalizationRegistry(cb)};
     Rooted<Value> token{Value(bronze_create_object())};
     Rooted<Value> held{Value::fromDouble(7.0)};
     const size_t cellsBefore = rtFinalizationCellCount();
@@ -272,7 +270,7 @@ TEST_CASE("an unregister token is held WEAKLY: its death does not drop the regis
     quiesce();
 
     Rooted<Value> cb{rtNativeFunction(recordCleanup, 1)};
-    Rooted<Value> reg{rtMakeFinalizationRegistry(cb)};
+    Rooted<Value> reg{rtNewFinalizationRegistry(cb)};
     Rooted<Value> target{Value(bronze_create_object())};
     Rooted<Value> held{Value::fromDouble(9.0)};
     const size_t cellsBefore = rtFinalizationCellCount();

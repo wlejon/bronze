@@ -1,23 +1,24 @@
-// `WeakMap` and `WeakSet` (ECMA-262 24.3, 24.4) — the constructors and the
-// four methods each defines: get/set/has/delete, add/has/delete.
+// `WeakMap` and `WeakSet` (ECMA-262 24.3, 24.4) — the constructors,
+// %WeakMap.prototype% and %WeakSet.prototype%, and the four methods each
+// defines: get/set/has/delete, add/has/delete.
 //
-// The storage is builtin_map.cpp's table under two kinds of its own
-// (MapHeader::kWeakMapFlags / kWeakSetFlags), and the references it holds are
-// STRONG. That is observably correct today, and the reason is the shape of the
-// API rather than an accident: a WeakMap is non-iterable, has no `size`, and
-// answers only about keys the asker is still holding — so a key kept alive by
-// the table is indistinguishable from one kept alive by the program, except
-// through memory exhaustion. What strong references cost is exactly that:
-// entries whose keys became garbage are never reclaimed. True weakness hangs
-// on the Heap's post-collection hook (heap.h, `set_post_collection_hook`) —
-// the one window in which a dead key's header is still distinguishable from a
-// live key's forwarded one — and lands there when a workload needs it.
+// The storage is builtin_map.cpp's table under two BRANDS of its own, and the
+// references it holds are STRONG. That is observably correct today, and the
+// reason is the shape of the API rather than an accident: a WeakMap is
+// non-iterable, has no `size`, and answers only about keys the asker is still
+// holding — so a key kept alive by the table is indistinguishable from one
+// kept alive by the program, except through memory exhaustion. What strong
+// references cost is exactly that: entries whose keys became garbage are never
+// reclaimed. True weakness hangs on the Heap's post-collection hook (heap.h,
+// `add_post_collection_hook`) — the one window in which a dead key's header is
+// still distinguishable from a live key's forwarded one — and lands there when
+// a workload needs it.
 //
-// The JS surface follows builtin_map.cpp line for line: methods are ordinary
-// function objects handed out by the property path, there is no
-// WeakMap.prototype OBJECT (`WeakMap.prototype` is a named refusal, and
-// `wm instanceof WeakMap` is false — the divergence recorded at the top of
-// builtin_map.cpp, inherited deliberately rather than re-decided here).
+// The JS surface follows builtin_map.cpp line for line: an instance is an
+// ordinary object with [[WeakMapData]] as internal slots, the prototype is a
+// real object with the members on it, and every method opens with the brand
+// test — so `WeakMap.prototype.get.call(new Map(), k)` is the TypeError
+// 24.3.3.3 step 2 names rather than a read of a Map's entries.
 //
 // CanBeHeldWeakly (4.2.1): a key may be an object, or a symbol that is NOT in
 // the `Symbol.for` registry — a registered symbol can always be re-minted from
@@ -33,25 +34,40 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
-#include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/map.h"
+#include "runtime/native_base.h"
+#include "runtime/object.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
 #include "runtime/symbol.h"
 #include "runtime/tls_block.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
 namespace {
 
+// As builtin_map.cpp's record: one per kind, every object a permanent root.
+struct WeakIntrinsics {
+    Value ctor = Value::fromUndefined();
+    Value proto = Value::fromUndefined();
+    Value brand = Value::fromUndefined();
+    Shape* instanceShape = nullptr;
+};
+
+thread_local WeakIntrinsics g_weakMap;
+thread_local WeakIntrinsics g_weakSet;
+
+void ensureWeakIntrinsics();
+
 bool isWeakCollection(Value v) {
-    if (!v.isObject()) return false;
-    const uint16_t f = v.asObject<HeapObjectHeader>()->flags;
-    return f == MapHeader::kWeakMapFlags || f == MapHeader::kWeakSetFlags;
+    return MapHeader::hasBrand(v, g_weakMap.brand) || MapHeader::hasBrand(v, g_weakSet.brand);
 }
 
 // The receiver check every method opens with, for the reason builtin_map.cpp's
@@ -60,15 +76,6 @@ bool isWeakCollection(Value v) {
 bool requireWeakCollection(Value self, const char* method) {
     if (isWeakCollection(self)) return true;
     rtThrowTypeError("Method " + std::string(method) + " called on an incompatible receiver");
-    return false;
-}
-
-// 4.2.1 CanBeHeldWeakly: an object, or a symbol with no entry in the global
-// symbol registry. Everything else can be re-created from what it IS, so
-// holding it weakly would be holding it forever under another name.
-bool canBeHeldWeakly(Value v) {
-    if (v.isObject()) return true;
-    if (v.isSymbol()) return rtSymbolKeyFor(v).isUndefined();
     return false;
 }
 
@@ -99,7 +106,7 @@ uint64_t weakMapGet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     if (!requireWeakCollection(self.get(), "get")) return Value::fromUndefined().rawBits();
     // 24.3.3.3 step 4: a key that cannot be held weakly is not an error here —
     // it simply is not in the table, and `undefined` says so.
-    if (!canBeHeldWeakly(args[0])) return Value::fromUndefined().rawBits();
+    if (!rtCanBeHeldWeakly(args[0])) return Value::fromUndefined().rawBits();
     Rooted<Value> key{args[0]};
     const uint32_t slot = MapHeader::find(rtHeap(), self, key);
     if (slot == UINT32_MAX) return Value::fromUndefined().rawBits();
@@ -113,7 +120,7 @@ uint64_t weakMapSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     // 24.3.3.5 step 4 throws where `get` above answers `undefined`: storing
     // under a key that can never be collected is the mistake the type exists
     // to prevent, so the write is the loud half.
-    if (!canBeHeldWeakly(args[0])) {
+    if (!rtCanBeHeldWeakly(args[0])) {
         return rtThrowTypeError("Invalid value used as weak map key").rawBits();
     }
     Rooted<Value> key{args[0]};
@@ -126,7 +133,7 @@ uint64_t weakSetAdd(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireWeakCollection(self.get(), "add")) return Value::fromUndefined().rawBits();
-    if (!canBeHeldWeakly(args[0])) {
+    if (!rtCanBeHeldWeakly(args[0])) {
         return rtThrowTypeError("Invalid value used in weak set").rawBits();
     }
     Rooted<Value> key{args[0]};
@@ -150,7 +157,7 @@ uint64_t weakMapHas(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireWeakCollection(self.get(), "has")) return Value::fromUndefined().rawBits();
-    if (!canBeHeldWeakly(args[0])) return Value::fromBool(false).rawBits();
+    if (!rtCanBeHeldWeakly(args[0])) return Value::fromBool(false).rawBits();
     Rooted<Value> key{args[0]};
     return Value::fromBool(MapHeader::find(rtHeap(), self, key) != UINT32_MAX).rawBits();
 }
@@ -159,7 +166,7 @@ uint64_t weakMapDelete(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireWeakCollection(self.get(), "delete")) return Value::fromUndefined().rawBits();
-    if (!canBeHeldWeakly(args[0])) return Value::fromBool(false).rawBits();
+    if (!rtCanBeHeldWeakly(args[0])) return Value::fromBool(false).rawBits();
     Rooted<Value> key{args[0]};
     return Value::fromBool(MapHeader::remove(rtHeap(), self, key)).rawBits();
 }
@@ -167,18 +174,27 @@ uint64_t weakMapDelete(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
 // ---- the constructors -------------------------------------------------------
 
 // `new WeakMap(iterable)` / `new WeakSet(iterable)` — 24.3.1.1 / 24.4.1.1.
-// The iterable is walked through the same protocol Map's constructor uses;
-// what differs is only the per-item validation above.
-uint64_t buildWeakCollection(Rooted<Value>& arg, uint16_t flags) {
-    Rooted<Value> self{Value::fromObject(MapHeader::create(rtHeap(), flags))};
+// The receiver is the object `new` already allocated from NewTarget
+// (builtin_map.cpp's `buildCollection` says why filling it in place is what
+// makes a subclass work), and the iterable is walked through the same
+// protocol; what differs from Map's is only the per-item validation.
+uint64_t buildWeakCollection(Rooted<Value>& receiver, Rooted<Value>& arg, bool isWeakSet) {
+    const WeakIntrinsics& kind = isWeakSet ? g_weakSet : g_weakMap;
+    if (!rtIsNativeConstructReceiver(receiver.get()) ||
+        !MapHeader::hasBrand(receiver.get(), kind.brand)) {
+        return rtThrowTypeError(std::string("Constructor ") + (isWeakSet ? "WeakSet" : "WeakMap") +
+                                " requires 'new'")
+            .rawBits();
+    }
+    Rooted<Value> self{receiver.get()};
     if (arg.get().isUndefined() || arg.get().isNull()) return self.get().rawBits();
 
     Rooted<Value> rec{Value(bronze_iter_open(arg.get().rawBits()))};
     if (rtExceptionPending()) return self.get().rawBits();
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-        if (flags == MapHeader::kWeakSetFlags) {
-            if (!canBeHeldWeakly(item.get())) {
+        if (isWeakSet) {
+            if (!rtCanBeHeldWeakly(item.get())) {
                 rtThrowTypeError("Invalid value used in weak set");
                 break;
             }
@@ -192,7 +208,7 @@ uint64_t buildWeakCollection(Rooted<Value>& arg, uint16_t flags) {
                 Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(0.0).rawBits()))};
             Rooted<Value> v{
                 Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(1.0).rawBits()))};
-            if (!canBeHeldWeakly(k.get())) {
+            if (!rtCanBeHeldWeakly(k.get())) {
                 rtThrowTypeError("Invalid value used as weak map key");
                 break;
             }
@@ -204,51 +220,108 @@ uint64_t buildWeakCollection(Rooted<Value>& arg, uint16_t flags) {
     return self.get().rawBits();
 }
 
-uint64_t weakMapConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t weakMapConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    Rooted<Value> receiver{Value(thisBits)};
     Rooted<Value> arg{args[0]};
-    return buildWeakCollection(arg, MapHeader::kWeakMapFlags);
+    return buildWeakCollection(receiver, arg, /*isWeakSet=*/false);
 }
 
-uint64_t weakSetConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+uint64_t weakSetConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
+    Rooted<Value> receiver{Value(thisBits)};
     Rooted<Value> arg{args[0]};
-    return buildWeakCollection(arg, MapHeader::kWeakSetFlags);
+    return buildWeakCollection(receiver, arg, /*isWeakSet=*/true);
 }
 
-using Method = NativeMethod;
-
-const Method kWeakMapMethods[] = {
-    {"get", weakMapGet, 1, 1},
+// In INSTALL order, hot members last (builtin_map.cpp says why): `get` and
+// `set` off a WeakMap are three.js's per-object-per-frame reads.
+const NativeMethod kWeakMapMethods[] = {
+    {"delete", weakMapDelete, 1, 1},
+    {"has", weakMapHas, 1, 1},
     {"set", weakMapSet, 2, 2},
-    {"has", weakMapHas, 1, 1},
-    {"delete", weakMapDelete, 1, 1},
+    {"get", weakMapGet, 1, 1},
 };
 
-const Method kWeakSetMethods[] = {
+const NativeMethod kWeakSetMethods[] = {
+    {"delete", weakMapDelete, 1, 1},
+    {"has", weakMapHas, 1, 1},
     {"add", weakSetAdd, 1, 1},
-    {"has", weakMapHas, 1, 1},
-    {"delete", weakMapDelete, 1, 1},
 };
 
-// Real members of `WeakMap` / `WeakSet` that bronze has not built. `prototype`
-// is on both lists for the reason it is on Map's: there is no prototype OBJECT
-// here, and `undefined` for it would let a program install a method nothing
-// would find. `getOrInsert` / `getOrInsertComputed` are the upsert proposal's,
-// listed the day they are standard and not before.
-const char* const kWeakMapUnimplemented[] = {
-    "constructor", "prototype",
-};
-const char* const kWeakSetUnimplemented[] = {
-    "constructor", "prototype",
-};
+// ---- assembling the intrinsics ----------------------------------------------
+
+void buildKind(WeakIntrinsics& out, bool isWeakSet) {
+    Rooted<Value> parent{rtObjectPrototype()};
+    Shape* protoShape = rtNewRootShape(parent.get());
+    protoShape->used_as_prototype = true;
+    ObjectHeader* protoObj = ObjectHeader::create(rtHeap(), rtArena(), protoShape);
+    protoObj->header.flags = HeapKind::Plain;
+    Rooted<Value> proto{Value::fromObject(protoObj)};
+    out.proto = proto.get();
+    rtHeap().add_permanent_root(&out.proto);
+
+    // 24.3.3.6 / 24.4.3.5.
+    rtDefineToStringTag(proto, isWeakSet ? "WeakSet" : "WeakMap");
+
+    Rooted<Value> ctor{rtNativeFunction(isWeakSet ? weakSetConstructor : weakMapConstructor, 0,
+                                        isWeakSet ? "WeakSet" : "WeakMap", 0)};
+    out.ctor = ctor.get();
+    rtHeap().add_permanent_root(&out.ctor);
+    {
+        Rooted<Value> key{rtMakeString("constructor")};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    if (isWeakSet) {
+        rtDefineMethods(proto, kWeakSetMethods, std::size(kWeakSetMethods));
+    } else {
+        rtDefineMethods(proto, kWeakMapMethods, std::size(kWeakMapMethods));
+    }
+    // No `size` and no `[Symbol.iterator]`, and that is 24.3.3 speaking rather
+    // than a gap: non-iterability is half of what makes the weak pair weak.
+
+    out.brand = rtMakeSymbol(Value::fromUndefined());
+
+    FunctionHeader* fn = ctor.get().asObject<FunctionHeader>();
+    fn->prototype = proto.get();
+    fn->instance_shape = rtNewRootShape(proto.get());
+    out.instanceShape = fn->instance_shape;
+}
+
+void ensureWeakIntrinsics() {
+    if (g_weakMap.proto.isObject()) return;
+    buildKind(g_weakMap, /*isWeakSet=*/false);
+    buildKind(g_weakSet, /*isWeakSet=*/true);
+}
 
 }  // namespace
 
+bool rtIsWeakMapObject(Value v) { return MapHeader::hasBrand(v, g_weakMap.brand); }
+bool rtIsWeakSetObject(Value v) { return MapHeader::hasBrand(v, g_weakSet.brand); }
+
+Value rtNewWeakMap() {
+    ensureWeakIntrinsics();
+    return Value::fromObject(
+        MapHeader::create(rtHeap(), rtArena(), g_weakMap.instanceShape, g_weakMap.brand));
+}
+
+Value rtNewWeakSet() {
+    ensureWeakIntrinsics();
+    return Value::fromObject(
+        MapHeader::create(rtHeap(), rtArena(), g_weakSet.instanceShape, g_weakSet.brand));
+}
+
+Value rtNewWeakCollectionWithShape(Shape* shape, bool isWeakSet) {
+    ensureWeakIntrinsics();
+    const WeakIntrinsics& kind = isWeakSet ? g_weakSet : g_weakMap;
+    return Value::fromObject(MapHeader::create(rtHeap(), rtArena(), shape, kind.brand));
+}
+
 Value rtWeakCollectionConstructor(const std::string& name) {
-    if (name == "WeakMap") return rtNativeFunction(weakMapConstructor, 0, "WeakMap", 0);
-    if (name == "WeakSet") return rtNativeFunction(weakSetConstructor, 0, "WeakSet", 0);
-    return Value::fromUndefined();
+    if (name != "WeakMap" && name != "WeakSet") return Value::fromUndefined();
+    ensureWeakIntrinsics();
+    return name == "WeakMap" ? g_weakMap.ctor : g_weakSet.ctor;
 }
 
 const char* rtWeakCollectionConstructorName(Value fn) {
@@ -259,46 +332,6 @@ const char* rtWeakCollectionConstructorName(Value fn) {
     if (code == weakMapConstructor) return "WeakMap";
     if (code == weakSetConstructor) return "WeakSet";
     return nullptr;
-}
-
-Value rtWeakCollectionMethod(bool isWeakSetReceiver, const std::string& key) {
-    if (isWeakSetReceiver) {
-        for (const Method& m : kWeakSetMethods) {
-            if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
-        }
-        return Value::fromUndefined();
-    }
-    for (const Method& m : kWeakMapMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
-    }
-    return Value::fromUndefined();
-}
-
-// `in`'s half, off the same tables the read path answers from — the one-list
-// rule builtin_map.cpp states. No `size` here, and that is 24.3.3 speaking
-// rather than a gap: a WeakMap's prototype defines no such accessor.
-bool rtWeakCollectionHasMember(bool isWeakSetReceiver, const std::string& key) {
-    if (isWeakSetReceiver) {
-        for (const Method& m : kWeakSetMethods) {
-            if (key == m.name) return true;
-        }
-    } else {
-        for (const Method& m : kWeakMapMethods) {
-            if (key == m.name) return true;
-        }
-    }
-    rtCheckWeakCollectionMember(isWeakSetReceiver, key);
-    return false;
-}
-
-void rtCheckWeakCollectionMember(bool isWeakSetReceiver, const std::string& key) {
-    if (isWeakSetReceiver) {
-        rtCheckUnimplementedMember("WeakSet", kWeakSetUnimplemented,
-                                   std::size(kWeakSetUnimplemented), key);
-        return;
-    }
-    rtCheckUnimplementedMember("WeakMap", kWeakMapUnimplemented,
-                               std::size(kWeakMapUnimplemented), key);
 }
 
 }  // namespace bronze::runtime

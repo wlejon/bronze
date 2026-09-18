@@ -156,11 +156,11 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
         if (rtIsFunctionConstructor(recv.get())) {
             return rtFunctionPrototypeObject().rawBits();
         }
-        // The guard above only covers `kCtors`. Map, Set, ArrayBuffer and
-        // the nine views are interned function singletons of their own, so
-        // without this they reached the on-demand slot below and
-        // `Map.prototype` answered a fresh empty object — the exact lie
-        // the comment above says the ordering exists to prevent, told
+        // The guard above only covers `kCtors`. SharedArrayBuffer, DataView
+        // and the nine views are interned function singletons of their own,
+        // so without this they reached the on-demand slot below and
+        // `Float64Array.prototype` answered a fresh empty object — the exact
+        // lie the comment above says the ordering exists to prevent, told
         // about every intrinsic that is not one of the three. Named here
         // rather than by adding `prototype` to nine more tables, because
         // the property is absent for the same one reason each time.
@@ -234,10 +234,6 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     } else if (keyStr == "length") {
         return Value::fromDouble(0.0).rawBits();
     }
-    // `Map.groupBy` (24.1.2.1), on the same terms and for the same reason:
-    // the `Map` constructor is an interned function singleton with no
-    // property object, so its one own member is answered from a table.
-    if (Value stat; rtMapStatic(recv.get(), keyStr, stat)) return stat.rawBits();
     // `RegExp.escape` (22.2.5.2), on the same terms: `RegExp` is an interned
     // function singleton too.
     if (Value stat; rtRegExpStatic(recv.get(), keyStr, stat)) return stat.rawBits();

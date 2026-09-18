@@ -1,9 +1,13 @@
-// The native-member memo (runtime/native_fn_memo.h): reading `m.get` off a
-// collection answers from a (kind, key) table instead of walking a C member
-// ladder to a fresh interning.
+// The native-member memo (runtime/native_fn_memo.h): reading a method off a
+// receiver with no prototype object answers from a (kind, key) table instead
+// of walking a C member ladder to a fresh interning. A Map and a Set were the
+// memo's first customers; each has a real `Map.prototype` / `Set.prototype`
+// now and is answered by the ordinary method cache instead, and this case
+// keeps them as the CONTROL: the identities below must hold whichever cache
+// answers them.
 //
-// Function IDENTITY is what a memo over function objects can get wrong, so it
-// is what this case pins first and hardest: the memo must not merge two
+// Function IDENTITY is what a cache over function objects can get wrong, so
+// it is what this case pins first and hardest: the cache must not merge two
 // members, must not survive an own property shadowing it, and must not answer
 // for a kind it was not filled for. Everything here is warmed in a loop,
 // because a table that never fills passes each assertion on its first read.
@@ -30,13 +34,9 @@ console.log(s.has(1), s.has(9), m.has('a'), m.has('z'));
 // is pinned: a Map's `has` takes a key, a Set's takes a value, and each must
 // answer about its own collection after the memo has been warm for both.
 //
-// Their IDENTITY is deliberately not pinned. `Set.prototype.has` and
-// `Map.prototype.has` share one C implementation (`mapHas`) and
-// `bronze_function_singleton` interns on the code pointer, so bronze answers
-// `m.has === s.has` as true where 24.2.3.7 and 24.1.3.7 are two distinct
-// function objects. That is a standing divergence this chunk found and did not
-// introduce — the memo is keyed on (kind, key) and merges nothing — and
-// recording a wrong answer as an expectation is worse than leaving it unpinned.
+// Their IDENTITY — `m.has !== s.has`, 24.1.3.7 and 24.2.3.7 being two
+// function objects — is pinned by map_prototype_objects.js, where the
+// prototypes themselves are the subject.
 for (let i = 0; i < 300; i = i + 1) { m.has('a'); s.has(1); }
 console.log(m.has('a'), m.has(1), s.has(1), s.has('a'));
 

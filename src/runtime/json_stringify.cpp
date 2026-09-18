@@ -24,7 +24,6 @@
 #include "runtime/fn.h"
 #include "runtime/namespace.h"
 #include "runtime/number_format.h"
-#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
@@ -32,7 +31,6 @@
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -379,31 +377,22 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             // `bronze_object_keys` returns the keys and the Get reads the
             // value — which is why `Object.entries` was right about both while
             // this reported them empty.
+            //
+            // A Map, a Set, the weak pair, a WeakRef and a FinalizationRegistry
+            // are plain objects here too: their ENTRIES and targets live in
+            // internal slots and are not properties, so 25.5.2.4's
+            // EnumerableOwnPropertyNames never sees them and `{}` is what an
+            // empty one serializes to — the classic surprise in every engine.
+            // An ordinary property ASSIGNED to the collection IS an own
+            // enumerable key and does appear, which is why the object
+            // serializer is the whole answer rather than a literal `{}`.
             case BRONZE_ABI_OBJ_FLAGS_PLAIN:
             case ModuleNamespaceHeader::kFlags:
             case TypedArrayHeader::kFlags:
                 return serializeObject(state, value, out);
-            // A Map's and a Set's ENTRIES live in internal slots and are not
-            // properties, so 25.5.2.4's EnumerableOwnPropertyNames never sees
-            // them and `{}` is what an empty one serializes to — the classic
-            // surprise in every engine. It is not a fallback: an ordinary
-            // property ASSIGNED to the collection IS an own enumerable key and
-            // does appear, which is why this shares the object serializer
-            // rather than printing a literal `{}`.
-            case HeapKind::Map:
-            case HeapKind::Set:
-            case HeapKind::WeakMap:
-            case HeapKind::WeakSet:
-                return serializeObject(state, value, out);
             case HeapKind::RegExp:
             case ArrayBufferHeader::kFlags:
             case DataViewHeader::kFlags:
-            // A WeakRef's target and a registry's cells are internal slots, so
-            // EnumerableOwnPropertyNames finds nothing and `{}` is the whole
-            // answer — and neither may serialize its target, for the liveness
-            // reason inspect.cpp gives.
-            case HeapKind::WeakRef:
-            case HeapKind::FinalizationRegistry:
                 appendAscii(out, "{}");
                 return true;
             // A Proxy is whatever its target chain says it is, read through

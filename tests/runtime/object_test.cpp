@@ -616,3 +616,78 @@ TEST_CASE("Object.defineProperty reads its descriptor's fields off the whole cha
         CHECK(info.configurable);
     }
 }
+
+// The per-KEY site (rt_state.h): a read whose call site brings no entry —
+// every site the brass backend emits — fills and consults the key's own site,
+// under the same validity as a call site's. What is pinned is that it FILLS
+// (a cache that never fills passes every behavioural test), that it answers a
+// prototype hit from the entry, that a prototype mutation retires the entry
+// through the epoch, and that the seam leaves the key with no site at all.
+TEST_CASE("an entry-less property read fills and hits the key's own site") {
+    ShadowStackFrame frame;
+    NonMovingArena& arena = runtime::rtArena();
+    Heap& heap = runtime::rtHeap();
+
+    Rooted<ObjectHeader*> proto(ObjectHeader::create(heap, arena, runtime::rtNewRootShape(Value::fromUndefined())));
+    Rooted<ObjectHeader*> inst(ObjectHeader::create(
+        heap, arena, runtime::rtNewRootShape(Value::fromObject(proto.get()))));
+    const uint32_t keyIndex = bronze_register_key_string("keySiteProbe");
+    Rooted<Value> key(Value::fromString(runtime::rtKeyHeader(keyIndex)));
+    Rooted<Value> one(Value::fromDouble(1.0));
+    proto.set(proto.get()->setProp(heap, arena, key, one));
+
+    InlineCacheSite* site = runtime::rtKeyCacheSite(keyIndex);
+    REQUIRE(site != nullptr);
+    CHECK(site->find(inst.get()->shape, rtIcWayLimit()) == nullptr);
+
+    // A null entry is what generated code passes; the read fills the key's
+    // site at the depth the walk found the holder.
+    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, nullptr))
+              .asNumber() == 1.0);
+    InlineCache* way = site->find(inst.get()->shape, rtIcWayLimit());
+    REQUIRE(way != nullptr);
+    CHECK(way->realDepth() == 1);
+    CHECK(way->describes(inst.get()->shape));
+
+    // The hit answers what the walk would: the prototype's CURRENT value, so
+    // replacing the value in place (no shape change) is seen through the slot.
+    Rooted<Value> two(Value::fromDouble(2.0));
+    proto.get()->setProp(heap, arena, key, two);
+    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, nullptr))
+              .asNumber() == 2.0);
+
+    // Shadowing on the RECEIVER changes its shape, so the entry no longer
+    // describes it; the read walks, answers the own value, and fills a way for
+    // the new shape beside the old one.
+    Shape* shapeBefore = inst.get()->shape;
+    Rooted<Value> own(Value::fromDouble(3.0));
+    inst.set(inst.get()->setProp(heap, arena, key, own));
+    CHECK(inst.get()->shape != shapeBefore);
+    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, nullptr))
+              .asNumber() == 3.0);
+    InlineCache* ownWay = site->find(inst.get()->shape, rtIcWayLimit());
+    REQUIRE(ownWay != nullptr);
+    CHECK(ownWay->realDepth() == 0);
+
+    // A second receiver of the ORIGINAL shape still has its way, and a
+    // prototype mutation retires it through the epoch: `describes` refuses
+    // the way until a walk refills it.
+    Rooted<ObjectHeader*> other(ObjectHeader::create(heap, arena, shapeBefore));
+    InlineCache* protoWay = site->find(shapeBefore, rtIcWayLimit());
+    REQUIRE(protoWay != nullptr);
+    CHECK(protoWay->describes(shapeBefore));
+    Rooted<Value> unrelatedKey(runtime::rtMakeString("keySiteOther"));
+    Rooted<Value> four(Value::fromDouble(4.0));
+    proto.set(proto.get()->setProp(heap, arena, unrelatedKey, four));
+    CHECK_FALSE(protoWay->describes(shapeBefore));
+    CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex, nullptr))
+              .asNumber() == 2.0);
+    CHECK(site->find(shapeBefore, rtIcWayLimit())->describes(shapeBefore));
+
+    // The seam: with the sites off, a key has none and the read still answers.
+    runtime::rtTls()->key_ic_enabled = 0;
+    CHECK(runtime::rtKeyCacheSite(keyIndex) == nullptr);
+    CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex, nullptr))
+              .asNumber() == 2.0);
+    runtime::rtTls()->key_ic_enabled = 1;
+}

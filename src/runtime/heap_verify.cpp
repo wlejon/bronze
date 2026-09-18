@@ -19,13 +19,16 @@
 namespace bronze {
 
 // Diagnostic name for a Tag::Object header's HeapKind word. Pinned to Count
-// so adding a kind extends this table instead of printing an index.
+// so adding a kind extends this table instead of printing an index. The
+// numbers are fixed (heap.h says why), so a retired kind keeps its row: a
+// header still carrying one of those values is corrupt, and the row's name
+// says so instead of shifting every later name onto the wrong kind.
 static const char* heap_kind_name(uint16_t kind) noexcept {
     static const char* const names[] = {
         "Plain", "Array", "Function", "TypedArray", "ArrayBuffer", "DataView",
-        "Map", "Set", "WeakMap", "WeakSet", "Iterator", "RegExp", "Env",
-        "ModuleNamespace", "Proxy", "PrivateTable", "WeakRef",
-        "FinalizationRegistry", "SlotBlock", "ValueBlock",
+        "(retired 6)", "(retired 7)", "(retired 8)", "(retired 9)", "Iterator",
+        "RegExp", "Env", "ModuleNamespace", "Proxy", "(retired 15)",
+        "(retired 16)", "(retired 17)", "SlotBlock", "ValueBlock",
     };
     static_assert(sizeof(names) / sizeof(names[0]) == HeapKind::Count,
                   "a new HeapKind needs a name here");

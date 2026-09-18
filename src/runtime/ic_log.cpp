@@ -12,7 +12,6 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/fn.h"
-#include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/object.h"
 #include "runtime/regexp.h"
@@ -23,7 +22,6 @@
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -99,12 +97,8 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
     }
     if (hdr->flags == TypedArrayHeader::kFlags) return "kind_typed_array";
     if (hdr->flags == HeapKind::Function) return "kind_function";
-    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) return "kind_map_or_set";
-    if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) return "kind_weak_collection";
     if (hdr->flags == ArrayBufferHeader::kFlags) return "kind_array_buffer";
     if (hdr->flags == DataViewHeader::kFlags) return "kind_data_view";
-    if (hdr->flags == WeakRefHeader::kFlags) return "kind_weak_ref";
-    if (hdr->flags == FinalizationRegistryHeader::kFlags) return "kind_finalization_registry";
     if (hdr->flags == RegExpHeader::kFlags) return "kind_regexp";
     if (hdr->flags == ModuleNamespaceHeader::kFlags) return "kind_module_namespace";
     if (hdr->flags == HeapKind::Proxy) return "kind_proxy";

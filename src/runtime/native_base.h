@@ -20,31 +20,30 @@
 // THE MECHANISM. bronze allocates the instance ONCE, in `bronze_construct`,
 // before any constructor body runs — and the function being constructed there
 // is exactly NewTarget. So the only thing missing is for that one allocation
-// site to know which exotic object to build, and the answer is a byte on the
+// site to know which native object to build, and the answer is a byte on the
 // constructor (`FunctionHeader::native_base`) that `bronze_class_extends`
 // copies down the chain as each `extends` link is made. `new MyMap()` therefore
-// allocates a real MapHeader whose [[Prototype]] is `MyMap.prototype`, hands it
-// to the derived constructor as `this`, and `super()` — which is `Map`'s body
-// run on that receiver — fills the entries in place instead of building a
+// allocates a real Map whose [[Prototype]] is `MyMap.prototype`, hands it to
+// the derived constructor as `this`, and `super()` — which is `Map`'s body run
+// on that receiver — fills the entries in place instead of building a
 // collection of its own and returning it.
 //
-// WHERE THE PROTOTYPE LIVES. A Map, a Set and an Array carry no shape, so there
-// is no slot on them for a [[Prototype]] and their members are answered from a
-// table beside the value. What they DO have is the side object holding their
-// ordinary named properties (`MapHeader::properties`, `ArrayHeader::properties`)
-// — the ordinary-object half of an exotic object — and a subclass instance's
-// [[Prototype]] is that box's. The read path walks it before the builtin table,
-// so a subclass method shadows a builtin one exactly as the chain says, and an
-// instance that is NOT a subclass has no box at all, which is what keeps the
-// plain-array path free of every check this adds.
-//
-// A Promise is not in that group: 27.2 gives it internal SLOTS on an ordinary
-// object, so bronze already builds it with a shape and the [[Prototype]] is the
-// shape's, needing nothing from here beyond picking NewTarget's shape.
+// WHERE THE PROTOTYPE LIVES. A Map, a Set, the weak pair, a WeakRef, a
+// FinalizationRegistry and a Promise are ORDINARY OBJECTS with internal slots,
+// so each carries a shape and the [[Prototype]] is the shape's — and the
+// constructor already holds the memoized root shape for its own prototype
+// (`instance_shape`), which is exactly what 10.1.13 asks for and costs no
+// shape per instance. An Array is the one exotic kind that carries no shape:
+// its members are answered from a table beside the value, and a subclass
+// instance's [[Prototype]] lives on the side object holding its ordinary named
+// properties (`ArrayHeader::properties`). The read path walks that box before
+// the builtin table, so a subclass method shadows a builtin one exactly as the
+// chain says, and an array that is NOT a subclass has no box at all, which is
+// what keeps the plain-array path free of every check this adds.
 
 namespace bronze::runtime {
 
-// The exotic objects a `new` can be required to allocate. `None` is every
+// The native objects a `new` can be required to allocate. `None` is every
 // ordinary constructor and is deliberately zero, so a FunctionHeader that was
 // merely zeroed says "ordinary".
 namespace NativeBase {
@@ -54,6 +53,10 @@ enum : uint8_t {
     Map,
     Set,
     Promise,
+    WeakMap,
+    WeakSet,
+    WeakRef,
+    FinalizationRegistry,
     Count,
 };
 }
@@ -63,11 +66,10 @@ enum : uint8_t {
 // cases a construction cares about — `new Map()` and `new (class extends Map)()`
 // — arrive at the same allocation.
 //
-// MAY ALLOCATE. The identity half compares against `Array`, `Promise`, `Map`
-// and `Set`, and the FIRST read of any of them builds it — so the caller must
-// already hold `fn` in a root, or the answer is about an address the collector
-// has just moved. The recorded-byte half, which is every class, returns before
-// any of that.
+// MAY ALLOCATE. The identity half compares against `Array` and `Promise`, and
+// the FIRST read of either builds it — so the caller must already hold `fn`
+// in a root, or the answer is about an address the collector has just moved.
+// The recorded-byte half, which is every class, returns before any of that.
 uint8_t rtNativeBaseOf(Value fn);
 
 // Record that `derived` inherits `base`'s allocation. Called by
@@ -80,18 +82,18 @@ void rtInheritNativeBase(Rooted<Value>& derived, Rooted<Value>& base);
 // 15.7.14 step 6 gives a derived constructor the base constructor as its
 // [[Prototype]], so `MyArr.of` is `Array.of` found by an ordinary walk — and
 // bronze already builds that walk, between the `properties` boxes the two
-// constructors keep their own properties in. What breaks it is that several
-// intrinsics answer their statics BESIDE the value, off a table keyed on the
-// constructor's code pointer (`Array.of`, `Array.from`, `Array.isArray`,
-// `Map.groupBy`), because an interned function singleton had no box worth
+// constructors keep their own properties in. What breaks it is that the
+// global constructors answer their statics BESIDE the value, off a table keyed
+// on the constructor's code pointer (`Array.of`, `Array.from`,
+// `Array.isArray`), because an interned function singleton had no box worth
 // building. A subclass is a different function object with a different code
 // pointer, so the table never fires for it and the walk finds nothing: a
 // silent `undefined` where the language names a function.
 //
 // So the statics are REALIZED — written into the base's box as ordinary
 // non-enumerable own properties — at the one moment it starts to matter, which
-// is the `extends` link. `Promise` needed none of this because its statics
-// were already real properties, and that is the arrangement this makes
+// is the `extends` link. `Promise` and `Map` need none of this because their
+// statics are already real properties, and that is the arrangement this makes
 // uniform rather than a second mechanism beside it. Idempotent, and never
 // reached by a program that subclasses nothing.
 //
@@ -104,7 +106,7 @@ void rtRealizeNativeStatics(Rooted<Value>& ctor);
 // the result must be rooted by the caller before anything else runs.
 Value rtAllocateNativeBaseInstance(uint8_t kind, Rooted<Value>& ctor);
 
-// The exotic object the construction CURRENTLY RUNNING allocated, held for as
+// The native object the construction CURRENTLY RUNNING allocated, held for as
 // long as its constructor body — and every derived body above it — is on the
 // stack. `bronze_construct` pushes one; a native constructor body asks whether
 // its receiver IS it.
@@ -137,15 +139,14 @@ bool rtIsNativeConstructReceiver(Value v);
 // BUILD the intrinsic it compares against.
 void rtCheckNativeBaseExtends(Rooted<Value>& base);
 
-// The ordinary-object half of an exotic instance: the box holding its own named
-// properties, whose [[Prototype]] is the instance's. `undefined` for an
-// instance that has neither — which is every array and every collection a
-// program did not subclass and did not write an expando on, and is the whole
-// fast path.
+// The ordinary-object half of an array: the box holding its own named
+// properties, whose [[Prototype]] is the instance's. `undefined` for an array
+// that has neither — which is every array a program did not subclass and did
+// not write an expando on, and is the whole fast path.
 Value rtExoticPropertyBox(Value obj);
 
-// The [[Prototype]] a subclass instance of an exotic kind carries, or
-// `undefined`. `Object.getPrototypeOf` and the property path both ask.
+// The [[Prototype]] a subclass instance of an array carries, or `undefined`.
+// `Object.getPrototypeOf` and the property path both ask.
 Value rtExoticSubclassPrototype(Value obj);
 
 // Read `key` off the ordinary half — own properties first, then the chain above
@@ -153,7 +154,7 @@ Value rtExoticSubclassPrototype(Value obj);
 // separating "the subclass defines this" from "the builtin table is the
 // answer"; a stored `undefined` is a real property and must not fall through.
 // `recv` is the receiver an accessor found on the chain is run against, so a
-// getter on a subclass prototype sees the collection and not the box.
+// getter on a subclass prototype sees the array and not the box.
 bool rtExoticNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out);
 
 }  // namespace bronze::runtime

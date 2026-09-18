@@ -25,7 +25,6 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
-#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/proxy.h"
@@ -51,14 +50,6 @@ ObjectHeader* namedPropertyOwner(Value v) {
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) return reinterpret_cast<ObjectHeader*>(hdr);
     if (hdr->flags == HeapKind::Function) {
         Value props = v.asObject<FunctionHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
-    // A Map or a Set keeps its ordinary properties in a side object too
-    // (rt_prop_map.cpp), and `delete m.foo` is the ordinary delete over it.
-    // Its ENTRIES are not properties and `delete` never reaches them, which is
-    // why there is nothing here about the entry table.
-    if (rtIsMapLike(v)) {
-        Value props = v.asObject<MapHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;

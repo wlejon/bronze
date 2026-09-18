@@ -8,9 +8,10 @@
 // on `ArrayBuffer.prototype`, 25.3.4.25 puts "DataView" on `DataView.prototype`,
 // and 20.4.3.6 puts "Symbol" on `Symbol.prototype`.
 //
-// The symbol line is the one that no longer stands in for anything: bronze
-// builds `Symbol.prototype`, so its tag is a real own property of a real object
-// found by the ordinary walk (`cases/symbol_prototype`). The other five
+// The symbol, Map and Set lines no longer stand in for anything: bronze
+// builds `Symbol.prototype`, `Map.prototype` and `Set.prototype`, so each tag
+// is a real own property of a real object found by the ordinary walk
+// (`cases/symbol_prototype`, `cases/map_prototype_objects`). The other three
 // prototypes are still unbuilt, and rt_prop.cpp answers for them from the heap
 // kind — the same VALUE by a different route, which is what the case is for.
 //

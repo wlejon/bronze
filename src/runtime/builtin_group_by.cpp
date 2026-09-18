@@ -165,7 +165,7 @@ struct ObjectSink final : GroupSink {
 struct MapSink final : GroupSink {
     Rooted<Value> out;
 
-    MapSink() : out{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))} {}
+    MapSink() : out{rtNewMap()} {}
 
     void add(Rooted<Value>& key, Rooted<Value>& value) override {
         const uint32_t slot = MapHeader::find(rtHeap(), out, key);

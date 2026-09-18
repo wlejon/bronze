@@ -264,6 +264,15 @@ Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
         tls->map_fast_enabled = 0;
     }
 
+    // The per-key inline-cache sites behind an entry-less property read
+    // (rt_prop.cpp's `rtKeyCacheSite`): with this off such a read takes the
+    // shape walk it always took, and generated code — which passes no entry
+    // on the brass path — runs with no property cache at all.
+    const char* env_no_key_ic = std::getenv("BRONZE_NO_KEY_IC");
+    if (env_no_key_ic && std::strcmp(env_no_key_ic, "1") == 0) {
+        tls->key_ic_enabled = 0;
+    }
+
     // %TypedArray%.prototype.set's number-elements fast loop over a plain
     // array source: with this off every element keeps its rooted spec-shaped
     // iteration (builtin_typed_array_methods.cpp).

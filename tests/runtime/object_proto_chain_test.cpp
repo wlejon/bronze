@@ -3,9 +3,11 @@
 // either.
 //
 // The bug this pins is not a wrong answer, it is a MISSING step. A function, an
-// array, a Map, a Set, a RegExp, a typed array, an ArrayBuffer and a DataView
-// each answer their members out of a C table standing in for a prototype object
-// bronze has not built — and the search used to END at that table. So
+// array, a RegExp, a typed array, an ArrayBuffer and a DataView each answer
+// their members out of a C table standing in for a prototype object bronze has
+// not built — and the search used to END at that table. (A Map and a Set have
+// real prototype objects now and take the ordinary walk; they stay here as the
+// control case.) So
 // `f.toString` was diagnosed by name from `Function.prototype`, one link
 // nearer, while `f.valueOf`, one link further up, read `undefined`: a silent
 // fallback about a prototype bronze DOES have.
@@ -170,10 +172,10 @@ TEST_CASE("a receiver with no shape still reaches Object.prototype") {
     }
 
     SUBCASE("a Map and a Set") {
-        Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+        Rooted<Value> m{rtNewMap()};
         reaches(m);
         reachesValueOf(m);
-        Rooted<Value> s{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
+        Rooted<Value> s{rtNewSet()};
         reaches(s);
         reachesValueOf(s);
     }
@@ -212,7 +214,7 @@ TEST_CASE("a receiver with no shape still reaches Object.prototype") {
         CHECK(isFunction(member(re, "toString")));
         CHECK(member(re, "toString").rawBits() != toString.get().rawBits());
 
-        Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+        Rooted<Value> m{rtNewMap()};
         CHECK(member(m, "toString").rawBits() == toString.get().rawBits());
     }
 }
@@ -289,10 +291,10 @@ TEST_CASE("hasOwnProperty and propertyIsEnumerable answer for a receiver with no
     }
 
     SUBCASE("a Map, a Set, an ArrayBuffer and a DataView have no own property") {
-        Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+        Rooted<Value> m{rtNewMap()};
         CHECK_FALSE(hasOwn(m, "size"));
         CHECK_FALSE(hasOwn(m, "get"));
-        Rooted<Value> s{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
+        Rooted<Value> s{rtNewSet()};
         CHECK_FALSE(hasOwn(s, "size"));
         Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
         CHECK_FALSE(hasOwn(buf, "byteLength"));
@@ -337,6 +339,8 @@ TEST_CASE("hasOwnProperty and propertyIsEnumerable answer for a receiver with no
 // `Object.prototype`, and bronze never hands the first of those to a program —
 // so it cannot be the receiver, and the whole remaining question is whether the
 // receiver is `Object.prototype`. Before this the answer was a silent `false`.
+// A Map, whose `Map.prototype` IS an object, is the control: its chain is the
+// ordinary two links.
 TEST_CASE("isPrototypeOf walks past the prototypes bronze has not built") {
     ShadowStackFrame frame;
 
@@ -344,7 +348,7 @@ TEST_CASE("isPrototypeOf walks past the prototypes bronze has not built") {
     Rooted<Value> plain{Value(bronze_create_object())};
     Rooted<Value> a{Value(bronze_create_array(0))};
     Rooted<Value> f{rtNativeFunction(nothing, 0)};
-    Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+    Rooted<Value> m{rtNewMap()};
 
     CHECK(invoke(proto, "isPrototypeOf", plain.get()).asBool());
     CHECK(invoke(proto, "isPrototypeOf", a.get()).asBool());
@@ -361,11 +365,10 @@ TEST_CASE("isPrototypeOf walks past the prototypes bronze has not built") {
     CHECK_FALSE(invoke(f, "isPrototypeOf", f.get()).asBool());
 }
 
-// The two kinds that joined with the weak collections: the chain reaches
-// `Object.prototype` from both, the members found are the SAME function
-// objects a plain object finds, and the own-property switch answers rather
-// than crashes — a WeakMap keeps everything in internal slots, so it has no
-// own property of any kind (24.3.3).
+// The weak collections: the chain reaches `Object.prototype` from both, the
+// members found are the SAME function objects a plain object finds, and — a
+// WeakMap keeps everything in internal slots — neither has an own property of
+// any kind (24.3.3).
 TEST_CASE("a WeakMap and a WeakSet reach Object.prototype") {
     ShadowStackFrame frame;
 
@@ -373,29 +376,26 @@ TEST_CASE("a WeakMap and a WeakSet reach Object.prototype") {
     Rooted<Value> valueOf{protoMember("valueOf")};
     REQUIRE(isFunction(hasOwnProperty.get()));
 
-    Rooted<Value> wm{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakMapFlags))};
-    Rooted<Value> ws{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakSetFlags))};
+    Rooted<Value> wm{rtNewWeakMap()};
+    Rooted<Value> ws{rtNewWeakSet()};
 
     CHECK(member(wm, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
     CHECK(member(ws, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
     CHECK(member(wm, "valueOf").rawBits() == valueOf.get().rawBits());
     CHECK(member(ws, "valueOf").rawBits() == valueOf.get().rawBits());
 
-    // No own properties: the methods a read answers come from the stand-in
-    // table, not from the object, so `hasOwnProperty` says no.
+    // No own properties: the methods a read answers come from
+    // `WeakMap.prototype`, not from the object, so `hasOwnProperty` says no.
     CHECK_FALSE(hasOwn(wm, "get"));
     CHECK_FALSE(hasOwn(wm, "has"));
     CHECK_FALSE(hasOwn(ws, "add"));
     CHECK_FALSE(enumerableOwn(wm, "get"));
 }
 
-// The two kinds that joined with the weak REFERENCES, checked for the same
-// three things: the chain reaches `Object.prototype`, the members found there
-// are the same function objects a plain object finds, and the own-property
-// switch answers rather than crashing. A WeakRef has no own property at all
-// (26.1.3 puts `deref` on a prototype), and its one payload word is the
-// untraced target — the word the own-property switch would have read as a
-// `Shape*` without an arm of its own.
+// The weak REFERENCES, checked for the same things: the chain reaches
+// `Object.prototype`, the members found there are the same function objects a
+// plain object finds, and neither has an own property (26.1.3 puts `deref` on
+// the prototype; the target and the cells are internal slots).
 TEST_CASE("a WeakRef and a FinalizationRegistry reach Object.prototype") {
     ShadowStackFrame frame;
 
@@ -404,9 +404,9 @@ TEST_CASE("a WeakRef and a FinalizationRegistry reach Object.prototype") {
     REQUIRE(isFunction(hasOwnProperty.get()));
 
     Rooted<Value> target{Value(bronze_create_object())};
-    Rooted<Value> wr{rtMakeWeakRef(target)};
+    Rooted<Value> wr{rtNewWeakRef(target)};
     Rooted<Value> callback{protoMember("valueOf")};
-    Rooted<Value> reg{rtMakeFinalizationRegistry(callback)};
+    Rooted<Value> reg{rtNewFinalizationRegistry(callback)};
 
     CHECK(member(wr, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());
     CHECK(member(reg, "hasOwnProperty").rawBits() == hasOwnProperty.get().rawBits());

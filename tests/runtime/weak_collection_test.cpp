@@ -21,6 +21,7 @@
 #include "runtime/heap.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -60,13 +61,9 @@ Value invoke1(Rooted<Value>& receiver, const char* name, Rooted<Value>& a) {
     return fn.get().asObject<FunctionHeader>()->call(receiver.get(), 1, args);
 }
 
-Value newWeakMap() {
-    return Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakMapFlags));
-}
+Value newWeakMap() { return rtNewWeakMap(); }
 
-Value newWeakSet() {
-    return Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakSetFlags));
-}
+Value newWeakSet() { return rtNewWeakSet(); }
 
 }  // namespace
 
@@ -145,10 +142,10 @@ TEST_CASE("a detached weak-collection method brand-checks its receiver") {
     REQUIRE(isFunction(get.get()));
     Rooted<Value> key{Value(bronze_create_object())};
 
-    // A Map is NOT a WeakMap: same layout, different kind, and the brand is
-    // the kind — a Map answering here would be a method reading a receiver it
-    // was never defined over.
-    Rooted<Value> plainMap{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+    // A Map is NOT a WeakMap: same layout, different brand — a Map answering
+    // here would be a method reading a receiver it was never defined over
+    // (24.3.3.2 step 3's TypeError).
+    Rooted<Value> plainMap{rtNewMap()};
     Value args[1] = {key.get()};
     get.get().asObject<FunctionHeader>()->call(plainMap.get(), 1, args);
     CHECK(rtExceptionPending());
@@ -161,9 +158,8 @@ TEST_CASE("a detached weak-collection method brand-checks its receiver") {
     CHECK(rtExceptionPending());
     rtClearException();
 
-    // A WeakSet is not a WeakMap either: `get` is a Map-side member and the
-    // read path answers `undefined` for it on a WeakSet — the split
-    // `rtWeakCollectionMethod` keys on the receiver for.
+    // A WeakSet is not a WeakMap either: `get` is on `WeakMap.prototype` and
+    // not on `WeakSet.prototype`, so the read answers `undefined` on a WeakSet.
     Rooted<Value> ws{newWeakSet()};
     CHECK(member(ws, "get").isUndefined());
 }

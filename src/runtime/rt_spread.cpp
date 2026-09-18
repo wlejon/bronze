@@ -20,7 +20,6 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
-#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/proxy.h"
@@ -518,35 +517,6 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             // the key contributes nothing — the trap's own answer, which is
             // the only reason a handler can hide a key from a spread.
             if (!present || !found.enumerable) continue;
-            Rooted<Value> val{
-                Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            if (rtExceptionPending()) return;
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            kSpreadWriteThrows);
-            if (rtExceptionPending()) return;
-        }
-        return;
-    }
-    // A Map, a Set or a weak one: an ordinary object with internal slots
-    // (24.1.4), so its own keys are the ones a program ASSIGNED to it and its
-    // entries are not among them. `{ ...map }` is `{}` for a map full of
-    // entries, which is the language's answer and the classic surprise, not a
-    // gap. The keys live in the same side object every other path reads
-    // (rt_prop_map.cpp), so this is the plain-object walk over that box with
-    // the reads taken THROUGH the collection.
-    if (rtIsMapLike(srcVal)) {
-        Rooted<Value> box{srcVal.asObject<MapHeader>()->properties};
-        if (!box.get().isObject()) return;
-        for (PropertyKey name : rtOwnKeysOrdered(box.get().asObject<ObjectHeader>())) {
-            if (stringTarget.get().isString() && !name.isSymbol() &&
-                stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
-                return;
-            }
-            Rooted<Value> key{name.isSymbol() ? name.toValue()
-                                              : rtKeyAsValue(name.string())};
-            // Read through the COLLECTION, not through the box: an accessor
-            // stored there must see the Map as its receiver, which is the same
-            // rule `rtMapNamedSet` writes under.
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
             if (rtExceptionPending()) return;

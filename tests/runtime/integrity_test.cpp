@@ -231,24 +231,45 @@ TEST_CASE("a sealed function keeps its prototype writable") {
 
 TEST_CASE("a receiver bronze cannot record a level for is refused by name") {
     ShadowStackFrame frame;
-    Rooted<Value> map{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+    Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
 
     // The predicates still answer, and their answers are correct BECAUSE the
-    // mutators refuse: nothing can have made this Map non-extensible.
-    CHECK(isExtensible(map.get()));
-    CHECK_FALSE(isFrozen(map.get()));
-    CHECK_FALSE(isSealed(map.get()));
+    // mutators refuse: nothing can have made this buffer non-extensible.
+    CHECK(isExtensible(buf.get()));
+    CHECK_FALSE(isFrozen(buf.get()));
+    CHECK_FALSE(isSealed(buf.get()));
 
     {
         FatalGuard guard([](const char* msg) { throw std::runtime_error(msg); });
-        CHECK_THROWS_WITH_AS(freeze(map.get()),
-                             doctest::Contains("Object.freeze on a Map"), std::runtime_error);
-        CHECK_THROWS_WITH_AS(seal(map.get()), doctest::Contains("Object.seal on a Map"),
+        CHECK_THROWS_WITH_AS(freeze(buf.get()),
+                             doctest::Contains("Object.freeze on an ArrayBuffer"),
                              std::runtime_error);
-        CHECK_THROWS_WITH_AS(preventExtensions(map.get()),
-                             doctest::Contains("Object.preventExtensions on a Map"),
+        CHECK_THROWS_WITH_AS(seal(buf.get()), doctest::Contains("Object.seal on an ArrayBuffer"),
+                             std::runtime_error);
+        CHECK_THROWS_WITH_AS(preventExtensions(buf.get()),
+                             doctest::Contains("Object.preventExtensions on an ArrayBuffer"),
                              std::runtime_error);
     }
+}
+
+// A Map is a plain object whose entries are not properties, so freezing one is
+// what 7.3.14 says it is: the object's own properties (none) and
+// [[Extensible]]. 24.1.3.9 `Map.prototype.set` never consults [[Extensible]],
+// so a frozen Map still takes entries — node agrees.
+TEST_CASE("a frozen Map records its level and keeps taking entries") {
+    ShadowStackFrame frame;
+    Rooted<Value> map{rtNewMap()};
+    CHECK(isExtensible(map.get()));
+
+    freeze(map.get());
+    CHECK_FALSE(isExtensible(map.get()));
+    CHECK(isFrozen(map.get()));
+    CHECK(isSealed(map.get()));
+
+    Rooted<Value> key{Value::fromDouble(1.0)};
+    Rooted<Value> value{Value::fromDouble(2.0)};
+    MapHeader::set(rtHeap(), map, key, value);
+    CHECK(map.get().asObject<MapHeader>()->liveSize() == 1);
 }
 
 TEST_CASE("freezing a typed array with elements is the TypeError 10.4.5.3 gives") {

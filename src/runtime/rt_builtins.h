@@ -189,7 +189,11 @@ bool rtObjectProtoHasMember(const std::string& key);
 //
 // Non-enumerable is not tidiness: these are prototype and namespace objects,
 // and `for-in` walks a chain — an enumerable tag on %IteratorPrototype% would
-// appear in every for-in over every iterator in the program.
+// appear in every for-in over every iterator in the program. Non-writable and
+// configurable are the other two attributes every one of those clauses gives
+// it, so `Map.prototype[Symbol.toStringTag] = "x"` is a refused write (a
+// TypeError in strict code) while `Object.defineProperty` can still replace
+// it.
 void rtDefineToStringTag(Rooted<Value>& obj, const char* tag);
 
 // The intrinsics a function of a NON-ORDINARY form reports (27.3, 27.4, 27.7):
@@ -371,47 +375,63 @@ Value rtJsonParse(std::string_view utf8);
 // `undefined` for a root the algorithm omits.
 Value rtJsonStringify(Value value, Value replacer, Value space);
 
-// `Map` / `Set`, by the name lowering resolved. `undefined` for anything else.
+// `Map` / `Set` (builtin_map.cpp), by the name lowering resolved. `undefined`
+// for anything else. The first call builds both intrinsics — the prototype
+// objects, the brands, the instance shapes.
 Value rtMapConstructor(const std::string& name);
-// A method of a Map (or, with `isSetReceiver`, of a Set), by name. The two
-// tables differ — `add` is a Set's and `get`/`set` are a Map's — which is why
-// the receiver kind is a parameter rather than something the caller applies
-// afterwards.
-Value rtMapMethod(bool isSetReceiver, const std::string& key);
-// `"Map"` / `"Set"` when this function object IS one of the two interned
-// constructors, else nullptr. The property path needs the NAME, not just the
-// fact, so that the intrinsic bronze has not built can be refused by it.
+// `"Map"` / `"Set"` when this function object IS one of the two constructors,
+// else nullptr. By code pointer, so it never builds anything.
 const char* rtMapConstructorName(Value fn);
+// Is `v` a Map or a Set — an object carrying [[MapData]] under one of the two
+// brands? A WeakMap, a WeakSet and an object built with `Object.create(
+// Map.prototype)` all answer false, which is what keeps
+// `Map.prototype.get.call(weakMap, k)` the TypeError 24.1.3.6 names. The
+// other two ask one brand each: a method's RequireInternalSlot is one of
+// those, never the pair.
+bool rtIsMapOrSet(Value v);
+bool rtIsMapKind(Value v);
+bool rtIsSetKind(Value v);
+// A fresh empty Map / Set with the intrinsic prototype — what a runtime path
+// that produces one (`Map.groupBy`, the set operations) builds. The shape form
+// is for a construction, where NewTarget's `instance_shape` decides the
+// [[Prototype]] (runtime/native_base.h). All three ALLOCATE.
+Value rtNewMap();
+Value rtNewSet();
+Value rtNewMapWithShape(class Shape* shape, bool isSet);
+// Is `fn` the intrinsic default iterator method of a Map (%Map.prototype.entries%,
+// 24.1.3.12) or of a Set (%Set.prototype.values%, 24.2.3.11)? What for-of asks
+// before stepping a collection's entry table directly instead of running the
+// protocol: the cursor kinds are an implementation of exactly that function,
+// and a program that put anything else at `[Symbol.iterator]` gets its
+// iterator called. Reads two words, allocates nothing.
+bool rtIsIntrinsicCollectionIterator(Value fn, bool isSet);
 
 // ECMA-262 24.2.4's set operations (builtin_set_ops.cpp), as the table beside
-// their bodies. `rtMapMethod` and `rtMapHasMember` both read it, so a Set's
-// members are one list however they are asked for — and the seven live in their
-// own file because they are the only members of a Set that read a SECOND
+// their bodies, from which `Set.prototype` is populated — the seven live in
+// their own file because they are the only members of a Set that read a SECOND
 // collection, through the set-like protocol rather than another Set's table.
 const NativeMethod* rtSetOperationMethods(size_t& count);
 
-// The intrinsic constructors bronze builds no prototype OBJECT for — the Map
-// family, the nine views, DataView — by name, else nullptr. One list, because
-// two facts depend on it: the property path answers `X.prototype` with a named
-// refusal, and `rtEnsureFunctionPrototype` must leave the FunctionHeader slot
-// empty so that generated code's inline read of it misses and reaches that
-// refusal instead of a fresh empty object.
+// The intrinsic constructors bronze builds no prototype OBJECT for — the nine
+// views, SharedArrayBuffer, DataView — by name, else nullptr. One list,
+// because two facts depend on it: the property path answers `X.prototype`
+// with a named refusal, and `rtEnsureFunctionPrototype` must leave the
+// FunctionHeader slot empty so that generated code's inline read of it misses
+// and reaches that refusal instead of a fresh empty object.
 const char* rtNoPrototypeObjectIntrinsic(Value fn);
-void rtCheckMapMember(bool isSetReceiver, const std::string& key);
-// Whether 24.1.3 / 24.2.3 give the receiver `key` at all — what `in` asks. It
-// reads the same tables `rtMapMethod` does and ends at the same named refusal,
-// so the operator and a property read never disagree about a Map's members.
-bool rtMapHasMember(bool isSetReceiver, const std::string& key);
-// What `m[Symbol.iterator]` answers: a Map's default iterator is `entries`
-// and a Set's is `values` (24.1.3.12, 24.2.3.11).
-Value rtMapDefaultIterator(bool isSetReceiver);
 
 // `WeakMap` / `WeakSet` (builtin_weak_map.cpp), in exactly the Map/Set
 // arrangement: a constructor by name for the global ladder, the constructor's
-// name back from the function object, a method by name for the property path,
-// `in`'s predicate off the same tables, and the named refusal for a member
-// ECMA-262 defines and bronze has not built. No default iterator, because
-// 24.3 and 24.4 define none — a WeakMap is not iterable.
+// name back from the function object, the brand tests, and the allocators a
+// construction and a test use.
+Value rtWeakCollectionConstructor(const std::string& name);
+const char* rtWeakCollectionConstructorName(Value fn);
+bool rtIsWeakMapObject(Value v);
+bool rtIsWeakSetObject(Value v);
+Value rtNewWeakMap();
+Value rtNewWeakSet();
+Value rtNewWeakCollectionWithShape(class Shape* shape, bool isWeakSet);
+
 // One typed-array element as a JS value, and one store into one
 // (builtin_typed_array.cpp). They exist as a pair because the two BigInt views
 // answer BigInts where the other ten answer Numbers, and every read and write
@@ -425,12 +445,6 @@ Value rtTypedArrayElement(Value viewVal, uint32_t index);
 void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value);
 void rtTypedArraySetAttached(Value viewVal, const std::string& key, Value val);
 Value rtTypedArrayGetAttached(Value viewVal, const std::string& key);
-
-Value rtWeakCollectionConstructor(const std::string& name);
-const char* rtWeakCollectionConstructorName(Value fn);
-Value rtWeakCollectionMethod(bool isWeakSetReceiver, const std::string& key);
-bool rtWeakCollectionHasMember(bool isWeakSetReceiver, const std::string& key);
-void rtCheckWeakCollectionMember(bool isWeakSetReceiver, const std::string& key);
 
 // Rows of builtin_array.cpp's method table whose bodies live in a translation
 // unit of their own — `sort` (builtin_array_sort.cpp) and the three iterator
@@ -472,20 +486,6 @@ Value rtArrayLikeElement(Rooted<Value>& src, uint32_t index);
 // thrown a RangeError that names the count and the limit.
 constexpr uint32_t kMaxAppliedArguments = 65535;
 bool rtCheckAppliedArgumentCount(uint32_t count, const char* member);
-
-// The own members of the `Map` / `Set` constructor FUNCTION objects — today
-// just `Map.groupBy`. Answered from a table here for the reason
-// `rtTypedArrayStatic` is: a constructor is an interned function singleton
-// with no property object to install statics into, so the property path asks
-// this instead.
-bool rtMapStatic(Value fn, const std::string& key, Value& out);
-
-// The same table, written into the constructor's `properties` box so that a
-// SUBCLASS reaches it by the ordinary chain walk rather than by a code-pointer
-// match it can never make (runtime/native_base.h says why the two spellings of
-// one table are not a second list: both loops read `kMapStatics`). False when
-// this function is neither `Map` nor `Set`.
-bool rtInstallMapStatics(Rooted<Value>& ctor);
 
 // The `Array.prototype` OBJECT — the value the expression denotes, built from
 // the same method table an array answers beside itself, never a link on any
@@ -552,9 +552,10 @@ bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string
                                       bronze_fn_code calleeCode) noexcept;
 
 // The statics half of that table, written into the constructor's `properties`
-// box for the reason `rtInstallMapStatics` above is — `class MyArr extends
-// Array` must reach `Array.of` — and off the SAME `kCtors` entry the read path
-// answers from. False for a function that is not one of them.
+// box so that a SUBCLASS reaches it by the ordinary chain walk rather than by
+// a code-pointer match it can never make — `class MyArr extends Array` must
+// reach `Array.of` (runtime/native_base.h) — and off the SAME `kCtors` entry
+// the read path answers from. False for a function that is not one of them.
 bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor);
 
 // The name of the intrinsic this function object IS, or null for any other

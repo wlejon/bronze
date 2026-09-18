@@ -40,7 +40,6 @@
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
 #include "runtime/proxy.h"
-#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -53,7 +52,6 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -281,33 +279,11 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             // `flags`, `global` and the rest — is an accessor on the prototype,
             // however much bronze's header-backed answers look like own data.
             return key == "lastIndex";
-        case HeapKind::Map:
-        case HeapKind::Set:
-        case HeapKind::WeakMap:
-        case HeapKind::WeakSet: {
-            // 24.1.3 and its siblings put every MEMBER on a prototype, so
-            // `size`, `get` and `add` are never own — but 24.1.4 leaves the
-            // collection an ordinary object, and a property a program assigned
-            // to it is own like any other.
-            PropertyInfo info;
-            if (!rtMapOwnNamed(self.get(), PropertyKey::fromValue(keyVal), info)) return false;
-            out.accessor = info.accessor;
-            out.writable = info.writable;
-            out.enumerable = info.enumerable;
-            out.configurable = info.configurable;
-            return true;
-        }
         case HeapKind::ArrayBuffer:
         case HeapKind::DataView:
             // 25.1.6 and 25.3.4 put every member on a prototype. Both carry
             // internal slots and no own property at all — `byteLength`
             // included, which is an accessor.
-            return false;
-        case HeapKind::WeakRef:
-        case HeapKind::FinalizationRegistry:
-            // 26.1.3 and 26.2.3 likewise: `deref`, `register` and `unregister`
-            // are prototype methods, and the target and the cells are internal
-            // slots rather than properties.
             return false;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.1: an export is own, writable and ENUMERABLE, and
@@ -339,7 +315,6 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             return rtProxyGetOwnProperty(self.get(), keyVal, out);
         case HeapKind::Iterator:
         case HeapKind::Env:
-        case HeapKind::PrivateTable:
         case HeapKind::SlotBlock:
         case HeapKind::ValueBlock:
             // Not JS values: nothing hands a program one, so reaching this is a
@@ -347,7 +322,7 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             // the strongest case of that — the only word naming one is a field
             // of the object whose properties it holds.
             fatal("internal: an own-property test on an environment, iteration, "
-                  "private-element, slot-block or value-block record");
+                  "slot-block or value-block record");
         default:
             fatal((std::string("internal: an own-property test on ") +
                    rtObjectKindName(self.get()) + ", a heap kind this switch has no arm for")
@@ -674,7 +649,9 @@ void rtDefineToStringTag(Rooted<Value>& obj, const char* tag) {
     Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
     Rooted<Value> val{rtMakeString(tag)};
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, /*ic=*/nullptr,
-                                                /*enumerable=*/false, /*defineOwn=*/true);
+                                                /*enumerable=*/false, /*defineOwn=*/true,
+                                                /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                /*writable=*/false, /*configurable=*/true);
 }
 
 void rtInstallObjectProtoMethods(Rooted<Value>& proto) {

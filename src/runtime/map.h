@@ -1,29 +1,59 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 #include "runtime/value.h"
 
 namespace bronze {
 
-// `Map` and `Set`. The first bronze structure whose KEY is a value rather than
-// a property name, so none of the machinery under `o.k` applies: no shape, no
-// interned name, no slot index. What a Map has instead is an insertion-ordered
-// entry table plus a hash index over it.
+// The table under `Map` and `Set` — and under a WeakMap, a WeakSet and a
+// private-element table, which reuse it. The first bronze structure whose KEY
+// is a value rather than a property name, so none of the machinery under
+// `o.k` applies: no interned name, no slot index. What the table has instead
+// is an insertion-ordered entry list plus a hash index over it.
 //
-// The two share one layout, because a Set is a Map whose values are its keys
-// (24.2.1.1 defines it that way and every method below reads the same table);
-// `header.flags` is what tells them apart and what decides which methods
-// `bronze_prop_get` hands out.
+// The object CARRYING the table is an ORDINARY OBJECT WITH INTERNAL SLOTS,
+// which is exactly what 24.1.4 says a Map is: [[MapData]] is a slot on an
+// object that otherwise has a shape, a [[Prototype]] and own properties like
+// any other. So a `MapHeader` is an `ObjectHeader` followed by the inline
+// property slots every object has, followed by the table's fields as internal
+// slots (`ObjectHeader::createWithInternalSlots`), and `m.foo = 1` lands in
+// the property half while `m.set("foo", 1)` lands in the table half, the two
+// never meeting. That arrangement is what gives a Map a real `Map.prototype`
+// on its chain and lets `m.get` be found by the ordinary property walk.
+//
+// Which KIND of collection an object is — a Map, a Set, a WeakMap — is its
+// BRAND: the first internal slot holds a symbol minted once per kind by the
+// kind's own file (builtin_map.cpp, builtin_weak_map.cpp, rt_private.cpp) and
+// unreachable from any program, so `Object.create(Map.prototype)` can never
+// pass for a Map. `hasBrand` is the one test every dispatch asks.
 //
 // Everything the collector must see is a Value in the payload, so the generic
-// payload scan forwards the table without this file owning a root source. The
+// object scan forwards the table without this file owning a root source. The
 // hash INDEX is the exception and is deliberately RawBytes-tagged: it holds
 // entry indices, not references, and the collector must not read it as Values.
+namespace CollectionSlot {
+enum : uint32_t {
+    Brand = 0,
+    Entries,
+    Index,
+    LiveCount,
+    UsedCount,
+    IndexEpoch,
+    IndexAnchor,
+    kCount,
+};
+}  // namespace CollectionSlot
+
 struct MapHeader {
-    HeapObjectHeader header;
+    ObjectHeader object;
+    Value inlineSlots[ObjectHeader::kInlineSlots];
+    // The kind's symbol (see above). First, so the brand test reads one slot.
+    Value brand;
     // Object-tagged block of Values, two per entry slot: key then value, in
     // INSERTION order. A removed entry's key is the Hole singleton, which is
     // internal by construction and therefore cannot collide with a key a
@@ -53,37 +83,28 @@ struct MapHeader {
     // address; the anchor catches a collector that bypassed the epoch), so
     // the index is valid only when BOTH agree.
     Value indexAnchor;
-    // Undefined, or a plain object holding this collection's ORDINARY named
-    // properties. A Map is an ordinary object with internal slots (24.1.4):
-    // `m.foo = 1` defines a property and changes nothing about the entry
-    // table, so the two stores are separate and `m.get("foo")` still answers
-    // `undefined`. Lazily created — a Map that never takes a named write is
-    // the header it always was — and traced for free, because it is a Value
-    // in the payload the generic scan already forwards.
-    Value properties;
 
-    static constexpr uint16_t kMapFlags = HeapKind::Map;
-    static constexpr uint16_t kSetFlags = HeapKind::Set;
-    // A WeakMap and a WeakSet reuse this table wholesale — brand-checked by
-    // their own kinds, so nothing that dispatches on a Map's flags ever sees
-    // one. The entries are STRONG references for now; builtin_weak_map.cpp's
-    // header says why that is observably correct and where true weakness
-    // would hang.
-    static constexpr uint16_t kWeakMapFlags = HeapKind::WeakMap;
-    static constexpr uint16_t kWeakSetFlags = HeapKind::WeakSet;
-    // A private element's table (rt_private.cpp) reuses the layout for the
-    // same reason the weak pair does — an object-keyed table with a hash index
-    // the collector rebuilds — under a kind of its own, so that nothing which
-    // dispatches on a collection's flags can ever be handed one. It is not a
-    // value: no program can hold it, and only the private helpers touch it.
-    static constexpr uint16_t kPrivateFlags = HeapKind::PrivateTable;
+    // A fresh, empty table on an object of `shape` — which decides its
+    // [[Prototype]], and which every caller takes from the constructor's
+    // `instance_shape` so that `new Map()` and `new (class extends Map)()`
+    // differ in nothing but that. `brand` is the kind's symbol.
+    static MapHeader* create(Heap& heap, NonMovingArena& arena, Shape* shape, Value brand);
 
-    static MapHeader* create(Heap& heap, uint16_t flags);
-
-    // The side object above, built on first use. Rooted operand, not a Value:
-    // the allocation inside can move the collection.
-    static struct ObjectHeader* ensureProperties(Heap& heap, class NonMovingArena& arena,
-                                                 Rooted<Value>& self);
+    // Is `v` an object created by `create` with this brand? Three loads and
+    // no allocation: the object kind, the slot count (an ordinary object with
+    // this prototype was not built with the slots and answers 0 here, which is
+    // what keeps the reads below in bounds), and the brand slot's identity.
+    // A brand that is not yet a symbol — the kind's intrinsics unbuilt — can
+    // match nothing, since no instance of that kind can exist before them.
+    static bool hasBrand(Value v, Value brand) noexcept {
+        if (!brand.isSymbol() || !v.isObject()) return false;
+        HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
+        if (hdr->flags != HeapKind::Plain) return false;
+        const auto* obj = reinterpret_cast<const ObjectHeader*>(hdr);
+        if (obj->internalSlotCount() != CollectionSlot::kCount) return false;
+        return obj->slotsData()[ObjectHeader::kInlineSlots + CollectionSlot::Brand].rawBits() ==
+               brand.rawBits();
+    }
 
     uint32_t liveSize() const noexcept { return static_cast<uint32_t>(liveCount.asNumber()); }
     uint32_t used() const noexcept { return static_cast<uint32_t>(usedCount.asNumber()); }
@@ -131,6 +152,18 @@ struct MapHeader {
 
     static void clear(Rooted<Value>& self);
 };
+
+// The struct above IS the internal-slot layout `createWithInternalSlots`
+// produces, field for field, which is what lets the table's code address its
+// fields by name while everything else in the runtime addresses them as slots.
+static_assert(offsetof(MapHeader, brand) ==
+              sizeof(ObjectHeader) + (ObjectHeader::kInlineSlots + CollectionSlot::Brand) * sizeof(Value));
+static_assert(offsetof(MapHeader, entries) ==
+              sizeof(ObjectHeader) + (ObjectHeader::kInlineSlots + CollectionSlot::Entries) * sizeof(Value));
+static_assert(offsetof(MapHeader, indexAnchor) ==
+              sizeof(ObjectHeader) + (ObjectHeader::kInlineSlots + CollectionSlot::IndexAnchor) * sizeof(Value));
+static_assert(sizeof(MapHeader) ==
+              sizeof(ObjectHeader) + (ObjectHeader::kInlineSlots + CollectionSlot::kCount) * sizeof(Value));
 
 // ECMA-262 7.2.10 SameValueZero: `===` except that NaN matches NaN. `+0` and
 // `-0` match under both, which `==` on the raw bits would get wrong, and two

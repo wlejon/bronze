@@ -3,7 +3,6 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
-#include "runtime/map.h"
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
@@ -44,12 +43,12 @@ void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] = w0;
 }
 
-// The EXOTIC-receiver latch: an Array, a collection (Map/Set/WeakMap/WeakSet),
-// a typed-array view, or a global-constructor function receiver, whose method
-// is a native builtin from an immutable C table. The entry is the
-// DIRECT form under a kind guard instead of a shape guard — bronze_abi.h's
-// method-site contract states the word 0 encoding and why the box-offset
-// clause is the complete shadowing story. What makes each latch sound:
+// The EXOTIC-receiver latch: an Array, a typed-array view, or a
+// global-constructor function receiver, whose method is a native builtin from
+// an immutable C table. The entry is the DIRECT form under a kind guard
+// instead of a shape guard — bronze_abi.h's method-site contract states the
+// word 0 encoding and why the box-offset clause is the complete shadowing
+// story. What makes each latch sound:
 //
 //   Array: the probe's way 0 holds the ARRAY-METHOD sentinel, which the read
 //   path fills only when the answer came from the method table, the receiver
@@ -57,13 +56,14 @@ void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
 //   (rt_prop.cpp) — and that table cannot change, because decorating
 //   `Array.prototype` is a hard error by construction (rt_prop_write.cpp).
 //
-//   Collections: the native-member memo (runtime/native_fn_memo.h) answers
+//   Typed arrays: the native-member memo (runtime/native_fn_memo.h) answers
 //   (kind, key) with the interned ladder native and nothing else — a fill is
 //   refused for anything that is not one — so `memo == callee` proves the
-//   read answered from the C ladder rather than from an own property or a
-//   subclass prototype, both of which live in the receiver's box and are
-//   re-guarded per hit anyway. A memo that has not filled (or is disabled by
-//   BRONZE_NO_FN_SINGLETON_CACHE) simply never latches here.
+//   read answered from the C ladder. A memo that has not filled (or is
+//   disabled by BRONZE_NO_FN_SINGLETON_CACHE) simply never latches here.
+//
+//   A Map, a Set and the weak pair are ordinary objects with a real prototype
+//   and take the ordinary shape-guarded method IC like any class instance.
 //
 // Loads, compares and stores only — no allocation, like the caller. Answers
 // whether it installed, so a Function receiver it declines can be offered to
@@ -123,14 +123,9 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
     if (kind == HeapKind::Array) {
         if (!probe.isArrayMethod()) return false;
         auxOffset = offsetof(ArrayHeader, properties);
-    } else if (kind == MapHeader::kMapFlags || kind == MapHeader::kSetFlags ||
-               kind == MapHeader::kWeakMapFlags || kind == MapHeader::kWeakSetFlags) {
-        const Value memo = rtNativeMemberProbe(kind, keyIndex);
-        if (memo.isUndefined() || memo.rawBits() != fnVal.rawBits()) return false;
-        auxOffset = offsetof(MapHeader, properties);
     } else if (kind == TypedArrayHeader::kFlags) {
-        // Memo-keyed like the collections (the fill is gated on the shared
-        // method table, rt_prop.cpp's typed-array branch). A view carries no
+        // Memo-keyed (the fill is gated on the shared method table,
+        // rt_prop.cpp's typed-array branch). A view carries no
         // named-property box AT ALL, so no shadowing channel exists and the
         // guard's box clause only needs a word that can never read as
         // Object-tagged: the {byteOffset, length} word, whose top 16 bits

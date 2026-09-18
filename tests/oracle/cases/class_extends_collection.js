@@ -15,12 +15,12 @@
 // object that has no shape to have installed a private name on.
 //
 // A method DEFINED on the subclass shadows the builtin of the same name
-// (`Loud.prototype.has` below), because the prototype chain is consulted before
-// the table that stands in for `Set.prototype`. Getting that order backwards is
-// the failure this pins: `l.has(7)` would answer the builtin's `true` instead
-// of the subclass's string. It reaches the real membership test through a
-// collection it holds rather than through `super.has`, because bronze has no
-// `Set.prototype` OBJECT for a super-property to be read from.
+// (`Loud.prototype.has` below), because `Loud.prototype` is one link nearer
+// than `Set.prototype` on the instance's chain. Getting that order backwards
+// is the failure this pins: `l.has(7)` would answer the builtin's `true`
+// instead of the subclass's string. It reaches the real membership test
+// through a collection it holds; the `super.has` form is
+// map_prototype_objects.js's subject.
 
 class Tagged extends Map {
   #tag;

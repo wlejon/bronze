@@ -6,8 +6,8 @@
 // same question and each kind answers it from different storage; a write asks
 // whether the receiver can hold the property AT ALL, and for most kinds the
 // answer is no. So this file is mostly refusals, one per storage story: a typed
-// array's named writes have nowhere to go, a Map's entries are not properties, a
-// DataView's bytes are written through its accessors. None of them may be
+// array's named writes have nowhere to go, an ArrayBuffer has no property at
+// all, a DataView's bytes are written through its accessors. None of them may be
 // quietly discarded — a discarded write leaves the program believing it stored
 // something, which is the silent-wrong-answer shape the house rules rank below
 // process death.
@@ -40,7 +40,6 @@
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
-#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/ic_log.h"
@@ -57,7 +56,6 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -257,18 +255,6 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                "through setInt8/setFloat64 and the rest; tried to write `" + keyStr + "`)")
                   .c_str());
     }
-    if (hdr->flags == WeakRefHeader::kFlags ||
-        hdr->flags == FinalizationRegistryHeader::kFlags) {
-        // 26.1.3 and 26.2.3 give neither a writable property, and there is no
-        // shape here for a named one to go in. Diagnosed rather than discarded,
-        // which is what would leave a program believing it stored something —
-        // and the mistake this catches is a real one: a program that means to
-        // remember what a WeakRef points at writes it beside the ref.
-        fatal((std::string("named property writes on a ") +
-               (hdr->flags == WeakRefHeader::kFlags ? "WeakRef" : "FinalizationRegistry") +
-               " are unsupported (tried to write `" + keyStr + "`)")
-                  .c_str());
-    }
     if (hdr->flags == RegExpHeader::kFlags) {
         // `lastIndex` is the one writable property a RegExp has (22.2.6.9).
         // Anything else would need a shape, and discarding the write would
@@ -278,20 +264,6 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                    "writable; tried to write `" + keyStr + "`)")
                       .c_str());
         }
-        return;
-    }
-    if (rtIsMapLike(objVal)) {
-        // 24.1.4: a Map is an ORDINARY object with internal slots, so an
-        // ordinary named write defines an ordinary property and leaves
-        // [[MapData]] alone. `m.foo = 1` and `m.set("foo", 1)` are two stores
-        // that never see each other, which is why this is a property write and
-        // not a redirection into the entry table.
-        StringHeader* named = rtKeyHeader(keyIndex);
-        if (!named) fatal("property write with an unregistered key index");
-        Rooted<Value> mapRoot{objVal};
-        Rooted<Value> val{valVal};
-        Rooted<Value> key(Value::fromString(named));
-        rtReportSetRefusal(rtMapNamedSet(mapRoot, key, val), strict, rtKeyString(keyIndex));
         return;
     }
     if (hdr->flags == HeapKind::Proxy) {
@@ -555,8 +527,8 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
         // rather than guessed at: an accessor lives in a shape, and each of
         // these kinds answers its members from a table beside the value with no
         // shape of its own to put a getter/setter pair in. The side property
-        // objects an array and a Map now carry are the storage a fix would use,
-        // but the READ paths that would have to consult them are per-kind and
+        // object an array carries is the storage a fix would use, but the
+        // READ paths that would have to consult it are per-kind and
         // per-member, so the refusal stands rather than half of it.
         fatal((std::string("an accessor property on ") + rtObjectKindName(objVal) +
                " is unsupported (its members are answered from a table beside the value, not "
@@ -599,8 +571,8 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
         // rather than guessed at: an accessor lives in a shape, and each of
         // these kinds answers its members from a table beside the value with no
         // shape of its own to put a getter/setter pair in. The side property
-        // objects an array and a Map now carry are the storage a fix would use,
-        // but the READ paths that would have to consult them are per-kind and
+        // object an array carries is the storage a fix would use, but the
+        // READ paths that would have to consult it are per-kind and
         // per-member, so the refusal stands rather than half of it.
         fatal((std::string("an accessor property on ") + rtObjectKindName(objVal) +
                " is unsupported (its members are answered from a table beside the value, not "
@@ -724,12 +696,6 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
             ArrayHeader::ensureProperties(rtHeap(), rtArena(), recv);
         }
-        // And a Map or a Set, on the same demand and for the same reason: its
-        // properties are ordinary (24.1.4) and a symbol-keyed one is no
-        // different from a named one.
-        if (rtIsMapLike(recv.get())) {
-            MapHeader::ensureProperties(rtHeap(), rtArena(), recv);
-        }
         if (ObjectHeader* holder = rtSymbolKeyHolder(recv.get())) {
             Rooted<Value> holderRoot{Value::fromObject(holder)};
             Rooted<Value> key{Value(idxBits)};
@@ -747,8 +713,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // 10.4.6.9 returns false without ever looking at the key.
         if (rtModuleNamespaceWriteRefused(recv.get(), "<symbol>", strict)) return;
         fatal("a symbol-keyed property write is only supported on a plain object, a "
-              "function, an array or a Map-like collection (a typed array carries no "
-              "shape at all)");
+              "function or an array (a typed array carries no shape at all)");
     }
     // A write through `o[i]` to something that is not an object, answered
     // exactly as `bronze_prop_set` answers `o.k`: the nullish TypeError first,
@@ -927,17 +892,6 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         if (refusal != SetRefusal::None) {
             rtReportSetRefusal(refusal, strict, rtUtf8Chars(key.get().asString<StringHeader>()));
         }
-        return;
-    }
-    if (rtIsMapLike(objVal)) {
-        // `m[k] = v` is `m.k = v`: a Map's key space is values and its
-        // property space is names, so nothing here is an element and every
-        // key names an ordinary property. One operation, two spellings.
-        Rooted<Value> mapRoot{objVal};
-        Rooted<Value> val{Value(valBits)};
-        Rooted<Value> key{rtElemKeyAsString(Value(idxBits))};
-        const std::string keyText = rtUtf8Chars(key.get().asString<StringHeader>());
-        rtReportSetRefusal(rtMapNamedSet(mapRoot, key, val), strict, keyText);
         return;
     }
     {

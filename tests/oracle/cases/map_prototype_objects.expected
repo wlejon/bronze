@@ -1,0 +1,65 @@
+true true true
+clear,constructor,delete,entries,forEach,get,has,keys,set,size,values
+[object Map] [object Map]
+value:string w:false e:false c:true Map
+get:get size/set:undefined w:undefined e:false c:true value:function w:true e:false c:true value:function w:true e:false c:true
+true false
+get 1 2 1 0 entries
+Map 0 groupBy,length,name,prototype function false
+one false 1
+true false true true
+true true false true
+add,clear,constructor,delete,difference,entries,forEach,has,intersection,isDisjointFrom,isSubsetOf,isSupersetOf,keys,size,symmetricDifference,union,values
+[object Set] Set
+true true values
+get:get size/set:undefined w:undefined e:false c:true value:function w:true e:false c:true
+1 1 1 1
+false false false
+false false false
+false
+true TypeError true TypeError
+true TypeError true TypeError true TypeError
+true TypeError true TypeError
+true TypeError true TypeError
+true TypeError true TypeError true TypeError
+true TypeError true TypeError true TypeError
+true TypeError true TypeError true TypeError true TypeError
+true true true x! none 1 true
+true true true
+2 3 true 1,2 true 3
+true true TypeError
+true true TypeError true
+1=2;3=4; undefined
+true true
+1 {} count
+label tag {"label":"tag"} {} {"m":{}}
+hidden,label 3 2 1
+true false true 1
+label;
+null undefined 2 true
+true function true TypeError true TypeError
+true true
+true false
+true true
+[object Map Iterator] [object Set Iterator] true
+{"value":[1,2],"done":false} {"done":true} {"value":1,"done":false}
+custom 1,a 1,a
+3,2,1 1,2,3
+true true false true
+constructor,delete,get,has,set [object WeakMap] value:string w:false e:false c:true
+1 2 set WeakMap 0 length,name,prototype
+1 false false false false
+true true add,constructor,delete,has [object WeakSet]
+1 true false WeakSet length,name,prototype
+true true kept true
+note {"note":"expando"} true
+true true constructor,deref [object WeakRef]
+0 deref WeakRef 1 length,name,prototype value:string w:false e:false c:true
+true true true
+true true constructor,register,unregister
+[object FinalizationRegistry] 2 1 FinalizationRegistry 1
+undefined true false
+true true t1 tag true
+true true true false
+mark {"mark":1} true true
+true true

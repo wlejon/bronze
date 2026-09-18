@@ -28,7 +28,6 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/iterator.h"
-#include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
@@ -45,7 +44,6 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 namespace {
@@ -165,9 +163,6 @@ static_assert(HeapKind::Count == 20,
     if (kind == HeapKind::SlotBlock) fatal("internal: 'in' on an object's slot block");
     if (kind == HeapKind::ValueBlock) fatal("internal: 'in' on an element or entry block");
     if (kind == EnvHeader::kFlags) fatal("internal: 'in' on an environment record");
-    if (kind == MapHeader::kPrivateFlags) {
-        fatal("internal: 'in' on a private-element table");
-    }
     fatal("internal: 'in' on an iteration record");
 }
 
@@ -190,25 +185,13 @@ static_assert(HeapKind::Count == 20,
 bool shapelessHasSymbol(uint16_t kind, Value key) {
     if (key.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
         switch (kind) {
-            // 24.1.3.13, 24.2.3.12, 23.2.3.35, 25.1.6.6, 25.3.4.25 put it on
-            // the prototype — 24.3.3.6 and 24.4.3.5 for the weak pair;
+            // 23.2.3.35, 25.1.6.6, 25.3.4.25 put it on the prototype;
             // 10.4.6.1 puts it on the namespace itself, which is the one of
             // these that is an OWN property.
-            case HeapKind::Map:
-            case HeapKind::Set:
-            case HeapKind::WeakMap:
-            case HeapKind::WeakSet:
             case HeapKind::TypedArray:
             case HeapKind::ArrayBuffer:
             case HeapKind::DataView:
             case HeapKind::ModuleNamespace:
-                return true;
-            // 26.1.3.3 and 26.2.3.3 put one on each prototype, which is the
-            // only reason `Object.prototype.toString.call(wr)` reads "[object
-            // WeakRef]" — 20.1.3.6's builtin-tag list has no entry for either,
-            // so step 14 would have said "Object" without it.
-            case HeapKind::WeakRef:
-            case HeapKind::FinalizationRegistry:
                 return true;
             // An array and a RegExp: 23.1.3 and 22.2.6 define none, which is
             // why 20.1.3.6 keeps a builtin-tag list for them.
@@ -218,17 +201,13 @@ bool shapelessHasSymbol(uint16_t kind, Value key) {
     }
     if (key.asSymbol<SymbolHeader>() != rtSymbolIterator()) return false;
     switch (kind) {
-        // 23.1.3.34, 23.2.3.34, 24.1.3.12, 24.2.3.11.
+        // 23.1.3.34, 23.2.3.34.
         case HeapKind::Array:
         case HeapKind::TypedArray:
-        case HeapKind::Map:
-        case HeapKind::Set:
             return true;
-        // An ArrayBuffer, a DataView, a RegExp, a WeakMap and a WeakSet are
-        // not iterable — non-iterability is half of what makes the weak pair
-        // weak — and a module namespace exports no name that could be one
-        // (10.4.6.4 is "is this an export", and @@toStringTag above is its
-        // only other key).
+        // An ArrayBuffer, a DataView and a RegExp are not iterable, and a
+        // module namespace exports no name that could be one (10.4.6.4 is "is
+        // this an export", and @@toStringTag above is its only other key).
         default:
             return false;
     }
@@ -256,14 +235,8 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
         case HeapKind::TypedArray:
         case HeapKind::ArrayBuffer:
         case HeapKind::DataView:
-        case HeapKind::Map:
-        case HeapKind::Set:
-        case HeapKind::WeakMap:
-        case HeapKind::WeakSet:
         case HeapKind::RegExp:
         case HeapKind::ModuleNamespace:
-        case HeapKind::WeakRef:
-        case HeapKind::FinalizationRegistry:
             return shapelessHasSymbol(kind, key);
         case HeapKind::Proxy:
             // 10.5.7: the handler's question, or the target's — either way the
@@ -272,7 +245,6 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
             return rtProxyHas(objRoot.get(), key);
         case HeapKind::Iterator:
         case HeapKind::Env:
-        case HeapKind::PrivateTable:
         case HeapKind::SlotBlock:
         case HeapKind::ValueBlock:
             refuseInternalKind(kind);
@@ -361,36 +333,8 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
         case HeapKind::DataView:
             if (rtDataViewHasMember(key)) return true;
             break;
-        // The collections answer from two places, and `in` has to ask both:
-        // an ORDINARY own property a program assigned (24.1.4 leaves a Map an
-        // ordinary object), then the members 24.1.3 and its siblings put on the
-        // prototype. An entry is neither — `m.set("k", 1)` does not make
-        // `"k" in m` true, and that is the language and not a gap.
-        case HeapKind::Map:
-        case HeapKind::Set:
-        case HeapKind::WeakMap:
-        case HeapKind::WeakSet: {
-            Rooted<Value> keyStr{rtMakeString(key)};
-            if (PropertyInfo info;
-                rtMapOwnNamed(objRoot.get(), keyStr.get().asString<StringHeader>(), info)) {
-                return true;
-            }
-            const uint16_t k = objRoot.get().asObject<HeapObjectHeader>()->flags;
-            if (k == HeapKind::Map || k == HeapKind::Set) {
-                if (rtMapHasMember(k == HeapKind::Set, key)) return true;
-            } else if (rtWeakCollectionHasMember(k == HeapKind::WeakSet, key)) {
-                return true;
-            }
-            break;
-        }
         case HeapKind::RegExp:
             if (rtRegExpHasMember(key)) return true;
-            break;
-        // Both answer from the one member table their READ answers from, so
-        // `'deref' in wr` and `wr.deref` cannot disagree.
-        case HeapKind::WeakRef:
-        case HeapKind::FinalizationRegistry:
-            if (rtWeakRefHasMember(objRoot.get(), key)) return true;
             break;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.4 [[HasProperty]] is exactly "is this an export name":
@@ -444,7 +388,6 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
         }
         case HeapKind::Iterator:
         case HeapKind::Env:
-        case HeapKind::PrivateTable:
         case HeapKind::SlotBlock:
         case HeapKind::ValueBlock:
             refuseInternalKind(hdr->flags);
@@ -711,16 +654,6 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         }
         if (rtIsRegExpConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::RegExp;
-        }
-        // A Map and a Set are the same case as an array and were missing from
-        // it only because nothing could produce one whose chain a walk would
-        // find: `new (class extends Map)() instanceof Map` has to be true, and
-        // the kind IS the answer, since the intrinsic has no prototype OBJECT
-        // for the walk below to compare against.
-        if (const char* name = rtMapConstructorName(ctorRoot.get())) {
-            const uint16_t flags = objRoot.get().asObject<HeapObjectHeader>()->flags;
-            return flags == (std::strcmp(name, "Set") == 0 ? MapHeader::kSetFlags
-                                                           : MapHeader::kMapFlags);
         }
         // 25.2 gives a SharedArrayBuffer its own prototype, so it is NOT an
         // `instanceof ArrayBuffer` -- the two brands share a header in bronze and

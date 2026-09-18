@@ -53,67 +53,46 @@ static_assert(sizeof(HeapObjectHeader) == 8, "HeapObjectHeader must be 8 bytes")
 // its own allocation sites and a constant on its own header, and no file saw
 // two of them at once.
 //
-// A value is read by nothing outside this process, so these may be renumbered
-// freely. What must never happen is two of them matching, which an enum makes
-// a matter of adding a name rather than of remembering a number.
+// The numbers are NOT free to change: brass's allocation lowering writes a
+// kind into a fresh header as a literal (il_alloc_lowering.cpp — Plain, Array,
+// Env and ValueBlock), so each enumerator here carries its value explicitly
+// and a retired kind leaves a hole rather than shifting its neighbours. What
+// must never happen is two of them matching, which an enum makes a matter of
+// adding a name rather than of remembering a number.
+//
+// Holes 6-9 and 15-17 belonged to Map, Set, WeakMap, WeakSet, PrivateTable,
+// WeakRef and FinalizationRegistry. Each is a PLAIN object now — a real
+// prototype chain, its state in internal slots, told apart by a brand symbol
+// in slot 0 exactly as a Date is (runtime/map.h, runtime/weak_ref.h) — so no
+// dispatch in the runtime needs a kind for one.
 namespace HeapKind {
 enum : uint16_t {
     Plain = 0,  // an ordinary object; ties to BRONZE_ABI_OBJ_FLAGS_PLAIN in object.h
-    Array,
-    Function,
-    TypedArray,
-    ArrayBuffer,
+    Array = 1,
+    Function = 2,
+    TypedArray = 3,
+    ArrayBuffer = 4,
     // A DataView is its own kind and not a tenth element kind: it reads a
     // buffer at an arbitrary byte offset with an explicitly named byte order,
     // so nothing about it shares the offset-times-width addressing every
     // %TypedArray% element access is.
-    DataView,
-    Map,
-    Set,
-    // A WeakMap and a WeakSet are the Map/Set LAYOUT under their own kinds,
-    // never the same kind with a bit: every dispatch in the runtime is an exact
-    // flags compare, and a WeakMap that answered as a Map would be iterable,
-    // report a `size`, and print its entries — three answers 24.3 and 24.4
-    // define it not to have.
-    WeakMap,
-    WeakSet,
-    Iterator,
-    RegExp,
-    Env,
+    DataView = 5,
+    Iterator = 10,
+    RegExp = 11,
+    Env = 12,
     // A module namespace exotic object (ECMA-262 10.4.6). Its own kind because
     // three of its internal methods are not the ordinary ones — sorted own
     // keys, a [[Set]] that always refuses, a non-configurable descriptor — and
     // none of the three is expressible as an attribute on a plain object's
     // property. See runtime/namespace.h.
-    ModuleNamespace,
+    ModuleNamespace = 13,
     // A Proxy exotic object (10.5), carrying its target and handler. Its own
     // kind for the same reason a namespace is: [[Get]], [[Set]] and
     // [[HasProperty]] are not the ordinary internal methods, and no attribute
     // on a plain object's property can express "ask the handler first".
     // runtime/proxy.h owns the layout and the construction gate that keeps
     // every OTHER internal method forwardable.
-    Proxy,
-
-    // One private class element's per-evaluation table (ECMA-262 6.2.12): the
-    // Map/Set LAYOUT again, keyed by the object that carries the element. Its
-    // own kind because it is NOT a JS value — nothing hands a program one, and
-    // every dispatch that meets one is a bug rather than something a program
-    // did, exactly as for an environment record.
-    PrivateTable,
-
-    // A WeakRef (26.1) and a FinalizationRegistry (26.2). Their own kinds for
-    // the reason the weak pair above has its own: every dispatch in the runtime
-    // is an exact flags compare, and neither is a plain object — a WeakRef's
-    // one slot is a reference the collector must NOT trace, and a
-    // FinalizationRegistry's cells are half strong and half weak.
-    //
-    // The WeakRef is also the first Tag::Object-shaped VALUE whose heap header
-    // carries Tag::RawBytes (an ArrayBuffer was the first object to do that at
-    // all): the payload scan is exactly what a weak slot must escape, and the
-    // tag is the only thing that keeps it away. runtime/weak_ref.h owns both
-    // layouts and the sweep that makes them weak.
-    WeakRef,
-    FinalizationRegistry,
+    Proxy = 14,
 
     // An object's OUT-OF-LINE PROPERTY SLOTS — the block `ObjectHeader::
     // overflow` names, holding slot `kInlineSlots` and up. Not a JS value and
@@ -127,7 +106,7 @@ enum : uint16_t {
     // first slot as a `Shape*` and chase it. That was harmless while the scan
     // was uniform over every payload word; it stopped being harmless the
     // moment the shape decides which words are Values (slot_repr.h).
-    SlotBlock,
+    SlotBlock = 18,
 
     // A flat run of Values that is not an object at all and has no header
     // fields of its own: an array's ELEMENTS, a Map's entry table. Every word
@@ -135,17 +114,17 @@ enum : uint16_t {
     // did when these blocks carried no kind — the kind exists so that they
     // stop reading as `HeapKind::Plain`, which is now a claim that a `Shape*`
     // is at offset 8 and that the shape decides which words are Values.
-    ValueBlock,
+    ValueBlock = 19,
 
-    // Not a kind: how many there are. It exists so that a dispatch which must
-    // be TOTAL over the registry can pin the registry's size and break the
-    // build when a kind is added. `flags` is a `uint16_t` and this enum is
+    // Not a kind: one past the highest number in use. It exists so that a
+    // dispatch which must be TOTAL over the registry can pin the registry's
+    // size and break the build when a kind is added. `flags` is a `uint16_t` and this enum is
     // unnamed, so no compiler warning can check such a switch for
     // exhaustiveness — a static_assert on this number is the only tripwire
     // available, and `bronze_has_property` is why one is needed: a kind with no
     // arm there once fell through to a cast that read its payload's first word
     // as a `Shape*`.
-    Count,
+    Count = 20,
 };
 }  // namespace HeapKind
 

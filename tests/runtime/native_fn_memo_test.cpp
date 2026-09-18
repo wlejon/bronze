@@ -19,12 +19,12 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
-#include "runtime/map.h"
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 using namespace bronze;
@@ -151,23 +151,27 @@ TEST_CASE("the member memo is keyed on the kind as well as the key") {
     MemoOn memo;
 
     // Filled through the read path rather than by hand, because what is being
-    // pinned is that the read path fills it.
-    Rooted<Value> map{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
-    Rooted<Value> set{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
-    const uint32_t getKey = bronze_register_key_string("get");
-    const uint32_t hasKey = bronze_register_key_string("has");
+    // pinned is that the read path fills it. A typed array's `set` and `fill`
+    // are the shared method table's, so both land in the memo.
+    Rooted<Value> view{Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 4))};
+    const uint32_t setKey = bronze_register_key_string("set");
+    const uint32_t fillKey = bronze_register_key_string("fill");
 
     for (int i = 0; i < 4; ++i) {
-        (void)bronze_prop_get(map.get().rawBits(), getKey, nullptr);
-        (void)bronze_prop_get(map.get().rawBits(), hasKey, nullptr);
-        (void)bronze_prop_get(set.get().rawBits(), hasKey, nullptr);
+        (void)bronze_prop_get(view.get().rawBits(), setKey, nullptr);
+        (void)bronze_prop_get(view.get().rawBits(), fillKey, nullptr);
     }
 
-    const Value mapGet = rtNativeMemberProbe(MapHeader::kMapFlags, getKey);
-    CHECK_FALSE(mapGet.isUndefined());
-    // A Set has no `get`, so no read ever filled that pair — and the Map's
-    // entry must not answer for it.
-    CHECK(rtNativeMemberProbe(MapHeader::kSetFlags, getKey).isUndefined());
+    const Value viewSet = rtNativeMemberProbe(TypedArrayHeader::kFlags, setKey);
+    CHECK_FALSE(viewSet.isUndefined());
+    CHECK_FALSE(rtNativeMemberProbe(TypedArrayHeader::kFlags, fillKey).isUndefined());
+    // No read of another kind filled that pair — a Map's `set` is found on
+    // `Map.prototype` by the ordinary walk and never reaches the memo — and
+    // the view's entry must not answer for it.
+    Rooted<Value> map{rtNewMap()};
+    for (int i = 0; i < 4; ++i) (void)bronze_prop_get(map.get().rawBits(), setKey, nullptr);
+    CHECK(rtNativeMemberProbe(HeapKind::Plain, setKey).isUndefined());
+    CHECK(rtNativeMemberProbe(HeapKind::Array, setKey).isUndefined());
 }
 
 TEST_CASE("the member memo refuses a value that is not an interned native") {
@@ -175,15 +179,15 @@ TEST_CASE("the member memo refuses a value that is not an interned native") {
     MemoOn memo;
 
     const uint32_t key = bronze_register_key_string("notANative");
-    rtNativeMemberFill(MapHeader::kMapFlags, key, Value::fromDouble(2.0));
-    CHECK(rtNativeMemberProbe(MapHeader::kMapFlags, key).isUndefined());
+    rtNativeMemberFill(TypedArrayHeader::kFlags, key, Value::fromDouble(2.0));
+    CHECK(rtNativeMemberProbe(TypedArrayHeader::kFlags, key).isUndefined());
 
-    // A plain object is not one either, and neither is `undefined` — `size`
+    // A plain object is not one either, and neither is `undefined` — `length`
     // reaches the fill as a number and an absent member never reaches it at
     // all, which is what keeps a diagnosed name diagnosed.
     Rooted<Value> obj{Value(bronze_create_object())};
-    rtNativeMemberFill(MapHeader::kMapFlags, key, obj.get());
-    CHECK(rtNativeMemberProbe(MapHeader::kMapFlags, key).isUndefined());
+    rtNativeMemberFill(TypedArrayHeader::kFlags, key, obj.get());
+    CHECK(rtNativeMemberProbe(TypedArrayHeader::kFlags, key).isUndefined());
 }
 
 TEST_CASE("the seam makes both memos miss without changing what they would answer") {
@@ -191,10 +195,10 @@ TEST_CASE("the seam makes both memos miss without changing what they would answe
     MemoOn memo;
 
     const Value warm = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
-    const uint32_t key = bronze_register_key_string("size");
+    const uint32_t key = bronze_register_key_string("set");
 
     bronze_tls_block_addr()->fn_singleton_cache_enabled = 0;
-    CHECK(rtNativeMemberProbe(MapHeader::kMapFlags, key).isUndefined());
+    CHECK(rtNativeMemberProbe(TypedArrayHeader::kFlags, key).isUndefined());
     // The singleton answer is the helper's either way — the seam removes the
     // shortcut, never the interning.
     CHECK(rtNativeSingleton(probeCodeA, 1, nullptr, 0).rawBits() == warm.rawBits());

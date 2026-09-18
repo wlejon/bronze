@@ -14,11 +14,14 @@
 #include <vector>
 
 #include "runtime/array.h"
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 
@@ -40,25 +43,34 @@ uint32_t linearFind(MapHeader* map, Value key) {
 
 TEST_CASE("the Set operation table is one list, with seven distinct bodies") {
     // 24.2.4's seven set operations live in their own translation unit and are
-    // reached through a table, so the two ways a Set member can be asked for —
-    // `s.union` (rtMapMethod) and `'union' in s` (rtMapHasMember) — read that
-    // one table rather than each carrying a list. What an oracle case cannot
-    // see is the failure this table invites: seven near-identical rows, where a
-    // copy-paste gives two names ONE body and every call still returns a Set,
-    // just the wrong one. `rtNativeFunction` interns by code pointer, so
+    // reached through a table, from which `Set.prototype` is populated — so
+    // `s.union` is an ordinary read off that object. What an oracle case
+    // cannot see is the failure this table invites: seven near-identical rows,
+    // where a copy-paste gives two names ONE body and every call still returns
+    // a Set, just the wrong one. `rtNativeFunction` interns by code pointer, so
     // distinct bodies mean distinct function objects and a duplicated row is
-    // visible as an identity collision here.
+    // visible as an identity collision on the prototype.
     ShadowStackFrame frame;
     size_t count = 0;
     const runtime::NativeMethod* ops = runtime::rtSetOperationMethods(count);
     REQUIRE(count == 7);
 
+    Rooted<Value> setCtor{runtime::rtMapConstructor("Set")};
+    REQUIRE(setCtor.get().isObject());
+    Rooted<Value> proto{setCtor.get().asObject<FunctionHeader>()->prototype};
+    REQUIRE(proto.get().isObject());
+
+    auto member = [&](const char* name) {
+        Rooted<Value> key{runtime::rtMakeString(name)};
+        return proto.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), key);
+    };
+
     for (size_t i = 0; i < count; ++i) {
         REQUIRE(ops[i].name != nullptr);
-        const std::string name = ops[i].name;
-        // Both lookups answer for it, and the read yields a callable.
-        CHECK(runtime::rtMapMethod(/*isSetReceiver=*/true, name).isObject());
-        CHECK(runtime::rtMapHasMember(/*isSetReceiver=*/true, name));
+        // The read off `Set.prototype` yields a callable.
+        const Value fn = member(ops[i].name);
+        REQUIRE(fn.isObject());
+        CHECK(fn.asObject<HeapObjectHeader>()->flags == HeapKind::Function);
         // Every one takes exactly one argument, and `length` is what a caller
         // reflects on.
         CHECK(ops[i].arity == 1);
@@ -67,12 +79,12 @@ TEST_CASE("the Set operation table is one list, with seven distinct bodies") {
     for (size_t i = 0; i < count; ++i) {
         for (size_t j = i + 1; j < count; ++j) {
             CHECK(std::string(ops[i].name) != std::string(ops[j].name));
-            // The first is ROOTED before the second lookup runs: interning
-            // allocates, and under GC stress that collection moves the object
-            // the first call returned. Comparing a stale address against a
-            // fresh one is the bug this file is otherwise about.
-            Rooted<Value> first{runtime::rtMapMethod(/*isSetReceiver=*/true, ops[i].name)};
-            const Value second = runtime::rtMapMethod(/*isSetReceiver=*/true, ops[j].name);
+            // The first is ROOTED before the second lookup runs: interning the
+            // key allocates, and under GC stress that collection moves the
+            // object the first read returned. Comparing a stale address
+            // against a fresh one is the bug this file is otherwise about.
+            Rooted<Value> first{member(ops[i].name)};
+            const Value second = member(ops[j].name);
             CHECK(first.get().rawBits() != second.rawBits());
         }
     }
@@ -97,10 +109,14 @@ TEST_CASE("SameValueZero is === with NaN matching itself") {
     CHECK_FALSE(sameValueZero(Value::fromNull(), Value::fromUndefined()));
 }
 
+// The three table tests below build on the RUNTIME's heap rather than a local
+// one: `rtNewMap` allocates the object there (its shape and brand are the
+// thread's intrinsics), and an entry table must live in the heap its owner
+// does or the first collection of either would orphan the other.
 TEST_CASE("two string objects with the same characters are one key") {
-    Heap heap;
+    Heap& heap = runtime::rtHeap();
     ShadowStackFrame frame;
-    Rooted<Value> map{Value::fromObject(MapHeader::create(heap, MapHeader::kMapFlags))};
+    Rooted<Value> map{runtime::rtNewMap()};
 
     Rooted<Value> k1{Value::fromString(StringHeader::createFromUTF8(heap, "hello"))};
     Rooted<Value> k2{Value::fromString(StringHeader::createFromUTF8(heap, "hello"))};
@@ -118,9 +134,9 @@ TEST_CASE("two string objects with the same characters are one key") {
 }
 
 TEST_CASE("a re-added key moves to the end and an updated one does not") {
-    Heap heap;
+    Heap& heap = runtime::rtHeap();
     ShadowStackFrame frame;
-    Rooted<Value> map{Value::fromObject(MapHeader::create(heap, MapHeader::kMapFlags))};
+    Rooted<Value> map{runtime::rtNewMap()};
 
     for (double d : {1.0, 2.0, 3.0}) {
         Rooted<Value> k{Value::fromDouble(d)};
@@ -151,10 +167,10 @@ TEST_CASE("a re-added key moves to the end and an updated one does not") {
 // objects, so this is the case the epoch exists for: every lookup after a
 // collection must still find every key.
 TEST_CASE("the hash index agrees with a linear scan across collections") {
-    Heap heap;
-    NonMovingArena arena;
+    Heap& heap = runtime::rtHeap();
+    NonMovingArena& arena = runtime::rtArena();
     ShadowStackFrame frame;
-    Rooted<Value> map{Value::fromObject(MapHeader::create(heap, MapHeader::kMapFlags))};
+    Rooted<Value> map{runtime::rtNewMap()};
     // The keys are held in an array of their own as well as by the map, so
     // that "the map lost it" and "the key moved" are different failures — one
     // root covers all of them and the collector forwards both copies.

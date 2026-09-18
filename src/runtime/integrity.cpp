@@ -26,7 +26,6 @@
 #include "runtime/fn.h"
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
-#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
 #include "runtime/namespace.h"
@@ -38,7 +37,6 @@
 #include "runtime/shape.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -47,7 +45,11 @@ namespace {
 // Which of the three storage stories a receiver tells. `Refused` is a real
 // answer and not an error case: it is the set of kinds that have nowhere to
 // keep a level, and naming it here is what keeps every one of the six entry
-// points from inventing its own opinion about a Map.
+// points from inventing its own opinion about a typed array. A Map, a Set and
+// the weak kinds are plain objects whose contents sit in internal slots, so
+// they freeze and seal the way a Date does: the level lands on the object and
+// the entries, which are not properties, stay writable — 24.1.3.9 never
+// consults [[Extensible]].
 enum class Target {
     NotAnObject,  // 20.1.2.6 step 1 / 7.3.15 step 1: nothing to do, vacuously frozen
     Plain,
@@ -305,16 +307,9 @@ const char* rtObjectKindName(Value v) {
         case BRONZE_ABI_OBJ_FLAGS_PLAIN: return "a plain object";
         case HeapKind::Array: return "an array";
         case HeapKind::Function: return "a function";
-        case MapHeader::kMapFlags: return "a Map";
-        case MapHeader::kSetFlags: return "a Set";
-        case MapHeader::kWeakMapFlags: return "a WeakMap";
-        case MapHeader::kWeakSetFlags: return "a WeakSet";
-        case MapHeader::kPrivateFlags: return "a private-element table";
         case TypedArrayHeader::kFlags: return "a typed array";
         case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
         case DataViewHeader::kFlags: return "a DataView";
-        case HeapKind::WeakRef: return "a WeakRef";
-        case HeapKind::FinalizationRegistry: return "a FinalizationRegistry";
         case RegExpHeader::kFlags: return "a RegExp";
         case ModuleNamespaceHeader::kFlags: return "a module namespace object";
         default: return "this object";

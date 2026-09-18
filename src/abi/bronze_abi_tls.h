@@ -47,6 +47,11 @@ typedef struct bronze_tls_block {
     uint64_t ta_set_fast_enabled;
     uint64_t truthy_inline_enabled;
     uint64_t* elem_set_cache_tbl;
+    /* The per-KEY inline-cache sites the property helpers consult when a call
+     * site brings no entry of its own (rt_prop.cpp). BRONZE_NO_KEY_IC=1
+     * lowers it, and every such read then takes the shape walk it always
+     * took. */
+    uint64_t key_ic_enabled;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -79,6 +84,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_TA_SET_FAST_ENABLED_OFF       216
 #define BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF     224
 #define BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF        232
+#define BRONZE_TLS_KEY_IC_ENABLED_OFF            240
 
 /*
  * ---- the iteration record, as generated code reads it ---------------------
@@ -107,8 +113,12 @@ typedef struct bronze_tls_block {
 #define BRONZE_ABI_MAP_ITER_SLOT_NEXT_OFFSET   64
 #define BRONZE_ABI_MAP_ITER_SLOT_KIND_OFFSET   72
 
-#define BRONZE_ABI_MAP_HEADER_ENTRIES_OFFSET   8
-#define BRONZE_ABI_MAP_HEADER_USED_OFFSET      32
+/* A Map's entry table and used-slot count sit in INTERNAL SLOTS after the
+ * ordinary object header and its four inline property slots (a Map is a plain
+ * object with a real prototype chain): slot 1 and slot 4 of runtime/map.h's
+ * CollectionSlot. Pinned against MapHeader in runtime/builtin_map.cpp. */
+#define BRONZE_ABI_MAP_HEADER_ENTRIES_OFFSET   64
+#define BRONZE_ABI_MAP_HEADER_USED_OFFSET      88
 
 #define BRONZE_ABI_MAP_ITER_KIND_KEYS_BITS     0x0000000000000000ull
 #define BRONZE_ABI_MAP_ITER_KIND_VALUES_BITS   0x3FF0000000000000ull

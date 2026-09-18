@@ -37,7 +37,6 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/iterator.h"
-#include "runtime/map.h"
 #include "runtime/native_base.h"
 #include "runtime/number_format.h"
 #include "runtime/proxy.h"
@@ -52,7 +51,6 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -544,21 +542,18 @@ Value ctorObject(const CtorEntry& entry) {
 // 5.c). One answer to "is this iterable, and how long is it?" rather than four,
 // because four is how they would come to disagree about `{length: 2}`.
 
-// Does 23.1.2.1 step 3's GetMethod(items, @@iterator) find something? The fast
-// kinds answer yes without a property read at all — `rtOpenIterator` steps an
-// array, a string, a typed array, a Map and a Set from a cursor — and anything
-// else is asked for the well-known key, because the answer decides between the
-// iterator path and the array-like one and getting it wrong turns
-// `Array.from(userIterable)` into an empty array.
+// Does 23.1.2.1 step 3's GetMethod(items, @@iterator) find something? The
+// shapeless fast kinds answer yes without a property read at all —
+// `rtOpenIterator` steps an array, a string and a typed array from a cursor —
+// and anything else is asked for the well-known key (a Map and a Set carry
+// theirs on their prototype like any ordinary object), because the answer
+// decides between the iterator path and the array-like one and getting it
+// wrong turns `Array.from(userIterable)` into an empty array.
 bool rtHasIteratorMethod(Rooted<Value>& src) {
     if (src.get().isString()) return true;
     if (!src.get().isObject()) return false;
     const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
-    if (flags == HeapKind::Array || flags == TypedArrayHeader::kFlags ||
-        flags == MapHeader::kMapFlags ||
-        flags == MapHeader::kSetFlags) {
-        return true;
-    }
+    if (flags == HeapKind::Array || flags == TypedArrayHeader::kFlags) return true;
     if (flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
     Rooted<Value> key{rtIteratorKey()};
     const Value method = src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
@@ -665,10 +660,7 @@ const char* rtIntrinsicConstructorName(Value fn) {
 // reads that slot inline, so anything that fills it turns the refusal into a
 // fresh empty object silently.
 const char* rtNoPrototypeObjectIntrinsic(Value fn) {
-    const char* name = rtMapConstructorName(fn);
-    if (!name) name = rtWeakCollectionConstructorName(fn);
-    if (!name) name = rtWeakRefConstructorName(fn);
-    if (!name) name = rtTypedArrayConstructorName(fn);
+    const char* name = rtTypedArrayConstructorName(fn);
     if (!name) name = rtSharedArrayBufferConstructorName(fn);
     if (!name) name = rtDataViewConstructorName(fn);
     return name;

@@ -105,8 +105,6 @@ const char* receiverKindName(Value v) {
         case HeapKind::TypedArray: return "typedarray";
         case HeapKind::ArrayBuffer: return "arraybuffer";
         case HeapKind::DataView: return "dataview";
-        case HeapKind::Map: return "map";
-        case HeapKind::Set: return "set";
         case HeapKind::Iterator: return "iterator";
         case HeapKind::RegExp: return "regexp";
         case HeapKind::ModuleNamespace: return "namespace";

@@ -1,17 +1,17 @@
-// Subclassing a native constructor: which exotic object a `new` allocates,
+// Subclassing a native constructor: which native object a `new` allocates,
 // where the subclass's prototype lives on one, and how a read finds it.
 // runtime/native_base.h carries the design; this file is its implementation and
 // the single list of which natives are subclassable.
 
 #include "runtime/native_base.h"
 
+#include <cstring>
 #include <string>
 
 #include "runtime/array.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
-#include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/promise.h"
 #include "runtime/rt_builtins.h"
@@ -30,19 +30,8 @@ bool isFunctionObject(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
-// The exotic kinds whose ordinary-object half is a `properties` box. Both
-// headers put it at the same conceptual place and neither carries a shape, so
-// the two are one question everywhere below.
-bool hasPropertyBox(Value v) {
-    if (!v.isObject()) return false;
-    const uint16_t kind = v.asObject<HeapObjectHeader>()->flags;
-    return kind == HeapKind::Array || kind == MapHeader::kMapFlags ||
-           kind == MapHeader::kSetFlags || kind == MapHeader::kWeakMapFlags ||
-           kind == MapHeader::kWeakSetFlags;
-}
-
-// Give the instance's ordinary half the [[Prototype]] 10.1.14 derived, which
-// for these kinds means BUILDING the box with that prototype behind it rather
+// Give an array subclass instance's ordinary half the [[Prototype]] 10.1.14
+// derived, which means BUILDING the box with that prototype behind it rather
 // than the null one an ordinary expando store leaves it with.
 //
 // The box is built here rather than through `ensureProperties` and
@@ -55,11 +44,10 @@ bool hasPropertyBox(Value v) {
 // instance gets.
 //
 // Skipped entirely when `proto` is not a subclass's: `new Array()` reaches here
-// with %Array.prototype% and `new Map()` with nothing at all, and neither may
-// be given a box — an array with one is an array that has left the
-// method-cache fast path (rt_prop.cpp fills the array-method IC only for an
-// array with no box, which is precisely the guard that keeps a subclass
-// instance off it).
+// with %Array.prototype%, and it may not be given a box — an array with one is
+// an array that has left the method-cache fast path (rt_prop.cpp fills the
+// array-method IC only for an array with no box, which is precisely the guard
+// that keeps a subclass instance off it).
 void attachSubclassPrototype(Rooted<Value>& self, Rooted<Value>& proto) {
     if (!proto.get().isObject()) return;
     if (rtIsArrayPrototypeObject(proto.get())) return;
@@ -70,12 +58,7 @@ void attachSubclassPrototype(Rooted<Value>& self, Rooted<Value>& proto) {
     ObjectHeader* box = ObjectHeader::create(rtHeap(), rtArena(), boxShape);
     box->header.flags = HeapKind::Plain;
     // Re-derived through the root: `create` above may have moved the instance.
-    const Value boxVal = Value::fromObject(box);
-    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-        self.get().asObject<ArrayHeader>()->properties = boxVal;
-    } else {
-        self.get().asObject<MapHeader>()->properties = boxVal;
-    }
+    self.get().asObject<ArrayHeader>()->properties = Value::fromObject(box);
 }
 
 }  // namespace
@@ -93,7 +76,14 @@ uint8_t rtNativeBaseOf(Value fn) {
     if (rtIsArrayConstructor(f.get())) return NativeBase::Array;
     if (rtIsPromiseConstructor(f.get())) return NativeBase::Promise;
     if (const char* name = rtMapConstructorName(f.get())) {
-        return std::string(name) == "Map" ? NativeBase::Map : NativeBase::Set;
+        return std::strcmp(name, "Map") == 0 ? NativeBase::Map : NativeBase::Set;
+    }
+    if (const char* name = rtWeakCollectionConstructorName(f.get())) {
+        return std::strcmp(name, "WeakMap") == 0 ? NativeBase::WeakMap : NativeBase::WeakSet;
+    }
+    if (const char* name = rtWeakRefConstructorName(f.get())) {
+        return std::strcmp(name, "WeakRef") == 0 ? NativeBase::WeakRef
+                                                 : NativeBase::FinalizationRegistry;
     }
     return NativeBase::None;
 }
@@ -108,44 +98,45 @@ void rtInheritNativeBase(Rooted<Value>& derived, Rooted<Value>& base) {
 }
 
 void rtRealizeNativeStatics(Rooted<Value>& ctor) {
-    // Two families answer statics beside the value, and each realizes them off
-    // the very table its read path uses. Neither is asked which constructor
-    // this is: both answer false for a function that is not theirs, so the day
-    // a third family joins, this is one more line and no new decision.
-    if (rtInstallGlobalConstructorStatics(ctor)) return;
-    rtInstallMapStatics(ctor);
+    // One family answers statics beside the value, and realizes them off the
+    // very table its read path uses. It is not asked which constructor this
+    // is: it answers false for a function that is not its own.
+    rtInstallGlobalConstructorStatics(ctor);
 }
 
 Value rtAllocateNativeBaseInstance(uint8_t kind, Rooted<Value>& ctor) {
     // 10.1.14 GetPrototypeFromConstructor is `Get(constructor, "prototype")`,
-    // and for a class that is the object `extends` built. For the intrinsic
-    // itself it is %Array.prototype% (a real object) or, for a Map and a Set,
-    // nothing at all — bronze builds no prototype OBJECT for those two, and the
-    // instance keeps the beside-the-value chain it has always had.
+    // and for a class that is the object `extends` built; for the intrinsic
+    // itself it is the intrinsic's own prototype. Either way the constructor
+    // holds the memoized root shape for it in `instance_shape`, which every
+    // kind below but an array allocates from — an ordinary object with
+    // internal slots, whose [[Prototype]] is its shape's.
     rtEnsureFunctionPrototype(ctor);
-    Rooted<Value> proto{ctor.get().asObject<FunctionHeader>()->prototype};
-    Rooted<Value> self{Value::fromUndefined()};
+    Shape* const shape = ctor.get().asObject<FunctionHeader>()->instance_shape;
     switch (kind) {
-        case NativeBase::Array:
-            self.set(Value::fromObject(ArrayHeader::create(rtHeap())));
-            break;
+        case NativeBase::Array: {
+            Rooted<Value> proto{ctor.get().asObject<FunctionHeader>()->prototype};
+            Rooted<Value> self{Value::fromObject(ArrayHeader::create(rtHeap()))};
+            attachSubclassPrototype(self, proto);
+            return self.get();
+        }
         case NativeBase::Map:
-            self.set(Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags)));
-            break;
+            return rtNewMapWithShape(shape, /*isSet=*/false);
         case NativeBase::Set:
-            self.set(Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags)));
-            break;
+            return rtNewMapWithShape(shape, /*isSet=*/true);
+        case NativeBase::WeakMap:
+            return rtNewWeakCollectionWithShape(shape, /*isWeakSet=*/false);
+        case NativeBase::WeakSet:
+            return rtNewWeakCollectionWithShape(shape, /*isWeakSet=*/true);
+        case NativeBase::WeakRef:
+            return rtNewWeakRefWithShape(shape, /*isRegistry=*/false);
+        case NativeBase::FinalizationRegistry:
+            return rtNewWeakRefWithShape(shape, /*isRegistry=*/true);
         case NativeBase::Promise:
-            // A promise is an ordinary object with internal slots, so its
-            // [[Prototype]] is its SHAPE's — and the constructor already holds
-            // the memoized root shape for its own prototype, which is exactly
-            // what 10.1.13 asks for and costs no shape per instance.
-            return rtNewPromiseWithShape(ctor.get().asObject<FunctionHeader>()->instance_shape);
+            return rtNewPromiseWithShape(shape);
         default:
             fatal("internal: unknown native base kind at construction");
     }
-    attachSubclassPrototype(self, proto);
-    return self.get();
 }
 
 namespace {
@@ -199,20 +190,6 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
         fatal("extending `Date` is unsupported (a Date's [[DateValue]] is created by the "
               "runtime's own constructor, so a subclass's instances would not carry one)");
     }
-    if (const char* name = rtWeakCollectionConstructorName(base.get())) {
-        fatal((std::string("extending `") + name +
-               "` is unsupported (its instances carry [[WeakMapData]]/[[WeakSetData]], which "
-               "bronze allocates only for the intrinsic, so a subclass's would carry none)")
-                  .c_str());
-    }
-    if (const char* name = rtWeakRefConstructorName(base.get())) {
-        fatal((std::string("extending `") + name +
-               "` is unsupported (its instances carry a slot the COLLECTOR owns — a WeakRef's "
-               "[[WeakRefTarget]] is an untraced word and a FinalizationRegistry's [[Cells]] "
-               "are a table the post-collection sweep walks — and bronze allocates both only "
-               "for the intrinsic, so a subclass's instances would carry neither)")
-                  .c_str());
-    }
     if (rtIsArrayBufferConstructor(base.get())) {
         fatal("extending `ArrayBuffer` is unsupported (its instances carry [[ArrayBufferData]] "
               "— the raw block itself, not a Value on an ordinary object — which bronze "
@@ -240,13 +217,10 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
 }
 
 Value rtExoticPropertyBox(Value obj) {
-    if (!hasPropertyBox(obj)) return Value::fromUndefined();
-    // Both headers keep the box in a Value field; the two are read through
-    // their own types because the field sits at a different offset in each.
-    if (obj.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
-        return obj.asObject<ArrayHeader>()->properties;
+    if (!obj.isObject() || obj.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
+        return Value::fromUndefined();
     }
-    return obj.asObject<MapHeader>()->properties;
+    return obj.asObject<ArrayHeader>()->properties;
 }
 
 Value rtExoticSubclassPrototype(Value obj) {
@@ -259,9 +233,9 @@ Value rtExoticSubclassPrototype(Value obj) {
 bool rtExoticNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out) {
     if (!keyHeader) return false;
     // THE FAST PATH, and the reason this is one call rather than a chain walk
-    // spliced into five member functions: an array or a collection a program
-    // has neither subclassed nor written a named property on has no box, and
-    // answers here with one load and one tag test.
+    // spliced into five member functions: an array a program has neither
+    // subclassed nor written a named property on has no box, and answers here
+    // with one load and one tag test.
     Rooted<Value> box{rtExoticPropertyBox(recv.get())};
     if (!box.get().isObject()) return false;
 
@@ -272,9 +246,9 @@ bool rtExoticNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out)
         PropertyInfo info;
         if (obj->shape && obj->shape->lookupProperty(name, info)) {
             Rooted<Value> key{Value::fromString(keyHeader)};
-            // The RECEIVER is the exotic object, so an accessor defined on a
-            // subclass prototype runs against the Map the program read from
-            // and not against the box its own properties live in.
+            // The RECEIVER is the array, so an accessor defined on a subclass
+            // prototype runs against the array the program read from and not
+            // against the box its own properties live in.
             out = holder.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, /*ic=*/nullptr,
                                                                  recv.slot_ptr());
             return true;

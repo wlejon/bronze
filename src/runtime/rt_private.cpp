@@ -9,10 +9,11 @@
 // two and none of the rest.
 //
 // So the storage is a TABLE PER NAME PER CLASS EVALUATION, keyed by the object
-// that carries the element — builtin_map.cpp's object-keyed table under a kind
-// of its own (MapHeader::kPrivateFlags). Reading `o.#x` is a lookup of `o` in
-// `#x`'s table, and the brand check ECMA-262 states as "PrivateElementFind
-// returned empty" is exactly a miss.
+// that carries the element — runtime/map.h's object-keyed table under a brand
+// of its own, with a null prototype so that it is nothing a program could
+// reach a method through even if it were handed one. Reading `o.#x` is a
+// lookup of `o` in `#x`'s table, and the brand check ECMA-262 states as
+// "PrivateElementFind returned empty" is exactly a miss.
 //
 // Per EVALUATION is the part that decides the shape of this. A class
 // expression evaluated twice mints two sets of Private Names, and an instance
@@ -35,14 +36,23 @@
 #include "runtime/map.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
 namespace {
 
-bool isPrivateTable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == MapHeader::kPrivateFlags;
+// The brand a private table carries in its slot 0, minted once per thread the
+// first time a table is: an arena symbol, so it never moves and is never
+// collected, and one no Map or Set shares, so `rtIsMapOrSet` is false of a
+// table and `isPrivateTable` false of a Map. Held as a Value, not a root,
+// because the arena is the root.
+Value privateTableBrand() {
+    static thread_local Value brand = rtMakeSymbol(Value::fromUndefined());
+    return brand;
 }
+
+bool isPrivateTable(Value v) { return MapHeader::hasBrand(v, privateTableBrand()); }
 
 // Every helper here is handed a table lowering produced, so a value that is
 // not one is a compiler bug and not something a program did — the same
@@ -82,7 +92,12 @@ using namespace bronze::runtime;
 // evaluations of one class expression call this twice and get two tables,
 // which is the whole of private-name identity.
 uint64_t bronze_private_new(void) {
-    return Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kPrivateFlags)).rawBits();
+    // A null prototype: the table is not a JS value, and a shape whose chain
+    // is empty is what keeps that true even for a path that walked it.
+    return Value::fromObject(MapHeader::create(rtHeap(), rtArena(),
+                                               rtRootShapeForPrototype(Value::fromNull()),
+                                               privateTableBrand()))
+        .rawBits();
 }
 
 // `#x in o` (13.10.1). An OBJECT that lacks the element answers false — that

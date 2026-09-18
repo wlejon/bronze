@@ -185,11 +185,28 @@ private:
             return "[Number: " + numberText(data.asNumber()) + "]";
         }
 
+        // The keyed collections are ordinary objects whose contents live in
+        // internal slots, so — like a Date — they are told apart by brand
+        // before the kind switch, not by a heap kind of their own.
+        if (rtIsMapOrSet(v)) return collection(v.asObject<MapHeader>(), rtIsSetKind(v), depth);
+        // node's spelling, and the CONTENTS are withheld on purpose: a WeakMap
+        // is non-iterable, so a console.log that listed its entries would be
+        // the one place in the language they leak.
+        if (rtIsWeakMapObject(v)) return "WeakMap { <items unknown> }";
+        if (rtIsWeakSetObject(v)) return "WeakSet { <items unknown> }";
+        // node's spelling for both. A WeakRef's TARGET is withheld for the
+        // reason a WeakMap's entries are, and more sharply: printing it would
+        // be an observation of liveness that `deref` is the only sanctioned
+        // road to, and one that a console.log could make change from run to
+        // run.
+        if (rtIsWeakRefObject(v)) return "WeakRef { <target unknown> }";
+        if (rtIsFinalizationRegistryObject(v)) return "FinalizationRegistry { <items unknown> }";
+
         // One arm per heap kind, and a `default:` that REFUSES. It used to cast
         // whatever it had not been taught to an ObjectHeader and read a shape
-        // word that a Map or a Set does not have there — a segfault, which is
-        // the one failure the house rules rank below a wrong answer. A kind
-        // added tomorrow lands on the diagnostic instead.
+        // word that an Env or a ValueBlock does not have there — a segfault,
+        // which is the one failure the house rules rank below a wrong answer.
+        // A kind added tomorrow lands on the diagnostic instead.
         auto* hdr = v.asObject<HeapObjectHeader>();
         switch (hdr->flags) {
             case BRONZE_ABI_OBJ_FLAGS_PLAIN:
@@ -216,22 +233,6 @@ private:
                 return arrayBuffer(reinterpret_cast<ArrayBufferHeader*>(hdr), depth);
             case DataViewHeader::kFlags:
                 return dataView(reinterpret_cast<DataViewHeader*>(hdr), depth);
-            case MapHeader::kMapFlags:
-                return collection(reinterpret_cast<MapHeader*>(hdr), false, depth);
-            case MapHeader::kSetFlags:
-                return collection(reinterpret_cast<MapHeader*>(hdr), true, depth);
-            // node's spelling, and the CONTENTS are withheld on purpose: a
-            // WeakMap is non-iterable, so a console.log that listed its
-            // entries would be the one place in the language they leak.
-            case MapHeader::kWeakMapFlags: return "WeakMap { <items unknown> }";
-            case MapHeader::kWeakSetFlags: return "WeakSet { <items unknown> }";
-            // node's spelling for both. A WeakRef's TARGET is withheld for the
-            // reason a WeakMap's entries are, and more sharply: printing it
-            // would be an observation of liveness that `deref` is the only
-            // sanctioned road to, and one that a console.log could make change
-            // from run to run.
-            case HeapKind::WeakRef: return "WeakRef { <target unknown> }";
-            case HeapKind::FinalizationRegistry: return "FinalizationRegistry { <items unknown> }";
             // node prints a RegExp as its source form, and so does bronze:
             // `/ab+/gi`, with no quotes, which is what distinguishes it in
             // output from the string of the same characters.

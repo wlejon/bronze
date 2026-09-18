@@ -564,9 +564,38 @@ Value rtOpenIterator(Value source) {
         switch (source.asObject<HeapObjectHeader>()->flags) {
             case 1: kind = IterRecordHeader::Array; break;
             case TypedArrayHeader::kFlags: kind = IterRecordHeader::TypedArray; break;
-            case MapHeader::kMapFlags: kind = IterRecordHeader::MapEntries; break;
-            case MapHeader::kSetFlags: kind = IterRecordHeader::SetValues; break;
             case BRONZE_ABI_OBJ_FLAGS_PLAIN:
+                // A Map or a Set is a plain object whose `[Symbol.iterator]`
+                // is a real property of its prototype (24.1.3.12, 24.2.3.11),
+                // and the MapEntries / SetValues cursor kinds step its entry
+                // table directly — which is what 7.4.2 GetIterator would do
+                // only while that hook is still the intrinsic one. So the hook
+                // is read ONCE here: intrinsic, the cursor kind; anything else
+                // — a program's own iterator, a getter, `undefined` — opens
+                // the protocol on the value just read rather than reading it a
+                // second time, so a getter runs once as the spec has it.
+                if (rtIsMapOrSet(source)) {
+                    const bool isSet = rtIsSetKind(source);
+                    Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
+                    if (!rtExceptionPending() &&
+                        rtIsIntrinsicCollectionIterator(method.get(), isSet)) {
+                        kind = isSet ? IterRecordHeader::SetValues : IterRecordHeader::MapEntries;
+                        break;
+                    }
+                    // Same shape of answer as a failed `openProtocol` below: a
+                    // Protocol record, with the exception left pending for the
+                    // caller when the hook's getter threw or the hook is not
+                    // callable.
+                    if (rtExceptionPending() || !isCallable(method.get())) {
+                        if (!rtExceptionPending()) {
+                            rtThrowTypeError(rtIterableKindName(srcRoot.get()) +
+                                             " is not iterable");
+                        }
+                        return Value::fromObject(
+                            IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol));
+                    }
+                    return rtGetIteratorFromMethod(srcRoot, method);
+                }
                 // `for (const u of map.values())`, `Array.from(set.keys())`,
                 // `[...arr.entries()]`: the value is already an iterator, and
                 // when it is one of the runtime's own with its protocol
@@ -676,8 +705,9 @@ bool bronze_iter_step(uint64_t recBits) {
         return true;
     }
 
-    if (kind == IterRecordHeader::MapEntries &&
-        rec->target.asObject<HeapObjectHeader>()->flags == MapHeader::kMapFlags) {
+    // A MapEntries record is only ever opened over a branded Map (rtOpenIterator),
+    // so the kind alone says what the target is.
+    if (kind == IterRecordHeader::MapEntries) {
         // A Map's default iterator yields [key, value] pairs (24.1.3.12), so
         // this is the one fast kind that allocates per element.
         const bool stepped = stepFast(rec);

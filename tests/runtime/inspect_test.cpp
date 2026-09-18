@@ -7,12 +7,17 @@
 #include "runtime/heap.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
 
 using namespace bronze;
+using bronze::runtime::rtHeap;
 using bronze::runtime::rtInspect;
+using bronze::runtime::rtNewMap;
+using bronze::runtime::rtNewSet;
 
 // The pinned inspect format, exercised below the compiler: the oracle case
 // covers the whole program, these cover the rules one at a time.
@@ -79,15 +84,16 @@ TEST_CASE("a cycle is marked, not followed") {
 }
 
 TEST_CASE("a Map prints its entries with an arrow and a Set prints a list") {
-    // The arm this exercises replaced a `default:` that cast a MapHeader to an
-    // ObjectHeader and read a shape word that is not there — a segfault, not a
-    // wrong answer. The `Ctor(size)` prefix is the one a typed array already
-    // prints, and an empty collection keeps it, which is what distinguishes it
-    // in output from the `{}` of a property-less object.
-    Heap heap;
+    // A Map is a plain object with an empty own shape, so without the brand
+    // dispatch it would print as the `{}` of a property-less object. The
+    // `Ctor(size)` prefix is the one a typed array already prints, and an
+    // empty collection keeps it, which is what distinguishes it in output.
+    // The runtime's heap and not a local one: `rtNewMap` builds on the
+    // thread's, and the entry table must live beside the object it belongs to.
+    Heap& heap = rtHeap();
     ShadowStackFrame frame;
 
-    Rooted<Value> map{Value::fromObject(MapHeader::create(heap, MapHeader::kMapFlags))};
+    Rooted<Value> map{rtNewMap()};
     CHECK(rtInspect(map.get()) == "Map(0) {}");
 
     Rooted<Value> ka{Value::fromString(StringHeader::createFromUTF8(heap, "a"))};
@@ -100,7 +106,7 @@ TEST_CASE("a Map prints its entries with an arrow and a Set prints a list") {
 
     // A Set is the same layout with no second half to separate, so its entries
     // print as a plain list.
-    Rooted<Value> set{Value::fromObject(MapHeader::create(heap, MapHeader::kSetFlags))};
+    Rooted<Value> set{rtNewSet()};
     CHECK(rtInspect(set.get()) == "Set(0) {}");
     Rooted<Value> e1{Value::fromDouble(1.0)};
     Rooted<Value> e2{Value::fromDouble(2.0)};
@@ -117,10 +123,10 @@ TEST_CASE("a Map prints its entries with an arrow and a Set prints a list") {
 }
 
 TEST_CASE("a Map that contains itself is marked, not followed") {
-    Heap heap;
+    Heap& heap = rtHeap();
     ShadowStackFrame frame;
 
-    Rooted<Value> map{Value::fromObject(MapHeader::create(heap, MapHeader::kMapFlags))};
+    Rooted<Value> map{rtNewMap()};
     Rooted<Value> key{Value::fromString(StringHeader::createFromUTF8(heap, "self"))};
     Rooted<Value> self{map.get()};
     MapHeader::set(heap, map, key, self);

@@ -82,8 +82,6 @@ static const char* valueKindName(Value v) {
                 return v.asObject<TypedArrayHeader>()->kindName();
             case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
             case DataViewHeader::kFlags: return "a DataView";
-            case HeapKind::WeakRef: return "a WeakRef";
-            case HeapKind::FinalizationRegistry: return "a FinalizationRegistry";
             default: return "an object";
         }
     }
@@ -145,12 +143,12 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
 
     // An intrinsic bronze builds no prototype object for must keep an EMPTY
     // slot: generated code reads `f.prototype` straight out of it, so minting
-    // one here would answer `Map.prototype` with a fresh empty object instead
-    // of reaching rt_prop.cpp's refusal — and would do it from the first
-    // `new Map()` onwards, silently. Only the instance shape is built, which
-    // is all `bronze_construct` needs from this function; nothing is ever
-    // allocated from it, because each of these constructors returns its own
-    // exotic object and the ordinary instance is discarded.
+    // one here would answer `Float64Array.prototype` with a fresh empty object
+    // instead of reaching rt_prop.cpp's refusal — and would do it from the
+    // first `new Float64Array()` onwards, silently. Only the instance shape is
+    // built, which is all `bronze_construct` needs from this function; nothing
+    // is ever allocated from it, because each of these constructors returns
+    // its own exotic object and the ordinary instance is discarded.
     if (rtNoPrototypeObjectIntrinsic(fnVal.get())) {
         if (!fn->instance_shape) {
             fn->instance_shape = rtRootShapeForPrototype(Value::fromNull());
@@ -377,14 +375,14 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // MyMap` allocates a Map exactly as `class MyMap extends Map` does.
     rtInheritNativeBase(derived, base);
 
-    // `Map.prototype` and `Set.prototype` are intrinsics bronze builds no
-    // OBJECT for (rt_builtins.h says why the slot must stay empty), so a
-    // subclass of one has nothing above it to link to and its chain ends at
-    // NULL. That is not a shortened chain: the members those two prototypes
-    // carry are answered from the table beside the value, which the read path
-    // reaches after this chain misses (rt_prop.cpp). Spelling it `undefined`
-    // — which is what an empty base slot used to produce — made the chain
-    // unwalkable instead of finite.
+    // A base whose `prototype` slot is EMPTY — the typed-array family, whose
+    // prototype object bronze has not built (rt_builtins.h says why the slot
+    // must stay so) — gives the subclass nothing above it to link to, and its
+    // chain ends at NULL. Spelling it `undefined` — which is what an empty
+    // base slot used to produce — made the chain unwalkable instead of finite.
+    // Unreachable today (every such base is refused by name above), and kept
+    // as the finite answer rather than a fatal because the refusal list is
+    // native_base.cpp's to shorten.
     Rooted<Value> baseProto{base.get().asObject<FunctionHeader>()->prototype};
     if (!baseProto.get().isObject()) baseProto.set(Value::fromNull());
     ObjectHeader* proto = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(baseProto.get()));

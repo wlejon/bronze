@@ -167,20 +167,19 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
         CHECK_FALSE(hasName("missing", v));
     }
 
-    // A WeakRef's payload word is not a `Value` at all — it is the untraced
-    // target under a RawBytes header — so the old fall-through would have read
-    // a target ADDRESS as a `Shape*`. Its member table is the whole of what
-    // 26.1.3 gives it, and the chain past it is Object.prototype's.
+    // A WeakRef and a FinalizationRegistry are plain objects whose members are
+    // the whole of what 26.1.3 / 26.2.3 give their prototypes, and the chain
+    // past those is Object.prototype's.
     SUBCASE("a WeakRef and a FinalizationRegistry") {
         Rooted<Value> target{Value(bronze_create_object())};
-        Rooted<Value> wr{rtMakeWeakRef(target)};
+        Rooted<Value> wr{rtNewWeakRef(target)};
         CHECK(hasName("deref", wr));
         CHECK(hasName("hasOwnProperty", wr));
         CHECK_FALSE(hasName("register", wr));
         CHECK_FALSE(hasName("missing", wr));
 
         Rooted<Value> callback{rtNativeFunction(nothing, 1)};
-        Rooted<Value> reg{rtMakeFinalizationRegistry(callback)};
+        Rooted<Value> reg{rtNewFinalizationRegistry(callback)};
         CHECK(hasName("register", reg));
         CHECK(hasName("unregister", reg));
         CHECK(hasName("valueOf", reg));
@@ -188,11 +187,10 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
         CHECK_FALSE(hasName("missing", reg));
     }
 
-    // The two that used to be the crash: a MapHeader's first payload word is a
-    // `Value` holding the entry table, and the old tail read it as a `Shape*`
-    // and followed it.
+    // A Map and a Set: the members 24.1.3 / 24.2.3 define on their prototypes,
+    // reached by the ordinary walk from an instance whose own shape is empty.
     SUBCASE("a Map") {
-        Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
+        Rooted<Value> m{rtNewMap()};
         CHECK(hasName("size", m));
         CHECK(hasName("get", m));
         CHECK(hasName("entries", m));
@@ -201,7 +199,7 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a string key") {
     }
 
     SUBCASE("a Set") {
-        Rooted<Value> s{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
+        Rooted<Value> s{rtNewSet()};
         CHECK(hasName("size", s));
         CHECK(hasName("add", s));
         // 24.2.3 is not 24.1.3 with a different receiver: `get` and `set` are a
@@ -278,8 +276,8 @@ TEST_CASE("`in` does not stop at the member table a shapeless receiver answers f
     Rooted<Value> v{Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 1))};
     Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
     Rooted<Value> view{Value::fromObject(DataViewHeader::create(rtHeap(), buf, 0, 8))};
-    Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
-    Rooted<Value> s{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
+    Rooted<Value> m{rtNewMap()};
+    Rooted<Value> s{rtNewSet()};
     Rooted<Value> src{rtMakeString("a")};
     Rooted<Value> re{rtRegExpFromParts(src, "g")};
 
@@ -350,15 +348,14 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a symbol key") {
         Rooted<Value> a{Value(bronze_create_array(0))};
         Rooted<Value> v{
             Value::fromObject(TypedArrayHeader::create(rtHeap(), ElementKind::Uint8, 1))};
-        Rooted<Value> m{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
-        Rooted<Value> s{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
+        Rooted<Value> m{rtNewMap()};
+        Rooted<Value> s{rtNewSet()};
         // 23.1.3.34, 23.2.3.34, 24.1.3.12, 24.2.3.11.
         CHECK(has(iterator, a.get()));
         CHECK(has(iterator, v.get()));
         CHECK(has(iterator, m.get()));
         CHECK(has(iterator, s.get()));
-        // A symbol the program made is never on one of these: none of them has
-        // a shape for it to have been added to.
+        // A symbol the program made is on none of these: nothing added it.
         CHECK_FALSE(has(other.get(), m.get()));
 
         Rooted<Value> buf{Value::fromObject(ArrayBufferHeader::create(rtHeap(), 8))};
@@ -375,14 +372,14 @@ TEST_CASE("`in` answers every heap kind a program can hold, for a symbol key") {
     }
 }
 
-// The two kinds that joined with the weak collections, covered the way the
-// TEST_CASEs above cover the other ten: an arm that answers rather than
-// crashes, agreement with the read path's tables, and the chain past them.
+// The weak collections, covered the way the TEST_CASEs above cover the other
+// kinds: the members 24.3.3 / 24.4.3 put on the prototype, the ones a Map has
+// and they do not, and the chain past them.
 TEST_CASE("`in` answers a WeakMap and a WeakSet") {
     ShadowStackFrame frame;
 
-    Rooted<Value> wm{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakMapFlags))};
-    Rooted<Value> ws{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kWeakSetFlags))};
+    Rooted<Value> wm{rtNewWeakMap()};
+    Rooted<Value> ws{rtNewWeakSet()};
 
     CHECK(hasName("get", wm));
     CHECK(hasName("set", wm));
@@ -402,8 +399,8 @@ TEST_CASE("`in` answers a WeakMap and a WeakSet") {
     CHECK_FALSE(hasName("get", ws));
     CHECK_FALSE(hasName("missing", ws));
 
-    // The chain continues past the member table, as it does for every other
-    // shapeless receiver.
+    // The chain continues past the prototype's own members to
+    // Object.prototype's, as it does for every other receiver.
     CHECK(hasName("hasOwnProperty", wm));
     CHECK(hasName("toString", ws));
 

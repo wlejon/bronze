@@ -46,7 +46,6 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/iterator.h"
-#include "runtime/map.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
 #include "runtime/namespace.h"
@@ -63,7 +62,6 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -77,86 +75,6 @@ namespace bronze::runtime {
 // runtime's own property paths); ObjectHeader::getProp already treats a null
 // cache as "look it up and cache nothing", a difference in speed and not in
 // semantics.
-
-// The ORDINARY half of one of the four MapHeader kinds: its own named
-// properties and the chain above them, read through the receiver so that an
-// accessor found there sees the collection and not the box its properties live
-// in. False means neither had the name and the member tables below are the
-// answer.
-//
-// The chain is `MyMap.prototype` and everything above it for a subclass
-// instance, since a collection carries no shape of its own and its
-// [[Prototype]] lives on that box (runtime/native_base.h). A collection that is
-// neither subclassed nor decorated has no box, and answers false after one load.
-static bool mapOwnNamedRead(Rooted<Value>& recv, StringHeader* keyHeader, Value& out) {
-    return rtExoticNamedRead(recv, keyHeader, out);
-}
-
-// A member of a WeakMap or a WeakSet, by name. The Map arrangement below with
-// the `size` line missing — 24.3.3 and 24.4.3 define no such accessor, so its
-// absence is the language's answer and not a gap.
-static Value weakCollectionMemberByName(Rooted<Value>& recv, const std::string& keyStr,
-                                        StringHeader* keyHeader, uint32_t keyIndex) {
-    if (Value own; mapOwnNamedRead(recv, keyHeader, own)) return own;
-    // The memo (runtime/native_fn_memo.h), below the own-property read that
-    // shadows it and above the ladder it replaces. `.get` and `.set` on a
-    // WeakMap are three.js's fourth, fifth and sixth largest helper sites —
-    // 5,000 reads a frame each, every one of them walking a C table to an
-    // interning of a function object that has existed since the first read.
-    const uint16_t kind = recv.get().asObject<HeapObjectHeader>()->flags;
-    if (Value memo = rtNativeMemberProbe(kind, keyIndex); !memo.isUndefined()) return memo;
-    const bool weakSet = kind == MapHeader::kWeakSetFlags;
-    Value method = rtWeakCollectionMethod(weakSet, keyStr);
-    // Filled only from the LADDER's answer, never from `rtObjectProtoMember`'s
-    // below it: the ladder is a C table and cannot change, while
-    // `Object.prototype.toString = f` replaces a slot's value without
-    // transitioning a shape or bumping an epoch — so a memo over that answer
-    // would have no invalidation to hang on.
-    if (!method.isUndefined()) {
-        rtNativeMemberFill(kind, keyIndex, method);
-        return method;
-    }
-    rtCheckWeakCollectionMember(weakSet, keyStr);
-    return rtObjectProtoMember(recv, keyStr);
-}
-
-// A member of a Map or a Set, by name. Its own function because BOTH `m.get`
-// and `m[k]` reach it: a Map's keys are values and its members are names, so
-// the computed-index path cannot treat the key as an element the way it does
-// for an array.
-static Value mapMemberByName(Rooted<Value>& recv, const std::string& keyStr,
-                             StringHeader* keyHeader, uint32_t keyIndex) {
-    // An ORDINARY own property first, because it shadows everything below it:
-    // 24.1.3's members are `Map.prototype`'s and an own property of the
-    // receiver is found before its prototype's. The presence test is the
-    // shape's, not "the value is not undefined" — `m.get = undefined` is an
-    // own property, and answering the builtin for it would un-shadow one the
-    // program really created.
-    if (Value own; mapOwnNamedRead(recv, keyHeader, own)) return own;
-    const uint16_t kind = recv.get().asObject<HeapObjectHeader>()->flags;
-    // The memo, in the same position it takes above: after the own-property
-    // read that shadows it, before the ladder it replaces — and before `size`,
-    // which it can never hold, because a number is not an interned native and
-    // `rtNativeMemberFill` refuses one.
-    if (Value memo = rtNativeMemberProbe(kind, keyIndex); !memo.isUndefined()) return memo;
-    const bool set = kind == MapHeader::kSetFlags;
-    // `size` is an ACCESSOR in the specification (24.1.3.10) and a plain read
-    // here: bronze has no Map.prototype for a getter to live on, and the
-    // observable difference — `Object.getOwnPropertyDescriptor` of it — is
-    // unreachable, since a Map has no own properties at all.
-    if (keyStr == "size") {
-        return Value::fromDouble(recv.get().asObject<MapHeader>()->liveSize());
-    }
-    Value method = rtMapMethod(set, keyStr);
-    if (!method.isUndefined()) {
-        rtNativeMemberFill(kind, keyIndex, method);
-        return method;
-    }
-    rtCheckMapMember(set, keyStr);
-    // 24.1.3 / 24.2.3 name nothing else, and the chain does not stop there:
-    // `m.hasOwnProperty` and `m.toString` are `Object.prototype`'s, one link up.
-    return rtObjectProtoMember(recv, keyStr);
-}
 
 extern "C" {
 
@@ -187,6 +105,14 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
         HeapObjectHeader* fastHdr = objVal.asObject<HeapObjectHeader>();
         if (fastHdr->flags == HeapKind::Plain) {
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
+            // A site that brought no entry — every site the brass backend
+            // emits — reads and fills the KEY's site instead (rt_state.h), so
+            // `m.get(k)` on a Map, `mesh.updateMatrix()` on a three.js
+            // object, any prototype method on any plain receiver, is a shape
+            // compare and a slot load after its first walk rather than a walk
+            // every time. Consulted and filled by the same code as a call
+            // site's entry from here on; nothing below can tell the two apart.
+            if (!site) site = rtKeyCacheSite(keyIndex);
             // The site's OTHER ways, which generated code also scanned and
             // also missed — so reaching here means every way disagreed with
             // the receiver's shape, or the one that matched needs a walk the
@@ -464,23 +390,6 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         // and a throw answers as undefined — which must not fall through into
         // the prototype chain as if the view simply lacked the property.
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        if (!found.isUndefined()) return found.rawBits();
-        return rtObjectProtoMember(recv, keyStr).rawBits();
-    }
-    if (hdr->flags == MapHeader::kMapFlags || hdr->flags == MapHeader::kSetFlags) {
-        Rooted<Value> recv{objVal};
-        return mapMemberByName(recv, keyStr, keyHeader, keyIndex).rawBits();
-    }
-    if (hdr->flags == MapHeader::kWeakMapFlags || hdr->flags == MapHeader::kWeakSetFlags) {
-        Rooted<Value> recv{objVal};
-        return weakCollectionMemberByName(recv, keyStr, keyHeader, keyIndex).rawBits();
-    }
-    if (hdr->flags == WeakRefHeader::kFlags ||
-        hdr->flags == FinalizationRegistryHeader::kFlags) {
-        // Neither carries a shape, so a name the member table does not know
-        // continues up `Object.prototype` exactly as an ArrayBuffer's does.
-        Rooted<Value> recv{objVal};
-        const Value found = rtWeakRefMember(recv.get(), keyStr);
         if (!found.isUndefined()) return found.rawBits();
         return rtObjectProtoMember(recv, keyStr).rawBits();
     }

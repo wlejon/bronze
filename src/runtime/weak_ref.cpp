@@ -3,8 +3,11 @@
 // place either fact is decidable. weak_ref.h carries the design and the exact
 // retention semantics; what is here is the machinery.
 //
-// The JS surface — the two constructors, `deref`, `register`, `unregister` — is
-// builtin_weak_ref.cpp. This file has no opinion about property lookup.
+// The JS surface — the two constructors, the prototypes, `deref`, `register`,
+// `unregister` — is builtin_weak_ref.cpp. This file has no opinion about
+// property lookup and never checks a brand: every object it is handed was
+// vetted by that file, and every cell in its own table was put there by an
+// init below.
 
 #include "runtime/weak_ref.h"
 
@@ -18,6 +21,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 #include "runtime/rt_state.h"
 #include "runtime/symbol.h"
 
@@ -49,7 +53,7 @@ struct PendingCleanup {
 thread_local std::vector<HeapObjectHeader*> g_weakRefs;
 
 // The registries, held STRONGLY (weak_ref.h says why), and their cells. Two
-// parallel vectors indexed by the block id stored in the registry header: a
+// parallel vectors indexed by the block id stored in the registry's slot: a
 // registry is never removed, so the index is stable for the run.
 thread_local std::vector<Value> g_registries;
 thread_local std::vector<std::vector<Cell>> g_cells;
@@ -68,6 +72,34 @@ thread_local std::deque<PendingCleanup> g_pending;
 // (more retention, never less).
 thread_local std::vector<Value> g_kept;
 thread_local std::unordered_set<uint64_t> g_keptSeen;
+
+// The target pair, encoded and decoded. Two doubles rather than one Value for
+// the reason the header comment gives: the collector reads every internal
+// slot as a Value, and a number is the one thing it never forwards.
+Value readTarget(const ObjectHeader* obj) {
+    const auto tag = static_cast<uint16_t>(obj->internalSlot(WeakRefSlot::TargetTag).asNumber());
+    const auto payload =
+        static_cast<uint64_t>(obj->internalSlot(WeakRefSlot::TargetPayload).asNumber());
+    return Value::fromTagAndPayload(tag, payload);
+}
+
+void writeTarget(ObjectHeader* obj, Value target) {
+    obj->setInternalSlot(WeakRefSlot::TargetPayload,
+                         Value::fromDouble(static_cast<double>(target.payload())));
+    obj->setInternalSlot(WeakRefSlot::TargetTag,
+                         Value::fromDouble(static_cast<double>(target.tag())));
+}
+
+// The block id, or UINT32_MAX for a registry whose init never ran — one a
+// derived constructor returned without calling `super()`, whose slot still
+// holds the negative sentinel `rtWeakSlotsReset` wrote. Tested as a double
+// BEFORE the narrowing, which is undefined for a negative value.
+uint32_t blockIdOf(Value registry) {
+    const double id =
+        registry.asObject<ObjectHeader>()->internalSlot(RegistrySlot::CellBlockId).asNumber();
+    if (!(id >= 0.0)) return UINT32_MAX;
+    return static_cast<uint32_t>(id);
+}
 
 // Forward one weak slot, or clear it. False when the target died, which is the
 // answer both callers branch on.
@@ -98,7 +130,10 @@ void sweepWeakReferences() {
     for (HeapObjectHeader* cell : g_weakRefs) {
         HeapObjectHeader* live = heap.survivor_of(cell);
         if (!live) continue;
-        updateWeakSlot(heap, reinterpret_cast<WeakRefHeader*>(live)->targetBits);
+        auto* obj = reinterpret_cast<ObjectHeader*>(live);
+        uint64_t bits = readTarget(obj).rawBits();
+        updateWeakSlot(heap, bits);
+        writeTarget(obj, Value(bits));
         g_weakRefs[keep++] = live;
     }
     g_weakRefs.resize(keep);
@@ -153,32 +188,6 @@ void ensureWeakRegistries() {
 
 }  // namespace
 
-// ---- construction -----------------------------------------------------------
-
-WeakRefHeader* WeakRefHeader::create(Heap& heap, Rooted<Value>& target) {
-    // `Tag::RawBytes`: the tag `payload_holds_values` refuses to scan, which is
-    // the entire mechanism keeping this reference weak.
-    HeapObjectHeader* raw = heap.allocate(sizeof(WeakRefHeader) - sizeof(HeapObjectHeader),
-                                          Tag::RawBytes);
-    auto* wr = reinterpret_cast<WeakRefHeader*>(raw);
-    wr->header.flags = kFlags;
-    // Read through the ROOT, after the allocation: it may have moved the target.
-    wr->targetBits = target.get().rawBits();
-    wr->reserved = 0;
-    return wr;
-}
-
-FinalizationRegistryHeader* FinalizationRegistryHeader::create(Heap& heap,
-                                                               Rooted<Value>& callback) {
-    HeapObjectHeader* raw =
-        heap.allocate(sizeof(FinalizationRegistryHeader) - sizeof(HeapObjectHeader), Tag::Object);
-    auto* reg = reinterpret_cast<FinalizationRegistryHeader*>(raw);
-    reg->header.flags = kFlags;
-    reg->cleanupCallback = callback.get();
-    reg->cellBlockId = Value::fromDouble(0.0);
-    return reg;
-}
-
 // ---- CanBeHeldWeakly --------------------------------------------------------
 
 bool rtCanBeHeldWeakly(Value v) {
@@ -189,23 +198,35 @@ bool rtCanBeHeldWeakly(Value v) {
     return false;
 }
 
+void rtWeakSlotsReset(Value obj, bool isRegistry) {
+    auto* o = obj.asObject<ObjectHeader>();
+    if (isRegistry) {
+        o->setInternalSlot(RegistrySlot::CleanupCallback, Value::fromUndefined());
+        o->setInternalSlot(RegistrySlot::CellBlockId, Value::fromDouble(-1.0));
+        return;
+    }
+    writeTarget(o, Value::fromUndefined());
+}
+
 // ---- WeakRef ----------------------------------------------------------------
 
-Value rtMakeWeakRef(Rooted<Value>& target) {
+void rtWeakRefInit(Rooted<Value>& self, Rooted<Value>& target) {
     ensureWeakRegistries();
-    WeakRefHeader* wr = WeakRefHeader::create(rtHeap(), target);
-    // No allocation between `create` and this push, so the address recorded is
-    // the one the collector will next see — the rule embed's handle registry
-    // states for its own table.
-    g_weakRefs.push_back(&wr->header);
+    auto* obj = self.get().asObject<ObjectHeader>();
+    writeTarget(obj, target.get());
+    // No allocation between the write and this push, so the address recorded
+    // is the one the collector will next see — the rule embed's handle
+    // registry states for its own table.
+    g_weakRefs.push_back(&obj->header);
     // 26.1.1.1 step 4: constructing a WeakRef keeps its target alive for the
     // rest of the job, exactly as a `deref` does.
     rtAddToKeptObjects(target.get());
-    return Value::fromObject(wr);
 }
 
+Value rtWeakRefTarget(Value weakRef) { return readTarget(weakRef.asObject<ObjectHeader>()); }
+
 Value rtWeakRefDeref(Value weakRef) {
-    const Value target = weakRef.asObject<WeakRefHeader>()->target();
+    const Value target = readTarget(weakRef.asObject<ObjectHeader>());
     if (target.isUndefined()) return target;
     // 26.1.3.2 step 3 is WeakRefDeref, whose step 2 is AddToKeptObjects: once a
     // job has seen the target it may not stop seeing it, so a second `deref`
@@ -216,25 +237,24 @@ Value rtWeakRefDeref(Value weakRef) {
 
 // ---- FinalizationRegistry ---------------------------------------------------
 
-Value rtMakeFinalizationRegistry(Rooted<Value>& callback) {
+void rtFinalizationRegistryInit(Rooted<Value>& self, Rooted<Value>& callback) {
     ensureWeakRegistries();
-    Rooted<Value> reg{
-        Value::fromObject(FinalizationRegistryHeader::create(rtHeap(), callback))};
-    // The block is claimed AFTER the allocation and the registry is read back
-    // through its root: `g_cells.emplace_back` is C++ memory and cannot move
-    // the heap, but the allocation above already could have.
+    // `g_cells.emplace_back` is C++ memory and cannot move the heap, so the
+    // object is read once and written twice with nothing between that could
+    // retire the pointer.
     const auto blockId = static_cast<uint32_t>(g_cells.size());
     g_cells.emplace_back();
-    g_registries.push_back(reg.get());
-    reg.get().asObject<FinalizationRegistryHeader>()->cellBlockId =
-        Value::fromDouble(static_cast<double>(blockId));
-    return reg.get();
+    g_registries.push_back(self.get());
+    auto* obj = self.get().asObject<ObjectHeader>();
+    obj->setInternalSlot(RegistrySlot::CleanupCallback, callback.get());
+    obj->setInternalSlot(RegistrySlot::CellBlockId,
+                         Value::fromDouble(static_cast<double>(blockId)));
 }
 
 void rtFinalizationRegister(Rooted<Value>& registry, Rooted<Value>& target,
                             Rooted<Value>& heldValue, Rooted<Value>& token) {
     ensureWeakRegistries();
-    const uint32_t block = registry.get().asObject<FinalizationRegistryHeader>()->blockId();
+    const uint32_t block = blockIdOf(registry.get());
     if (block >= g_cells.size()) {
         fatal("internal: a FinalizationRegistry whose cell block was never claimed");
     }
@@ -248,7 +268,7 @@ void rtFinalizationRegister(Rooted<Value>& registry, Rooted<Value>& target,
 
 bool rtFinalizationUnregister(Rooted<Value>& registry, Rooted<Value>& token) {
     ensureWeakRegistries();
-    const uint32_t block = registry.get().asObject<FinalizationRegistryHeader>()->blockId();
+    const uint32_t block = blockIdOf(registry.get());
     if (block >= g_cells.size()) return false;
     std::vector<Cell>& cells = g_cells[block];
     const uint64_t wanted = token.get().rawBits();
@@ -302,8 +322,8 @@ void rtRunFinalizationCleanupJob() {
         if (entry.blockId >= g_registries.size()) continue;
         Rooted<Value> registry{g_registries[entry.blockId]};
         Rooted<Value> held{entry.heldValue};
-        Rooted<Value> callback{
-            registry.get().asObject<FinalizationRegistryHeader>()->cleanupCallback};
+        Rooted<Value> callback{registry.get().asObject<ObjectHeader>()->internalSlot(
+            RegistrySlot::CleanupCallback)};
         if (!callback.get().isObject() ||
             callback.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
             continue;

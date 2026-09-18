@@ -6,7 +6,6 @@
 #include "runtime/bigint.h"
 #include "runtime/fatal.h"
 #include "runtime/object.h"
-#include "runtime/rt_state.h"
 #include "runtime/string.h"
 
 namespace bronze {
@@ -206,35 +205,24 @@ uint32_t MapHeader::capacity() const noexcept {
     return static_cast<uint32_t>((hdr->size - sizeof(HeapObjectHeader)) / (sizeof(Value) * 2));
 }
 
-MapHeader* MapHeader::create(Heap& heap, uint16_t flags) {
-    HeapObjectHeader* raw = heap.allocate(sizeof(MapHeader) - sizeof(HeapObjectHeader), Tag::Object);
-    auto* map = reinterpret_cast<MapHeader*>(raw);
-    map->header.flags = flags;
+MapHeader* MapHeader::create(Heap& heap, NonMovingArena& arena, Shape* shape, Value brand) {
+    // An ordinary object with the table's fields as internal slots — the one
+    // allocation that gives the object a shape (so a [[Prototype]]) AND the
+    // slots the property path can never address (object.h says why they sit
+    // past the inline ones). `createWithInternalSlots` leaves every slot
+    // `undefined`, so what follows is the table's own initial state.
+    ObjectHeader* obj =
+        ObjectHeader::createWithInternalSlots(heap, arena, shape, CollectionSlot::kCount);
+    obj->header.flags = HeapKind::Plain;
+    auto* map = reinterpret_cast<MapHeader*>(obj);
+    map->brand = brand;
     map->entries = Value::fromUndefined();
     map->index = Value::fromUndefined();
     map->liveCount = Value::fromDouble(0.0);
     map->usedCount = Value::fromDouble(0.0);
     map->indexEpoch = Value::fromDouble(-1.0);
     map->indexAnchor = Value::fromDouble(-1.0);
-    map->properties = Value::fromUndefined();
     return map;
-}
-
-ObjectHeader* MapHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
-                                          Rooted<Value>& self) {
-    if (self.get().asObject<MapHeader>()->properties.isObject()) {
-        return self.get().asObject<MapHeader>()->properties.asObject<ObjectHeader>();
-    }
-    // A root shape with NO prototype, for the reason ArrayHeader::ensureProperties
-    // gives: this object is STORAGE, and the property path consults it before
-    // the collection's own members. With `Object.prototype` behind it the box
-    // would answer every name that object carries, so `m.valueOf` would find
-    // the box's inherited answer instead of the one the receiver gives.
-    ObjectHeader* props =
-        ObjectHeader::create(heap, arena, runtime::rtRootShapeForPrototype(Value::fromNull()));
-    props->header.flags = HeapKind::Plain;
-    self.get().asObject<MapHeader>()->properties = Value::fromObject(props);
-    return props;
 }
 
 bool MapHeader::findFast(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept {

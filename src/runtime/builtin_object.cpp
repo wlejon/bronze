@@ -607,11 +607,10 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             Rooted<Value> fn{args[0]};
             // A global constructor's statics are answered BESIDE the function
             // from a C table until something needs them written down — which a
-            // listing does. Both installers are idempotent and write the same
+            // listing does. The installer is idempotent and writes the same
             // interned objects the read path hands out, so materialising here
             // changes what is listed and nothing about what is read.
             rtInstallGlobalConstructorStatics(fn);
-            rtInstallMapStatics(fn);
             Rooted<Value> out{Value(bronze_create_array(0))};
             uint32_t at = 0;
             const FunctionHeader* header = fn.get().asObject<FunctionHeader>();

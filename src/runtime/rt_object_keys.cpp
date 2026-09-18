@@ -15,7 +15,6 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
-#include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
@@ -29,7 +28,6 @@
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
@@ -209,29 +207,8 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
-    if (rtIsMapLike(objVal)) {
-        // A Map's and a Set's ENTRIES are internal slots reached by
-        // `get`/`add` and are never keys — but 24.1.4 makes the collection an
-        // ordinary object besides, so anything a program ASSIGNED to it is an
-        // own enumerable key and belongs here. Empty for a collection that
-        // never took a named write, which is the common case and the classic
-        // `Object.keys(map)` surprise.
-        Value props = objVal.asObject<MapHeader>()->properties;
-        if (!props.isObject()) return bronze_create_array(0);
-        Rooted<Value> propsRoot{props};
-        const std::vector<StringHeader*> named =
-            rtOwnStringKeysOrdered(propsRoot.get().asObject<ObjectHeader>());
-        Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
-        uint32_t at = 0;
-        for (StringHeader* k : named) {
-            Rooted<Value> key{rtKeyAsValue(k)};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-        }
-        return out.get().rawBits();
-    }
     if (hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
-        hdr->flags == DataViewHeader::kFlags || hdr->flags == WeakRefHeader::kFlags ||
-        hdr->flags == FinalizationRegistryHeader::kFlags) {
+        hdr->flags == DataViewHeader::kFlags) {
         // None of these has an own enumerable string-keyed property, and that
         // is a fact about the LANGUAGE rather than about bronze's storage: a
         // RegExp's `lastIndex` is an own property but non-enumerable

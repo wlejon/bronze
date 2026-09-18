@@ -35,6 +35,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -105,8 +106,8 @@ TEST_CASE("the native base is inherited down an extends chain, not rediscovered"
 TEST_CASE("the construct receiver scope nests, innermost first") {
     ShadowStackFrame frame;
 
-    Rooted<Value> outer{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
-    Rooted<Value> inner{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
+    Rooted<Value> outer{rtNewMap()};
+    Rooted<Value> inner{rtNewSet()};
 
     CHECK_FALSE(rtIsNativeConstructReceiver(outer.get()));
     {
@@ -125,25 +126,24 @@ TEST_CASE("the construct receiver scope nests, innermost first") {
     CHECK_FALSE(rtIsNativeConstructReceiver(Value::fromUndefined()));
 }
 
-TEST_CASE("an un-subclassed array or collection carries no property box") {
+TEST_CASE("an un-subclassed array carries no property box") {
     ShadowStackFrame frame;
 
     Rooted<Value> arr{Value::fromObject(ArrayHeader::create(rtHeap()))};
-    Rooted<Value> map{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kMapFlags))};
-    Rooted<Value> set{Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags))};
 
     // THE FAST-PATH GUARD. Every species and named-read probe starts here, so
     // an un-subclassed receiver costs one load and one tag test.
     CHECK_FALSE(rtExoticPropertyBox(arr.get()).isObject());
-    CHECK_FALSE(rtExoticPropertyBox(map.get()).isObject());
-    CHECK_FALSE(rtExoticPropertyBox(set.get()).isObject());
     CHECK(rtExoticSubclassPrototype(arr.get()).isUndefined());
-    CHECK(rtExoticSubclassPrototype(map.get()).isUndefined());
 
     // A kind with no box at all answers the same way rather than reading a
-    // field that is not there.
+    // field that is not there. A Map is one of those now: a plain object whose
+    // [[Prototype]] is on its own shape, with no side box to consult.
     Rooted<Value> fn{makeFunction()};
     CHECK(rtExoticPropertyBox(fn.get()).isUndefined());
+    Rooted<Value> map{rtNewMap()};
+    CHECK(rtExoticPropertyBox(map.get()).isUndefined());
+    CHECK(rtExoticSubclassPrototype(map.get()).isUndefined());
     CHECK(rtExoticPropertyBox(Value::fromDouble(1)).isUndefined());
 }
 
@@ -186,19 +186,27 @@ TEST_CASE("realized statics are the same objects the beside-the-value table answ
     CHECK(props.get().asObject<ObjectHeader>()->getProp(rtHeap(), ofKey).rawBits() ==
           beside.rawBits());
 
-    // The Map family reads its own table through the same entry point.
+    // `Map.groupBy` (24.1.2.1) is an ORDINARY own property of the constructor,
+    // installed into its box when the intrinsic is built and answered by no
+    // table — so realizing the statics has nothing to add and must disturb
+    // nothing: the same function object before and after, non-enumerable.
     Rooted<Value> mapCtor{rtMapConstructor("Map")};
-    rtRealizeNativeStatics(mapCtor);
     Rooted<Value> mapProps{mapCtor.get().asObject<FunctionHeader>()->properties};
     REQUIRE(mapProps.get().isObject());
     Rooted<Value> groupKey{rtMakeString("groupBy")};
-    Value mapBeside;
-    REQUIRE(rtMapStatic(mapCtor.get(), "groupBy", mapBeside));
+    Rooted<Value> groupBy{mapProps.get().asObject<ObjectHeader>()->getProp(rtHeap(), groupKey)};
+    REQUIRE(groupBy.get().isObject());
+    CHECK(groupBy.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function);
+    PropertyInfo groupInfo;
+    REQUIRE(mapProps.get().asObject<ObjectHeader>()->shape->lookupProperty(
+        PropertyKey::forString(groupKey.get().asString<StringHeader>()), groupInfo));
+    CHECK_FALSE(groupInfo.enumerable);
+    rtRealizeNativeStatics(mapCtor);
     CHECK(mapProps.get().asObject<ObjectHeader>()->getProp(rtHeap(), groupKey).rawBits() ==
-          mapBeside.rawBits());
+          groupBy.get().rawBits());
 }
 
-TEST_CASE("each native base allocates its own heap kind, with NewTarget's prototype") {
+TEST_CASE("each native base allocates its own kind, with NewTarget's prototype") {
     ShadowStackFrame frame;
 
     Rooted<Value> ctor{makeFunction()};
@@ -208,23 +216,45 @@ TEST_CASE("each native base allocates its own heap kind, with NewTarget's protot
 
     Rooted<Value> arr{rtAllocateNativeBaseInstance(NativeBase::Array, ctor)};
     CHECK(arr.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array);
+    // A Map and a Set are plain objects told apart by BRAND, and the brand is
+    // what every 24.1.3 / 24.2.3 method checks its receiver for — so a Map
+    // brand on a Set-derived instance would be the wrong answer that still
+    // runs.
     Rooted<Value> map{rtAllocateNativeBaseInstance(NativeBase::Map, ctor)};
-    CHECK(map.get().asObject<HeapObjectHeader>()->flags == MapHeader::kMapFlags);
+    CHECK(rtIsMapOrSet(map.get()));
+    CHECK_FALSE(rtIsSetKind(map.get()));
     Rooted<Value> set{rtAllocateNativeBaseInstance(NativeBase::Set, ctor)};
-    CHECK(set.get().asObject<HeapObjectHeader>()->flags == MapHeader::kSetFlags);
+    CHECK(rtIsSetKind(set.get()));
+    Rooted<Value> weakMap{rtAllocateNativeBaseInstance(NativeBase::WeakMap, ctor)};
+    CHECK(rtIsWeakMapObject(weakMap.get()));
+    CHECK_FALSE(rtIsWeakSetObject(weakMap.get()));
+    Rooted<Value> weakSet{rtAllocateNativeBaseInstance(NativeBase::WeakSet, ctor)};
+    CHECK(rtIsWeakSetObject(weakSet.get()));
+    Rooted<Value> weakRef{rtAllocateNativeBaseInstance(NativeBase::WeakRef, ctor)};
+    CHECK(rtIsWeakRefObject(weakRef.get()));
+    Rooted<Value> registry{rtAllocateNativeBaseInstance(NativeBase::FinalizationRegistry, ctor)};
+    CHECK(rtIsFinalizationRegistryObject(registry.get()));
+    CHECK_FALSE(rtIsWeakRefObject(registry.get()));
 
-    // 10.1.14: the [[Prototype]] is the one NewTarget carries, and for these
-    // kinds it lives on the property box rather than on the instance.
+    // 10.1.14: the [[Prototype]] is the one NewTarget carries. An array's
+    // lives on its property box; a collection's is on its own shape, as any
+    // plain object's is.
     CHECK(rtExoticSubclassPrototype(arr.get()).rawBits() == proto.get().rawBits());
-    CHECK(rtExoticSubclassPrototype(map.get()).rawBits() == proto.get().rawBits());
-    CHECK(rtExoticSubclassPrototype(set.get()).rawBits() == proto.get().rawBits());
+    for (const Rooted<Value>* instance : {&map, &set, &weakMap, &weakSet, &weakRef, &registry}) {
+        const Shape* shape = instance->get().asObject<ObjectHeader>()->shape;
+        REQUIRE(shape != nullptr);
+        CHECK(shape->root->prototype.rawBits() == proto.get().rawBits());
+    }
 
-    // Every instance of one class shares ONE box shape: a per-instance shape
-    // would cost each of them its inline caches, which is the reason the box is
-    // built through the memoized root shape instead of `setPrototype`.
+    // Every instance of one class shares ONE shape: a per-instance shape would
+    // cost each of them its inline caches, which is why the instance is built
+    // from the constructor's `instance_shape` rather than by `setPrototype`.
     Rooted<Value> second{rtAllocateNativeBaseInstance(NativeBase::Map, ctor)};
-    Shape* a = rtExoticPropertyBox(map.get()).asObject<ObjectHeader>()->shape;
-    Shape* b = rtExoticPropertyBox(second.get()).asObject<ObjectHeader>()->shape;
+    CHECK(map.get().asObject<ObjectHeader>()->shape ==
+          second.get().asObject<ObjectHeader>()->shape);
+    Rooted<Value> secondArr{rtAllocateNativeBaseInstance(NativeBase::Array, ctor)};
+    Shape* a = rtExoticPropertyBox(arr.get()).asObject<ObjectHeader>()->shape;
+    Shape* b = rtExoticPropertyBox(secondArr.get()).asObject<ObjectHeader>()->shape;
     CHECK(a != nullptr);
     CHECK(a == b);
 }

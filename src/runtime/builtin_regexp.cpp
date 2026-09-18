@@ -639,9 +639,9 @@ bool rtIsRegExpConstructor(Value fn) {
 
 // The own members of the `RegExp` constructor FUNCTION object — today just
 // `escape` (22.2.5.2). Answered from a table beside the value for the reason
-// `rtMapStatic` is: the constructor is an interned function singleton with no
-// property object of its own, so the property path asks this instead of
-// walking a chain that does not exist.
+// `rtTypedArrayStatic` is: the constructor is an interned function singleton
+// with no property object of its own, so the property path asks this instead
+// of walking a chain that does not exist.
 //
 // Both guards come before the only allocation, so a receiver that is not
 // %RegExp% — which is every receiver, on almost every property miss in the

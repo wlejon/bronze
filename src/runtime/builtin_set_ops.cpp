@@ -49,9 +49,7 @@ using iterator_helpers::isCallable;
 using iterator_helpers::Step;
 using iterator_helpers::stepIterator;
 
-bool isSetObject(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == MapHeader::kSetFlags;
-}
+bool isSetObject(Value v) { return rtIsSetKind(v); }
 
 // 24.2.4's step 2 in every member: `this` must really be a Set. The argument is
 // deliberately NOT checked this way — see the file header.
@@ -151,10 +149,10 @@ bool otherHas(SetRecord& rec, Rooted<Value>& value, bool& out) {
 
 // ---- the result set ---------------------------------------------------------
 
-// A fresh empty Set. It carries no prototype link, exactly as `new Set()` does
-// here (builtin_map.cpp's header says why a Set has no prototype object in
-// bronze), so a returned set is indistinguishable from a constructed one.
-Value newSet() { return Value::fromObject(MapHeader::create(rtHeap(), MapHeader::kSetFlags)); }
+// A fresh empty Set with the intrinsic prototype (24.2.4.7 step 5 etc.: "Let
+// resultSetData be ... OrdinaryObjectCreate(%Set.prototype%)"), so a returned
+// set is indistinguishable from a constructed one.
+Value newSet() { return rtNewSet(); }
 
 // Append unless already present. `MapHeader::set` is the one insertion path and
 // it already keeps an existing key's POSITION, so this is the whole of "if

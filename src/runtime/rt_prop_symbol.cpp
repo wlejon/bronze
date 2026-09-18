@@ -7,9 +7,11 @@
 // found by `rtSymbolKeyHolder` — so the interesting question moves to the other
 // end: `@@toStringTag`, `@@species`, `@@iterator`, `@@hasInstance` and the five
 // string/regexp keys of 22.2.6 are properties of intrinsic PROTOTYPE OBJECTS
-// that bronze does not build, so for an array, a Map, a Set, a typed array, a
-// collection or a RegExp there is no object for the walk to find them on, and
-// this file stands in for those objects.
+// that bronze does not build, so for an array, a typed array, an ArrayBuffer,
+// a DataView or a RegExp there is no object for the walk to find them on, and
+// this file stands in for those objects. A Map, a Set, the weak pair, a
+// WeakRef and a FinalizationRegistry are NOT among them: each has a real
+// prototype carrying its tag and its iterator, found by the ordinary walk.
 //
 // Nothing here overrides what a program installs. Every answer is guarded by
 // "the receiver has no shape to have installed it on", or — for `@@species`,
@@ -24,7 +26,6 @@
 #include "runtime/bigint.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
-#include "runtime/map.h"
 #include "runtime/namespace.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
@@ -38,14 +39,13 @@
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
-#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
 
 // What a WELL-KNOWN symbol names on a receiver that carries no shape.
 //
 // `o[sym]` on a plain object or a function is a slot the shape decides, and
-// needs nothing from here. An array, a string, a typed array, a Map and a Set
+// needs nothing from here. An array, a string and a typed array
 // have no own properties at all, so what `v[Symbol.iterator]` means for them is
 // ECMA-262's answer rather than the object's — and it used to arrive through
 // the string member tables purely because the key used to be the string
@@ -59,15 +59,13 @@ namespace bronze::runtime {
 // carry it.
 //
 // This is an approximation of the MECHANISM and not of the bytes. ECMA-262
-// puts the tag on a prototype — `Map.prototype[@@toStringTag]` is "Map"
-// (24.1.3.13), `Set.prototype`'s is "Set" (24.2.3.12),
-// `%TypedArray%.prototype`'s is an accessor over [[TypedArrayName]]
-// (23.2.3.35), `ArrayBuffer.prototype`'s is "ArrayBuffer" (25.1.6.6),
-// `DataView.prototype`'s is "DataView" (25.3.4.25) — and bronze has none of
-// those objects, so the property a walk would find is answered from the heap
-// kind at the one place that sees both the receiver and the key. The VALUE is
-// the one the specification's property holds, so
-// `Object.prototype.toString.call(new Map())` is the spec's bytes.
+// puts the tag on a prototype — `%TypedArray%.prototype`'s is an accessor
+// over [[TypedArrayName]] (23.2.3.35), `ArrayBuffer.prototype`'s is
+// "ArrayBuffer" (25.1.6.6), `DataView.prototype`'s is "DataView" (25.3.4.25)
+// — and bronze has none of those objects, so the property a walk would find
+// is answered from the heap kind at the one place that sees both the receiver
+// and the key. The VALUE is the one the specification's property holds, so
+// `Object.prototype.toString.call(new DataView(buf))` is the spec's bytes.
 //
 // Nothing a program installs is overridden by this, because it answers only for
 // receivers that have no shape to install anything on: a plain object's and a
@@ -85,18 +83,6 @@ namespace bronze::runtime {
 static Value toStringTagOf(Value objVal, bool& handled) {
     if (!objVal.isObject()) return Value::fromUndefined();
     switch (objVal.asObject<HeapObjectHeader>()->flags) {
-        case MapHeader::kMapFlags:
-            handled = true;
-            return rtMakeString("Map");
-        case MapHeader::kSetFlags:
-            handled = true;
-            return rtMakeString("Set");
-        case MapHeader::kWeakMapFlags:
-            handled = true;
-            return rtMakeString("WeakMap");  // 24.3.3.6
-        case MapHeader::kWeakSetFlags:
-            handled = true;
-            return rtMakeString("WeakSet");  // 24.4.3.5
         case TypedArrayHeader::kFlags: {
             // 23.2.3.35 is an ACCESSOR whose answer is [[TypedArrayName]], so
             // nine views give nine tags rather than one shared "TypedArray".
@@ -117,12 +103,6 @@ static Value toStringTagOf(Value objVal, bool& handled) {
         case DataViewHeader::kFlags:
             handled = true;
             return rtMakeString("DataView");
-        case HeapKind::WeakRef:
-            handled = true;
-            return rtMakeString("WeakRef");  // 26.1.3.3
-        case HeapKind::FinalizationRegistry:
-            handled = true;
-            return rtMakeString("FinalizationRegistry");  // 26.2.3.3
         case ModuleNamespaceHeader::kFlags:
             handled = true;
             return rtMakeString("Module");
@@ -220,8 +200,8 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
     // 22.2.6's five SYMBOL-keyed members — `[@@match]`, `[@@matchAll]`,
     // `[@@replace]`, `[@@search]` and `[@@split]`. They belong to
     // `RegExp.prototype`, which is exactly the object bronze does not build, so
-    // this file stands in for it the way it already does for a Map's tag and an
-    // array's iterator.
+    // this file stands in for it the way it already does for a DataView's tag
+    // and an array's iterator.
     //
     // Nothing a program installs is overridden: a RegExp has no shape, so there
     // is no own or inherited symbol-keyed property for these to shadow —
@@ -252,12 +232,6 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         case TypedArrayHeader::kFlags:
             handled = true;
             return rtTypedArrayIteratorMethod();
-        case MapHeader::kMapFlags:
-            handled = true;
-            return rtMapDefaultIterator(/*isSetReceiver=*/false);
-        case MapHeader::kSetFlags:
-            handled = true;
-            return rtMapDefaultIterator(/*isSetReceiver=*/true);
         default:
             return Value::fromUndefined();
     }
@@ -275,10 +249,6 @@ ObjectHeader* rtSymbolKeyHolder(Value objVal) {
     }
     if (hdr->flags == HeapKind::Array) {
         Value props = objVal.asObject<ArrayHeader>()->properties;
-        return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
-    }
-    if (rtIsMapLike(objVal)) {
-        Value props = objVal.asObject<MapHeader>()->properties;
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;
