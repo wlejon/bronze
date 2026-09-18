@@ -1,7 +1,8 @@
-// The JS surface of `ArrayBuffer` and the nine views: the constructor objects,
-// the four construction paths of 23.2.5.1, and the members an instance answers.
-// The METHODS live next door in builtin_typed_array_methods.cpp; the
-// representation lives in typed_array.{h,cpp}.
+// The JS surface of the nine views: the constructor objects, the four
+// construction paths of 23.2.5.1, and the members an instance answers. The
+// METHODS live next door in builtin_typed_array_methods.cpp, `ArrayBuffer`
+// itself in builtin_array_buffer.cpp; the representation lives in
+// typed_array.{h,cpp}.
 
 #include <cmath>
 #include <cstring>
@@ -222,43 +223,6 @@ uint64_t typedArrayCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
     return constructTypedArray(K, argc, argv).rawBits();
 }
 
-uint64_t arrayBufferCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    uint32_t byteLength = 0;
-    if (!toIndex(args[0], "array buffer", 1, byteLength)) return Value::fromUndefined().rawBits();
-    if (!checkAllocatable(byteLength)) return Value::fromUndefined().rawBits();
-
-    if (args.count() > 1 && args[1].isObject()) {
-        Rooted<Value> opts{args[1]};
-        Rooted<Value> mblKey{rtMakeString("maxByteLength")};
-        Value mblVal =
-            opts.get().asObject<ObjectHeader>()->getProp(rtHeap(), mblKey, nullptr, opts.slot_ptr());
-        if (!mblVal.isUndefined()) {
-            uint32_t maxByteLength = 0;
-            if (!toIndex(mblVal, "maxByteLength", 1, maxByteLength)) {
-                return Value::fromUndefined().rawBits();
-            }
-            if (maxByteLength < byteLength) {
-                return rtThrowRangeError("maxByteLength must be >= byteLength").rawBits();
-            }
-            if (!checkAllocatable(maxByteLength)) return Value::fromUndefined().rawBits();
-            return Value::fromObject(
-                       ArrayBufferHeader::createResizable(rtHeap(), byteLength, maxByteLength))
-                .rawBits();
-        }
-    }
-    return Value::fromObject(ArrayBufferHeader::create(rtHeap(), byteLength)).rawBits();
-}
-
-uint64_t arrayBufferIsView(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    const Value v = args[0];
-    if (!v.isObject()) return Value::fromBool(false).rawBits();
-    const uint16_t flags = v.asObject<HeapObjectHeader>()->flags;
-    return Value::fromBool(flags == TypedArrayHeader::kFlags || flags == DataViewHeader::kFlags)
-        .rawBits();
-}
-
 struct CtorEntry {
     ElementKind kind;
     bronze_fn_code code;
@@ -289,141 +253,6 @@ const char* const kTypedArrayUnimplemented[] = {
 const char* const kTypedArraySlotMembers[] = {
     "length", "byteLength", "byteOffset", "buffer", "BYTES_PER_ELEMENT", "constructor",
 };
-
-// 25.1.5.5 ArrayBuffer.prototype.resize
-uint64_t arrayBufferResize(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Value self(thisBits);
-    if (!isBuffer(self)) {
-        return rtThrowTypeError("ArrayBuffer.prototype.resize called on non-ArrayBuffer").rawBits();
-    }
-    auto* buf = self.asObject<ArrayBufferHeader>();
-    if (buf->isDetached()) {
-        return rtThrowTypeError("Cannot resize a detached ArrayBuffer").rawBits();
-    }
-    if (!buf->isResizable()) {
-        return rtThrowTypeError("Cannot resize a non-resizable ArrayBuffer").rawBits();
-    }
-    uint32_t newLen = 0;
-    if (!toIndex(args[0], "byte length", 1, newLen)) return Value::fromUndefined().rawBits();
-    if (newLen > buf->maxByteLength) {
-        return rtThrowRangeError("Invalid byte length: exceeds maxByteLength").rawBits();
-    }
-    if (newLen > buf->byteLength) {
-        std::memset(buf->data() + buf->byteLength, 0, newLen - buf->byteLength);
-    }
-    buf->byteLength = newLen;
-    // A shrink strands the views that no longer fit; a grow can re-admit
-    // them. Their length fields carry the truth, so they are re-derived here,
-    // at the mutation, rather than checked on every element access.
-    Rooted<Value> selfRoot{self};
-    closeOrReopenViews(rtHeap(), selfRoot);
-    return Value::fromUndefined().rawBits();
-}
-
-// 25.1.5.7 ArrayBuffer.prototype.transfer
-uint64_t arrayBufferTransfer(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!isBuffer(self.get())) {
-        return rtThrowTypeError("ArrayBuffer.prototype.transfer called on non-ArrayBuffer").rawBits();
-    }
-    auto* buf = self.get().asObject<ArrayBufferHeader>();
-    if (buf->isDetached()) {
-        return rtThrowTypeError("Cannot transfer a detached ArrayBuffer").rawBits();
-    }
-    uint32_t newLen = buf->byteLength;
-    if (args.count() > 0 && !args[0].isUndefined()) {
-        if (!toIndex(args[0], "byte length", 1, newLen)) return Value::fromUndefined().rawBits();
-    }
-    if (!checkAllocatable(newLen)) return Value::fromUndefined().rawBits();
-
-    const bool resizable = buf->isResizable();
-    const uint32_t maxByteLen = buf->maxByteLength;
-    const uint32_t oldLen = buf->byteLength;
-    if (resizable && newLen > maxByteLen) {
-        return rtThrowRangeError("newByteLength exceeds maxByteLength").rawBits();
-    }
-
-    Rooted<Value> newBufVal{Value::fromUndefined()};
-    if (resizable) {
-        newBufVal.set(Value::fromObject(
-            ArrayBufferHeader::createResizable(rtHeap(), newLen, maxByteLen)));
-    } else {
-        newBufVal.set(Value::fromObject(
-            ArrayBufferHeader::create(rtHeap(), newLen)));
-    }
-    auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
-    auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
-    const uint32_t copyLen = std::min(oldLen, newLen);
-    std::memcpy(newBuf->data(), oldBuf->data(), copyLen);
-    oldBuf->setDetached();
-    // The detach closes every view over the old buffer FOREVER (its
-    // byteLength is 0 from here on); their length fields carry the truth,
-    // so they are zeroed here, at the mutation, rather than checked on every
-    // element access.
-    closeOrReopenViews(rtHeap(), self);
-    return newBufVal.get().rawBits();
-}
-
-// 25.1.5.8 ArrayBuffer.prototype.transferToFixedLength
-uint64_t arrayBufferTransferToFixedLength(uint64_t, uint64_t thisBits, uint32_t argc,
-                                         const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!isBuffer(self.get())) {
-        return rtThrowTypeError("ArrayBuffer.prototype.transferToFixedLength called on non-ArrayBuffer").rawBits();
-    }
-    auto* buf = self.get().asObject<ArrayBufferHeader>();
-    if (buf->isDetached()) {
-        return rtThrowTypeError("Cannot transfer a detached ArrayBuffer").rawBits();
-    }
-    uint32_t newLen = buf->byteLength;
-    if (args.count() > 0 && !args[0].isUndefined()) {
-        if (!toIndex(args[0], "byte length", 1, newLen)) return Value::fromUndefined().rawBits();
-    }
-    if (!checkAllocatable(newLen)) return Value::fromUndefined().rawBits();
-
-    const uint32_t oldLen = buf->byteLength;
-    Rooted<Value> newBufVal{Value::fromObject(ArrayBufferHeader::create(rtHeap(), newLen))};
-    auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
-    auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
-    const uint32_t copyLen = std::min(oldLen, newLen);
-    std::memcpy(newBuf->data(), oldBuf->data(), copyLen);
-    oldBuf->setDetached();
-    closeOrReopenViews(rtHeap(), self);
-    return newBufVal.get().rawBits();
-}
-
-// 25.1.5.6 ArrayBuffer.prototype.slice
-uint64_t arrayBufferSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!isBuffer(self.get())) {
-        return rtThrowTypeError("ArrayBuffer.prototype.slice called on non-ArrayBuffer").rawBits();
-    }
-    auto* buf = self.get().asObject<ArrayBufferHeader>();
-    if (buf->isDetached()) {
-        return rtThrowTypeError("Cannot slice a detached ArrayBuffer").rawBits();
-    }
-    const uint32_t len = buf->byteLength;
-    uint32_t first = 0;
-    if (args.count() > 0 && !args[0].isUndefined()) {
-        first = relativeIndex(toInteger(rtToNumber(args[0])), len);
-    }
-    uint32_t final = len;
-    if (args.count() > 1 && !args[1].isUndefined()) {
-        final = relativeIndex(toInteger(rtToNumber(args[1])), len);
-    }
-    const uint32_t newLen = final > first ? final - first : 0;
-    Rooted<Value> newBufVal{Value::fromObject(ArrayBufferHeader::create(rtHeap(), newLen))};
-    auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
-    auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
-    if (newLen > 0) {
-        std::memcpy(newBuf->data(), oldBuf->data() + first, newLen);
-    }
-    return newBufVal.get().rawBits();
-}
 
 // %TypedArray%.from
 uint64_t typedArrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -527,10 +356,10 @@ uint64_t typedArrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 
 // Arity 0 for every constructor here: a variadic native must not be padded,
 // or `new Float64Array(buffer)` would arrive with two extra `undefined`s and
-// take the explicit-offset branch. `length` is the clause's: 25.1.4 gives
-// `ArrayBuffer` 1 and 23.2.6 gives each view 3.
+// take the explicit-offset branch. `length` is the clause's: 23.2.6 gives each
+// view 3. `ArrayBuffer` is answered under this name too, from its own file.
 Value rtTypedArrayConstructor(const std::string& name) {
-    if (name == "ArrayBuffer") return rtNativeFunction(arrayBufferCtor, 0, "ArrayBuffer", 1);
+    if (name == "ArrayBuffer") return rtArrayBufferConstructor(name);
     for (const CtorEntry& entry : kCtors) {
         if (name == elementKindInfo(entry.kind).name) {
             return rtNativeFunction(entry.code, 0, elementKindInfo(entry.kind).name, 3);
@@ -543,8 +372,8 @@ const char* rtTypedArrayConstructorName(Value fn) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return nullptr;
     }
+    if (const char* buffer = rtArrayBufferConstructorName(fn)) return buffer;
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
-    if (code == arrayBufferCtor) return "ArrayBuffer";
     for (const CtorEntry& entry : kCtors) {
         if (entry.code == code) return elementKindInfo(entry.kind).name;
     }
@@ -568,14 +397,8 @@ bool rtTypedArrayStatic(Value fn, const std::string& key, Value& out) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return false;
     }
+    if (rtArrayBufferConstructorName(fn)) return rtArrayBufferStatic(fn, key, out);
     const bronze_fn_code code = fn.asObject<FunctionHeader>()->code;
-    if (code == arrayBufferCtor) {
-        if (key == "isView") {
-            out = rtNativeFunction(arrayBufferIsView, 1, "isView", 1);
-            return true;
-        }
-        return false;
-    }
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code) continue;
         if (key == "BYTES_PER_ELEMENT") {
@@ -710,52 +533,12 @@ void rtCheckTypedArrayMember(const char* kindName, const std::string& key) {
                                std::size(kTypedArrayUnimplemented), key);
 }
 
-Value rtArrayBufferMember(Value bufferVal, const std::string& key) {
-    auto* buf = bufferVal.asObject<ArrayBufferHeader>();
-    // One kind, two surfaces: 25.2's SharedArrayBuffer members are a different
-    // set from 25.1's and live with the rest of the shared-memory surface
-    // (builtin_shared_memory.cpp). Delegated here rather than branched at the
-    // property path so `in`, the reads and the printer cannot disagree.
-    if (buf->isShared()) return rtSharedArrayBufferMember(bufferVal, key);
-    if (key == "byteLength") {
-        return Value::fromDouble(buf->isDetached() ? 0.0 : static_cast<double>(buf->byteLength));
-    }
-    if (key == "maxByteLength") {
-        return Value::fromDouble(buf->isDetached() ? 0.0
-                                                   : static_cast<double>(buf->maxByteLength));
-    }
-    if (key == "resizable") {
-        return Value::fromBool(buf->isDetached() ? false : buf->isResizable());
-    }
-    if (key == "detached") {
-        return Value::fromBool(buf->isDetached());
-    }
-    if (key == "resize") return rtNativeFunction(arrayBufferResize, 1, "resize", 1);
-    if (key == "transfer") return rtNativeFunction(arrayBufferTransfer, 0, "transfer", 0);
-    if (key == "transferToFixedLength") {
-        return rtNativeFunction(arrayBufferTransferToFixedLength, 0, "transferToFixedLength", 0);
-    }
-    if (key == "slice") return rtNativeFunction(arrayBufferSlice, 0, "slice", 2);
-    if (key == "constructor") return rtTypedArrayConstructor("ArrayBuffer");
-    return Value::fromUndefined();
-}
-
 bool rtTypedArrayHasMember(const char* kindName, const std::string& key) {
     for (const char* name : kTypedArraySlotMembers) {
         if (key == name) return true;
     }
     if (rtTypedArrayHasMethod(key)) return true;
     rtCheckTypedArrayMember(kindName, key);
-    return false;
-}
-
-bool rtArrayBufferHasMember(bool shared, const std::string& key) {
-    if (shared) return rtSharedArrayBufferHasMember(key);
-    if (key == "byteLength" || key == "maxByteLength" || key == "resizable" ||
-        key == "detached" || key == "resize" || key == "transfer" ||
-        key == "transferToFixedLength" || key == "slice" || key == "constructor") {
-        return true;
-    }
     return false;
 }
 

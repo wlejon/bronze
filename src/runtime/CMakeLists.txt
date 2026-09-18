@@ -31,6 +31,7 @@ bronze_add_module(runtime
         object.cpp
         array.cpp
         typed_array.cpp
+        builtin_array_buffer.cpp
         builtin_typed_array.cpp
         builtin_typed_array_methods.cpp
         builtin_typed_array_iteration.cpp
@@ -121,6 +122,8 @@ bronze_add_module(runtime
         builtin_number_proto.cpp
         builtin_json.cpp
         builtin_regexp.cpp
+        builtin_regexp_exec.cpp
+        builtin_regexp_escape.cpp
         builtin_regexp_symbols.cpp
         builtin_string_regexp.cpp
         json_stringify.cpp

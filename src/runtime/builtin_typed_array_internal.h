@@ -159,6 +159,13 @@ inline bool sameValueZero(Value a, Value b) {
 
 using namespace typed_array_internal;
 
+// `ArrayBuffer` (25.1), which builtin_array_buffer.cpp owns: the property path
+// asks the view file for every constructor of the family by name, and the view
+// file forwards the buffer's questions here.
+Value rtArrayBufferConstructor(const std::string& name);
+const char* rtArrayBufferConstructorName(Value fn);
+bool rtArrayBufferStatic(Value fn, const std::string& key, Value& out);
+
 // Transform & Mutator declarations:
 uint64_t taSet(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
 uint64_t taSubarray(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
