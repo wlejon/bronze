@@ -1,0 +1,72 @@
+proto is object: object true
+ctor: true RegExp 2
+ctor proto: true
+RegExp.prototype desc: value:object w:false e:false c:false
+RegExp own names: escape,length,name,prototype
+RegExp species: get:get [Symbol.species]/set:undefined w:undefined e:false c:true true
+escape: escape 1 \x61\.b
+proto own names: compile,constructor,dotAll,exec,flags,global,hasIndices,ignoreCase,multiline,source,sticky,test,toString,unicode,unicodeSets
+proto own symbols: Symbol.match,Symbol.matchAll,Symbol.replace,Symbol.search,Symbol.split
+exec: value:function w:true e:false c:true exec 1
+test: value:function w:true e:false c:true test 1
+toString: value:function w:true e:false c:true toString 0
+compile: value:function w:true e:false c:true compile 2
+dotAll: get:get dotAll/set:undefined w:undefined e:false c:true get dotAll 0
+flags: get:get flags/set:undefined w:undefined e:false c:true get flags 0
+global: get:get global/set:undefined w:undefined e:false c:true get global 0
+hasIndices: get:get hasIndices/set:undefined w:undefined e:false c:true get hasIndices 0
+ignoreCase: get:get ignoreCase/set:undefined w:undefined e:false c:true get ignoreCase 0
+multiline: get:get multiline/set:undefined w:undefined e:false c:true get multiline 0
+source: get:get source/set:undefined w:undefined e:false c:true get source 0
+sticky: get:get sticky/set:undefined w:undefined e:false c:true get sticky 0
+unicode: get:get unicode/set:undefined w:undefined e:false c:true get unicode 0
+unicodeSets: get:get unicodeSets/set:undefined w:undefined e:false c:true get unicodeSets 0
+Symbol.match: value:function w:true e:false c:true [Symbol.match] 1
+Symbol.matchAll: value:function w:true e:false c:true [Symbol.matchAll] 1
+Symbol.replace: value:function w:true e:false c:true [Symbol.replace] 2
+Symbol.search: value:function w:true e:false c:true [Symbol.search] 1
+Symbol.split: value:function w:true e:false c:true [Symbol.split] 2
+instance proto: true true
+instance own names: lastIndex 
+lastIndex desc: value:number w:true e:false c:false
+hasOwn: true false true true true true
+keys: 0 {}
+accessors: a(b)? gi true true false false false false false false
+toString: /a(b)?/gi /a(b)?/gi /a(b)?/gi /a(b)?/gi
+tag: [object RegExp]
+delete lastIndex: false true
+assigned as written: string 2
+exec from 2: 2 4
+negative clamps: 0 2
+fraction truncates: true 2
+defineProperty value: 7 value:number w:true e:false c:false
+redefine enumerable: true TypeError
+expando: mine label,lastIndex label {"label":"mine"}
+for-in: label
+still matches: true xTx
+frozen: true true value:number w:false e:false c:false
+frozen exec throws: true TypeError
+frozen sloppy assign: 0
+frozen strict assign: true TypeError
+sealed: true false 0 1
+on the prototype itself: undefined (?:)  (?:) 
+on a plain object: true TypeError true TypeError no throw
+on a primitive: true TypeError
+flags reads properties: dmsy
+exec wrong receiver: true TypeError true TypeError
+toString on plain: /q/y true TypeError
+symbol wrong receiver: true TypeError true TypeError true TypeError
+explicit calls: aXc 1 ["a","c"] ["b","b"] 1,3
+same function object: true true true
+RegExp(re) returns it: true false false g m
+RegExp(re-like): g (?:) y
+subclass: true true true T q q+ g
+subclass own: lastIndex,tag value:number w:true e:false c:false
+subclass matches: true 4 undefined 0
+subclass in strings: x_y a|b|c 1 ["q","q"] 2
+subclass toString: /q+/g [object RegExp]
+subclass species: true
+bare subclass: true y true true true
+extends via Reflect: true
+override [Symbol.replace]: loud:aXc
+own [Symbol.split]: own,boo

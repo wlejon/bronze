@@ -214,16 +214,9 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         }
         return out.get().rawBits();
     }
-    if (hdr->flags == RegExpHeader::kFlags) {
-        // A RegExp has no own enumerable string-keyed property, and that is a
-        // fact about the LANGUAGE rather than about bronze's storage: its
-        // `lastIndex` is an own property but non-enumerable (22.2.6.9). So `[]`
-        // is the complete answer, and refusing it named bronze's coverage
-        // instead. (A buffer and a DataView carry a shape and take the ordinary
-        // tail: their `byteLength` and friends are accessors on the prototype,
-        // so only an expando is ever listed.)
-        return bronze_create_array(0);
-    }
+    // A RegExp takes the ordinary tail: its `lastIndex` is an own property
+    // held in the header but NON-ENUMERABLE (22.2.4.1), so the shape's keys —
+    // whatever expandos the program wrote — are the complete answer.
     if (hdr->flags == ProxyHeader::kFlags) {
         // 20.1.2.17 is 7.3.23 EnumerableOwnProperties, which on a proxy is
         // [[OwnPropertyKeys]] filtered by [[GetOwnProperty]]'s `enumerable` —

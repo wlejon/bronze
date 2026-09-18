@@ -42,6 +42,21 @@ std::string textOf(Value v) {
     return rtUtf8Chars(v.asString<StringHeader>());
 }
 
+// A named member read the way a program reads it: through the property path,
+// which finds 22.2.6's accessors on the real `RegExp.prototype`.
+Value memberOf(Rooted<Value>& re, const char* name) {
+    Rooted<Value> key{rtMakeString(name)};
+    return Value(bronze_elem_get(re.get().rawBits(), key.get().rawBits()));
+}
+
+// The `lastIndex` a match would read: ToLength of the stored value.
+double lastIndexOf(Rooted<Value>& re) {
+    bool ok = false;
+    const double n = rtRegExpLastIndexLength(re, ok);
+    REQUIRE(ok);
+    return n;
+}
+
 // A match array's element `i`, as text, or a marker for the two ways it can
 // not be one.
 std::string elementText(Value array, uint32_t i) {
@@ -66,13 +81,13 @@ std::string namedText(Value array, const char* name) {
 TEST_CASE("source and flags round-trip in 22.2.6.5's order") {
     ShadowStackFrame frame;
     Rooted<Value> re{makeRegExp("a.c", "yig")};
-    CHECK(textOf(rtRegExpMember(re.get(), "source")) == "a.c");
-    CHECK(textOf(rtRegExpMember(re.get(), "flags")) == "giy");
-    CHECK(rtRegExpMember(re.get(), "global").asBool());
-    CHECK(rtRegExpMember(re.get(), "ignoreCase").asBool());
-    CHECK(rtRegExpMember(re.get(), "sticky").asBool());
-    CHECK_FALSE(rtRegExpMember(re.get(), "multiline").asBool());
-    CHECK_FALSE(rtRegExpMember(re.get(), "dotAll").asBool());
+    CHECK(textOf(memberOf(re, "source")) == "a.c");
+    CHECK(textOf(memberOf(re, "flags")) == "giy");
+    CHECK(memberOf(re, "global").asBool());
+    CHECK(memberOf(re, "ignoreCase").asBool());
+    CHECK(memberOf(re, "sticky").asBool());
+    CHECK_FALSE(memberOf(re, "multiline").asBool());
+    CHECK_FALSE(memberOf(re, "dotAll").asBool());
     CHECK(rtRegExpText(re.get()) == "/a.c/giy");
 }
 
@@ -82,18 +97,18 @@ TEST_CASE("source is always a pattern that could have been written as a literal"
     // a line terminator, and neither can appear between two slashes on one
     // line, so `source` carries the escaped form and the source form parses.
     Rooted<Value> slash{makeRegExp("a/b", "")};
-    CHECK(textOf(rtRegExpMember(slash.get(), "source")) == "a\\/b");
+    CHECK(textOf(memberOf(slash, "source")) == "a\\/b");
     CHECK(rtRegExpText(slash.get()) == "/a\\/b/");
     Rooted<Value> inClass{makeRegExp("[/]", "")};
-    CHECK(textOf(rtRegExpMember(inClass.get(), "source")) == "[\\/]");
+    CHECK(textOf(memberOf(inClass, "source")) == "[\\/]");
     Rooted<Value> newline{makeRegExp("a\nb", "")};
-    CHECK(textOf(rtRegExpMember(newline.get(), "source")) == "a\\nb");
+    CHECK(textOf(memberOf(newline, "source")) == "a\\nb");
     // An escape already in the pattern is left alone rather than doubled.
     Rooted<Value> escaped{makeRegExp("a\\/b", "")};
-    CHECK(textOf(rtRegExpMember(escaped.get(), "source")) == "a\\/b");
+    CHECK(textOf(memberOf(escaped, "source")) == "a\\/b");
     // The empty pattern, whose literal form would otherwise be a comment.
     Rooted<Value> empty{makeRegExp("", "")};
-    CHECK(textOf(rtRegExpMember(empty.get(), "source")) == "(?:)");
+    CHECK(textOf(memberOf(empty, "source")) == "(?:)");
 }
 
 TEST_CASE("two regular expressions with the same source share one compilation") {
@@ -147,13 +162,13 @@ TEST_CASE("lastIndex is a cursor for g and y and is ignored otherwise") {
     for (int i = 0; i < 3; ++i) {
         Rooted<Value> match{rtRegExpExec(plain, input)};
         CHECK(namedText(match.get(), "index") == "0");
-        CHECK(rtRegExpLastIndex(plain.get()) == 0.0);
+        CHECK(lastIndexOf(plain) == 0.0);
     }
 
     Rooted<Value> global{makeRegExp("a", "g")};
     Rooted<Value> first{rtRegExpExec(global, input)};
     CHECK(namedText(first.get(), "index") == "0");
-    CHECK(rtRegExpLastIndex(global.get()) == 1.0);
+    CHECK(lastIndexOf(global) == 1.0);
     Rooted<Value> second{rtRegExpExec(global, input)};
     CHECK(namedText(second.get(), "index") == "2");
     Rooted<Value> third{rtRegExpExec(global, input)};
@@ -161,7 +176,7 @@ TEST_CASE("lastIndex is a cursor for g and y and is ignored otherwise") {
     // Exhausted: null, and the cursor is reset so the next call starts over.
     Rooted<Value> fourth{rtRegExpExec(global, input)};
     CHECK(fourth.get().isNull());
-    CHECK(rtRegExpLastIndex(global.get()) == 0.0);
+    CHECK(lastIndexOf(global) == 0.0);
 }
 
 TEST_CASE("a sticky pattern matches only at lastIndex") {
@@ -170,7 +185,7 @@ TEST_CASE("a sticky pattern matches only at lastIndex") {
     Rooted<Value> input{rtMakeString("Xa")};
     Rooted<Value> miss{rtRegExpExec(re, input)};
     CHECK(miss.get().isNull());
-    rtRegExpSetLastIndex(re.get(), 1.0);
+    REQUIRE(rtRegExpSetLastIndex(re, 1.0));
     Rooted<Value> hit{rtRegExpExec(re, input)};
     REQUIRE(hit.get().isObject());
     CHECK(namedText(hit.get(), "index") == "1");
@@ -199,25 +214,25 @@ TEST_CASE("console.log prints a regular expression as its source form") {
     CHECK(rtInspect(match.get()) == "[ 'b', index: 1, input: 'ab', groups: undefined ]");
 }
 
-// 22.2.6's SYMBOL-keyed members. They are the one family of RegExp members
-// bronze answers by KEY rather than by name, because no string names them —
-// which puts them on a different road out of the property path
-// (rt_prop_symbol.cpp) and gives them a table of their own to get wrong.
-//
-// The property this pins is IDENTITY. 22.2.6 puts all five on
-// `RegExp.prototype`, so a program comparing `/a/[Symbol.replace]` with
-// `/b/[Symbol.replace]` must see one function object — which holds because
-// `rtNativeFunction` interns on the code pointer, and would stop holding the
-// day a row in the table were built per call instead.
+// 22.2.6's SYMBOL-keyed members are own data properties of the real
+// `RegExp.prototype` (builtin_regexp_symbols.cpp). The property this pins is
+// IDENTITY: a program comparing `/a/[Symbol.replace]` with
+// `/b/[Symbol.replace]` must see one function object, because both reads find
+// the same slot of the same prototype.
 
 TEST_CASE("the five symbol-keyed members are one function object per key") {
     ShadowStackFrame frame;
+    Rooted<Value> proto{rtRegExpPrototypeObject()};
+    auto ownOf = [&](SymbolHeader* sym) {
+        Rooted<Value> key{Value::fromSymbol(sym)};
+        return Value(bronze_elem_get(proto.get().rawBits(), key.get().rawBits()));
+    };
 
-    Rooted<Value> match{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolMatch()))};
-    Rooted<Value> matchAll{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolMatchAll()))};
-    Rooted<Value> replace{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolReplace()))};
-    Rooted<Value> search{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolSearch()))};
-    Rooted<Value> split{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolSplit()))};
+    Rooted<Value> match{ownOf(rtSymbolMatch())};
+    Rooted<Value> matchAll{ownOf(rtSymbolMatchAll())};
+    Rooted<Value> replace{ownOf(rtSymbolReplace())};
+    Rooted<Value> search{ownOf(rtSymbolSearch())};
+    Rooted<Value> split{ownOf(rtSymbolSplit())};
 
     REQUIRE(match.get().isObject());
     REQUIRE(matchAll.get().isObject());
@@ -239,29 +254,23 @@ TEST_CASE("the five symbol-keyed members are one function object per key") {
     CHECK(replace.get().rawBits() != split.get().rawBits());
     CHECK(search.get().rawBits() != split.get().rawBits());
 
-    // Asked twice, the same object — the whole point of interning.
-    Rooted<Value> again{rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolReplace()))};
-    CHECK(again.get().rawBits() == replace.get().rawBits());
-
-    // A symbol 22.2.6 does not define is not a member here, and neither is a
-    // string that spells one.
-    CHECK(rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolIterator())).isUndefined());
-    CHECK(rtRegExpSymbolMethod(Value::fromSymbol(rtSymbolSpecies())).isUndefined());
-    Rooted<Value> spelled{rtMakeString("replace")};
-    CHECK(rtRegExpSymbolMethod(spelled.get()).isUndefined());
+    // A symbol 22.2.6 does not define is not a member of the prototype.
+    CHECK(ownOf(rtSymbolIterator()).isUndefined());
+    CHECK(ownOf(rtSymbolSpecies()).isUndefined());
 }
 
 TEST_CASE("a symbol-keyed read of a RegExp finds 22.2.6's members") {
     ShadowStackFrame frame;
 
     Rooted<Value> key{Value::fromSymbol(rtSymbolReplace())};
-    Rooted<Value> fromTable{rtRegExpSymbolMethod(key.get())};
+    Rooted<Value> proto{rtRegExpPrototypeObject()};
+    Rooted<Value> fromProto{Value(bronze_elem_get(proto.get().rawBits(), key.get().rawBits()))};
     Rooted<Value> re{makeRegExp("a", "g")};
     Rooted<Value> fromRead{Value(bronze_elem_get(re.get().rawBits(), key.get().rawBits()))};
-    CHECK(fromRead.get().rawBits() == fromTable.get().rawBits());
+    CHECK(fromRead.get().rawBits() == fromProto.get().rawBits());
 
-    // A RegExp carries no shape, so there is nothing per instance for the
-    // answer to depend on: a second one reads the same object.
+    // Every RegExp's chain reaches the one prototype: a second one reads the
+    // same object.
     Rooted<Value> other{makeRegExp("b", "")};
     Rooted<Value> fromOther{Value(bronze_elem_get(other.get().rawBits(), key.get().rawBits()))};
     CHECK(fromOther.get().rawBits() == fromRead.get().rawBits());
@@ -270,4 +279,21 @@ TEST_CASE("a symbol-keyed read of a RegExp finds 22.2.6's members") {
     // `undefined` off a RegExp, which is what 20.1.3.6 relies on.
     Rooted<Value> tag{Value::fromSymbol(rtSymbolToStringTag())};
     CHECK(Value(bronze_elem_get(re.get().rawBits(), tag.get().rawBits())).isUndefined());
+}
+
+TEST_CASE("a fresh RegExp's chain is pristine and an own key ends that") {
+    ShadowStackFrame frame;
+    Rooted<Value> re{makeRegExp("a", "g")};
+    CHECK(rtRegExpChainPristine(re.get().asObject<RegExpHeader>()));
+    // `lastIndex` lives in the header, so writing it moves no shape.
+    REQUIRE(rtRegExpSetLastIndex(re, 3.0));
+    CHECK(rtRegExpChainPristine(re.get().asObject<RegExpHeader>()));
+    // An expando is an own key: the shape moves and the fast path is gone
+    // for this instance, though not for a fresh one.
+    Rooted<Value> key{rtMakeString("mine")};
+    Rooted<Value> val{Value::fromDouble(1.0)};
+    re.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+    CHECK_FALSE(rtRegExpChainPristine(re.get().asObject<RegExpHeader>()));
+    Rooted<Value> fresh{makeRegExp("b", "")};
+    CHECK(rtRegExpChainPristine(fresh.get().asObject<RegExpHeader>()));
 }

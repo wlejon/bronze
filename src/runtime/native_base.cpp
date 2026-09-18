@@ -145,6 +145,8 @@ Value rtAllocateNativeBaseInstance(uint8_t kind, Rooted<Value>& ctor) {
             return Value::fromObject(ArrayBufferHeader::createShared(rtHeap(), shape, 0, 0));
         case NativeBase::DataView:
             return Value::fromObject(DataViewHeader::createUninitialized(rtHeap(), shape));
+        case NativeBase::RegExp:
+            return rtAllocateRegExp(shape);
         default:
             if (kind >= NativeBase::TypedArrayFirst && kind < NativeBase::Count) {
                 const auto elementKind =
@@ -216,12 +218,6 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
         fatal("extending the abstract `%TypedArray%` is unsupported (23.2.1.1 makes its "
               "constructor throw, so a subclass could never be instantiated; extend one of "
               "the twelve views instead)");
-    }
-    if (rtIsRegExpConstructor(base.get())) {
-        fatal("extending `RegExp` is unsupported (a RegExp's [[RegExpMatcher]] and the "
-              "compiled pattern beside it are created by the runtime's own constructor, so "
-              "a subclass's instances would carry none and every member of 22.2.6 would "
-              "read `undefined` on them)");
     }
 }
 

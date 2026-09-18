@@ -10,15 +10,21 @@
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
-// The receiver kinds that answer their own members: the module namespace exotic
-// object, the nine typed-array views with ArrayBuffer and DataView, and RegExp.
+// The receiver kinds with INTERNAL SLOTS the property paths must know about:
+// the module namespace exotic object, the twelve typed-array views with
+// ArrayBuffer and DataView, and RegExp.
 //
-// None of them carries a shape, so none has a prototype object for a lookup to
-// walk — their members are handed out BESIDE the value by the property path,
-// and every question about one has to be asked of a table here. They are
-// together because that is the one property they share and the reason each
-// needs a `Has` form beside its reader: `in` must not disagree with a read
-// about a member whose value bronze refuses to produce.
+// The namespace object carries no shape, so its members are handed out
+// BESIDE the value and every question about one is asked of a table here —
+// which is why it needs a `Has` form beside its reader: `in` must not
+// disagree with a read. The byte-store family and RegExp are ordinary objects
+// with a real prototype each (typed_array.h, regexp.h); what this file gives
+// them is their intrinsics by name, the allocation helpers, the element and
+// `lastIndex` protocols, and the pristine-chain witnesses the fast paths use.
+
+namespace bronze {
+struct RegExpHeader;
+}
 
 namespace bronze::runtime {
 
@@ -198,24 +204,21 @@ bool rtIsCanonicalNumericString(const std::string& key);
 bool rtIsRegExp(Value v);
 // `RegExp`, for the provided-global path; `undefined` for any other name.
 Value rtRegExpConstructor(const std::string& name);
-// A static of the `RegExp` constructor object — `RegExp.escape` (22.2.5.2).
-// True with `out` filled when this function IS `RegExp` and the key names one;
-// the property path asks it because the constructor is an interned singleton
-// with no property object to install statics into.
-bool rtRegExpStatic(Value fn, const std::string& key, Value& out);
-// A member of a RegExp instance by name: the flag accessors, `source`,
-// `flags`, `lastIndex`, and the three methods. A name ECMA-262 defines and
-// bronze has not built is a named error here rather than `undefined`.
-Value rtRegExpMember(Value re, const std::string& key);
-Value rtRegExpMethod(const std::string& key);
-// Whether 22.2.6 defines `key` on a RegExp at all — `in`'s question, off the
-// same tables the reader above uses and ending at the same named refusal.
-bool rtRegExpHasMember(const std::string& key);
-// True when the write was a RegExp's business. `lastIndex` is the only
-// writable property one has, and a write to anything else is the caller's to
-// diagnose.
-bool rtRegExpSetMember(Value re, const std::string& key, Value value);
-// `/source/flags`, which is both `toString` and what console.log prints.
+// `RegExp.prototype` (22.2.6) and the shape a `new RegExp` takes its
+// [[Prototype]] from. Both build the intrinsics on first use.
+Value rtRegExpPrototypeObject();
+Shape* rtRegExpInstanceShape();
+// 22.2.3.2 RegExpAlloc: a RegExp header with `shape` and no pattern yet —
+// what `new` allocates from NewTarget before the constructor body fills it.
+Value rtAllocateRegExp(Shape* shape);
+// Is this RegExp's chain exactly as built — its own shape the intrinsic
+// instance shape (no own key, the intrinsic prototype) and `RegExp.prototype`
+// still holding its `exec` and its five symbol-keyed algorithms? When it is,
+// the string members and the flag getters answer from the header with no
+// property read, which is the whole of the `str.replace(/x/g, ...)` fast
+// path. Allocates nothing.
+bool rtRegExpChainPristine(const RegExpHeader* re) noexcept;
+// `/source/flags`, which is what console.log prints.
 std::string rtRegExpText(Value re);
 // 22.2.7.2 RegExpBuiltinExec: the match array, or `null`. Honours `lastIndex`
 // for a `g` or `y` pattern and updates it. EVERY regular-expression operation
@@ -229,8 +232,16 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr);
 const regex::Pattern& rtRegExpPattern(Value re);
 Value rtRegExpBuildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
                               const regex::MatchResult& match);
-void rtRegExpSetLastIndex(Value re, double value);
-double rtRegExpLastIndex(Value re);
+// `lastIndex` (22.2.4.1), the own data property the header carries. The
+// WRITE is Set(R, "lastIndex", v, true) — false with a TypeError pending on
+// a frozen RegExp. The READ for a match is ToLength of whatever was
+// assigned, which can run user code (`ok` false with the exception pending);
+// the raw value is for `[@@search]`'s save-and-restore, which must put back
+// exactly what it found.
+bool rtRegExpSetLastIndex(Rooted<Value>& re, double value);
+double rtRegExpLastIndexLength(Rooted<Value>& re, bool& ok);
+Value rtRegExpLastIndexValue(Value re);
+void rtRegExpRestoreLastIndex(Value re, Value saved);
 
 // ---- the string/regexp protocol (22.1.3 dispatches, 22.2.6 implements) ------
 //
@@ -246,20 +257,16 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
 Value rtRegExpSearch(Rooted<Value>& re, Rooted<Value>& str);
 Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limit);
 
-// The same five as FUNCTION OBJECTS, by key — what a symbol-keyed read of a
-// RegExp answers (rt_prop_symbol.cpp). `undefined` for any other symbol.
-// Interned on the code pointer, so `/a/[Symbol.split] === /b/[Symbol.split]`.
-Value rtRegExpSymbolMethod(Value symbolKey);
-
 // The well-known key a pattern-taking `String.prototype` member dispatches on.
 enum class PatternSymbol : uint8_t { Match, MatchAll, Replace, Search, Split };
 
 // 22.1.3's step 2, shared by all six members: GetMethod(argument, @@which).
 // `true` with `out` set to a CALLABLE method when the argument carries one.
 // `false` — with NO property read at all — for the two argument shapes that
-// cannot: a non-object, and a RegExp (whose five are answered beside the value
-// and cannot be shadowed, because it has no shape). `false` with an exception
-// pending when the property was present and not callable, or a getter threw.
+// need none: a non-object, and a RegExp whose chain is as built
+// (`rtRegExpChainPristine`), where the read would find exactly the algorithm
+// the caller runs directly. `false` with an exception pending when the
+// property was present and not callable, or a getter threw.
 bool rtPatternMethod(Rooted<Value>& arg, PatternSymbol which, Rooted<Value>& out);
 
 // The call that dispatch makes: `Call(method, argument, «first[, second]»)`.

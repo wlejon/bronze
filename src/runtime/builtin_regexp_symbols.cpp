@@ -10,19 +10,19 @@
 // kept in step.
 //
 // The five are reachable as FUNCTION OBJECTS too — `/x/[Symbol.replace]("ax",
-// "y")` is a call a program may write — and reach them the way every other
-// RegExp member does: beside the value, from rt_prop_symbol.cpp, because a
-// RegExp carries no shape and bronze builds it no prototype object to hang a
-// property on. `rtRegExpSymbolMethod` is the one table both routes read, so the
-// function a program calls explicitly and the code the string members run are
-// the same code pointer.
+// "y")` is a call a program may write — as own data properties of
+// `RegExp.prototype` (`rtInstallRegExpSymbolMethods`), so the function a
+// program calls explicitly and the code the string members run are the same
+// code pointer, and `RegExp.prototype[Symbol.replace] = f` is an ordinary
+// property write that `rtRegExpChainPristine` notices.
 //
 // Everything here drives the matcher DIRECTLY rather than through `exec`: a
 // `replace` over a long string builds one result from many matches, and a match
 // array per match would allocate an array per match. The consequence is stated
-// as a refusal rather than left implicit — a subclass overriding `exec` cannot
-// be honoured, and `rtCheckNativeBaseExtends` refuses `extends RegExp` by name
-// (native_base.cpp), which is what keeps that from being reachable at all.
+// as a refusal rather than left implicit — a receiver whose `exec` is not the
+// intrinsic one (22.2.7.1 step 2 would call it) is refused BY NAME in each of
+// the five, because answering from the matcher would be a silently wrong
+// answer rather than a missing one.
 
 #include <algorithm>
 #include <cmath>
@@ -34,6 +34,7 @@
 #include "abi/bronze_abi.h"
 #include "regex/regex.h"
 #include "runtime/array.h"
+#include "runtime/builtin_regexp_internal.h"
 #include "runtime/builtin_string_regexp_internal.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -106,21 +107,15 @@ size_t advanceOver(const regex::Units& haystack, size_t index, bool unicode) {
     return regex::advanceStringIndex(haystack, index, unicode);
 }
 
-// 7.1.20 ToLength over a value that is ALREADY a Number — which is what a
-// RegExp's `lastIndex` is, since rtRegExpSetMember runs ToNumber on every write
-// to it. So this is only the clamp: NaN and anything negative are 0, a
-// fraction truncates toward zero, and 2^53-1 is the ceiling.
-double toLength(double n) {
-    if (!(n >= 1.0)) return 0.0;  // false for NaN too, which is step 2's answer
-    constexpr double kMaxSafeInteger = 9007199254740991.0;
-    return std::min(std::trunc(n), kMaxSafeInteger);
-}
-
-// The same step applied to a RegExp's own `lastIndex`.
-void advanceLastIndex(Value re, const regex::Units& haystack) {
-    const bool unicode = regex::patternFlags(rtRegExpPattern(re)).unicodeMode();
-    const auto index = static_cast<size_t>(rtRegExpLastIndex(re));
-    rtRegExpSetLastIndex(re, static_cast<double>(advanceOver(haystack, index, unicode)));
+// The same step applied to a RegExp's own `lastIndex`: ToLength of what was
+// assigned (which may run user code), then Set(R, "lastIndex", ..., true),
+// which a frozen RegExp refuses. False with the exception pending.
+bool advanceLastIndex(Rooted<Value>& re, const regex::Units& haystack) {
+    const bool unicode = regex::patternFlags(rtRegExpPattern(re.get())).unicodeMode();
+    bool ok = false;
+    const auto index = static_cast<size_t>(rtRegExpLastIndexLength(re, ok));
+    if (!ok) return false;
+    return rtRegExpSetLastIndex(re, static_cast<double>(advanceOver(haystack, index, unicode)));
 }
 
 // ---- the matchAll iterator (22.2.9) -----------------------------------------
@@ -179,7 +174,9 @@ uint64_t matchAllNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     // AdvanceStringIndex, or the iterator would yield it for ever.
     Value first = match.get().asObject<ArrayHeader>()->getElem(0);
     if (first.isString() && first.asString<StringHeader>()->getLength() == 0) {
-        advanceLastIndex(re.get(), toRegexUnits(unitsOf(input.get())));
+        if (!advanceLastIndex(re, toRegexUnits(unitsOf(input.get())))) {
+            return Value::fromUndefined().rawBits();
+        }
     }
     return iterResult(match, false).rawBits();
 }
@@ -191,12 +188,17 @@ uint64_t matchAllNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 Value rtRegExpSearch(Rooted<Value>& re, Rooted<Value>& str) {
     const Units input = unitsOf(str.get());
     // Steps 4-8: `search` SAVES and restores `lastIndex`, so it is the one
-    // pattern member with no effect on the cursor.
-    const double saved = rtRegExpLastIndex(re.get());
+    // pattern member with no effect on the cursor. Restored as the VALUE it
+    // held, not a number made from it. Step 5 is a real Set when the cursor is
+    // not already +0 — the one way a frozen RegExp's `search` can throw.
+    Rooted<Value> saved{rtRegExpLastIndexValue(re.get())};
+    const bool atZero = saved.get().isNumber() && saved.get().asNumber() == 0.0 &&
+                        !std::signbit(saved.get().asNumber());
+    if (!atZero && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
     regex::MatchResult match;
     const regex::Pattern& pattern = rtRegExpPattern(re.get());
     const regex::ExecStatus status = runMatch(pattern, toRegexUnits(input), 0, false, match);
-    rtRegExpSetLastIndex(re.get(), saved);
+    rtRegExpRestoreLastIndex(re.get(), saved.get());
     if (status != regex::ExecStatus::Match) return Value::fromDouble(-1.0);
     return Value::fromDouble(static_cast<double>(match.start()));
 }
@@ -210,7 +212,7 @@ Value rtRegExpMatch(Rooted<Value>& re, Rooted<Value>& str) {
     // else, which is why the two answers have different shapes.
     if (!flags.global) return rtRegExpExec(re, str);
 
-    rtRegExpSetLastIndex(re.get(), 0.0);
+    if (!rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
     const regex::Units haystack = toRegexUnits(unitsOf(str.get()));
     // Length ZERO, grown by the appends below: `bronze_create_array(n)` sets
     // the length, so passing a capacity guess would leave trailing `undefined`
@@ -226,7 +228,7 @@ Value rtRegExpMatch(Rooted<Value>& re, Rooted<Value>& str) {
         // An empty match would leave `lastIndex` where it is and loop for
         // ever; step 8.f.iii advances it by AdvanceStringIndex.
         if (matched.get().asString<StringHeader>()->getLength() == 0) {
-            advanceLastIndex(re.get(), haystack);
+            if (!advanceLastIndex(re, haystack)) return Value::fromUndefined();
         }
     }
     // Step 6.c: `null`, not an empty array, when nothing matched.
@@ -242,9 +244,9 @@ Value rtRegExpMatchAll(Rooted<Value>& re, Rooted<Value>& str) {
     // `source` and `flags` because that is the pair a RegExp is made of, and
     // because 22.2.6.10's escaping is idempotent — the source of the clone is
     // the source of the original, byte for byte.
-    Rooted<Value> source{rtRegExpMember(re.get(), "source")};
+    Rooted<Value> source{re.get().asObject<RegExpHeader>()->source};
     const std::string flagsText =
-        rtUtf8Chars(rtRegExpMember(re.get(), "flags").asString<StringHeader>());
+        rtUtf8Chars(re.get().asObject<RegExpHeader>()->flagsText.asString<StringHeader>());
     Rooted<Value> matcher{rtRegExpFromParts(source, flagsText)};
     if (rtExceptionPending()) return Value::fromUndefined();
     // Step 6: the clone STARTS WHERE THE ORIGINAL STOOD. `rtRegExpFromParts`
@@ -253,7 +255,10 @@ Value rtRegExpMatchAll(Rooted<Value>& re, Rooted<Value>& str) {
     // has two matches, not four. Copied through ToLength (7.1.20), so a
     // negative cursor is 0 and a fractional one truncates, exactly as a
     // subsequent `exec` on the original would have read it.
-    rtRegExpSetLastIndex(matcher.get(), toLength(rtRegExpLastIndex(re.get())));
+    bool ok = false;
+    const double cursor = rtRegExpLastIndexLength(re, ok);
+    if (!ok) return Value::fromUndefined();
+    rtRegExpSetLastIndex(matcher, cursor);
 
     // %RegExpStringIteratorPrototype% (22.2.9.1), which is where the
     // `[Symbol.iterator]` self-hook lives — inherited from %IteratorPrototype%,
@@ -286,21 +291,34 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
     // `"aa".replace(/a/, ...)`.
     const bool everyMatch = flags.global;
     const regex::Units haystack = toRegexUnits(input);
-    if (everyMatch) rtRegExpSetLastIndex(re.get(), 0.0);
+    if (everyMatch && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
 
     Units out;
     size_t at = 0;
-    size_t from = everyMatch ? 0 : static_cast<size_t>(rtRegExpLastIndex(re.get()));
+    size_t from = 0;
     // A non-global, non-sticky pattern ignores `lastIndex` entirely (22.2.7.2
     // step 6), so it always starts at zero; a `y` one starts at the cursor.
-    if (!everyMatch && !flags.sticky) from = 0;
+    if (!everyMatch && flags.sticky) {
+        bool ok = false;
+        from = static_cast<size_t>(rtRegExpLastIndexLength(re, ok));
+        if (!ok) return Value::fromUndefined();
+    }
+    // A `y` pattern's one exec (22.2.7.2 steps 12-15) leaves `lastIndex` at
+    // the match's end, or at 0 when it failed — before the replacer runs,
+    // because that is where step 11 of [@@replace] puts it: the exec is
+    // finished before any replacement is computed.
+    const bool stickyOnly = !everyMatch && flags.sticky;
     for (;;) {
-        if (from > input.size()) break;
         regex::MatchResult match;
-        if (runMatch(pattern, haystack, from, flags.sticky, match) != regex::ExecStatus::Match) {
+        if (from > input.size() ||
+            runMatch(pattern, haystack, from, flags.sticky, match) != regex::ExecStatus::Match) {
+            if (stickyOnly && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
             break;
         }
         const MatchPieces pieces = piecesOf(pattern, input, match);
+        if (stickyOnly && !rtRegExpSetLastIndex(re, static_cast<double>(pieces.end))) {
+            return Value::fromUndefined();
+        }
         const Units before = slice(input, at, pieces.start);
         out.insert(out.end(), before.begin(), before.end());
         if (!appendReplacement(out, input, pieces, replacement, replacerIsFunction)) {
@@ -314,7 +332,9 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
                                           : pieces.end;
         if (!everyMatch) break;
     }
-    if (everyMatch) rtRegExpSetLastIndex(re.get(), 0.0);
+    // The global walk ends on an exec that failed, which is what put the
+    // cursor back at 0 (22.2.7.2 step 12.a.i).
+    if (everyMatch && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
     const Units tail = slice(input, at, input.size());
     out.insert(out.end(), tail.begin(), tail.end());
     return stringOf(out);
@@ -406,17 +426,39 @@ namespace {
 // 22.2.6's opening step in every one of the five: `this` must be an Object with
 // a [[RegExpMatcher]], which for bronze is a RegExp heap object and nothing
 // else. `/x/[Symbol.replace].call("ax", "y")` is the TypeError this produces.
-bool thisRegExp(Value self, const char* member) {
-    if (rtIsRegExp(self)) return true;
-    rtThrowTypeError(std::string("RegExp.prototype[Symbol.") + member +
-                     "] called on a receiver that is not a RegExp");
+//
+// Then the refusal the file comment states. A pristine receiver's `exec` is
+// the intrinsic by construction (`rtRegExpChainPristine` compares that slot);
+// any other receiver — a subclass instance, a RegExp with an own key — has
+// its `exec` READ, the Get of 22.2.7.1 step 1, and is refused by name unless
+// what it holds runs the intrinsic body. A subclass that leaves `exec` alone
+// therefore works; one that overrides it is told so rather than answered from
+// a matcher its `exec` never saw.
+bool receiverFor(Rooted<Value>& self, const char* member) {
+    if (!rtIsRegExp(self.get())) {
+        rtThrowTypeError(std::string("RegExp.prototype[Symbol.") + member +
+                         "] called on a receiver that is not a RegExp");
+        return false;
+    }
+    if (rtRegExpChainPristine(self.get().asObject<RegExpHeader>())) return true;
+    Rooted<Value> key{rtMakeString("exec")};
+    const Value exec{bronze_elem_get(self.get().rawBits(), key.get().rawBits())};
+    if (rtExceptionPending()) return false;
+    if (exec.isObject() && exec.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+        exec.asObject<FunctionHeader>()->code == rtRegExpExecBody) {
+        return true;
+    }
+    fatal((std::string("RegExp.prototype[Symbol.") + member +
+           "] on a RegExp whose `exec` is not RegExp.prototype.exec: bronze drives the matcher "
+           "directly and does not call an overridden exec")
+              .c_str());
     return false;
 }
 
 uint64_t regexpSymbolMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!thisRegExp(Value(thisBits), "match")) return Value::fromUndefined().rawBits();
     Rooted<Value> re{Value(thisBits)};
+    if (!receiverFor(re, "match")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpMatch(re, str).rawBits();
@@ -424,8 +466,8 @@ uint64_t regexpSymbolMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 
 uint64_t regexpSymbolMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!thisRegExp(Value(thisBits), "matchAll")) return Value::fromUndefined().rawBits();
     Rooted<Value> re{Value(thisBits)};
+    if (!receiverFor(re, "matchAll")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpMatchAll(re, str).rawBits();
@@ -433,8 +475,8 @@ uint64_t regexpSymbolMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const 
 
 uint64_t regexpSymbolReplace(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!thisRegExp(Value(thisBits), "replace")) return Value::fromUndefined().rawBits();
     Rooted<Value> re{Value(thisBits)};
+    if (!receiverFor(re, "replace")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> replaceValue{args[1]};
@@ -443,8 +485,8 @@ uint64_t regexpSymbolReplace(uint64_t, uint64_t thisBits, uint32_t argc, const u
 
 uint64_t regexpSymbolSearch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!thisRegExp(Value(thisBits), "search")) return Value::fromUndefined().rawBits();
     Rooted<Value> re{Value(thisBits)};
+    if (!receiverFor(re, "search")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpSearch(re, str).rawBits();
@@ -452,21 +494,17 @@ uint64_t regexpSymbolSearch(uint64_t, uint64_t thisBits, uint32_t argc, const ui
 
 uint64_t regexpSymbolSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    if (!thisRegExp(Value(thisBits), "split")) return Value::fromUndefined().rawBits();
     Rooted<Value> re{Value(thisBits)};
+    if (!receiverFor(re, "split")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpSplit(re, str, args[1]).rawBits();
 }
 
-// The one table both routes read: the property path that answers
-// `/x/[Symbol.replace]`, and nothing else — the string members call the
-// algorithms above directly, so there is no second spelling of "which symbol
-// means which algorithm" to drift out of step with this one.
-//
-// The key is compared by IDENTITY, which is the whole contract of a well-known
-// symbol: a second interning of the description "Symbol.replace" would be a
-// different symbol and would find nothing here.
+// The five as `RegExp.prototype`'s own data properties, in 22.2.6's clause
+// order, which is also the order node lists them. The string members call
+// the algorithms above directly, so there is no second spelling of "which
+// symbol means which algorithm" to drift out of step with this one.
 struct RegExpSymbolMethod {
     SymbolHeader* (*key)();
     bronze_fn_code code;
@@ -486,16 +524,15 @@ const RegExpSymbolMethod kRegExpSymbolMethods[] = {
 
 }  // namespace
 
-Value rtRegExpSymbolMethod(Value symbolKey) {
-    if (!symbolKey.isSymbol()) return Value::fromUndefined();
-    SymbolHeader* wanted = symbolKey.asSymbol<SymbolHeader>();
+void rtInstallRegExpSymbolMethods(Rooted<Value>& proto) {
     for (const RegExpSymbolMethod& m : kRegExpSymbolMethods) {
-        // Each `key()` interns its symbol on first use, which is why the
-        // comparison is inside the loop rather than against a table built once:
-        // the table holds the accessors, not their answers.
-        if (m.key() == wanted) return rtNativeFunction(m.code, m.arity, m.name, m.length);
+        Rooted<Value> key{Value::fromSymbol(m.key())};
+        Rooted<Value> fn{rtNativeFunction(m.code, m.arity, m.name, m.length)};
+        // 22.2.6: writable and configurable, not enumerable — a definition,
+        // so it does not write through to Object.prototype.
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
     }
-    return Value::fromUndefined();
 }
 
 }  // namespace bronze::runtime

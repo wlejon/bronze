@@ -84,6 +84,9 @@ Target targetOf(Value v) {
         case TypedArrayHeader::kFlags:
         case ArrayBufferHeader::kFlags:
         case DataViewHeader::kFlags:
+        // A RegExp too; its header-held `lastIndex` is the one own property
+        // its dictionary does not list, and `testIntegrity` answers for it.
+        case RegExpHeader::kFlags:
             return Target::Plain;
         case HeapKind::Array: return Target::Array;
         case HeapKind::Function: return Target::Function;
@@ -283,6 +286,14 @@ bool testIntegrity(Value receiver, bool frozen) {
 
     const Dictionary* d = rtIntegrityTable(receiver);
     if (!d || d->extensible) return false;  // step 3
+
+    // A RegExp's `lastIndex` (22.2.4.1) is an array's `length` in this
+    // respect: non-configurable from birth and writable until `freeze`, so
+    // it alone decides the frozen answer and never affects the sealed one.
+    if (frozen && receiver.asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags &&
+        d->level != IntegrityLevel::Frozen) {
+        return false;
+    }
 
     if (target == Target::Array) {
         const auto* arr = receiver.asObject<ArrayHeader>();

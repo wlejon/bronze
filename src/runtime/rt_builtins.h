@@ -563,7 +563,6 @@ bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor);
 // refuse a base whose instances it cannot actually produce.
 const char* rtIntrinsicConstructorName(Value fn);
 bool rtIsArrayConstructor(Value fn);
-bool rtIsRegExpConstructor(Value fn);
 bool rtOrdinaryHasInstance(Value ctor, Value obj);
 uint64_t rtFunctionHasInstanceBuiltin(uint64_t env, uint64_t thisBits, uint32_t argc,
                                       const uint64_t* argv);

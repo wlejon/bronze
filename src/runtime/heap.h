@@ -130,16 +130,18 @@ enum : uint16_t {
 // Does a header of this kind BEGIN with an `ObjectHeader` — a shape word, an
 // overflow word and the inline property slots — whatever it carries after
 // them? A plain object is the one kind with nothing after; a typed array, an
-// ArrayBuffer and a DataView (typed_array.h) carry their state behind the
-// prefix, exactly so that the ordinary property machinery — the shape walk,
-// the inline caches, expandos, `Object.keys`, [[Prototype]] — reads them as
-// objects while the kind still names them for the element paths.
+// ArrayBuffer and a DataView (typed_array.h) and a RegExp (regexp.h) carry
+// their state behind the prefix, exactly so that the ordinary property
+// machinery — the shape walk, the inline caches, expandos, `Object.keys`,
+// [[Prototype]] — reads them as objects while the kind still names them for
+// the element paths and the matcher.
 //
 // The two questions are different and every gate must ask the one it means:
 // "may I read this as an ObjectHeader" is this; "is this an ordinary object
 // and nothing more" keeps comparing against `Plain`.
 inline constexpr bool carriesShape(uint16_t flags) noexcept {
-    return flags == Plain || flags == TypedArray || flags == ArrayBuffer || flags == DataView;
+    return flags == Plain || flags == TypedArray || flags == ArrayBuffer || flags == DataView ||
+           flags == RegExp;
 }
 }  // namespace HeapKind
 

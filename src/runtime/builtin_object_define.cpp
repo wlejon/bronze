@@ -504,10 +504,44 @@ static bool applyTypedArrayDescriptor(Rooted<Value>& self, PropertyKey name,
     return true;
 }
 
+// 10.1.6.3 over a RegExp's `lastIndex` (22.2.3.2: { writable: true,
+// enumerable: false, configurable: false }, held in the header). A descriptor
+// that contradicts the fixed two attributes, or an accessor, is refused; a
+// value is stored; on a frozen RegExp only a SameValue restatement passes.
+// `writable: false` on an unfrozen RegExp is refused BY NAME: the header
+// records writability only as the whole object's integrity level, so a
+// non-writable `lastIndex` beside writable expandos has nowhere to go.
+static bool applyRegExpDescriptor(Rooted<Value>& self, PropertyKey name,
+                                  const DecodedDescriptor& d, Rooted<Value>& value,
+                                  bool throwOnRefusal, bool& answered) {
+    answered = false;
+    if (!name.isString() || rtUtf8Chars(name.string()) != "lastIndex") return false;
+    answered = true;
+    if (d.hasGet || d.hasSet || (d.hasConfigurable && d.wantConfigurable) ||
+        (d.hasEnumerable && d.wantEnumerable)) {
+        return refuseDefine(throwOnRefusal, "Cannot redefine property: lastIndex");
+    }
+    const bool frozen = rtIntegrityLevel(self.get()) == IntegrityLevel::Frozen;
+    if (frozen) {
+        if ((d.hasWritable && d.wantWritable) ||
+            (d.hasValue && !sameValue(value.get(), rtRegExpLastIndexValue(self.get())))) {
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: lastIndex");
+        }
+        return true;
+    }
+    if (d.hasWritable && !d.wantWritable) {
+        fatal("unsupported: Object.defineProperty(regexp, 'lastIndex', { writable: false }) "
+              "(bronze records a RegExp's `lastIndex` writability only as the object's "
+              "integrity level; Object.freeze the RegExp instead)");
+    }
+    if (d.hasValue) rtRegExpRestoreLastIndex(self.get(), value.get());
+    return true;
+}
+
 // 10.1.6.3, 10.4.2.1, 10.4.5.3 or 10.5.6, by the receiver's kind, over a table
 // the receiver keeps somewhere: a function's statics box, an array's three
-// stories above, a typed array's elements, a proxy's `defineProperty` trap,
-// everything else its own shape.
+// stories above, a typed array's elements, a RegExp's `lastIndex`, a proxy's
+// `defineProperty` trap, everything else its own shape.
 static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const DecodedDescriptor& d,
                             Rooted<Value>& value, Rooted<Value>& getter, Rooted<Value>& setter,
                             bool throwOnRefusal) {
@@ -518,6 +552,11 @@ static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const Decoded
     if (kind == HeapKind::TypedArray) {
         bool answered = false;
         const bool ok = applyTypedArrayDescriptor(self, name, d, value, throwOnRefusal, answered);
+        if (answered) return ok;
+    }
+    if (kind == HeapKind::RegExp) {
+        bool answered = false;
+        const bool ok = applyRegExpDescriptor(self, name, d, value, throwOnRefusal, answered);
         if (answered) return ok;
     }
     if (kind == HeapKind::Proxy) {

@@ -256,15 +256,17 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
         // Any other name is an ordinary property of an ordinary object: the
         // tail below.
     }
-    if (hdr->flags == RegExpHeader::kFlags) {
-        // `lastIndex` is the one writable property a RegExp has (22.2.6.9).
-        // Anything else would need a shape, and discarding the write would
-        // leave the program believing it stored something.
-        if (!rtRegExpSetMember(objVal, keyStr, valVal)) {
-            fatal(("named property writes on a RegExp are unsupported (only `lastIndex` is "
-                   "writable; tried to write `" + keyStr + "`)")
-                      .c_str());
+    if (hdr->flags == RegExpHeader::kFlags && keyStr == "lastIndex") {
+        // 22.2.4.1: `lastIndex` is an own writable data property held in the
+        // header, so the write is OrdinarySet's store of the VALUE as given —
+        // ToLength runs when a match reads it (22.2.7.2 step 2), not here. A
+        // frozen RegExp's is non-writable, which is the one refusal. Any other
+        // name is an ordinary property of the shape the RegExp carries.
+        if (rtIntegrityLevel(objVal) == IntegrityLevel::Frozen) {
+            rtReportSetRefusal(SetRefusal::NotWritable, strict, keyStr);
+            return;
         }
+        rtRegExpRestoreLastIndex(objVal, valVal);
         return;
     }
     if (hdr->flags == HeapKind::Proxy) {

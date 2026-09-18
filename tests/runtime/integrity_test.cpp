@@ -230,27 +230,36 @@ TEST_CASE("a sealed function keeps its prototype writable") {
     CHECK_FALSE(isFrozen(fn.get()));
 }
 
-TEST_CASE("a receiver bronze cannot record a level for is refused by name") {
+// A RegExp records its level in its shape like a plain object; its `lastIndex`
+// (22.2.4.1) is an array's `length` here — non-configurable from birth,
+// writable until `freeze` — so it alone decides the frozen answer and is the
+// one write a frozen RegExp refuses.
+TEST_CASE("a RegExp records its level and freeze makes lastIndex read-only") {
     ShadowStackFrame frame;
     Rooted<Value> src{rtMakeString("a")};
-    Rooted<Value> re{rtRegExpFromParts(src, "")};
+    Rooted<Value> re{rtRegExpFromParts(src, "g")};
 
-    // The predicates still answer, and their answers are correct BECAUSE the
-    // mutators refuse: nothing can have made this RegExp non-extensible.
     CHECK(isExtensible(re.get()));
     CHECK_FALSE(isFrozen(re.get()));
     CHECK_FALSE(isSealed(re.get()));
+    CHECK(rtRegExpSetLastIndex(re, 1.0));
 
-    {
-        FatalGuard guard([](const char* msg) { throw std::runtime_error(msg); });
-        CHECK_THROWS_WITH_AS(freeze(re.get()), doctest::Contains("Object.freeze on a RegExp"),
-                             std::runtime_error);
-        CHECK_THROWS_WITH_AS(seal(re.get()), doctest::Contains("Object.seal on a RegExp"),
-                             std::runtime_error);
-        CHECK_THROWS_WITH_AS(preventExtensions(re.get()),
-                             doctest::Contains("Object.preventExtensions on a RegExp"),
-                             std::runtime_error);
-    }
+    seal(re.get());
+    CHECK(isSealed(re.get()));
+    // Sealed, not frozen: `lastIndex` is still writable.
+    CHECK_FALSE(isFrozen(re.get()));
+    CHECK(rtRegExpSetLastIndex(re, 0.0));
+
+    freeze(re.get());
+    CHECK(isFrozen(re.get()));
+    // 22.2.7.2 step 15 / 22.2.7.1: Set(R, "lastIndex", v, true) on a
+    // non-writable property is the TypeError, left pending.
+    CHECK_FALSE(rtRegExpSetLastIndex(re, 1.0));
+    REQUIRE(rtExceptionPending());
+    rtClearException();
+    bool ok = false;
+    CHECK(rtRegExpLastIndexLength(re, ok) == 0.0);
+    CHECK(ok);
 }
 
 // An ArrayBuffer is an ordinary object with internal slots (25.1.6): it has a

@@ -13,13 +13,13 @@
 //
 // The dispatch costs the common path nothing. `rtPatternMethod` answers "no
 // method" from the argument's TAG for a string, a number or `undefined`, and
-// from its heap kind for a RegExp — bronze builds no `RegExp.prototype` object
-// and a RegExp carries no shape, so a RegExp's five symbol-keyed members are
-// answered beside the value (rt_prop_symbol.cpp) and there is no own key that
-// could shadow them. `"str".replace(/re/, "x")` therefore reaches
-// `rtRegExpReplace` through one tag test and one flags compare, exactly as it
-// did before the protocol existed, and only an ordinary OBJECT argument pays
-// for a symbol-keyed property read.
+// from its heap kind plus `rtRegExpChainPristine` for a RegExp — a RegExp
+// whose chain is as built would find exactly `RegExp.prototype[@@replace]`,
+// which is the algorithm this file calls directly, so the read is skipped.
+// `"str".replace(/re/, "x")` therefore reaches `rtRegExpReplace` through one
+// tag test, one pristine check and one flags compare, and only an ordinary
+// OBJECT argument, a subclass instance or a RegExp someone has been editing
+// pays for a symbol-keyed property read.
 //
 // Separate from builtin_string.cpp because these are the only string members
 // that know what a RegExp is, and because their argument is not a string: a
@@ -110,13 +110,16 @@ const char* patternSymbolName(PatternSymbol which) {
 // expression for the purpose of the `g` requirement below, whether or not it
 // carries a matcher.
 //
-// A real RegExp is answered from its heap kind with no property read: its
+// A RegExp with its chain as built is answered with no property read: its
 // `[Symbol.match]` is `RegExp.prototype[@@match]`, which is a function and so
-// truthy, and nothing can have replaced it.
+// truthy. Any other RegExp has the property READ like any object, because an
+// own or subclass `[Symbol.match] = false` opts it out (step 2).
 bool argumentIsRegExpLike(Rooted<Value>& arg, bool& threw) {
     threw = false;
     if (!arg.get().isObject()) return false;
-    if (rtIsRegExp(arg.get())) return true;
+    if (rtIsRegExp(arg.get()) && rtRegExpChainPristine(arg.get().asObject<RegExpHeader>())) {
+        return true;
+    }
     Rooted<Value> key{Value::fromSymbol(rtSymbolMatch())};
     const Value matcher = Value(bronze_elem_get(arg.get().rawBits(), key.get().rawBits()));
     if (rtExceptionPending()) {
@@ -141,7 +144,11 @@ bool requireGlobalPattern(Rooted<Value>& arg, const char* method) {
     if (!argumentIsRegExpLike(arg, threw)) return !threw;
     const std::string message =
         std::string("String.prototype.") + method + " called with a non-global RegExp argument";
-    if (rtIsRegExp(arg.get())) {
+    // Step 2.b.i is Get(searchValue, "flags"), which for a RegExp with its
+    // chain as built is the intrinsic getter over the header — read straight
+    // from the compiled pattern. A subclass that overrides `flags` gets the
+    // read, as any object does.
+    if (rtIsRegExp(arg.get()) && rtRegExpChainPristine(arg.get().asObject<RegExpHeader>())) {
         if (regex::patternFlags(rtRegExpPattern(arg.get())).global) return true;
         rtThrowTypeError(message);
         return false;
@@ -355,19 +362,20 @@ void rtInstallStringPatternMethods(Rooted<Value>& proto) {
 }
 
 bool rtPatternMethod(Rooted<Value>& arg, PatternSymbol which, Rooted<Value>& out) {
-    // THE GUARD. Both tests are the argument's own bits: a string, a number,
-    // `undefined` and `null` are not objects and reach `String.prototype` or
-    // nothing, neither of which defines one of the five; a RegExp answers its
-    // five beside the value and has no shape for an own key to shadow them
-    // with. So the two shapes of argument that every real program passes cost
-    // one tag test and never touch the property path.
-    //
-    // The day a RegExp gains a shape — a subclass instance would be the reason,
-    // and `extends RegExp` is refused by name today (native_base.cpp) — this
-    // second test is the line that has to become "and no own key", and the
-    // dispatch below is already what would honour the override.
+    // THE GUARD. A string, a number, `undefined` and `null` are not objects
+    // and reach `String.prototype` or nothing, neither of which defines one of
+    // the five: one tag test. A RegExp whose chain is as built — no own key,
+    // `RegExp.prototype` still holding its five — would find exactly the
+    // algorithm the caller runs directly, so the property read is skipped
+    // (`rtRegExpChainPristine`: a shape compare, an epoch compare and six
+    // slot compares, no allocation). A subclass instance, a RegExp given an
+    // own key, or a program that replaced `RegExp.prototype[Symbol.replace]`
+    // takes the read below, and the dispatch honours what it finds.
     if (!arg.get().isObject()) return false;
-    if (arg.get().asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags) return false;
+    if (arg.get().asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags &&
+        rtRegExpChainPristine(arg.get().asObject<RegExpHeader>())) {
+        return false;
+    }
 
     // GetMethod (7.3.11) from here down: the key is interned before the
     // receiver is re-read, because interning one allocates its description.

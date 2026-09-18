@@ -229,8 +229,9 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     Rooted<Value> fn{Value(bronze_elem_get(ns.get().rawBits(), keysKey.get().rawBits()))};
     REQUIRE(fn.get().isObject());
     REQUIRE(fn.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function);
-    // A RegExp is the kind still without a property table of its own; a typed
-    // array, an ArrayBuffer and a DataView carry a shape now and answer.
+    // A RegExp carries a shape now, like a typed array, an ArrayBuffer and a
+    // DataView; its header-held `lastIndex` is listed ahead of the shape's
+    // keys (22.2.3.2 defines it before a program can write one).
     Rooted<Value> src{runtime::rtMakeString("a")};
     Rooted<Value> re{runtime::rtRegExpFromParts(src, "")};
 
@@ -251,14 +252,14 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
 
     setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
 
-    // The kind is named, and so is what about it cannot be done — never "this
-    // is not an object", which is what a typed array used to be told. And a
-    // kind with no property table at all says exactly that.
-    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", re, 0),
-                         doctest::Contains("Object.getOwnPropertyNames on a RegExp"),
-                         std::runtime_error);
-    CHECK_THROWS_WITH_AS(call("getOwnPropertyNames", re, 0),
-                         doctest::Contains("keeps no property table"), std::runtime_error);
+    {
+        Rooted<Value> names{call("getOwnPropertyNames", re, 0)};
+        REQUIRE(names.get().isObject());
+        REQUIRE(names.get().asObject<ArrayHeader>()->length == 1);
+        Value first = names.get().asObject<ArrayHeader>()->getElem(0);
+        REQUIRE(first.isString());
+        CHECK(runtime::rtUtf8Chars(first.asString<StringHeader>()) == "lastIndex");
+    }
 
     // A NUMBER target for `Object.assign`, which is the one member here whose
     // primitive case ToObject does not settle. The four that only READ own keys

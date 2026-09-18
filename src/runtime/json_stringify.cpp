@@ -392,10 +392,11 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             case TypedArrayHeader::kFlags:
             case ArrayBufferHeader::kFlags:
             case DataViewHeader::kFlags:
-                return serializeObject(state, value, out);
+            // A RegExp's one own property, `lastIndex`, is non-enumerable
+            // (22.2.4.1), so it serializes as its expandos: `{}` for the
+            // ordinary one, exactly as the object serializer answers.
             case HeapKind::RegExp:
-                appendAscii(out, "{}");
-                return true;
+                return serializeObject(state, value, out);
             // A Proxy is whatever its target chain says it is, read through
             // its traps — never `{}` and never a fatal: a proxy is an
             // ordinary value a program hands to JSON.stringify all the time

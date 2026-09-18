@@ -60,9 +60,8 @@ try { /x/[Symbol.split].call(null, "ax"); } catch (e) { console.log(e.name + ": 
 
 // A pattern object that DELEGATES to RegExp.prototype's algorithm is what a
 // program writes to wrap one, and the string members dispatch to it exactly as
-// they do to a bare RegExp. (`class R extends RegExp` is refused by name: a
-// subclass's instances would carry no [[RegExpMatcher]], so wrapping is the
-// route a program has.)
+// they do to a bare RegExp. (`class R extends RegExp` is the other route, and
+// `regexp_prototype_object` pins it.)
 const bracketed = {
   re: /[a-z]+/g,
   [Symbol.replace](s, value) { return "[" + this.re[Symbol.replace](s, value) + "]"; },

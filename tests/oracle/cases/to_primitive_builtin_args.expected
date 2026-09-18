@@ -27,7 +27,7 @@ typedArrayCtor 3
 dataViewCtor 8
 typedArrayFill 0,5,5,0
 dataViewRoundTrip 1234
-lastIndex 3
+lastIndex object 3 4
 hintNumber 98
 exotic 99
 hints number

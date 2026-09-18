@@ -85,11 +85,15 @@ const view = new DataView(new ArrayBuffer(16));
 view.setInt32(num(0), num(1234));
 console.log("dataViewRoundTrip", view.getInt32(num(0)));
 
-// ---- lastIndex, which writes through the receiver --------------------------
+// ---- lastIndex, which is converted by the MATCH and not by the write -------
+//
+// 22.2.4.1 makes `lastIndex` an ordinary data property, so the assignment
+// stores the object as written; 22.2.7.2 step 2 runs ToLength on it when a
+// `g` pattern next matches, holding the receiver across the conversion.
 
 const re = /a/g;
 re.lastIndex = num(3);
-console.log("lastIndex", re.lastIndex);
+console.log("lastIndex", typeof re.lastIndex, re.exec("aaaaa").index, re.lastIndex);
 
 // ---- hint -------------------------------------------------------------------
 //

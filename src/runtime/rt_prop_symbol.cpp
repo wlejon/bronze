@@ -159,15 +159,15 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         // current. The other probes identify their constructor by code pointer
         // and allocate nothing.
         //
-        // The byte-store family is NOT answered here: `%TypedArray%`,
-        // `ArrayBuffer` and `SharedArrayBuffer` carry 23.2.2.4, 25.1.5.3 and
-        // 25.2.4.2 as real accessors on their own boxes
-        // (rtDefineSpeciesGetter), which the twelve views and every subclass
-        // reach through the static chain — and the walk below finds them
-        // before this arm could. 25.3 defines no `DataView[@@species]` at all.
+        // The byte-store family and `RegExp` are NOT answered here:
+        // `%TypedArray%`, `ArrayBuffer`, `SharedArrayBuffer` and `RegExp`
+        // carry 23.2.2.4, 25.1.5.3, 25.2.4.2 and 22.2.5.3 as real accessors
+        // on their own boxes (rtDefineSpeciesGetter), which the twelve views
+        // and every subclass reach through the static chain — and the walk
+        // below finds them before this arm could. 25.3 defines no
+        // `DataView[@@species]` at all.
         const uint8_t base = rtNativeBaseOf(obj.get());
-        const bool ordinaryBase = base != NativeBase::None && base < NativeBase::ArrayBuffer;
-        const bool inheritsSpecies = ordinaryBase || rtIsRegExpConstructor(obj.get());
+        const bool inheritsSpecies = base != NativeBase::None && base < NativeBase::ArrayBuffer;
         if (inheritsSpecies && !symbolKeyOnChain(obj.get(), rtSymbolSpecies())) {
             handled = true;
             return obj.get();
@@ -182,24 +182,9 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         }
         return Value::fromUndefined();
     }
-    // 22.2.6's five SYMBOL-keyed members — `[@@match]`, `[@@matchAll]`,
-    // `[@@replace]`, `[@@search]` and `[@@split]`. They belong to
-    // `RegExp.prototype`, which is exactly the object bronze does not build, so
-    // this file stands in for it the way it already does for a DataView's tag
-    // and an array's iterator.
-    //
-    // Nothing a program installs is overridden: a RegExp has no shape, so there
-    // is no own or inherited symbol-keyed property for these to shadow —
-    // `rtSymbolKeyHolder` answers null for one — and `extends RegExp`, which is
-    // what would give an instance a chain, is refused by name (native_base.cpp).
-    if (obj.get().isObject() &&
-        obj.get().asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags) {
-        const Value method = rtRegExpSymbolMethod(key.get());
-        if (!method.isUndefined()) {
-            handled = true;
-            return method;
-        }
-    }
+    // 22.2.6's five SYMBOL-keyed members are own data properties of the real
+    // `RegExp.prototype` (builtin_regexp_symbols.cpp), which the ordinary
+    // walk finds through the shape a RegExp carries — nothing here.
     if (key.get().asSymbol<SymbolHeader>() != rtSymbolIterator()) return Value::fromUndefined();
     // A STRING is not this function's business: 22.1.3.36 puts its
     // `[Symbol.iterator]` on the real `String.prototype` object

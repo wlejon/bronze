@@ -179,6 +179,7 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray) {
         return ObjectOwnKeys::TypedArray;
     }
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::RegExp) return ObjectOwnKeys::RegExp;
     if (isPlainObject(v)) return ObjectOwnKeys::Shape;
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
         return ObjectOwnKeys::Function;
@@ -362,12 +363,14 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             return Value::fromBool(false).rawBits();
         case ObjectOwnKeys::Array:
         case ObjectOwnKeys::TypedArray:
+        case ObjectOwnKeys::RegExp:
         case ObjectOwnKeys::Proxy: {
             // The one [[GetOwnProperty]] `hasOwnProperty` asks
-            // (builtin_object_proto.cpp): an element, `length`, or a named or
-            // symbol-keyed property of the side object — or, for a proxy, the
-            // `getOwnPropertyDescriptor` trap (10.5.5). Asked there rather
-            // than answered here so the two spellings cannot drift.
+            // (builtin_object_proto.cpp): an element, `length`, a RegExp's
+            // `lastIndex`, or a named or symbol-keyed property of the side
+            // object — or, for a proxy, the `getOwnPropertyDescriptor` trap
+            // (10.5.5). Asked there rather than answered here so the two
+            // spellings cannot drift.
             Rooted<Value> self{args[0]};
             bool enumerable = false;
             const bool own = rtOwnPropertyOf(self, args[1], enumerable);
@@ -644,6 +647,7 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             return out.get().rawBits();
         }
         case ObjectOwnKeys::TypedArray:
+        case ObjectOwnKeys::RegExp:
         case ObjectOwnKeys::Shape:
             break;
     }
@@ -655,13 +659,21 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
         rtOwnStringKeysOrdered(self.get().asObject<ObjectHeader>(), /*enumerableOnly=*/false);
     // 10.4.5.7: a typed array's elements come first, every index within the
     // length ascending, ahead of the string keys its shape holds.
-    const uint32_t elements = self.get().asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray
-                                  ? self.get().asObject<TypedArrayHeader>()->length
-                                  : 0;
-    Rooted<Value> out{Value(bronze_create_array(elements + static_cast<uint32_t>(ordered.size())))};
+    const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
+    const uint32_t elements =
+        kind == HeapKind::TypedArray ? self.get().asObject<TypedArrayHeader>()->length : 0;
+    // 22.2.3.2: `lastIndex` is defined by RegExpAlloc before the program can
+    // write a key, so by 6.1.7.1's creation order it is listed first.
+    const bool lastIndex = kind == HeapKind::RegExp;
+    Rooted<Value> out{Value(bronze_create_array(elements + (lastIndex ? 1u : 0u) +
+                                                static_cast<uint32_t>(ordered.size())))};
     uint32_t at = 0;
     for (uint32_t i = 0; i < elements; ++i) {
         Rooted<Value> key{rtMakeString(std::to_string(i))};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    if (lastIndex) {
+        Rooted<Value> key{rtMakeString("lastIndex")};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
     }
     for (StringHeader* name : ordered) {

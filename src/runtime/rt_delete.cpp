@@ -29,6 +29,7 @@
 #include "runtime/profile.h"
 #include "runtime/proxy.h"
 #include "runtime/namespace.h"
+#include "runtime/regexp.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
@@ -211,6 +212,12 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
         const bool removed = typedArrayNumericDelete(objVal, Value::fromString(keyHeader), answered);
         if (answered) return reportRefusedDelete(removed, strict, rtKeyString(keyIndex));
     }
+    // 22.2.3.2: a RegExp's `lastIndex` is non-configurable, so its delete is
+    // the refusal 10.1.10.1 step 3 gives — false, a TypeError in strict code.
+    if (objVal.asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags &&
+        rtKeyString(keyIndex) == "lastIndex") {
+        return reportRefusedDelete(false, strict, "lastIndex");
+    }
 
     // 10.4.6.10: deleting an EXPORTED name answers false — a namespace property
     // is non-configurable — and deleting anything else answers true, because it
@@ -273,6 +280,13 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
                 idxVal.isString() ? rtUtf8Chars(idxVal.asString<StringHeader>())
                                   : rtUtf8Chars(rtValueToString(idxVal).asString<StringHeader>()));
         }
+    }
+    // The same non-configurable `lastIndex` as the named entry above; a key
+    // that is already a string is the only spelling that can name it, the
+    // object-key case having been sent through the named entry.
+    if (objVal.asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags &&
+        idxVal.isString() && rtUtf8Chars(idxVal.asString<StringHeader>()) == "lastIndex") {
+        return reportRefusedDelete(false, strict, "lastIndex");
     }
 
     if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {

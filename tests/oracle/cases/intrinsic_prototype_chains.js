@@ -49,8 +49,10 @@ class MyErr extends Error {}
 const sub = new MyErr("m");
 console.log(sub instanceof Error, String(sub));
 
-// The kinds whose members are answered beside the value: unchanged, and pinned
-// so the chain-end step cannot quietly go away.
+// Every other kind — those with a real prototype object of their own and the
+// few whose members are still answered beside the value — reaches
+// `Object.prototype` at the end of its chain, pinned so the chain-end step
+// cannot quietly go away for any of them.
 const beside = [
   new Map(),
   new Set(),

@@ -222,9 +222,6 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     } else if (keyStr == "length") {
         return Value::fromDouble(0.0).rawBits();
     }
-    // `RegExp.escape` (22.2.5.2), on the same terms: `RegExp` is an interned
-    // function singleton too.
-    if (Value stat; rtRegExpStatic(recv.get(), keyStr, stat)) return stat.rawBits();
     rtSymbolCheckMissingMember(recv.get(), keyStr);
     // `Object` is a function object too (20.1.1), so its unimplemented-member
     // table is consulted on THIS miss path and not on the plain object one

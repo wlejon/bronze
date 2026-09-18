@@ -659,14 +659,6 @@ bool rtIsArrayConstructor(Value fn) {
            fn.asObject<FunctionHeader>()->code == kCtors[0].code;
 }
 
-// `rtIsRegExpConstructor` lives in builtin_regexp.cpp beside the body it
-// compares against, for the reason `rtIsArrayConstructor` above compares a code
-// pointer and not an object: identifying an intrinsic must not BUILD it. The
-// version that lived here answered by materialising %RegExp% and comparing
-// addresses, which made every caller an allocation site — and one of those
-// callers is the function-object miss ladder in rt_prop.cpp, where an
-// unexpected collection retires the property box mid-lookup.
-
 bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
     if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return false;

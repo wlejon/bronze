@@ -275,6 +275,22 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             if (name.isString() && rtIsCanonicalNumericString(key)) return false;
             [[fallthrough]];
         }
+        case HeapKind::RegExp:
+            // 22.2.3.2 RegExpAlloc defines exactly one own property, held in
+            // the header: `lastIndex` { writable: true, enumerable: false,
+            // configurable: false }, its writability being the one thing
+            // `Object.freeze` takes away. Everything else 22.2.6 gives a
+            // RegExp — `source`, `flags`, `global` and the rest — is an
+            // accessor on the prototype; an expando is the shape's below.
+            if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::RegExp &&
+                key == "lastIndex") {
+                out.configurable = false;
+                out.writable = rtIntegrityLevel(self.get()) != IntegrityLevel::Frozen;
+                out.value = rtRegExpLastIndexValue(self.get());
+                out.valueKnown = true;
+                return true;
+            }
+            [[fallthrough]];
         case HeapKind::ArrayBuffer:
         case HeapKind::DataView: {
             // 25.1.6 and 25.3.4 put every member on a prototype — `byteLength`
@@ -286,15 +302,6 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             fillFromShape(obj, info, out);
             return true;
         }
-        case HeapKind::RegExp:
-            // 22.2.3.1's one own property is { writable: true, enumerable:
-            // false, configurable: false }.
-            out.configurable = false;
-            // 22.2.3.1 RegExpAlloc defines exactly one own property, and
-            // non-enumerably. Everything else 22.2.6 gives a RegExp — `source`,
-            // `flags`, `global` and the rest — is an accessor on the prototype,
-            // however much bronze's header-backed answers look like own data.
-            return key == "lastIndex";
         case HeapKind::ModuleNamespace: {
             // 10.4.6.1: an export is own, writable and ENUMERABLE, and
             // `@@toStringTag` is the one own key that is not an export.
@@ -653,8 +660,16 @@ const NativeMethod kObjectProtoMethods[] = {
     {"valueOf", objectProtoValueOf, 0, 0},
 };
 
-// Every `@@species` getter the specification defines has this one body.
-uint64_t speciesGetter(uint64_t, uint64_t self, uint32_t, const uint64_t*) { return self; }
+// Every `@@species` getter the specification defines has this one body —
+// `return this`, which is also %IteratorPrototype%[@@iterator]'s body
+// (iterator.cpp). Interning is by code pointer, and MSVC's `/OPT:ICF` folds
+// two identical bodies into ONE address, so without the profile record the
+// getter and the iterator hook would be one function object with whichever
+// name was interned first. The record is what keeps this a second pointer.
+uint64_t speciesGetter(uint64_t, uint64_t self, uint32_t, const uint64_t*) {
+    recordHelperCall("speciesGetter");
+    return self;
+}
 
 }  // namespace
 

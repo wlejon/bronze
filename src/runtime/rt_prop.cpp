@@ -360,13 +360,11 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         if (rtIsCanonicalNumericString(keyStr)) return BRONZE_ABI_UNDEFINED_BITS;
     }
     if (hdr->flags == RegExpHeader::kFlags) {
-        // Every member of a RegExp is computed from the header and the
-        // compiled pattern; there is no shape and no slot to read, which is
-        // why this is a branch here rather than properties on an object.
-        Rooted<Value> recv{objVal};
-        const Value found = rtRegExpMember(recv.get(), keyStr);
-        if (!found.isUndefined()) return found.rawBits();
-        return rtObjectProtoMember(recv, keyStr).rawBits();
+        // 22.2.4.1: `lastIndex` is the one own data property a RegExp always
+        // has, and it lives in the header rather than in a slot so the exec
+        // path reads it with no lookup. Every other name is the ordinary walk
+        // below — the RegExp carries a shape whose chain is `RegExp.prototype`.
+        if (keyStr == "lastIndex") return rtRegExpLastIndexValue(objVal).rawBits();
     }
     if (hdr->flags == IterRecordHeader::kFlags) {
         // The record of a live for-of is not a JS value: nothing hands one to

@@ -66,6 +66,9 @@ enum : uint8_t {
     ArrayBuffer,
     SharedArrayBuffer,
     DataView,
+    // 22.2.3.2 RegExpAlloc: a RegExp header carrying NewTarget's prototype and
+    // no pattern yet, for 22.2.3.3 RegExpInitialize in the body to fill.
+    RegExp,
     // The twelve view kinds, one per ElementKind, in the enum's order:
     // `TypedArrayFirst + kind`.
     TypedArrayFirst,

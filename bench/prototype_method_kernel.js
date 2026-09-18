@@ -84,6 +84,16 @@ function plainMethod() {
   return acc;
 }
 
+// The string-side dispatch: `str.replace(/re/g, "x")` finds `[Symbol.replace]`
+// on the RegExp argument, and a RegExp whose chain is as built is answered
+// with no property read at all (`rtRegExpChainPristine`). This is the path
+// a templating loop and a tokenizer's normaliser run.
+function strReplace() {
+  let acc = 0;
+  for (let i = 0; i < N; i++) acc += words[i % 6].replace(global, 'A').length;
+  return acc;
+}
+
 const a = measure('ta_subarray', subarray, N);
 const b = measure('ta_set', set, N);
 const c = measure('ta_slice', slice, N);
@@ -91,4 +101,5 @@ const d = measure('re_test', reTest, N);
 const e = measure('re_exec', reExec, N);
 const f = measure('typed_index', typedIndex, N);
 const g = measure('plain_method', plainMethod, N);
-console.log('checksum ' + a + ' ' + b + ' ' + c + ' ' + d + ' ' + e + ' ' + f + ' ' + g);
+const h = measure('str_replace', strReplace, N);
+console.log('checksum ' + a + ' ' + b + ' ' + c + ' ' + d + ' ' + e + ' ' + f + ' ' + g + ' ' + h);

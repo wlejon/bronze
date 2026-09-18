@@ -184,15 +184,15 @@ static_assert(HeapKind::Count == 20,
 // beside it — which is the rule every other arm of these switches follows.
 bool shapelessHasSymbol(uint16_t kind, Value key) {
     if (key.asSymbol<SymbolHeader>() == rtSymbolToStringTag()) {
-        // 10.4.6.1 puts it on the namespace itself, an OWN property. An array
-        // and a RegExp: 23.1.3 and 22.2.6 define none, which is why 20.1.3.6
-        // keeps a builtin-tag list for them.
+        // 10.4.6.1 puts it on the namespace itself, an OWN property. An
+        // array: 23.1.3 defines none, which is why 20.1.3.6 keeps a
+        // builtin-tag list for it.
         return kind == HeapKind::ModuleNamespace;
     }
     if (key.asSymbol<SymbolHeader>() != rtSymbolIterator()) return false;
-    // 23.1.3.34. A RegExp is not iterable, and a module namespace exports no
-    // name that could be one (10.4.6.4 is "is this an export", and
-    // @@toStringTag above is its only other key).
+    // 23.1.3.34. A module namespace exports no name that could be one
+    // (10.4.6.4 is "is this an export", and @@toStringTag above is its only
+    // other key).
     return kind == HeapKind::Array;
 }
 
@@ -210,6 +210,7 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
         case HeapKind::TypedArray:
         case HeapKind::ArrayBuffer:
         case HeapKind::DataView:
+        case HeapKind::RegExp:
             holder = reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
             break;
         case HeapKind::Function: {
@@ -221,7 +222,6 @@ bool hasSymbolProperty(Rooted<Value>& objRoot, Value key) {
             break;
         }
         case HeapKind::Array:
-        case HeapKind::RegExp:
         case HeapKind::ModuleNamespace:
             return shapelessHasSymbol(kind, key);
         case HeapKind::Proxy:
@@ -307,6 +307,11 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             if (rtIsCanonicalNumericString(key)) return false;
             [[fallthrough]];
         }
+        case HeapKind::RegExp:
+            // 22.2.4.1: `lastIndex` is an own property held in the header, so
+            // the walk below cannot see it; every other name is the walk's.
+            if (hdr->flags == HeapKind::RegExp && key == "lastIndex") return true;
+            [[fallthrough]];
         // A buffer and a DataView are ordinary objects with internal slots
         // (25.1.4, 25.3.4): the walk answers, exactly as for a plain object.
         case HeapKind::ArrayBuffer:
@@ -320,9 +325,6 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
                 reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
             return plainObjectHas(holder, keyStr.get().asString<StringHeader>());
         }
-        case HeapKind::RegExp:
-            if (rtRegExpHasMember(key)) return true;
-            break;
         case HeapKind::ModuleNamespace: {
             // 10.4.6.4 [[HasProperty]] is exactly "is this an export name":
             // [[Prototype]] is null (10.4.6.1), so nothing else can be true.
@@ -627,11 +629,8 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
         if (rtIsArrayConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array;
         }
-        if (rtIsRegExpConstructor(ctorRoot.get())) {
-            return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::RegExp;
-        }
-        // The byte-store family needs no arm: a view, a buffer and a DataView
-        // carry a shape, so the chain walk below answers `instanceof` for the
+        // The byte-store family and a RegExp need no arm: each carries a
+        // shape, so the chain walk below answers `instanceof` for the
         // intrinsic constructors and a subclass alike (7.3.22 step 4).
         if (rtIsFunctionConstructor(ctorRoot.get())) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function;

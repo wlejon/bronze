@@ -492,6 +492,28 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             }
             break;
         }
+        case ObjectOwnKeys::RegExp: {
+            // 22.2.3.2: `lastIndex` is { value, writable: true (until frozen),
+            // enumerable: false, configurable: false }, held in the header;
+            // any other key is the ordinary walk below over the shape.
+            if (!args[1].isSymbol()) {
+                const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                if (key == "lastIndex") {
+                    Rooted<Value> value{rtRegExpLastIndexValue(args[0])};
+                    const bool writable = rtIntegrityLevel(args[0]) != IntegrityLevel::Frozen;
+                    Rooted<Value> out{Value(bronze_create_object())};
+                    putField(out, "value", value);
+                    Rooted<Value> w{Value::fromBool(writable)};
+                    putField(out, "writable", w);
+                    Rooted<Value> f{Value::fromBool(false)};
+                    putField(out, "enumerable", f);
+                    putField(out, "configurable", f);
+                    return out.get().rawBits();
+                }
+            }
+            break;
+        }
         case ObjectOwnKeys::Shape:
             break;
     }

@@ -29,10 +29,12 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/integrity.h"
 #include "runtime/object.h"
 #include "runtime/regexp.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -266,55 +268,102 @@ Value buildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
     return array.get();
 }
 
-// ToLength (7.1.20) of whatever a program assigned to `lastIndex`.
-size_t lastIndexOf(Value re) {
-    const double raw = re.asObject<RegExpHeader>()->lastIndex.asNumber();
+// 22.2.7.2 steps 1-2: ToLength (7.1.20) of whatever the program assigned to
+// `lastIndex`. The slot holds the assigned VALUE — a string stays a string —
+// so this may run user code (an object's `valueOf`), and the RegExp is read
+// through its root afterwards. `ok` is false with the exception pending.
+size_t lastIndexOf(Rooted<Value>& re, bool& ok) {
+    ok = true;
+    const Value stored = re.get().asObject<RegExpHeader>()->lastIndex;
+    double raw = 0.0;
+    if (stored.isNumber()) {
+        raw = stored.asNumber();
+    } else {
+        raw = rtToNumber(stored);
+        if (rtExceptionPending()) {
+            ok = false;
+            return 0;
+        }
+    }
     if (std::isnan(raw) || raw <= 0.0) return 0;
     if (raw >= 9007199254740991.0) return static_cast<size_t>(-1);
     return static_cast<size_t>(raw);
 }
 
+// 22.2.7.2 step 15 / 22.2.7.1: the `lastIndex` write is Set(R, "lastIndex",
+// v, true), a TypeError when the property is not writable — which a frozen
+// RegExp's is not.
+bool storeLastIndex(Rooted<Value>& re, double value) {
+    if (rtIntegrityLevel(re.get()) == IntegrityLevel::Frozen) {
+        rtThrowTypeError("Cannot assign to read only property 'lastIndex' of a frozen RegExp");
+        return false;
+    }
+    re.get().asObject<RegExpHeader>()->lastIndex = Value::fromDouble(value);
+    return true;
+}
+
 }  // namespace
 
-Value rtMakeRegExp(Rooted<Value>& sourceStr, const std::string& flagsText) {
+bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::string& flagsText) {
     const std::string written = rtUtf8Chars(sourceStr.get().asString<StringHeader>());
     const std::string sourceUtf8 = escapeRegExpPattern(written);
     if (sourceUtf8 != written) sourceStr.set(rtMakeString(sourceUtf8.c_str()));
     const regex::Units source = unitsOfString(sourceStr.get().asString<StringHeader>());
     uint32_t index = 0;
     regex::Flags flags;
-    if (!programFor(sourceUtf8, source, flagsText, flags, index)) return Value::fromUndefined();
+    if (!programFor(sourceUtf8, source, flagsText, flags, index)) return false;
 
-    // The flags are re-spelled in 22.2.6.5's order, so `/a/yg`.flags is "gy".
+    // The flags are re-spelled in 22.2.6.4's order, so `/a/yg`.flags is "gy".
     Rooted<Value> canonicalFlags{rtMakeString(flags.text())};
 
-    HeapObjectHeader* raw =
-        rtHeap().allocate(sizeof(RegExpHeader) - sizeof(HeapObjectHeader), Tag::Object);
-    auto* re = reinterpret_cast<RegExpHeader*>(raw);
-    re->header.flags = RegExpHeader::kFlags;
-    re->source = sourceStr.get();
-    re->flagsText = canonicalFlags.get();
-    re->lastIndex = Value::fromDouble(0.0);
-    re->programIndex = Value::fromDouble(index);
-    return Value::fromObject(re);
+    auto* header = re.get().asObject<RegExpHeader>();
+    header->source = sourceStr.get();
+    header->flagsText = canonicalFlags.get();
+    header->lastIndex = Value::fromDouble(0.0);
+    header->programIndex = Value::fromDouble(index);
+    return true;
+}
+
+Value rtMakeRegExp(Rooted<Value>& sourceStr, const std::string& flagsText) {
+    Rooted<Value> re{rtAllocateRegExp(rtRegExpInstanceShape())};
+    if (!rtInitializeRegExp(re, sourceStr, flagsText)) return Value::fromUndefined();
+    return re.get();
+}
+
+Value rtAllocateRegExp(Shape* shape) {
+    ObjectHeader* obj = ObjectHeader::createWithInternalSlots(rtHeap(), rtArena(), shape,
+                                                              RegExpHeader::kInternalSlots);
+    obj->header.flags = RegExpHeader::kFlags;
+    // The four internal slots came back `undefined`, which is exactly the
+    // "allocated, not yet initialised" state 22.2.3.2 RegExpAlloc leaves a
+    // derived constructor's `this` in until `super()` runs.
+    return Value::fromObject(obj);
 }
 
 bool rtIsRegExp(Value v) { return isRegExp(v); }
 
 Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
-    if (!isRegExp(re.get())) {
+    if (!isRegExp(re.get()) || !re.get().asObject<RegExpHeader>()->programIndex.isNumber()) {
         return rtThrowTypeError("RegExp.prototype.exec called on an incompatible receiver");
+    }
+    // 22.2.7.2 step 6: a pattern with neither `g` nor `y` ignores `lastIndex`
+    // entirely, which is what makes `/a/.exec(s)` idempotent and `/a/g.exec(s)`
+    // a cursor. Read FIRST: it can run user code, and every raw pointer below
+    // is taken after it.
+    const bool tracksLastIndex = [&] {
+        const regex::Flags& f = regex::patternFlags(programOf(re.get()));
+        return f.global || f.sticky;
+    }();
+    size_t from = 0;
+    if (tracksLastIndex) {
+        bool ok = true;
+        from = lastIndexOf(re, ok);
+        if (!ok) return Value::fromUndefined();
     }
     const regex::Pattern& pattern = programOf(re.get());
     const regex::Flags& flags = regex::patternFlags(pattern);
     const std::vector<uint16_t> raw = rtStringUnits(inputStr.get().asString<StringHeader>());
     const regex::Units input(raw.begin(), raw.end());
-
-    // 22.2.7.2 step 6: a pattern with neither `g` nor `y` ignores `lastIndex`
-    // entirely, which is what makes `/a/.exec(s)` idempotent and `/a/g.exec(s)`
-    // a cursor.
-    const bool tracksLastIndex = flags.global || flags.sticky;
-    size_t from = tracksLastIndex ? lastIndexOf(re.get()) : 0;
 
     regex::MatchResult match;
     std::string error;
@@ -330,14 +379,11 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
         fatal(error.c_str());
     }
     if (status != regex::ExecStatus::Match) {
-        if (tracksLastIndex) {
-            re.get().asObject<RegExpHeader>()->lastIndex = Value::fromDouble(0.0);
-        }
+        if (tracksLastIndex && !storeLastIndex(re, 0.0)) return Value::fromUndefined();
         return Value::fromNull();
     }
-    if (tracksLastIndex) {
-        re.get().asObject<RegExpHeader>()->lastIndex =
-            Value::fromDouble(static_cast<double>(match.end()));
+    if (tracksLastIndex && !storeLastIndex(re, static_cast<double>(match.end()))) {
+        return Value::fromUndefined();
     }
     return buildMatchArray(pattern, inputStr, match);
 }
@@ -349,11 +395,18 @@ Value rtRegExpBuildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inpu
     return buildMatchArray(pattern, inputStr, match);
 }
 
-void rtRegExpSetLastIndex(Value re, double value) {
-    re.asObject<RegExpHeader>()->lastIndex = Value::fromDouble(value);
+bool rtRegExpSetLastIndex(Rooted<Value>& re, double value) { return storeLastIndex(re, value); }
+
+Value rtRegExpLastIndexValue(Value re) { return re.asObject<RegExpHeader>()->lastIndex; }
+
+void rtRegExpRestoreLastIndex(Value re, Value saved) {
+    re.asObject<RegExpHeader>()->lastIndex = saved;
 }
 
-double rtRegExpLastIndex(Value re) { return re.asObject<RegExpHeader>()->lastIndex.asNumber(); }
+double rtRegExpLastIndexLength(Rooted<Value>& re, bool& ok) {
+    const size_t n = lastIndexOf(re, ok);
+    return n == static_cast<size_t>(-1) ? 9007199254740991.0 : static_cast<double>(n);
+}
 
 Value rtRegExpFromParts(Rooted<Value>& sourceStr, const std::string& flagsText) {
     return rtMakeRegExp(sourceStr, flagsText);
@@ -362,7 +415,14 @@ Value rtRegExpFromParts(Rooted<Value>& sourceStr, const std::string& flagsText) 
 uint64_t rtRegExpExecBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
+    // 22.2.6.2 step 3 before step 4: the receiver is checked before the
+    // argument is converted, and ToString can run user code.
+    if (!isRegExp(self.get()) || !self.get().asObject<RegExpHeader>()->programIndex.isNumber()) {
+        return rtThrowTypeError("RegExp.prototype.exec called on an incompatible receiver")
+            .rawBits();
+    }
     Rooted<Value> input{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpExec(self, input).rawBits();
 }
 
