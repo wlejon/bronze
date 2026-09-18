@@ -13,6 +13,10 @@
 #include "runtime/integrity.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
@@ -30,6 +34,88 @@ inline bool requireArray(Value v, const char* method) {
     rtThrowTypeError(std::string("Array.prototype.") + method +
                      " called on a value that is not an array");
     return false;
+}
+
+inline Value toObject(Value v, const char* method) {
+    (void)method;
+    if (v.isNull() || v.isUndefined()) {
+        rtThrowTypeError("Cannot convert undefined or null to object");
+        return Value::fromUndefined();
+    }
+    if (v.isObject()) return v;
+    if (v.isString()) {
+        Rooted<Value> str{v};
+        return rtMakeStringWrapper(str);
+    }
+    if (v.isBool()) return rtMakeBooleanWrapper(v.asBool());
+    if (v.isNumber()) return rtMakeNumberWrapper(v.asNumber());
+    if (v.isBigInt()) {
+        fatal("unsupported: a BigInt wrapper object (7.1.18 ToObject boxes a BigInt, and bronze "
+              "builds no BigInt object)");
+    }
+    if (v.isSymbol()) {
+        fatal("unsupported: a Symbol wrapper object (7.1.18 ToObject boxes a Symbol, and bronze "
+              "builds no Symbol object)");
+    }
+    return Value::fromUndefined();
+}
+
+inline bool rtArrayLikeHasElement(Rooted<Value>& src, uint32_t index) {
+    if (isArray(src.get())) {
+        return src.get().asObject<ArrayHeader>()->hasElem(index);
+    }
+    Rooted<Value> key{Value::fromDouble(index)};
+    return bronze_has_property(key.get().rawBits(), src.get().rawBits());
+}
+
+inline Value rtArrayLikeGetElement(Rooted<Value>& src, uint32_t index) {
+    if (isArray(src.get())) {
+        return src.get().asObject<ArrayHeader>()->getElem(index);
+    }
+    return Value(bronze_elem_get(src.get().rawBits(), Value::fromDouble(index).rawBits()));
+}
+
+inline void rtArrayLikeSetElement(Rooted<Value>& src, uint32_t index, Rooted<Value>& val) {
+    if (isArray(src.get())) {
+        src.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, val.get());
+        return;
+    }
+    Rooted<Value> key{Value::fromDouble(index)};
+    bronze_elem_set(src.get().rawBits(), key.get().rawBits(), val.get().rawBits(), /*strict=*/true);
+}
+
+inline void rtArrayLikeDeleteElement(Rooted<Value>& src, uint32_t index) {
+    if (isArray(src.get())) {
+        src.get().asObject<ArrayHeader>()->deleteElem(index);
+        return;
+    }
+    Rooted<Value> key{Value::fromDouble(index)};
+    bronze_elem_delete(src.get().rawBits(), key.get().rawBits(), /*strict=*/true);
+}
+
+inline void rtArrayLikeSetLength(Rooted<Value>& src, uint32_t newLen) {
+    if (isArray(src.get())) {
+        ArrayHeader::setLength(rtHeap(), src, newLen);
+        return;
+    }
+    Rooted<Value> lenKey{rtMakeString("length")};
+    Rooted<Value> lenVal{Value::fromDouble(newLen)};
+    bronze_elem_set(src.get().rawBits(), lenKey.get().rawBits(), lenVal.get().rawBits(), /*strict=*/true);
+}
+
+inline void rtCreateDataPropertyOrThrow(Rooted<Value>& target, uint32_t index, Rooted<Value>& val) {
+    if (isArray(target.get())) {
+        if (index <= target.get().asObject<ArrayHeader>()->length) {
+            target.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, val);
+            return;
+        } else {
+            ArrayHeader::setLength(rtHeap(), target, index + 1);
+            target.get().asObject<ArrayHeader>()->elementsData()[index] = val.get();
+            return;
+        }
+    }
+    Rooted<Value> key{Value::fromDouble(index)};
+    bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(), /*strict=*/true);
 }
 
 inline uint32_t lengthOf(Value v) { return v.asObject<ArrayHeader>()->length; }
@@ -74,7 +160,7 @@ inline void appendHole(Rooted<Value>& out) {
 }
 
 inline bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+    return rtIsCallableValue(v);
 }
 
 inline bool requireCallable(Value v, const char* method) {

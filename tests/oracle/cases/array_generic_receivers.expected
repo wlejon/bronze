@@ -1,0 +1,62 @@
+--- mutators ---
+push: 4 0:"a", 1:"b", 2:"c", 3:"d", length:4
+pop: c 0:"a", 1:"b", length:2
+shift: a 0:"b", 1:"c", length:2
+unshift: 3 0:"a", 1:"b", 2:"c", length:3
+reverse: true 0:"d", 1:"c", 2:"b", 3:"a", length:4
+fill: true 0:"a", 1:"z", 2:"z", length:3
+copyWithin: true 0:4, 1:5, 2:3, 3:4, 4:5, length:5
+splice: true b,c 0:"a", 1:"x", 2:"y", 3:"z", 4:"d", length:5
+sort: true 0:10, 1:20, 2:30, 3:40, length:4
+--- search ---
+indexOf: 2
+lastIndexOf: 2
+includes: true
+at: c
+find: c
+findIndex: 3
+findLast: a
+findLastIndex: 2
+--- iteration ---
+forEach: 0:1,1:2,2:3
+map: true 10,20,30
+filter: true 1,3
+some: true
+every: true
+reduce: 6
+reduceRight: 94
+--- transform ---
+slice: true b,c
+concat default: 3 true d,e
+concat spreadable: x,y,z
+join: a:b:c
+flat: 1,2,3,4
+flatMap: a,A,b,B,c,C
+toSorted: 10,20,30 0:30, 1:10, 2:20, length:3
+toReversed: c,b,a 0:"a", 1:"b", 2:"c", length:3
+toSpliced: a,x,y,c 0:"a", 1:"b", 2:"c", length:3
+with: a,replaced,c 0:"a", 1:"b", 2:"c", length:3
+--- iterators ---
+keys: 0,1,2
+values: a,b,c
+entries: 0=a,1=b,2=c
+--- strings ---
+string join: h-e-l-l-o
+string slice: e,l,l
+string map: HELLO
+string indexOf: 3
+string includes: false
+string at: o
+string reduce: olleh
+--- holes ---
+sparse join: first,,,last
+sparse includes hole: true
+sparse indexOf hole: -1
+sparse map: false first! last!
+sparse filter: 2 first,last
+sparse sort: 0:"a", 1:"b", length:4
+--- null and undefined ---
+slice(null): TypeError
+push(undefined): TypeError
+map(null): TypeError
+sort(undefined): TypeError

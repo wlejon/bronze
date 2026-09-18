@@ -24,6 +24,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_array_internal.h"
 #include "runtime/call_out.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -42,14 +43,6 @@
 namespace bronze::runtime {
 
 namespace {
-
-bool isArray(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array;
-}
-
-bool isCallable(Value v) {
-    return rtIsCallableValue(v);
-}
 
 // Element access through a ROOT, because everything in this file runs between
 // comparator calls that can move the array. `setAt` writes an index that
@@ -228,12 +221,6 @@ void mergeRunsFast(SortSlots& s, Rooted<Value>& src, Rooted<Value>& dst, uint32_
 
 uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Rooted<Value> self{Value(thisBits)};
-    if (!isArray(self.get())) {
-        return rtThrowTypeError(
-                   "Array.prototype.sort called on a value that is not an array")
-            .rawBits();
-    }
     // Step 1: the comparator is validated BEFORE anything is read, so a bad
     // one does not leave a half-snapshot behind.
     Rooted<Value> comparefn{args[0]};
@@ -241,8 +228,12 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
         return rtThrowTypeError("The comparison function must be either a function or undefined")
             .rawBits();
     }
+    Rooted<Value> self{toObject(Value(thisBits), "sort")};
+    if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
 
-    const uint32_t len = self.get().asObject<ArrayHeader>()->length;
+    const bool isArr = isArray(self.get());
+    const uint32_t len = isArr ? self.get().asObject<ArrayHeader>()->length : rtArrayLikeLength(self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     const bool fastEngine = rtTls()->sort_fast_enabled != 0;
 
@@ -258,10 +249,21 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     Rooted<Value> list{fastEngine
                            ? Value::fromObject(ArrayHeader::create(rtHeap(), len > 4 ? len : 4))
                            : Value(bronze_create_array(0))};
-    for (uint32_t i = 0; i < len; ++i) {
-        if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
-        const uint32_t at = list.get().asObject<ArrayHeader>()->length;
-        setAt(list, at, getAt(self, i));
+    if (isArr) {
+        for (uint32_t i = 0; i < len; ++i) {
+            if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+            const uint32_t at = list.get().asObject<ArrayHeader>()->length;
+            setAt(list, at, getAt(self, i));
+        }
+    } else {
+        for (uint32_t i = 0; i < len; ++i) {
+            if (!rtArrayLikeHasElement(self, i)) continue;
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            Rooted<Value> val{rtArrayLikeGetElement(self, i)};
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            const uint32_t at = list.get().asObject<ArrayHeader>()->length;
+            setAt(list, at, val.get());
+        }
     }
     const uint32_t itemCount = list.get().asObject<ArrayHeader>()->length;
 
@@ -327,31 +329,43 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     // where the spec refuses it too: every write below is a Set with throw
     // semantics, so on a frozen array the FIRST one throws with nothing yet
     // moved, and on a non-extensible array the first hole it would fill does.
-    for (uint32_t i = 0; i < itemCount; ++i) {
-        const SetRefusal refusal = rtArrayElementWriteRefusal(self.get(), i);
-        if (refusal == SetRefusal::NotWritable) {
-            return rtThrowTypeError("Cannot assign to read only element of a frozen array "
-                                    "(Array.prototype.sort)")
-                .rawBits();
+    if (isArr) {
+        for (uint32_t i = 0; i < itemCount; ++i) {
+            const SetRefusal refusal = rtArrayElementWriteRefusal(self.get(), i);
+            if (refusal == SetRefusal::NotWritable) {
+                return rtThrowTypeError("Cannot assign to read only element of a frozen array "
+                                        "(Array.prototype.sort)")
+                    .rawBits();
+            }
+            if (refusal != SetRefusal::None) {
+                return rtThrowTypeError("Cannot add elements to an array that is not extensible "
+                                        "(Array.prototype.sort)")
+                    .rawBits();
+            }
+            setAt(self, i, getAt(sorted, i));
         }
-        if (refusal != SetRefusal::None) {
-            return rtThrowTypeError("Cannot add elements to an array that is not extensible "
-                                    "(Array.prototype.sort)")
-                .rawBits();
+        // Step 9: the tail past the items is DELETED, which is what moves the
+        // holes after the undefineds. DeletePropertyOrThrow, so a sealed array
+        // with a hole in it refuses here by name.
+        for (uint32_t i = itemCount; i < len; ++i) {
+            if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
+            if (!rtArrayElementsConfigurable(self.get())) {
+                return rtThrowTypeError("Cannot delete property " + std::to_string(i) +
+                                        " of a sealed array (Array.prototype.sort)")
+                    .rawBits();
+            }
+            self.get().asObject<ArrayHeader>()->deleteElem(i);
         }
-        setAt(self, i, getAt(sorted, i));
-    }
-    // Step 9: the tail past the items is DELETED, which is what moves the
-    // holes after the undefineds. DeletePropertyOrThrow, so a sealed array
-    // with a hole in it refuses here by name.
-    for (uint32_t i = itemCount; i < len; ++i) {
-        if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
-        if (!rtArrayElementsConfigurable(self.get())) {
-            return rtThrowTypeError("Cannot delete property " + std::to_string(i) +
-                                    " of a sealed array (Array.prototype.sort)")
-                .rawBits();
+    } else {
+        for (uint32_t i = 0; i < itemCount; ++i) {
+            Rooted<Value> val{getAt(sorted, i)};
+            rtArrayLikeSetElement(self, i, val);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
-        self.get().asObject<ArrayHeader>()->deleteElem(i);
+        for (uint32_t i = itemCount; i < len; ++i) {
+            rtArrayLikeDeleteElement(self, i);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        }
     }
     return self.get().rawBits();  // sorts IN PLACE and answers the same array
 }
