@@ -1,6 +1,6 @@
 true 42
 0
-cause,message
+cause,message,stack
 m Error
 false
 false
@@ -23,7 +23,7 @@ false
 plain
 plainT
 only true true
-cause
+stack,cause
 inherited
 read1 1
 undefined false

@@ -536,6 +536,118 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
+    auto emitStringSym = [&](const std::string& symName, const std::string& str) {
+        roSec.align_to(1);
+        const size_t strOffset = roSec.data.size();
+        roSec.emit_bytes(reinterpret_cast<const uint8_t*>(str.data()), str.size());
+        roSec.emit8(0);
+        const size_t strSize = str.size() + 1;
+
+        if (auto* sym = obj.find_symbol(symName)) {
+            sym->section_index = obj.get_section_index(roSecName);
+            sym->value = strOffset;
+            sym->size = strSize;
+            sym->binding = brass::object::SymbolBinding::Local;
+            sym->type = brass::object::SymbolType::Object;
+        } else {
+            brass::object::ObjectSymbol s;
+            s.name = symName;
+            s.section_index = obj.get_section_index(roSecName);
+            s.value = strOffset;
+            s.size = strSize;
+            s.binding = brass::object::SymbolBinding::Local;
+            s.type = brass::object::SymbolType::Object;
+            obj.add_symbol(std::move(s));
+        }
+    };
+
+    emitStringSym(moduleSym("__bronze_file_str_empty"), "");
+    for (size_t f = 0; f < module.sourceFiles.size(); ++f) {
+        emitStringSym(moduleSym("__bronze_file_str_" + std::to_string(f)), module.sourceFiles[f]);
+    }
+
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        const auto& fn = module.functions[i];
+        if (fn.blocks.empty()) continue;
+
+        std::string nameStr;
+        if (!fn.displayName.empty()) {
+            nameStr = fn.displayName;
+        } else if (uniqueNames[i] == "main" || fn.name == "main") {
+            nameStr = "";
+        } else if (fn.name.rfind("__anon_fn", 0) == 0) {
+            nameStr = "<anonymous>";
+        } else {
+            nameStr = fn.name;
+        }
+
+        std::string nameSymName = moduleSym("__bronze_fn_name_" + uniqueNames[i]);
+        emitStringSym(nameSymName, nameStr);
+
+        std::string fileSymName;
+        if (fn.sourceFile < module.sourceFiles.size()) {
+            fileSymName = moduleSym("__bronze_file_str_" + std::to_string(fn.sourceFile));
+        } else {
+            fileSymName = moduleSym("__bronze_file_str_empty");
+        }
+
+        uint32_t line = 1, col = 1;
+        if (fn.sourceFile < module.sourceTexts.size()) {
+            const std::string& text = module.sourceTexts[fn.sourceFile];
+            uint32_t limit = std::min<uint32_t>(fn.sourceBegin, static_cast<uint32_t>(text.size()));
+            for (uint32_t c = 0; c < limit; ++c) {
+                if (text[c] == '\n') {
+                    ++line;
+                    col = 1;
+                } else {
+                    ++col;
+                }
+            }
+        }
+
+        roSec.align_to(8);
+        const size_t descOffset = roSec.data.size();
+
+        brass::object::ObjectRelocation nameReloc;
+        nameReloc.offset = roSec.data.size();
+        nameReloc.symbol_name = nameSymName;
+        nameReloc.kind = brass::object::RelocKind::Abs64;
+        nameReloc.addend = 0;
+        roSec.relocations.push_back(nameReloc);
+        roSec.emit64(0);
+
+        brass::object::ObjectRelocation fileReloc;
+        fileReloc.offset = roSec.data.size();
+        fileReloc.symbol_name = fileSymName;
+        fileReloc.kind = brass::object::RelocKind::Abs64;
+        fileReloc.addend = 0;
+        roSec.relocations.push_back(fileReloc);
+        roSec.emit64(0);
+
+        roSec.emit32(line);
+        roSec.emit32(col);
+        roSec.emit32(fn.descFlags);
+        roSec.emit32(0);
+
+        std::string descSymName = moduleSym("__bronze_fn_desc_" + uniqueNames[i]);
+        if (auto* sym = obj.find_symbol(descSymName)) {
+            sym->section_index = obj.get_section_index(roSecName);
+            sym->value = descOffset;
+            sym->size = 32;
+            sym->binding = brass::object::SymbolBinding::Global;
+            sym->type = brass::object::SymbolType::Object;
+        } else {
+            brass::object::ObjectSymbol descSym;
+            descSym.name = descSymName;
+            descSym.section_index = obj.get_section_index(roSecName);
+            descSym.value = descOffset;
+            descSym.size = 32;
+            descSym.binding = brass::object::SymbolBinding::Global;
+            descSym.type = brass::object::SymbolType::Object;
+            obj.add_symbol(std::move(descSym));
+        }
+    }
+
     std::string dataSecName = target.is_windows() ? ".data" : ".data";
     brass::object::Section& dataSec = obj.get_or_create_section(
         dataSecName,

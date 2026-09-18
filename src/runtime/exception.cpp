@@ -3,6 +3,7 @@
 // here is C++ the runtime calls on its own behalf.
 
 #include "runtime/exception.h"
+#include "runtime/stack_trace.h"
 #include "runtime/tls_block.h"
 
 #include <cstdio>
@@ -178,6 +179,7 @@ uint64_t errorCtorImpl(ErrorKind kind, uint64_t thisBits, uint32_t argc, const u
         if (rtExceptionPending()) return self.get().rawBits();
         setMessage(self, message);
     }
+    bronze_install_stack(self.get());
     Rooted<Value> options{args[1]};
     installErrorCause(self, options);
     return self.get().rawBits();
@@ -221,6 +223,7 @@ uint64_t errorCtorAggregateError(uint64_t, uint64_t thisBits, uint32_t argc,
         if (rtExceptionPending()) return self.get().rawBits();
         setMessage(self, message);
     }
+    bronze_install_stack(self.get());
     // 20.5.7.1.1 step 4: the options are the THIRD argument here, one along
     // from every other error class, because `errors` comes first.
     Rooted<Value> options{args[2]};
@@ -278,6 +281,17 @@ uint64_t errorProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_
     if (nameText.empty()) return msg.get().rawBits();
     if (msgText.empty()) return name.get().rawBits();
     return rtMakeString(nameText + ": " + msgText).rawBits();
+}
+
+uint64_t errorCaptureStackTrace(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args{argc, argv};
+    if (!args[0].isObject()) {
+        return rtThrowTypeError("Error.captureStackTrace: first argument must be an object")
+            .rawBits();
+    }
+    Value skipFn = argc >= 2 ? args[1] : Value::fromUndefined();
+    bronze_install_stack(args[0], skipFn);
+    return Value::fromUndefined().rawBits();
 }
 
 void ensureErrorClasses() {
@@ -354,6 +368,28 @@ void ensureErrorClasses() {
         g_errorClasses[0].prototype = proto.get();
     }
 
+    {
+        Rooted<Value> ctorRoot{g_errorClasses[0].constructor};
+        rtEnsureFunctionProperties(ctorRoot);
+        Rooted<Value> props{ctorRoot.get().asObject<FunctionHeader>()->properties};
+
+        Rooted<Value> limitKey{rtMakeString("stackTraceLimit")};
+        Rooted<Value> limitVal{Value::fromDouble(10.0)};
+        props.get().asObject<ObjectHeader>()->setProp(
+            rtHeap(), rtArena(), limitKey, limitVal,
+            /*ic=*/nullptr, /*enumerable=*/true, /*defineOwn=*/true,
+            /*receiver=*/nullptr, /*refused=*/nullptr,
+            /*writable=*/true, /*configurable=*/true);
+
+        Rooted<Value> capKey{rtMakeString("captureStackTrace")};
+        Rooted<Value> capFn{rtNativeFunction(errorCaptureStackTrace, 0, "captureStackTrace", 2)};
+        props.get().asObject<ObjectHeader>()->setProp(
+            rtHeap(), rtArena(), capKey, capFn,
+            /*ic=*/nullptr, /*enumerable=*/false, /*defineOwn=*/true,
+            /*receiver=*/nullptr, /*refused=*/nullptr,
+            /*writable=*/true, /*configurable=*/true);
+    }
+
     // The two keys the error prototype was just given, recovered as the
     // arena-interned headers the walk above already holds. Both are string
     // keys by construction; the filter says so rather than assuming it, since
@@ -411,6 +447,7 @@ Value rtThrowError(ErrorKind kind, const std::string& message) {
     Rooted<Value> msg{rtMakeString(message)};
     Rooted<Value> self{newErrorInstance(cls)};
     setMessage(self, msg);
+    bronze_install_stack(self.get());
     return rtThrow(self.get());
 }
 
@@ -445,6 +482,7 @@ Value rtNewErrorValue(ErrorKind kind, const std::string& message) {
         Rooted<Value> msg{rtMakeString(message)};
         setMessage(self, msg);
     }
+    bronze_install_stack(self.get());
     return self.get();
 }
 
@@ -589,7 +627,8 @@ void bronze_pin_check_array(uint32_t keyIndex, uint64_t bits) {
 // which is what node does and what keeps an uncaught-throw oracle case
 // pinnable: stdout holds exactly what the program printed before it died.
 void bronze_uncaught_exception() {
-    const std::string text = rtUncaughtText(Value(rtTls()->exception_cell));
+    Value thrown(rtTls()->exception_cell);
+    const std::string text = rtIsErrorInstance(thrown) ? rtInspectErrorWithStack(thrown) : rtUncaughtText(thrown);
     std::fflush(stdout);
     std::fprintf(stderr, "%s\n", text.c_str());
     std::fflush(stderr);

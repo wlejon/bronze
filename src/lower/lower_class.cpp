@@ -177,6 +177,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     pendingDerivedCtor_ = false;
     cloneOrigins_.pop_back();
     if (!ctorVal) return std::nullopt;
+    ilModule_.functions[lastClosureFnIndex_].displayName = name.empty() ? "<anonymous>" : name;
+    ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_CONSTRUCTOR;
 
     // `extends` REPLACES the prototype object (the prototype lives on the
     // shape), so it has to be linked before a single method is stored.
@@ -213,6 +215,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             auto fnVal = lowerClosure(*m.fn, m.fn->name, std::optional<std::string>{m.name},
                                       m.fn->params, m.fn->returnType, m.fn->body, m.fn->span, ilFn);
             if (!fnVal) return std::nullopt;
+            if (lastClosureFnIndex_ < ilModule_.functions.size()) {
+                ilModule_.functions[lastClosureFnIndex_].displayName =
+                    (name.empty() ? "<anonymous>" : name) + ".#" + m.name;
+                ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_METHOD;
+            }
             const std::string slot = m.accessor == ast::AccessorKind::Setter
                                          ? privateSetterFnSlot(m.name)
                                          : privateFnSlot(m.name);
@@ -277,6 +284,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             inferredMethodName,
             m.fn->params, m.fn->returnType, m.fn->body, m.fn->span, ilFn);
         if (!fnVal) return std::nullopt;
+        if (lastClosureFnIndex_ < ilModule_.functions.size()) {
+            ilModule_.functions[lastClosureFnIndex_].displayName =
+                (name.empty() ? "<anonymous>" : name) + "." + (inferredMethodName.value_or(m.name));
+            ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_METHOD;
+        }
 
         if (keyBoxed) {
             il::Instruction computedInst;

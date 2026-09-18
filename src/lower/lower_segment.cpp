@@ -26,6 +26,13 @@ bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLeve
     while (stmtIdx < topLevelStmts.size()) {
         il::Function segFn;
         segFn.name = "main.seg" + std::to_string(segNo++);
+        segFn.displayName = "";
+        segFn.descFlags |= BRONZE_FN_DESC_TOPLEVEL;
+        segFn.sourceFile = mainFn.sourceFile;
+        if (!topLevelStmts.empty() && stmtIdx < topLevelStmts.size()) {
+            segFn.sourceBegin = topLevelStmts[stmtIdx]->span.begin;
+            segFn.sourceEnd = topLevelStmts.back()->span.end;
+        }
         segFn.returnType = il::Type::Void;
         segFn.isStrict = strictCode_;
         segFn.blocks.push_back(il::Block{.id = 0});

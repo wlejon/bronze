@@ -118,6 +118,8 @@ std::string numberText(double num) {
 
 class Inspector {
 public:
+    explicit Inspector(bool withStack = false) : withStack_(withStack) {}
+
     std::string run(Value v) {
         std::string body = format(v, 0);
         // node numbers every circularly-referenced object; bronze marks one, so
@@ -128,6 +130,7 @@ public:
 private:
     std::vector<const void*> ancestors_;
     bool sawCircular_ = false;
+    bool withStack_ = false;
 
     bool enter(const void* p) {
         if (std::find(ancestors_.begin(), ancestors_.end(), p) != ancestors_.end()) return false;
@@ -154,12 +157,39 @@ private:
         if (v.isSymbol()) return rtSymbolDescriptiveString(v);
         if (!v.isObject()) fatal("internal: console.log reached a value with an unknown tag");
 
-        // An Error prints as `Name: message`, which is what node shows on the
-        // first line of its output — and the whole of bronze's, because there
-        // is no stack to print. Tested by walking the prototype chain rather
-        // than by a header flag, so an error instance stays a plain object
-        // (flags == HeapKind::Plain) and stays on the inline property fast path.
-        if (std::string text; rtIsErrorInstance(v) && rtErrorText(v, text)) return text;
+        // When withStack_ is false (console.log / standard inspect), an Error
+        // prints as `Name: message` (plus extra own props if present), preserving
+        // byte-for-byte oracle determinism. When true (console.error, uncaught),
+        // prints `err.stack` plus extra own props.
+        if (rtIsErrorInstance(v)) {
+            ObjectHeader* obj = v.asObject<ObjectHeader>();
+            std::string text;
+            if (withStack_) {
+                Value stackVal;
+                if (obj->shape) {
+                    for (PropertyKey k : obj->shape->ownKeysInInsertionOrder()) {
+                        if (k.isString() && utf8Of(k.string()) == "stack") {
+                            PropertyInfo info;
+                            if (obj->shape->lookupProperty(k, info) && !info.accessor) {
+                                stackVal = obj->getSlot(info.slot);
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (stackVal.isString()) {
+                    text = utf8Of(stackVal.asString<StringHeader>());
+                }
+            }
+            if (text.empty() && !rtErrorText(v, text)) {
+                text = "Error";
+            }
+            std::string extra = extraOwnProps(obj, depth);
+            if (!extra.empty()) {
+                text += " " + extra;
+            }
+            return text;
+        }
 
         // A primitive wrapper prints as node prints one — `[String: 'ab']`,
         // `[Number: 1]`, `[Boolean: false]` — and not as the `{}` an object with no own
@@ -402,6 +432,53 @@ private:
                arrayBuffer(view->buffer.asObject<ArrayBufferHeader>(), depth + 1) + " }";
     }
 
+    std::string extraOwnProps(ObjectHeader* obj, int depth) {
+        if (!obj->shape) return "";
+        std::vector<PropertyKey> keys = obj->shape->ownKeysInInsertionOrder();
+        std::vector<std::pair<uint32_t, PropertyKey>> intKeys;
+        std::vector<PropertyKey> strKeys;
+        std::vector<PropertyKey> symKeys;
+        for (PropertyKey k : keys) {
+            PropertyInfo info;
+            if (!obj->shape->lookupProperty(k, info) || !info.enumerable) continue;
+            if (k.isSymbol()) {
+                symKeys.push_back(k);
+                continue;
+            }
+            const std::string name = utf8Of(k.string());
+            if (name == "name" || name == "message" || name == "stack") continue;
+            uint32_t idx = 0;
+            if (rtIsIntegerLikeKey(name, idx)) {
+                intKeys.emplace_back(idx, k);
+            } else {
+                strKeys.push_back(k);
+            }
+        }
+        if (intKeys.empty() && strKeys.empty() && symKeys.empty()) return "";
+        std::sort(intKeys.begin(), intKeys.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        std::string out;
+        auto emit = [&](PropertyKey k) {
+            PropertyInfo info;
+            if (!obj->shape || !obj->shape->lookupProperty(k, info)) return;
+            if (!out.empty()) out += ", ";
+            out += keyLabel(k);
+            out += ": ";
+            if (info.accessor) {
+                const bool hasGet = !obj->getSlot(info.slot).isUndefined();
+                const bool hasSet = !obj->getSlot(info.slot + 1).isUndefined();
+                out += hasGet ? (hasSet ? "[Getter/Setter]" : "[Getter]") : "[Setter]";
+                return;
+            }
+            out += format(obj->getSlot(info.slot), depth + 1);
+        };
+        for (const auto& [idx, k] : intKeys) emit(k);
+        for (PropertyKey k : strKeys) emit(k);
+        for (PropertyKey k : symKeys) emit(k);
+        return out.empty() ? "" : "{ " + out + " }";
+    }
+
     std::string object(ObjectHeader* obj, int depth) {
         if (!enter(obj)) {
             sawCircular_ = true;
@@ -465,6 +542,7 @@ private:
 
 }  // namespace
 
-std::string rtInspect(Value v) { return Inspector().run(v); }
+std::string rtInspect(Value v) { return Inspector(/*withStack=*/false).run(v); }
+std::string rtInspectErrorWithStack(Value v) { return Inspector(/*withStack=*/true).run(v); }
 
 }  // namespace bronze::runtime

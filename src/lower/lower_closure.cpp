@@ -166,6 +166,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     newFn.sourceFile = span.file;
     newFn.sourceBegin = span.begin;
     newFn.sourceEnd = span.end;
+    std::string dName = jsName.has_value() && !jsName->empty() ? *jsName : fnName;
+    if (dName.empty() || dName.rfind("__anon_fn", 0) == 0) {
+        dName = "<anonymous>";
+    }
+    newFn.displayName = dName;
+    if (isAsync) newFn.descFlags |= BRONZE_FN_DESC_ASYNC;
 
     size_t outerBlockIdx = currentBlockIdx_;
     auto outerVarBindings = varBindings_;

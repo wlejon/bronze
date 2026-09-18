@@ -509,6 +509,11 @@ bool Lowerer::lowerGeneratorTail(const std::vector<const ast::Stmt*>& stmts,
     resumeFn.params.push_back({"__sent", il::Type::Dynamic});
     resumeFn.requiredArgs = 2;
     resumeFn.valueCount = static_cast<uint32_t>(resumeFn.params.size());
+    resumeFn.sourceFile = ilFn.sourceFile;
+    resumeFn.sourceBegin = ilFn.sourceBegin;
+    resumeFn.sourceEnd = ilFn.sourceEnd;
+    resumeFn.displayName = ilFn.displayName;
+    resumeFn.descFlags = ilFn.descFlags;
 
     if (!lowerResumeBody(stmts, resumeFn)) return false;
 

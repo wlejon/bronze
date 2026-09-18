@@ -1,7 +1,30 @@
 #include "runtime/builtin_array_internal.h"
 #include "runtime/rt_roots.h"
+#include "abi/bronze_abi.h"
 
 namespace bronze::runtime {
+
+namespace {
+
+static const bronze_fn_desc kDescArrayForEach = {
+    "Array.forEach",
+    "<anonymous>",
+    0,
+    0,
+    BRONZE_FN_DESC_BUILTIN,
+    0
+};
+
+struct CallFrameGuard {
+    CallFrameGuard(const bronze_fn_desc* desc) {
+        bronze_call_frame_push(const_cast<bronze_fn_desc*>(desc));
+    }
+    ~CallFrameGuard() {
+        bronze_call_frame_pop();
+    }
+};
+
+}  // namespace
 
 uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
@@ -11,6 +34,7 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     if (!requireCallable(fn.get(), "forEach")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
+    CallFrameGuard frameGuard(&kDescArrayForEach);
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};

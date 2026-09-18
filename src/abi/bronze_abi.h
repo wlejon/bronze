@@ -786,6 +786,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_exception_pending,   BRONZE_ABI_I32,  (BRONZE_ABI_NOARGS)) \
     X(bronze_gc_frame_push,       BRONZE_ABI_FRAMEPTR, (BRONZE_ABI_U32)) \
     X(bronze_gc_frame_pop,        BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+    X(bronze_call_frame_push,     BRONZE_ABI_VOID, (BRONZE_ABI_VPTR)) \
+    X(bronze_call_frame_pop,      BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     X(bronze_register_key_manifest, BRONZE_ABI_VOID, (BRONZE_ABI_PU8, BRONZE_ABI_MU32)) \
     X(bronze_print_f64,           BRONZE_ABI_VOID, (BRONZE_ABI_F64)) \
     X(bronze_print_i32,           BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
@@ -1458,6 +1460,30 @@ typedef struct bronze_gc_frame {
     uint64_t count;
     uint64_t slots[1];
 } bronze_gc_frame;
+
+enum {
+    BRONZE_FN_DESC_METHOD      = 1u << 0,
+    BRONZE_FN_DESC_CONSTRUCTOR = 1u << 1,
+    BRONZE_FN_DESC_ASYNC       = 1u << 2,
+    BRONZE_FN_DESC_TOPLEVEL    = 1u << 3,
+    BRONZE_FN_DESC_BUILTIN     = 1u << 4,
+};
+
+typedef struct bronze_fn_desc {
+    const char* name;
+    const char* file;
+    uint32_t def_line;
+    uint32_t def_col;
+    uint32_t flags;
+    uint32_t reserved;
+} bronze_fn_desc;
+
+typedef struct bronze_call_frame {
+    struct bronze_call_frame* prev;
+    const bronze_fn_desc* desc;
+    uint32_t call_line;
+    uint32_t call_col;
+} bronze_call_frame;
 
 /*
  * The per-thread ABI data block: every mutable word generated code shares

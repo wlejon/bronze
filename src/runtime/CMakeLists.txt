@@ -28,6 +28,7 @@ bronze_add_module(runtime
         accessor.cpp
         integrity.cpp
         exception.cpp
+        stack_trace.cpp
         object.cpp
         array.cpp
         typed_array.cpp

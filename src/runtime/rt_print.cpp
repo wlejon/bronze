@@ -110,7 +110,7 @@ void writeValue(uint64_t valBits, std::FILE* out) {
     } else if (v.isNull()) {
         std::fputs("null", out);
     } else if (v.isObject()) {
-        const std::string text = rtInspect(v);
+        const std::string text = (out == stderr) ? rtInspectErrorWithStack(v) : rtInspect(v);
         std::fwrite(text.data(), 1, text.size(), out);
     } else if (v.isHole()) {
         // the hole is internal and never user-visible. Printing it as anything

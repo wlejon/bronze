@@ -80,6 +80,8 @@ static_assert(offsetof(bronze_tls_block, truthy_inline_enabled) ==
 static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
               BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF);
 static_assert(offsetof(bronze_tls_block, key_ic_enabled) == BRONZE_TLS_KEY_IC_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, call_frame_top) == BRONZE_TLS_CALL_FRAME_TOP_OFF);
+static_assert(offsetof(bronze_tls_block, call_frame_cursor) == BRONZE_TLS_CALL_FRAME_CURSOR_OFF);
 
 namespace bronze::runtime {
 
@@ -123,6 +125,8 @@ thread_local bronze_tls_block g_tls_block = {
     /*truthy_inline_enabled=*/1,
     /*elem_set_cache_tbl=*/nullptr,
     /*key_ic_enabled=*/1,
+    /*call_frame_top=*/nullptr,
+    /*call_frame_cursor=*/nullptr,
 };
 
 }  // namespace bronze::runtime
@@ -179,5 +183,54 @@ extern "C" void bronze_gc_frame_pop(void) {
     if (BRONZE_LIKELY(frame != nullptr)) {
         tls->frame_top = frame->prev;
         g_shadow_stack.top = reinterpret_cast<uint64_t*>(frame);
+    }
+}
+
+namespace {
+
+struct CallStack {
+    static constexpr size_t kMaxFrames = 65536;
+    bronze_call_frame* base = nullptr;
+
+    void init() {
+        if (!base) {
+            size_t bytes = kMaxFrames * sizeof(bronze_call_frame);
+#if defined(_WIN32)
+            base = reinterpret_cast<bronze_call_frame*>(
+                VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+#else
+            base = reinterpret_cast<bronze_call_frame*>(
+                mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+#endif
+        }
+    }
+};
+
+static thread_local CallStack g_call_stack;
+
+}  // namespace
+
+extern "C" void bronze_call_frame_push(void* desc) {
+    if (BRONZE_UNLIKELY(!g_call_stack.base)) {
+        g_call_stack.init();
+    }
+    bronze_tls_block* tls = bronze_tls_block_addr();
+    if (BRONZE_UNLIKELY(!tls->call_frame_cursor)) {
+        tls->call_frame_cursor = g_call_stack.base;
+    }
+    bronze_call_frame* frame = tls->call_frame_cursor++;
+    frame->prev = tls->call_frame_top;
+    frame->desc = reinterpret_cast<const bronze_fn_desc*>(desc);
+    frame->call_line = 0;
+    frame->call_col = 0;
+    tls->call_frame_top = frame;
+}
+
+extern "C" void bronze_call_frame_pop(void) {
+    bronze_tls_block* tls = bronze_tls_block_addr();
+    bronze_call_frame* frame = tls->call_frame_top;
+    if (BRONZE_LIKELY(frame != nullptr)) {
+        tls->call_frame_top = frame->prev;
+        tls->call_frame_cursor = frame;
     }
 }

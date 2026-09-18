@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 typedef struct bronze_gc_frame bronze_gc_frame;
+typedef struct bronze_call_frame bronze_call_frame;
 
 /*
  * ---- the thread-local state block (TLS) ------------------------------------
@@ -52,6 +53,8 @@ typedef struct bronze_tls_block {
      * lowers it, and every such read then takes the shape walk it always
      * took. */
     uint64_t key_ic_enabled;
+    bronze_call_frame* call_frame_top;
+    bronze_call_frame* call_frame_cursor;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -85,6 +88,8 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF     224
 #define BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF        232
 #define BRONZE_TLS_KEY_IC_ENABLED_OFF            240
+#define BRONZE_TLS_CALL_FRAME_TOP_OFF            248
+#define BRONZE_TLS_CALL_FRAME_CURSOR_OFF         256
 
 /*
  * ---- the iteration record, as generated code reads it ---------------------

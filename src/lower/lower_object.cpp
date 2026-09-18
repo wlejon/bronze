@@ -137,6 +137,10 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
                     const auto& fn = static_cast<const ast::FunctionExpr&>(*prop.value);
                     valOpt = lowerClosure(fn, fn.name, strLit->value, fn.params, fn.returnType, fn.body,
                                           fn.span, ilFn, fn.isArrow);
+                    if (valOpt && lastClosureFnIndex_ < ilModule_.functions.size()) {
+                        ilModule_.functions[lastClosureFnIndex_].displayName = "Object." + strLit->value;
+                        ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_METHOD;
+                    }
                 } else {
                     valOpt = lowerNamedEvaluation(*prop.value, strLit->value, ilFn);
                 }
@@ -147,6 +151,10 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
             const auto& fn = static_cast<const ast::FunctionExpr&>(*prop.value);
             valOpt = lowerClosure(fn, fn.name, prop.key, fn.params, fn.returnType, fn.body,
                                   fn.span, ilFn, fn.isArrow);
+            if (valOpt && lastClosureFnIndex_ < ilModule_.functions.size()) {
+                ilModule_.functions[lastClosureFnIndex_].displayName = "Object." + prop.key;
+                ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_METHOD;
+            }
         } else {
             valOpt = lowerNamedEvaluation(*prop.value, prop.key, ilFn);
         }

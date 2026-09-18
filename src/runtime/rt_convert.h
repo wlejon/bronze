@@ -22,6 +22,7 @@ namespace bronze::runtime {
 // console.log of a container, in the pinned inspect format. Returns the text;
 // the caller writes it.
 std::string rtInspect(Value v);
+std::string rtInspectErrorWithStack(Value v);
 
 // A heap string from UTF-8 bytes, and JS ToString (7.1.17) / ToNumber (7.1.4)
 // entire — step 1 of each, ToPrimitive, included.

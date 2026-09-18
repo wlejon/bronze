@@ -17,6 +17,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/stack_trace.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -176,4 +177,34 @@ TEST_CASE("an error message survives a collection") {
     }
     CHECK(rtIsErrorInstance(thrown.get()));
     CHECK(textOf(thrown.get()) == "TypeError: survives");
+}
+
+TEST_CASE("stack trace formatter over a synthetic call frame chain") {
+    bronze_fn_desc descBottom{"bottom", "app.js", 10, 2, 0};
+    bronze_fn_desc descMiddle{"Greeter.greet", "greeter.js", 20, 5, 0};
+    bronze_fn_desc descCtor{"Maker", "maker.js", 30, 1, BRONZE_FN_DESC_CONSTRUCTOR};
+    bronze_fn_desc descBuiltin{"Array.forEach", "", 0, 0, BRONZE_FN_DESC_BUILTIN};
+    bronze_fn_desc descAnon{"", "anon.js", 40, 8, 0};
+
+    bronze_call_frame f1{nullptr, &descBottom, 0, 0};
+    bronze_call_frame f2{&f1, &descMiddle, 22, 10};
+    bronze_call_frame f3{&f2, &descCtor, 35, 4};
+    bronze_call_frame f4{&f3, &descBuiltin, 0, 0};
+    bronze_call_frame f5{&f4, &descAnon, 42, 15};
+
+    bronze_call_frame* oldTop = rtTls()->call_frame_top;
+    rtTls()->call_frame_top = &f5;
+
+    ShadowStackFrame frame;
+    Rooted<Value> err{rtNewErrorValue(ErrorKind::Error, "test error")};
+
+    std::string stack = bronze_format_stack_trace(err.get());
+    rtTls()->call_frame_top = oldTop;
+
+    CHECK(stack.find("Error: test error") == 0);
+    CHECK(stack.find("    at anon.js:42:15\n") != std::string::npos);
+    CHECK(stack.find("    at Array.forEach (<anonymous>)\n") != std::string::npos);
+    CHECK(stack.find("    at new Maker (maker.js:35:4)\n") != std::string::npos);
+    CHECK(stack.find("    at Greeter.greet (greeter.js:22:10)\n") != std::string::npos);
+    CHECK(stack.find("    at bottom (app.js:10:2)") != std::string::npos);
 }

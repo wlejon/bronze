@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -132,6 +133,8 @@ std::optional<il::Module> Lowerer::lower() {
             fn.sourceFile = fnDecl->span.file;
             fn.sourceBegin = fnDecl->span.begin;
             fn.sourceEnd = fnDecl->span.end;
+            fn.displayName = fnDecl->name.empty() ? "<anonymous>" : fnDecl->name;
+            if (fnDecl->isAsync) fn.descFlags |= BRONZE_FN_DESC_ASYNC;
             fn.valueCount = static_cast<uint32_t>(fn.params.size());
             functionIndices_[fn.name] = moduleFnIndex;
             ilModule_.functions.push_back(std::move(fn));
@@ -185,6 +188,11 @@ std::optional<il::Module> Lowerer::lower() {
     if (!topLevelStmts.empty()) {
         il::Function mainFn;
         mainFn.name = "main";
+        mainFn.displayName = "";
+        mainFn.descFlags |= BRONZE_FN_DESC_TOPLEVEL;
+        mainFn.sourceFile = topLevelStmts.front()->span.file;
+        mainFn.sourceBegin = topLevelStmts.front()->span.begin;
+        mainFn.sourceEnd = topLevelStmts.back()->span.end;
         // Nothing above `main` can catch, so its unwind path reports and exits
         // rather than returning. No handler BLOCK, and so no IL at all in a
         // program that never throws — which is what keeps every pinned dump of
@@ -306,8 +314,13 @@ std::optional<il::Module> Lowerer::lower() {
     // then drop (it emits a blob only for a file some function names).
     if (sources_) {
         ilModule_.sourceTexts.reserve(sources_->size());
+        ilModule_.sourceFiles.reserve(sources_->size());
         for (size_t i = 0; i < sources_->size(); ++i) {
             ilModule_.sourceTexts.emplace_back(sources_->at(static_cast<uint16_t>(i)).text());
+            std::string path(sources_->at(static_cast<uint16_t>(i)).name());
+            std::error_code ec;
+            auto absPath = std::filesystem::absolute(path, ec);
+            ilModule_.sourceFiles.emplace_back(ec ? path : absPath.string());
         }
     }
     // The one IL -> IL pass, and it runs LAST: it reads the finished module and

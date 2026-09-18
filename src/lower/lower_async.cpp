@@ -196,6 +196,11 @@ bool Lowerer::lowerAsyncTail(const std::vector<const ast::Stmt*>& stmts, il::Fun
     resumeFn.params.push_back({"__sent", il::Type::Dynamic});
     resumeFn.requiredArgs = 2;
     resumeFn.valueCount = static_cast<uint32_t>(resumeFn.params.size());
+    resumeFn.sourceFile = ilFn.sourceFile;
+    resumeFn.sourceBegin = ilFn.sourceBegin;
+    resumeFn.sourceEnd = ilFn.sourceEnd;
+    resumeFn.displayName = ilFn.displayName;
+    resumeFn.descFlags = ilFn.descFlags | BRONZE_FN_DESC_ASYNC;
 
     if (!lowerResumeBody(stmts, resumeFn, /*isAsync=*/true)) return false;
 
@@ -265,6 +270,11 @@ bool Lowerer::lowerAsyncGeneratorTail(const std::vector<const ast::Stmt*>& stmts
     resumeFn.params.push_back({"__sent", il::Type::Dynamic});
     resumeFn.requiredArgs = 2;
     resumeFn.valueCount = static_cast<uint32_t>(resumeFn.params.size());
+    resumeFn.sourceFile = ilFn.sourceFile;
+    resumeFn.sourceBegin = ilFn.sourceBegin;
+    resumeFn.sourceEnd = ilFn.sourceEnd;
+    resumeFn.displayName = ilFn.displayName;
+    resumeFn.descFlags = ilFn.descFlags | BRONZE_FN_DESC_ASYNC;
 
     if (!lowerResumeBody(stmts, resumeFn, /*isAsync=*/true, /*isAsyncGenerator=*/true)) return false;
 
