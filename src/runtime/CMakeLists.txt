@@ -101,6 +101,8 @@ bronze_add_module(runtime
         iterator_terminal.cpp
         map.cpp
         builtin_map.cpp
+        builtin_map_methods.cpp
+        builtin_map_iterator.cpp
         builtin_set_ops.cpp
         builtin_group_by.cpp
         builtin_date.cpp
