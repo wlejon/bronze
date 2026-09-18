@@ -6,6 +6,7 @@
 #include <io.h>
 #endif
 
+#include "abi/bronze_abi.h"
 #include "runtime/abi_guard.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
@@ -14,6 +15,9 @@
 
 extern "C" void bronze_main();
 extern "C" const uint32_t bronze_object_abi_fingerprint;
+extern "C" const bronze_code_range bronze_object_code_ranges[];
+extern "C" const uint32_t bronze_object_code_range_count;
+extern "C" void bronze_register_code_ranges(const void* ranges, uint32_t count);
 
 int main() {
 #ifdef _WIN32
@@ -26,6 +30,7 @@ int main() {
     // object runs (abi_guard.h says why; the symbol reference lives in this TU
     // for the same reason bronze_main's does).
     bronze::runtime::rtCheckObjectAbi(bronze_object_abi_fingerprint);
+    bronze_register_code_ranges(bronze_object_code_ranges, bronze_object_code_range_count);
     // Root frame for the whole program: Rooted<> handles inside runtime helpers
     // register here. Generated code registers its own contiguous slot frames
     // separately.

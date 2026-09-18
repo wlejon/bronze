@@ -796,8 +796,9 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_print_i32_err,       BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
     X(bronze_print_dynamic_err,   BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_print_space_err,     BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
-    X(bronze_print_newline_err,   BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
-    X(brass_gc_write_barrier,     BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64))
+    X(brass_gc_write_barrier,     BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_register_code_ranges,   BRONZE_ABI_VOID, (BRONZE_ABI_CVPTR, BRONZE_ABI_U32)) \
+    X(bronze_unregister_code_ranges, BRONZE_ABI_VOID, (BRONZE_ABI_CVPTR, BRONZE_ABI_U32))
 
 /*
  * There are no data symbols in this ABI. Every mutable word generated code
@@ -1477,12 +1478,25 @@ typedef struct bronze_fn_desc {
     const void* code;
 } bronze_fn_desc;
 
-typedef struct bronze_call_frame {
-    struct bronze_call_frame* prev;
+typedef struct bronze_pc_entry {
+    uint32_t pc_offset;
+    uint32_t line;
+    uint32_t col;
+} bronze_pc_entry;
+
+typedef struct bronze_code_range {
+    const void* code_start;
+    uint32_t code_size;
+    uint32_t pc_count;
     const bronze_fn_desc* desc;
-    uint32_t call_line;
-    uint32_t call_col;
-} bronze_call_frame;
+    const bronze_pc_entry* pc_table;
+} bronze_code_range;
+
+typedef struct bronze_entry_link {
+    struct bronze_entry_link* prev;
+    void* js_rbp;
+    const bronze_fn_desc* builtin_desc;
+} bronze_entry_link;
 
 /*
  * The per-thread ABI data block: every mutable word generated code shares

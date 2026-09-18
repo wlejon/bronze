@@ -324,6 +324,11 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
                 cfi.name = entrySymbol_;
             }
         }
+        for (auto& dt : obj.debug_tables) {
+            if (dt.function_name() == "main") {
+                dt.set_function_name(entrySymbol_);
+            }
+        }
         for (auto& sec : obj.sections) {
             for (auto& reloc : sec.relocations) {
                 if (reloc.symbol_name == "main") {
@@ -658,6 +663,73 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
+    auto emitRoReloc = [&](const std::string& sym) {
+        if (!sym.empty()) {
+            roSec.relocations.push_back({roSec.data.size(), brass::object::RelocKind::Abs64, sym, 0});
+        }
+        roSec.emit64(0);
+    };
+    auto addRoSym = [&](const std::string& name, size_t off, size_t sz, brass::object::SymbolBinding bind) {
+        if (auto* s = obj.find_symbol(name)) {
+            s->section_index = obj.get_section_index(roSecName);
+            s->value = off; s->size = sz; s->binding = bind; s->type = brass::object::SymbolType::Object;
+        } else {
+            obj.add_symbol({name, obj.get_section_index(roSecName), off, sz, bind, brass::object::SymbolType::Object});
+        }
+    };
+
+    std::unordered_map<std::string, std::string> fnToDesc;
+    for (size_t i = 0; i < module.functions.size(); ++i) {
+        if (module.functions[i].blocks.empty()) continue;
+        std::string fnName = (uniqueNames[i] == "main")
+            ? (entrySymbol_.empty() ? "main" : entrySymbol_) : uniqueNames[i];
+        fnToDesc[fnName] = moduleSym("__bronze_fn_desc_" + uniqueNames[i]);
+    }
+
+    std::unordered_map<std::string, const brass::FunctionDebugTable*> debugTableMap;
+    for (const auto& dt : obj.debug_tables) debugTableMap[dt.function_name()] = &dt;
+
+    std::unordered_map<std::string, std::string> fnToPcTable;
+    for (const auto& cfi : obj.functions) {
+        auto itDt = debugTableMap.find(cfi.name);
+        if (itDt != debugTableMap.end() && !itDt->second->line_entries().empty()) {
+            const auto& entries = itDt->second->line_entries();
+            roSec.align_to(4);
+            const size_t pcOff = roSec.data.size();
+            for (const auto& le : entries) {
+                roSec.emit32(le.code_offset); roSec.emit32(le.loc.line); roSec.emit32(le.loc.column);
+            }
+            std::string pcSym = moduleSym("__bronze_pc_table_" + cfi.name);
+            fnToPcTable[cfi.name] = pcSym;
+            addRoSym(pcSym, pcOff, entries.size() * sizeof(bronze_pc_entry), brass::object::SymbolBinding::Local);
+        }
+    }
+
+    const std::string codeRangesSymbol = (entrySymbol_ == "bronze_main")
+        ? "bronze_object_code_ranges" : (entrySymbol_ + "_code_ranges");
+    const std::string codeRangeCountSymbol = (entrySymbol_ == "bronze_main")
+        ? "bronze_object_code_range_count" : (entrySymbol_ + "_code_range_count");
+
+    roSec.align_to(4);
+    const size_t countOff = roSec.data.size();
+    roSec.emit32(static_cast<uint32_t>(obj.functions.size()));
+    addRoSym(codeRangeCountSymbol, countOff, sizeof(uint32_t), brass::object::SymbolBinding::Global);
+
+    roSec.align_to(8);
+    const size_t rangesOff = roSec.data.size();
+    for (const auto& cfi : obj.functions) {
+        emitRoReloc(cfi.name);
+        roSec.emit32(static_cast<uint32_t>(cfi.text_size));
+        auto itDt = debugTableMap.find(cfi.name);
+        roSec.emit32(itDt != debugTableMap.end() ? static_cast<uint32_t>(itDt->second->line_entries().size()) : 0);
+        auto itDesc = fnToDesc.find(cfi.name);
+        emitRoReloc(itDesc != fnToDesc.end() ? itDesc->second : "");
+        auto itPc = fnToPcTable.find(cfi.name);
+        emitRoReloc(itPc != fnToPcTable.end() ? itPc->second : "");
+    }
+    addRoSym(codeRangesSymbol, rangesOff, obj.functions.size() * sizeof(bronze_code_range), brass::object::SymbolBinding::Global);
+
+
     std::string dataSecName = target.is_windows() ? ".data" : ".data";
     brass::object::Section& dataSec = obj.get_or_create_section(
         dataSecName,
@@ -824,7 +896,9 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
                 sym.name != stampSymbol &&
                 sym.name != manifestSymbol &&
                 sym.name != keySymbol &&
-                sym.name != importsSymbol) {
+                sym.name != importsSymbol &&
+                sym.name != codeRangesSymbol &&
+                sym.name != codeRangeCountSymbol) {
                 sym.binding = brass::object::SymbolBinding::Local;
             }
         }

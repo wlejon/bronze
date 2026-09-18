@@ -10,6 +10,7 @@
 
 #include <cstdint>
 
+#include "abi/bronze_abi.h"
 #include "embed/embed.h"
 #include "runtime/abi_guard.h"
 #include "runtime/gc.h"
@@ -18,6 +19,9 @@
 
 extern "C" void bronze_main();
 extern "C" const uint32_t bronze_object_abi_fingerprint;
+extern "C" const bronze_code_range bronze_object_code_ranges[];
+extern "C" const uint32_t bronze_object_code_range_count;
+extern "C" void bronze_register_code_ranges(const void* ranges, uint32_t count);
 
 namespace bronze::embed {
 
@@ -28,6 +32,7 @@ void runMain() {
     // object dies here with both fingerprints named, not thirty seconds into
     // a helper reading a parameter the object never passed.
     runtime::rtCheckObjectAbi(bronze_object_abi_fingerprint);
+    bronze_register_code_ranges(bronze_object_code_ranges, bronze_object_code_range_count);
     // The statically-linked twin of runEntry's note: this thread runs the
     // program's compiled JS. A no-op unless BRONZE_SAMPLE=1 armed the sampler.
     runtime::samplerNoteJsThread();

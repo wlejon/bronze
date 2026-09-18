@@ -42,6 +42,7 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/stack_trace.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"

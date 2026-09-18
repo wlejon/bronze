@@ -11,7 +11,8 @@ namespace bronze {
 
 class BrassJitProgram {
 public:
-    BrassJitProgram(std::unique_ptr<brass::codegen::JitExecutionEngine> engine, void* entryPoint);
+    BrassJitProgram(std::unique_ptr<brass::codegen::JitExecutionEngine> engine, void* entryPoint,
+                    const void* codeRanges = nullptr, uint32_t codeRangeCount = 0);
     ~BrassJitProgram();
 
     BrassJitProgram(const BrassJitProgram&) = delete;
@@ -27,6 +28,8 @@ public:
 private:
     std::unique_ptr<brass::codegen::JitExecutionEngine> engine_;
     void* entryPoint_ = nullptr;
+    const void* codeRanges_ = nullptr;
+    uint32_t codeRangeCount_ = 0;
 };
 
 }  // namespace bronze

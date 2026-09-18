@@ -10,10 +10,14 @@
 namespace bronze {
 
 BrassJitProgram::BrassJitProgram(std::unique_ptr<brass::codegen::JitExecutionEngine> engine,
-                                 void* entryPoint)
-    : engine_(std::move(engine)), entryPoint_(entryPoint) {}
+                                 void* entryPoint, const void* codeRanges, uint32_t codeRangeCount)
+    : engine_(std::move(engine)), entryPoint_(entryPoint), codeRanges_(codeRanges), codeRangeCount_(codeRangeCount) {}
 
-BrassJitProgram::~BrassJitProgram() = default;
+BrassJitProgram::~BrassJitProgram() {
+    if (codeRanges_ && codeRangeCount_ > 0) {
+        bronze_unregister_code_ranges(codeRanges_, codeRangeCount_);
+    }
+}
 
 BrassJitProgram::BrassJitProgram(BrassJitProgram&&) noexcept = default;
 BrassJitProgram& BrassJitProgram::operator=(BrassJitProgram&&) noexcept = default;
@@ -60,7 +64,15 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
     }
 
     void* entry = engine->get_symbol_address(entrySymbol_);
-    return std::make_unique<BrassJitProgram>(std::move(engine), entry);
+    std::string rangesSym = (entrySymbol_ == "bronze_main") ? "bronze_object_code_ranges" : (entrySymbol_ + "_code_ranges");
+    std::string countSym = (entrySymbol_ == "bronze_main") ? "bronze_object_code_range_count" : (entrySymbol_ + "_code_range_count");
+    void* rangesAddr = engine->get_symbol_address(rangesSym);
+    void* countAddr = engine->get_symbol_address(countSym);
+    uint32_t count = countAddr ? *reinterpret_cast<const uint32_t*>(countAddr) : 0;
+    if (rangesAddr && count > 0) {
+        bronze_register_code_ranges(rangesAddr, count);
+    }
+    return std::make_unique<BrassJitProgram>(std::move(engine), entry, rangesAddr, count);
 }
 
 }  // namespace bronze

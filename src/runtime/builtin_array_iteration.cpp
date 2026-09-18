@@ -3,6 +3,8 @@
 #include "runtime/tls_block.h"
 #include "abi/bronze_abi.h"
 
+#include "runtime/stack_trace.h"
+
 namespace bronze::runtime {
 
 namespace {
@@ -37,24 +39,6 @@ static const bronze_fn_desc kDescArrayFilter = {
     reinterpret_cast<const void*>(arrayFilter)
 };
 
-struct CallFrameGuard {
-    bronze_call_frame frame;
-    bronze_call_frame* old_top;
-
-    explicit CallFrameGuard(const bronze_fn_desc* desc) {
-        bronze_tls_block* tls = rtTls();
-        old_top = tls->call_frame_top;
-        frame.prev = old_top;
-        frame.desc = desc;
-        frame.call_line = 0;
-        frame.call_col = 0;
-        tls->call_frame_top = &frame;
-    }
-    ~CallFrameGuard() {
-        rtTls()->call_frame_top = old_top;
-    }
-};
-
 }  // namespace
 
 uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -65,7 +49,7 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     if (!requireCallable(fn.get(), "forEach")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    CallFrameGuard frameGuard(&kDescArrayForEach);
+    EntryLinkGuard frameGuard(&kDescArrayForEach);
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
@@ -84,7 +68,7 @@ uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
     if (!requireCallable(fn.get(), "map")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    CallFrameGuard frameGuard(&kDescArrayMap);
+    EntryLinkGuard frameGuard(&kDescArrayMap);
     Rooted<Value> out{rtArraySpeciesCreate(self, len)};
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) {
@@ -108,7 +92,7 @@ uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     if (!requireCallable(fn.get(), "filter")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    CallFrameGuard frameGuard(&kDescArrayFilter);
+    EntryLinkGuard frameGuard(&kDescArrayFilter);
     Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
     uint32_t to = 0;
     for (uint32_t i = 0; i < len; ++i) {
