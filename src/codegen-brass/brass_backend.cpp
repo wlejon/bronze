@@ -60,8 +60,8 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const bool optimize = this->optimize();
     brass::il::TranslatorOptions options;
     options.enable_optimizations = optimize;
-    options.enable_inlining = true;
-    options.enable_speculative_inlining = true;
+    options.enable_inlining = false;
+    options.enable_speculative_inlining = false;
     options.enable_sroa = true;
     options.enable_gvn = true;
     options.enable_sccp = true;

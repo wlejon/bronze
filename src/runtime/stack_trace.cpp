@@ -16,6 +16,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <pthread.h>
+#include <dlfcn.h>
 #endif
 
 #include "abi/bronze_abi.h"
@@ -123,27 +126,26 @@ static inline void get_stack_bounds(uintptr_t& low, uintptr_t& high) {
         high = reinterpret_cast<uintptr_t>(tib->StackBase);
         return;
     }
+#elif defined(__APPLE__)
+    void* stack_addr = pthread_get_stackaddr_np(pthread_self());
+    size_t stack_size = pthread_get_stacksize_np(pthread_self());
+    high = reinterpret_cast<uintptr_t>(stack_addr);
+    low = high - stack_size;
+    return;
+#elif defined(__linux__)
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        void* stack_addr = nullptr;
+        size_t stack_size = 0;
+        pthread_attr_getstack(&attr, &stack_addr, &stack_size);
+        pthread_attr_destroy(&attr);
+        low = reinterpret_cast<uintptr_t>(stack_addr);
+        high = low + stack_size;
+        return;
+    }
 #endif
     low = 0;
     high = UINTPTR_MAX;
-}
-
-inline void bronze_get_context(void** out_rsp, void** out_rbp) {
-#if defined(_WIN32)
-    CONTEXT ctx;
-    RtlCaptureContext(&ctx);
-    if (out_rsp) *out_rsp = reinterpret_cast<void*>(ctx.Rsp);
-    if (out_rbp) *out_rbp = reinterpret_cast<void*>(ctx.Rbp);
-#else
-    if (out_rsp) {
-        void* sp = nullptr;
-        __asm__ volatile("mov %%rsp, %0" : "=r"(sp));
-        *out_rsp = sp;
-    }
-    if (out_rbp) {
-        *out_rbp = __builtin_frame_address(0);
-    }
-#endif
 }
 
 bool lookupProp(ObjectHeader* obj, const std::string& keyStr, Value& out) {
@@ -204,47 +206,6 @@ const bronze_code_range* find_code_range(const void* pc) {
     return g_code_ranges.find(pc);
 }
 
-void* find_current_js_rbp() {
-    void* cur_rsp = nullptr;
-    bronze_get_context(&cur_rsp, nullptr);
-    if (!cur_rsp) return nullptr;
-
-    uintptr_t stack_low = 0, stack_high = 0;
-    get_stack_bounds(stack_low, stack_high);
-
-    auto valid_ptr = [&](const void* p, size_t sz = sizeof(void*)) -> bool {
-        uintptr_t a = reinterpret_cast<uintptr_t>(p);
-        return (a & 7) == 0 && a >= stack_low && a + sz <= stack_high;
-    };
-
-    if (!valid_ptr(cur_rsp)) return nullptr;
-
-    void** sp = static_cast<void**>(cur_rsp);
-    while (valid_ptr(sp)) {
-        void* ret = *sp;
-        uintptr_t a = reinterpret_cast<uintptr_t>(ret);
-        const bronze_code_range* r = find_code_range(ret);
-        if (r && r->desc && a > reinterpret_cast<uintptr_t>(r->code_start)) {
-            return static_cast<void*>(sp);
-        }
-        ++sp;
-    }
-    return nullptr;
-}
-
-EntryLinkGuard::EntryLinkGuard(const bronze_fn_desc* builtin_desc) {
-    bronze_tls_block* tls = rtTls();
-    old_top = tls->entry_link_top;
-    link.prev = old_top;
-    link.builtin_desc = builtin_desc;
-    link.js_rbp = find_current_js_rbp();
-    tls->entry_link_top = &link;
-}
-
-EntryLinkGuard::~EntryLinkGuard() {
-    rtTls()->entry_link_top = old_top;
-}
-
 std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     std::string nameStr = "Error";
     std::string msgStr = "";
@@ -273,9 +234,6 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     const uint32_t limit = getStackTraceLimit();
     if (limit == 0) return header;
 
-    void* cur_rsp = nullptr;
-    bronze_get_context(&cur_rsp, nullptr);
-
     uintptr_t stack_low = 0, stack_high = 0;
     get_stack_bounds(stack_low, stack_high);
 
@@ -285,55 +243,114 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     };
 
     struct StackFrameInfo {
-        const bronze_fn_desc* desc;
-        uint32_t line;
-        uint32_t col;
-        const void* code;
+        const bronze_fn_desc* desc = nullptr;
+        uint32_t line = 0;
+        uint32_t col = 0;
+        const void* code = nullptr;
+        const char* builtin_name = nullptr;
     };
     std::vector<StackFrameInfo> frames;
-    const bronze_entry_link* entry_link = rtTls()->entry_link_top;
 
-    if (cur_rsp && valid_ptr(cur_rsp)) {
-        void** sp = static_cast<void**>(cur_rsp);
-        void** last_frame_sp = nullptr;
-        while (valid_ptr(sp) && frames.size() < limit + 10) {
-            while (entry_link && entry_link->js_rbp && sp >= static_cast<void**>(entry_link->js_rbp)) {
-                if (entry_link->builtin_desc) {
-                    frames.push_back({entry_link->builtin_desc, 0, 0, nullptr});
-                }
-                entry_link = entry_link->prev;
-            }
+#if defined(_WIN32) && defined(_M_X64)
+    CONTEXT ctx;
+    RtlCaptureContext(&ctx);
 
-            void* ret = *sp;
-            uintptr_t a = reinterpret_cast<uintptr_t>(ret);
-            const bronze_code_range* r = find_code_range(ret);
-            if (r && r->desc && a > reinterpret_cast<uintptr_t>(r->code_start)) {
-                // Deduplicate if the same function was recorded within 4 stack words
-                if (frames.empty() || frames.back().desc != r->desc || (last_frame_sp && (sp - last_frame_sp) >= 4)) {
-                    uint32_t f_line = r->desc->def_line;
-                    uint32_t f_col = r->desc->def_col;
-                    if (r->pc_table && r->pc_count > 0) {
-                        uintptr_t pc_off = a - 1 - reinterpret_cast<uintptr_t>(r->code_start);
-                        auto it = std::upper_bound(
-                            r->pc_table, r->pc_table + r->pc_count, pc_off,
-                            [](uintptr_t val, const bronze_pc_entry& e) { return val < e.pc_offset; });
-                        if (it != r->pc_table) {
-                            --it;
-                            f_line = it->line;
-                            f_col = it->col;
-                        }
-                    }
-                    frames.push_back({r->desc, f_line, f_col, r->code_start});
-                    last_frame_sp = sp;
+    while (ctx.Rip != 0 && frames.size() < limit + 10) {
+        uintptr_t prev_rip = ctx.Rip;
+        uintptr_t prev_rsp = ctx.Rsp;
 
-                    if (r->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
-                        break;
-                    }
+        const bronze_code_range* cr = find_code_range(reinterpret_cast<const void*>(ctx.Rip));
+        if (cr && cr->desc) {
+            uint32_t f_line = cr->desc->def_line;
+            uint32_t f_col = cr->desc->def_col;
+            if (cr->pc_table && cr->pc_count > 0) {
+                uintptr_t pc_off = (ctx.Rip - 1) - reinterpret_cast<uintptr_t>(cr->code_start);
+                auto it = std::upper_bound(
+                    cr->pc_table, cr->pc_table + cr->pc_count, pc_off,
+                    [](uintptr_t val, const bronze_pc_entry& e) { return val < e.pc_offset; });
+                if (it != cr->pc_table) {
+                    --it;
+                    f_line = it->line;
+                    f_col = it->col;
                 }
             }
-            ++sp;
+            frames.push_back({cr->desc, f_line, f_col, cr->code_start, nullptr});
+            if (cr->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
+                break;
+            }
+        }
+
+        DWORD64 imageBase = 0;
+        PRUNTIME_FUNCTION fnEntry = RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
+        if (fnEntry) {
+            void* fnBegin = reinterpret_cast<void*>(imageBase + fnEntry->BeginAddress);
+            const char* builtinName = rtGetNativeDisplayName(fnBegin);
+            if (builtinName) {
+                frames.push_back({nullptr, 0, 0, nullptr, builtinName});
+            }
+
+            void* handlerData = nullptr;
+            DWORD64 establisherFrame = 0;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, fnEntry,
+                             &ctx, &handlerData, &establisherFrame, nullptr);
+        } else {
+            // Leaf function or unrecorded frame: rip = [rsp]; rsp += 8
+            if (!valid_ptr(reinterpret_cast<const void*>(ctx.Rsp), 8)) {
+                break;
+            }
+            ctx.Rip = *reinterpret_cast<const uintptr_t*>(ctx.Rsp);
+            ctx.Rsp += 8;
+        }
+
+        if (ctx.Rip == prev_rip && ctx.Rsp == prev_rsp) {
+            break;
         }
     }
+#elif !defined(_WIN32)
+    void* cur_rbp = __builtin_frame_address(0);
+    while (valid_ptr(cur_rbp, 16) && frames.size() < limit + 10) {
+        uintptr_t* fp = static_cast<uintptr_t*>(cur_rbp);
+        uintptr_t caller_rbp = fp[0];
+        uintptr_t caller_rip = fp[1];
+        if (caller_rip == 0) break;
+
+        const bronze_code_range* cr = find_code_range(reinterpret_cast<const void*>(caller_rip));
+        if (cr) {
+            if (cr->desc) {
+                uint32_t f_line = cr->desc->def_line;
+                uint32_t f_col = cr->desc->def_col;
+                if (cr->pc_table && cr->pc_count > 0) {
+                    uintptr_t pc_off = (caller_rip - 1) - reinterpret_cast<uintptr_t>(cr->code_start);
+                    auto it = std::upper_bound(
+                        cr->pc_table, cr->pc_table + cr->pc_count, pc_off,
+                        [](uintptr_t val, const bronze_pc_entry& e) { return val < e.pc_offset; });
+                    if (it != cr->pc_table) {
+                        --it;
+                        f_line = it->line;
+                        f_col = it->col;
+                    }
+                }
+                frames.push_back({cr->desc, f_line, f_col, cr->code_start, nullptr});
+                if (cr->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
+                    break;
+                }
+            }
+        } else {
+            Dl_info dlinfo;
+            if (dladdr(reinterpret_cast<const void*>(caller_rip), &dlinfo) && dlinfo.dli_saddr) {
+                const char* builtinName = rtGetNativeDisplayName(dlinfo.dli_saddr);
+                if (builtinName) {
+                    frames.push_back({nullptr, 0, 0, nullptr, builtinName});
+                }
+            }
+        }
+
+        if (caller_rbp <= reinterpret_cast<uintptr_t>(cur_rbp) || caller_rbp >= stack_high) {
+            break;
+        }
+        cur_rbp = reinterpret_cast<void*>(caller_rbp);
+    }
+#endif
 
     size_t start_idx = 0;
     if (skipFn.isObject() && skipFn.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
@@ -356,28 +373,17 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
             }
         }
         if (!found) return header;
-    } else if (skipFn.isUndefined() && errorObj.isObject() &&
-               errorObj.asObject<HeapObjectHeader>()->flags == HeapKind::Plain) {
-        ObjectHeader* obj = errorObj.asObject<ObjectHeader>();
-        Value ctorVal;
-        if (lookupProp(obj, "constructor", ctorVal) && ctorVal.isObject() &&
-            ctorVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-            FunctionHeader* ctorFn = ctorVal.asObject<FunctionHeader>();
-            if (ctorFn && ctorFn->name && !frames.empty()) {
-                std::string ctorName = rtUtf8Chars(ctorFn->name);
-                const bronze_fn_desc* d = frames[0].desc;
-                if (d && (d->flags & BRONZE_FN_DESC_CONSTRUCTOR) && d->name &&
-                    ctorName == d->name) {
-                    start_idx = 1;
-                }
-            }
-        }
     }
 
     std::string out = header;
     uint32_t count = 0;
     for (size_t i = start_idx; i < frames.size() && count < limit; ++i) {
         const auto& fi = frames[i];
+        if (fi.builtin_name) {
+            out += "\n    at " + std::string(fi.builtin_name) + " (<anonymous>)";
+            ++count;
+            continue;
+        }
         const bronze_fn_desc* desc = fi.desc;
         if (!desc) continue;
 

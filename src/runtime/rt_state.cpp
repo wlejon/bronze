@@ -569,6 +569,48 @@ Value rtFunctionSingletonAt(uint32_t index, bronze_fn_code expect) {
     return entry.second;
 }
 
+static std::mutex g_nativeDisplayNamesMu;
+static std::unordered_map<const void*, std::string> g_nativeDisplayNames;
+
+static const void* resolveJumpThunk(const void* p) {
+    if (!p) return nullptr;
+#if defined(_WIN32) && defined(_M_X64)
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(p);
+    if (b[0] == 0xE9) {
+        int32_t rel = *reinterpret_cast<const int32_t*>(b + 1);
+        return b + 5 + rel;
+    }
+#endif
+    return p;
+}
+
+void rtRegisterNativeDisplayName(const void* code, const char* displayName) {
+    if (!code || !displayName) return;
+    std::lock_guard<std::mutex> lock(g_nativeDisplayNamesMu);
+    g_nativeDisplayNames[code] = displayName;
+    const void* target = resolveJumpThunk(code);
+    if (target && target != code) {
+        g_nativeDisplayNames[target] = displayName;
+    }
+}
+
+const char* rtGetNativeDisplayName(const void* code) {
+    if (!code) return nullptr;
+    std::lock_guard<std::mutex> lock(g_nativeDisplayNamesMu);
+    auto it = g_nativeDisplayNames.find(code);
+    if (it != g_nativeDisplayNames.end()) {
+        return it->second.c_str();
+    }
+    const void* target = resolveJumpThunk(code);
+    if (target && target != code) {
+        it = g_nativeDisplayNames.find(target);
+        if (it != g_nativeDisplayNames.end()) {
+            return it->second.c_str();
+        }
+    }
+    return nullptr;
+}
+
 extern "C" {
 
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,

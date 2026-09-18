@@ -39,6 +39,22 @@ static brass::il::BronzeInstruction lowerInstruction(
     out.target = mapBlockTarget(inst.target);
     out.else_target = mapBlockTarget(inst.elseTarget);
 
+    if ((inst.span.begin != 0 || inst.span.end != 0) && inst.span.file < module.sourceTexts.size()) {
+        const std::string& text = module.sourceTexts[inst.span.file];
+        uint32_t line = 1, col = 1;
+        uint32_t limit = std::min<uint32_t>(inst.span.begin, static_cast<uint32_t>(text.size()));
+        for (uint32_t c = 0; c < limit; ++c) {
+            if (text[c] == '\n') {
+                ++line;
+                col = 1;
+            } else {
+                ++col;
+            }
+        }
+        out.line = line;
+        out.column = col;
+    }
+
     auto getFnName = [&](size_t idx) -> std::string {
         if (idx < uniqueNames.size() && !uniqueNames[idx].empty()) {
             return uniqueNames[idx];

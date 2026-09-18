@@ -16,6 +16,7 @@
 // make twenty files say where they now live.
 #include "il/il_pin.h"
 #include "il/il_op.h"
+#include "support/source.h"
 
 namespace bronze::il {
 
@@ -213,6 +214,8 @@ struct Instruction {
     // that needs none.
     static constexpr uint32_t kNoEnvHops = 0xFFFFFFFFu;
     uint32_t callEnvHops = kNoEnvHops;
+
+    Span span;
 
     BlockTarget target;              // Jump target / Branch then-target
     BlockTarget elseTarget;          // Branch else-target

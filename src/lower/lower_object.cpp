@@ -430,6 +430,7 @@ std::optional<Lowerer::Value> Lowerer::lowerNewExpr(const ast::NewExpr* newExpr,
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.operands = std::move(operands);
+    inst.span = Span{newExpr->span.begin, newExpr->span.begin + 3, newExpr->span.file};
     if (!spreadArgs) {
         if (const auto* ident = dynamic_cast<const ast::Ident*>(newExpr->callee.get())) {
             auto it = functionIndices_.find(ident->name);
@@ -473,6 +474,12 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
     const bool mono = monomorphicPropSite(*mem->object);
     inst.icMonomorphic = mono;
     inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
+    Span propSpan = {
+        static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
+        mem->span.end,
+        mem->span.file
+    };
+    inst.span = propSpan;
     stampStaticSlot(inst, *mem->object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
@@ -553,6 +560,7 @@ std::optional<Lowerer::Value> Lowerer::emitIndexRead(const ast::IndexAccess& idx
     const bool mono = monomorphicPropSite(*idxAccess.object);
     inst.icMonomorphic = mono;
     inst.icFnRecv = functionBindingReceiver(*idxAccess.object, *literalKey);
+    inst.span = idxAccess.index ? idxAccess.index->span : idxAccess.span;
     stampStaticSlot(inst, *idxAccess.object);
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};

@@ -88,10 +88,10 @@ uint64_t functionToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*
 // order after `constructor`. `bind` is a row here and a body elsewhere
 // (builtin_function_bind.cpp).
 const NativeMethod kFunctionMethods[] = {
-    {"apply", functionApply, 2, 2},
-    {"bind", rtFunctionBindBuiltin, 1, 1},
-    {"call", functionCall, 1, 1},
-    {"toString", functionToString, 0, 0},
+    {"apply", functionApply, 2, 2, "Function.apply"},
+    {"bind", rtFunctionBindBuiltin, 1, 1, "Function.bind"},
+    {"call", functionCall, 1, 1, "Function.call"},
+    {"toString", functionToString, 0, 0, "Function.toString"},
 };
 
 void ensureFunctionIntrinsics() {

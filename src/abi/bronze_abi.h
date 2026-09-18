@@ -1492,12 +1492,6 @@ typedef struct bronze_code_range {
     const bronze_pc_entry* pc_table;
 } bronze_code_range;
 
-typedef struct bronze_entry_link {
-    struct bronze_entry_link* prev;
-    void* js_rbp;
-    const bronze_fn_desc* builtin_desc;
-} bronze_entry_link;
-
 /*
  * The per-thread ABI data block: every mutable word generated code shares
  * with the runtime, one instance per OS thread, fetched once per compiled

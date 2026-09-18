@@ -382,7 +382,7 @@ void ensureErrorClasses() {
             /*writable=*/true, /*configurable=*/true);
 
         Rooted<Value> capKey{rtMakeString("captureStackTrace")};
-        Rooted<Value> capFn{rtNativeFunction(errorCaptureStackTrace, 0, "captureStackTrace", 2)};
+        Rooted<Value> capFn{rtNativeSingleton(errorCaptureStackTrace, 0, "captureStackTrace", 2)};
         props.get().asObject<ObjectHeader>()->setProp(
             rtHeap(), rtArena(), capKey, capFn,
             /*ic=*/nullptr, /*enumerable=*/false, /*defineOwn=*/true,

@@ -3,43 +3,7 @@
 #include "runtime/tls_block.h"
 #include "abi/bronze_abi.h"
 
-#include "runtime/stack_trace.h"
-
 namespace bronze::runtime {
-
-namespace {
-
-static const bronze_fn_desc kDescArrayForEach = {
-    "Array.forEach",
-    "<anonymous>",
-    0,
-    0,
-    BRONZE_FN_DESC_BUILTIN,
-    0,
-    reinterpret_cast<const void*>(arrayForEach)
-};
-
-static const bronze_fn_desc kDescArrayMap = {
-    "Array.map",
-    "<anonymous>",
-    0,
-    0,
-    BRONZE_FN_DESC_BUILTIN,
-    0,
-    reinterpret_cast<const void*>(arrayMap)
-};
-
-static const bronze_fn_desc kDescArrayFilter = {
-    "Array.filter",
-    "<anonymous>",
-    0,
-    0,
-    BRONZE_FN_DESC_BUILTIN,
-    0,
-    reinterpret_cast<const void*>(arrayFilter)
-};
-
-}  // namespace
 
 uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
@@ -49,7 +13,6 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     if (!requireCallable(fn.get(), "forEach")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    EntryLinkGuard frameGuard(&kDescArrayForEach);
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
@@ -68,7 +31,6 @@ uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
     if (!requireCallable(fn.get(), "map")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    EntryLinkGuard frameGuard(&kDescArrayMap);
     Rooted<Value> out{rtArraySpeciesCreate(self, len)};
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) {
@@ -92,7 +54,6 @@ uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     if (!requireCallable(fn.get(), "filter")) return Value::fromUndefined().rawBits();
     Rooted<Value> thisArg{args[1]};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
-    EntryLinkGuard frameGuard(&kDescArrayFilter);
     Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
     uint32_t to = 0;
     for (uint32_t i = 0; i < len; ++i) {

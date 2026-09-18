@@ -105,20 +105,20 @@ const ArrayMethod kArrayMethods[] = {
     {"entries", rtArrayEntriesBuiltin, 0, 0},
     {"every", arrayEvery, 1, 1},
     {"fill", arrayFill, 0, 1},
-    {"filter", arrayFilter, 1, 1},
+    {"filter", arrayFilter, 1, 1, "Array.filter"},
     {"find", arrayFind, 1, 1},
     {"findIndex", arrayFindIndex, 1, 1},
     {"findLast", arrayFindLast, 1, 1},
     {"findLastIndex", arrayFindLastIndex, 1, 1},
     {"flat", arrayFlat, 0, 0},
     {"flatMap", arrayFlatMap, 1, 1},
-    {"forEach", arrayForEach, 1, 1},
+    {"forEach", arrayForEach, 1, 1, "Array.forEach"},
     {"includes", arrayIncludes, 1, 1},
     {"indexOf", arrayIndexOf, 1, 1},
     {"join", arrayJoin, 0, 1},
     {"keys", rtArrayKeysBuiltin, 0, 0},
     {"lastIndexOf", arrayLastIndexOf, 1, 1},
-    {"map", arrayMap, 1, 1},
+    {"map", arrayMap, 1, 1, "Array.map"},
     {"pop", bronze_array_pop, 0, 0},
     {"push", bronze_array_push, 0, 1},
     {"reduce", arrayReduce, 0, 1},
@@ -172,7 +172,7 @@ Value rtArrayMethodById(uint32_t id) {
         } else {
             const size_t idx = id - 1;
             const ArrayMethod& m = kArrayMethods[idx];
-            g_arrayMethodValues[id] = rtNativeFunction(m.code, m.arity, m.name, m.length);
+            g_arrayMethodValues[id] = rtNativeFunction(m.code, m.arity, m.name, m.length, m.qualifiedName);
         }
     }
     return g_arrayMethodValues[id];
@@ -188,7 +188,7 @@ Value rtArrayPrototypeObject() {
 
     for (const ArrayMethod& m : kArrayMethods) {
         Rooted<Value> key{rtMakeString(m.name)};
-        Rooted<Value> fn{rtNativeFunction(m.code, m.arity, m.name, m.length)};
+        Rooted<Value> fn{rtNativeFunction(m.code, m.arity, m.name, m.length, m.qualifiedName)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, fn, /*ic=*/nullptr,
                                                     /*enumerable=*/false, /*defineOwn=*/true);
     }

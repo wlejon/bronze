@@ -119,6 +119,7 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
     inst.operands = std::move(argVals);
     inst.type = calleeFn.returnType;
     if (calleeFn.needsEnv) inst.callEnvHops = envHops;
+    inst.span = call->callee ? call->callee->span : call->span;
 
     il::ValueId res = il::kNoValue;
     if (calleeFn.returnType != il::Type::Void) {
@@ -448,6 +449,12 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             recordCall(call->span.file, false, "callee is method / property access");
             inst.icMonomorphic = mono;
             inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
+            Span propSpan = {
+                static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
+                mem->span.end,
+                mem->span.file
+            };
+            inst.span = propSpan;
             stampStaticSlot(inst, *mem->object);
             emitInst(ilFn, inst);
             calleeVal = Value{getRes, il::Type::Dynamic};
@@ -464,6 +471,12 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
             inst.icIndex = icIdx;
             inst.icMonomorphic = mono;
             inst.icFnRecv = functionBindingReceiver(*mem->object, keyIdx);
+            Span propSpan = {
+                static_cast<uint32_t>(mem->span.end >= mem->property.length() ? mem->span.end - mem->property.length() : mem->span.begin),
+                mem->span.end,
+                mem->span.file
+            };
+            inst.span = propSpan;
             const bool isNumRet = (mem->property == "charCodeAt");
             inst.type = isNumRet ? il::Type::F64 : il::Type::Dynamic;
             inst.result = callRes;
@@ -597,6 +610,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     inst.type = il::Type::Dynamic;
     inst.result = callRes;
     inst.operands = std::move(dynOperands);
+    inst.span = call->callee ? call->callee->span : call->span;
     emitInst(ilFn, inst);
     return Value{callRes, il::Type::Dynamic};
 }

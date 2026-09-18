@@ -80,7 +80,6 @@ static_assert(offsetof(bronze_tls_block, truthy_inline_enabled) ==
 static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
               BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF);
 static_assert(offsetof(bronze_tls_block, key_ic_enabled) == BRONZE_TLS_KEY_IC_ENABLED_OFF);
-static_assert(offsetof(bronze_tls_block, entry_link_top) == BRONZE_TLS_ENTRY_LINK_TOP_OFF);
 
 namespace bronze::runtime {
 
@@ -124,7 +123,6 @@ thread_local bronze_tls_block g_tls_block = {
     /*truthy_inline_enabled=*/1,
     /*elem_set_cache_tbl=*/nullptr,
     /*key_ic_enabled=*/1,
-    /*entry_link_top=*/nullptr,
 };
 
 }  // namespace bronze::runtime

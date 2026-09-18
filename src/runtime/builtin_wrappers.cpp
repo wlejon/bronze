@@ -292,7 +292,7 @@ void rtDefineMethods(Rooted<Value>& proto, const NativeMethod* methods, size_t c
     for (size_t i = 0; i < count; ++i) {
         Rooted<Value> key{rtMakeString(methods[i].name)};
         Rooted<Value> val{rtNativeFunction(methods[i].code, methods[i].arity, methods[i].name,
-                                           methods[i].length)};
+                                           methods[i].length, methods[i].qualifiedName)};
         // `defineOwn`, because this is DefineOwnProperty and not an assignment,
         // and `enumerable: false`, because that is what 22.1.3 and 20.3.3 say
         // every one of these is — see the file header for why that is the load-

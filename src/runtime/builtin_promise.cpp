@@ -603,9 +603,9 @@ void ensurePromiseIntrinsics() {
 
     // 27.2.5.4, 27.2.5.1, 27.2.5.3, with the spec's lengths.
     const NativeMethod methods[] = {
-        {"then", promiseThen, 2, 2},
-        {"catch", promiseCatch, 1, 1},
-        {"finally", promiseFinally, 1, 1},
+        {"then", promiseThen, 2, 2, "Promise.then"},
+        {"catch", promiseCatch, 1, 1, "Promise.catch"},
+        {"finally", promiseFinally, 1, 1, "Promise.finally"},
     };
     rtDefineMethods(proto, methods, 3);
 

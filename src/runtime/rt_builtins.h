@@ -75,20 +75,18 @@ void rtSetFunctionNameAndLength(struct FunctionHeader* fn, uint32_t nameKey, uin
 // IS `values`, named "values"; `Array.prototype[Symbol.iterator]` IS `values`).
 // The table that lists the canonical name therefore has to be the one that
 // creates first, or list the canonical spelling first.
+void rtRegisterNativeDisplayName(const void* code, const char* displayName);
+const char* rtGetNativeDisplayName(const void* code);
+
 inline Value rtNativeFunction(bronze_fn_code code, uint32_t arity, const char* name,
-                              uint32_t length) {
-    // No slot cell: a native builtin belongs to no compiled module, so there
-    // is no module-local table to cache it in. The by-code-pointer map is the
-    // authority regardless, and `rtNativeSingleton` is a direct-mapped memo in
-    // front of it (runtime/native_fn_memo.h) — the same object, found without
-    // an unordered_map probe or a cross-module call, which is what took this
-    // path off the top of the three.js bill. The name is interned only on the
-    // fill path, so a hit costs nothing it did not already.
-    // BRONZE_ABI_FN_FLAGS_ORDINARY, because a native builtin has no syntax
-    // behind it to say otherwise: `Array` and `Map` really are constructors,
-    // and the tables these are built from do not record which of the rest are
-    // not. So the constructibility of a NATIVE stays what it has always been,
-    // and only functions bronze COMPILED carry the syntax's answer.
+                              uint32_t length, const char* qualifiedName = nullptr) {
+    if (code) {
+        if (qualifiedName) {
+            rtRegisterNativeDisplayName(reinterpret_cast<const void*>(code), qualifiedName);
+        } else if (name && name[0] != '\0') {
+            rtRegisterNativeDisplayName(reinterpret_cast<const void*>(code), name);
+        }
+    }
     return rtNativeSingleton(code, arity, name, length);
 }
 
@@ -232,6 +230,7 @@ struct NativeMethod {
     bronze_fn_code code;
     uint32_t arity;
     uint32_t length;
+    const char* qualifiedName = nullptr;
 };
 
 // Define each as a NON-ENUMERABLE own property. That attribute is not tidiness:

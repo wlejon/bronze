@@ -58,6 +58,7 @@ bool Lowerer::lowerThrowStmt(const ast::ThrowStmt* throwStmt, il::Function& ilFn
     inst.type = il::Type::Void;
     inst.result = il::kNoValue;
     inst.operands = {boxed.id};
+    inst.span = throwStmt->span;
     emitInst(ilFn, inst);
 
     // Statements after a `throw` in the same list are unreachable and have
