@@ -39,6 +39,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
+#include "runtime/profile.h"
 #include "runtime/proxy.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
@@ -177,12 +178,12 @@ bool ownProperty(Rooted<Value>& self, Value keyVal, OwnPropertyDetail& out) {
             // object; a static or an assigned property carries whatever
             // attribute the shape recorded for it.
             //
-            // `prototype` answers true for every function, which is the answer
-            // `in` already gives: bronze materialises the slot on demand for
-            // any function, so an arrow — which 10.2.11 gives no `prototype`
-            // at all — is over-reported by both spellings together rather than
-            // by one of them.
+            // `prototype` is there for every function whose syntax gave it
+            // one (10.2.4) and for no other — an arrow, a method, an async
+            // function and %Function.prototype% have none — which is the
+            // answer `in` gives too.
             if (key == "prototype") {
+                if (!self.get().asObject<FunctionHeader>()->hasPrototypeProperty()) return false;
                 // 10.2.4: non-enumerable and non-configurable, and writable
                 // until `Object.freeze` takes that away. The VALUE is not
                 // reported: bronze materialises the slot on demand, and doing

@@ -94,6 +94,18 @@ function strReplace() {
   return acc;
 }
 
+// `Function.prototype.call` read off a plain function: `call` is an own
+// property of `Function.prototype`'s statics box, found at the end of the
+// function-receiver ladder, which is what a `super`-style helper and every
+// `Array.prototype.slice.call(arguments)` idiom pays per call.
+function addTo(a, b) { return this.base + a + b; }
+const ctx = { base: 1 };
+function fnCall() {
+  let acc = 0;
+  for (let i = 0; i < N; i++) acc += addTo.call(ctx, i & 7, 1);
+  return acc;
+}
+
 const a = measure('ta_subarray', subarray, N);
 const b = measure('ta_set', set, N);
 const c = measure('ta_slice', slice, N);
@@ -102,4 +114,6 @@ const e = measure('re_exec', reExec, N);
 const f = measure('typed_index', typedIndex, N);
 const g = measure('plain_method', plainMethod, N);
 const h = measure('str_replace', strReplace, N);
-console.log('checksum ' + a + ' ' + b + ' ' + c + ' ' + d + ' ' + e + ' ' + f + ' ' + g + ' ' + h);
+const k = measure('fn_call', fnCall, N);
+console.log('checksum ' + a + ' ' + b + ' ' + c + ' ' + d + ' ' + e + ' ' + f + ' ' + g + ' ' + h +
+  ' ' + k);

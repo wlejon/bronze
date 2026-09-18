@@ -151,11 +151,6 @@ Value rtObjectPrototype();
 // `String.prototype`'s members already reach their object through.
 void rtInstallObjectProtoMethods(Rooted<Value>& proto);
 
-// `Function.prototype.call` / `.apply`, answered beside a function rather than
-// found on a prototype object — a FunctionHeader has no shape for a walk to
-// follow. `undefined` for every other name, which leaves `bind`, `name` and
-// `length` to the unimplemented table in rt_members.cpp.
-Value rtFunctionMethod(const std::string& key);
 // The miss check for a plain object's prototype chain: a name 20.1.3 defines
 // and bronze has not built. Reached only after the whole chain misses, which is
 // why it is safe to apply to every plain object — a program's own property of
@@ -514,7 +509,6 @@ bool rtBoundFunctionState(Value fn, Value& target, Value& boundThis, Value& boun
 Value rtFunctionConstructorObject();
 Value rtFunctionPrototypeObject();
 bool rtIsFunctionConstructor(Value fn);
-bool rtIsFunctionPrototype(Value fn);
 
 // 19.2.1 `eval` (builtin_function.cpp, beside the Function constructor whose
 // dynamic-code story it shares). A body rather than an accessor because

@@ -1,11 +1,14 @@
 // `Function` and `Function.prototype` — the Function global constructor and
 // its prototype object (ECMA-262 20.2), holder of `call`, `apply`, `bind`,
-// `toString` and `constructor`.
+// `toString`, `constructor` and `[Symbol.hasInstance]` as own properties of
+// its statics box, which is where every function object keeps its own named
+// properties and where the function-receiver read ladder ends
+// (rt_prop_function.cpp).
 //
 // `Function.prototype` is itself a callable function object (20.2.3) that
-// returns undefined when called. Constructor-from-string (`new Function(...)`
-// or `Function(...)`) is out of scope for an AOT compiler and is diagnosed by
-// name with a TypeError.
+// returns undefined when called, with no `prototype` and no [[Construct]].
+// Constructor-from-string (`new Function(...)` or `Function(...)`) is out of
+// scope for an AOT compiler and is diagnosed by name with a TypeError.
 //
 // `bind` is a row here and a body elsewhere: it has to MAKE a function, and
 // the making — the trampoline, the cell that holds [[BoundTargetFunction]],
@@ -25,6 +28,7 @@
 #include "runtime/fn_source.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/profile.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -61,37 +65,86 @@ uint64_t functionConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64
 
 // 20.2.3 The Function Prototype Object is itself a built-in function object.
 // When called, it accepts any arguments and returns undefined.
+//
+// The profile record is what keeps this a code pointer of its own: interning
+// is by code pointer, and MSVC's `/OPT:ICF` folds every `return undefined`
+// native — a test's placeholder, a no-op callback — into ONE address, after
+// which `rtNativeFunction(thatBody)` would hand back %Function.prototype%
+// itself, with its own members and without a `prototype` (iterator.cpp's
+// async self-hook says the same).
 uint64_t functionPrototypeBody(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    recordHelperCall("functionPrototypeBody");
     return Value::fromUndefined().rawBits();
 }
 
 static thread_local Value g_functionPrototype = Value::fromUndefined();
 static thread_local Value g_functionConstructor = Value::fromUndefined();
 
+uint64_t functionCall(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t functionToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*);
+
+// 20.2.3.1-.5 as `Function.prototype`'s own data properties, in the clause's
+// order after `constructor`. `bind` is a row here and a body elsewhere
+// (builtin_function_bind.cpp).
+const NativeMethod kFunctionMethods[] = {
+    {"apply", functionApply, 2, 2},
+    {"bind", rtFunctionBindBuiltin, 1, 1},
+    {"call", functionCall, 1, 1},
+    {"toString", functionToString, 0, 0},
+};
+
 void ensureFunctionIntrinsics() {
     if (g_functionPrototype.isObject()) return;
 
     // 20.2.3: Function.prototype is a callable function object, with 20.2.3's
-    // own `name` "" and `length` 0.
+    // own `name` "" and `length` 0 — and NO `prototype` property and no
+    // [[Construct]], which is what the two flags cleared here say: a native
+    // is built constructible because its table cannot say otherwise, and
+    // this is the one native whose clause does.
     Rooted<Value> proto{rtNativeFunction(functionPrototypeBody, 0, "", 0)};
+    proto.get().asObject<FunctionHeader>()->function_flags &=
+        ~(BRONZE_ABI_FN_FLAG_PROTOTYPE | BRONZE_ABI_FN_FLAG_CONSTRUCT);
 
     // 20.2.1: Function constructor object.
     Rooted<Value> ctor{rtNativeFunction(functionConstructorBody, 1, "Function", 1)};
     ctor.get().asObject<FunctionHeader>()->prototype = proto.get();
     ctor.get().asObject<FunctionHeader>()->instance_shape =
         rtRootShapeForPrototype(proto.get());
+    // 20.2.2.2: `Function.prototype` is neither writable nor configurable.
+    ctor.get().asObject<FunctionHeader>()->prototype_readonly = true;
 
     g_functionPrototype = proto.get();
     g_functionConstructor = ctor.get();
     rtHeap().add_permanent_root(&g_functionPrototype);
     rtHeap().add_permanent_root(&g_functionConstructor);
 
+    // The members live in the prototype's own statics box, which is where
+    // every function object keeps its own named properties; every function
+    // receiver's read ladder ends at this box (rt_prop_function.cpp), so
+    // `f.call` finds the same slot `Object.getOwnPropertyDescriptor(
+    // Function.prototype, "call")` describes.
     rtEnsureFunctionProperties(proto);
+    Rooted<Value> box{proto.get().asObject<FunctionHeader>()->properties};
+    {
+        // 20.2.3.1, a DEFINITION so it does not write through.
+        Rooted<Value> key{rtMakeString("constructor")};
+        box.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, ctor, nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    rtDefineMethods(box, kFunctionMethods, std::size(kFunctionMethods));
+    // 20.2.3.6: { writable: false, enumerable: false, configurable: false },
+    // the one member of the five that a program cannot replace — 7.3.22
+    // OrdinaryHasInstance is what `instanceof` runs, and a non-writable hook
+    // is what keeps that a fact about every function.
     Rooted<Value> hasInstKey{Value::fromSymbol(rtSymbolHasInstance())};
     Rooted<Value> hasInstFn{
         rtNativeFunction(rtFunctionHasInstanceBuiltin, 1, "[Symbol.hasInstance]", 1)};
-    proto.get().asObject<FunctionHeader>()->properties.asObject<ObjectHeader>()->setProp(
-        rtHeap(), rtArena(), hasInstKey, hasInstFn, nullptr, /*enumerable=*/false, /*defineOwn=*/true);
+    box.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), hasInstKey, hasInstFn,
+                                                /*ic=*/nullptr, /*enumerable=*/false,
+                                                /*defineOwn=*/true, /*receiver=*/nullptr,
+                                                /*refused=*/nullptr, /*writable=*/false,
+                                                /*configurable=*/false);
 }
 
 bool requireFunctionReceiver(Value self, const char* method) {
@@ -217,15 +270,6 @@ uint64_t functionToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*
     return rtMakeString("function () { [native code] }").rawBits();
 }
 
-using FunctionMethod = NativeMethod;
-
-const FunctionMethod kFunctionMethods[] = {
-    {"apply", functionApply, 2, 2},
-    {"bind", rtFunctionBindBuiltin, 1, 1},
-    {"call", functionCall, 1, 1},
-    {"toString", functionToString, 0, 0},
-};
-
 }  // namespace
 
 Value rtFunctionConstructorObject() {
@@ -243,21 +287,6 @@ bool rtIsFunctionConstructor(Value fn) {
     HeapObjectHeader* hdr = fn.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Function) return false;
     return reinterpret_cast<FunctionHeader*>(hdr)->code == functionConstructorBody;
-}
-
-bool rtIsFunctionPrototype(Value fn) {
-    if (!fn.isObject()) return false;
-    HeapObjectHeader* hdr = fn.asObject<HeapObjectHeader>();
-    if (hdr->flags != HeapKind::Function) return false;
-    return reinterpret_cast<FunctionHeader*>(hdr)->code == functionPrototypeBody;
-}
-
-Value rtFunctionMethod(const std::string& key) {
-    if (key == "constructor") return rtFunctionConstructorObject();
-    for (const FunctionMethod& m : kFunctionMethods) {
-        if (key == m.name) return rtNativeFunction(m.code, m.arity, m.name, m.length);
-    }
-    return Value::fromUndefined();
 }
 
 uint64_t rtFunctionHasInstanceBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,

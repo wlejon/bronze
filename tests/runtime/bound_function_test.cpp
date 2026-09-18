@@ -17,6 +17,7 @@
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -57,10 +58,12 @@ uint64_t recordingCtor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
     return Value::fromUndefined().rawBits();
 }
 
-// `target.bind(thisArg, bound...)` through the same member table the property
-// path answers `f.bind` from.
+// `target.bind(thisArg, bound...)` through the same property `f.bind` reads:
+// `Function.prototype`'s own `bind`, found by the property path.
 Value bindWith(Rooted<Value>& target, Rooted<Value>& thisArg, std::initializer_list<double> bound) {
-    Rooted<Value> bind{rtFunctionMethod("bind")};
+    Rooted<Value> proto{rtFunctionPrototypeObject()};
+    Rooted<Value> key{rtMakeString("bind")};
+    Rooted<Value> bind{Value(bronze_elem_get(proto.get().rawBits(), key.get().rawBits()))};
     REQUIRE(isFunction(bind.get()));
     Value args[4] = {thisArg.get(), Value::fromUndefined(), Value::fromUndefined(),
                      Value::fromUndefined()};

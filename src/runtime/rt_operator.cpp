@@ -343,9 +343,13 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
         }
         case HeapKind::Function: {
             // `prototype` lives in its own slot and is materialised lazily, so
-            // the walk below cannot see it — but the PROPERTY is there either
-            // way, which is what `in` asks.
-            if (key == "prototype") return true;
+            // the walk below cannot see it — but the PROPERTY is there for
+            // every function whose syntax gave it one (10.2.4), which is what
+            // `in` asks; an arrow, a method and %Function.prototype% have
+            // none.
+            if (key == "prototype") {
+                return objRoot.get().asObject<FunctionHeader>()->hasPrototypeProperty();
+            }
             // `length` and `name` (10.2.10, 10.2.9) live in the header for the
             // same reason and answer the same way. Asked of the header rather
             // than of the statics table, which is where the READ asks — a
@@ -359,6 +363,16 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             Value props = objRoot.get().asObject<FunctionHeader>()->properties;
             if (props.isObject() && plainObjectHas(props.asObject<ObjectHeader>(),
                                                    keyStr.get().asString<StringHeader>())) {
+                return true;
+            }
+            // %Function.prototype%'s own members (20.2.3), which every
+            // function reaches whether or not it has a box of its own — the
+            // same step the READ ladder takes (rt_prop_function.cpp). Read
+            // through a root: building the intrinsic on first use allocates.
+            Rooted<Value> fpBox{
+                rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
+            if (plainObjectHas(fpBox.get().asObject<ObjectHeader>(),
+                               keyStr.get().asString<StringHeader>())) {
                 return true;
             }
             break;

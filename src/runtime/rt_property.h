@@ -82,7 +82,6 @@ void rtCheckUnimplementedMember(const char* receiver, const char* const* names, 
 // ECMA-262 defines and bronze has not built.
 void rtCheckArrayMember(const std::string& key);
 void rtCheckStringMember(const std::string& key);
-void rtCheckFunctionMember(const std::string& key);
 
 // The Array table asked without the refusal: does 23.1.3 define this member,
 // whether or not bronze has built it. `in` needs the question in this form —

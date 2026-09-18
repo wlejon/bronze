@@ -1,0 +1,31 @@
+callable: function undefined undefined 0 ""
+chain: true true true true
+own names: apply,bind,call,constructor,length,name,toString
+own symbols: Symbol.hasInstance
+Reflect.ownKeys: Symbol(Symbol.hasInstance),apply,bind,call,constructor,length,name,toString
+hasOwn: true true true false false undefined
+length/name descs: value:number w:false e:false c:true value:string w:false e:false c:true
+apply: value:function w:true e:false c:true apply 2
+bind: value:function w:true e:false c:true bind 1
+call: value:function w:true e:false c:true call 1
+toString: value:function w:true e:false c:true toString 0
+constructor: value:function w:true e:false c:true Function 1
+hasInstance: value:function w:false e:false c:false [Symbol.hasInstance] 1
+descriptor value identity: true true
+inherited: true true true true true true
+not own: false false true undefined
+names of f: length,name,prototype length,name length,name,prototype,s length,name
+call.call: 6
+apply.call: 15
+bind.call: 103
+Reflect.apply: 7
+detached call: 7
+hasInstance.call: true false false
+wrong receivers: true TypeError true TypeError true TypeError true TypeError no throw
+static shadows: static call true
+own shadows: own bind true true
+patched: patched function patched function
+restored: true true
+expando on FP: 3 true undefined
+native forms: function call() { [native code] } function () { [native code] }
+tag: [object Function] [object Function]

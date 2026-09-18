@@ -109,8 +109,8 @@ StringHeader* boundName(const StringHeader* targetName) {
 
 }  // namespace
 
-// 20.2.3.2. Reached as a member of any function through rtFunctionMethod's
-// table (builtin_function.cpp), with the target as `this`.
+// 20.2.3.2. An own property of `Function.prototype` (builtin_function.cpp),
+// reached as a member of any function with the target as `this`.
 uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> target{Value(thisBits)};

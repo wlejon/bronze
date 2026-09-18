@@ -55,12 +55,9 @@ const char* const kStringMembers[] = {
 // where a name leaves the list when it lands and the two halves must be read
 // together.
 
-// Function.prototype, minus `prototype`, which is real, and minus `call`,
-// `apply`, `bind`, `toString` and `constructor`, which builtin_function.cpp answers.
-// `length` and `name` have LEFT this table: every function bronze compiles now
-// carries both as own properties (rt_prop.cpp reads them off the header), and a
-// function bronze did not compile refuses them there with a message about its
-// own missing answer rather than about an unimplemented prototype member.
+// There is no Function.prototype table: every member 20.2.3 defines is an own
+// property of the real `Function.prototype` (builtin_function.cpp), and
+// `length` and `name` are own properties of every function.
 
 }  // namespace
 
@@ -87,11 +84,6 @@ bool rtArrayMemberUnimplemented(const std::string& key) {
 
 void rtCheckStringMember(const std::string& key) {
     rtCheckUnimplementedMember("String.prototype", kStringMembers, std::size(kStringMembers), key);
-}
-
-void rtCheckFunctionMember(const std::string& /*key*/) {
-    // All ECMA-262 Function.prototype members supported by bronze are answered
-    // by builtin_function.cpp.
 }
 
 }  // namespace bronze::runtime

@@ -3,8 +3,8 @@
 // for the reason rt_prop.cpp is split by receiver kind at all: this is one
 // kind, and it is the one whose answer comes from FOUR places in a fixed order
 // — the global-constructor table, the `prototype` slot, the function's own
-// statics object, and a ladder of intrinsic tables ending at
-// %Function.prototype% and %Object.prototype%.
+// statics object (and the base classes' it inherits through `extends`), then
+// %Function.prototype%'s own statics box and %Object.prototype%.
 //
 // That order is the file's whole content and every step of it is load-bearing;
 // each one carries the clause it implements. The one thing to know before
@@ -150,9 +150,6 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // `prototype` first is what keeps `call`, `bind` and `name` answered
     // or diagnosed rather than read as undefined.
     if (keyStr == "prototype") {
-        if (rtIsFunctionPrototype(recv.get())) {
-            return Value::fromUndefined().rawBits();
-        }
         if (rtIsFunctionConstructor(recv.get())) {
             return rtFunctionPrototypeObject().rawBits();
         }
@@ -239,12 +236,10 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
             return ctor.rawBits();
         }
     }
-    // After the own properties above, because a static named `call` shadows
-    // the inherited one — which is the ordinary rule, and the reason this
-    // is not read first even though it is the cheaper lookup.
-    if (Value method = rtFunctionMethod(keyStr); !method.isUndefined()) {
-        return method.rawBits();
-    }
+    // The statics `extends` linked in, BEFORE %Function.prototype%'s own
+    // members below: a base class's `static call()` is nearer on the chain
+    // than 20.2.3.3, so a derived class reads the static — the ordinary
+    // shadowing rule, and the reason the cheaper lookup is not made first.
     if (props.get().isObject()) {
         // The chain's end BEFORE the pointer that walks toward it:
         // `rtObjectPrototype` builds %Object.prototype% on first use, so a
@@ -264,13 +259,26 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
             }
         }
     }
-    rtCheckFunctionMember(keyStr);
-    // `Function.prototype` has had its say — `call`, `apply` and `bind`
-    // answered above, `constructor` and `toString` refused by name just now
-    // — so what is left is the object above it. That step is what makes
-    // `f.hasOwnProperty` a function rather than `undefined`, which is the
-    // one place bronze answered `undefined` for a member of a prototype it
-    // HAS: the nearer, unbuilt one was already diagnosed by name.
+    // %Function.prototype%'s own members (20.2.3): `call`, `apply`, `bind`,
+    // `toString` and `constructor`, held in ITS statics box, which is the
+    // one box every function receiver's chain reaches whether or not the
+    // receiver has a box of its own — a closure that was never assigned a
+    // static has none, and must still read `call`. The receiver is handed
+    // to the read so an accessor installed there would see the function and
+    // not the box. `rtFunctionPrototypeObject` builds the intrinsics on
+    // first use, which is why the box is taken through a root afterwards.
+    {
+        Rooted<Value> fpBox{rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
+        ObjectHeader* fpObj = fpBox.get().asObject<ObjectHeader>();
+        PropertyInfo inherited;
+        if (fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader), inherited)) {
+            Rooted<Value> key(Value::fromString(keyHeader));
+            return fpObj->getProp(rtHeap(), key, /*ic=*/nullptr, recv.slot_ptr()).rawBits();
+        }
+    }
+    // `Function.prototype` has had its say, so what is left is the object
+    // above it. That step is what makes `f.hasOwnProperty` a function rather
+    // than `undefined`.
     return rtObjectProtoMember(recv, keyStr).rawBits();
 }
 

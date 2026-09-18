@@ -175,10 +175,20 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
         return Value::fromUndefined();
     }
     if (key.get().asSymbol<SymbolHeader>() == rtSymbolHasInstance()) {
+        // 20.2.3.6 is an own property of %Function.prototype%'s statics box
+        // (builtin_function.cpp), which a function's own box chain does not
+        // reach — the chain `extends` links runs through base classes'
+        // boxes to `Object.prototype`. So a function receiver reads it from
+        // that box here, after a `static [Symbol.hasInstance]` anywhere on
+        // its own chain has had the ordinary walk's say.
         if (obj.get().isObject() &&
-            obj.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+            obj.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+            !symbolKeyOnChain(obj.get(), rtSymbolHasInstance())) {
             handled = true;
-            return rtNativeFunction(rtFunctionHasInstanceBuiltin, 1, "[Symbol.hasInstance]", 1);
+            Rooted<Value> fpBox{
+                rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
+            return fpBox.get().asObject<ObjectHeader>()->getProp(rtHeap(), key, /*ic=*/nullptr,
+                                                                 obj.slot_ptr());
         }
         return Value::fromUndefined();
     }
