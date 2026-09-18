@@ -8,6 +8,7 @@
 #include "eval/eval.h"
 #include "embed/embed.h"
 #include "runtime/gc.h"
+#include "runtime/sampler.h"
 
 namespace bronze::cli {
 
@@ -32,6 +33,11 @@ int runEvalReal(std::string_view code) {
 
 int runFileInJitReal(const std::string& filePath) {
     embed::setupIo();
+    // This thread runs the program's JIT-compiled JS: the same note the
+    // standalone main and the embed entry make, so BRONZE_SAMPLE=1 profiles
+    // a `bronze run` exactly as it profiles a built program. A no-op unless
+    // the sampler is armed.
+    runtime::samplerNoteJsThread();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
     embed::CallResult res = eval::evalFile(filePath, eval::EvalOptions{.filename = filePath});
