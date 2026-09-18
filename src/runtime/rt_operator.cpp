@@ -117,6 +117,17 @@ bool plainObjectHas(ObjectHeader* holder, PropertyKey name) {
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
         uint32_t slot = 0;
         if (holder->shape && holder->shape->lookupProperty(name, slot)) return true;
+        if (!holder->shape) return false;
+        const Value proto = holder->shape->prototypeValue();
+        if (!proto.isObject()) return false;
+        if (proto.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+            // 10.1.7.1 step 3.c: `parent.[[HasProperty]](P)` — a proxy link
+            // owns the rest of the question (10.5.7), `has` trap and all.
+            // Nothing above the proxy is walked here; the proxy's own [[Has]]
+            // walks its target's chain when the trap is absent.
+            const Value key = name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string());
+            return rtProxyHas(proto, key);
+        }
         ObjectHeader* next = holder->protoAncestor(1);
         if (!next) return false;
         holder = next;
@@ -738,12 +749,26 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
             return objRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function;
         }
 
-        rtEnsureFunctionPrototype(ctorRoot);
-        protoRoot.set(ctorRoot.get().asObject<FunctionHeader>()->prototype);
-        if (!protoRoot.get().isObject()) return false;
+        if (ctorRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            // 7.3.22 step 3: `Get(C, "prototype")` — through the proxy's own
+            // [[Get]] (10.5.8), so a `get` trap sees the read; step 4 makes a
+            // non-object answer a TypeError rather than a false.
+            Rooted<Value> key{rtMakeString("prototype")};
+            protoRoot.set(rtProxyGet(ctorRoot.get(), key.get(), ctorRoot.get()));
+            if (rtExceptionPending()) return false;
+            if (!protoRoot.get().isObject()) {
+                rtThrowTypeError("Function has non-object prototype in instanceof check");
+                return false;
+            }
+        } else {
+            rtEnsureFunctionPrototype(ctorRoot);
+            protoRoot.set(ctorRoot.get().asObject<FunctionHeader>()->prototype);
+            if (!protoRoot.get().isObject()) return false;
+        }
     }
 
-    if (objRoot.get().asObject<HeapObjectHeader>()->flags != HeapKind::Plain) {
+    const uint16_t objKind = objRoot.get().asObject<HeapObjectHeader>()->flags;
+    if (objKind != HeapKind::Plain && objKind != HeapKind::Proxy) {
         if (protoRoot.get().rawBits() == rtObjectPrototype().rawBits()) {
             return true;
         }
@@ -771,13 +796,28 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
     // prototype has to be materialized above: a constructor whose
     // `.prototype` was never read has no object yet, and creating a
     // different one per test would answer false for its own instances.
-    // Nothing in the walk allocates, so this pointer stays valid.
-    auto* cur = reinterpret_cast<ObjectHeader*>(objRoot.get().asObject<HeapObjectHeader>());
+    //
+    // Step 4 is `O.[[GetPrototypeOf]]()` per link: a plain link answers from
+    // its shape, a PROXY link from its `getPrototypeOf` trap (10.5.1) — which
+    // is user code, so the walker is a root — and any other kind ends the
+    // walk, its members being answered beside the value rather than found on
+    // an object the chain could reach.
+    Rooted<Value> cur{objRoot.get()};
     for (uint32_t depth = 0; depth <= 1000; ++depth) {
-        ObjectHeader* next = cur->protoAncestor(1);
-        if (!next) return false;
-        if (protoRoot.get().rawBits() == Value::fromObject(next).rawBits()) return true;
-        cur = next;
+        Value next = Value::fromUndefined();
+        const uint16_t kind = cur.get().asObject<HeapObjectHeader>()->flags;
+        if (kind == HeapKind::Plain) {
+            Shape* shape = cur.get().asObject<ObjectHeader>()->shape;
+            next = shape ? shape->prototypeValue() : Value::fromUndefined();
+        } else if (kind == HeapKind::Proxy) {
+            next = rtProxyGetPrototypeOf(cur.get());
+            if (rtExceptionPending()) return false;
+        } else {
+            return false;
+        }
+        if (!next.isObject()) return false;
+        if (protoRoot.get().rawBits() == next.rawBits()) return true;
+        cur.set(next);
     }
     fatal("prototype chain too deep (a cycle?)");
 }

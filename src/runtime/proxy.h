@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "runtime/dictionary.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/rt_property.h"
@@ -14,12 +15,10 @@ namespace bronze {
 // A trap is found the way 10.5 finds one — GetMethod(handler, name), an
 // ordinary read followed by a callable check — so ANY object is a legal
 // handler (10.5.14 requires only an object), an inherited trap is found, and a
-// handler with no trap for an operation forwards it to the target. There is no
-// construction-time gate over the trap names: the operations whose traps
-// bronze has NOT built refuse BY NAME at the operation instead
-// (`Object.defineProperty`, `Object.setPrototypeOf`, `Object.freeze` and the
-// extensibility pair on a proxy), which is the same guarantee — no operation
-// silently bypasses a handler — placed where it can name what was asked for.
+// handler with no trap for an operation forwards it to the target. All
+// thirteen internal methods are here: the nine property-shaped ones in
+// proxy.cpp, and [[GetPrototypeOf]]'s three siblings, [[DefineOwnProperty]]
+// and the integrity operations built over them in proxy_reflect.cpp.
 //
 // REVOCATION (28.2.2.1) is a state, not a kind: the revoker nulls both fields,
 // and every internal method below begins with the check 10.5.1 step 2 and its
@@ -31,10 +30,14 @@ struct ProxyHeader {
     Value target;    // an object; NULL once revoked
     Value handler;   // an object; NULL once revoked
     // 10.5.14: [[Call]] and [[Construct]] are present on the proxy exactly
-    // when the TARGET had them at creation, so this is decided once and read
+    // when the TARGET had them at creation, so both are decided once and read
     // afterwards — including after revocation, when the target is gone but
-    // `typeof p` must still answer "function".
-    Value callable;  // boolean
+    // `typeof p` must still answer "function". Two facts, not one: an arrow
+    // or a method is callable without being a constructor, and `new` on a
+    // proxy over one must be the TypeError of a missing [[Construct]] rather
+    // than a `construct` trap call (10.5.13 exists only when this is true).
+    Value callable;      // boolean
+    Value constructible; // boolean
 
     static constexpr uint16_t kFlags = HeapKind::Proxy;
 
@@ -74,11 +77,14 @@ inline Value rtProxyGet(Value proxyVal, Value keyVal) {
 
 // [[Set]] (10.5.9): the `set` trap or the forwarded write. The trap's
 // boolean result is read the way 13.15.2 reads it: false under strict is a
-// TypeError, false otherwise is a quiet refusal. `receiver` is step 7's fourth
-// trap argument, on the same terms as [[Get]]'s above.
-void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict, Value receiver);
-inline void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict) {
-    rtProxySet(proxyVal, keyVal, val, strict, proxyVal);
+// TypeError, false otherwise is a quiet refusal — and it is also RETURNED, for
+// the one caller that spends it differently: 10.1.9.2 step 2 of an ordinary
+// object whose chain holds the proxy, which reports the refusal to its own
+// strict caller rather than throwing here. `receiver` is step 7's fourth trap
+// argument, on the same terms as [[Get]]'s above.
+bool rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict, Value receiver);
+inline bool rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict) {
+    return rtProxySet(proxyVal, keyVal, val, strict, proxyVal);
 }
 
 // [[HasProperty]] (10.5.7): the `has` trap or the forwarded `in`.
@@ -115,8 +121,66 @@ Value rtProxyTargetOwnKeys(Rooted<Value>& targetRoot);
 // there.
 bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, struct OwnPropertyDetail& out);
 
+// The same, as far as the TRAP takes it: `Forwarded` means the handler has no
+// `getOwnPropertyDescriptor` trap and the target has not been asked, so the
+// caller asks it in whichever spelling it wants — the attribute switch above,
+// or `Object.getOwnPropertyDescriptor`'s object, which is the only spelling
+// that describes every target kind. `Present` fills `out` with the trap's
+// descriptor COMPLETED (6.2.6.6), value included.
+enum class ProxyOwnProperty { Forwarded, Absent, Present };
+ProxyOwnProperty rtProxyGetOwnPropertyTrapped(Value proxyVal, Value keyVal,
+                                              struct OwnPropertyDetail& out);
+
 // [[GetPrototypeOf]] (10.5.1): the `getPrototypeOf` trap, or the target's.
 Value rtProxyGetPrototypeOf(Value proxyVal);
+
+// ---- proxy_reflect.cpp -----------------------------------------------------
+//
+// The internal methods whose forward is an `Object` member rather than a
+// property read, and the two integrity operations (7.3.14, 7.3.15) that are
+// defined over four of them. Every one is a GC point and a throw point on the
+// same terms as the family above.
+
+// [[GetOwnProperty]] (10.5.5) as the OBJECT 6.2.6.4 FromPropertyDescriptor
+// builds from it, or `undefined`: what `Object.getOwnPropertyDescriptor` and
+// `Reflect.getOwnPropertyDescriptor` answer for a proxy.
+Value rtProxyGetOwnPropertyDescriptor(Value proxyVal, Value keyVal);
+
+// [[DefineOwnProperty]] (10.5.6). `descVal` is the descriptor as an OBJECT —
+// already decoded once by the caller and rebuilt through FromPropertyDescriptor
+// (step 9), so the trap sees exactly the fields the descriptor has and nothing
+// the program's own object carried besides. `throwOnRefusal` is the
+// `Object.defineProperty` / `Reflect.defineProperty` split: a trap that
+// answers false is the TypeError for the first and `false` for the second.
+bool rtProxyDefineOwnProperty(Value proxyVal, Value keyVal, Value descVal, bool throwOnRefusal);
+
+// [[SetPrototypeOf]] (10.5.2), [[IsExtensible]] (10.5.3) and
+// [[PreventExtensions]] (10.5.4): the boolean each internal method answers.
+// A refusal is the boolean; a contradiction of the target is the TypeError.
+bool rtProxySetPrototypeOf(Value proxyVal, Value protoVal);
+bool rtProxyIsExtensible(Value proxyVal);
+bool rtProxyPreventExtensions(Value proxyVal);
+
+// 7.3.14 SetIntegrityLevel and 7.3.15 TestIntegrityLevel over a proxy: the
+// generic algorithms, spelled over the internal methods above, which is what
+// makes `Object.freeze(proxy)` reach `preventExtensions`, `ownKeys`,
+// `getOwnPropertyDescriptor` and `defineProperty` in 7.3.14's order.
+// `IntegrityLevel::Open` is `preventExtensions` alone (20.1.2.19).
+bool rtProxySetIntegrityLevel(Value proxyVal, IntegrityLevel level);
+bool rtProxyTestIntegrityLevel(Value proxyVal, bool frozen);
+
+// 7.2.2 IsArray over the whole value model: an Array exotic object, or a
+// proxy — however deep — whose ultimate target is one. A revoked proxy on the
+// way is step 3.b's TypeError, left pending with `false` answered. It lives
+// beside the proxy because the proxy is the only reason the question is not
+// a kind test; `Array.isArray` and `Object.prototype.toString` ask it.
+bool rtIsArray(Value v);
+
+// 7.3.23 EnumerableOwnProperties over a proxy, for `Object.values` and
+// `Object.entries`: [[OwnPropertyKeys]] once, then PER KEY a
+// [[GetOwnProperty]] and — for an enumerable one — a [[Get]], which is the
+// interleaving a handler observes and `Object.keys` followed by reads is not.
+Value rtProxyEnumerableOwn(Value proxyVal, bool wantEntries);
 
 // [[Call]] (10.5.12): the `apply` trap called as `trap(target, thisArg,
 // argsArray)` — the arguments as a real Array, which is CreateArrayFromList in
@@ -125,8 +189,11 @@ uint64_t rtProxyCall(Value proxyVal, Value thisArg, uint32_t argc, const uint64_
 
 // [[Construct]] (10.5.13): the `construct` trap called as `trap(target,
 // argsArray, newTarget)`, whose non-object return is step 9's TypeError — or
-// the forwarded construction.
-uint64_t rtProxyConstruct(Value proxyVal, uint32_t argc, const uint64_t* argv);
+// the forwarded construction, `Construct(target, args, newTarget)`. The
+// newTarget is the proxy itself for `new p()`, the third argument of
+// `Reflect.construct`, and the active new.target for a `super()` that
+// reaches a proxy base. `argv` must be rooted by the caller.
+uint64_t rtProxyConstruct(Value proxyVal, uint32_t argc, const uint64_t* argv, Value newTarget);
 
 // The check every one of the above begins with, exposed for the callers that
 // reach a proxy without going through one of them. True means a TypeError is
@@ -164,9 +231,32 @@ void rtProxyCheckDelete(Rooted<Value>& target, Rooted<Value>& key, bool trapAnsw
 
 // 10.5.5 steps 9-17, over the descriptor object the trap returned (or a
 // `Rooted` holding undefined for the absent answer). This is the one check that
-// runs 6.2.6's IsCompatiblePropertyDescriptor.
+// runs 6.2.6's IsCompatiblePropertyDescriptor. `reported` comes back holding
+// the trap's descriptor after ToPropertyDescriptor and
+// CompletePropertyDescriptor (steps 12-13): decoded ONCE, here, because each
+// field read is a [[Get]] on the trap's object and may run a getter.
 void rtProxyCheckGetOwnProperty(Rooted<Value>& target, Rooted<Value>& key,
-                                Rooted<Value>& desc);
+                                Rooted<Value>& desc, OwnPropertyDetail& reported);
+
+// The fields of a decoded descriptor that the [[DefineOwnProperty]] check
+// reads, spelled without a dependency on the descriptor seam's own struct:
+// which fields are PRESENT, the three booleans, and the payloads (rooted by
+// the caller).
+struct DecodedDescriptorView {
+    bool hasValue = false, hasWritable = false, hasEnumerable = false, hasConfigurable = false;
+    bool hasGet = false, hasSet = false;
+    bool writable = false, enumerable = false, configurable = false;
+    Rooted<Value>* value = nullptr;
+    Rooted<Value>* getter = nullptr;
+    Rooted<Value>* setter = nullptr;
+};
+
+// 10.5.6 steps 11-17: the descriptor a `defineProperty` trap accepted against
+// the target's own property — 6.2.6.7 IsCompatiblePropertyDescriptor over the
+// PARTIAL descriptor (a field the descriptor lacks constrains nothing), and the
+// two rules about manufacturing non-configurability and non-writability.
+void rtProxyCheckDefineProperty(Rooted<Value>& target, Rooted<Value>& key,
+                                const DecodedDescriptorView& desc);
 
 // 10.5.11 steps 9-23: the trap's key list against the target's non-configurable
 // keys, and — for a non-extensible target — against ALL of them, in both

@@ -298,6 +298,10 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             // `undefined`, the same answer a plain object gives for a name it
             // does not carry.
             return Value::fromUndefined().rawBits();
+        case ObjectOwnKeys::Proxy:
+            // 10.5.5 [[GetOwnProperty]]: the `getOwnPropertyDescriptor` trap's
+            // descriptor, completed, or the target's own (proxy_reflect.cpp).
+            return rtProxyGetOwnPropertyDescriptor(args[0], args[1]).rawBits();
         case ObjectOwnKeys::StringChars: {
             if (args[1].isSymbol()) return Value::fromUndefined().rawBits();
             const std::string key = rtObjectKeyTextOf(args[1]);

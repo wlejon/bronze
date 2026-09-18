@@ -82,6 +82,9 @@ void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::string& key)
             rtThrowTypeError("Cannot add property '" + key +
                              "' to an object that is not extensible");
             return;
+        case SetRefusal::TrapRefused:
+            rtThrowTypeError("'set' on proxy: trap returned falsish for property '" + key + "'");
+            return;
         case SetRefusal::None:
             return;
     }

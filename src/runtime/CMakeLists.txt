@@ -73,6 +73,7 @@ bronze_add_module(runtime
         rt_members.cpp
         native_base.cpp
         rt_object.cpp
+        rt_object_keys.cpp
         realm.cpp
         rt_global.cpp
         rt_reflect.cpp
@@ -130,6 +131,7 @@ bronze_add_module(runtime
         proxy.cpp
         proxy_array.cpp
         proxy_invariant.cpp
+        proxy_reflect.cpp
     DEPS
         abi
         json

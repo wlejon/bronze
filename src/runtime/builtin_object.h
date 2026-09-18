@@ -45,6 +45,7 @@ enum class ObjectOwnKeys {
     Namespace,    // a module namespace: 10.4.6.2's sorted export names
     Function,     // a function: its statics are in FunctionHeader::properties
     Array,        // an array: its elements, `length`, and ArrayHeader::properties
+    Proxy,        // a Proxy: 10.5.11's `ownKeys` trap, or the target's, per ask
     None,         // a number, a boolean, a symbol: the box has no own property
     Threw,        // null or undefined: ToObject has no answer, and this raised it
 };
@@ -101,6 +102,13 @@ uint64_t rtObjectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
                                            const uint64_t* argv);
 uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+
+// [[SetPrototypeOf]] answering its BOOLEAN (10.1.2.1 for an ordinary object,
+// 10.5.2 for a proxy): what `Reflect.setPrototypeOf` reports and what
+// `Object.setPrototypeOf` turns into 20.1.2.21 step 4's TypeError. `proto`
+// must already be an object or null (both members check it first). A pending
+// exception — a proxy trap — comes back as false with the cell set.
+bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& obj, Rooted<Value>& proto);
 uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t objectKeys(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t objectValues(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);

@@ -25,6 +25,7 @@ enum class SetRefusal {
     NoSetter,       // an accessor property with no `set` half (step 5.c)
     NotWritable,    // a non-writable data property (step 3 -> 10.1.6.3)
     NotExtensible,  // a new property on a non-extensible receiver (10.1.6.3 2.b)
+    TrapRefused,    // a proxy on the chain answered false from its [[Set]] (10.5.9)
 };
 
 // The number of property ADDS that have happened anywhere in the program. A

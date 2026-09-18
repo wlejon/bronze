@@ -189,6 +189,12 @@ uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
 uint64_t functionToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (!requireFunctionReceiver(self, "toString")) return Value::fromUndefined().rawBits();
+    // 20.2.3.5 step 3: a callable that is not a function object — a proxy
+    // over a function — has no source text and no [[InitialName]], so it is
+    // the anonymous NativeFunction form.
+    if (self.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return rtMakeString("function () { [native code] }").rawBits();
+    }
     auto* fn = self.asObject<FunctionHeader>();
     if (!fn->isNativeCode()) {
         const std::string_view text = rtFunctionSourceText(reinterpret_cast<void*>(fn->code));

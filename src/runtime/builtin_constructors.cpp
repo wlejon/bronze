@@ -121,16 +121,12 @@ uint64_t arrayConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint
 // program can install, which is why it is a flags test and not a property read.
 uint64_t arrayIsArray(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    const Value v = args[0];
-    // `Array.prototype` is an Array exotic object (23.1.3) that bronze keeps as
-    // a plain one, for the reason builtin_array.cpp gives where its `length` is
-    // installed. IsArray is the one question that difference is visible
-    // through, so it is answered by identity here rather than left to report
-    // the kind and be wrong.
-    if (rtIsArrayPrototypeObject(v)) return Value::fromBool(true).rawBits();
-    return Value::fromBool(v.isObject() &&
-                           v.asObject<HeapObjectHeader>()->flags == HeapKind::Array)
-        .rawBits();
+    // 7.2.2 IsArray, which sees through a proxy to its target and throws for a
+    // revoked one — and which answers by identity for `Array.prototype`, an
+    // Array exotic object (23.1.3) that bronze keeps as a plain one.
+    const bool isArray = rtIsArray(args[0]);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    return Value::fromBool(isArray).rawBits();
 }
 
 uint64_t arrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -168,13 +164,34 @@ uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> ctor{Value(thisBits)};
     const bool constructed = buildsThroughThis(ctor.get());
 
-    if (rtHasIteratorMethod(src)) {
+    // Step 4: `GetMethod(items, @@iterator)`. For a PROXY source that is one
+    // `get` trap, observable exactly once — so the method is fetched here and
+    // the iterator opened FROM it (7.4.3), where every other source lets
+    // `bronze_iter_open` do its own lookup.
+    Rooted<Value> proxyMethod{Value::fromUndefined()};
+    bool iterable = rtHasIteratorMethod(src);
+    if (!iterable && src.get().isObject() &&
+        src.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        Rooted<Value> key{rtIteratorKey()};
+        proxyMethod.set(rtProxyGet(src.get(), key.get(), src.get()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (!proxyMethod.get().isNull() && !proxyMethod.get().isUndefined()) {
+            if (!rtIsCallableValue(proxyMethod.get())) {
+                return rtThrowTypeError("Array.from: Symbol.iterator is not a function").rawBits();
+            }
+            iterable = true;
+        }
+    }
+
+    if (iterable) {
         // Step 5.b constructs with NO argument on this path, because the count
         // is not known until the iterator is exhausted — which is the one place
         // the two halves of this member differ in what they hand the base.
         Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-        Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
+        Rooted<Value> rec{proxyMethod.get().isUndefined()
+                              ? Value(bronze_iter_open(src.get().rawBits()))
+                              : rtGetIteratorFromMethod(src, proxyMethod)};
         if (rtExceptionPending()) return out.get().rawBits();
         uint32_t i = 0;
         while (bronze_iter_step(rec.get().rawBits())) {

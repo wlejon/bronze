@@ -131,35 +131,9 @@ const char* propertyStoreReason(Value v) {
 // saying what it is and what about its storage bronze cannot reach —
 // `getOwnPropertyNames`'s precedent, which named the kinds before any of the
 // rest of them did.
-// The trap 10.5 routes an `Object` member through — for the ones bronze has
-// not built. A proxy refused with the reason above would be describing the
-// TARGET's storage, which is not what is missing: 10.5 asks the HANDLER first,
-// and the gap is the ask. Naming the trap says what a handler would have to
-// provide and what bronze would have to call.
-const char* proxyTrapFor(const std::string& member) {
-    if (member == "defineProperty" || member == "defineProperties") return "defineProperty";
-    if (member == "setPrototypeOf") return "setPrototypeOf";
-    if (member == "freeze" || member == "seal" || member == "preventExtensions") {
-        return "preventExtensions";
-    }
-    if (member == "isFrozen" || member == "isSealed" || member == "isExtensible") {
-        return "isExtensible";
-    }
-    return nullptr;
-}
-
 }  // namespace
 
 [[noreturn]] void refuseObjectKind(Value v, const char* member) {
-    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
-        const char* trap = proxyTrapFor(member);
-        fatal((std::string("unsupported: Object.") + member + " on a Proxy (10.5 routes it " +
-               (trap ? std::string("through the `") + trap + "` trap, which bronze has not built"
-                     : std::string("through a trap bronze has not built")) +
-               "; forwarding to the target behind the handler's back would be the one thing a "
-               "proxy must never do, so this refuses instead)")
-                  .c_str());
-    }
     fatal((std::string("unsupported: Object.") + member + " on " + rtObjectKindName(v) + " (" +
            propertyStoreReason(v) + ")")
               .c_str());
@@ -173,6 +147,10 @@ bool rtObjectRequirePropertyTable(Value v, const char* member) {
     // and its named properties live in a side object that is an ordinary
     // shape.
     if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Array) return true;
+    // And a proxy: its [[DefineOwnProperty]] is 10.5.6, the `defineProperty`
+    // trap, which the apply reaches as one more receiver kind
+    // (builtin_object_define.cpp).
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) return true;
     if (!v.isObject()) {
         rtThrowTypeError(std::string("Object.") + member +
                          " called on a value that is not an object");
@@ -198,6 +176,7 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
         return ObjectOwnKeys::Function;
     }
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Array) return ObjectOwnKeys::Array;
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) return ObjectOwnKeys::Proxy;
     if (rtIsModuleNamespace(v)) return ObjectOwnKeys::Namespace;
     refuseObjectKind(v, member);
 }
@@ -374,10 +353,12 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             return Value::fromUndefined().rawBits();
         case ObjectOwnKeys::None:
             return Value::fromBool(false).rawBits();
-        case ObjectOwnKeys::Array: {
+        case ObjectOwnKeys::Array:
+        case ObjectOwnKeys::Proxy: {
             // The one [[GetOwnProperty]] `hasOwnProperty` asks
             // (builtin_object_proto.cpp): an element, `length`, or a named or
-            // symbol-keyed property of the side object. Asked there rather
+            // symbol-keyed property of the side object — or, for a proxy, the
+            // `getOwnPropertyDescriptor` trap (10.5.5). Asked there rather
             // than answered here so the two spellings cannot drift.
             Rooted<Value> self{args[0]};
             bool enumerable = false;
@@ -452,41 +433,37 @@ bool rtSamePrototypeAsCurrent(Value obj, Value proto) {
     return bronze_strict_eq(proto.rawBits(), current.rawBits());
 }
 
-// 20.1.2.21 step 4, in one place: both arms below reach it, and a chain that
-// could not be replaced must not be reported differently depending on which
-// storage the receiver keeps its prototype in.
+// 20.1.2.21 step 4, in one place: every false [[SetPrototypeOf]] answers —
+// a non-extensible object (10.1.2.1 step 4), a chain that would loop (step
+// 8.c.ii), a proxy trap that refused (10.5.2 step 9) — reach it, and none of
+// them is reported differently for the storage the receiver keeps its
+// prototype in.
 uint64_t refuseInextensiblePrototype() {
-    return rtThrowTypeError("Cannot set the prototype of an object that is not extensible")
+    return rtThrowTypeError("Cannot set the prototype: the object is not extensible, the "
+                            "chain would be cyclic, or a proxy trap refused")
         .rawBits();
 }
 
-// 20.1.2.21 Object.setPrototypeOf. Returns the object, so it composes.
-uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    RootedArgs args(argc, argv);
-    if (!args[1].isObject() && !args[1].isNull()) {
-        return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
-    }
-    if (!isPlainObject(args[0])) {
-        if (args[0].isNull() || args[0].isUndefined()) {
-            return rtThrowTypeError("Object.setPrototypeOf called on null or undefined")
-                .rawBits();
+bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
+    if (!isPlainObject(self.get())) {
+        if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            // 10.5.2 [[SetPrototypeOf]]: the `setPrototypeOf` trap, or the
+            // target's own, checked against the target's extensibility.
+            return rtProxySetPrototypeOf(self.get(), proto.get());
         }
-        if (!args[0].isObject()) return args[0].rawBits();  // 20.1.2.21 step 3
         // 10.1.2 OrdinarySetPrototypeOf step 2: a write of the prototype the
         // object ALREADY has succeeds and changes nothing. That is the whole
         // of `Object.setPrototypeOf(arr, Array.prototype)`, a defensive idiom
         // real code writes, and answering it needs no storage — only the
         // getter above, which now knows what an array's and a function's
         // prototype is.
-        if (rtSamePrototypeAsCurrent(args[0], args[1])) return args[0].rawBits();
-        if (!rtIsExtensible(args[0])) return refuseInextensiblePrototype();
+        if (rtSamePrototypeAsCurrent(self.get(), proto.get())) return true;
+        if (!rtIsExtensible(self.get())) return false;
         // Shapeless objects (e.g. functions / closures) cannot alter native dispatch,
         // but TypeScript's __extends and similar inheritance helpers call setPrototypeOf
-        // on constructors. Return the object so the call succeeds.
-        return args[0].rawBits();
+        // on constructors. Answer success so the call composes.
+        return true;
     }
-    Rooted<Value> self{args[0]};
-    Rooted<Value> proto{args[1]};
     // 10.1.2.1 OrdinarySetPrototypeOf steps 2 to 4, in that order. Step 2's
     // SameValue comes FIRST, so a write of the prototype the object already has
     // succeeds on a non-extensible object too — it stores nothing, and there is
@@ -498,13 +475,41 @@ uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     {
         const uint64_t call[1] = {self.get().rawBits()};
         const Value current(objectGetPrototypeOf(0, 0, 1, call));
-        if (bronze_strict_eq(proto.get().rawBits(), current.rawBits())) {
-            return self.get().rawBits();
+        if (bronze_strict_eq(proto.get().rawBits(), current.rawBits())) return true;
+    }
+    if (!rtIsExtensible(self.get())) return false;
+    // Step 8: a chain that would loop back to the object is refused, walked
+    // over ordinary links only — step 8.c.i stops the walk at a link whose
+    // [[GetPrototypeOf]] is not the ordinary one, a proxy being the case.
+    {
+        Value link = proto.get();
+        for (uint32_t depth = 0; link.isObject() && depth <= 1000; ++depth) {
+            if (link.rawBits() == self.get().rawBits()) return false;
+            if (!isPlainObject(link)) break;
+            Shape* shape = link.asObject<ObjectHeader>()->shape;
+            link = shape ? shape->prototypeValue() : Value::fromNull();
         }
     }
-    if (!rtIsExtensible(self.get())) return refuseInextensiblePrototype();
     Shape* newRoot = rtRootShapeForPrototype(proto.get());
     ObjectHeader::setPrototype(rtArena(), self, newRoot);
+    return true;
+}
+
+// 20.1.2.21 Object.setPrototypeOf. Returns the object, so it composes.
+uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!args[1].isObject() && !args[1].isNull()) {
+        return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
+    }
+    if (args[0].isNull() || args[0].isUndefined()) {
+        return rtThrowTypeError("Object.setPrototypeOf called on null or undefined").rawBits();
+    }
+    if (!args[0].isObject()) return args[0].rawBits();  // 20.1.2.21 step 3
+    Rooted<Value> self{args[0]};
+    Rooted<Value> proto{args[1]};
+    const bool ok = rtObjectSetPrototypeOfOrdinary(self, proto);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!ok) return refuseInextensiblePrototype();
     return self.get().rawBits();
 }
 
@@ -517,7 +522,13 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (!args[0].isObject() && !args[0].isNull()) {
         return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
     }
-    if (args[0].isObject() && !isPlainObject(args[0])) {
+    // A PROXY may be the prototype: every walk that misses stops at the link
+    // and hands the rest of the operation to the proxy's internal method with
+    // the receiver it had (object.cpp's read and write walks, rt_operator.cpp's
+    // `in`, rt_enumerate.cpp's for-in), which is what 10.1.8.1 step 3 and its
+    // siblings say happens at a link whose [[Get]] is not the ordinary one.
+    if (args[0].isObject() && !isPlainObject(args[0]) &&
+        args[0].asObject<HeapObjectHeader>()->flags != HeapKind::Proxy) {
         fatal((std::string("unsupported: Object.create with ") + rtObjectKindName(args[0]) +
                " as the prototype (a prototype is walked by every read that misses, and this "
                "kind answers its members from a table beside the value rather than from a "
@@ -564,6 +575,23 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             // changes nothing and this is the same list `Object.keys` gives —
             // answered by the same function, so the two cannot drift.
             return bronze_object_keys(args[0].rawBits());
+        case ObjectOwnKeys::Proxy: {
+            // 10.5.11 [[OwnPropertyKeys]] — the `ownKeys` trap's list, in the
+            // trap's order — with 20.1.2.10's string filter over it. The trap
+            // runs once; its symbols are `getOwnPropertySymbols`' half.
+            Rooted<Value> proxy{args[0]};
+            Rooted<Value> keys{rtProxyOwnKeys(proxy.get())};
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            Rooted<Value> out{Value(bronze_create_array(0))};
+            uint32_t at = 0;
+            const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
+            for (uint32_t i = 0; i < count; ++i) {
+                Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
+                if (!key.get().isString()) continue;
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+            }
+            return out.get().rawBits();
+        }
         case ObjectOwnKeys::Function: {
             // 10.2.4 and 10.2.9/10.2.10: an ordinary function's own properties
             // are `length`, `name` and — where its syntax gave it one —

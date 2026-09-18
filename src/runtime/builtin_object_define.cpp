@@ -35,6 +35,7 @@
 #include "runtime/integrity.h"
 #include "runtime/map.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -443,15 +444,49 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
     return applyDecodedDescriptor(holder, name, d, value, getter, setter, throwOnRefusal);
 }
 
-// 10.1.6.3 or 10.4.2.1, by the receiver's kind, over a table the receiver
-// keeps somewhere: a function's statics box, an array's three stories above,
-// everything else its own shape.
+// 6.2.6.4 FromPropertyDescriptor over a DECODED descriptor: a fresh ordinary
+// object carrying exactly the fields the descriptor HAS, in the
+// specification's field order. 10.5.6 step 9 hands a `defineProperty` trap
+// this rather than the program's own descriptor object, so a trap sees the
+// six-field shape and nothing the caller's object carried besides.
+static Value descriptorObjectOf(const DecodedDescriptor& d, Rooted<Value>& value,
+                                Rooted<Value>& getter, Rooted<Value>& setter) {
+    Rooted<Value> out{Value(bronze_create_object())};
+    Rooted<Value> flag{Value::fromUndefined()};
+    if (d.hasValue) putField(out, "value", value);
+    if (d.hasWritable) {
+        flag.set(Value::fromBool(d.wantWritable));
+        putField(out, "writable", flag);
+    }
+    if (d.hasGet) putField(out, "get", getter);
+    if (d.hasSet) putField(out, "set", setter);
+    if (d.hasEnumerable) {
+        flag.set(Value::fromBool(d.wantEnumerable));
+        putField(out, "enumerable", flag);
+    }
+    if (d.hasConfigurable) {
+        flag.set(Value::fromBool(d.wantConfigurable));
+        putField(out, "configurable", flag);
+    }
+    return out.get();
+}
+
+// 10.1.6.3, 10.4.2.1 or 10.5.6, by the receiver's kind, over a table the
+// receiver keeps somewhere: a function's statics box, an array's three stories
+// above, a proxy's `defineProperty` trap, everything else its own shape.
 static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const DecodedDescriptor& d,
                             Rooted<Value>& value, Rooted<Value>& getter, Rooted<Value>& setter,
                             bool throwOnRefusal) {
     const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
     if (kind == HeapKind::Array) {
         return applyArrayDescriptor(self, name, d, value, getter, setter, throwOnRefusal);
+    }
+    if (kind == HeapKind::Proxy) {
+        // The key as an ordinary heap string for the trap to hold, not the
+        // arena's interned one.
+        Rooted<Value> key{name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string())};
+        Rooted<Value> desc{descriptorObjectOf(d, value, getter, setter)};
+        return rtProxyDefineOwnProperty(self.get(), key.get(), desc.get(), throwOnRefusal);
     }
     Rooted<Value> holder{self.get()};
     if (kind == HeapKind::Function) {

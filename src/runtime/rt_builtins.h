@@ -586,4 +586,11 @@ struct NewTargetScope {
     static Value current();
 };
 
+// 7.3.15 Construct(F, argumentsList, newTarget) with a newTarget that may
+// differ from F: `Reflect.construct`'s body, and where a Proxy's forwarded
+// [[Construct]] sends its target (rt_reflect.cpp). `argv` must be rooted by
+// the caller — the ordinary path allocates the instance before reading it.
+uint64_t rtConstructWithNewTarget(Rooted<Value>& target, uint32_t count, const uint64_t* argv,
+                                  Rooted<Value>& newTarget);
+
 }  // namespace bronze::runtime

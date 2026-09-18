@@ -416,12 +416,21 @@ uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
     for (uint32_t depth = 0; depth < ObjectHeader::kMaxPrototypeDepth; ++depth) {
         const uint16_t kind = walker.get().asObject<HeapObjectHeader>()->flags;
         if (kind == HeapKind::ModuleNamespace) return Value::fromBool(false).rawBits();
-        if (kind != HeapKind::Plain) {
+        Value nextVal = Value::fromUndefined();
+        if (kind == HeapKind::Proxy) {
+            // Step 3.a is `V.[[GetPrototypeOf]]()`: a proxy link answers with
+            // its `getPrototypeOf` trap (10.5.1), and the walk goes on from
+            // whatever it said.
+            nextVal = rtProxyGetPrototypeOf(walker.get());
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            if (!nextVal.isObject()) return Value::fromBool(false).rawBits();
+        } else if (kind != HeapKind::Plain) {
             return Value::fromBool(target == objectProto).rawBits();
+        } else {
+            Shape* shape = walker.get().asObject<ObjectHeader>()->shape;
+            nextVal = shape ? shape->prototypeValue() : Value::fromUndefined();
+            if (!nextVal.isObject()) return Value::fromBool(false).rawBits();
         }
-        ObjectHeader* next = walker.get().asObject<ObjectHeader>()->protoAncestor(1);
-        if (!next) return Value::fromBool(false).rawBits();
-        const Value nextVal = Value::fromObject(next);
         if (nextVal.rawBits() == target) return Value::fromBool(true).rawBits();
         walker.set(nextVal);
     }
@@ -485,6 +494,14 @@ const char* builtinTag(Value self) {
             return "Function";
         case HeapKind::RegExp:
             return "RegExp";
+        case HeapKind::Proxy:
+            // Steps 4 and 6 are the two tests that see through a proxy: 7.2.2
+            // IsArray to its target, and IsCallable, which 10.5.14 fixed at
+            // creation. Every other arm asks for a slot a proxy has not got.
+            // A revoked proxy is IsArray's TypeError, left pending; the tag
+            // answered beside it is discarded by the caller's test.
+            if (rtIsArray(self)) return "Array";
+            return rtIsCallableValue(self) ? "Function" : "Object";
         default:
             break;
     }
@@ -549,6 +566,7 @@ uint64_t rtObjectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint
     // read landed in a recycled block.
     Rooted<Value> receiver{self};
     std::string tag = builtinTag(receiver.get());
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();  // a revoked proxy
 
     // Steps 15-17. An ordinary property GET, so a user-installed
     // `[Symbol.toStringTag]` — own or inherited — is found by the ordinary

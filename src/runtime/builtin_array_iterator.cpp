@@ -29,6 +29,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
+#include "runtime/typed_array.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -81,9 +82,15 @@ uint64_t arrayIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 // so the object has no own symbol-keyed property at all.
 uint64_t makeArrayIterator(uint64_t thisBits, uint32_t kind, const char* method) {
     Rooted<Value> self{Value(thisBits)};
-    if (!isArray(self.get())) {
+    // 23.1.3.34 step 1 is ToObject(this value): the method is GENERIC, and
+    // 23.1.5.1 reads the receiver through `LengthOfArrayLike` and `Get`, so a
+    // Proxy over an array iterates through its `get` trap — `length` on every
+    // step, then the element — and an array-like iterates its indices. Only
+    // null and undefined are refused (7.1.18); a primitive boxes to an object
+    // with no `length`, which the generic walk below reads as 0.
+    if (self.get().isNull() || self.get().isUndefined()) {
         return rtThrowTypeError(std::string("Array.prototype.") + method +
-                                " called on a value that is not an array")
+                                " called on null or undefined")
             .rawBits();
     }
     Rooted<Value> it{rtNewIteratorObject(IteratorProto::Array)};
@@ -107,10 +114,19 @@ bool rtArrayIteratorStep(Rooted<Value>& self, Value& produced) {
     // The prototype is shared with a typed array's iterator (23.2.5.2), so a
     // detached `next` moved between the two kinds lands here with the other
     // kind's target — exhausted, not crashed, exactly as taIterNext answers
-    // an array-backed receiver.
-    if (!isArray(target.get())) return false;
+    // an array-backed receiver. A slot holding no object is the same answer.
+    if (!target.get().isObject() || target.get().asObject<HeapObjectHeader>()->flags ==
+                                        TypedArrayHeader::kFlags) {
+        return false;
+    }
     const auto at = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::NextIndex).asNumber());
-    if (at >= target.get().asObject<ArrayHeader>()->length) return false;
+    // 23.1.5.1 step b.ii: `LengthOfArrayLike(array)` on EVERY step — an
+    // array's own length word, any other object's `length` through Get (a
+    // proxy's `get` trap), which is what makes an array grown mid-walk
+    // iterate its new tail and a trap see one `length` read per element.
+    const uint32_t length = rtArrayLikeLength(target);
+    if (rtExceptionPending()) return false;
+    if (at >= length) return false;
     const auto kind = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::Kind).asNumber());
 
     writeSlot(self, ArrayIteratorSlot::NextIndex, Value::fromDouble(static_cast<double>(at + 1)));
@@ -119,8 +135,11 @@ bool rtArrayIteratorStep(Rooted<Value>& self, Value& produced) {
         return true;
     }
     // 23.1.5.2.1 reads with Get, so a HOLE iterates as `undefined` rather
-    // than being skipped — the same rule the for-of cursor follows.
-    Rooted<Value> elem{target.get().asObject<ArrayHeader>()->getElem(at)};
+    // than being skipped — the same rule the for-of cursor follows. The
+    // generic read is `Get(array, ToString(index))`, trap and all.
+    Rooted<Value> elem{isArray(target.get()) ? target.get().asObject<ArrayHeader>()->getElem(at)
+                                             : rtArrayLikeElement(target, at)};
+    if (rtExceptionPending()) return false;
     if (kind == Values) {
         produced = elem.get();
     } else {

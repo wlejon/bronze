@@ -27,6 +27,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
+#include "runtime/promise.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -48,9 +49,26 @@ ProxyHeader* ProxyHeader::create(Heap& heap, Rooted<Value>& target, Rooted<Value
     // the target is callable AT CREATION. Recorded rather than re-derived,
     // because the target is gone after revocation and `typeof` still has to
     // answer.
-    proxy->callable =
-        Value::fromBool(target.get().isObject() &&
-                        target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function);
+    bool callable = false;
+    bool constructible = false;
+    if (target.get().isObject()) {
+        const uint16_t kind = target.get().asObject<HeapObjectHeader>()->flags;
+        if (kind == HeapKind::Function) {
+            callable = true;
+            // 10.5.14 step 7: [[Construct]] only if the target has one —
+            // which 10.2.2 denies an arrow, a method, an accessor, a
+            // generator and an async function.
+            constructible = target.get().asObject<FunctionHeader>()->hasConstruct();
+        } else if (kind == kFlags) {
+            // A proxy over a proxy inherits both answers, as the inner
+            // proxy's own creation decided them.
+            const auto* inner = target.get().asObject<ProxyHeader>();
+            callable = inner->callable.asBool();
+            constructible = inner->constructible.asBool();
+        }
+    }
+    proxy->callable = Value::fromBool(callable);
+    proxy->constructible = Value::fromBool(constructible);
     return proxy;
 }
 
@@ -140,12 +158,13 @@ bool openProxy(Value proxyVal, const char* operation, Rooted<Value>& targetRoot,
 // 28.2.2.1.1, the revoker: nulls both slots and answers undefined. Idempotent
 // — step 1 returns early when the pair is already broken — which is what makes
 // the documented "revoke defensively" idiom safe. The proxy it closes over is
-// its bound `this`, which is how the pair is kept without a captured
-// environment.
-uint64_t proxyRevoke(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
-    Value self(thisBits);
+// its environment (step 3's [[RevocableProxy]] slot), the arrangement a
+// promise's resolving functions already use, so the revoker is an ordinary
+// anonymous function: `name` "", `length` 0, and no receiver of its own.
+uint64_t proxyRevoke(uint64_t env, uint64_t, uint32_t, const uint64_t*) {
+    Value self(env);
     if (!self.isObject() || self.asObject<HeapObjectHeader>()->flags != ProxyHeader::kFlags) {
-        fatal("internal: a Proxy revoker invoked on a receiver that is not its proxy");
+        fatal("internal: a Proxy revoker whose environment is not its proxy");
     }
     auto* proxy = self.asObject<ProxyHeader>();
     proxy->target = Value::fromNull();
@@ -178,16 +197,12 @@ uint64_t rtProxyRevocable(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
     Rooted<Value> handlerRoot{Value(argv[1])};
     Rooted<Value> proxy{Value::fromObject(
         reinterpret_cast<HeapObjectHeader*>(ProxyHeader::create(rtHeap(), targetRoot, handlerRoot)))};
-    // The revoker is `proxyRevoke` BOUND to the proxy (step 3 stores the proxy
-    // in the revoker's [[RevocableProxy]] slot; a bound receiver is the same
-    // arrangement with machinery bronze already has). It is therefore callable
-    // with no receiver of its own, which is what `const { revoke } = pair;
-    // revoke()` needs.
-    // 28.2.2.1.1 creates the revoker anonymous with length 0; binding it
-    // prefixes "bound " to that, which is what a program reads off `revoke`.
-    Rooted<Value> raw{rtNativeFunction(proxyRevoke, 0, "", 0)};
-    uint64_t boundThis = proxy.get().rawBits();
-    Rooted<Value> revoke{Value(rtFunctionBindBuiltin(0, raw.get().rawBits(), 1, &boundThis))};
+    // 28.2.2.1.1 creates the revoker as an anonymous built-in function with
+    // `length` 0 (10.3.4 step 9 gives it the name ""), closing over the proxy
+    // through its [[RevocableProxy]] slot — here the environment.
+    Rooted<Value> revoke{rtMakeNativeClosure(proxyRevoke, proxy, /*arity=*/0)};
+    rtSetFunctionNameAndLength(revoke.get().asObject<FunctionHeader>(),
+                               bronze_register_key_string(""), 0);
 
     Rooted<Value> out{Value(bronze_create_object())};
     Rooted<Value> proxyKey{rtMakeString("proxy")};
@@ -229,37 +244,62 @@ Value rtProxyGet(Value proxyVal, Value keyVal, Value receiver) {
     return result.get();
 }
 
-void rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict, Value receiver) {
+bool rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict, Value receiver) {
     Rooted<Value> proxyRoot{proxyVal};
     Rooted<Value> keyRoot{keyVal};
     Rooted<Value> valRoot{val};
     Rooted<Value> receiverRoot{receiver};
     Rooted<Value> targetRoot;
     Rooted<Value> handlerRoot;
-    if (!openProxy(proxyVal, "set", targetRoot, handlerRoot)) return;
+    if (!openProxy(proxyVal, "set", targetRoot, handlerRoot)) return false;
 
     Value trap = trapOf(handlerRoot, "set");
-    if (rtExceptionPending()) return;
+    if (rtExceptionPending()) return false;
     if (trap.isUndefined()) {
+        // 10.5.9 step 6: the target's own [[Set]], receiver and all. Through
+        // the receiver-aware ordinary set when the receiver is not the target
+        // — a proxy on an ordinary object's chain hands the write back to
+        // that object (10.1.9.2 step 2.c) — and through the funnel otherwise,
+        // which is the same algorithm with the receiver folded in.
+        if (receiverRoot.get().rawBits() != targetRoot.get().rawBits() &&
+            receiverRoot.get().isObject() &&
+            targetRoot.get().asObject<HeapObjectHeader>()->flags != ProxyHeader::kFlags) {
+            const SetRefusal refusal =
+                rtOrdinarySetWithReceiver(targetRoot, keyRoot, valRoot, receiverRoot);
+            if (rtExceptionPending()) return false;
+            if (refusal != SetRefusal::None) {
+                Rooted<Value> keyText{rtValueToString(keyRoot.get())};
+                if (rtExceptionPending()) return false;
+                rtReportSetRefusal(refusal, strict,
+                                   rtUtf8Chars(keyText.get().asString<StringHeader>()));
+                return false;
+            }
+            return true;
+        }
+        if (targetRoot.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+            return rtProxySet(targetRoot.get(), keyRoot.get(), valRoot.get(), strict,
+                              receiverRoot.get());
+        }
         bronze_elem_set(targetRoot.get().rawBits(), keyRoot.get().rawBits(),
                         valRoot.get().rawBits(), strict);
-        return;
+        return !rtExceptionPending();
     }
     Rooted<Value> trapRoot{trap};
     const uint64_t args[4] = {targetRoot.get().rawBits(), keyRoot.get().rawBits(),
                               valRoot.get().rawBits(), receiverRoot.get().rawBits()};
     const uint64_t result = bronze_dynamic_call(trapRoot.get().rawBits(),
                                                 handlerRoot.get().rawBits(), 4, args);
-    if (rtExceptionPending()) return;
+    if (rtExceptionPending()) return false;
     // 13.15.2 via 10.5.9 step 6: a trap that answers false refused the write,
     // and strict code turns that refusal into a TypeError.
     if (!bronze_truthy(result)) {
         if (strict) rtThrowTypeError("'set' on proxy: trap returned falsish");
         // Step 9 runs only after a SUCCESSFUL write: a refusal changed nothing
         // and so can contradict nothing.
-        return;
+        return false;
     }
     rtProxyCheckSet(targetRoot, keyRoot, valRoot);
+    return !rtExceptionPending();
 }
 
 bool rtProxyHas(Value proxyVal, Value keyVal) {
@@ -356,26 +396,24 @@ Value rtProxyOwnKeys(Value proxyVal) {
     return out.get();
 }
 
-bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, OwnPropertyDetail& out) {
+ProxyOwnProperty rtProxyGetOwnPropertyTrapped(Value proxyVal, Value keyVal,
+                                              OwnPropertyDetail& out) {
     out = OwnPropertyDetail{};
     Rooted<Value> keyRoot{keyVal};
     Rooted<Value> targetRoot;
     Rooted<Value> handlerRoot;
-    if (!openProxy(proxyVal, "getOwnPropertyDescriptor", targetRoot, handlerRoot)) return false;
+    if (!openProxy(proxyVal, "getOwnPropertyDescriptor", targetRoot, handlerRoot)) {
+        return ProxyOwnProperty::Absent;
+    }
 
     Value trap = trapOf(handlerRoot, "getOwnPropertyDescriptor");
-    if (rtExceptionPending()) return false;
-    if (trap.isUndefined()) {
-        // Forwarded: the target's own-property question, asked the way
-        // `hasOwnProperty` asks it so the two cannot disagree.
-        Rooted<Value> t{targetRoot.get()};
-        return rtOwnPropertyOf(t, keyRoot.get(), out);
-    }
+    if (rtExceptionPending()) return ProxyOwnProperty::Absent;
+    if (trap.isUndefined()) return ProxyOwnProperty::Forwarded;
     Rooted<Value> trapRoot{trap};
     const uint64_t args[2] = {targetRoot.get().rawBits(), keyRoot.get().rawBits()};
     Rooted<Value> desc{Value(bronze_dynamic_call(trapRoot.get().rawBits(),
                                                  handlerRoot.get().rawBits(), 2, args))};
-    if (rtExceptionPending()) return false;
+    if (rtExceptionPending()) return ProxyOwnProperty::Absent;
     // 10.5.5 step 6: anything that is neither an object nor undefined is a
     // TypeError. Step 7's `undefined` still goes through the invariant check,
     // which is what makes "the target has a non-configurable `k`" impossible to
@@ -383,20 +421,31 @@ bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, OwnPropertyDetail& out)
     if (!desc.get().isObject() && !desc.get().isUndefined()) {
         rtThrowTypeError("'getOwnPropertyDescriptor' on proxy: trap returned neither an object "
                          "nor undefined");
-        return false;
+        return ProxyOwnProperty::Absent;
     }
-    rtProxyCheckGetOwnProperty(targetRoot, keyRoot, desc);
-    if (rtExceptionPending()) return false;
-    if (desc.get().isUndefined()) return false;
-    // What every caller in bronze reads back off the descriptor. The
-    // attributes are the trap's own, completed the way 6.2.6.6 completes them:
-    // a field the trap left off is false, which is what makes
-    // `propertyIsEnumerable` on a proxy answer about the descriptor rather than
-    // about the target.
-    Rooted<Value> enumKey{rtMakeString("enumerable")};
-    out.enumerable =
-        bronze_truthy(bronze_elem_get(desc.get().rawBits(), enumKey.get().rawBits()));
-    return !rtExceptionPending();
+    // Steps 9-17, and steps 12-13 with them: the check decodes and completes
+    // the trap's descriptor once and hands it back, so what every caller
+    // reads — `propertyIsEnumerable`'s bit, a descriptor object's four fields
+    // — is the trap's own answer with a field it left off completed to
+    // false, and no field getter runs a second time.
+    rtProxyCheckGetOwnProperty(targetRoot, keyRoot, desc, out);
+    if (rtExceptionPending()) return ProxyOwnProperty::Absent;
+    if (desc.get().isUndefined()) return ProxyOwnProperty::Absent;
+    return ProxyOwnProperty::Present;
+}
+
+bool rtProxyGetOwnProperty(Value proxyVal, Value keyVal, OwnPropertyDetail& out) {
+    Rooted<Value> proxyRoot{proxyVal};
+    Rooted<Value> keyRoot{keyVal};
+    switch (rtProxyGetOwnPropertyTrapped(proxyVal, keyVal, out)) {
+        case ProxyOwnProperty::Absent: return false;
+        case ProxyOwnProperty::Present: return true;
+        case ProxyOwnProperty::Forwarded: break;
+    }
+    // Forwarded: the target's own-property question, asked the way
+    // `hasOwnProperty` asks it so the two cannot disagree.
+    Rooted<Value> t{proxyRoot.get().asObject<ProxyHeader>()->target};
+    return rtOwnPropertyOf(t, keyRoot.get(), out);
 }
 
 Value rtProxyGetPrototypeOf(Value proxyVal) {
@@ -447,6 +496,12 @@ Value argumentsArray(uint32_t argc, const uint64_t* argv) {
 
 uint64_t rtProxyCall(Value proxyVal, Value thisArg, uint32_t argc, const uint64_t* argv) {
     Rooted<Value> thisRoot{thisArg};
+    // 13.3.6.2 step 5 asks IsCallable before [[Call]]: a proxy over a plain
+    // object HAS no [[Call]] (10.5.14 step 7 installs it only for a callable
+    // target), so `p()` is "not a function" and no `apply` trap is consulted.
+    if (!proxyVal.asObject<ProxyHeader>()->callable.asBool()) {
+        return rtThrowTypeError("proxy is not a function").rawBits();
+    }
     Rooted<Value> targetRoot;
     Rooted<Value> handlerRoot;
     if (!openProxy(proxyVal, "apply", targetRoot, handlerRoot)) {
@@ -473,15 +528,19 @@ uint64_t rtProxyCall(Value proxyVal, Value thisArg, uint32_t argc, const uint64_
     return bronze_dynamic_call(trapRoot.get().rawBits(), handlerRoot.get().rawBits(), 3, args);
 }
 
-uint64_t rtProxyConstruct(Value proxyVal, uint32_t argc, const uint64_t* argv) {
+uint64_t rtProxyConstruct(Value proxyVal, uint32_t argc, const uint64_t* argv, Value newTarget) {
     Rooted<Value> proxyRoot{proxyVal};
+    Rooted<Value> newTargetRoot{newTarget};
+    // 13.3.5.1.1 step 5 asks IsConstructor BEFORE [[Construct]] runs, so a
+    // proxy without one is refused here — revoked or not, and without its
+    // handler ever being consulted.
+    if (!proxyRoot.get().asObject<ProxyHeader>()->constructible.asBool()) {
+        return rtThrowTypeError("proxy is not a constructor").rawBits();
+    }
     Rooted<Value> targetRoot;
     Rooted<Value> handlerRoot;
     if (!openProxy(proxyVal, "construct", targetRoot, handlerRoot)) {
         return Value::fromUndefined().rawBits();
-    }
-    if (!proxyRoot.get().asObject<ProxyHeader>()->callable.asBool()) {
-        return rtThrowTypeError("proxy is not a constructor").rawBits();
     }
     RootedBlock incoming(argc);
     for (uint32_t i = 0; i < argc; ++i) incoming.set(i, Value(argv[i]));
@@ -489,19 +548,17 @@ uint64_t rtProxyConstruct(Value proxyVal, uint32_t argc, const uint64_t* argv) {
     Value trap = trapOf(handlerRoot, "construct");
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (trap.isUndefined()) {
-        // 10.5.13 step 5 constructs the TARGET with the PROXY as newTarget.
-        // bronze threads newTarget through a scope rather than a parameter, and
-        // the one thing the difference reaches — the instance's prototype,
-        // which comes from Get(newTarget, "prototype") — forwards to the
-        // target's `prototype` whenever there is no `get` trap. A `get` trap
-        // that answers `prototype` differently is therefore not honoured here;
-        // it is the one part of [[Construct]] this does not reproduce.
-        return bronze_construct(targetRoot.get().rawBits(), incoming.count(), incoming.data());
+        // 10.5.13 step 5: `Construct(target, argumentsList, newTarget)`. The
+        // newTarget is the PROXY for `new p()`, so the instance's prototype
+        // is `Get(p, "prototype")` — through the `get` trap, which is why
+        // this is not a plain `bronze_construct` of the target.
+        return rtConstructWithNewTarget(targetRoot, incoming.count(), incoming.data(),
+                                        newTargetRoot);
     }
     Rooted<Value> trapRoot{trap};
     Rooted<Value> argArray{argumentsArray(incoming.count(), incoming.data())};
     const uint64_t args[3] = {targetRoot.get().rawBits(), argArray.get().rawBits(),
-                              proxyRoot.get().rawBits()};
+                              newTargetRoot.get().rawBits()};
     Value result = Value(
         bronze_dynamic_call(trapRoot.get().rawBits(), handlerRoot.get().rawBits(), 3, args));
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();

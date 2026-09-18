@@ -56,7 +56,9 @@ static uint64_t reflectApply(uint64_t, uint64_t, uint32_t argc, const uint64_t* 
     Value target(argv[0]);
     Value thisArg(argv[1]);
     Value argsList(argv[2]);
-    if (!target.isObject() || target.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+    // 28.1.1 step 1 is IsCallable, which a proxy over a function satisfies
+    // (10.5.14): the call below then reaches its `apply` trap.
+    if (!rtIsCallableValue(target)) {
         return rtThrowTypeError("Reflect.apply: target must be a function").rawBits();
     }
     if (!argsList.isObject()) {
@@ -168,16 +170,49 @@ static SetDestination setDestination(Rooted<Value>& target, Rooted<Value>& key) 
 //
 // The reason, not a bare bool: `super.k = v` spends the same answer as a
 // TypeError and has to name which of the three refusals it was.
-static SetRefusal receiverRefusalForData(Rooted<Value>& receiver, Rooted<Value>& key) {
+static SetRefusal receiverRefusalForData(Rooted<Value>& receiver, Rooted<Value>& key,
+                                         bool& existed) {
+    existed = false;
     if (!receiver.get().isObject()) return SetRefusal::NotExtensible;  // step 2.b
     OwnPropertyDetail existing;
     if (!rtOwnPropertyOf(receiver, key.get(), existing)) {
         if (rtExceptionPending()) return SetRefusal::None;
+        // A proxy receiver's extensibility is its [[DefineOwnProperty]]'s
+        // business (step 2.c.ii reaches the trap, and 10.5.6 checks the
+        // target), so it is not asked here.
+        if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            return SetRefusal::None;
+        }
         return rtIsExtensible(receiver.get()) ? SetRefusal::None : SetRefusal::NotExtensible;
     }
     if (rtExceptionPending()) return SetRefusal::None;
+    existed = true;
     if (existing.accessor) return SetRefusal::NoSetter;
     return existing.writable ? SetRefusal::None : SetRefusal::NotWritable;
+}
+
+// Step 2.c's [[DefineOwnProperty]] on a PROXY receiver: `{ [[Value]]: V }`
+// over an existing property (2.c.i), or the full data descriptor
+// CreateDataProperty spells (2.c.ii) — each through the `defineProperty` trap,
+// which is the one way a proxy can be written as a receiver.
+static SetRefusal defineOntoProxyReceiver(Rooted<Value>& receiver, Rooted<Value>& key,
+                                          Rooted<Value>& val, bool existed) {
+    Rooted<Value> desc{Value(bronze_create_object())};
+    Rooted<Value> valueKey{rtMakeString("value")};
+    bronze_elem_set(desc.get().rawBits(), valueKey.get().rawBits(), val.get().rawBits(),
+                    /*strict=*/false);
+    if (!existed) {
+        Rooted<Value> yes{Value::fromBool(true)};
+        for (const char* field : {"writable", "enumerable", "configurable"}) {
+            Rooted<Value> fieldKey{rtMakeString(field)};
+            bronze_elem_set(desc.get().rawBits(), fieldKey.get().rawBits(), yes.get().rawBits(),
+                            /*strict=*/false);
+        }
+    }
+    const bool ok = rtProxyDefineOwnProperty(receiver.get(), key.get(), desc.get(),
+                                             /*throwOnRefusal=*/false);
+    if (rtExceptionPending()) return SetRefusal::None;
+    return ok ? SetRefusal::None : SetRefusal::NotWritable;
 }
 
 // 10.1.9.2 OrdinarySetWithOwnDescriptor where the RECEIVER is not the object
@@ -200,12 +235,36 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
             // the chain (step 2.a), and an exception raised while asking.
             return rtExceptionPending() ? SetRefusal::None : SetRefusal::NotWritable;
         case SetDestination::DataOntoReceiver: {
-            const SetRefusal why = receiverRefusalForData(receiver, key);
+            bool existed = false;
+            const SetRefusal why = receiverRefusalForData(receiver, key, existed);
             if (why != SetRefusal::None || rtExceptionPending()) return why;
+            if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+                return defineOntoProxyReceiver(receiver, key, val, existed);
+            }
             // Step 2.c: the write lands on the RECEIVER, as its own property.
             // Writing it onto the holder instead is what made `super.k = v`
             // store into the base prototype, where the next instance of the
             // class read back the previous one's value.
+            //
+            // Step 2.c.ii is CreateDataProperty — a [[DefineOwnProperty]] on
+            // the receiver, NOT a [[Set]] — so a plain receiver takes the
+            // define-own write. A [[Set]] would walk the receiver's chain
+            // again, and when that chain holds the proxy whose forward
+            // brought the write here, the walk arrives back here forever.
+            if (rtObjectIsPlain(receiver.get())) {
+                // The key has been through ToPropertyKey by every caller;
+                // what is left is the ToString of a primitive that is not
+                // yet a string (an index), which `setProp` wants as one.
+                Rooted<Value> keyAsKey{key.get().isSymbol() ? key.get()
+                                                            : rtElemKeyAsString(key.get())};
+                if (rtExceptionPending()) return SetRefusal::None;
+                SetRefusal refusal = SetRefusal::None;
+                receiver.get().asObject<ObjectHeader>()->setProp(
+                    rtHeap(), rtArena(), keyAsKey, val, /*ic=*/nullptr, /*enumerable=*/true,
+                    /*defineOwn=*/true, /*receiver=*/nullptr, &refusal, /*writable=*/true,
+                    /*configurable=*/true);
+                return refusal;
+            }
             bronze_elem_set(receiver.get().rawBits(), key.get().rawBits(),
                             val.get().rawBits(), /*strict=*/false);
             return SetRefusal::None;
@@ -306,8 +365,9 @@ static uint64_t reflectSet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
         // 10.5.9 hands the receiver to the trap and stops there: a proxy's
         // [[Set]] is the trap, not OrdinarySet, so none of the chain walk below
         // applies to one.
-        rtProxySet(target.get(), key.get(), val.get(), /*strict=*/false, receiver.get());
-        return Value::fromBool(!rtExceptionPending()).rawBits();
+        const bool ok =
+            rtProxySet(target.get(), key.get(), val.get(), /*strict=*/false, receiver.get());
+        return Value::fromBool(ok && !rtExceptionPending()).rawBits();
     }
 
     // 28.1.13 answers the BOOLEAN [[Set]] returned, which is exactly the
@@ -375,15 +435,83 @@ static uint64_t reflectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const u
     return objectGetPrototypeOf(0, 0, argc, argv);
 }
 
+// 28.1.13 Reflect.setPrototypeOf: the BOOLEAN [[SetPrototypeOf]] answers,
+// where `Object.setPrototypeOf` answers the object and turns a false into a
+// TypeError. Step 1 refuses a primitive target outright — ToObject is the
+// other member's step 2, not this one's.
 static uint64_t reflectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return objectSetPrototypeOf(0, 0, argc, argv);
+    RootedArgs args(argc, argv);
+    if (!args[0].isObject()) {
+        return rtThrowTypeError("Reflect.setPrototypeOf called on a value that is not an object")
+            .rawBits();
+    }
+    if (!args[1].isObject() && !args[1].isNull()) {
+        return rtThrowTypeError("Object prototype may only be an Object or null").rawBits();
+    }
+    Rooted<Value> self{args[0]};
+    Rooted<Value> proto{args[1]};
+    const bool ok = rtObjectSetPrototypeOfOrdinary(self, proto);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    return Value::fromBool(ok).rawBits();
+}
+
+// 28.1.4 Reflect.deleteProperty: [[Delete]]'s boolean, which is `delete` in
+// sloppy code — a refusal is false and never a throw.
+static uint64_t reflectDeleteProperty(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!args[0].isObject()) {
+        return rtThrowTypeError("Reflect.deleteProperty called on a value that is not an object")
+            .rawBits();
+    }
+    const bool deleted =
+        bronze_elem_delete(args[0].rawBits(), args[1].rawBits(), /*strict=*/false);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    return Value::fromBool(deleted).rawBits();
+}
+
+// 28.1.9 and 28.1.12: [[IsExtensible]] and [[PreventExtensions]] as the
+// booleans they answer. The `Object` pair boxes a primitive (20.1.2.16 step 1)
+// and turns a false [[PreventExtensions]] into a TypeError; here both are the
+// internal method's own answer over an object the caller must supply.
+static uint64_t reflectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!args[0].isObject()) {
+        return rtThrowTypeError("Reflect.isExtensible called on a value that is not an object")
+            .rawBits();
+    }
+    Rooted<Value> self{args[0]};
+    const bool extensible = rtIsExtensibleOf(self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    return Value::fromBool(extensible).rawBits();
+}
+
+static uint64_t reflectPreventExtensions(uint64_t, uint64_t, uint32_t argc,
+                                         const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (!args[0].isObject()) {
+        return rtThrowTypeError(
+                   "Reflect.preventExtensions called on a value that is not an object")
+            .rawBits();
+    }
+    Rooted<Value> self{args[0]};
+    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        const bool ok = rtProxyPreventExtensions(self.get());
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        return Value::fromBool(ok).rawBits();
+    }
+    // Every other kind the member handles answers true or raises — 10.1.4.1
+    // has no false — so the member's own answer is the boolean.
+    const uint64_t call[1] = {self.get().rawBits()};
+    rtObjectPreventExtensions(0, 0, 1, call);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    return Value::fromBool(true).rawBits();
 }
 
 static bool isConstructor(Value v) {
     if (!v.isObject()) return false;
     const HeapObjectHeader* h = v.asObject<HeapObjectHeader>();
     if (h->flags == ProxyHeader::kFlags) {
-        return v.asObject<ProxyHeader>()->callable.asBool();
+        return v.asObject<ProxyHeader>()->constructible.asBool();
     }
     if (h->flags == HeapKind::Function) {
         const FunctionHeader* fn = v.asObject<FunctionHeader>();
@@ -423,17 +551,28 @@ static uint64_t reflectConstruct(uint64_t, uint64_t, uint32_t argc, const uint64
         block.set(i, rtArrayLikeElement(listRoot, i));
         if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
+    return rtConstructWithNewTarget(targetRoot, count, block.data(), newTargetRoot);
+}
 
+// 7.3.15 Construct(F, argumentsList, newTarget), for a `newTarget` that may
+// differ from `F`. Shared by `Reflect.construct` and by a Proxy's forwarded
+// [[Construct]] (10.5.13 step 5), which constructs its target with the
+// PROXY — or whatever `Reflect.construct` / `super()` handed the proxy — as
+// newTarget. `argv` is the caller's rooted block: the ordinary path below
+// allocates the instance before it reads the arguments.
+uint64_t rtConstructWithNewTarget(Rooted<Value>& targetRoot, uint32_t count, const uint64_t* argv,
+                                  Rooted<Value>& newTargetRoot) {
     NewTargetScope targetScope(newTargetRoot.get());
     if (newTargetRoot.get().rawBits() == targetRoot.get().rawBits()) {
-        return bronze_construct(targetRoot.get().rawBits(), count, block.data());
+        return bronze_construct(targetRoot.get().rawBits(), count, argv);
     }
 
     // Proxy target with different newTarget
     if (targetRoot.get().isObject() &&
         targetRoot.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
-        return rtProxyConstruct(targetRoot.get(), count, block.data());
+        return rtProxyConstruct(targetRoot.get(), count, argv, newTargetRoot.get());
     }
+    Value* args = const_cast<Value*>(reinterpret_cast<const Value*>(argv));
 
     // Native exotic constructor target with different newTarget
     if (const uint8_t nativeBase = rtNativeBaseOf(targetRoot.get());
@@ -441,8 +580,7 @@ static uint64_t reflectConstruct(uint64_t, uint64_t, uint32_t argc, const uint64
         Rooted<Value> self{rtAllocateNativeBaseInstance(nativeBase, newTargetRoot)};
         NativeReceiverScope receiverScope(self.get());
         FunctionHeader* live = targetRoot.get().asObject<FunctionHeader>();
-        Value result = live->call(self.get(), count,
-                                  const_cast<Value*>(reinterpret_cast<const Value*>(block.data())));
+        Value result = live->call(self.get(), count, args);
         return result.isObject() ? result.rawBits() : self.get().rawBits();
     }
 
@@ -455,8 +593,7 @@ static uint64_t reflectConstruct(uint64_t, uint64_t, uint32_t argc, const uint64
     Rooted<Value> self{Value::fromObject(ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(proto.get())))};
     self.get().asObject<HeapObjectHeader>()->flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
     FunctionHeader* fn = targetRoot.get().asObject<FunctionHeader>();
-    Value result = fn->call(self.get(), count,
-                            const_cast<Value*>(reinterpret_cast<const Value*>(block.data())));
+    Value result = fn->call(self.get(), count, args);
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return result.isObject() ? result.rawBits() : self.get().rawBits();
 }
@@ -495,9 +632,12 @@ Value rtReflectNamespace() {
             {"get", reflectGet, 2, 2},
             {"set", reflectSet, 3, 3},
             {"has", reflectHas, 2, 2},
+            {"deleteProperty", reflectDeleteProperty, 2, 2},
             {"ownKeys", reflectOwnKeys, 1, 1},
             {"getPrototypeOf", reflectGetPrototypeOf, 1, 1},
             {"setPrototypeOf", reflectSetPrototypeOf, 2, 2},
+            {"isExtensible", reflectIsExtensible, 1, 1},
+            {"preventExtensions", reflectPreventExtensions, 1, 1},
             {"getOwnPropertyDescriptor", reflectGetOwnPropertyDescriptor, 2, 2},
             {"defineProperty", reflectDefineProperty, 3, 3},
         };

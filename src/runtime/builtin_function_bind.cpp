@@ -21,6 +21,7 @@
 // recursion: it unwraps one bound layer, prepends that layer's args, and
 // constructs the target, which unwraps the next (rt_object.cpp).
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -28,10 +29,12 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/env.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
@@ -111,12 +114,16 @@ StringHeader* boundName(const StringHeader* targetName) {
 uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> target{Value(thisBits)};
-    if (!target.get().isObject() ||
-        target.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+    // Step 1 is IsCallable: a proxy over a function binds too, and its
+    // [[Call]] and [[Construct]] are then reached through the trampoline and
+    // `bronze_construct`'s unwrapping exactly as a function's would be.
+    if (!rtIsCallableValue(target.get())) {
         return rtThrowTypeError(
                    "Function.prototype.bind called on a value that is not a function")
             .rawBits();
     }
+    const bool targetIsProxy =
+        target.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags;
     Rooted<Value> boundThis{args[0]};
 
     // [[BoundArguments]] as an ordinary array in the cell, so the payload scan
@@ -152,6 +159,45 @@ uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const
     fn->env_record = env.get();
     fn->header.flags = HeapKind::Function;
     Rooted<Value> fnRoot{Value::fromObject(fn)};
+
+    if (targetIsProxy) {
+        // 10.4.1.3 step 1 and 20.2.3.2 steps 3-6 spelled as the internal
+        // methods they are, in their order: [[GetPrototypeOf]], then
+        // HasOwnProperty(Target, "length"), Get(Target, "length") if it has
+        // one, and Get(Target, "name") — each a trap a handler observes.
+        Rooted<Value> proto{rtProxyGetPrototypeOf(target.get())};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        Rooted<Value> lengthKey{rtMakeString("length")};
+        OwnPropertyDetail ignored;
+        const bool hasLength = rtProxyGetOwnProperty(target.get(), lengthKey.get(), ignored);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        uint32_t length = 0;
+        if (hasLength) {
+            const Value targetLen = rtProxyGet(target.get(), lengthKey.get());
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+            // Step 5.b: a Number's ToIntegerOrInfinity, less the bound count,
+            // floored at zero; anything else leaves L at zero.
+            if (targetLen.isNumber() && targetLen.asNumber() > 0) {
+                const double whole = std::floor(targetLen.asNumber());
+                const double left = whole - static_cast<double>(boundCount);
+                length = left > 0 ? static_cast<uint32_t>(left > 4294967295.0 ? 4294967295.0
+                                                                                : left)
+                                  : 0;
+            }
+        }
+        Rooted<Value> nameKey{rtMakeString("name")};
+        Rooted<Value> targetName{rtProxyGet(target.get(), nameKey.get())};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        // Step 7: a name that is not a string is the empty string.
+        if (!targetName.get().isString()) targetName.set(rtMakeString(""));
+        StringHeader* interned =
+            StringHeader::internToArena(rtArena(), targetName.get().asString<StringHeader>());
+        StringHeader* named = boundName(interned);  // allocates
+        FunctionHeader* live = fnRoot.get().asObject<FunctionHeader>();
+        live->name = named;
+        live->length = length;
+        return fnRoot.get().rawBits();
+    }
 
     // `name` = "bound " + target name and `length` = max(0, target length −
     // bound count) — 20.2.3.2 steps 2-4 — but only when the target CARRIES the

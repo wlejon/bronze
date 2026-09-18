@@ -3,8 +3,10 @@
 #include "runtime/tls_block.h"
 
 #include "runtime/accessor.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_state.h"
 #include "runtime/slot_repr.h"
 
@@ -369,6 +371,14 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
             return Value::fromUndefined();
         }
         auto* protoHdr = proto.asObject<HeapObjectHeader>();
+        if (protoHdr->flags == ProxyHeader::kFlags) {
+            // 10.1.8.1 step 3: `parent.[[Get]](P, Receiver)` — the rest of the
+            // read belongs to the proxy's own [[Get]] (10.5.8), trap and all,
+            // with the receiver the read started from. Nothing is cached:
+            // a trap's answer is not a slot.
+            const Value self = receiver ? *receiver : Value::fromObject(this);
+            return runtime::rtProxyGet(proto, key.get(), self);
+        }
         if (protoHdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return Value::fromUndefined();
         holder = reinterpret_cast<ObjectHeader*>(protoHdr);
     }
@@ -505,6 +515,27 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     if (!defineOwn) {
         ObjectHeader* holder = this;
         for (uint32_t depth = 1; depth <= kMaxPrototypeDepth; ++depth) {
+            // A PROXY link takes the rest of the write: 10.1.9.1 step 2.c is
+            // `parent.[[Set]](P, V, Receiver)`, which is the proxy's own
+            // [[Set]] (10.5.9) — its trap, or the forward that hands the
+            // write back to the receiver as a definition. A false answer is
+            // the refusal 13.15.2 spends as strict code's TypeError.
+            if (holder->shape) {
+                const Value parent = holder->shape->prototypeValue();
+                if (parent.isObject() &&
+                    parent.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+                    Rooted<Value> live{Value::fromObject(this)};
+                    Rooted<Value> recv{receiver ? *receiver : live.get()};
+                    const bool ok = runtime::rtProxySet(parent, key.get(), val.get(),
+                                                        /*strict=*/false, recv.get());
+                    // A false with an exception already pending is the trap's
+                    // own throw, not a refusal for the caller to report over it.
+                    if (!ok && refused && !runtime::rtExceptionPending()) {
+                        *refused = SetRefusal::TrapRefused;
+                    }
+                    return live.get().asObject<ObjectHeader>();
+                }
+            }
             holder = holder->protoAncestor(1);
             if (!holder) break;
             PropertyInfo info;

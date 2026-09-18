@@ -1,8 +1,9 @@
 // Object, array and function construction, the two class links, environment
 // records, and the dynamic call path. Property access itself is rt_prop.cpp;
-// the `Reflect` namespace is rt_reflect.cpp, whose members are forwards into
-// the same funnels this file calls; typed arrays build themselves through
-// ordinary constructor objects and so need nothing here.
+// own-key names and `Object.keys` are rt_object_keys.cpp; the `Reflect`
+// namespace is rt_reflect.cpp, whose members are forwards into the same
+// funnels this file calls; typed arrays build themselves through ordinary
+// constructor objects and so need nothing here.
 
 #include <algorithm>
 #include <charconv>
@@ -244,85 +245,6 @@ std::vector<StringHeader*> rtOwnStringKeysOrdered(const ObjectHeader* obj, bool 
     return names;
 }
 
-// An array index as the STRING that names it — the spelling ToPropertyKey gives
-// it, and the only one an own-key answer may contain. `std::to_chars` rather
-// than a stream for the reason every number that reaches output uses it:
-// deterministic bytes with no locale in the path.
-static Value indexName(uint32_t index) {
-    char buf[16];
-    auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), index);
-    return Value::fromString(
-        StringHeader::createFromUTF8(rtHeap(), std::string_view(buf, end - buf)));
-}
-
-Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly) {
-    Rooted<Value> self{strVal};
-    Value data = self.get();
-    if (!data.isString()) rtStringWrapperData(self.get(), data);
-    const uint32_t length = data.asString<StringHeader>()->getLength();
-    const uint32_t total = enumerableOnly ? length : length + 1;
-    Rooted<Value> out{Value(bronze_create_array(total))};
-    for (uint32_t i = 0; i < length; ++i) {
-        Rooted<Value> key{indexName(i)};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
-    }
-    if (!enumerableOnly) {
-        Rooted<Value> key{rtMakeString("length")};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), length, key);
-    }
-    return out.get();
-}
-
-Value rtArrayOwnKeyNames(Value arrVal, bool enumerableOnly) {
-    Rooted<Value> src{arrVal};
-    // The indices it actually HAS, already in ascending order: a hole left by
-    // `delete a[i]` is not an own property, so the result can be shorter than
-    // `length`.
-    const uint32_t length = src.get().asObject<ArrayHeader>()->length;
-    Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), length ? length : 4))};
-    uint32_t at = 0;
-    for (uint32_t i = 0; i < length; ++i) {
-        if (!src.get().asObject<ArrayHeader>()->hasElem(i)) continue;
-        Rooted<Value> key{indexName(i)};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-    }
-    // `length` is where `Object.keys` and `getOwnPropertyNames` part: 10.4.2.2
-    // makes it non-enumerable, and it precedes every named property because
-    // ArrayCreate defines it before a program can assign one.
-    if (!enumerableOnly) {
-        Rooted<Value> key{rtMakeString("length")};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-    }
-    // Then the named ones — the indices come first because they are
-    // integer-like keys, and own-key order puts those ahead of the rest. The
-    // keys are arena-interned and immortal, so the vector survives the
-    // allocations the copy below makes.
-    for (StringHeader* k : rtArrayOwnNamedKeys(src.get(), enumerableOnly)) {
-        Rooted<Value> key{rtKeyAsValue(k)};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-    }
-    return out.get();
-}
-
-Value rtKeyAsValue(const StringHeader* key) {
-    // The ARENA key itself, not a copy — and that is the mechanism, not a
-    // shortcut. Every caller hands this an arena-interned key (a shape key
-    // walked by for-in / Object.keys, a module export name, a function
-    // static's name): immortal, non-moving, and IMMUTABLE like every string,
-    // while a JS string has no observable identity — `===` is content
-    // equality — so the aliasing cannot be told apart from the copy this
-    // function used to make. What CAN be told apart is the cost: the copy
-    // allocated one heap string per key per enumeration (three.js's for-in
-    // over `geometry.attributes` made ~5M a run), and it broke object
-    // identity, which the computed-read cache's string-key latch
-    // (elem_ic.h's `key_ident`) guards on — a fresh copy per frame missed
-    // the latch exactly once per site per enumeration, where the arena key
-    // hits forever. The collector is indifferent: `forward_value` skips a
-    // payload outside the reservation, and the heap verifier admits arena
-    // strings in scanned slots by name.
-    return Value::fromString(key);
-}
-
 extern "C" {
 
 uint64_t bronze_create_object() {
@@ -390,11 +312,45 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
         derivedVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         fatal("internal: class extends with a non-function derived class");
     }
+    Rooted<Value> derived{derivedVal};
+    Rooted<Value> base{baseVal};
+    if (baseVal.isObject() && baseVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        // 15.7.14 ClassDefinitionEvaluation over a PROXY superclass: step 8.e
+        // requires IsConstructor (a proxy has [[Construct]] exactly when its
+        // target has, 10.5.13), and step 8.g reads `Get(superclass,
+        // "prototype")` — through the proxy's [[Get]], so a `get` trap sees
+        // it — which must be an object or null (8.h). The statics chain links
+        // to the proxy ITSELF (step 6: it is the derived constructor's
+        // [[Prototype]]), so an inherited static resolves through its traps;
+        // none of the function-specific realization below applies, because
+        // the proxy has no prototype slot or statics box of its own.
+        if (!base.get().asObject<ProxyHeader>()->constructible.asBool()) {
+            fatal("a class can only extend another class or a constructor function");
+        }
+        Rooted<Value> key{rtMakeString("prototype")};
+        Rooted<Value> protoParent{rtProxyGet(base.get(), key.get(), base.get())};
+        if (rtExceptionPending()) return;
+        if (!protoParent.get().isObject() && !protoParent.get().isNull()) {
+            rtThrowTypeError("Class extends value does not have valid prototype property");
+            return;
+        }
+        ObjectHeader* proto =
+            ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(protoParent.get()));
+        proto->header.flags = HeapKind::Plain;
+        Rooted<Value> protoRoot{Value::fromObject(proto)};
+        ObjectHeader* props = ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(base.get()));
+        props->header.flags = HeapKind::Plain;
+        FunctionHeader* fn = derived.get().asObject<FunctionHeader>();
+        fn->prototype = protoRoot.get();
+        fn->properties = Value::fromObject(props);
+        fn->instance_shape = rtNewRootShape(protoRoot.get());
+        fn->parent = base.get();
+        rtInstallPrototypeConstructor(derived);
+        return;
+    }
     if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         fatal("a class can only extend another class or a constructor function");
     }
-    Rooted<Value> derived{derivedVal};
-    Rooted<Value> base{baseVal};
     // A native base whose instances bronze cannot allocate from NewTarget is
     // refused BY NAME here, before a single link is made — the alternative is a
     // derived constructor that hands back an ordinary plain object answering
@@ -463,7 +419,8 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     // never the ordinary path below, which would read a ProxyHeader as a
     // FunctionHeader.
     if (fnVal.isObject() && fnVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
-        return rtProxyConstruct(fnVal, argc, argvBits);
+        // 13.3.5.1.1 step 6: `new p()` constructs with newTarget = p.
+        return rtProxyConstruct(fnVal, argc, argvBits, fnVal);
     }
     if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(fnVal)) + " is not a constructor")
@@ -608,187 +565,6 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     // JS: a constructor returning an object replaces the instance; any other
     // return value (including undefined) is ignored.
     return result.isObject() ? result.rawBits() : self.get().rawBits();
-}
-
-// ECMA-262 20.1.2.17 Object.keys: own ENUMERABLE STRING keys, which is 7.3.23
-// EnumerableOwnProperties with key-of-type-String.
-//
-// Every receiver gets an answer here or is named, and the difference between
-// those two is not how much bronze has built — it is whether the answer is
-// COMPLETE. A Map, a Set, a RegExp, an ArrayBuffer and a DataView have no own
-// enumerable string-keyed property at all, so the empty array is derivable
-// rather than a gap dressed up as a result; a typed array's indices ARE own
-// enumerable properties (10.4.5.3), so it answers those and not `[]`. The old
-// message said which receivers were "supported", which names bronze's coverage
-// where the reader needs the receiver's storage.
-uint64_t bronze_object_keys(uint64_t objBits) {
-    recordHelperCall("bronze_object_keys");
-    Value objVal(objBits);
-    // Step 1 is ToObject, whose only two failures are these (7.1.18). Thrown
-    // rather than fatal: the language names this TypeError, so a `catch` may
-    // hold it.
-    if (objVal.isNull() || objVal.isUndefined()) {
-        return rtThrowTypeError("Object.keys called on a value that is not an object").rawBits();
-    }
-    // ToObject("ab") is a String exotic object whose own keys are the indices
-    // and `length` (10.4.3.3) — and only the indices are enumerable, so those
-    // are the answer. Computed from the characters rather than from a box built
-    // to be read once and thrown away, which is the arrangement
-    // `Object.getPrototypeOf` of a primitive already uses.
-    if (objVal.isString()) return rtStringOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
-    if (Value data; rtStringWrapperData(objVal, data)) {
-        return rtStringOwnKeyNames(data, /*enumerableOnly=*/true).rawBits();
-    }
-    // A number, a boolean and a symbol box to an object with no own property of
-    // any kind, so the empty answer needs no box either — which is what lets
-    // `Object.keys(5)` answer at all, since bronze has no Number.prototype for
-    // one to point at.
-    if (!objVal.isObject()) return bronze_create_array(0);
-
-    HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
-
-    // An array's own keys are its indices, already in ascending order — the
-    // ones it actually HAS: a hole left by `delete a[i]` is not an own
- // property, so the result is shorter than `length`.
-    if (hdr->flags == HeapKind::Array) {
-        return rtArrayOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
-    }
-    // A typed array's integer-indexed elements are own enumerable properties
-    // (10.4.5.3 [[DefineOwnProperty]] gives one `enumerable: true`), so this is
-    // the one receiver below whose answer is not empty — and the reason the
-    // whole group could not be answered with `[]` and a comment. There are no
-    // holes: 23.2.5.1 allocates every element, so the keys are exactly
-    // `0..length-1`. `length`, `buffer` and `byteOffset` are accessors on
-    // %TypedArray%.prototype and own properties of nothing.
-    if (hdr->flags == TypedArrayHeader::kFlags) {
-        const uint32_t length = reinterpret_cast<TypedArrayHeader*>(hdr)->length;
-        Rooted<Value> out{Value(bronze_create_array(length))};
-        for (uint32_t i = 0; i < length; ++i) {
-            Rooted<Value> key{indexName(i)};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
-        }
-        return out.get().rawBits();
-    }
-    // A module namespace: 10.4.6.2's export names, SORTED by code unit, and
-    // every one of them enumerable (10.4.6.5), so `Object.keys` and
-    // `getOwnPropertyNames` report the same list. The sort happened once at
-    // construction — this only copies it out, which is what makes the order a
-    // function of the export names rather than of any table walked here.
-    if (hdr->flags == ModuleNamespaceHeader::kFlags) {
-        Rooted<Value> src{objVal};
-        const std::vector<StringHeader*> names = rtModuleNamespaceKeys(src.get());
-        Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(names.size())))};
-        uint32_t at = 0;
-        for (StringHeader* name : names) {
-            Rooted<Value> key{rtKeyAsValue(name)};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-        }
-        return out.get().rawBits();
-    }
-    // A function's own keys are `length`, `name` and `prototype` — every one of
-    // them non-enumerable (10.2.4, 20.2.4) — plus the statics it was assigned,
-    // which are the only group this member reports. Those live in the side
-    // object, so the answer is COMPLETE, and that is what separates this from
-    // `Object.getOwnPropertyNames` of the same function: that member wants the
-    // non-enumerable three, and bronze stores none of them.
-    if (hdr->flags == HeapKind::Function) {
-        Value props = objVal.asObject<FunctionHeader>()->properties;
-        if (!props.isObject()) return bronze_create_array(0);
-        Rooted<Value> propsRoot{props};
-        const std::vector<StringHeader*> named =
-            rtOwnStringKeysOrdered(propsRoot.get().asObject<ObjectHeader>());
-        Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
-        uint32_t at = 0;
-        for (StringHeader* k : named) {
-            Rooted<Value> key{rtKeyAsValue(k)};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-        }
-        return out.get().rawBits();
-    }
-    if (rtIsMapLike(objVal)) {
-        // A Map's and a Set's ENTRIES are internal slots reached by
-        // `get`/`add` and are never keys — but 24.1.4 makes the collection an
-        // ordinary object besides, so anything a program ASSIGNED to it is an
-        // own enumerable key and belongs here. Empty for a collection that
-        // never took a named write, which is the common case and the classic
-        // `Object.keys(map)` surprise.
-        Value props = objVal.asObject<MapHeader>()->properties;
-        if (!props.isObject()) return bronze_create_array(0);
-        Rooted<Value> propsRoot{props};
-        const std::vector<StringHeader*> named =
-            rtOwnStringKeysOrdered(propsRoot.get().asObject<ObjectHeader>());
-        Rooted<Value> out{Value(bronze_create_array(static_cast<uint32_t>(named.size())))};
-        uint32_t at = 0;
-        for (StringHeader* k : named) {
-            Rooted<Value> key{rtKeyAsValue(k)};
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-        }
-        return out.get().rawBits();
-    }
-    if (hdr->flags == RegExpHeader::kFlags || hdr->flags == ArrayBufferHeader::kFlags ||
-        hdr->flags == DataViewHeader::kFlags || hdr->flags == WeakRefHeader::kFlags ||
-        hdr->flags == FinalizationRegistryHeader::kFlags) {
-        // None of these has an own enumerable string-keyed property, and that
-        // is a fact about the LANGUAGE rather than about bronze's storage: a
-        // RegExp's `lastIndex` is an own property but non-enumerable
-        // (22.2.6.9), and an ArrayBuffer's and a DataView's `byteLength` and
-        // friends are accessors on their prototypes. So `[]` is the complete
-        // answer, and refusing it named bronze's coverage instead.
-        return bronze_create_array(0);
-    }
-    if (hdr->flags == ProxyHeader::kFlags) {
-        // 20.1.2.17 is 7.3.23 EnumerableOwnProperties, which on a proxy is
-        // [[OwnPropertyKeys]] filtered by [[GetOwnProperty]]'s `enumerable` —
-        // the `ownKeys` and `getOwnPropertyDescriptor` traps, in that order.
-        Rooted<Value> proxyRoot{objVal};
-        // Rooted and re-read per iteration: the descriptor trap below is user
-        // code that allocates, so a raw list of key Values would hold
-        // from-space strings by the second key.
-        Rooted<Value> keys{rtProxyOwnKeys(proxyRoot.get())};
-        if (rtExceptionPending()) return bronze_create_array(0);
-        Rooted<Value> out{Value(bronze_create_array(0))};
-        uint32_t at = 0;
-        const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
-        for (uint32_t ki = 0; ki < keyCount; ++ki) {
-            Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(ki)};
-            // 7.3.23 takes the STRING half only; a symbol is never one of the
-            // names `Object.keys` reports.
-            if (!key.get().isString()) continue;
-            OwnPropertyDetail found;
-            const bool present = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), found);
-            if (rtExceptionPending()) return out.get().rawBits();
-            if (!present || !found.enumerable) continue;
-            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-        }
-        return out.get().rawBits();
-    }
-    if (hdr->flags != HeapKind::Plain) {
-        // An iteration record and an environment record are the remainder, and
-        // nothing hands a program either — so reaching here is a lowering bug
-        // rather than something a program did.
-        fatal("internal: Object.keys on an object kind no program can hold");
-    }
-
-    // `Object.keys` is own ENUMERABLE STRING keys (20.1.2.17 -> 7.3.23 with
-    // key-of-type-String), so the symbol half of the own keys never reaches
-    // here — which is how a symbol-keyed property becomes invisible to
-    // `Object.keys`, `Object.entries` and `JSON.stringify` at once, by BEING a
-    // symbol rather than by any rule about its spelling.
-    const std::vector<StringHeader*> ordered =
-        rtOwnStringKeysOrdered(reinterpret_cast<ObjectHeader*>(hdr));
-
-    const uint32_t total = static_cast<uint32_t>(ordered.size());
-    Rooted<Value> out{Value::fromObject(ArrayHeader::create(rtHeap(), total ? total : 4))};
-
-    uint32_t at = 0;
-    for (StringHeader* name : ordered) {
-        // Copy the immortal arena string into the heap: the result array holds
-        // ordinary JS strings, not pointers into the shape arena.
-        Rooted<Value> key{rtKeyAsValue(name)};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
-    }
-
-    return out.get().rawBits();
 }
 
 // ---- Environment records: `depth` parent hops, then `index` ----
@@ -947,6 +723,14 @@ uint64_t bronze_super_call(uint64_t baseBits, uint64_t thisBits, uint32_t argc,
                            const uint64_t* argvBits) {
     recordHelperCall("bronze_super_call");
     Value baseVal(baseBits);
+    if (baseVal.isObject() && baseVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        // 13.3.7.1 step 6: `Construct(func, argList, newTarget)` on a proxy
+        // base — its `construct` trap, or the forwarded construction — with
+        // the new.target of the `new` that reached this `super()`. The object
+        // it returns IS the receiver from here on (step 7), so the instance
+        // the derived constructor allocated ahead of time is simply dropped.
+        return rtProxyConstruct(baseVal, argc, argvBits, NewTargetScope::current());
+    }
     if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
     }
@@ -963,6 +747,21 @@ uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t
     recordHelperCall("bronze_super_call_spread");
     Value baseVal(baseBits);
     Value argsVal(argsBits);
+    if (baseVal.isObject() && baseVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        // The proxy arm of `bronze_super_call`, with the spread list copied
+        // into a rooted block first: the construction allocates before it
+        // reads its arguments, and the array's storage is not a root.
+        Rooted<Value> argsRoot{argsVal};
+        const uint32_t count =
+            argsVal.isObject() && argsVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array
+                ? argsVal.asObject<ArrayHeader>()->length
+                : 0;
+        RootedBlock block(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            block.set(i, argsRoot.get().asObject<ArrayHeader>()->getElem(i));
+        }
+        return rtProxyConstruct(baseVal, count, block.data(), NewTargetScope::current());
+    }
     if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError(std::string(valueKindName(baseVal)) + " is not a constructor").rawBits();
     }

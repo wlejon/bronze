@@ -63,6 +63,14 @@ inline bool rtIsExtensible(Value obj) {
     return !d || d->extensible;
 }
 
+// [[IsExtensible]] over the WHOLE value model, which the inline form above is
+// not: a Proxy answers with its `isExtensible` trap (10.5.3), a module
+// namespace with the constant false (10.4.6.3), a non-object with false
+// (20.1.2.16 step 1), and a kind that keeps no level with true — the same
+// arithmetic `Object.isExtensible` does. Rooted, because the trap is user code.
+// A pending exception comes back as false; the caller tests the cell.
+bool rtIsExtensibleOf(Rooted<Value>& obj);
+
 inline IntegrityLevel rtIntegrityLevel(Value obj) {
     const Dictionary* d = rtIntegrityTable(obj);
     return d ? d->level : IntegrityLevel::Open;

@@ -10,6 +10,7 @@
 #include "runtime/gc.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -37,6 +38,21 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
         return out.get().rawBits();
     }
     Rooted<Value> self{args[0]};
+    if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        // 10.5.11 [[OwnPropertyKeys]] with 20.1.2.11's symbol filter: the
+        // `ownKeys` trap once, its symbols in the trap's order.
+        Rooted<Value> keys{rtProxyOwnKeys(self.get())};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        Rooted<Value> out{Value(bronze_create_array(0))};
+        uint32_t at = 0;
+        const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
+        for (uint32_t i = 0; i < count; ++i) {
+            Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
+            if (!key.get().isSymbol()) continue;
+            out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+        }
+        return out.get().rawBits();
+    }
     ObjectHeader* holder = nullptr;
     HeapObjectHeader* hdr = self.get().asObject<HeapObjectHeader>();
     if (hdr->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
@@ -71,6 +87,13 @@ uint64_t objectKeys(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 static uint64_t enumerableOwn(Value source, bool wantEntries) {
     Rooted<Value> src{source};
+    // 7.3.23 on a proxy interleaves the traps — a [[GetOwnProperty]] and then
+    // a [[Get]] PER KEY — where the keys-then-reads below would run every
+    // descriptor trap before the first read. A handler can tell the two
+    // apart, so the proxy takes the algorithm as written.
+    if (source.isObject() && source.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+        return rtProxyEnumerableOwn(src.get(), wantEntries).rawBits();
+    }
     Rooted<Value> keys{Value(bronze_object_keys(src.get().rawBits()))};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> out{Value(bronze_create_array(0))};

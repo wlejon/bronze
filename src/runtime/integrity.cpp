@@ -59,14 +59,13 @@ enum class Target {
     // integrity state is a fact about the KIND and there is nothing a
     // dictionary would have to record.
     ModuleNamespace,
-    // A Proxy, which is refused for a REASON OF ITS OWN and so is not folded
-    // into `Refused` below. Every one of the six members here is defined over
-    // 10.5's `preventExtensions`, `isExtensible`, `defineProperty` and
-    // `getOwnPropertyDescriptor` traps, and bronze has built only the last;
-    // answering from the target instead would be a proxy silently bypassed,
-    // which is the one thing a proxy must never be. `Refused`'s sentence —
-    // "there is nowhere to record [[Extensible]]" — is not even true here: the
-    // TARGET has somewhere, and going there is precisely the mistake.
+    // A Proxy, whose level is not STORED anywhere at all: every one of the six
+    // members is defined over 10.5's `preventExtensions`, `isExtensible`,
+    // `ownKeys`, `getOwnPropertyDescriptor` and `defineProperty` traps, so
+    // each is answered by running 7.3.14 or 7.3.15 over the internal methods
+    // (proxy_reflect.cpp) rather than by reading a bit. Answering from the
+    // target instead would be a proxy silently bypassed, which is the one
+    // thing a proxy must never be.
     Proxy,
     Refused,
 };
@@ -102,17 +101,6 @@ const char* refusedKindName(Value v) {
 // What every refused kind has in common, said once: it has no side object, so
 // there is nowhere for [[Extensible]] to go, and a bit invented for it would
 // have to be read back by every write path that kind has.
-// The refusal for a proxy, naming the traps the operation is defined over.
-// Separate from `refuseKind` because the sentence is different: nothing is
-// missing about the STORAGE, the missing thing is the trap.
-[[noreturn]] void refuseProxy(const char* operation, const char* traps) {
-    fatal((std::string("unsupported: Object.") + operation +
-           " on a Proxy (10.5 routes it through the " + traps +
-           ", which bronze has not built; answering from the target behind the handler's back "
-           "would be the one thing a proxy must never do, so this refuses instead)")
-              .c_str());
-}
-
 [[noreturn]] void refuseKind(Value v, const char* operation) {
     fatal((std::string("unsupported: Object.") + operation + " on " + refusedKindName(v) +
            " (it keeps no property table, so bronze has nowhere to record "
@@ -201,9 +189,19 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
         return receiver.rawBits();
     }
     if (target == Target::Proxy) {
-        // 7.3.14 steps 2 and 5: [[PreventExtensions]] and, for every own key, a
-        // [[DefineOwnProperty]]. Both are traps bronze has not built.
-        refuseProxy(operation, "`preventExtensions`, `ownKeys` and `defineProperty` traps");
+        // 7.3.14 over the internal methods: [[PreventExtensions]], then for
+        // every own key a [[DefineOwnProperty]]. A false from the first is
+        // 20.1.2.6 step 3's TypeError (and 20.1.2.19 step 3's, 20.1.2.20 step
+        // 3's) — the language's own answer, since a trap refused.
+        Rooted<Value> self{receiver};
+        const bool ok = rtProxySetIntegrityLevel(self.get(), want);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (!ok) {
+            return rtThrowTypeError(std::string("Cannot ") + operation +
+                                    " a proxy whose 'preventExtensions' trap returned falsish")
+                .rawBits();
+        }
+        return self.get().rawBits();
     }
     if (target == Target::Refused) {
         // A typed array is the one refused kind with a SPECIFIED answer rather
@@ -246,10 +244,11 @@ bool testIntegrity(Value receiver, bool frozen) {
     const Target target = targetOf(receiver);
     if (target == Target::NotAnObject) return true;  // 7.3.15 step 1: vacuously
     if (target == Target::Proxy) {
-        // 7.3.15 steps 2 and 3 are [[IsExtensible]] and [[OwnPropertyKeys]],
-        // and the first of the two is a trap bronze has not built.
-        refuseProxy(frozen ? "isFrozen" : "isSealed",
-                    "`isExtensible`, `ownKeys` and `getOwnPropertyDescriptor` traps");
+        // 7.3.15 over the internal methods: [[IsExtensible]], then
+        // [[OwnPropertyKeys]] and a [[GetOwnProperty]] per key until one
+        // answers "configurable" (or, for the frozen question, "writable").
+        Rooted<Value> self{receiver};
+        return rtProxyTestIntegrityLevel(self.get(), frozen);
     }
     if (target == Target::ModuleNamespace) {
         // 7.3.15 over 10.4.6, and nothing here is read off the object. Step 3's
@@ -410,9 +409,29 @@ uint64_t rtObjectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     // condition. A namespace is the one object whose answer is fixed by its
     // kind, which is exactly why it needs no place to record one.
     if (target == Target::ModuleNamespace) return Value::fromBool(false).rawBits();
-    if (target == Target::Proxy) refuseProxy("isExtensible", "`isExtensible` trap");
+    if (target == Target::Proxy) {
+        // 10.5.3 [[IsExtensible]]: the `isExtensible` trap, checked against
+        // the target's own answer.
+        Rooted<Value> self{args[0]};
+        const bool extensible = rtProxyIsExtensible(self.get());
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        return Value::fromBool(extensible).rawBits();
+    }
     if (target == Target::Refused) return Value::fromBool(true).rawBits();
     return Value::fromBool(rtIsExtensible(args[0])).rawBits();
+}
+
+bool rtIsExtensibleOf(Rooted<Value>& obj) {
+    switch (targetOf(obj.get())) {
+        case Target::NotAnObject: return false;
+        case Target::ModuleNamespace: return false;
+        case Target::Proxy: return rtProxyIsExtensible(obj.get());
+        case Target::Refused: return true;
+        case Target::Plain:
+        case Target::Array:
+        case Target::Function: return rtIsExtensible(obj.get());
+    }
+    return true;
 }
 
 }  // namespace bronze::runtime

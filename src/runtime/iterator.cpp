@@ -30,7 +30,9 @@
 #include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
@@ -96,22 +98,51 @@ bool isSurrogatePair(uint16_t high, uint16_t low) {
            low >= kLowSurrogateFirst && low <= kLowSurrogateLast;
 }
 
+// 7.2.3 IsCallable: a function, or a proxy whose target is one. The protocol
+// calls whatever this admits through `callMethod` below, which dispatches a
+// proxy to its `apply` trap — so an iterator whose `next` is a proxied
+// function, or a proxied iterable's `[Symbol.iterator]`, runs the trap.
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+    return rtIsCallableValue(v);
 }
 
-// A named property of a PLAIN object, by its arena-interned key. Every object
-// this asks about is one the protocol built — an iterator, or the `{ value,
-// done }` record `next` returned — so anything else answers `undefined` and
-// the caller's own check reports it.
+// 7.3.14 Call(fn, thisValue) with no arguments, for any callable `isCallable`
+// admits. `bronze_dynamic_call` is the one dispatcher that knows every
+// callable kind (ordinary, bound, proxy); the direct FunctionHeader call it
+// replaces here knew one.
+Value callMethod(Rooted<Value>& fn, Rooted<Value>& thisValue) {
+    return Value(bronze_dynamic_call(fn.get().rawBits(), thisValue.get().rawBits(), 0, nullptr));
+}
+
+// A named property of an object, by its arena-interned key. Every object this
+// asks about is one the protocol built or was handed — an iterator, or the
+// `{ value, done }` record `next` returned. A plain object is read off its
+// shape; a Proxy is asked through its [[Get]] (10.5.8), because a proxied
+// iterator's `next` is the `get` trap's to answer. Anything else answers
+// `undefined` and the caller's own check reports it.
 Value namedProp(Value obj, StringHeader* key) {
-    if (!obj.isObject() ||
-        obj.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        return Value::fromUndefined();
+    if (!obj.isObject()) return Value::fromUndefined();
+    const uint16_t kind = obj.asObject<HeapObjectHeader>()->flags;
+    if (kind == ProxyHeader::kFlags) {
+        Rooted<Value> objRoot{obj};
+        Rooted<Value> keyRoot{rtKeyAsValue(key)};
+        return rtProxyGet(objRoot.get(), keyRoot.get(), objRoot.get());
     }
+    if (kind != BRONZE_ABI_OBJ_FLAGS_PLAIN) return Value::fromUndefined();
     Rooted<Value> objRoot{obj};
     Rooted<Value> keyRoot{Value::fromString(key)};
     return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
+}
+
+// The `[Symbol.iterator]` / `[Symbol.asyncIterator]` method of a Proxy: a
+// 7.3.10 GetMethod through the proxy's own [[Get]], receiver the proxy.
+Value proxyMethodOf(Value proxy, Value symbolKey) {
+    Rooted<Value> objRoot{proxy};
+    Rooted<Value> keyRoot{symbolKey};
+    Rooted<Value> method{rtProxyGet(objRoot.get(), keyRoot.get(), objRoot.get())};
+    if (rtExceptionPending()) return Value::fromUndefined();
+    if (method.get().isNull() || method.get().isUndefined()) return Value::fromUndefined();
+    return method.get();
 }
 
 StringHeader* internKey(const char* text) {
@@ -143,7 +174,11 @@ StringHeader* keyReturn() {
 // key and can no longer be confused by a string property that happens to spell
 // the hook's old name.
 Value iteratorMethodOf(Value v) {
-    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (!v.isObject()) return Value::fromUndefined();
+    if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return proxyMethodOf(v, rtIteratorKey());
+    }
+    if (v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         return Value::fromUndefined();
     }
     Rooted<Value> objRoot{v};
@@ -182,21 +217,19 @@ bool pristineBuiltinIterator(Value v, IteratorProto kind, bronze_fn_code nextCod
            hook.asObject<FunctionHeader>()->code == iteratorProtoSelf;
 }
 
-// Everything 7.4.2 GetIterator does, into an already-created record.
+// 7.4.3 GetIteratorFromMethod, into an already-created record: the call of
+// a fetched `[Symbol.iterator]`, then 7.4.7 GetIteratorDirect's `next` read.
 // `recRoot` holds the record; `srcRoot` the value being iterated.
-void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
-    Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
-    if (!isCallable(method.get())) {
-        rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
-        return;
-    }
-    Rooted<Value> iter{method.get().asObject<FunctionHeader>()->call(srcRoot.get(), 0, nullptr)};
+void openProtocolFromMethod(Rooted<Value>& recRoot, Rooted<Value>& srcRoot,
+                            Rooted<Value>& method) {
+    Rooted<Value> iter{callMethod(method, srcRoot)};
     if (rtExceptionPending()) return;
     if (!iter.get().isObject()) {
         rtThrowTypeError("the result of Symbol.iterator is not an object");
         return;
     }
     Rooted<Value> next{namedProp(iter.get(), keyNext())};
+    if (rtExceptionPending()) return;
     if (!isCallable(next.get())) {
         rtThrowTypeError("the iterator has no `next` method");
         return;
@@ -205,6 +238,18 @@ void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
     rec->kind = Value::fromDouble(static_cast<double>(IterRecordHeader::Protocol));
     rec->target = iter.get();
     rec->nextFn = next.get();
+}
+
+// Everything 7.4.2 GetIterator does, into an already-created record: the
+// GetMethod of `[Symbol.iterator]`, then the open above.
+void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
+    Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
+    if (rtExceptionPending()) return;
+    if (!isCallable(method.get())) {
+        rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
+        return;
+    }
+    openProtocolFromMethod(recRoot, srcRoot, method);
 }
 
 bool stepFast(IterRecordHeader* rec) {
@@ -550,6 +595,13 @@ Value rtOpenIterator(Value source) {
     return recRoot.get();
 }
 
+Value rtGetIteratorFromMethod(Rooted<Value>& source, Rooted<Value>& method) {
+    Rooted<Value> recRoot{
+        Value::fromObject(IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol))};
+    openProtocolFromMethod(recRoot, source, method);
+    return recRoot.get();
+}
+
 }  // namespace bronze::runtime
 
 namespace bronze::runtime {
@@ -680,7 +732,7 @@ bool bronze_iter_step(uint64_t recBits) {
     // The protocol: one call into user code per element (7.4.6 IteratorStep).
     Rooted<Value> nextFn{rec->nextFn};
     Rooted<Value> iterObj{rec->target};
-    Rooted<Value> result{nextFn.get().asObject<FunctionHeader>()->call(iterObj.get(), 0, nullptr)};
+    Rooted<Value> result{callMethod(nextFn, iterObj)};
     if (rtExceptionPending()) {
         // Nothing more to close: 7.4.6 leaves an iterator whose `next` threw
         // for the caller's throw completion to carry, and calling `return` on
@@ -693,13 +745,20 @@ bool bronze_iter_step(uint64_t recBits) {
         recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
         return false;
     }
-    if (bronze_truthy(namedProp(result.get(), keyDone()).rawBits())) {
+    // 7.4.4 / 7.4.5: `done` then `value`, each a Get that can run a trap (or
+    // a getter) and so can throw; a throw ends the iteration as `next`'s did.
+    const bool finished = bronze_truthy(namedProp(result.get(), keyDone()).rawBits());
+    if (finished || rtExceptionPending()) {
         rec = recRoot.get().asObject<IterRecordHeader>();
         rec->done = Value::fromBool(true);
         rec->current = Value::fromUndefined();
         return false;
     }
     Rooted<Value> produced{namedProp(result.get(), keyValue())};
+    if (rtExceptionPending()) {
+        recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
+        return false;
+    }
     recRoot.get().asObject<IterRecordHeader>()->current = produced.get();
     return true;
 }
@@ -759,7 +818,7 @@ void bronze_iter_close(uint64_t recBits, bool suppress) {
     // 7.4.9 step 4: an iterator with no `return` closes by doing nothing.
     Rooted<Value> result{Value::fromUndefined()};
     if (isCallable(ret.get())) {
-        result.set(ret.get().asObject<FunctionHeader>()->call(iterObj.get(), 0, nullptr));
+        result.set(callMethod(ret, iterObj));
     } else if (!inFlight) {
         return;
     }
@@ -813,7 +872,7 @@ uint64_t bronze_async_iter_next(uint64_t recBits) {
     if (rec->kindOf() == IterRecordHeader::Protocol) {
         Rooted<Value> nextFn{rec->nextFn};
         Rooted<Value> target{rec->target};
-        return nextFn.get().asObject<FunctionHeader>()->call(target.get(), 0, nullptr).rawBits();
+        return callMethod(nextFn, target).rawBits();
     }
     bool hasVal = bronze_iter_step(recRoot.get().rawBits());
     Rooted<Value> valVal{hasVal ? Value(bronze_iter_value(recRoot.get().rawBits())) : Value::fromUndefined()};
@@ -833,7 +892,11 @@ void bronze_async_iter_close(uint64_t recBits, bool suppress) {
 }  // extern "C"
 
 Value asyncIteratorMethodOf(Value v) {
-    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
+    if (!v.isObject()) return Value::fromUndefined();
+    if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
+        return proxyMethodOf(v, rtAsyncIteratorKey());
+    }
+    if (v.asObject<HeapObjectHeader>()->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
         return Value::fromUndefined();
     }
     Rooted<Value> objRoot{v};
@@ -844,15 +907,16 @@ Value asyncIteratorMethodOf(Value v) {
 Value rtOpenAsyncIterator(Value source) {
     Rooted<Value> srcRoot{source};
     Rooted<Value> asyncMethod{asyncIteratorMethodOf(srcRoot.get())};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (isCallable(asyncMethod.get())) {
-        Rooted<Value> iter{
-            asyncMethod.get().asObject<FunctionHeader>()->call(srcRoot.get(), 0, nullptr)};
+        Rooted<Value> iter{callMethod(asyncMethod, srcRoot)};
         if (rtExceptionPending()) return Value::fromUndefined();
         if (!iter.get().isObject()) {
             rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
             return Value::fromUndefined();
         }
         Rooted<Value> next{namedProp(iter.get(), keyNext())};
+        if (rtExceptionPending()) return Value::fromUndefined();
         if (!isCallable(next.get())) {
             rtThrowTypeError("the async iterator has no `next` method");
             return Value::fromUndefined();

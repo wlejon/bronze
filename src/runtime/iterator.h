@@ -79,6 +79,12 @@ namespace bronze::runtime {
 // the pending cell.
 Value rtOpenIterator(Value source);
 
+// 7.4.3 GetIteratorFromMethod, for a caller that has already fetched the
+// `[Symbol.iterator]` method — `Array.from` over a Proxy, whose GetMethod is
+// one observable `get` trap that must not run twice. `method` is callable;
+// the record is a Protocol one over the object the call returns.
+Value rtGetIteratorFromMethod(Rooted<Value>& source, Rooted<Value>& method);
+
 // 7.4.1 CreateIterResultObject: `{ value, done }`, in that order, as one
 // object of ONE shape for every built-in iterator in the runtime. The shape is
 // minted once per thread; a result is then an allocation and two slot stores,

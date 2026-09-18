@@ -232,7 +232,9 @@ void rtProxyCheckHas(Rooted<Value>& target, Rooted<Value>& key, bool trapAnswer)
         refuse("has", key, "the absence of a non-configurable property of the target");
         return;
     }
-    if (!rtIsExtensible(target.get())) {
+    const bool extensible = rtIsExtensibleOf(target);
+    if (rtExceptionPending()) return;
+    if (!extensible) {
         refuse("has", key,
                "the absence of an own property of a target that is not extensible");
     }
@@ -249,20 +251,24 @@ void rtProxyCheckDelete(Rooted<Value>& target, Rooted<Value>& key, bool trapAnsw
                "the removal of a non-configurable property of the target");
         return;
     }
-    if (!rtIsExtensible(target.get())) {
+    const bool extensible = rtIsExtensibleOf(target);
+    if (rtExceptionPending()) return;
+    if (!extensible) {
         refuse("deleteProperty", key,
                "the removal of an own property of a target that is not extensible");
     }
 }
 
 void rtProxyCheckGetOwnProperty(Rooted<Value>& target, Rooted<Value>& key,
-                                Rooted<Value>& desc) {
+                                Rooted<Value>& desc, OwnPropertyDetail& reported) {
+    reported = OwnPropertyDetail{};
     OwnPropertyDetail current;
     const bool exists = targetOwn(target, key, current);
     if (rtExceptionPending()) return;
     // The target's value may be a heap value the message-building below moves;
     // it is only ever compared, never held, so nothing needs rooting.
-    const bool extensible = rtIsExtensible(target.get());
+    const bool extensible = rtIsExtensibleOf(target);
+    if (rtExceptionPending()) return;
 
     if (desc.get().isUndefined()) {
         // Steps 10-12: reporting a property absent is a lie if the target's is
@@ -280,7 +286,6 @@ void rtProxyCheckGetOwnProperty(Rooted<Value>& target, Rooted<Value>& key,
         return;
     }
 
-    OwnPropertyDetail reported;
     if (!decodeDescriptor(desc, reported) || rtExceptionPending()) return;
 
     // Step 16: the descriptor must be one the target could actually have been
@@ -344,7 +349,8 @@ void rtProxyCheckOwnKeys(Rooted<Value>& target, Rooted<Value>& keys) {
         }
     }
 
-    const bool extensible = rtIsExtensible(target.get());
+    const bool extensible = rtIsExtensibleOf(target);
+    if (rtExceptionPending()) return;
     // The target's OWN keys, through the SAME answer the forward path of
     // 10.5.11 hands back when a handler has no `ownKeys` trap. Deliberately not
     // `Object.getOwnPropertyNames`: that member refuses by name for receiver
@@ -398,7 +404,8 @@ void rtProxyCheckOwnKeys(Rooted<Value>& target, Rooted<Value>& keys) {
 void rtProxyCheckPrototype(Rooted<Value>& target, Rooted<Value>& trapResult) {
     // 10.5.1 step 7: an extensible target's prototype can still change, so the
     // trap is free.
-    if (rtIsExtensible(target.get())) return;
+    const bool extensible = rtIsExtensibleOf(target);
+    if (extensible || rtExceptionPending()) return;
     const uint64_t call[1] = {target.get().rawBits()};
     Value actual = Value(objectGetPrototypeOf(0, 0, 1, call));
     if (rtExceptionPending()) return;
@@ -406,6 +413,84 @@ void rtProxyCheckPrototype(Rooted<Value>& target, Rooted<Value>& trapResult) {
         rtThrowTypeError(
             "'getPrototypeOf' on proxy: trap returned a prototype different from the one held "
             "by a target that is not extensible");
+    }
+}
+
+// 6.2.6.6 ValidateAndApplyPropertyDescriptor with O undefined, over a PARTIAL
+// descriptor: the general algorithm, where `compatibleDescriptor` above is its
+// completed special case. A field the descriptor lacks constrains nothing —
+// "if Desc has a [[Writable]] field" is read literally — which is what lets
+// `{ enumerable: true }` redescribe an accessor without claiming to be one.
+static bool compatiblePartialDescriptor(bool extensibleTarget, const DecodedDescriptorView& d,
+                                        bool targetExists, const OwnPropertyDetail& current) {
+    if (!targetExists) return extensibleTarget;  // step 2
+    const bool descAccessor = d.hasGet || d.hasSet;
+    const bool descData = d.hasValue || d.hasWritable;
+    if (current.configurable) return true;  // step 4's tests are all over a locked property
+    if (d.hasConfigurable && d.configurable) return false;              // 4.a
+    if (d.hasEnumerable && d.enumerable != current.enumerable) return false;  // 4.b
+    if ((descAccessor || descData) && descAccessor != current.accessor) return false;  // 4.c
+    if (current.accessor) {  // 4.d
+        if (d.hasGet && !sameValue(d.getter->get(), current.getter)) return false;
+        if (d.hasSet && !sameValue(d.setter->get(), current.setter)) return false;
+        return true;
+    }
+    if (current.writable) return true;  // 4.e applies to a non-writable one
+    if (d.hasWritable && d.writable) return false;
+    if (d.hasValue && current.valueKnown && !sameValue(d.value->get(), current.value)) {
+        return false;
+    }
+    return true;
+}
+
+void rtProxyCheckDefineProperty(Rooted<Value>& target, Rooted<Value>& key,
+                                const DecodedDescriptorView& desc) {
+    OwnPropertyDetail current;
+    const bool exists = targetOwn(target, key, current);
+    if (rtExceptionPending()) return;
+    const bool extensible = rtIsExtensibleOf(target);
+    if (rtExceptionPending()) return;
+    // Step 14: the one field of the descriptor that can manufacture a
+    // guarantee — non-configurability — is the one every rule below is about.
+    const bool settingConfigFalse = desc.hasConfigurable && !desc.configurable;
+
+    if (!exists) {
+        // Step 15: a property the target has not got cannot be added to a
+        // target that can gain none, and cannot be added LOCKED, because the
+        // target would then have a configurable-or-absent property the proxy
+        // reports as non-configurable forever.
+        if (!extensible) {
+            refuse("defineProperty", key,
+                   "a successful definition on a target that is not extensible");
+            return;
+        }
+        if (settingConfigFalse) {
+            refuse("defineProperty", key,
+                   "a successful non-configurable definition of a property the target has "
+                   "not got");
+        }
+        return;
+    }
+    // Step 16.a: the descriptor must be one the target could have taken.
+    if (!compatiblePartialDescriptor(extensible, desc, exists, current)) {
+        refuse("defineProperty", key,
+               "a successful definition incompatible with the property the target holds");
+        return;
+    }
+    // Step 16.b: non-configurability cannot be claimed over a configurable one.
+    if (settingConfigFalse && current.configurable) {
+        refuse("defineProperty", key,
+               "a successful non-configurable definition over a configurable property of the "
+               "target");
+        return;
+    }
+    // Step 16.c: nor non-writability over a writable non-configurable one —
+    // the target would still accept writes the proxy says it refuses.
+    if (!current.accessor && !current.configurable && current.writable && desc.hasWritable &&
+        !desc.writable) {
+        refuse("defineProperty", key,
+               "a successful non-writable definition over a writable non-configurable "
+               "property of the target");
     }
 }
 
