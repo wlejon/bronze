@@ -101,6 +101,11 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 // publishes. Incoherent with `emitObj` — two different outputs — and refused
 // by name. An executable is the same module beside a copy of the prebuilt
 // program host (cli/link.h).
+//
+// `targetName` (`--target`) names the machine the object is for —
+// `x64-windows`, `x64-linux`, `x64-macos`, `aarch64-linux`, `aarch64-macos`,
+// `aarch64-windows`; empty is this one — and goes with `emitObj` or
+// `emitShared` only: a program needs that machine's host binary and runtime.
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
              std::string* errOut = nullptr, bool infer = true, bool timings = false,
              bool emitObj = false, const std::string& hostGlobalsPath = {},
@@ -116,7 +121,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // See ModuleOptions::entryResolvesAs: the path `sourcePath`'s own
              // imports resolve from when it is a temp copy of a script that
              // lives elsewhere. Empty = its own path.
-             const std::string& entryResolvesAs = {});
+             const std::string& entryResolvesAs = {},
+             const std::string& targetName = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

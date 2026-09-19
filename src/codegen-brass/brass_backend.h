@@ -29,6 +29,11 @@ public:
     // oracle suite, a host's JIT) can be run in the baseline tier as a check.
     void setOptimize(bool on) { optimize_ = on; }
     bool optimize() const;
+    // The machine the object is for: this one unless a build says otherwise
+    // (`--target`). Only the object and the module written from it change;
+    // a program needs the target's own host binary, so it stays native.
+    void setTarget(const brass::Target& target) { target_ = target; }
+    const brass::Target& target() const { return target_; }
 
     std::optional<brass::object::ObjectFile> buildObjectFile(const il::Module& module,
                                                             DiagnosticSink& diags);
@@ -44,6 +49,7 @@ private:
     bool sharedRuntime_ = false;
     bool propagateExceptionsInEntry_ = false;
     bool optimize_ = true;
+    brass::Target target_ = brass::Target::host();
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;
 };

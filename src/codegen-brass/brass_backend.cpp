@@ -321,7 +321,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
-    brass::Target target = brass::Target::host();
+    const brass::Target target = target_;
     brass::object::ModuleCompiler compiler(target);
     brass::codegen::SchedOptions schedOpts;
     schedOpts.enable_post_ra = optimize;
@@ -373,7 +373,7 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         return false;
     }
 
-    brass::Target target = brass::Target::host();
+    const brass::Target target = target_;
     std::error_code ec;
     std::filesystem::path outPath(outputPath);
     if (outPath.has_parent_path()) {

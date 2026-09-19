@@ -140,6 +140,30 @@ bool hasHostBoundary(const std::string& hostGlobalsPath, bool emitObj, bool emit
     return !hostGlobalsPath.empty() || emitObj || emitShared;
 }
 
+// `--target <arch>-<os>`: the machines brass has a code generator and an
+// image writer for. The object and the module written from it are the only
+// things that change; the runtime a module imports is that machine's.
+bool parseTargetName(const std::string& name, brass::Target& out, std::string& err) {
+    static const struct { const char* name; brass::Target target; } kTargets[] = {
+        {"x64-windows", brass::Target::x64_windows()},
+        {"x64-linux", brass::Target::x64_linux()},
+        {"x64-macos", brass::Target::x64_macos()},
+        {"aarch64-linux", brass::Target::aarch64_linux()},
+        {"aarch64-macos", brass::Target::aarch64_macos()},
+        {"aarch64-windows", brass::Target::aarch64_windows()},
+    };
+    for (const auto& t : kTargets) {
+        if (name == t.name) {
+            out = t.target;
+            return true;
+        }
+    }
+    err = "error: unknown --target " + name + "; one of";
+    for (const auto& t : kTargets) err += std::string(" ") + t.name;
+    err += "\n";
+    return false;
+}
+
 // `--native-manifest <path>`: the JSON `embed::writeNativeManifest` printed
 // (lower/native_manifest.h), or a directory of them. Empty path = no natives.
 // Every message is a fact about the invocation, reported before compiling.
@@ -329,7 +353,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& importMapPath, bool assumeNoBigInt,
              const std::string& pinsPath, const std::string& censusOutPath,
              bool pinsAllowObserved, const std::string& nativeManifestPath,
-             const std::string& nativeLibPath, const std::string& entryResolvesAs) {
+             const std::string& nativeLibPath, const std::string& entryResolvesAs,
+             const std::string& targetName) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -341,6 +366,23 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         if (errOut) *errOut = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
+    }
+    // The target likewise: an unknown name, or a program (which needs the
+    // target's own host binary) for another machine, is refused before any
+    // compilation.
+    brass::Target target = brass::Target::host();
+    if (!targetName.empty()) {
+        std::string targetErr;
+        if (!parseTargetName(targetName, target, targetErr) ||
+            (target != brass::Target::host() && !emitObj && !emitShared)) {
+            std::string msg = targetErr.empty()
+                ? "error: --target " + targetName + " builds an object or a module for that "
+                  "machine (--emit-obj or --emit-shared); a program needs its host binary\n"
+                : targetErr;
+            if (errOut) *errOut = msg;
+            else std::fputs(msg.c_str(), stderr);
+            return 1;
+        }
     }
 
     // The backend reports the inside of its own phase, and it is reached
@@ -463,6 +505,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         BrassBackend objBackend;
         if (!entrySymbol.empty()) objBackend.setEntrySymbol(entrySymbol);
         objBackend.setHostGlobals(hostGlobals);
+        objBackend.setTarget(target);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
         timer.total();
@@ -483,6 +526,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(hostGlobals);
     backend.setSharedRuntime(emitShared);
+    backend.setTarget(target);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     timer.mark("codegen");
     if (!obj) {
@@ -764,11 +808,21 @@ int runDriver(int argc, char** argv) {
         std::string censusOutPath;
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
+        std::string targetName;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--no-infer") {
                 infer = false;
+            } else if (arg == "--target") {
+                if (i + 1 < argc) {
+                    targetName = argv[++i];
+                } else {
+                    return fail("error: missing argument for --target\n");
+                }
+            } else if (arg.rfind("--target=", 0) == 0) {
+                targetName = arg.substr(9);
+                if (targetName.empty()) return fail("error: missing argument for --target\n");
             } else if (arg == "--no-fn-source") {
                 retainFnSource = false;
             } else if (arg == "--assume-no-bigint") {
@@ -867,7 +921,8 @@ int runDriver(int argc, char** argv) {
         return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
-                        censusOutPath, pinsAllowObserved, nativeManifestPath);
+                        censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
+                        targetName);
     }
 
     return fail(kUsage);

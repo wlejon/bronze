@@ -414,3 +414,81 @@ TEST_CASE("CLI driver --no-fn-source keeps the Error.stack line table") {
     removeProgram(exeWithout, ec);
     std::filesystem::remove(jsPath, ec);
 }
+
+// `--target` writes another machine's module from this one — brass's image
+// writers need no cross toolchain — and refuses a program, which needs that
+// machine's host binary. The x64 macOS module is the one the codegen had to
+// become position independent for: dyld will not slide a pointer in __TEXT.
+TEST_CASE("CLI driver --target writes a module for another machine and refuses a program") {
+    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_target.js";
+    std::filesystem::path dylibPath = std::filesystem::temp_directory_path() / "test_driver_target.dylib";
+    std::filesystem::path soPath = std::filesystem::temp_directory_path() / "test_driver_target.so";
+    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_target.exe";
+    std::error_code ec;
+    std::filesystem::remove(dylibPath, ec);
+    std::filesystem::remove(soPath, ec);
+    removeProgram(exePath, ec);
+
+    writeTestFile(jsPath,
+        "class P { constructor(x) { this.x = x; } get d() { return this.x * 2; } }\n"
+        "const xs = [1, 2, 3].map(x => new P(x).d);\n"
+        "console.log(xs.join(','), Math.sqrt(xs[2]));\n");
+
+    auto readMagic = [](const std::filesystem::path& p) -> uint32_t {
+        std::ifstream in(p, std::ios::binary);
+        unsigned char b[4] = {0, 0, 0, 0};
+        in.read(reinterpret_cast<char*>(b), 4);
+        return uint32_t(b[0]) | (uint32_t(b[1]) << 8) | (uint32_t(b[2]) << 16) | (uint32_t(b[3]) << 24);
+    };
+
+    std::string err;
+    int status = bronze::cli::runBuild(
+        jsPath.string(), dylibPath.string(), &err,
+        /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
+        /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
+        /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/true,
+        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
+        /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
+        /*targetName=*/"x64-macos");
+    REQUIRE_MESSAGE(status == 0, err);
+    REQUIRE(std::filesystem::exists(dylibPath));
+    CHECK(readMagic(dylibPath) == 0xFEEDFACFu);   // MH_MAGIC_64
+
+    status = bronze::cli::runBuild(
+        jsPath.string(), soPath.string(), &err,
+        /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
+        /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
+        /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/true,
+        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
+        /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
+        /*targetName=*/"x64-linux");
+    REQUIRE_MESSAGE(status == 0, err);
+    CHECK(readMagic(soPath) == 0x464C457Fu);      // \x7fELF
+
+    // A program for another machine, and an unknown machine: refused by name.
+    err.clear();
+    status = bronze::cli::runBuild(
+        jsPath.string(), exePath.string(), &err,
+        /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
+        /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
+        /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/false,
+        /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
+        /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
+        /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
+        /*targetName=*/"x64-macos");
+    CHECK(status != 0);
+    CHECK(err.find("--emit-shared") != std::string::npos);
+    CHECK(!std::filesystem::exists(exePath));
+
+    std::string jsPathStr = jsPath.string();
+    std::string outStr = soPath.string();
+    const char* argvBad[] = {"bronze", "build", jsPathStr.c_str(), "--emit-shared",
+                             "--target", "riscv-plan9", "-o", outStr.c_str()};
+    CHECK(bronze::cli::runDriver(8, const_cast<char**>(argvBad)) != 0);
+
+    std::filesystem::remove(dylibPath, ec);
+    std::filesystem::remove(soPath, ec);
+    std::filesystem::remove(jsPath, ec);
+}

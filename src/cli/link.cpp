@@ -37,36 +37,47 @@ namespace fs = std::filesystem;
 
 // ---- names -----------------------------------------------------------------
 
-// The shared runtime's file name, which is also what a module imports it as:
-// the DLL name on Windows, the soname on ELF, and on Mach-O the install name
-// the runtime was built with, which CMake spells `@rpath/<file>`.
+// The shared runtime's file name beside this bronze, and the prebuilt host
+// next to it: files of THIS machine.
+#ifdef _WIN32
+constexpr const char* kRuntimeFile = "bronze_runtime_shared.dll";
+constexpr const char* kHostFile = "bronze_host.exe";
+#elif defined(__APPLE__)
+constexpr const char* kRuntimeFile = "libbronze_runtime_shared.dylib";
+constexpr const char* kHostFile = "bronze_host";
+#else
+constexpr const char* kRuntimeFile = "libbronze_runtime_shared.so";
+constexpr const char* kHostFile = "bronze_host";
+#endif
+
+// What a module imports the runtime as — the DLL name on Windows, the soname
+// on ELF, and on Mach-O the install name the runtime was built with, which
+// CMake spells `@rpath/<file>` — plus the module's own extension and the
+// search path for its own directory. Spelled for the loader of the machine
+// the OBJECT is for, which is this one unless `--target` said otherwise.
 //
 // The C math library is the one other thing generated code calls: brass
 // lowers Math.sqrt, Math.floor and their kin to the C functions of those
 // names, and a statically linked program took them from the C runtime it
 // was linked with. A module imports them from the platform's own library —
 // the UCRT's math API set on Windows, libm on ELF, libSystem on Mach-O.
-#ifdef _WIN32
-constexpr const char* kRuntimeFile = "bronze_runtime_shared.dll";
-constexpr const char* kRuntimeImportName = "bronze_runtime_shared.dll";
-constexpr const char* kMathImportName = "api-ms-win-crt-math-l1-1-0.dll";
-constexpr const char* kHostFile = "bronze_host.exe";
-constexpr const char* kModuleExtension = ".dll";
-#elif defined(__APPLE__)
-constexpr const char* kRuntimeFile = "libbronze_runtime_shared.dylib";
-constexpr const char* kRuntimeImportName = "@rpath/libbronze_runtime_shared.dylib";
-constexpr const char* kMathImportName = "/usr/lib/libSystem.B.dylib";
-constexpr const char* kHostFile = "bronze_host";
-constexpr const char* kModuleExtension = ".dylib";
-constexpr const char* kOwnDirRpath = "@loader_path";
-#else
-constexpr const char* kRuntimeFile = "libbronze_runtime_shared.so";
-constexpr const char* kRuntimeImportName = "libbronze_runtime_shared.so";
-constexpr const char* kMathImportName = "libm.so.6";
-constexpr const char* kHostFile = "bronze_host";
-constexpr const char* kModuleExtension = ".so";
-constexpr const char* kOwnDirRpath = "$ORIGIN";
-#endif
+struct TargetNames {
+    const char* runtimeImport;
+    const char* mathImport;
+    const char* moduleExtension;
+    const char* ownDirRpath;   // none on Windows, where the loader looks beside the host
+};
+
+TargetNames namesFor(const brass::Target& target) {
+    if (target.is_windows()) {
+        return {"bronze_runtime_shared.dll", "api-ms-win-crt-math-l1-1-0.dll", ".dll", nullptr};
+    }
+    if (target.is_macos()) {
+        return {"@rpath/libbronze_runtime_shared.dylib", "/usr/lib/libSystem.B.dylib", ".dylib",
+                "@loader_path"};
+    }
+    return {"libbronze_runtime_shared.so", "libm.so.6", ".so", "$ORIGIN"};
+}
 
 // ---- where the runtime lives -------------------------------------------------
 
@@ -420,19 +431,24 @@ bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& o
         return false;
     }
 
+    const TargetNames names = namesFor(obj.target);
     brass::target::LinkerOptions options;
     options.module_name = fs::path(outputPath).filename().string();
     options.soname = options.module_name;
     options.export_all_functions = false;
     options.explicit_exports = moduleExports(obj, entry);
-    if (!runtimeImports.empty()) options.imports.push_back({kRuntimeImportName, runtimeImports});
-    if (!mathImports.empty()) options.imports.push_back({kMathImportName, mathImports});
-#ifndef _WIN32
-    options.rpaths.push_back(kOwnDirRpath);
-    if (auto runtimeDir = findSharedRuntimeDir()) {
-        options.rpaths.push_back(runtimeDir->string());
+    if (!runtimeImports.empty()) options.imports.push_back({names.runtimeImport, runtimeImports});
+    if (!mathImports.empty()) options.imports.push_back({names.mathImport, mathImports});
+    if (names.ownDirRpath) {
+        options.rpaths.push_back(names.ownDirRpath);
+        // This machine's runtime directory means something only to a module
+        // that will run on this machine.
+        if (obj.target == brass::Target::host()) {
+            if (auto runtimeDir = findSharedRuntimeDir()) {
+                options.rpaths.push_back(runtimeDir->string());
+            }
+        }
     }
-#endif
 
     std::error_code ec;
     const fs::path out(outputPath);
@@ -449,6 +465,13 @@ bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& o
 
 bool linkExecutable(const brass::object::ObjectFile& obj, const std::string& outputPath,
                     DiagnosticSink& diags) {
+    if (obj.target != brass::Target::host()) {
+        diags.error(Span{}, "cannot build a program for another machine: the host binary and the "
+                            "shared runtime beside it are this machine's. Build the module alone "
+                            "with --emit-shared and pair it with that machine's bronze_host and "
+                            "runtime.");
+        return false;
+    }
     const std::optional<fs::path> runtimeDir = findSharedRuntimeDir();
     if (!runtimeDir) {
         diags.error(Span{}, "cannot build an executable: " + runtimeNotFoundMessage());
@@ -470,7 +493,7 @@ bool linkExecutable(const brass::object::ObjectFile& obj, const std::string& out
 
     // The module, named so the host's own stem finds it (host_main.cpp).
     fs::path module = out;
-    module.replace_extension(kModuleExtension);
+    module.replace_extension(namesFor(obj.target).moduleExtension);
     if (!linkSharedModule(obj, module.string(), diags, "bronze_main")) return false;
 
     // The host, under the program's name.
