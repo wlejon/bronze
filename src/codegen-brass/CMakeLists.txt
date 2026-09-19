@@ -23,6 +23,7 @@ endif()
 
 add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
+    brass_backend_sections.cpp
     brass_jit.cpp
     il_to_brass_ast.cpp
 )
