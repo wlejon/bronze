@@ -28,6 +28,9 @@
 #else
 #include <pthread.h>
 #include <sys/mman.h>
+#if defined(__APPLE__)
+#include <sys/resource.h>
+#endif
 #endif
 
 #include "abi/bronze_abi.h"
@@ -141,9 +144,14 @@ void threadStackBounds(uintptr_t& low, uintptr_t& high) {
     low = static_cast<uintptr_t>(lo);
     high = static_cast<uintptr_t>(hi);
 #elif defined(__APPLE__)
-    void* addr = pthread_get_stackaddr_np(pthread_self());
+    high = reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
     size_t size = pthread_get_stacksize_np(pthread_self());
-    high = reinterpret_cast<uintptr_t>(addr);
+    if (pthread_main_np()) {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur > 0 && rl.rlim_cur < RLIM_INFINITY) {
+            size = static_cast<size_t>(rl.rlim_cur);
+        }
+    }
     low = high - size;
 #else
     pthread_attr_t attr;
@@ -184,6 +192,14 @@ extern "C" void* bronze_tls_enter(void) {
                 size >= 2 * bronze::runtime::kStackReserveBytes ? bronze::runtime::kStackReserveBytes
                                                                  : size / 4;
             tls->stack_limit = low + reserve;
+        }
+        uintptr_t cur_sp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+        if (tls->stack_limit != 0 && cur_sp <= tls->stack_limit) {
+            if (cur_sp > bronze::runtime::kStackReserveBytes) {
+                tls->stack_limit = cur_sp - bronze::runtime::kStackReserveBytes;
+            } else {
+                tls->stack_limit = 0;
+            }
         }
     }
     return tls;
