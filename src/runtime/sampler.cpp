@@ -6,11 +6,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "runtime/stack_trace.h"
 #include "runtime/symbolize.h"
 
 #ifdef _WIN32
@@ -200,6 +202,33 @@ struct FuncRow {
     uint64_t totalTail = 0;
 };
 
+// One source line of compiled JS, credited with every sample whose innermost
+// compiled frame is on it — the leaf when the leaf is compiled code, else the
+// compiled caller of the runtime helper the leaf is in. That is the line's
+// cost as a program sees it: a `+` that became bronze_add is the line's, not
+// the helper's. Resolved through the pc tables the backend emitted, the ones
+// Error.stack reads, so the line named here is the one a stack would name.
+struct LineRow {
+    std::string function;
+    std::string file;
+    uint32_t line = 0;
+    uint64_t self = 0;
+    uint64_t selfTail = 0;
+};
+
+// The innermost compiled frame of one sample, or false when none of its
+// frames is compiled JS. Frame 0 holds the instruction the thread was
+// stopped on; every later frame holds a return address, one past its call.
+bool innermostCompiledSite(const uint64_t* pcs, uint32_t n, CodeSite& out) {
+    for (uint32_t f = 0; f < n; ++f) {
+        const uint64_t pc = f == 0 ? pcs[f] : pcs[f] - 1;
+        if (find_code_site(reinterpret_cast<const void*>(static_cast<uintptr_t>(pc)), out)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void dumpSamplerReport() {
     SamplerState* st = g_state;
     if (st == nullptr) return;
@@ -243,6 +272,10 @@ void dumpSamplerReport() {
         return key;
     };
 
+    // (descriptor, line) -> row: the key is the descriptor's address, one
+    // per compiled function, and the line the pc table gave.
+    std::map<std::pair<const void*, uint32_t>, LineRow> lineRows;
+
     std::unordered_set<uint64_t> seen;
     for (size_t i = 0; i < st->log.size();) {
         const uint64_t relMs = st->log[i] >> 8;
@@ -265,8 +298,28 @@ void dumpSamplerReport() {
                 if (inTail) row.totalTail++;
             }
         }
+        if (CodeSite site; innermostCompiledSite(pcs, n, site)) {
+            const bronze_fn_desc* desc = site.range->desc;
+            auto& lr = lineRows[{desc, site.line}];
+            if (lr.line == 0) {
+                lr.function = (desc->name && desc->name[0]) ? desc->name : "<anonymous>";
+                lr.file = (desc->file && desc->file[0]) ? desc->file : "<anonymous>";
+                lr.line = site.line ? site.line : 1;
+            }
+            lr.self++;
+            if (inTail) lr.selfTail++;
+        }
     }
     if (sampleCount == 0) return;
+
+    std::vector<const LineRow*> sortedLines;
+    sortedLines.reserve(lineRows.size());
+    for (const auto& [k, r] : lineRows) sortedLines.push_back(&r);
+    std::sort(sortedLines.begin(), sortedLines.end(), [](const LineRow* a, const LineRow* b) {
+        if (a->self != b->self) return a->self > b->self;
+        if (a->file != b->file) return a->file < b->file;
+        return a->line < b->line;
+    });
 
     std::vector<FuncRow*> sorted;
     sorted.reserve(rows.size());
@@ -294,6 +347,20 @@ void dumpSamplerReport() {
                      r.module.c_str(), static_cast<unsigned long long>(r.self),
                      static_cast<unsigned long long>(r.total),
                      100.0 * static_cast<double>(r.self) / static_cast<double>(sampleCount));
+    }
+    if (!sortedLines.empty()) {
+        std::fprintf(stderr, "\n%-56s %-36s %9s %7s\n", "Line", "Function", "Self", "Self%");
+        for (size_t i = 0; i < sortedLines.size() && i < 40; ++i) {
+            const LineRow& r = *sortedLines[i];
+            // The file's basename: the directory is the same for every row.
+            const char* base = r.file.c_str();
+            if (const char* s = std::strrchr(base, '/')) base = s + 1;
+            if (const char* s = std::strrchr(base, '\\')) base = s + 1;
+            const std::string where = std::string(base) + ":" + std::to_string(r.line);
+            std::fprintf(stderr, "%-56.56s %-36.36s %9llu %6.2f%%\n", where.c_str(),
+                         r.function.c_str(), static_cast<unsigned long long>(r.self),
+                         100.0 * static_cast<double>(r.self) / static_cast<double>(sampleCount));
+        }
     }
     std::fflush(stderr);
 
@@ -337,6 +404,18 @@ void dumpSamplerReport() {
                      static_cast<unsigned long long>(r->total),
                      static_cast<unsigned long long>(r->selfTail),
                      static_cast<unsigned long long>(r->totalTail));
+        first = false;
+    }
+    std::fprintf(f, "\n],\n\"lines\":[\n");
+    first = true;
+    for (const LineRow* r : sortedLines) {
+        std::fprintf(f,
+                     "%s{\"function\":\"%s\",\"file\":\"%s\",\"line\":%u,\"self\":%llu,"
+                     "\"self_tail\":%llu}",
+                     first ? "" : ",\n", jsonEscape(r->function).c_str(),
+                     jsonEscape(r->file).c_str(), r->line,
+                     static_cast<unsigned long long>(r->self),
+                     static_cast<unsigned long long>(r->selfTail));
         first = false;
     }
     std::fprintf(f, "\n]}\n");

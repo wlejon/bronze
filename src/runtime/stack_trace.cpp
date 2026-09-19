@@ -207,6 +207,27 @@ const bronze_code_range* find_code_range(const void* pc) {
     return g_code_ranges.find(pc);
 }
 
+bool find_code_site(const void* pc, CodeSite& out) {
+    const bronze_code_range* cr = find_code_range(pc);
+    if (!cr || !cr->desc) return false;
+    out.range = cr;
+    out.line = cr->desc->def_line;
+    out.col = cr->desc->def_col;
+    if (cr->pc_table && cr->pc_count > 0) {
+        const uintptr_t pc_off =
+            reinterpret_cast<uintptr_t>(pc) - reinterpret_cast<uintptr_t>(cr->code_start);
+        auto it = std::upper_bound(
+            cr->pc_table, cr->pc_table + cr->pc_count, pc_off,
+            [](uintptr_t val, const bronze_pc_entry& e) { return val < e.pc_offset; });
+        if (it != cr->pc_table) {
+            --it;
+            out.line = it->line;
+            out.col = it->col;
+        }
+    }
+    return true;
+}
+
 std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     std::string nameStr = "Error";
     std::string msgStr = "";
@@ -260,23 +281,12 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         uintptr_t prev_rip = ctx.Rip;
         uintptr_t prev_rsp = ctx.Rsp;
 
-        const bronze_code_range* cr = find_code_range(reinterpret_cast<const void*>(ctx.Rip));
-        if (cr && cr->desc) {
-            uint32_t f_line = cr->desc->def_line;
-            uint32_t f_col = cr->desc->def_col;
-            if (cr->pc_table && cr->pc_count > 0) {
-                uintptr_t pc_off = (ctx.Rip - 1) - reinterpret_cast<uintptr_t>(cr->code_start);
-                auto it = std::upper_bound(
-                    cr->pc_table, cr->pc_table + cr->pc_count, pc_off,
-                    [](uintptr_t val, const bronze_pc_entry& e) { return val < e.pc_offset; });
-                if (it != cr->pc_table) {
-                    --it;
-                    f_line = it->line;
-                    f_col = it->col;
-                }
-            }
-            frames.push_back({cr->desc, f_line, f_col, cr->code_start, nullptr});
-            if (cr->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
+        // The first frame's Rip is the instruction after the call into the
+        // runtime, and every later one a return address: the byte before it
+        // is the call, and the range and pc-table lookups both see that byte.
+        if (CodeSite site; find_code_site(reinterpret_cast<const void*>(ctx.Rip - 1), site)) {
+            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr});
+            if (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
                 break;
             }
         }
@@ -328,30 +338,14 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         uintptr_t caller_rbp = fp[0];
         uintptr_t caller_rip = fp[1];
         if (caller_rip == 0) break;
-        const void* call_pc = reinterpret_cast<const void*>(caller_rip - 1);
+        void* call_pc = reinterpret_cast<void*>(caller_rip - 1);
 
-        const bronze_code_range* cr = find_code_range(call_pc);
-        if (cr) {
-            if (cr->desc) {
-                uint32_t f_line = cr->desc->def_line;
-                uint32_t f_col = cr->desc->def_col;
-                if (cr->pc_table && cr->pc_count > 0) {
-                    uintptr_t pc_off = (caller_rip - 1) - reinterpret_cast<uintptr_t>(cr->code_start);
-                    auto it = std::upper_bound(
-                        cr->pc_table, cr->pc_table + cr->pc_count, pc_off,
-                        [](uintptr_t val, const bronze_pc_entry& e) { return val < e.pc_offset; });
-                    if (it != cr->pc_table) {
-                        --it;
-                        f_line = it->line;
-                        f_col = it->col;
-                    }
-                }
-                frames.push_back({cr->desc, f_line, f_col, cr->code_start, nullptr});
-                if (cr->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
-                    break;
-                }
+        if (CodeSite site; find_code_site(call_pc, site)) {
+            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr});
+            if (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
+                break;
             }
-        } else if (void* fnBegin = _Unwind_FindEnclosingFunction(const_cast<void*>(call_pc))) {
+        } else if (void* fnBegin = _Unwind_FindEnclosingFunction(call_pc)) {
             const char* builtinName = rtGetNativeDisplayName(fnBegin);
             if (builtinName) {
                 frames.push_back({nullptr, 0, 0, nullptr, builtinName});

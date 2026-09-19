@@ -63,6 +63,16 @@ bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
         return true;
     }
 
+    // This statement's span is what its unpositioned instructions carry
+    // (emitInst, `currentStmtSpan_`); a nested statement narrows it and hands
+    // it back on its way out, whichever return below it leaves through.
+    struct StmtSpanScope {
+        Span& slot;
+        Span outer;
+        ~StmtSpanScope() { slot = outer; }
+    } stmtSpanScope{currentStmtSpan_, currentStmtSpan_};
+    currentStmtSpan_ = stmt.span;
+
     if (const auto* varDecl = dynamic_cast<const ast::VarDecl*>(&stmt)) {
         return lowerVarDecl(varDecl, ilFn);
     }

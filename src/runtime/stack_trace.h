@@ -10,6 +10,20 @@ void bronze_register_code_ranges_internal(const void* ranges, uint32_t count);
 void bronze_unregister_code_ranges_internal(const void* ranges, uint32_t count);
 const bronze_code_range* find_code_range(const void* pc);
 
+// A pc inside compiled JS: the function's code range and the source position
+// of the instruction there, read off the pc table the backend emitted
+// (bronze_pc_entry). Falls back to the function's definition position when
+// the table has no entry at or before the pc. `pc` is the instruction's own
+// address, so a caller frame passes its return address minus one — the byte
+// of the call, not the instruction after it.
+struct CodeSite {
+    const bronze_code_range* range = nullptr;
+    uint32_t line = 0;
+    uint32_t col = 0;
+};
+// False when `pc` is in no registered code range, or in one with no descriptor.
+bool find_code_site(const void* pc, CodeSite& out);
+
 
 std::string bronze_format_stack_trace(Value errorObj, Value skipFn = Value::fromUndefined());
 void bronze_install_stack(Value errorObj, Value skipFn = Value::fromUndefined());

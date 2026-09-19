@@ -52,6 +52,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     scopeHasEnv_.clear();
     immutableEnvCache_.clear();
     cachedTypedElemGet_.reset();
+    currentStmtSpan_ = Span{};
     functionVarNames_ = ast::getHoistedVarDeclarations(body);
     for (auto& n : ast::getAssignedNames(body)) assignedNames_.insert(std::move(n));
 

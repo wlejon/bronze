@@ -168,6 +168,15 @@ private:
     // next, so a label can never leak onto a second statement.
     std::string pendingLabel_;
     size_t currentBlockIdx_ = 0;
+    // The span of the statement being lowered, which `emitInst` puts on every
+    // instruction that names no position of its own. A site that can raise
+    // stamps its own (a call, a property read, a `new`, an unresolved name);
+    // the arithmetic, the compares and the loop control between them carried
+    // nothing, so the pc table behind Error.stack and the sampler had no
+    // entry for them and a pc there was reported at the last raising site
+    // before it, or at the function's definition when none preceded it.
+    // Empty (no statement) while a body's prologue lowers.
+    Span currentStmtSpan_;
 
     std::vector<EnvScopeInfo> envScopes_;
     std::vector<il::ValueId> savedEnvValues_;

@@ -191,7 +191,8 @@ void Lowerer::emitInst(il::Function& ilFn, const il::Instruction& inst) {
     if (currentBlockIdx_ >= ilFn.blocks.size()) {
         ilFn.blocks.push_back(il::Block{.id = static_cast<il::BlockId>(currentBlockIdx_)});
     }
-    ilFn.blocks[currentBlockIdx_].instructions.push_back(inst);
+    auto& placed = ilFn.blocks[currentBlockIdx_].instructions.emplace_back(inst);
+    if (placed.span.begin == 0 && placed.span.end == 0) placed.span = currentStmtSpan_;
 
     if (cachedTypedElemGet_.has_value()) {
         const auto op = inst.op;
