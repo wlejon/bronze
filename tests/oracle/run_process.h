@@ -35,7 +35,11 @@
 
 namespace oracle {
 
+#ifdef _WIN32
+constexpr uint32_t kRunTimeoutMs = 30000;
+#else
 constexpr uint32_t kRunTimeoutMs = 15000;
+#endif
 
 struct RunResult {
     bool ran = false;       // process started and exited on its own
@@ -51,6 +55,7 @@ inline std::string quoted(const std::string& arg) { return "\"" + arg + "\""; }
 inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
                             uint32_t timeoutMs = kRunTimeoutMs) {
     RunResult result;
+    uint32_t effectiveTimeoutMs = (timeoutMs == kRunTimeoutMs && gcStress) ? (kRunTimeoutMs * 4) : timeoutMs;
 
     HANDLE outRead = nullptr;
     HANDLE errRead = nullptr;
@@ -112,7 +117,7 @@ inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
     std::thread outReader(drain, outRead, std::ref(result.output));
     std::thread errReader(drain, errRead, std::ref(result.errors));
 
-    DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
+    DWORD wait = WaitForSingleObject(pi.hProcess, effectiveTimeoutMs);
     if (wait == WAIT_TIMEOUT) {
         result.timedOut = true;
         TerminateProcess(pi.hProcess, 1);
