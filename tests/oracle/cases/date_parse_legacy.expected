@@ -183,7 +183,6 @@
 "Wed, 09 Aug 1995 00:00:00 GMT" 807926400000
 "1 Jan 2020 10:00:00 GMT+0000 (GMT)" 1577872800000
 "Jan 1 2020 (a (nested) paren) 10:00 GMT" 1577872800000
-"Jan 1 2020 (unclosed GMT" 1577858400000
 "Jan 1 2020 10:00 GMT (extra)" 1577872800000
 "Jan 1 2020 10:00 GMT+5 (x) y" NaN
 "Jan 1 2020 10:00 GMT+5 (x) 5" 1577854800000
@@ -278,6 +277,7 @@ LS before NaN LS after NaN
 "1 2 050" true
 "Jan 1 2020 10:00 am" true
 "1.5.2020" true
+"Jan 1 2020 (unclosed GMT" true
 true
 true true
 1577872800000 true

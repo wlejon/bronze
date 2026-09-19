@@ -101,7 +101,7 @@ show([
   "Wed, 01 Jan 2020 00:00:00 +0000", "Wed, 01 Jan 2020 00:00:00 -0130",
   "01 Jan 2020 00:00:00 GMT", "Wed, 09 Aug 1995 00:00:00 GMT",
   "1 Jan 2020 10:00:00 GMT+0000 (GMT)", "Jan 1 2020 (a (nested) paren) 10:00 GMT",
-  "Jan 1 2020 (unclosed GMT", "Jan 1 2020 10:00 GMT (extra)", "Jan 1 2020 10:00 GMT+5 (x) y",
+  "Jan 1 2020 10:00 GMT (extra)", "Jan 1 2020 10:00 GMT+5 (x) y",
   "Jan 1 2020 10:00 GMT+5 (x) 5", "Jan 1 2020 10:00 GMT+5 (x))", "Jan 1 2020 10:00 GMT+0100 extra",
   "(x) Jan 1 2020 GMT", "(x)Jan 1 2020 GMT", "x Jan 1 2020 GMT", "x1 Jan 2020 GMT",
   "1x Jan 2020 GMT", "Jan 1x 2020 GMT", "Jan x 1 2020 GMT", "Jan 1 2020 foo GMT",
@@ -148,6 +148,7 @@ local("1 2 49", 2049, 0, 2);
 local("1 2 050", 1950, 0, 2);
 local("Jan 1 2020 10:00 am", 2020, 0, 1, 10);
 local("1.5.2020", 2020, 0, 5);
+local("Jan 1 2020 (unclosed GMT", 2020, 0, 1);
 // A leading space turns an ISO date-only string from UTC into local, because
 // the legacy loop reads it: the two differ by exactly the zone offset.
 {
