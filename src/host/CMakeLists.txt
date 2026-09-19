@@ -39,6 +39,41 @@ else()
     endif()
 endif()
 
+# The C++ runtime the host and the shared runtime load — msvcp140,
+# msvcp140_2, vcruntime140, vcruntime140_1 — copied to `redist/` beside the
+# runtime, from where `bronze build` stages them beside every program
+# (src/cli/link.cpp, stageRedist), so a program runs on a machine that never
+# installed the VC redistributable. The `api-ms-win-crt-*` names it also
+# imports are forwarders every supported Windows carries and need nothing.
+# InstallRequiredSystemLibraries is CMake's own knowledge of where the
+# toolchain keeps them; with the SKIP it only lists them. A host on the static
+# CRT leaves no folder, and the driver stages nothing. The list is the release
+# CRT whatever the configuration: a Debug host links the debug CRT, which is
+# not redistributable, and a Debug program is a developer's own anyway.
+if(MSVC AND NOT CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "^MultiThreaded(Debug)?$")
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    set(_bronze_redist)
+    foreach(_lib IN LISTS CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        get_filename_component(_name "${_lib}" NAME)
+        string(TOLOWER "${_name}" _name)
+        if(_name MATCHES "^(msvcp140|msvcp140_2|vcruntime140|vcruntime140_1)\\.dll$")
+            list(APPEND _bronze_redist "${_lib}")
+        endif()
+    endforeach()
+    if(_bronze_redist)
+        add_custom_command(TARGET bronze_host POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${BRONZE_SHARED_RUNTIME_DIR}/redist"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_bronze_redist}
+                    "${BRONZE_SHARED_RUNTIME_DIR}/redist"
+            COMMENT "Staging the C++ runtime beside the shared runtime (redist/)"
+            VERBATIM)
+    else()
+        message(STATUS "bronze: no redistributable C++ runtime found for this toolchain; "
+            "built programs will need the VC redistributable installed")
+    endif()
+endif()
+
 # Anything that builds programs — the CLI, the oracle and CLI test binaries —
 # needs the host on disk before it runs, and it links the driver library.
 if(TARGET bronze_cli)

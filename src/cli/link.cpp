@@ -355,18 +355,18 @@ bool copyFileForExec(const fs::path& src, const fs::path& dst, std::error_code& 
 #endif
 }
 
-// Copy the shared runtime beside the program, unless the copy there is
+// Copy a library the program loads beside it, unless the copy there is
 // already current. Written to a unique name and renamed into place, because
 // N builds may stage into one directory at once (the oracle suite compiles
 // its cases in parallel, into one temp directory): a half-written library
 // is never at the final name, and a loser of the rename race finds the
-// winner's copy already there.
-bool stageRuntime(const fs::path& runtimeDir, const fs::path& outDir, DiagnosticSink& diags) {
+// winner's copy already there. `what` names the library in a diagnostic.
+bool stageBeside(const fs::path& src, const fs::path& outDir, const char* what,
+                 DiagnosticSink& diags) {
     static std::mutex s_mutex;
     std::lock_guard<std::mutex> lock(s_mutex);
 
-    const fs::path src = runtimeDir / kRuntimeFile;
-    const fs::path dst = outDir / kRuntimeFile;
+    const fs::path dst = outDir / src.filename();
     std::error_code ec;
     if (fs::equivalent(src, dst, ec)) return true;
     if (stagedCopyIsCurrent(src, dst)) return true;
@@ -378,12 +378,12 @@ bool stageRuntime(const fs::path& runtimeDir, const fs::path& outDir, Diagnostic
     pid = static_cast<uint64_t>(getpid());
 #endif
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    const fs::path partial = outDir / (std::string(kRuntimeFile) + "." + std::to_string(pid) + "." +
+    const fs::path partial = outDir / (src.filename().string() + "." + std::to_string(pid) + "." +
                                        std::to_string(stamp) + ".partial");
     if (!copyFileForExec(src, partial, ec)) {
         const std::string why = ec.message();
         fs::remove(partial, ec);
-        diags.error(Span{}, "cannot copy the shared runtime " + src.string() + " to " +
+        diags.error(Span{}, std::string("cannot copy ") + what + " " + src.string() + " to " +
                                 dst.string() + ": " + why);
         return false;
     }
@@ -395,10 +395,34 @@ bool stageRuntime(const fs::path& runtimeDir, const fs::path& outDir, Diagnostic
         std::error_code cleanup;
         fs::remove(partial, cleanup);
         if (stagedCopyIsCurrent(src, dst)) return true;
-        diags.error(Span{}, "cannot replace " + dst.string() + " with the current shared runtime " +
+        diags.error(Span{}, "cannot replace " + dst.string() + " with the current " + what + " " +
                                 src.string() + ": " + ec.message() +
                                 ". A program using it may still be running.");
         return false;
+    }
+    return true;
+}
+
+bool stageRuntime(const fs::path& runtimeDir, const fs::path& outDir, DiagnosticSink& diags) {
+    return stageBeside(runtimeDir / kRuntimeFile, outDir, "the shared runtime", diags);
+}
+
+// The C++ runtime the host and the shared runtime were built against, when
+// the build put a copy in `redist/` beside the runtime (src/host/CMakeLists.txt
+// does on MSVC: msvcp140, msvcp140_2, vcruntime140, vcruntime140_1 — the
+// `api-ms-win-crt-*` names are forwarders every supported Windows has). A
+// program that carries them runs on a machine without the VC redistributable
+// installed. No folder means a build that has nothing to stage — a Linux or
+// macOS build, or a host built against the static CRT — and nothing to say.
+// A Debug host links the debug CRT, which is not redistributable; the folder
+// holds the release one, which such a program does not load.
+bool stageRedist(const fs::path& runtimeDir, const fs::path& outDir, DiagnosticSink& diags) {
+    std::error_code ec;
+    const fs::path redist = runtimeDir / "redist";
+    if (!fs::is_directory(redist, ec)) return true;
+    for (const auto& entry : fs::directory_iterator(redist, ec)) {
+        if (!entry.is_regular_file(ec)) continue;
+        if (!stageBeside(entry.path(), outDir, "the C++ runtime library", diags)) return false;
     }
     return true;
 }
@@ -503,8 +527,9 @@ bool linkExecutable(const brass::object::ObjectFile& obj, const std::string& out
         return false;
     }
 
-    // And the runtime the pair loads, beside them.
-    return stageRuntime(*runtimeDir, outDir, diags);
+    // And the runtime the pair loads, beside them, with the C++ runtime it
+    // and the host were built against.
+    return stageRuntime(*runtimeDir, outDir, diags) && stageRedist(*runtimeDir, outDir, diags);
 }
 
 }  // namespace bronze::cli
