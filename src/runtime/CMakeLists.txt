@@ -205,6 +205,17 @@ bronze_add_module(runtime
         ../../tests/runtime/class_family_test.cpp
 )
 
+# On the SysV targets Error.stack is the frame-pointer chain
+# (stack_trace.cpp): compiled code and the enter_js trampoline keep rbp/x29,
+# and the runtime is the only C++ that ever sits between two compiled frames
+# (a builtin calling back, Array.forEach and the like). An optimizer that
+# takes rbp as a scratch register in any of those functions cuts the chain
+# at the first builtin. The shared runtime image (cmake/
+# bronze_shared_runtime.cmake) carries the same switch for the same reason.
+if(NOT MSVC)
+    target_compile_options(bronze_runtime PRIVATE -fno-omit-frame-pointer)
+endif()
+
 # The same test binary, run again with per-allocation collection forced on.
 # This surfaces unrooted-pointer-across-allocation bugs that a lazily
 # collecting run can never catch.

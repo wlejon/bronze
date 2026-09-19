@@ -19,7 +19,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
-#include <dlfcn.h>
+#include <unwind.h>
 #endif
 
 #include "abi/bronze_abi.h"
@@ -308,14 +308,29 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         }
     }
 #elif !defined(_WIN32)
+    // The frame-pointer chain. Compiled code keeps rbp/x29 in every non-leaf
+    // prologue, the enter_js trampoline keeps it, and the runtime — the only
+    // C++ that sits between two compiled frames — is built with
+    // -fno-omit-frame-pointer (src/runtime/CMakeLists.txt), so each link's
+    // saved return address is the pc to attribute. The pc is the address
+    // after the call, so the byte before it is what the lookups see: a call
+    // that ends a function (a throw, say) returns to the next function's
+    // first byte.
+    //
+    // A builtin is named by the start of the function holding the pc, which
+    // the unwinder's FDE lookup answers the way RtlLookupFunctionEntry does
+    // above. dladdr cannot: it knows dynamic symbols only, and the shared
+    // runtime exports the ABI and nothing else, so it would name the nearest
+    // export before the pc rather than the builtin itself.
     void* cur_rbp = __builtin_frame_address(0);
     while (valid_ptr(cur_rbp, 16) && frames.size() < limit + 10) {
         uintptr_t* fp = static_cast<uintptr_t*>(cur_rbp);
         uintptr_t caller_rbp = fp[0];
         uintptr_t caller_rip = fp[1];
         if (caller_rip == 0) break;
+        const void* call_pc = reinterpret_cast<const void*>(caller_rip - 1);
 
-        const bronze_code_range* cr = find_code_range(reinterpret_cast<const void*>(caller_rip));
+        const bronze_code_range* cr = find_code_range(call_pc);
         if (cr) {
             if (cr->desc) {
                 uint32_t f_line = cr->desc->def_line;
@@ -336,13 +351,10 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
                     break;
                 }
             }
-        } else {
-            Dl_info dlinfo;
-            if (dladdr(reinterpret_cast<const void*>(caller_rip), &dlinfo) && dlinfo.dli_saddr) {
-                const char* builtinName = rtGetNativeDisplayName(dlinfo.dli_saddr);
-                if (builtinName) {
-                    frames.push_back({nullptr, 0, 0, nullptr, builtinName});
-                }
+        } else if (void* fnBegin = _Unwind_FindEnclosingFunction(const_cast<void*>(call_pc))) {
+            const char* builtinName = rtGetNativeDisplayName(fnBegin);
+            if (builtinName) {
+                frames.push_back({nullptr, 0, 0, nullptr, builtinName});
             }
         }
 
