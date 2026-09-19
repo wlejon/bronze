@@ -396,8 +396,14 @@ Value rtMathObject() {
     // Its own root shape, not the one every `{}` literal shares: a property
     // site reading `Math.sqrt` and one reading `point.x` would otherwise
     // walk the same transition tree and miss each other's caches forever.
+    //
+    // The shape still names %Object.prototype% because 21.3.1 says `Math`'s
+    // [[Prototype]] IS that object: a root shape carrying `undefined` instead
+    // left `Object.getPrototypeOf(Math)` with no answer to give and
+    // `Math.hasOwnProperty` undefined, which is the ordinary-object half of
+    // the namespace that programs reflect over.
     Rooted<Value> obj{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(rtObjectPrototype())))};
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
 
     for (const MathFn& fn : kMathFunctions) {
@@ -407,12 +413,18 @@ Value rtMathObject() {
         profileNameNative(reinterpret_cast<const void*>(fn.code), "Math", fn.name);
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
-        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        // 21.3.1: every member of the namespace is non-enumerable, which is
+        // what keeps `for (const k in Math)` and `Object.keys(Math)` empty the
+        // way they are in a spec engine — the default here is an ordinary
+        // assignment's `enumerable: true`, and a reflective walk saw 44 keys.
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true);
     }
     for (const MathConst& c : kMathConstants) {
         Rooted<Value> key{rtMakeString(c.name)};
         Rooted<Value> val{Value::fromDouble(c.value)};
-        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true);
     }
 
     // 21.3.1.9: `Math[@@toStringTag]` is the string "Math", which is what makes

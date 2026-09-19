@@ -28,6 +28,7 @@
 #include "runtime/gc.h"
 #include "runtime/host_globals.h"
 #include "runtime/iterator.h"
+#include "runtime/module_registry.h"
 #include "runtime/native_registry.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
@@ -396,10 +397,16 @@ void rtRegisterHostGlobal(const std::string& name, Value value) {
     for (auto& entry : g_hostGlobals) {
         if (entry.first == name) {
             entry.second = value;
+            rtDefineHostGlobalOnLiveRealms(name, value);
             return;
         }
     }
     g_hostGlobals.emplace_back(name, value);
+    // The registry answers the BARE name; a realm's global object is what
+    // `globalThis[name]`, `name in globalThis` and every reflective walk read.
+    // Both, or a host global is invisible to feature detection (realm.h states
+    // the rule and why a builtin name is not written).
+    rtDefineHostGlobalOnLiveRealms(name, value);
 }
 
 bool rtHostGlobalLookup(const std::string& name, Value& out) {
@@ -691,6 +698,13 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
         out = promise;
     } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
         out = numeric;
+    } else if (Value moduleIntrinsic = rtModuleRegistryIntrinsic(keyStr);
+               moduleIntrinsic.isObject()) {
+        // The two module-registry intrinsics the linker's generated source
+        // calls (module_registry.h). On the ladder rather than in the host
+        // registry because they are the compiler's own, not a host's — and
+        // last, so no name a program can reasonably write is shadowed by one.
+        out = moduleIntrinsic;
     } else {
         return false;
     }

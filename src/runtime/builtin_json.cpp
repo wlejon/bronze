@@ -191,13 +191,22 @@ thread_local Value g_jsonNamespace = Value::fromUndefined();
 
 Value rtJsonNamespace() {
     if (g_jsonNamespace.isObject()) return g_jsonNamespace;
+    // 25.5 gives `JSON` the ordinary-object [[Prototype]], %Object.prototype%,
+    // and naming it here is what lets a program reflect over the namespace the
+    // way it reflects over any object — `Object.getPrototypeOf(JSON)`,
+    // `JSON.hasOwnProperty('parse')`. A root shape carrying `undefined` had no
+    // answer for either.
     Rooted<Value> obj{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(rtObjectPrototype())))};
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
     for (const NamespaceFn& fn : kJsonFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
-        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        // 25.5: `parse` and `stringify` are non-enumerable, like every
+        // namespace member — an ordinary assignment's `enumerable: true` put
+        // both in `Object.keys(JSON)`.
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true);
     }
     // 25.5.3: `JSON[@@toStringTag]` is the string "JSON", an own property of
     // this object — the same arrangement `Math` has, and the reason

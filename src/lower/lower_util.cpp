@@ -135,7 +135,15 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            // therefore for browser code: three.js picks its clock with
            // `typeof performance === 'undefined' ? Date : performance`, and
            // pixi calls `performance.now()` with no fallback at all.
-           name == "performance";
+           name == "performance" ||
+           // The linker's two module-registry intrinsics
+           // (runtime/module_registry.h). No program writes either name — the
+           // `__bronze_` prefix is the compiler's, like the synthetic entry
+           // symbols — and they are on the list rather than recognized at the
+           // call because the generated source calls them as ordinary
+           // functions, which is what keeps `modules/link.cpp` generating
+           // SOURCE rather than hand-built AST.
+           name == "__bronze_module_publish" || name == "__bronze_module_lookup";
 }
 
 // The `file:` URL of one module of the graph, for `import.meta.url`

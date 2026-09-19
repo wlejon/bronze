@@ -1,0 +1,12 @@
+true,true,true,true
+false,false,false,false
+function,function,function,function
+function,function,function,function
+[object Math],[object JSON],[object Atomics],[object Reflect]
+true false
+true true
+true true
+0 0 0
+["parse","stringify"]
+Object.prototype Object.prototype Object.prototype Object.prototype
+reflected

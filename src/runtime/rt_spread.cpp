@@ -523,6 +523,26 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         }
         return;
     }
+    // A FUNCTION's own enumerable keys are its statics, and they do live in a
+    // property table: the side object every function keeps them in. The three
+    // that are not there — `prototype`, `length` and `name` — are
+    // non-enumerable (10.2.4, 10.2.9, 10.2.10), so a spread would skip them
+    // anyway. `Object.assign({}, fn)` and `{ ...fn }` are the same operation
+    // and both used to abort the process on a perfectly ordinary receiver.
+    if (srcVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        Value props = src.get().asObject<FunctionHeader>()->properties;
+        if (!props.isObject()) return;
+        Rooted<Value> propsRoot{props};
+        for (PropertyKey name : rtOwnKeysOrdered(propsRoot.get().asObject<ObjectHeader>())) {
+            if (stringTarget.get().isString() && !name.isSymbol() &&
+                stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
+                return;
+            }
+            copyProperty(target, propsRoot, name);
+            if (rtExceptionPending()) return;
+        }
+        return;
+    }
     // Every PRIMITIVE now has an answer, so what is left is an object kind
     // whose own keys are not in a shape. It is named rather than reported
     // empty, because "no properties" is a wrong answer about a receiver with

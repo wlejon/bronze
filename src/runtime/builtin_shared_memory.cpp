@@ -607,15 +607,22 @@ Value rtAtomicsObject() {
     if (g_atomicsObject.isObject()) return g_atomicsObject;
 
     // Its own root shape, for the reason `Math` has one: a site reading
-    // `Atomics.load` must not share a transition tree with every `{}`.
+    // `Atomics.load` must not share a transition tree with every `{}`. It names
+    // %Object.prototype% because 25.4.2 gives the namespace the ordinary
+    // [[Prototype]]; with `undefined` there `Object.getPrototypeOf(Atomics)`
+    // had no answer at all.
     Rooted<Value> obj{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(rtObjectPrototype())))};
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
 
     for (const AtomicsFn& fn : kAtomicsFunctions) {
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
-        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
+        // 25.4: non-enumerable, like every namespace member — the default here
+        // is an ordinary assignment's `enumerable: true`, which put all ten in
+        // `Object.keys(Atomics)`.
+        obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
+                                                    /*enumerable=*/false, /*defineOwn=*/true);
     }
 
     // 25.4.2: `Atomics[@@toStringTag]` is "Atomics", an own property.

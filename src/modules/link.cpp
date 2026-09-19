@@ -107,6 +107,16 @@ private:
     ast::StmtPtr synthesizeNamespace(uint16_t owner, const std::string& local, uint16_t target);
     bool synthesizePicker(uint16_t owner, const ModuleInfo::DynPicker& picker,
                           std::vector<ast::StmtPtr>& out);
+    // The two halves of a shared module registry (runtime/module_registry.h).
+    bool synthesizeExternalBindings(uint16_t id, std::vector<ast::StmtPtr>& out);
+    bool synthesizePublish(uint16_t id, std::vector<ast::StmtPtr>& out);
+    // Parses a generated snippet, applies `renames`, and appends its
+    // statements. The three synthesizers above and the two below all do this,
+    // and doing it once is what keeps them agreeing about what a synthetic
+    // source buffer is called and how its spans are stamped.
+    bool emitSynthesized(const std::string& label, const std::string& src,
+                         const std::map<std::string, std::string>& renames,
+                         std::vector<ast::StmtPtr>& out);
 
     Graph& graph_;
     SourceSet& sources_;
@@ -657,6 +667,101 @@ bool Linker::synthesizePicker(uint16_t owner, const ModuleInfo::DynPicker& picke
     return true;
 }
 
+// A JS string literal's body. The paths and export names that reach this are
+// the compiler's own, but a name is whatever the source wrote, so the two
+// characters that could end the literal are escaped rather than assumed absent.
+static std::string quoteForJs(const std::string& text) {
+    std::string out;
+    for (char c : text) {
+        if (c == '\\' || c == '"') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
+bool Linker::emitSynthesized(const std::string& label, const std::string& src,
+                             const std::map<std::string, std::string>& renames,
+                             std::vector<ast::StmtPtr>& out) {
+    const SourceBuffer& buffer = sources_.add(label, src);
+    auto tokens = Lexer(buffer, diags_).lex();
+    if (diags_.hasErrors()) return false;
+    auto parsed = Parser(std::move(tokens), diags_, buffer.fileId()).parseModule("<synthetic>");
+    if (!parsed) {
+        diags_.error(Span{}, "internal error: synthesized " + label + " did not parse");
+        return false;
+    }
+    if (!renameModuleScope(parsed->body, renames, buffer.fileId(), {}, diags_)) return false;
+    for (auto& stmt : parsed->body) out.push_back(std::move(stmt));
+    return true;
+}
+
+// The local a synthetic declaration owns. `#` cannot occur in a JavaScript
+// identifier, so `mod3.#ns` is a name no source can spell and no rename of a
+// user binding can collide with — the same argument the `.` in `canonicalName`
+// makes, one level down.
+static std::string syntheticLocal(const char* what) { return std::string("#") + what; }
+
+// An EXTERNAL module contributes no statements. What it contributes instead is
+// one binding per export, read out of the namespace an earlier unit published:
+//
+//     const mod3.#ext = __bronze_module_lookup("<path>");
+//     const mod3.counter = mod3.#ext["counter"];
+//
+// Every importer of this module was renamed to `mod3.counter` by `buildRenames`
+// exactly as if the module had been evaluated here, so nothing else in the
+// linker has to know the difference.
+//
+// Only the names this module DECLARES are bound. A name it re-exports from
+// somewhere else resolves to that module's canonical binding, which is either
+// bound by that module's own external arm or declared by its statements — so
+// binding it here would be a duplicate declaration of the same slot.
+bool Linker::synthesizeExternalBindings(uint16_t id, std::vector<ast::StmtPtr>& out) {
+    const ModuleInfo& mi = info_[id];
+    std::map<std::string, std::string> renames;
+    const std::string nsPlaceholder = "bz_ext_" + std::to_string(syntheticCounter_++);
+    renames[nsPlaceholder] = canonicalName(id, syntheticLocal("ext"));
+
+    std::string src = "const " + nsPlaceholder + " = __bronze_module_lookup(\"" +
+                      quoteForJs(graph_.modules[id]->displayName) + "\");\n";
+    size_t slot = 0;
+    for (const auto& name : mi.exportOrder) {
+        uint16_t defModule = 0;
+        std::string defLocal;
+        if (!resolveExport(id, name, Span{}, &diags_, defModule, defLocal)) return false;
+        if (defModule != id) continue;
+        const std::string placeholder = nsPlaceholder + "_v" + std::to_string(slot++);
+        renames[placeholder] = canonicalName(defModule, defLocal);
+        src += "const " + placeholder + " = " + nsPlaceholder + "[\"" + quoteForJs(name) +
+               "\"];\n";
+    }
+    return emitSynthesized(graph_.modules[id]->displayName + " (external module bindings)", src,
+                           renames, out);
+}
+
+// The publishing half: a namespace object for this module, left in the realm's
+// registry under the module's canonical path.
+//
+//     const mod3.#ns = { get "counter"() { return mod3.counter; } };
+//     __bronze_module_publish("<path>", mod3.#ns);
+//
+// The namespace is the same 10.4.6 exotic `import * as` builds, and it is built
+// by the same function — so an export read through the registry is a read of
+// this module's own binding, not of a copy taken when the module finished.
+bool Linker::synthesizePublish(uint16_t id, std::vector<ast::StmtPtr>& out) {
+    const std::string local = syntheticLocal("ns");
+    auto decl = synthesizeNamespace(id, local, id);
+    if (!decl) return false;
+    out.push_back(std::move(decl));
+
+    const std::string placeholder = "bz_pub_" + std::to_string(syntheticCounter_++);
+    std::map<std::string, std::string> renames{{placeholder, canonicalName(id, local)}};
+    const std::string src = "__bronze_module_publish(\"" +
+                            quoteForJs(graph_.modules[id]->displayName) + "\", " + placeholder +
+                            ");\n";
+    return emitSynthesized(graph_.modules[id]->displayName + " (module registry publish)", src,
+                           renames, out);
+}
+
 bool Linker::run(ast::Module& out) {
     // Tables first, in evaluation order, so that a module's dependencies are
     // linked before it and `resolveExport` never has to look at a half-built
@@ -932,6 +1037,18 @@ bool Linker::run(ast::Module& out) {
     // before it lowers any body.
     for (const uint16_t id : graph_.evaluationOrder) {
         ModuleFile& file = *graph_.modules[id];
+        // An EXTERNAL module's instance already exists: its exports are bound
+        // from the realm's registry and its statements are not merged, so the
+        // program that imports it observes the one instance rather than making
+        // a second. Its namespaces and pickers are not synthesized either —
+        // those hold the modules IT imports, whose bindings this unit never
+        // evaluated. `import * as ns` from an external module still works: the
+        // namespace the IMPORTER declares is built from the canonical names
+        // bound just below.
+        if (file.isExternal) {
+            if (!synthesizeExternalBindings(id, out.body)) return false;
+            continue;
+        }
         for (const auto& ns : info_[id].namespaceLocals) {
             auto decl = synthesizeNamespace(id, ns.first, ns.second);
             if (!decl) return false;
@@ -945,6 +1062,13 @@ bool Linker::run(ast::Module& out) {
             if (dynamic_cast<const ast::ImportDecl*>(stmt.get())) continue;
             if (dynamic_cast<const ast::ExportNamesDecl*>(stmt.get())) continue;
             out.body.push_back(std::move(stmt));
+        }
+        // AFTER the statements, because what is published is the module's
+        // state once its top level has run. Never the entry (id 0): the entry
+        // is the program being run, not an instance another unit imports, and
+        // publishing it would make a second run of the same file a no-op.
+        if (graph_.publishModules && id != 0) {
+            if (!synthesizePublish(id, out.body)) return false;
         }
     }
     return !diags_.hasErrors();

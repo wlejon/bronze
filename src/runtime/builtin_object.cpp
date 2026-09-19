@@ -80,11 +80,20 @@ PropertyKey rtInternPropertyKey(Value keyVal) {
 // The key is interned BEFORE the object is read: `rtInternPropertyKey` runs
 // ToString, which allocates, so an ObjectHeader* taken across it would be stale.
 bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key) {
+    // The characters first (10.4.3.3), then the shape: a String exotic object
+    // has both, and `String.prototype` is the one every program meets — its
+    // [[StringData]] is "" and every string method is a property of its shape.
+    // A miss in the characters is therefore not the answer, only the first
+    // half of it (10.4.3.1 step 3 hands the rest to OrdinaryGetOwnProperty).
     if (Value data; rtStringWrapperData(self.get(), data)) {
-        if (key.isSymbol()) return false;
-        const std::string keyStr = rtObjectKeyTextOf(key);
-        if (rtExceptionPending()) return false;
-        return rtStringDataHasOwnKey(data, keyStr);
+        if (!key.isSymbol()) {
+            const std::string keyStr = rtObjectKeyTextOf(key);
+            if (rtExceptionPending()) return false;
+            if (rtStringDataHasOwnKey(data, keyStr)) return true;
+        }
+        // A PRIMITIVE string has no shape to walk, so its characters really
+        // were the whole answer.
+        if (!self.get().isObject()) return false;
     }
     PropertyKey name = rtInternPropertyKey(key);
     auto* obj = self.get().asObject<ObjectHeader>();
@@ -382,15 +391,22 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             return Value::fromBool(functionHasOwnKey(fn, args[1])).rawBits();
         }
         case ObjectOwnKeys::StringChars: {
-            // A symbol is never an own key of a String exotic object: 10.4.3.3
-            // reports the indices and `length`, all of them strings.
-            if (args[1].isSymbol()) return Value::fromBool(false).rawBits();
-            const std::string key = rtObjectKeyTextOf(args[1]);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-            // args[0] re-read through RootedArgs: `rtObjectKeyTextOf` allocates.
-            Value data = args[0];
-            if (!data.isString()) rtStringWrapperData(args[0], data);
-            return Value::fromBool(rtStringDataHasOwnKey(data, key)).rawBits();
+            if (!args[1].isSymbol()) {
+                const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                // args[0] re-read through RootedArgs: `rtObjectKeyTextOf` allocates.
+                Value data = args[0];
+                if (!data.isString()) rtStringWrapperData(args[0], data);
+                if (rtStringDataHasOwnKey(data, key)) return Value::fromBool(true).rawBits();
+            }
+            // A PRIMITIVE string's own keys are the indices and `length` and
+            // nothing else (10.4.3.3), so the miss is the answer. A String
+            // exotic OBJECT also has a shape — `String.prototype` keeps every
+            // string method in one — and 10.4.3.1 step 3 hands the key that the
+            // characters did not answer to OrdinaryGetOwnProperty, which is the
+            // walk below.
+            if (!args[0].isObject()) return Value::fromBool(false).rawBits();
+            break;
         }
         case ObjectOwnKeys::Namespace: {
             // The exports are the complete list of own keys (10.4.6.2), and
@@ -540,11 +556,19 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     // siblings say happens at a link whose [[Get]] is not the ordinary one.
     if (args[0].isObject() && !isPlainObject(args[0]) &&
         args[0].asObject<HeapObjectHeader>()->flags != HeapKind::Proxy) {
-        fatal((std::string("unsupported: Object.create with ") + rtObjectKindName(args[0]) +
-               " as the prototype (a prototype is walked by every read that misses, and this "
-               "kind answers its members from a table beside the value rather than from a "
-               "shape a walk can step through; only a plain object may be one)")
-                  .c_str());
+        // THROWN rather than fatal, and the difference is who the message is
+        // for. It is still bronze's gap and not the program's — 20.1.2.2 admits
+        // any object — but the receiver is a value the program was holding, so
+        // a reflective walk that reaches one (`Object.create(SomeClass)`,
+        // `Object.create(arr)`) must be able to carry on or report it, not take
+        // the process down. The reason stays in the message.
+        return rtThrowTypeError(
+                   std::string("Object.create with ") + rtObjectKindName(args[0]) +
+                   " as the prototype is unsupported (a prototype is walked by every read "
+                   "that misses, and this kind answers its members from a table beside the "
+                   "value rather than from a shape a walk can step through; only a plain "
+                   "object may be one)")
+            .rawBits();
     }
     Rooted<Value> proto{args[0]};
     Rooted<Value> out{Value::fromObject(

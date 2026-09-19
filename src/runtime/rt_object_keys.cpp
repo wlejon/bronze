@@ -46,16 +46,37 @@ Value rtStringOwnKeyNames(Value strVal, bool enumerableOnly) {
     Rooted<Value> self{strVal};
     Value data = self.get();
     if (!data.isString()) rtStringWrapperData(self.get(), data);
-    const uint32_t length = data.asString<StringHeader>()->getLength();
-    const uint32_t total = enumerableOnly ? length : length + 1;
+    Rooted<Value> dataRoot{data};
+    const uint32_t length = dataRoot.get().asString<StringHeader>()->getLength();
+    // 10.4.3.3 step 5: after the indices and `length` come the object's
+    // ORDINARY own string keys. A primitive string has none — the characters
+    // are the whole story — but a String exotic OBJECT is where the string
+    // methods live, and `String.prototype` is one of those objects
+    // (22.1.3 makes it a String exotic with [[StringData]] ""). Without this
+    // walk `Object.getOwnPropertyNames(String.prototype)` was `["length"]`
+    // while `String.prototype.hasOwnProperty("slice")` was true: the keys were
+    // in the shape and the listing never looked at it.
+    std::vector<StringHeader*> named;
+    if (self.get().isObject()) {
+        named = rtOwnStringKeysOrdered(self.get().asObject<ObjectHeader>(), enumerableOnly);
+    }
+    const uint32_t total =
+        (enumerableOnly ? length : length + 1) + static_cast<uint32_t>(named.size());
     Rooted<Value> out{Value(bronze_create_array(total))};
     for (uint32_t i = 0; i < length; ++i) {
         Rooted<Value> key{indexName(i)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, key);
     }
+    uint32_t at = length;
     if (!enumerableOnly) {
         Rooted<Value> key{rtMakeString("length")};
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), length, key);
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+    }
+    // The keys are arena-interned and immortal, so the vector survives the
+    // allocations the copy makes — the same rule the array arm below relies on.
+    for (StringHeader* name : named) {
+        Rooted<Value> key{rtKeyAsValue(name)};
+        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
     }
     return out.get();
 }
@@ -138,8 +159,11 @@ uint64_t bronze_object_keys(uint64_t objBits) {
     // to be read once and thrown away, which is the arrangement
     // `Object.getPrototypeOf` of a primitive already uses.
     if (objVal.isString()) return rtStringOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
+    // The WRAPPER, not its [[StringData]]: 10.4.3.3 lists the object's own
+    // ordinary keys after the characters, and handing the primitive over here
+    // dropped every expando a program had put on the wrapper.
     if (Value data; rtStringWrapperData(objVal, data)) {
-        return rtStringOwnKeyNames(data, /*enumerableOnly=*/true).rawBits();
+        return rtStringOwnKeyNames(objVal, /*enumerableOnly=*/true).rawBits();
     }
     // A number, a boolean and a symbol box to an object with no own property of
     // any kind, so the empty answer needs no box either — which is what lets

@@ -79,6 +79,18 @@ void Realm::initGlobalObject(Value customGlobal) {
     }
 
     for (const auto& entry : runtime::rtHostGlobalEntries()) {
+        // Skipped for the same reason `rtDefineHostGlobalOnLiveRealms` skips
+        // it: the bare-name ladder asks the builtins first, so a host global
+        // named `Math` is unreachable by name — and writing it here made the
+        // property disagree with the name on every realm built after the
+        // registration, which is one object called `Math` in a program and
+        // another one in the realm beside it.
+        if (entry.first != "performance") {
+            if (Value builtin = Value::fromUndefined();
+                runtime::rtResolveBuiltinGlobal(entry.first, builtin)) {
+                continue;
+            }
+        }
         Rooted<Value> key{runtime::rtMakeString(entry.first)};
         Rooted<Value> val{entry.second};
         globRoot.get().asObject<ObjectHeader>()->setProp(
@@ -116,6 +128,12 @@ void Realm::visitRoots(const Heap::RootVisitor& visit) {
     }
     if (globalEnv_.isObject()) {
         visit(globalEnv_);
+    }
+    // The published module namespaces. A root SOURCE and not a fixed slot:
+    // the namespace objects live in the moving heap, and a later unit reads
+    // them through the registry long after the unit that published them ran.
+    for (auto& entry : moduleRegistry_) {
+        if (entry.second.isObject()) visit(entry.second);
     }
 }
 
@@ -175,6 +193,36 @@ void rtVisitRealmRoots(const Heap::RootVisitor& visit) {
         if (r) {
             r->visitRoots(visit);
         }
+    }
+}
+
+void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value) {
+    if (g_liveRealms.empty()) return;
+    if (name == "globalThis") return;
+    // The bare-name ladder's order, mirrored exactly (rt_state.cpp
+    // `bronze_global_get`): `performance` is the one builtin a host may shadow,
+    // and every other builtin wins over the registry — so writing one here
+    // would make `globalThis.Math` and bare `Math` two different objects.
+    if (name != "performance") {
+        if (Value builtin = Value::fromUndefined();
+            runtime::rtResolveBuiltinGlobal(name, builtin)) {
+            return;
+        }
+    }
+    ShadowStackFrame frame;
+    Rooted<Value> val{value};
+    Rooted<Value> key{runtime::rtMakeString(name)};
+    for (Realm* r : g_liveRealms) {
+        if (!r) continue;
+        Rooted<Value> glob{r->globalObject()};
+        if (!glob.get().isObject()) continue;
+        glob.get().asObject<ObjectHeader>()->setProp(runtime::rtHeap(), runtime::rtArena(), key,
+                                                     val, nullptr,
+                                                     /*enumerable=*/false, /*defineOwn=*/true);
+        // setProp can transition the shape and the write allocates, so the
+        // realm's handle is refreshed from the rooted copy rather than left
+        // pointing at whatever the collector moved out from under it.
+        r->setGlobalObject(glob.get());
     }
 }
 

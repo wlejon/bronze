@@ -43,6 +43,21 @@ struct ModuleOptions {
     // is affected — a module it imports is a real file and resolves from where
     // it is.
     std::filesystem::path entryResolvesAs;
+    // The REALM's module registry, when the host wants this unit to share
+    // module instances with the units compiled beside it
+    // (runtime/module_registry.h says why that is a thing at all).
+    //
+    // `publishModules` makes every file this unit evaluates leave a namespace
+    // object behind under its canonical path. `externalModules` is the set of
+    // canonical paths some earlier unit already left one for: such a file is
+    // still parsed, for its export names, but contributes no statements —
+    // its exports are bound from the registry instead, so the importing code
+    // sees the instance that exists rather than a second one.
+    //
+    // Off by default, because a standalone program is one unit and a registry
+    // it never reads is a namespace object per module for nothing.
+    bool publishModules = false;
+    std::vector<std::string> externalModules;
 };
 
 // Loads an import map from a JSON file, resolving relative target paths relative

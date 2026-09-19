@@ -122,7 +122,14 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // imports resolve from when it is a temp copy of a script that
              // lives elsewhere. Empty = its own path.
              const std::string& entryResolvesAs = {},
-             const std::string& targetName = {});
+             const std::string& targetName = {},
+             // Every non-entry file this build evaluates publishes a module
+             // namespace into the realm it runs in (runtime/module_registry.h),
+             // so a unit compiled LATER in that realm — a host's test driver
+             // against a page it already loaded — binds these instances instead
+             // of compiling a second copy. Off by default: a standalone program
+             // is one unit and the namespaces would be built for nothing.
+             bool publishModules = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

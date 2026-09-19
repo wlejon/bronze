@@ -286,6 +286,24 @@ bool literalDescriptorFieldsAreOwnOnly() {
 
 using descriptor_internal::putField;
 
+// 6.2.6.4 FromPropertyDescriptor over the attributes 10.4.3 fixes for a String
+// exotic object's CHARACTER keys: non-writable and non-configurable for both an
+// index and `length`, enumerable for an index alone. Its own function because
+// the arm that builds it now has an early exit around it.
+static Value stringCharDescriptor(const StringOwnProperty& own) {
+    // Rooted first — building the result allocates.
+    Rooted<Value> value{own.value};
+    Rooted<Value> out{Value(bronze_create_object())};
+    putField(out, "value", value);
+    Rooted<Value> w{Value::fromBool(false)};
+    putField(out, "writable", w);
+    Rooted<Value> e{Value::fromBool(own.enumerable)};
+    putField(out, "enumerable", e);
+    Rooted<Value> c{Value::fromBool(false)};
+    putField(out, "configurable", c);
+    return out.get();
+}
+
 // 6.2.6.4 FromPropertyDescriptor. The FIELD ORDER is the specification's, not
 // a convenience — `Object.keys(descriptor)` prints it, so it is pinned bytes.
 uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
@@ -304,29 +322,27 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             // descriptor, completed, or the target's own (proxy_reflect.cpp).
             return rtProxyGetOwnPropertyDescriptor(args[0], args[1]).rawBits();
         case ObjectOwnKeys::StringChars: {
-            if (args[1].isSymbol()) return Value::fromUndefined().rawBits();
-            const std::string key = rtObjectKeyTextOf(args[1]);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-            Value data = args[0];
-            if (!data.isString()) rtStringWrapperData(args[0], data);
-            StringOwnProperty own;
-            if (!rtStringDataOwnProperty(data, key, own)) {
-                return Value::fromUndefined().rawBits();
+            // A String exotic OBJECT has the characters AND an ordinary shape
+            // (10.4.3.1 step 3 defers to OrdinaryGetOwnProperty), and
+            // `String.prototype` is exactly that object: its [[StringData]] is
+            // "" and every string method is a property of its shape. So a key
+            // the characters do not answer — a symbol, or any name that is not
+            // an index or `length` — falls through to the ordinary walk below,
+            // the way the array and typed-array arms already do. Only a
+            // PRIMITIVE string stops here, because it has no shape to walk.
+            const bool isWrapper = args[0].isObject();
+            if (!args[1].isSymbol()) {
+                const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                Value data = args[0];
+                if (!data.isString()) rtStringWrapperData(args[0], data);
+                StringOwnProperty own;
+                if (rtStringDataOwnProperty(data, key, own)) {
+                    return stringCharDescriptor(own).rawBits();
+                }
             }
-            // 6.2.6.4 FromPropertyDescriptor in the same field order as below,
-            // over the attributes 10.4.3 fixes: non-writable and
-            // non-configurable for both kinds of own key, and enumerable for an
-            // index alone. Rooted first — building the result allocates.
-            Rooted<Value> value{own.value};
-            Rooted<Value> out{Value(bronze_create_object())};
-            putField(out, "value", value);
-            Rooted<Value> w{Value::fromBool(false)};
-            putField(out, "writable", w);
-            Rooted<Value> e{Value::fromBool(own.enumerable)};
-            putField(out, "enumerable", e);
-            Rooted<Value> c{Value::fromBool(false)};
-            putField(out, "configurable", c);
-            return out.get().rawBits();
+            if (!isWrapper) return Value::fromUndefined().rawBits();
+            break;
         }
         case ObjectOwnKeys::Namespace: {
             // 10.4.6.1 gives a namespace one own SYMBOL-keyed property —

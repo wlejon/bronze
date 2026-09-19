@@ -354,7 +354,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& pinsPath, const std::string& censusOutPath,
              bool pinsAllowObserved, const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
-             const std::string& targetName) {
+             const std::string& targetName, bool publishModules) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -429,6 +429,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     DiagnosticSink diags;
     modules::ModuleOptions moduleOptions{moduleRoots, importMapPath};
     moduleOptions.entryResolvesAs = entryResolvesAs;
+    // The publishing half only. A build has no realm to read, so it cannot
+    // know which instances will already exist when the program runs; what it
+    // CAN do is leave its own behind, which is what lets a JIT-compiled unit
+    // later in the same realm bind them.
+    moduleOptions.publishModules = publishModules;
     auto astModule = modules::loadProgram(sourcePath, sources, diags, moduleOptions);
     timer.mark("load");
     if (!astModule) {
@@ -809,6 +814,7 @@ int runDriver(int argc, char** argv) {
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
         std::string targetName;
+        bool publishModules = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -835,6 +841,8 @@ int runDriver(int argc, char** argv) {
                 emitObj = true;
             } else if (arg == "--emit-shared") {
                 emitShared = true;
+            } else if (arg == "--module-registry") {
+                publishModules = true;
             } else if (arg == "--entry-symbol") {
                 if (i + 1 < argc) {
                     entrySymbol = argv[++i];
@@ -922,7 +930,7 @@ int runDriver(int argc, char** argv) {
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
-                        targetName);
+                        targetName, publishModules);
     }
 
     return fail(kUsage);

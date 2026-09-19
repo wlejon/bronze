@@ -85,8 +85,11 @@ Value rtPerformanceNamespace() {
     // reason `Math` mints one: a site reading `performance.now` and a site
     // reading `point.x` would otherwise walk one transition tree and miss each
     // other's caches forever.
+    // Named prototype for the same reason `Math` names one: `performance` is
+    // an ordinary object to everything that reflects over it, and a root shape
+    // carrying `undefined` gave `Object.getPrototypeOf` nothing to answer with.
     Rooted<Value> obj{Value::fromObject(
-        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(Value::fromUndefined())))};
+        ObjectHeader::create(rtHeap(), rtArena(), rtNewRootShape(rtObjectPrototype())))};
     obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
 
     for (const PerformanceFn& fn : kPerformanceFunctions) {

@@ -42,6 +42,15 @@ struct ModuleFile {
     uint16_t id = 0;
     std::filesystem::path path;
     std::string displayName;  // what a diagnostic calls it
+    // This file's instance already exists in the realm: an earlier compilation
+    // unit published a namespace for it (runtime/module_registry.h), and
+    // `ModuleOptions::externalModules` named the path. It is still READ and
+    // PARSED — the importing files need its export names, and its export table
+    // is what resolves them — but it contributes no statements to the merged
+    // program. The linker binds each of its exports from the registry instead,
+    // so an importer reads the instance that exists rather than making a second
+    // one. Never true of the entry: the entry is the program being run now.
+    bool isExternal = false;
     std::unique_ptr<ast::Module> ast;
     // The top-level import and export nodes, in source order, borrowed from
     // `ast`. Source order is what makes the load deterministic: the DFS follows
@@ -68,6 +77,11 @@ struct Graph {
     // later member has not initialized yet is in its temporal dead zone rather
     // than absent.
     std::vector<uint16_t> evaluationOrder;
+    // `ModuleOptions::publishModules`, carried to the linker: every non-entry
+    // file this unit evaluates leaves a module namespace in the realm's
+    // registry under its canonical path, so a unit compiled later in the same
+    // realm can bind that instance instead of building its own.
+    bool publishModules = false;
 };
 
 // Reads, lexes and parses the entry and everything it reaches. False on a

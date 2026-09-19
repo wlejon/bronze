@@ -18,6 +18,7 @@
 #include "parse/parser.h"
 #include "runtime/exception.h"
 #include "runtime/host_globals.h"
+#include "runtime/module_registry.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -189,6 +190,17 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
     return program;
 }
 
+// The realm's module registry, read at COMPILE time (eval.h says when a host
+// turns this on). The paths come from the realm rather than from the host,
+// because the realm is what knows which instances exist — a host would have to
+// keep a second list and the two would drift the first time a unit failed
+// halfway.
+void applyModuleRegistry(const EvalOptions& options, modules::ModuleOptions& modOpts) {
+    if (!options.moduleRegistry) return;
+    modOpts.publishModules = true;
+    modOpts.externalModules = runtime::rtModuleRegistryPaths();
+}
+
 std::unique_ptr<BrassJitProgram> compileSourceToJit(
     const std::string& code,
     const EvalOptions& options,
@@ -199,6 +211,7 @@ std::unique_ptr<BrassJitProgram> compileSourceToJit(
     modules::ModuleOptions modOpts;
     modOpts.moduleRoots = options.moduleRoots;
     modOpts.entryResolvesAs = options.entryResolvesAs;
+    applyModuleRegistry(options, modOpts);
 
     auto astModule = modules::loadProgramSource(code, options.filename, sources, diags, modOpts);
     if (diags.hasErrors() || !astModule) return nullptr;
@@ -216,6 +229,7 @@ std::unique_ptr<BrassJitProgram> compileFileToJit(
     modules::ModuleOptions modOpts;
     modOpts.moduleRoots = options.moduleRoots;
     modOpts.entryResolvesAs = options.entryResolvesAs;
+    applyModuleRegistry(options, modOpts);
 
     auto astModule = modules::loadProgram(filePath, sources, diags, modOpts);
     if (diags.hasErrors() || !astModule) return nullptr;

@@ -15,4 +15,5 @@ bronze_add_module(eval
         modules
     TEST_SOURCES
         ../../tests/eval/eval_test.cpp
+        ../../tests/eval/eval_module_registry_test.cpp
 )

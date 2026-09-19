@@ -91,6 +91,7 @@ bronze_add_module(runtime
         rt_object.cpp
         rt_object_keys.cpp
         realm.cpp
+        module_registry.cpp
         rt_global.cpp
         rt_reflect.cpp
         rt_operator.cpp

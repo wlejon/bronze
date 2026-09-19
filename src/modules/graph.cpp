@@ -321,6 +321,13 @@ public:
         file->id = buffer.fileId();
         file->path = path;
         file->displayName = key;
+        // An instance of this file already exists in the realm. Only for a
+        // non-entry file: the entry is the program being compiled now, and a
+        // driver script run twice must run twice (graph.h states the rule).
+        file->isExternal =
+            buffer.fileId() != 0 &&
+            std::find(options_.externalModules.begin(), options_.externalModules.end(), key) !=
+                options_.externalModules.end();
 
         // ECMA-262 11.2.2: module code is always strict mode code. Every file
         // but the entry is module code by construction — it was REACHED through
@@ -536,6 +543,7 @@ bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink&
         return false;
     }
     uint16_t entryId = 0;
+    out.publishModules = effectiveOptions.publishModules;
     if (!Loader(sources, diags, out, effectiveOptions).load(entry, Span{}, entryId)) return false;
     return entryId == 0;
 }
@@ -567,6 +575,7 @@ bool loadGraphSource(const std::string& code, const std::string& entryPath,
     const std::string dispName = entryPath.empty() ? "<eval>" : entryPath;
     std::filesystem::path entry(dispName);
     uint16_t entryId = 0;
+    out.publishModules = effectiveOptions.publishModules;
     if (!Loader(sources, diags, out, effectiveOptions).loadSource(entry, code, Span{}, entryId)) {
         return false;
     }

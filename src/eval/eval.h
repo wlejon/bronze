@@ -45,6 +45,19 @@ struct EvalOptions {
     // semantics, slower code — the tier for a host's edit-and-reload loop,
     // not for the build it ships.
     bool optimize = true;
+    // Share module instances with the other units compiled in this realm
+    // (runtime/module_registry.h). With it on, every non-entry file this unit
+    // evaluates publishes a module namespace under its canonical path, and a
+    // specifier resolving to a path some earlier unit already published binds
+    // THAT instance instead of evaluating the file again.
+    //
+    // Off by default, because it is a property of the HOST and not of the
+    // language: a standalone `bronze run` is one unit and a registry it never
+    // reads is a namespace object per module for nothing. A host that compiles
+    // a page and then compiles scripts against that page — a document and its
+    // test driver — turns it on, which is what "one module map per context"
+    // meant when the map was the runtime's.
+    bool moduleRegistry = false;
 };
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine

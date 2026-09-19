@@ -648,8 +648,12 @@ static thread_local Value g_reflectNamespace = Value::fromUndefined();
 
 Value rtReflectNamespace() {
     if (g_reflectNamespace.isUndefined()) {
+        // 28.1 gives `Reflect` the ordinary [[Prototype]], %Object.prototype%.
+        // `null` here said the opposite, and a chain walk over the global
+        // object's members read it as an object deliberately cut off from
+        // `Object.prototype` — which the namespace is not.
         Rooted<Value> ns{Value::fromObject(
-            ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(Value::fromNull())))};
+            ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(rtObjectPrototype())))};
         ns.get().asObject<HeapObjectHeader>()->flags = BRONZE_ABI_OBJ_FLAGS_PLAIN;
         g_reflectNamespace = ns.get();
         rtHeap().add_permanent_root(&g_reflectNamespace);
@@ -670,6 +674,11 @@ Value rtReflectNamespace() {
             {"defineProperty", reflectDefineProperty, 3, 3},
         };
         rtDefineMethods(ns, methods, std::size(methods));
+        // 28.1.14: `Reflect[@@toStringTag]` is "Reflect", an own property —
+        // the same arrangement `Math`, `JSON` and `Atomics` have, and what
+        // makes `Object.prototype.toString.call(Reflect)` read
+        // "[object Reflect]" instead of "[object Object]".
+        rtDefineToStringTag(ns, "Reflect");
     }
     return g_reflectNamespace;
 }
