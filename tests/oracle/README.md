@@ -6,10 +6,12 @@ is the harness; it is a doctest suite like any other module's.
 
 ```
 cmake --build --preset dev --target bronze_oracle_tests
-ctest --preset dev -L oracle                # differential cases (excluding milestones)
+ctest --preset dev -L oracle                # differential cases, built and JIT (excluding milestones)
+ctest --preset dev -L jit                   # the JIT half alone
 ctest --preset dev -LE "threejs|pixi"       # fast loop (skip both heavy milestones)
-ctest --preset dev -L threejs               # three.js r160 milestone
-ctest --preset dev -L pixi                  # pixi.js v8 milestone
+ctest --preset dev -L threejs               # three.js r160 milestone, built and JIT
+ctest --preset dev -L pixi                  # pixi.js v8 milestone, built and JIT
+ctest --preset dev -L jit-milestone         # the two milestones through `bronze run` only
 ```
 
 ## Adding a case
@@ -55,6 +57,28 @@ Every case is compiled and run **twice — with inference and with
 gets right means the dynamic path is unsound; a case only `--no-infer` gets
 right means inference is. It doubles the suite's build cost and is what makes
 the switch a bisection seam worth trusting.
+
+Every case is ALSO run through **`bronze run`** (the `oracle-jit` test): the
+source compiled in-process by the JIT and run in that same process, which is
+how the bro engine runs an app that has no `app.dll`. Its stdout must match
+the same pinned bytes, and its exit code and stderr must match the built
+program's — the built program and the JIT load the same brass object, so a
+divergence lives in what surrounds it (entry and exception propagation, hook
+and host-global installation, symbol resolution, module init order), which is
+exactly what neither half can see alone. Each JIT run is a subprocess of the
+harness, for the same three reasons the built program is one: the runtime is
+process-global with no teardown, so a second program in one process would see
+the first one's globals; a miscompiled loop is stopped by killing the process
+that runs it; and a crash fails its case instead of the suite. The gc-stress
+run is repeated for the JIT too, and there the compile happens inside the
+stressed process.
+
+One thing the JIT half cannot pin, and the built half cannot either: dynamic
+code compilation (`Function("...")`, `eval`, and the generator/async
+constructors' call forms). node compiles it, `bronze run` compiles it through
+the runtime's dynamic hooks, and a built program — with no compiler beside
+it — refuses with a TypeError. A case must not call them;
+`tests/cli/cli_test.cpp` pins the refusal on the built program alone.
 
 ## Deriving an expectation
 

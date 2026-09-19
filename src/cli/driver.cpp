@@ -522,8 +522,8 @@ static int runEval(std::string_view code) {
     return fail("error: eval not supported in this build\n");
 }
 
-static int runFileInJit(const std::string& filePath) {
-    if (s_runFileInJitFn) return s_runFileInJitFn(filePath);
+static int runFileInJit(const std::string& filePath, const std::vector<std::string>& hostGlobals) {
+    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals);
     return fail("error: run not supported in this build\n");
 }
 
@@ -562,8 +562,32 @@ int runDriver(int argc, char** argv) {
     }
 
     if (command == "run") {
-        if (argc < 3) return fail("error: missing <file>\n");
-        return runFileInJit(argv[2]);
+        // The same `--host-globals` manifest `build` takes, so a program an
+        // embedding host runs (or the oracle suite's JIT half checks) is
+        // lowered against the same provided-globals set both ways.
+        std::string sourcePath;
+        std::string hostGlobalsPath;
+        for (int i = 2; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--host-globals") {
+                if (i + 1 < argc) {
+                    hostGlobalsPath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --host-globals\n");
+                }
+            } else if (sourcePath.empty()) {
+                sourcePath = arg;
+            } else {
+                return fail("error: unexpected argument " + arg + "\n");
+            }
+        }
+        if (sourcePath.empty()) return fail("error: missing <file>\n");
+        std::vector<std::string> hostGlobals;
+        if (!hostGlobalsPath.empty()) {
+            std::string err;
+            if (!loadHostGlobals(hostGlobalsPath, hostGlobals, err)) return fail(err);
+        }
+        return runFileInJit(sourcePath, hostGlobals);
     }
 
 

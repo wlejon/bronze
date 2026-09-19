@@ -36,7 +36,7 @@ int runEvalReal(std::string_view code) {
     return 0;
 }
 
-int runFileInJitReal(const std::string& filePath) {
+int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals) {
     embed::setupIo();
     // This thread runs the program's JIT-compiled JS: the same note the
     // standalone main and the embed entry make, so BRONZE_SAMPLE=1 profiles
@@ -45,7 +45,8 @@ int runFileInJitReal(const std::string& filePath) {
     runtime::samplerNoteJsThread();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
-    embed::CallResult res = eval::evalFile(filePath, eval::EvalOptions{.filename = filePath});
+    embed::CallResult res = eval::evalFile(
+        filePath, eval::EvalOptions{.filename = filePath, .hostGlobals = hostGlobals});
     if (res.thrown) return reportUncaught(res.value);
     return 0;
 }

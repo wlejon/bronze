@@ -7,6 +7,7 @@ constexpr const char* kUsage =
     "\n"
     "Usage:\n"
     "  bronze run <file>                   Run JS source directly in-memory via JIT\n"
+    "                                      (takes --host-globals, as build does)\n"
     "  bronze eval <code> (or -e <code>)   Evaluate JS code directly in-memory via JIT\n"
     "  bronze lex <file>                   Tokenize and print one token per line\n"
     "  bronze parse <file>                 Parse and print the canonical AST dump\n"

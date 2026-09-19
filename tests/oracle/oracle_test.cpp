@@ -15,6 +15,15 @@
 // cases/blocked/ entry that builds and matches must be promoted to cases/; and
 // every case is compiled and run BOTH with inference and with `--no-infer`,
 // both of which must produce the pinned bytes.
+//
+// The JIT half (the "Oracle JIT" test case below, its own ctest test): every
+// case is ALSO run through `bronze run`, the in-process JIT path the bro
+// engine uses for an app without an app.dll, and its stdout must match the
+// same pinned bytes. Both paths load the same brass object, so a divergence
+// lives in what surrounds it — entry and exception propagation, hook and
+// host-global installation, symbol resolution — and the harness also holds
+// the exit code and the uncaught-error report to be identical between the
+// built program and the JIT run of the same source.
 
 #include <algorithm>
 #include <atomic>
@@ -32,14 +41,7 @@
 #include <doctest/doctest.h>
 
 #include "cli/driver.h"
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <sys/wait.h>
-#endif
-
+#include "run_process.h"
 
 #ifndef TEST_CASES_DIR
 #define TEST_CASES_DIR "tests/oracle/cases"
@@ -53,109 +55,29 @@
 #define TEST_PIXI_DIR "tests/oracle/pixi"
 #endif
 
+#ifndef TEST_BRONZE_CLI
+#define TEST_BRONZE_CLI "bronze"
+#endif
+
 namespace {
 
-constexpr uint32_t kRunTimeoutMs = 15000;
+using oracle::kRunTimeoutMs;
+using oracle::RunResult;
 
-struct RunResult {
-    bool ran = false;       // process started and exited on its own
-    bool timedOut = false;  // killed after kRunTimeoutMs
-    int exitCode = -1;      // 0 on clean exit; 128+signal where the OS says so
-    std::string output;
-};
-
-#ifdef _WIN32
 RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
                          uint32_t timeoutMs = kRunTimeoutMs) {
-    RunResult result;
-
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-    HANDLE readPipe = nullptr;
-    HANDLE writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) return result;
-    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = writePipe;
-    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    PROCESS_INFORMATION pi{};
-
-    std::string cmdLine = "\"" + exePath + "\"";
-
-    static std::mutex s_spawnMutex;
-    {
-        std::lock_guard<std::mutex> lock(s_spawnMutex);
-        if (gcStress) {
-            _putenv_s("BRONZE_GC_STRESS", "1");
-        } else {
-            _putenv_s("BRONZE_GC_STRESS", "");
-        }
-        BOOL ok = CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr, TRUE, 0, nullptr,
-                                 nullptr, &si, &pi);
-        _putenv_s("BRONZE_GC_STRESS", "");
-        if (!ok) {
-            CloseHandle(readPipe);
-            CloseHandle(writePipe);
-            return result;
-        }
-    }
-    CloseHandle(writePipe);  // ours would keep the pipe open past child exit
-
-    // Drain the pipe on a separate thread so a chatty child can never fill
-    // the pipe buffer and deadlock against our process-handle wait.
-    std::thread reader([&] {
-        char buf[4096];
-        DWORD n = 0;
-        while (ReadFile(readPipe, buf, sizeof(buf), &n, nullptr) && n > 0) {
-            result.output.append(buf, n);
-        }
-    });
-
-    DWORD wait = WaitForSingleObject(pi.hProcess, timeoutMs);
-    if (wait == WAIT_TIMEOUT) {
-        result.timedOut = true;
-        TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, 5000);
-    }
-    reader.join();
-    CloseHandle(readPipe);
-    DWORD code = 0;
-    if (GetExitCodeProcess(pi.hProcess, &code)) {
-        result.exitCode = static_cast<int>(code);
-    }
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-
-    result.ran = !result.timedOut;
-    return result;
+    return oracle::runCommand(oracle::quoted(exePath), gcStress, timeoutMs);
 }
-#else
-RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
-                         uint32_t timeoutMs = kRunTimeoutMs) {
-    (void)timeoutMs;
-    RunResult result;
-    std::string cmd = (gcStress ? "BRONZE_GC_STRESS=1 " : "") + ("\"" + exePath + "\"");
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return result;
-    char buf[4096];
-    while (std::size_t n = std::fread(buf, 1, sizeof(buf), pipe)) {
-        result.output.append(buf, n);
-    }
-    int status = pclose(pipe);
-    if (WIFEXITED(status)) {
-        result.exitCode = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        result.exitCode = 128 + WTERMSIG(status);
-    }
-    result.ran = true;
-    return result;
+
+// `bronze run <entry>`: the source compiled in-process by the JIT and run in
+// that same process, as the engine does it. `hostGlobals` is the manifest a
+// build of the same case would take.
+RunResult runInJit(const std::filesystem::path& entry, bool gcStress = false,
+                   uint32_t timeoutMs = kRunTimeoutMs, const std::string& hostGlobals = {}) {
+    std::string cmd = oracle::quoted(TEST_BRONZE_CLI) + " run " + oracle::quoted(entry.string());
+    if (!hostGlobals.empty()) cmd += " --host-globals " + oracle::quoted(hostGlobals);
+    return oracle::runCommand(cmd, gcStress, timeoutMs);
 }
-#endif
 
 bool readFileBytes(const std::filesystem::path& path, std::string& content) {
     std::ifstream in(path, std::ios::binary);
@@ -490,6 +412,141 @@ TEST_CASE("Oracle differential test suite") {
     }
 }
 
+namespace {
+
+// One case through the JIT, beside the built program it is held against.
+struct JitCaseResult {
+    OracleCase oracleCase;
+    bool expectedReadOk = false;
+    std::string expectedPathStr;
+    std::string expected;
+
+    // The reference: the same source built (inference on) and run once. Its
+    // exit code and stderr are what the JIT run must reproduce.
+    int buildStatus = -1;
+    std::string buildErr;
+    bool exeExists = false;
+    RunResult runBuilt;
+
+    RunResult runJit;
+    RunResult runJitGc;
+};
+
+// The uncaught-error report both paths print at the end: the built program
+// through bronze_uncaught_exception, `bronze run` through cli/run.cpp's
+// reportUncaught, both from rtUncaughtReport. Held to be the same bytes.
+void checkJitMatchesBuilt(const JitCaseResult& res) {
+    const std::string& id = res.oracleCase.id;
+    CHECK_MESSAGE(!res.runJit.timedOut,
+                  ("bronze run did not finish within the timeout: " + res.oracleCase.entry.string()).c_str());
+    if (res.runJit.ran) {
+        CHECK_MESSAGE(res.expected == res.runJit.output,
+                      ("JIT output differs from the pinned expectation for " + id).c_str());
+        if (res.runBuilt.ran) {
+            CHECK_MESSAGE(res.runBuilt.exitCode == res.runJit.exitCode,
+                          ("JIT exit code " + std::to_string(res.runJit.exitCode) +
+                           " differs from the built program's " + std::to_string(res.runBuilt.exitCode) +
+                           " for " + id)
+                              .c_str());
+            CHECK_MESSAGE(res.runBuilt.errors == res.runJit.errors,
+                          ("JIT stderr differs from the built program's for " + id + "\n--- built ---\n" +
+                           res.runBuilt.errors + "\n--- jit ---\n" + res.runJit.errors)
+                              .c_str());
+        }
+    }
+    CHECK_MESSAGE(!res.runJitGc.timedOut,
+                  ("bronze run did not finish within the timeout (gc-stress): " +
+                   res.oracleCase.entry.string()).c_str());
+    if (res.runJitGc.ran) {
+        CHECK_MESSAGE(res.expected == res.runJitGc.output,
+                      ("JIT output differs from the pinned expectation for " + id + " (gc-stress)").c_str());
+        if (res.runBuilt.ran) {
+            CHECK_MESSAGE(res.runBuilt.exitCode == res.runJitGc.exitCode,
+                          ("JIT exit code differs from the built program's for " + id + " (gc-stress)").c_str());
+        }
+    }
+}
+
+}  // namespace
+
+TEST_CASE("Oracle JIT differential test suite") {
+    std::filesystem::path casesDir = findCasesDirectory();
+    REQUIRE_MESSAGE(!casesDir.empty(), "Oracle test cases directory not found");
+    REQUIRE_MESSAGE(std::filesystem::exists(TEST_BRONZE_CLI),
+                    "bronze CLI not found at " TEST_BRONZE_CLI);
+
+    auto caseFiles = casesIn(casesDir);
+    REQUIRE_MESSAGE(!caseFiles.empty(), "No .js test cases found in cases directory");
+
+    static std::vector<JitCaseResult> results;
+    static std::once_flag resultsOnce;
+
+    std::call_once(resultsOnce, [&] {
+        results.resize(caseFiles.size());
+        const unsigned int numJobs = getWorkerJobCount();
+        std::atomic<size_t> nextCaseIdx{0};
+
+        auto worker = [&] {
+            while (true) {
+                size_t idx = nextCaseIdx.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= caseFiles.size()) break;
+
+                const auto& oracleCase = caseFiles[idx];
+                JitCaseResult& res = results[idx];
+                res.oracleCase = oracleCase;
+
+                std::filesystem::path expectedPath = oracleCase.entry;
+                expectedPath.replace_extension(".expected");
+                res.expectedPathStr = expectedPath.string();
+                res.expectedReadOk = readFileBytes(expectedPath, res.expected);
+                if (!res.expectedReadOk) continue;
+
+                // Its own output name: the AOT suite may be building the same
+                // case in another ctest process at the same time.
+                std::filesystem::path exe =
+                    std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle_jitref.exe");
+                std::error_code ec;
+                removeProgram(exe, ec);
+                res.buildStatus =
+                    bronze::cli::runBuild(oracleCase.entry.string(), exe.string(), &res.buildErr, true);
+                res.exeExists = std::filesystem::exists(exe);
+                if (res.buildStatus == 0 && res.exeExists) {
+                    res.runBuilt = runWithTimeout(exe.string(), /*gcStress=*/false);
+                }
+                removeProgram(exe, ec);
+
+                res.runJit = runInJit(oracleCase.entry, /*gcStress=*/false);
+                res.runJitGc = runInJit(oracleCase.entry, /*gcStress=*/true);
+            }
+        };
+
+        std::vector<std::thread> threads;
+        threads.reserve(numJobs);
+        for (unsigned int i = 0; i < numJobs; ++i) {
+            threads.emplace_back(worker);
+        }
+        for (auto& t : threads) {
+            t.join();
+        }
+    });
+
+    for (const auto& res : results) {
+        SUBCASE(res.oracleCase.id.c_str()) {
+            REQUIRE_MESSAGE(res.expectedReadOk,
+                            ("Missing pinned expectation " + res.expectedPathStr).c_str());
+            std::string buildMsg =
+                "Bronze build failed for " + res.oracleCase.entry.string() + ": " + res.buildErr;
+            INFO(buildMsg);
+            REQUIRE(res.buildStatus == 0);
+            REQUIRE(res.exeExists);
+            CHECK_MESSAGE(!res.runBuilt.timedOut,
+                          ("Compiled case did not finish within the timeout: " +
+                           res.oracleCase.entry.string()).c_str());
+            checkJitMatchesBuilt(res);
+        }
+    }
+}
+
 TEST_CASE("Oracle blocked test suite") {
     std::filesystem::path casesDir = findCasesDirectory();
     REQUIRE_MESSAGE(!casesDir.empty(), "Oracle test cases directory not found");
@@ -647,4 +704,57 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
         }
         removeProgram(exePath, ec);
     }
+}
+
+namespace {
+
+// A milestone library through `bronze run`: the whole bundle compiled by the
+// JIT in one process and run there, held to the same expectation the built
+// program is. The gc-stress budget is the one the built program gets, plus
+// the compile, which now happens inside the stressed process too.
+void checkJitMilestone(const char* name, const std::filesystem::path& entry,
+                       const std::string& expected, const std::string& hostGlobals,
+                       uint32_t gcStressTimeoutMs) {
+    const std::string what = std::string(name) + " (jit)";
+    RunResult run = runInJit(entry, /*gcStress=*/false, kRunTimeoutMs * 4, hostGlobals);
+    CHECK_MESSAGE(!run.timedOut, (what + " did not finish within the timeout").c_str());
+    if (run.ran) {
+        CHECK_MESSAGE(run.exitCode == 0,
+                      (what + " exited with code " + std::to_string(run.exitCode) + "\n" + run.errors).c_str());
+        CHECK_MESSAGE(expected == run.output, (what + " output differs from the pinned expectation").c_str());
+    }
+
+    RunResult stressed = runInJit(entry, /*gcStress=*/true, gcStressTimeoutMs, hostGlobals);
+    CHECK_MESSAGE(!stressed.timedOut, (what + " did not finish within the timeout (gc-stress)").c_str());
+    if (stressed.ran) {
+        CHECK_MESSAGE(stressed.exitCode == 0,
+                      (what + " exited with code " + std::to_string(stressed.exitCode) + " (gc-stress)\n" +
+                       stressed.errors).c_str());
+        CHECK_MESSAGE(expected == stressed.output,
+                      (what + " output differs from the pinned expectation (gc-stress)").c_str());
+    }
+}
+
+}  // namespace
+
+TEST_CASE("threejs-jit milestone: unmodified r160 runs under bronze run") {
+    std::filesystem::path dir = findTestDirectory(TEST_THREEJS_DIR, "tests/oracle/threejs");
+    REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/threejs not found");
+    REQUIRE(std::filesystem::exists(dir / "main.js"));
+    std::string expected;
+    REQUIRE_MESSAGE(readFileBytes(dir / "main.expected", expected),
+                    ("Missing pinned expectation " + (dir / "main.expected").string()).c_str());
+    checkJitMilestone("three.js", dir / "main.js", expected, {}, kRunTimeoutMs * 4);
+}
+
+TEST_CASE("pixi-jit milestone: unmodified v8.19.0 runs under bronze run") {
+    std::filesystem::path dir = findTestDirectory(TEST_PIXI_DIR, "tests/oracle/pixi");
+    REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/pixi not found");
+    REQUIRE(std::filesystem::exists(dir / "main.js"));
+    std::string expected;
+    REQUIRE_MESSAGE(readFileBytes(dir / "main.expected", expected),
+                    ("Missing pinned expectation " + (dir / "main.expected").string()).c_str());
+    const std::string hostGlobals = (dir / "host.globals").string();
+    REQUIRE(std::filesystem::exists(hostGlobals));
+    checkJitMilestone("pixi", dir / "main.js", expected, hostGlobals, /*gcStressTimeoutMs=*/300000);
 }
