@@ -169,17 +169,14 @@ uint64_t bigIntAsUintN(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
     return asNBody(argc, argv, /*signedResult=*/false);
 }
 
-// 21.2.3.4 thisBigIntValue. There is no wrapper object, so the receiver is
-// either the primitive or an incompatible one — which is the whole of the
-// check.
+// 21.2.3.4 thisBigIntValue: the primitive, or the [[BigIntData]] of the box
+// `Object(1n)` and 7.1.18 ToObject build (builtin_wrappers.cpp). Anything else
+// is the incompatible receiver the clause names.
 bool thisBigInt(Value self, const char* method, Value& out) {
-    if (!self.isBigInt()) {
-        rtThrowTypeError(std::string("BigInt.prototype.") + method +
-                         " called on a value that is not a BigInt");
-        return false;
-    }
-    out = self;
-    return true;
+    if (rtThisBigIntValue(self, out)) return true;
+    rtThrowTypeError(std::string("BigInt.prototype.") + method +
+                     " called on a value that is not a BigInt");
+    return false;
 }
 
 uint64_t bigIntProtoToString(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {

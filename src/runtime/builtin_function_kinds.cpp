@@ -35,6 +35,7 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -176,14 +177,18 @@ uint32_t slotForFunction(Value fnVal) {
     return (fn->isGeneratorFunction() ? 1u : 0u) | (fn->isAsyncFunction() ? 2u : 0u);
 }
 
-// What 20.2.3 puts on %Function.prototype% and 10.2 on every function object.
-// A read of one of these off a kind's prototype object walks a chain that ends
-// at a link `protoAncestor` will not cross, so it would answer `undefined` —
-// a wrong answer about a property the language really does inherit, which is
-// what this table turns into a diagnostic.
-const char* const kFunctionProtoMembers[] = {
-    "apply", "bind", "call", "toString", "length", "name", "caller", "arguments",
-};
+// Which of the three prototype objects `obj` is, or `kOrdinary` for any other
+// value. Only a slot that has been built can match: a kind nobody has asked
+// for has no prototype object yet, so nothing can be it.
+uint32_t slotForKindPrototype(Value obj) {
+    if (!obj.isObject()) return kOrdinary;
+    for (uint32_t slot = kGenerator; slot < kKindCount; ++slot) {
+        if (g_kinds[slot].proto.isObject() && obj.rawBits() == g_kinds[slot].proto.rawBits()) {
+            return slot;
+        }
+    }
+    return kOrdinary;
+}
 
 }  // namespace
 
@@ -201,16 +206,40 @@ Value rtFunctionKindPrototype(Value fnVal) {
     return g_kinds[slot].proto;
 }
 
-bool rtFunctionKindCheckMissingMember(Value obj, const std::string& key) {
-    for (uint32_t slot = kGenerator; slot < kKindCount; ++slot) {
-        if (!g_kinds[slot].proto.isObject()) continue;
-        if (obj.rawBits() != g_kinds[slot].proto.rawBits()) continue;
-        const std::string receiver = std::string(kindName(slot)) + ".prototype";
-        rtCheckUnimplementedMember(receiver.c_str(), kFunctionProtoMembers,
-                                   std::size(kFunctionProtoMembers), key);
+bool rtFunctionKindInheritedMember(Rooted<Value>& obj, StringHeader* keyHeader,
+                                   const std::string& key, Value& out) {
+    if (slotForKindPrototype(obj.get()) == kOrdinary) return false;
+    // 27.3.3, 27.4.3, 27.7.3: each of the three is an ordinary object whose
+    // [[Prototype]] is %Function.prototype% — an object with no slot of its
+    // own for `length` or `name`, so it inherits 20.2.3's: 0 and "".
+    if (key == "length") {
+        out = Value::fromDouble(0.0);
         return true;
     }
-    return false;
+    if (key == "name") {
+        out = rtMakeString("");
+        return true;
+    }
+    // 20.2.3's members live in %Function.prototype%'s own property box, the
+    // one a function receiver reaches through rt_prop_function.cpp. `call`,
+    // `apply`, `bind` and `toString` are what land here; the receiver stays
+    // this object, so `GeneratorFunction.prototype.toString()` is 20.2.3.5's
+    // step-1 TypeError rather than a source text.
+    Rooted<Value> fpBox{rtFunctionPrototypeObject().asObject<FunctionHeader>()->properties};
+    if (fpBox.get().isObject()) {
+        ObjectHeader* fpObj = fpBox.get().asObject<ObjectHeader>();
+        PropertyInfo inherited;
+        if (fpObj->shape && fpObj->shape->lookupProperty(PropertyKey::forString(keyHeader),
+                                                         inherited)) {
+            Rooted<Value> keyVal(Value::fromString(keyHeader));
+            out = fpObj->getProp(rtHeap(), keyVal, /*ic=*/nullptr, obj.slot_ptr());
+            return true;
+        }
+    }
+    // Past %Function.prototype% the chain is %Object.prototype%, which the
+    // ordinary walk never reached either.
+    out = rtObjectProtoMember(obj, key);
+    return true;
 }
 
 }  // namespace bronze::runtime

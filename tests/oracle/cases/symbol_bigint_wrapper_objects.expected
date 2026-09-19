@@ -1,0 +1,25 @@
+object true true
+true Symbol(marker) marker
+[object Symbol] 0 {}
+true false true
+function 1
+string conversion: true
+1 1
+false true
+true
+false
+false
+object true 1
+0
+forged receiver: true
+object true true
+true 10 1010 [object BigInt]
+11n 20n true false true
+10 10 10
+JSON of a BigInt object: true
+{"n":1,"o":false}
+forged receiver: true
+false 2
+object,object,object,object,object
+true true false
+object object object 2 s!

@@ -433,13 +433,19 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
     // exists is the silent lie rt_members.cpp exists to prevent. Checked only
     // on the miss, so the hit path is untouched.
     if (result.isUndefined()) {
+        // %GeneratorFunction.prototype% and its two siblings inherit from a
+        // FUNCTION object, a link the walk above stops at. Their inherited
+        // members are answered here, uncached: the answer is a real value the
+        // chain holds, not a miss.
+        if (Value inherited; rtFunctionKindInheritedMember(objRoot, keyHeader, keyStr, inherited)) {
+            return inherited.rawBits();
+        }
         // Each of these answers whether it CLAIMED this receiver as the
         // singleton whose absent members it diagnoses from a table. They are
         // OR'd rather than short-circuited so that every one still runs: the
         // claim decides only whether the miss may be cached, never whether the
         // diagnostic fires.
-        bool diagnosed = rtFunctionKindCheckMissingMember(objRoot.get(), keyStr);
-        diagnosed = rtMathCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
+        bool diagnosed = rtMathCheckMissingMember(objRoot.get(), keyStr);
         diagnosed = rtPerformanceCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
         diagnosed = rtAtomicsCheckMissingMember(objRoot.get(), keyStr) || diagnosed;
         diagnosed = rtObjectCheckMissingMember(objRoot.get(), keyStr) || diagnosed;

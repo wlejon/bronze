@@ -132,23 +132,9 @@ static Value toObjectForAssign(Value v) {
         rtThrowTypeError("Object.assign called on a value that is not an object");
         return Value::fromUndefined();
     }
-    if (v.isString()) {
-        Rooted<Value> str{v};
-        return rtMakeStringWrapper(str);
-    }
-    if (v.isBool()) return rtMakeBooleanWrapper(v.asBool());
-    if (v.isNumber()) return rtMakeNumberWrapper(v.asNumber());
-    if (v.isBigInt()) {
-        fatal("unsupported: a BigInt wrapper object (7.1.18 ToObject boxes a BigInt, and bronze "
-              "builds no BigInt object — 21.2.3 gives BigInt.prototype no [[BigIntData]] slot "
-              "for one to carry)");
-    }
-    if (!v.isObject()) {
-        fatal("unsupported: Object.assign with a symbol as the target (7.1.18 boxes it in a "
-              "Symbol object, and bronze builds none — 20.4.3 makes Symbol.prototype an "
-              "ordinary object with no [[SymbolData]] slot, so there is nothing for the box "
-              "to be)");
-    }
+    // 20.1.2.1 step 1: ToObject(target) — a primitive target is copied INTO
+    // its box, which is then the result.
+    if (!v.isObject()) return rtToObject(v);
     if (rtObjectIsPlain(v)) return v;
     const uint16_t kind = v.asObject<HeapObjectHeader>()->flags;
     // A proxy's [[Set]] is its trap and an array's is the computed write;
@@ -212,17 +198,8 @@ uint64_t objectConstructorBody(uint64_t, uint64_t thisBits, uint32_t argc, const
     if (argc == 0) return bronze_create_object();
     Rooted<Value> value{Value(argv[0])};
     if (value.get().isUndefined() || value.get().isNull()) return bronze_create_object();
-    if (value.get().isObject()) return value.get().rawBits();
-    if (value.get().isString()) return rtMakeStringWrapper(value).rawBits();
-    if (value.get().isBool()) return rtMakeBooleanWrapper(value.get().asBool()).rawBits();
-    if (value.get().isNumber()) return rtMakeNumberWrapper(value.get().asNumber()).rawBits();
-    fatal(value.get().isSymbol()
-              ? "unsupported: Object(symbol) (20.4.3 wraps it in an object with a "
-                "[[SymbolData]] internal slot, and bronze builds none — 20.4.3 makes "
-                "Symbol.prototype an ordinary object with no slot for one to carry)"
-              : "unsupported: Object(bigint) (21.2.3 wraps it in an object with a "
-                "[[BigIntData]] internal slot, and bronze builds none — 21.2.3 makes "
-                "BigInt.prototype an ordinary object with no slot for one to carry)");
+    // 20.1.1.1 step 4: ToObject — the value itself, or its box.
+    return rtToObject(value.get()).rawBits();
 }
 
 }  // namespace bronze::runtime

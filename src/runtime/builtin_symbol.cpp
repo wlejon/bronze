@@ -134,19 +134,27 @@ const WellKnownSymbol kWellKnownSymbols[] = {
 
 // ---- Symbol.prototype (20.4.3) ---------------------------------------------
 
-// 20.4.3.4 thisSymbolValue. Only the PRIMITIVE half exists: 20.4.3 gives this
-// prototype no [[SymbolData]] slot of its own, and bronze builds no Symbol
-// wrapper object — `new Symbol()` is the TypeError 20.4.1.1 makes it, and
-// `Object(sym)` is a construct bronze refuses by name — so there is nothing
-// else that could carry one.
+// 20.4.3.4 thisSymbolValue: the primitive, or the [[SymbolData]] of the box
+// `Object(sym)` and 7.1.18 ToObject build (builtin_wrappers.cpp). This
+// prototype itself carries no slot — 20.4.3 makes it an ordinary object — and
+// `new Symbol()` is the TypeError 20.4.1.1 makes it, so the box is the one
+// other receiver.
 bool thisSymbol(Value self, const char* method, Value& out) {
-    if (!self.isSymbol()) {
-        rtThrowTypeError(std::string("Symbol.prototype.") + method +
-                         " called on an incompatible receiver");
-        return false;
+    if (rtThisSymbolValue(self, out)) return true;
+    rtThrowTypeError(std::string("Symbol.prototype.") + method +
+                     " called on an incompatible receiver");
+    return false;
+}
+
+// 20.4.3.5 Symbol.prototype[@@toPrimitive](hint): thisSymbolValue, whatever
+// the hint. It is what makes `Object(sym) == sym` true and `Object(sym) + ""`
+// the symbol-to-string TypeError, both by way of 7.1.1 step 2.
+uint64_t symbolProtoToPrimitive(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    Value self;
+    if (!thisSymbol(Value(thisBits), "[Symbol.toPrimitive]", self)) {
+        return Value::fromUndefined().rawBits();
     }
-    out = self;
-    return true;
+    return self.rawBits();
 }
 
 uint64_t symbolProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
@@ -218,6 +226,15 @@ void ensureSymbolPrototype() {
         Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
         Rooted<Value> tag{rtMakeString("Symbol")};
         proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, tag, nullptr,
+                                                      /*enumerable=*/false, /*defineOwn=*/true);
+    }
+    {
+        // 20.4.3.5's key is a symbol, so it cannot ride the string-keyed table
+        // above; `{ [[Writable]]: false, [[Enumerable]]: false,
+        // [[Configurable]]: true }`, length 1.
+        Rooted<Value> key{Value::fromSymbol(rtSymbolToPrimitive())};
+        Rooted<Value> val{rtNativeFunction(symbolProtoToPrimitive, 0, "[Symbol.toPrimitive]", 1)};
+        proto.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
                                                       /*enumerable=*/false, /*defineOwn=*/true);
     }
     {

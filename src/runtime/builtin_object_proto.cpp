@@ -418,7 +418,16 @@ uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
             if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             if (!nextVal.isObject()) return Value::fromBool(false).rawBits();
         } else if (!HeapKind::carriesShape(kind)) {
-            return Value::fromBool(target == objectProto).rawBits();
+            // A function, an array or an exotic subclass instance names its
+            // [[Prototype]] beside the value rather than in a shape, and it
+            // may be an object a program holds — a class's parent, a kind's
+            // prototype, `Function.prototype` — so the walk goes through it.
+            // Only a link with no object to hand back is the one-question case:
+            // `<Kind>.prototype` then `Object.prototype`, neither reachable.
+            if (!rtShapelessPrototypeOf(walker.get(), nextVal)) {
+                return Value::fromBool(target == objectProto).rawBits();
+            }
+            if (!nextVal.isObject()) return Value::fromBool(false).rawBits();
         } else {
             Shape* shape = walker.get().asObject<ObjectHeader>()->shape;
             nextVal = shape ? shape->prototypeValue() : Value::fromUndefined();
@@ -439,17 +448,16 @@ uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
 // answered a primitive here would stop that search, which is exactly what a
 // program's own override is for.
 //
-// A PRIMITIVE is where ToObject has work to do, and the box is what bronze does
-// not build. Refused by name rather than answered with the primitive itself,
-// which would make `x.valueOf() === x` true where the language says the wrapper
-// makes it false. Reachable only through `.call`: every primitive that has a
-// prototype of its own answers `valueOf` from it first.
+// A PRIMITIVE is where ToObject has work to do: the answer is its box, a fresh
+// one, which is what makes `Object.prototype.valueOf.call(x) === x` false for
+// every primitive but `undefined` and `null` (those two are the TypeError).
+// Reachable only through `.call`: every primitive that has a prototype of its
+// own answers `valueOf` from it first.
 uint64_t objectProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value self(thisBits);
     if (!requireNonNullish(self, "valueOf")) return Value::fromUndefined().rawBits();
     if (self.isObject()) return self.rawBits();
-    fatal("unsupported: Object.prototype.valueOf on a primitive receiver (20.1.3.7 is "
-          "ToObject, and bronze does not build the wrapper object it would return)");
+    return rtToObject(self).rawBits();
 }
 
 // 20.1.3.6 steps 4 through 14: the BUILTIN TAG, chosen from what the receiver

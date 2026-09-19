@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -43,6 +44,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -117,6 +119,11 @@ thread_local Value g_numberPrototype = Value::fromUndefined();
 thread_local Shape* g_stringWrapperShape = nullptr;
 thread_local Shape* g_booleanWrapperShape = nullptr;
 thread_local Shape* g_numberWrapperShape = nullptr;
+// The two boxes whose prototypes are ORDINARY objects (20.4.3, 21.2.3) — no
+// slot of their own, built by builtin_symbol.cpp and builtin_bigint.cpp — so
+// their shapes wait on those intrinsics rather than on the three above.
+thread_local Shape* g_symbolWrapperShape = nullptr;
+thread_local Shape* g_bigIntWrapperShape = nullptr;
 // `valueOf`, arena-interned once, so the ToPrimitive guard below can walk a
 // chain without allocating — which is what lets the shortcut be usable from
 // `console.log`'s inspect walk, whose whole contract is that it cannot move
@@ -362,6 +369,67 @@ bool rtThisNumberValue(Value self, Value& out) {
         return true;
     }
     return rtNumberWrapperData(self, out);
+}
+
+Value rtMakeSymbolWrapper(Rooted<Value>& sym) {
+    if (!g_symbolWrapperShape) {
+        Rooted<Value> proto{rtSymbolPrototype()};
+        g_symbolWrapperShape = rtNewRootShape(proto.get());
+    }
+    return newWrapper(g_symbolWrapperShape, sym);
+}
+
+Value rtMakeBigIntWrapper(Rooted<Value>& big) {
+    if (!g_bigIntWrapperShape) {
+        Rooted<Value> proto{rtBigIntPrototype()};
+        g_bigIntWrapperShape = rtNewRootShape(proto.get());
+    }
+    return newWrapper(g_bigIntWrapperShape, big);
+}
+
+Value rtToObject(Value v) {
+    if (v.isNull() || v.isUndefined()) {
+        rtThrowTypeError("Cannot convert undefined or null to object");
+        return Value::fromUndefined();
+    }
+    if (v.isObject()) return v;
+    Rooted<Value> prim{v};
+    if (v.isString()) return rtMakeStringWrapper(prim);
+    if (v.isBool()) return rtMakeBooleanWrapper(v.asBool());
+    if (v.isNumber()) return rtMakeNumberWrapper(v.asNumber());
+    if (v.isSymbol()) return rtMakeSymbolWrapper(prim);
+    if (v.isBigInt()) return rtMakeBigIntWrapper(prim);
+    fatal("internal: ToObject of a value that is neither an object nor a primitive");
+}
+
+bool rtSymbolWrapperData(Value v, Value& out) {
+    Value data;
+    if (!wrapperData(v, data) || !data.isSymbol()) return false;
+    out = data;
+    return true;
+}
+
+bool rtBigIntWrapperData(Value v, Value& out) {
+    Value data;
+    if (!wrapperData(v, data) || !data.isBigInt()) return false;
+    out = data;
+    return true;
+}
+
+bool rtThisSymbolValue(Value self, Value& out) {
+    if (self.isSymbol()) {
+        out = self;
+        return true;
+    }
+    return rtSymbolWrapperData(self, out);
+}
+
+bool rtThisBigIntValue(Value self, Value& out) {
+    if (self.isBigInt()) {
+        out = self;
+        return true;
+    }
+    return rtBigIntWrapperData(self, out);
 }
 
 Value rtStringCharAsString(Value str, uint32_t index) {

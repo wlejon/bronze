@@ -274,13 +274,17 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     REQUIRE(runtime::rtNumberWrapperData(boxed.get(), data));
     CHECK(data.asNumber() == 5.0);
 
-    // A SYMBOL is the one primitive still refused, and its reason is not
-    // bronze's coverage: 20.4.3 gives `Symbol.prototype` no [[SymbolData]]
-    // slot, so there is no Symbol object in this runtime for the box to be.
+    // A SYMBOL target builds its box the same way: a Symbol object whose
+    // [[SymbolData]] is the symbol (20.4.3), inheriting from `Symbol.prototype`
+    // — the prototype itself carries no slot, the box does.
     Rooted<Value> sym{runtime::rtMakeSymbol(Value::fromUndefined())};
-    CHECK_THROWS_WITH_AS(call("assign", sym, 1),
-                         doctest::Contains("Object.assign with a symbol as the target"),
-                         std::runtime_error);
+    Rooted<Value> symBox{call("assign", sym, 1)};
+    REQUIRE(symBox.get().isObject());
+    Value symData;
+    REQUIRE(runtime::rtSymbolWrapperData(symBox.get(), symData));
+    CHECK(symData.rawBits() == sym.get().rawBits());
+    CHECK(symBox.get().asObject<ObjectHeader>()->shape->prototypeValue().rawBits() ==
+          runtime::rtSymbolPrototype().rawBits());
 
     // `Object.hasOwn` on an array: an existence test over the elements,
     // `length` and the side object, the same [[GetOwnProperty]] that

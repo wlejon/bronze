@@ -38,26 +38,7 @@ inline bool requireArray(Value v, const char* method) {
 
 inline Value toObject(Value v, const char* method) {
     (void)method;
-    if (v.isNull() || v.isUndefined()) {
-        rtThrowTypeError("Cannot convert undefined or null to object");
-        return Value::fromUndefined();
-    }
-    if (v.isObject()) return v;
-    if (v.isString()) {
-        Rooted<Value> str{v};
-        return rtMakeStringWrapper(str);
-    }
-    if (v.isBool()) return rtMakeBooleanWrapper(v.asBool());
-    if (v.isNumber()) return rtMakeNumberWrapper(v.asNumber());
-    if (v.isBigInt()) {
-        fatal("unsupported: a BigInt wrapper object (7.1.18 ToObject boxes a BigInt, and bronze "
-              "builds no BigInt object)");
-    }
-    if (v.isSymbol()) {
-        fatal("unsupported: a Symbol wrapper object (7.1.18 ToObject boxes a Symbol, and bronze "
-              "builds no Symbol object)");
-    }
-    return Value::fromUndefined();
+    return rtToObject(v);
 }
 
 inline bool rtArrayLikeHasElement(Rooted<Value>& src, uint32_t index) {

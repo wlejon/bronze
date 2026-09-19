@@ -321,6 +321,11 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
     // `toJSON` and the replacer because that is where the clause puts it: an
     // object either of those RETURNED is unwrapped too.
     if (Value prim; rtWrapperPrimitive(value.get(), prim)) value.set(prim);
+    // The same step's [[BigIntData]] arm: the box unwraps to the BigInt, which
+    // the dispatch below then refuses exactly as it refuses the primitive. A
+    // Symbol object is NOT in the list and stays an object — `{}` — which is
+    // what 25.5.2.2 step 4 says.
+    if (Value big; rtBigIntWrapperData(value.get(), big)) value.set(big);
 
     const Value v = value.get();
     if (v.isNull()) {

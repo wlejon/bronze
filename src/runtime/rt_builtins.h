@@ -207,12 +207,16 @@ void rtDefineSpeciesGetter(Rooted<Value>& ctor);
 Value rtFunctionKindConstructor(Value fnVal);
 Value rtFunctionKindPrototype(Value fnVal);
 
-// A member of %Function.prototype% read off one of those three prototype
-// objects. Their chains end at a link the plain-object walk will not cross, so
-// an inherited `call` would read `undefined`; this makes it a diagnostic
-// instead. Fires only for those exact objects, and only once one has been
-// built.
-bool rtFunctionKindCheckMissingMember(Value obj, const std::string& key);
+// An inherited member read off one of those three prototype objects. Each is
+// an ordinary object whose [[Prototype]] is %Function.prototype%, a function
+// object — a link the plain-object walk will not cross, so `call`, `toString`,
+// `length`, `hasOwnProperty` all missed. This answers the miss the way the
+// chain would: 20.2.3's members from %Function.prototype%'s own box (with this
+// object as the receiver), `length` 0 and `name` "" as that intrinsic carries
+// them, and %Object.prototype% past it. Claims only those exact objects, and
+// only once one has been built; `false` for every other value.
+bool rtFunctionKindInheritedMember(Rooted<Value>& obj, StringHeader* keyHeader,
+                                   const std::string& key, Value& out);
 
 // ---- the primitive wrappers (builtin_wrappers.cpp) --------------------------
 
@@ -260,21 +264,36 @@ Value rtNumberPrototype();
 Value rtMakeStringWrapper(Rooted<Value>& str);
 Value rtMakeBooleanWrapper(bool value);
 Value rtMakeNumberWrapper(double value);
+// 20.4.3 / 21.2.3: a Symbol object and a BigInt object, the [[SymbolData]] and
+// [[BigIntData]] boxes 7.1.18 ToObject and `Object(x)` build. Same brand and
+// slot as the three above; the chain is %Symbol.prototype% or
+// %BigInt.prototype%, each an ordinary object with no slot of its own.
+Value rtMakeSymbolWrapper(Rooted<Value>& sym);
+Value rtMakeBigIntWrapper(Rooted<Value>& big);
 
-// The [[StringData]] / [[BooleanData]] / [[NumberData]] of a wrapper; false for
-// every other value. The brand is the internal-slot count paired with the
-// slot's type — builtin_wrappers.cpp says why it is not the (prototype, count)
-// pair an iterator object uses.
+// 7.1.18 ToObject: the object itself, a wrapper for a primitive that boxes,
+// and for `undefined` and `null` a TypeError with `undefined` returned.
+Value rtToObject(Value v);
+
+// The [[StringData]] / [[BooleanData]] / [[NumberData]] / [[SymbolData]] /
+// [[BigIntData]] of a wrapper; false for every other value. The brand is the
+// internal-slot count paired with the slot's type — builtin_wrappers.cpp says
+// why it is not the (prototype, count) pair an iterator object uses.
 bool rtStringWrapperData(Value v, Value& out);
 bool rtBooleanWrapperData(Value v, Value& out);
 bool rtNumberWrapperData(Value v, Value& out);
+bool rtSymbolWrapperData(Value v, Value& out);
+bool rtBigIntWrapperData(Value v, Value& out);
 
 // 22.1.3.35 thisStringValue / 20.3.3.3 thisBooleanValue / 21.1.3's
-// thisNumberValue: the primitive itself, or a wrapper's slot. False for
-// anything else, which the caller reports as the TypeError those clauses name.
+// thisNumberValue / 20.4.3.4 thisSymbolValue / 21.2.3.4 thisBigIntValue: the
+// primitive itself, or a wrapper's slot. False for anything else, which the
+// caller reports as the TypeError those clauses name.
 bool rtThisStringValue(Value self, Value& out);
 bool rtThisBooleanValue(Value self, Value& out);
 bool rtThisNumberValue(Value self, Value& out);
+bool rtThisSymbolValue(Value self, Value& out);
+bool rtThisBigIntValue(Value self, Value& out);
 
 // One code unit of a string, as a String of length 1 — 10.4.3.5's answer, and
 // the value `s[i]` is. `undefined` past the end. ALLOCATES.
