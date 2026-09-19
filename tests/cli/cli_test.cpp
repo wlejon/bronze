@@ -328,5 +328,48 @@ TEST_CASE("CLI driver accepts --import-map parameter in runTypes and runBuild") 
     std::filesystem::remove_all(tempDir, ec);
 }
 
+// Error.stack positions come from the module's line index, which outlives the
+// source texts `--no-fn-source` drops: the two builds of one program print the
+// same frames, at the lines and columns the program was written on, rather
+// than the no-source build degrading every frame to 1:1.
+TEST_CASE("CLI driver --no-fn-source keeps the Error.stack line table") {
+    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_no_fn_source.js";
+    std::filesystem::path exeWith = std::filesystem::temp_directory_path() / "test_driver_fn_source.exe";
+    std::filesystem::path exeWithout = std::filesystem::temp_directory_path() / "test_driver_no_fn_source.exe";
+    std::error_code ec;
+    removeProgram(exeWith, ec);
+    removeProgram(exeWithout, ec);
 
+    writeTestFile(jsPath,
+        "function inner() {\n"
+        "  return new Error('where');\n"
+        "}\n"
+        "function outer() {\n"
+        "  return inner();\n"
+        "}\n"
+        "const e = outer();\n"
+        "console.log(e.stack.split('\\n').slice(1, 3).map(l => l.replace(/\\(.*[\\\\/]/, '(')).join('|'));\n"
+    );
 
+    std::string err;
+    int status = bronze::cli::runBuild(jsPath.string(), exeWith.string(), &err);
+    REQUIRE_MESSAGE(status == 0, err);
+    status = bronze::cli::runBuild(
+        jsPath.string(), exeWithout.string(), &err,
+        /*infer=*/true, /*timings=*/false, /*emitObj=*/false,
+        /*hostGlobalsPath=*/{}, /*inferStats=*/false, /*statsOut=*/nullptr,
+        /*moduleRoots=*/{}, /*entrySymbol=*/{}, /*emitShared=*/false,
+        /*retainFnSource=*/false);
+    REQUIRE_MESSAGE(status == 0, err);
+
+    const std::string withSource = runAndCaptureOutput(exeWith);
+    const std::string withoutSource = runAndCaptureOutput(exeWithout);
+    CHECK(withSource ==
+          "    at inner (test_driver_no_fn_source.js:2:10)|"
+          "    at outer (test_driver_no_fn_source.js:5:10)\n");
+    CHECK(withoutSource == withSource);
+
+    removeProgram(exeWith, ec);
+    removeProgram(exeWithout, ec);
+    std::filesystem::remove(jsPath, ec);
+}

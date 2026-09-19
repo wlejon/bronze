@@ -535,6 +535,12 @@ struct Module {
     // what `--no-fn-source` does — the ranges above stay, and address nothing.
     std::vector<std::string> sourceTexts;
     std::vector<std::string> sourceFiles;
+    // The line index of each file, same order, built with the texts and kept
+    // when they are dropped: every (line, column) the backend records — the
+    // pc tables behind Error.stack and each descriptor's definition
+    // position — is a span resolved against this, and a build without
+    // function source still has to put its frames on the right line.
+    std::vector<LineTable> lineTables;
 
     // The inline-cache sites that belong to METHOD CALLS, in ascending order:
     // the `icIndex` of every MethodCall / MethodCallSpread, each once. A

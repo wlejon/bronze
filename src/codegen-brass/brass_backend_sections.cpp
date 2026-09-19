@@ -189,11 +189,10 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     }
     timer.mark("ro tables");
 
-    // One line index per file for the descriptors' (line, column): the
-    // per-function scan from byte 0 it replaces was 4.7 s of a pixi compile.
-    std::vector<LineTable> lineTables;
-    lineTables.reserve(module.sourceTexts.size());
-    for (const std::string& text : module.sourceTexts) lineTables.emplace_back(text);
+    // The module's line index per file for the descriptors' (line, column):
+    // the per-function scan from byte 0 it replaces was 4.7 s of a pixi
+    // compile, and it outlives `sourceTexts`, which `--no-fn-source` empties.
+    const std::vector<LineTable>& lineTables = module.lineTables;
 
     // The function descriptors (bronze_fn_desc): name, file, definition
     // position, flags, and the wrapper the runtime calls.

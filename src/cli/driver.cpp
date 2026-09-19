@@ -439,7 +439,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     // each function are what lowering produced and the texts are what they
     // index: clearing one place is the whole of the flag, and nothing
     // downstream has to be told about it. The backend emits a blob only for a
-    // file it still has.
+    // file it still has. `lineTables` stays: Error.stack's positions come
+    // from it, and a build without function source still names the line.
     if (!retainFnSource) ilModule->sourceTexts.clear();
 
     if (inferStats) {

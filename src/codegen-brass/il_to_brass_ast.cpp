@@ -602,9 +602,9 @@ brass::il::BronzeModuleAST lowerToBrassAst(
     readKeys.erase(std::unique(readKeys.begin(), readKeys.end()), readKeys.end());
     if (globalReadKeys) *globalReadKeys = readKeys;
 
-    std::vector<LineTable> lineTables;
-    lineTables.reserve(module.sourceTexts.size());
-    for (const std::string& text : module.sourceTexts) lineTables.emplace_back(text);
+    // The module's own line index and not one built from `sourceTexts`,
+    // which `--no-fn-source` has emptied by now.
+    const std::vector<LineTable>& lineTables = module.lineTables;
 
     for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
         const auto& fn = module.functions[fnIdx];

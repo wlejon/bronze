@@ -315,8 +315,10 @@ std::optional<il::Module> Lowerer::lower() {
     if (sources_) {
         ilModule_.sourceTexts.reserve(sources_->size());
         ilModule_.sourceFiles.reserve(sources_->size());
+        ilModule_.lineTables.reserve(sources_->size());
         for (size_t i = 0; i < sources_->size(); ++i) {
             ilModule_.sourceTexts.emplace_back(sources_->at(static_cast<uint16_t>(i)).text());
+            ilModule_.lineTables.emplace_back(sources_->at(static_cast<uint16_t>(i)).text());
             std::string path(sources_->at(static_cast<uint16_t>(i)).name());
             std::error_code ec;
             auto absPath = std::filesystem::absolute(path, ec);
