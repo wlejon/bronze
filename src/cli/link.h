@@ -1,47 +1,53 @@
 #pragma once
 
-#include <filesystem>
 #include <string>
-#include <vector>
+
+#include <brass/object/object_writer.hpp>
 
 #include "support/diagnostics.h"
 
-// The link step family: everything between "bronze has written an object" and
-// "there is an artefact on disk". Split out of driver.cpp because it is a
-// self-contained concern with its own shape — a search for the runtime
-// libraries, a per-platform fan-out of linker command lines, and a cache of
-// the one that worked — and because that shape repeats once per KIND of
-// artefact. There are two kinds now.
+// The link step: everything between "the backend has an object" and "there is
+// a program on disk". No system linker is involved anywhere below — brass's
+// own image writers (AotLinker) turn the object into a DLL/.so/.dylib in
+// process, and the runtime is never linked INTO anything: every symbol the
+// object leaves undefined is imported from the shared runtime by name.
+//
+// That makes one kind of artefact rather than two. A loadable module is the
+// object as an image importing the runtime, and a `bronze build` executable
+// is that same module beside a copy of a prebuilt host (src/host) that opens
+// the module named after itself, plus the runtime library the pair loads.
 
 namespace bronze::cli {
 
-// Object -> native executable: bronze's runtime linked in whole, `main` from
-// src/rt/rt.cpp. Tries the toolchains it knows in order and remembers the
-// first that worked, because a build compiles hundreds of programs and the
-// misses are process launches.
-// Both linkers take a LIST of objects because a large module is emitted as
-// several partition objects in parallel (llvm_backend.cpp, writeObjectFile);
-// an ordinary program's list has one entry.
-bool linkExecutable(const std::vector<std::string>& objPaths, const std::string& outputPath,
-                    DiagnosticSink& diags);
-
-// Object -> loadable module (DLL / .so / .dylib), against the SHARED runtime.
+// Object -> loadable module (DLL / .so / .dylib) importing the SHARED runtime.
 //
-// Same fan-out, three differences that are the whole point: `/DLL` or
-// `-shared` instead of an executable; the shared runtime's import library or
-// `.so` instead of the static archives, so the loaded module and the host it
-// is loaded into share one heap; and no fallback to compiling src/rt/rt.cpp,
-// which exists to supply `main` and a module has none.
+// Every undefined symbol the object references must be in the runtime's
+// export surface — the registry in src/abi/bronze_abi.h plus the three brass
+// words cmake/bronze_abi_exports.cmake appends — and one that is not is a
+// diagnosed error naming it, never an unresolved import the loader discovers.
+// The module exports the loadable-module contract that header states: the
+// entry, its ABI stamp, its host-globals manifest and its native import
+// table, and beside them the code-range table a host registers for stack
+// walks (`<entry>_code_ranges` / `<entry>_code_range_count`, or
+// `bronze_object_*` for the default entry).
 //
-// A missing shared runtime is a diagnosed error naming the library and the
-// override, never a silent fall through to the static path — a module linked
-// against a static runtime would load, run, and quietly allocate out of a
-// second heap.
-bool linkSharedModule(const std::vector<std::string>& objPaths, const std::string& outputPath,
+// ELF and Mach-O modules carry a run-time search path: their own directory
+// first, then the directory the shared runtime was found in (see
+// findSharedRuntimeDir), so a host beside the runtime or with it already
+// loaded resolves the same library either way.
+bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& outputPath,
                       DiagnosticSink& diags, const std::string& entrySymbol = "bronze_main");
 
-// A temp object path unique per process and per call, for the two commands
-// that emit an object only to hand it straight to a linker.
-std::filesystem::path uniqueTempObjPath(const std::string& sourcePath);
+// Object -> native program at `outputPath`: the module written beside it with
+// the platform's library extension in place of the output's, the prebuilt
+// host copied to `outputPath` itself, and the shared runtime library copied
+// into the same directory if it is not already there and current. The host
+// finds the module by its own basename at run time (src/host/host_main.cpp).
+//
+// The host and the runtime come from the directory the shared runtime lives
+// in; a tree built without the shared runtime has neither, and the error says
+// so by name.
+bool linkExecutable(const brass::object::ObjectFile& obj, const std::string& outputPath,
+                    DiagnosticSink& diags);
 
 }  // namespace bronze::cli

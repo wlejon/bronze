@@ -14,6 +14,21 @@ static void writeTestFile(const std::filesystem::path& path, const std::string& 
     out << content;
 }
 
+// A built program is the executable and the module beside it (cli/link.h);
+// both go, so a later build cannot run a stale module under a fresh host.
+static void removeProgram(const std::filesystem::path& exe, std::error_code& ec) {
+    std::filesystem::remove(exe, ec);
+    std::filesystem::path module = exe;
+#if defined(_WIN32)
+    module.replace_extension(".dll");
+#elif defined(__APPLE__)
+    module.replace_extension(".dylib");
+#else
+    module.replace_extension(".so");
+#endif
+    std::filesystem::remove(module, ec);
+}
+
 [[maybe_unused]] static std::string runAndCaptureOutput(const std::filesystem::path& exePath) {
     std::string result;
 #ifdef _WIN32
@@ -82,9 +97,7 @@ TEST_CASE("CLI driver build command compiles and links executable") {
     std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_build.exe";
 
     std::error_code ec;
-    if (std::filesystem::exists(exePath, ec)) {
-        std::filesystem::remove(exePath, ec);
-    }
+    removeProgram(exePath, ec);
 
     writeTestFile(jsPath, "console.log(40 + 2);\n");
 
@@ -97,7 +110,7 @@ TEST_CASE("CLI driver build command compiles and links executable") {
     std::string output = runAndCaptureOutput(exePath);
     CHECK(output == "42\n");
 
-    std::filesystem::remove(exePath, ec);
+    removeProgram(exePath, ec);
 
     std::filesystem::remove(jsPath, ec);
 }
@@ -141,7 +154,7 @@ TEST_CASE("CLI driver --infer-stats produces deterministic stats output") {
     std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_infer_stats.js";
     std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_infer_stats.exe";
     std::error_code ec;
-    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+    removeProgram(exePath, ec);
 
     writeTestFile(jsPath,
         "function add(a, b) {\n"
@@ -167,7 +180,7 @@ TEST_CASE("CLI driver --infer-stats produces deterministic stats output") {
     CHECK(statsOut.find("Element Operations:") != std::string::npos);
     CHECK(statsOut.find("Total:") != std::string::npos);
 
-    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+    removeProgram(exePath, ec);
     std::filesystem::remove(jsPath, ec);
 }
 
@@ -209,7 +222,7 @@ TEST_CASE("BRONZE_PROFILE=1 runtime profile outputs helper table on stderr") {
     std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_profile.js";
     std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_profile.exe";
     std::error_code ec;
-    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+    removeProgram(exePath, ec);
 
     writeTestFile(jsPath,
         "const o = { a: 1 };\n"
@@ -227,7 +240,7 @@ TEST_CASE("BRONZE_PROFILE=1 runtime profile outputs helper table on stderr") {
     std::string normalStderr = runAndCaptureStderr(exePath, nullptr);
     CHECK(normalStderr.find("Bronze Runtime Profile") == std::string::npos);
 
-    if (std::filesystem::exists(exePath, ec)) std::filesystem::remove(exePath, ec);
+    removeProgram(exePath, ec);
     std::filesystem::remove(jsPath, ec);
 }
 

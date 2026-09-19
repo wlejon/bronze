@@ -15,7 +15,6 @@
 
 #include "ast/dump.h"
 #include "cli/link.h"
-#include "cli/link_order.h"
 #include "cli/run.h"
 #include "cli/usage.h"
 #include "codegen/backend.h"
@@ -509,56 +508,26 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     }
 
     // Everything else — an executable, and `--emit-shared`'s loadable module —
-    // is the same object emission followed by a different link.
-    std::filesystem::path tempObj = uniqueTempObjPath(sourcePath);
-
+    // is the same object, never written as one: it goes straight from the
+    // backend to brass's image writer (cli/link.h), which imports the shared
+    // runtime and needs no linker on the machine.
     BrassBackend backend;
     if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(hostGlobals);
     backend.setSharedRuntime(emitShared);
-    // Handing the backend somewhere to record its outputs is what ALLOWS it
-    // to emit a large module as parallel partition objects; the temp path is
-    // then the stem the partition files are named from.
-    std::vector<std::string> objPaths;
-    backend.setEmittedPathsOut(&objPaths);
-    const bool emitted = backend.emitObject(*ilModule, tempObj.string(), diags);
+    std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     timer.mark("codegen");
-    if (!emitted) {
-        std::error_code ec;
-        if (std::filesystem::exists(tempObj, ec)) std::filesystem::remove(tempObj, ec);
+    if (!obj) {
         std::string msg = diags.render(sources);
         if (errOut) *errOut = msg;
         else std::fputs(msg.c_str(), stderr);
         return 1;
     }
 
-    // Before the link, not after: a link that fails is exactly when the
-    // objects are worth having, and the retention is a property of the
-    // EMISSION rather than of what was done with it.
-    if (!keptObjectDir().empty()) {
-        const std::string retainErr = retainObjects(objPaths);
-        if (!retainErr.empty()) {
-            if (errOut) *errOut = retainErr;
-            else std::fputs(retainErr.c_str(), stderr);
-            return 1;
-        }
-    }
-
-    std::vector<std::string> linkInputs = objPaths;
-
-    bool linked = emitShared ? linkSharedModule(linkInputs, outputPath, diags, entrySymbol)
-                             : linkExecutable(linkInputs, outputPath, diags);
+    const bool linked = emitShared ? linkSharedModule(*obj, outputPath, diags, entrySymbol)
+                                   : linkExecutable(*obj, outputPath, diags);
     timer.mark("link");
     timer.total();
-
-    std::error_code ec;
-    if (std::filesystem::exists(tempObj, ec)) {
-        std::filesystem::remove(tempObj, ec);
-    }
-    for (const std::string& obj : objPaths) {
-        std::filesystem::path p(obj);
-        if (std::filesystem::exists(p, ec)) std::filesystem::remove(p, ec);
-    }
 
     if (!linked) {
         std::string msg = diags.hasErrors() ? diags.render(sources) : "error: linking failed\n";
@@ -629,7 +598,6 @@ int runDriver(int argc, char** argv) {
         return runFileInJit(argv[2]);
     }
 
-    if (command == "link") return runLink(argc, argv);
 
     if (command == "lex" || command == "parse") {
         if (argc < 3) return fail("error: missing <file>\n");
@@ -804,13 +772,10 @@ int runDriver(int argc, char** argv) {
         std::string censusOutPath;
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
-        std::string linkFlagError;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
-            if (consumeLinkMeasurementFlag(arg, i, argc, argv, linkFlagError)) {
-                if (!linkFlagError.empty()) return fail(linkFlagError);
-            } else if (arg == "--no-infer") {
+            if (arg == "--no-infer") {
                 infer = false;
             } else if (arg == "--no-fn-source") {
                 retainFnSource = false;

@@ -443,6 +443,15 @@ Value evalFunction(std::span<const std::string> params, std::string_view body,
     return fnObj.get();
 }
 
+// Installed by whoever means to run dynamic code — `bronze run` / `bronze -e`
+// (cli/run.cpp) and the eval tests — and by NOTHING else. This used to be a
+// static initializer of this translation unit, which was fine while the eval
+// library only ever reached a process that wanted it, and wrong once the
+// shared runtime carried it: a `bronze build` executable is the host plus that
+// runtime, and its `Function("...")` must stay the refusal the AOT contract
+// promises (builtin_function.cpp), not a JIT that happens to be in the same
+// DLL. A host that wants dynamic code asks for it, as bro does through
+// embed::setDynamicFunctionHook.
 void installDefaultDynamicHooks() {
     auto evalHook = [](Value source) -> Value {
         if (!source.isString()) return source;
@@ -458,15 +467,6 @@ void installDefaultDynamicHooks() {
     runtime::rtSetDefaultDynamicFunctionHost(funcHook);
     embed::setDynamicEvalHook(evalHook);
     embed::setDynamicFunctionHook(funcHook);
-}
-
-namespace {
-struct AutoInstallHooks {
-    AutoInstallHooks() {
-        installDefaultDynamicHooks();
-    }
-};
-static AutoInstallHooks s_autoInstallHooks;
 }
 
 }  // namespace bronze::eval

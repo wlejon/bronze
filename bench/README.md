@@ -150,6 +150,16 @@ rounds, medians.
 
 ## Where bronze stands
 
+> [!NOTE]
+> **Historical.** The rows and the sweep below were taken when a large fixture
+> was emitted as several partition objects handed to a system linker, whose
+> order decided the layout. bronze now emits ONE object per program and writes
+> the image itself (brass's `AotLinker`, no linker on the machine), so there is
+> no link order to permute: `--keep-objs`, `--link-seed`, `bronze link` and
+> `bench/tools/layout_sweep.py` are gone with it, and `interleave.py` is the
+> instrument for everything. The numbers stay as the record of what layout was
+> worth and why a profile could not recover it.
+
 The three library-scale rows, taken under layout control with
 `bench/tools/layout_sweep.py` — nine link orders per fixture (the order bronze
 ships plus eight seeds), three independently-created copies of each, medians per
@@ -196,13 +206,13 @@ small leaf bodies it calls have nothing in common except the call edge, and it
 measured at the 96th percentile of the twenty-five-order distribution: nearly
 the worst order available.
 
-So the order is now decided instead of inherited (managed in `src/cli/link_order.{h,cpp}`
-and `src/cli/link.cpp`): start at the partition that owns the entry
+So the order was then decided instead of inherited (in the driver's link
+step, since retired with the linker): start at the partition that owns the entry
 point, then repeatedly hand over whichever partition is most tightly tied by
 symbol references to the one just handed over. It is static, it reads nothing
 but the module, and the same input gives the same order and the same bytes.
-`--link-seed <n>` deterministically permutes this order to measure layout spread,
-and `--keep-objs <dir>` leaves partition objects behind for rapid relinking. On
+`--link-seed <n>` deterministically permuted this order to measure layout spread,
+and `--keep-objs <dir>` left partition objects behind for rapid relinking. On
 `instanced_mesh_churn` the shipped order reads 38.18 and 38.91 ms across two
 sweeps against the old order's 40.95 and 40.56, and `mesh_churn_2k` and
 `three_math` move by less than their own noise.
@@ -248,13 +258,14 @@ defaults on `Color` methods this fixture never calls and one comparison inside
 **+0.9%, inside the bar,** across nine orders. So:
 
 > **An arm-vs-arm delta is CLAIMABLE only if it exceeds the wider of the two
-> arms' cross-seed spreads.** `layout_sweep.py` prints that rule and applies it.
+> arms' cross-seed spreads.** `layout_sweep.py` printed that rule and applied it.
 
-A per-seed point costs a LINK, not a compile: `bronze build --keep-objs <dir>`
-leaves the partition objects behind and `bronze link <dir> --link-seed <n>`
-relinks them under a deterministic permutation. On the `instanced_mesh_churn`
-graph that is ~0.3 s of link against ~90 s of object emission, which is what
-makes nine layouts per arm affordable.
+A per-seed point cost a LINK, not a compile: `bronze build --keep-objs <dir>`
+left the partition objects behind and `bronze link <dir> --link-seed <n>`
+relinked them under a deterministic permutation. On the `instanced_mesh_churn`
+graph that was ~0.3 s of link against ~90 s of object emission, which is what
+made nine layouts per arm affordable. (All of this is the historical sweep the
+note at the top of this section describes; none of the flags exist now.)
 
 ### Function alignment does not narrow the band
 
@@ -414,34 +425,10 @@ Three things this table says that the previous protocol hid:
 
 ## Reproducing
 
-For anything built out of a library — the three rows in the table above, and
-any A/B whose expected delta is smaller than about 10% — use the layout sweep,
-because a single link order is one draw of a distribution several percent wide:
-
-```sh
-# 1. compile each arm ONCE; the objects, not the exe, are the artefact
-bronze build bench/instanced_mesh_churn.js -o /tmp/base.exe --keep-objs /tmp/objs/base
-bronze build path/to/edited/entry.js      -o /tmp/edit.exe --keep-objs /tmp/objs/edit
-
-# 2. a spec naming the object directories, the seeds, and the rounds
-#    (`null` in "seeds" is the default order, so the table shows where
-#    today's number sits in the distribution as well as how wide it is)
-cat > sweep.json <<'JSON'
-{"region": "instanced_mesh_churn",
- "seeds": [null, 1, 2, 3, 4, 5, 6, 7, 8], "rounds": 11, "copies": 3,
- "bronze": "<abs-path>/bronze.exe", "launcher": ["<abs-path>/dev.cmd"],
- "stage": "/tmp/stage",
- "arms": [{"name": "base", "objs": "/tmp/objs/base"},
-          {"name": "edit", "objs": "/tmp/objs/edit"}]}
-JSON
-
-# 3. link every (arm, seed), run them interleaved, apply the decision rule
-python bench/tools/layout_sweep.py sweep.json
-```
-
-For a kernel that compiles to one object there is no order to permute, and
-`interleave.py` is still the instrument — it is also the only one that can take
-a node column:
+Every program compiles to one object and one image now, so there is no link
+order to permute (the note under "Where bronze stands"); `interleave.py` is
+the instrument for every comparison, and the only one that can take a node
+column:
 
 ```sh
 # 1. build the columns you want to compare

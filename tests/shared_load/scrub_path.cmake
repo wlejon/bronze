@@ -1,12 +1,10 @@
 # What "no developer environment" means, in one place.
 #
-# Included by both CMakeLists.txt (to decide whether the scrubbed run is even
-# possible on this machine) and run_no_vcvars.cmake (to perform it). One
-# definition, because a test that scrubs differently from the check that gates
-# it is a test that can silently stop scrubbing.
-#
-# The list is the Visual Studio installation and the Windows SDK, and the reason
-# each entry is here is that lld-link will find the CRT through it:
+# Included by run_no_vcvars.cmake, which performs the scrubbed run. The list
+# is the Visual Studio installation and the Windows SDK: everything a linker
+# on PATH would have found a toolchain through, back when bronze ran one. It
+# stays what it was so the test keeps proving the same absence, and the
+# reason each entry was here is the reason it still is:
 #
 #   VC/Tools/MSVC/    LLVM's findVCToolChainViaEnvironment walks %PATH% looking
 #                     for exactly this shape and derives the library directory

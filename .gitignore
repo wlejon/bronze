@@ -4,9 +4,13 @@ vcpkg_installed/
 *.user
 compile_commands.json
 
-# Compiler output artifacts (bronze-built exes and intermediates land in
-# the working tree during testing; never commit them)
+# Compiler output artifacts (bronze-built programs — the host copy, the
+# module beside it and the staged runtime — land in the working tree during
+# testing and benchmarking; never commit them)
 *.exe
+*.dll
+*.so
+*.dylib
 *.obj
 *.pdb
 *.ilk

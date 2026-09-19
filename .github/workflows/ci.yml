@@ -60,8 +60,8 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
 
       # Put cl.exe on PATH so Windows can use the dev preset's Ninja generator
-      # (this is what dev.cmd does locally). Also gives ctest's oracle cases
-      # link.exe, which `bronze build` invokes to link its test executables.
+      # (this is what dev.cmd does locally). `bronze build` itself needs no
+      # toolchain: it writes its programs with brass's own image writers.
       - name: MSVC dev environment (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1

@@ -1,6 +1,7 @@
 #include "runtime/stack_trace.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <mutex>

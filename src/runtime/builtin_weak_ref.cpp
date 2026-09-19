@@ -246,7 +246,8 @@ void ensureWeakRefIntrinsics() {
 Value allocate(Shape* shape, bool isRegistry) {
     const WeakRefIntrinsics& kind = isRegistry ? g_registry : g_weakRef;
     ObjectHeader* obj = ObjectHeader::createWithInternalSlots(
-        rtHeap(), rtArena(), shape, isRegistry ? RegistrySlot::kCount : WeakRefSlot::kCount);
+        rtHeap(), rtArena(), shape,
+        isRegistry ? uint32_t{RegistrySlot::kCount} : uint32_t{WeakRefSlot::kCount});
     obj->header.flags = HeapKind::Plain;
     obj->setInternalSlot(0, kind.brand);
     const Value val = Value::fromObject(obj);

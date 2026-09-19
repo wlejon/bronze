@@ -1,47 +1,88 @@
 #include "cli/link.h"
 
-#include <atomic>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <functional>
-#include <map>
 #include <mutex>
-#include <sstream>
 #include <optional>
 #include <string>
+#include <system_error>
+#include <unordered_set>
 #include <vector>
 
-#include "cli/link_order.h"
+#include <brass/target/aot_linker.hpp>
+
+#include "abi/bronze_abi.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <fcntl.h>
 #include <mach-o/dyld.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 namespace bronze::cli {
 namespace {
 
-std::filesystem::path getExecutableDir() {
+namespace fs = std::filesystem;
+
+// ---- names -----------------------------------------------------------------
+
+// The shared runtime's file name, which is also what a module imports it as:
+// the DLL name on Windows, the soname on ELF, and on Mach-O the install name
+// the runtime was built with, which CMake spells `@rpath/<file>`.
+//
+// The C math library is the one other thing generated code calls: brass
+// lowers Math.sqrt, Math.floor and their kin to the C functions of those
+// names, and a statically linked program took them from the C runtime it
+// was linked with. A module imports them from the platform's own library —
+// the UCRT's math API set on Windows, libm on ELF, libSystem on Mach-O.
+#ifdef _WIN32
+constexpr const char* kRuntimeFile = "bronze_runtime_shared.dll";
+constexpr const char* kRuntimeImportName = "bronze_runtime_shared.dll";
+constexpr const char* kMathImportName = "api-ms-win-crt-math-l1-1-0.dll";
+constexpr const char* kHostFile = "bronze_host.exe";
+constexpr const char* kModuleExtension = ".dll";
+#elif defined(__APPLE__)
+constexpr const char* kRuntimeFile = "libbronze_runtime_shared.dylib";
+constexpr const char* kRuntimeImportName = "@rpath/libbronze_runtime_shared.dylib";
+constexpr const char* kMathImportName = "/usr/lib/libSystem.B.dylib";
+constexpr const char* kHostFile = "bronze_host";
+constexpr const char* kModuleExtension = ".dylib";
+constexpr const char* kOwnDirRpath = "@loader_path";
+#else
+constexpr const char* kRuntimeFile = "libbronze_runtime_shared.so";
+constexpr const char* kRuntimeImportName = "libbronze_runtime_shared.so";
+constexpr const char* kMathImportName = "libm.so.6";
+constexpr const char* kHostFile = "bronze_host";
+constexpr const char* kModuleExtension = ".so";
+constexpr const char* kOwnDirRpath = "$ORIGIN";
+#endif
+
+// ---- where the runtime lives -------------------------------------------------
+
+fs::path getExecutableDir() {
 #ifdef _WIN32
     char buffer[MAX_PATH];
     DWORD len = GetModuleFileNameA(NULL, buffer, MAX_PATH);
     if (len > 0) {
-        return std::filesystem::path(buffer).parent_path();
+        return fs::path(buffer).parent_path();
     }
 #elif defined(__linux__)
     char buffer[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
     if (len > 0) {
         buffer[len] = '\0';
-        return std::filesystem::path(buffer).parent_path();
+        return fs::path(buffer).parent_path();
     }
 #elif defined(__APPLE__)
     char buffer[PATH_MAX];
@@ -49,245 +90,87 @@ std::filesystem::path getExecutableDir() {
     if (_NSGetExecutablePath(buffer, &size) == 0) {
         char realBuffer[PATH_MAX];
         if (realpath(buffer, realBuffer) != nullptr) {
-            return std::filesystem::path(realBuffer).parent_path();
+            return fs::path(realBuffer).parent_path();
         }
-        return std::filesystem::path(buffer).parent_path();
+        return fs::path(buffer).parent_path();
     }
 #endif
-    return std::filesystem::current_path();
+    return fs::current_path();
 }
 
-// `getenv` without the MSVC deprecation, in one place instead of at each of
-// the two search functions that wants it.
-std::optional<std::filesystem::path> envPath(const char* name) {
+// `getenv` without the MSVC deprecation.
+std::optional<fs::path> envPath(const char* name) {
 #ifdef _WIN32
     char* buffer = nullptr;
     size_t len = 0;
     if (_dupenv_s(&buffer, &len, name) == 0 && buffer != nullptr) {
-        std::filesystem::path p(buffer);
+        fs::path p(buffer);
         std::free(buffer);
         std::error_code ec;
-        if (std::filesystem::exists(p, ec)) return p;
+        if (fs::exists(p, ec)) return p;
     }
 #else
     if (const char* value = std::getenv(name)) {
-        std::filesystem::path p(value);
+        fs::path p(value);
         std::error_code ec;
-        if (std::filesystem::exists(p, ec)) return p;
+        if (fs::exists(p, ec)) return p;
     }
 #endif
     return std::nullopt;
 }
 
-std::optional<std::filesystem::path> findRuntimeLib() {
-    static std::optional<std::filesystem::path> s_cached;
-    static std::once_flag s_once;
-    std::call_once(s_once, [] {
-        if (auto fromEnv = envPath("BRONZE_RT_LIB")) {
-            s_cached = *fromEnv;
-            return;
-        }
-
-        std::vector<std::filesystem::path> candidates;
-        std::filesystem::path exeDir = getExecutableDir();
-
-        const std::vector<const char*> libNames = {
-#ifdef _WIN32
-            "bronze_rt.lib", "libbronze_rt.a"
-#else
-            "libbronze_rt.a", "bronze_rt.lib"
-#endif
-        };
-
-        // First, check the running compiler's own build directory and active configuration
-        std::string exeConfig = exeDir.filename().string();
-        for (const char* name : libNames) {
-            candidates.push_back(exeDir / name);
-            candidates.push_back(exeDir.parent_path().parent_path() / "rt" / exeConfig / name);
-            candidates.push_back(exeDir.parent_path().parent_path() / "rt" / name);
-            candidates.push_back(exeDir.parent_path().parent_path() / "src" / "rt" / exeConfig / name);
-            candidates.push_back(exeDir.parent_path().parent_path() / "src" / "rt" / name);
-            candidates.push_back(exeDir.parent_path().parent_path().parent_path() / "src" / "rt" / name);
-            candidates.push_back(exeDir / "../../src/rt" / exeConfig / name);
-            candidates.push_back(exeDir / "../../src/rt" / name);
-            candidates.push_back(exeDir / "../../../src/rt" / name);
-            candidates.push_back(exeDir / "../../rt" / exeConfig / name);
-            candidates.push_back(exeDir / "../../rt" / name);
-            candidates.push_back(exeDir / "../rt" / name);
-        }
-
-        for (const char* name : libNames) {
-            std::filesystem::path cwd = std::filesystem::current_path();
-            candidates.push_back(cwd / "build/src/rt" / exeConfig / name);
-            candidates.push_back(cwd / "build/src/rt" / name);
-            candidates.push_back(cwd / "build/Release/src/rt" / name);
-            candidates.push_back(cwd / "build/dev/src/rt" / name);
-            candidates.push_back(cwd / "src/rt" / name);
-            candidates.push_back(cwd / name);
-            candidates.push_back(cwd / "../src/rt" / name);
-            candidates.push_back(cwd / "../../src/rt" / name);
-            candidates.push_back(cwd / "../../../src/rt" / name);
-        }
-
-        const size_t flatCount = candidates.size();
-        static const char* const kConfigs[] = {"Release", "RelWithDebInfo", "MinSizeRel",
-                                               "Debug"};
-        for (size_t i = 0; i < flatCount; ++i) {
-            for (const char* config : kConfigs) {
-                candidates.push_back(candidates[i].parent_path() / config / candidates[i].filename());
-            }
-        }
-
-        for (const auto& cand : candidates) {
-            std::error_code ec;
-            if (std::filesystem::exists(cand, ec)) {
-                s_cached = std::filesystem::canonical(cand, ec);
-                return;
-            }
-        }
-    });
-    return s_cached;
-}
-
-std::optional<std::filesystem::path> findBrassLib() {
-    static std::optional<std::filesystem::path> s_cached;
-    static std::once_flag s_once;
-    std::call_once(s_once, [] {
-        if (auto fromEnv = envPath("BRASS_LIB")) {
-            s_cached = *fromEnv;
-            return;
-        }
-        if (auto fromEnv = envPath("BRONZE_BRASS_LIB")) {
-            s_cached = *fromEnv;
-            return;
-        }
-        if (auto fromBrassRoot = envPath("BRASS_ROOT")) {
-            for (const auto* rel : {"build/libbrass.a", "build/Release/libbrass.a", "build/brass.lib", "build/Release/brass.lib", "build_msvc/brass.lib", "libbrass.a", "brass.lib"}) {
-                auto p = *fromBrassRoot / rel;
-                std::error_code ec;
-                if (std::filesystem::exists(p, ec)) {
-                    s_cached = std::filesystem::canonical(p, ec);
-                    return;
-                }
-            }
-        }
-
-        std::vector<std::filesystem::path> candidates = {
-            "D:/projects/brass/build_msvc/brass.lib",
-            "D:/projects/brass/build/brass.lib",
-            "/home/j/projects/brass/build/libbrass.a",
-            "/home/j/projects/brass/build/Release/libbrass.a",
-            "/home/j/projects/brass/build/brass.lib",
-        };
-        const std::filesystem::path exeDir = getExecutableDir();
-        candidates.push_back(exeDir / "libbrass.a");
-        candidates.push_back(exeDir / "brass.lib");
-        candidates.push_back(exeDir / "../../brass-build/libbrass.a");
-        candidates.push_back(exeDir / "../../brass-build/brass.lib");
-        candidates.push_back(exeDir / "../../../brass-build/libbrass.a");
-        candidates.push_back(exeDir / "../../../brass-build/brass.lib");
-        candidates.push_back(exeDir / "../brass-build/libbrass.a");
-        candidates.push_back(exeDir / "../brass-build/brass.lib");
-        candidates.push_back(exeDir / "brass-build/libbrass.a");
-        candidates.push_back(exeDir / "brass-build/brass.lib");
-        candidates.push_back(exeDir / "../../../brass/build_msvc/brass.lib");
-        candidates.push_back(exeDir / "../../brass/build_msvc/brass.lib");
-        candidates.push_back(exeDir / "../brass/build_msvc/brass.lib");
-
-        for (const auto& cand : candidates) {
-            std::error_code ec;
-            if (std::filesystem::exists(cand, ec)) {
-                s_cached = std::filesystem::canonical(cand, ec);
-                return;
-            }
-        }
-    });
-    return s_cached;
-}
-
-std::optional<std::filesystem::path> findRuntimeCpp() {
-    static std::optional<std::filesystem::path> s_cached;
-    static std::once_flag s_once;
-    std::call_once(s_once, [] {
-        std::vector<std::filesystem::path> candidates;
-        std::filesystem::path exeDir = getExecutableDir();
-
-        candidates.push_back(exeDir / "../../../src/rt/rt.cpp");
-        candidates.push_back(exeDir / "../../src/rt/rt.cpp");
-        candidates.push_back(exeDir / "../src/rt/rt.cpp");
-        candidates.push_back(exeDir / "src/rt/rt.cpp");
-
-        std::filesystem::path cwd = std::filesystem::current_path();
-        candidates.push_back(cwd / "src/rt/rt.cpp");
-        candidates.push_back(cwd / "../src/rt/rt.cpp");
-
-        for (const auto& cand : candidates) {
-            std::error_code ec;
-            if (std::filesystem::exists(cand, ec)) {
-                s_cached = std::filesystem::canonical(cand, ec);
-                return;
-            }
-        }
-    });
-    return s_cached;
-}
-
-// The shared runtime, as the thing a MODULE links against: on Windows the
-// import library beside the DLL, elsewhere the shared object itself. One name
-// per platform and no cross-platform fallback list, because unlike the static
-// search above there is no world in which the wrong one is better than none:
-// linking a module against a static archive is the two-heaps failure this
-// whole path exists to prevent, so a miss must stay a miss.
-std::optional<std::filesystem::path> findSharedRuntime() {
-    static std::optional<std::filesystem::path> s_cached;
+// The directory holding the shared runtime — and with it the prebuilt host,
+// since src/host lands both in one place (BRONZE_SHARED_RUNTIME_DIR).
+//
+// BRONZE_SHARED_RT_LIB still names the runtime first, as it did when it named
+// the import library a linker needed: a build that knows exactly which
+// runtime its module must bind to says so, and a search that found a stale
+// one elsewhere would be a silently different build. Whether it points at
+// the library or its import stub, the DIRECTORY is what matters now.
+//
+// Then the places a bronze binary keeps its runtime: beside itself (a
+// packaged install is flat), the `shared` output directory of the build tree
+// it was built in, and the same directories under the multi-config
+// generators' per-config names.
+std::optional<fs::path> findSharedRuntimeDir() {
+    static std::optional<fs::path> s_cached;
     static std::once_flag s_once;
     std::call_once(s_once, [] {
         if (auto fromEnv = envPath("BRONZE_SHARED_RT_LIB")) {
-            s_cached = *fromEnv;
-            return;
+            std::error_code ec;
+            const fs::path dir = fs::canonical(*fromEnv, ec).parent_path();
+            if (!ec) {
+                s_cached = dir;
+                return;
+            }
         }
 
-#ifdef _WIN32
-        const char* const name = "bronze_runtime_shared.lib";
-#elif defined(__APPLE__)
-        const char* const name = "libbronze_runtime_shared.dylib";
-#else
-        const char* const name = "libbronze_runtime_shared.so";
-#endif
+        std::vector<fs::path> candidates;
+        const fs::path exeDir = getExecutableDir();
+        candidates.push_back(exeDir);
+        candidates.push_back(exeDir / "shared");
+        candidates.push_back(exeDir / ".." / "shared");
+        candidates.push_back(exeDir / ".." / ".." / "shared");
 
-        std::vector<std::filesystem::path> candidates;
-        const std::filesystem::path exeDir = getExecutableDir();
-        candidates.push_back(exeDir / name);
-        candidates.push_back(exeDir / "shared" / name);
-        candidates.push_back(exeDir / ".." / "shared" / name);
-        candidates.push_back(exeDir / ".." / ".." / "shared" / name);
+        const fs::path cwd = fs::current_path();
+        candidates.push_back(cwd);
+        candidates.push_back(cwd / "shared");
+        candidates.push_back(cwd / "build/dev/shared");
+        candidates.push_back(cwd / "build/shared");
 
-        const std::filesystem::path cwd = std::filesystem::current_path();
-        candidates.push_back(cwd / name);
-        candidates.push_back(cwd / "shared" / name);
-        candidates.push_back(cwd / "build/dev/shared" / name);
-        candidates.push_back(cwd / "build/shared" / name);
-
-        // Multi-config generators (Visual Studio, Xcode) append a per-config
-        // directory under the output dir CMake was given, so the library sits
-        // one level deeper than every path above. The same directories again
-        // with the four standard config names — after the flat ones, so a
-        // single-config layout never changes its answer, and Release first
-        // because a Debug runtime under a Release host is the CRT mismatch
-        // embed.h forbids anyway.
         const size_t flatCount = candidates.size();
         static const char* const kConfigs[] = {"Release", "RelWithDebInfo", "MinSizeRel",
                                                "Debug"};
         for (size_t i = 0; i < flatCount; ++i) {
             for (const char* config : kConfigs) {
-                candidates.push_back(candidates[i].parent_path() / config / name);
+                candidates.push_back(candidates[i] / config);
             }
         }
 
-        for (const auto& cand : candidates) {
+        for (const auto& dir : candidates) {
             std::error_code ec;
-            if (std::filesystem::exists(cand, ec)) {
-                s_cached = std::filesystem::canonical(cand, ec);
+            if (fs::exists(dir / kRuntimeFile, ec)) {
+                s_cached = fs::canonical(dir, ec);
                 return;
             }
         }
@@ -295,413 +178,310 @@ std::optional<std::filesystem::path> findSharedRuntime() {
     return s_cached;
 }
 
-std::atomic<uint64_t> g_tempCounter{0};
+std::string runtimeNotFoundMessage() {
+    return std::string("the shared bronze runtime (") + kRuntimeFile +
+           ") was not found beside bronze or in its build tree's shared/ directory. Point "
+           "BRONZE_SHARED_RT_LIB at it, or build bronze with -DBRONZE_BUILD_SHARED_RUNTIME=ON.";
+}
 
-// A temp path unique per process and per call. `stem` names what it is for and
-// `extension` includes its dot.
-std::filesystem::path uniqueTempPath(const std::string& stem, const char* extension) {
+// ---- what the runtime exports -----------------------------------------------
+
+// The export surface of the shared runtime, as the object sees it: the ABI
+// registry, expanded here the same way cmake/bronze_abi_exports.cmake expands
+// it into the .def / version script / exported-symbols list, plus the three
+// brass words that script appends. One registry, two consumers, no drift.
+const std::unordered_set<std::string>& runtimeExports() {
+    static const std::unordered_set<std::string> s_names = [] {
+        std::unordered_set<std::string> names;
+#define BRONZE_LINK_EXPORT_NAME(name, ret, args) names.insert(#name);
+        BRONZE_ABI_FUNCTIONS(BRONZE_LINK_EXPORT_NAME)
+#undef BRONZE_LINK_EXPORT_NAME
+        names.insert("brass_tlab_top");
+        names.insert("brass_tlab_end");
+        names.insert("brass_root_shape");
+        return names;
+    }();
+    return s_names;
+}
+
+// The C math functions the backend may name (brass's il_lowering_ops and the
+// kernel builders), every one of them a `double(double)` or `double(double,
+// double)` the platform's math library exports under exactly that name.
+const std::unordered_set<std::string>& mathExports() {
+    static const std::unordered_set<std::string> s_names = {
+        "acos", "asin", "atan", "atan2", "cbrt", "ceil", "cos", "cosh", "exp", "exp2",
+        "expm1", "fabs", "floor", "fmax", "fmin", "fmod", "hypot", "log", "log10", "log1p",
+        "log2", "pow", "round", "sin", "sinh", "sqrt", "tan", "tanh", "trunc",
+    };
+    return s_names;
+}
+
+// Every undefined symbol a relocation in the object names, once each, in
+// first-reference order. A symbol the object declares undefined but never
+// references is nobody's business.
+std::vector<std::string> referencedUndefined(const brass::object::ObjectFile& obj) {
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> names;
+    for (const auto& sec : obj.sections) {
+        for (const auto& r : sec.relocations) {
+            if (r.symbol_name.empty() || seen.count(r.symbol_name)) continue;
+            const auto* sym = obj.find_symbol(r.symbol_name);
+            if (sym && sym->section_index >= 0) continue;
+            if (!sym && obj.get_section(r.symbol_name) != nullptr) continue;
+            seen.insert(r.symbol_name);
+            names.push_back(r.symbol_name);
+        }
+    }
+    return names;
+}
+
+// The exported names of the loadable-module contract (bronze_abi.h) for an
+// entry, plus the code-range pair, kept to the ones the object defines.
+std::vector<std::string> moduleExports(const brass::object::ObjectFile& obj,
+                                       const std::string& entry) {
+    const bool defaultEntry = entry == "bronze_main";
+    const std::string prefix = defaultEntry ? "bronze_object" : entry;
+    const std::vector<std::string> wanted = {
+        entry,
+        prefix + "_abi_fingerprint",
+        entry + "_host_globals",
+        entry + "_native_imports",
+        prefix + "_code_ranges",
+        prefix + "_code_range_count",
+    };
+    std::vector<std::string> present;
+    for (const std::string& name : wanted) {
+        const auto* sym = obj.find_symbol(name);
+        if (sym && sym->section_index >= 0) present.push_back(name);
+    }
+    return present;
+}
+
+// ---- staging the runtime beside a program -------------------------------------
+
+// Is `dst` a copy of `src` that is at least as new? Size and time, which is
+// what a rebuilt runtime changes; the ABI stamp inside catches the drift a
+// same-sized rebuild would hide.
+bool stagedCopyIsCurrent(const fs::path& src, const fs::path& dst) {
+    std::error_code ec;
+    if (!fs::exists(dst, ec)) return false;
+    if (fs::file_size(dst, ec) != fs::file_size(src, ec) || ec) return false;
+    const auto srcTime = fs::last_write_time(src, ec);
+    if (ec) return false;
+    const auto dstTime = fs::last_write_time(dst, ec);
+    if (ec) return false;
+    return dstTime >= srcTime;
+}
+
+// A file copy whose descriptors no other thread's child can inherit. This
+// matters because a build may run in-process beside threads that fork and
+// exec (the oracle suite compiles its cases on N threads and runs each one
+// through popen): a write descriptor that is open across another thread's
+// fork lives on in that child for as long as it runs, and the kernel refuses
+// to exec a file anyone still holds open for writing — ETXTBSY, "Text file
+// busy", on a program that was written completely a moment ago. Descriptors
+// opened O_CLOEXEC close at the child's exec, so nothing outlives the copy.
+// std::filesystem::copy_file gives no such guarantee; Windows does not
+// inherit handles into a child unless asked to, so the library call stands
+// there.
+bool copyFileForExec(const fs::path& src, const fs::path& dst, std::error_code& ec) {
+    ec.clear();
+#ifdef _WIN32
+    return fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec) && !ec;
+#else
+    const int in = ::open(src.c_str(), O_RDONLY | O_CLOEXEC);
+    if (in < 0) {
+        ec = std::error_code(errno, std::generic_category());
+        return false;
+    }
+    struct stat st{};
+    if (::fstat(in, &st) != 0) {
+        ec = std::error_code(errno, std::generic_category());
+        ::close(in);
+        return false;
+    }
+    const int out = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, st.st_mode & 07777);
+    if (out < 0) {
+        ec = std::error_code(errno, std::generic_category());
+        ::close(in);
+        return false;
+    }
+    std::vector<char> buffer(1 << 16);
+    bool ok = true;
+    for (;;) {
+        const ssize_t got = ::read(in, buffer.data(), buffer.size());
+        if (got == 0) break;
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            ec = std::error_code(errno, std::generic_category());
+            ok = false;
+            break;
+        }
+        ssize_t done = 0;
+        while (done < got) {
+            const ssize_t put = ::write(out, buffer.data() + done, static_cast<size_t>(got - done));
+            if (put < 0) {
+                if (errno == EINTR) continue;
+                ec = std::error_code(errno, std::generic_category());
+                ok = false;
+                break;
+            }
+            done += put;
+        }
+        if (!ok) break;
+    }
+    // The mode again, past the umask the open applied.
+    if (ok && ::fchmod(out, st.st_mode & 07777) != 0) {
+        ec = std::error_code(errno, std::generic_category());
+        ok = false;
+    }
+    if (::close(out) != 0 && ok) {
+        ec = std::error_code(errno, std::generic_category());
+        ok = false;
+    }
+    ::close(in);
+    return ok;
+#endif
+}
+
+// Copy the shared runtime beside the program, unless the copy there is
+// already current. Written to a unique name and renamed into place, because
+// N builds may stage into one directory at once (the oracle suite compiles
+// its cases in parallel, into one temp directory): a half-written library
+// is never at the final name, and a loser of the rename race finds the
+// winner's copy already there.
+bool stageRuntime(const fs::path& runtimeDir, const fs::path& outDir, DiagnosticSink& diags) {
+    static std::mutex s_mutex;
+    std::lock_guard<std::mutex> lock(s_mutex);
+
+    const fs::path src = runtimeDir / kRuntimeFile;
+    const fs::path dst = outDir / kRuntimeFile;
+    std::error_code ec;
+    if (fs::equivalent(src, dst, ec)) return true;
+    if (stagedCopyIsCurrent(src, dst)) return true;
+
     uint64_t pid = 0;
 #ifdef _WIN32
     pid = static_cast<uint64_t>(GetCurrentProcessId());
 #else
     pid = static_cast<uint64_t>(getpid());
 #endif
-    const uint64_t count = g_tempCounter.fetch_add(1, std::memory_order_relaxed);
-    return std::filesystem::temp_directory_path() /
-           (stem + "_" + std::to_string(pid) + "_" + std::to_string(count) + extension);
-}
-
-// Is the `exe` that PATH resolves actually the tool bronze means by that name?
-//
-// `link` is the collision that made this necessary, and it is not exotic: a Git
-// for Windows install puts GNU coreutils' hardlink utility on PATH as
-// `link.exe`, and cmd runs THAT for `link.exe /nologo /DLL ...`. Its complaint
-// — "extra operand '/out:app.dll'", plus an invitation to try `link --help` —
-// then surfaces as bronze's link failure, phrased by a program the user never
-// meant to run about a flag they never typed.
-//
-// So a tool whose name is not its own is IDENTIFIED before it is trusted: run
-// it with a harmless flag, capture what it says about itself, and require the
-// vendor's own words. Probed at most once per name per process, and only when
-// the fallback chain actually reaches that candidate — the first linker
-// normally works, so the happy path never pays for this.
-bool toolIsItself(const std::string& exe, const std::string& probeArgs,
-                  const std::string& needle) {
-    static std::mutex s_mutex;
-    static std::map<std::string, bool> s_cache;
-    {
-        std::lock_guard<std::mutex> lock(s_mutex);
-        auto it = s_cache.find(exe);
-        if (it != s_cache.end()) return it->second;
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path partial = outDir / (std::string(kRuntimeFile) + "." + std::to_string(pid) + "." +
+                                       std::to_string(stamp) + ".partial");
+    if (!copyFileForExec(src, partial, ec)) {
+        const std::string why = ec.message();
+        fs::remove(partial, ec);
+        diags.error(Span{}, "cannot copy the shared runtime " + src.string() + " to " +
+                                dst.string() + ": " + why);
+        return false;
     }
-
-    const std::filesystem::path out = uniqueTempPath("bronze_tool_probe", ".txt");
-    const std::string command = exe + " " + probeArgs + " > \"" + out.string() + "\" 2>&1";
-    std::system(command.c_str());
-
-    bool identified = false;
-    {
-        std::ifstream in(out, std::ios::binary);
-        if (in) {
-            std::ostringstream text;
-            text << in.rdbuf();
-            identified = text.str().find(needle) != std::string::npos;
-        }
+    fs::rename(partial, dst, ec);
+    if (ec) {
+        // The destination may be in use by a running program, or another
+        // build may have just put the same library there. Either way a
+        // current copy at the final name is the outcome that was wanted.
+        std::error_code cleanup;
+        fs::remove(partial, cleanup);
+        if (stagedCopyIsCurrent(src, dst)) return true;
+        diags.error(Span{}, "cannot replace " + dst.string() + " with the current shared runtime " +
+                                src.string() + ": " + ec.message() +
+                                ". A program using it may still be running.");
+        return false;
     }
-    std::error_code ec;
-    std::filesystem::remove(out, ec);
-
-    std::lock_guard<std::mutex> lock(s_mutex);
-    s_cache[exe] = identified;
-    return identified;
-}
-
-// The MSVC linker, as opposed to whatever else on this machine answers to
-// `link`. `/?` makes the real one print "Microsoft (R) Incremental Linker
-// Version ..." and makes coreutils' one complain about a missing operand.
-bool msvcLinkIsAvailable() {
-    return toolIsItself("link.exe", "/?", "Microsoft (R) Incremental Linker");
-}
-
-struct LinkerState {
-    int workingIndex = -1;
-    std::string libStr;
-    std::string brassLibStr;
-    std::string runtimeLibStr;
-    std::string runtimeWholeStr;
-    std::string unixRuntimeLibs;
-    std::string cppStr;
-    std::mutex mutex;
-};
-
-// The program a command line runs, for a diagnostic that has to say what was
-// attempted. The first token, which is all these commands ever put there.
-std::string commandTool(const std::string& command) {
-    const auto end = command.find(' ');
-    return end == std::string::npos ? command : command.substr(0, end);
-}
-
-// Runs `makeCommand(i)` over the platform's candidate list, cached-first, and
-// answers whether one produced `outputPath`. The cache is the reason a build
-// that compiles hundreds of programs does not pay for the misses twice.
-//
-// `triedOut` collects the tools actually RUN, so a total failure can name them.
-// A candidate `makeCommand` declined (an empty string: the toolchain is absent,
-// or the name on PATH turned out to be something else) is not among them —
-// naming a tool bronze never launched would send the reader after the wrong
-// thing.
-bool runFirstWorkingCommand(LinkerState& state, int totalCommands,
-                            const std::function<std::string(int)>& makeCommand,
-                            const std::string& outputPath, std::string& triedOut) {
-    auto note = [&triedOut](const std::string& cmd) {
-        const std::string tool = commandTool(cmd);
-        if (triedOut.find(tool) == std::string::npos) {
-            triedOut += (triedOut.empty() ? "" : ", ") + tool;
-        }
-    };
-
-    int cachedIndex = -1;
-    {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        cachedIndex = state.workingIndex;
-    }
-
-    if (cachedIndex >= 0) {
-        std::string cmd = makeCommand(cachedIndex);
-        note(cmd);
-        int res = std::system(cmd.c_str());
-        std::error_code ec;
-        if (res == 0 && std::filesystem::exists(outputPath, ec)) {
-            return true;
-        }
-    }
-
-    for (int i = 0; i < totalCommands; ++i) {
-        if (i == cachedIndex) continue;
-        std::string cmd = makeCommand(i);
-        if (cmd.empty()) continue;
-        note(cmd);
-        int res = std::system(cmd.c_str());
-        std::error_code ec;
-        if (res == 0 && std::filesystem::exists(outputPath, ec)) {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            state.workingIndex = i;
-            return true;
-        }
-    }
-    return false;
+    return true;
 }
 
 }  // namespace
 
-bool linkExecutable(const std::vector<std::string>& objPaths, const std::string& outputPath,
-                    DiagnosticSink& diags) {
-    // Every command below wraps `objPath` in exactly one pair of quotes, so
-    // joining the list with `" "` splices N quoted paths into that pair and
-    // no command line needs to know how many objects there are.
-    //
-    // The order is `orderForLink`'s rather than the caller's because the
-    // linker lays the image out in the order it is given the objects, and that
-    // layout is a measurable variable the harness needs to be able to move
-    // (link_order.h). With no seed set it IS the caller's order, unchanged.
-    const std::vector<std::string> ordered = orderForLink(objPaths);
-    std::string objPath;
-    for (size_t i = 0; i < ordered.size(); ++i) {
-        if (i) objPath += "\" \"";
-        objPath += ordered[i];
-    }
-    auto rtLib = findRuntimeLib();
-    auto rtCpp = findRuntimeCpp();
-    auto brassLib = findBrassLib();
-
-    if (!rtLib && !rtCpp) {
-        diags.error(Span{}, "Runtime library (libbronze_rt.a/bronze_rt.lib) or runtime source (rt.cpp) not found");
-        return false;
-    }
-
-    static LinkerState s_state;
-    static std::once_flag s_stringsOnce;
-    std::call_once(s_stringsOnce, [&] {
-        if (brassLib) {
-            s_state.brassLibStr = "\"" + brassLib->string() + "\"";
-        }
-        if (rtLib) {
-            s_state.libStr = rtLib->string();
-            static const char* const kRuntimeLibs[][3] = {
-                {"runtime", "libbronze_runtime.a", "bronze_runtime.lib"},
-                {"json", "libbronze_json.a", "bronze_json.lib"},
-                {"regex", "libbronze_regex.a", "bronze_regex.lib"},
-                {"support", "libbronze_support.a", "bronze_support.lib"},
-            };
-            for (const auto& lib : kRuntimeLibs) {
-                std::filesystem::path path;
-                for (int nameIdx = 1; nameIdx <= 2; ++nameIdx) {
-                    std::vector<std::filesystem::path> libCandidates = {
-                        rtLib->parent_path() / lib[nameIdx],
-                        rtLib->parent_path() / ".." / lib[0] / lib[nameIdx],
-                        rtLib->parent_path() / ".." / ".." / lib[0] / rtLib->parent_path().filename() / lib[nameIdx],
-                        rtLib->parent_path() / ".." / ".." / lib[0] / lib[nameIdx],
-                        rtLib->parent_path() / ".." / ".." / "src" / lib[0] / rtLib->parent_path().filename() / lib[nameIdx],
-                        rtLib->parent_path() / ".." / ".." / "src" / lib[0] / lib[nameIdx],
-                    };
-                    for (const auto& cand : libCandidates) {
-                        std::error_code ec;
-                        if (std::filesystem::exists(cand, ec)) {
-                            path = std::filesystem::canonical(cand, ec);
-                            break;
-                        }
-                    }
-                    if (!path.empty()) break;
-                }
-                if (path.empty()) continue;
-                const std::string quoted = "\"" + path.string() + "\"";
-                s_state.runtimeLibStr += (s_state.runtimeLibStr.empty() ? "" : " ") + quoted;
-                s_state.runtimeWholeStr += (s_state.runtimeWholeStr.empty() ? "" : " ") + ("/wholearchive:" + quoted);
-                s_state.unixRuntimeLibs += (s_state.unixRuntimeLibs.empty() ? "" : " ") + quoted;
-            }
-        }
-        if (rtCpp) {
-            s_state.cppStr = rtCpp->string();
-        }
-    });
-
-    auto makeCommand = [&](int index) -> std::string {
-#ifdef _WIN32
-        switch (index) {
-            case 0:
-                return "lld-link /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
-            case 1:
-                return "lld-link /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /force:multiple /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/out:\"" + outputPath + "\" \"" + objPath + "\"";
-            case 2:
-                if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /include:main /DEBUG /OPT:REF /OPT:ICF /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " "));
-            case 3:
-                if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /DEBUG /OPT:REF /OPT:ICF /force:multiple /wholearchive:\"" + s_state.libStr + "\" " + s_state.runtimeWholeStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/out:\"" + outputPath + "\" \"" + objPath + "\"";
-            case 4:
-                return "clang-cl /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
-            case 5:
-                return "cl.exe /nologo \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.runtimeLibStr + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /include:main /Fe:\"" + outputPath + "\"";
-            case 6:
-                return "clang++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 7:
-                return "g++ \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 8:
-                return "clang-cl /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /Fe:\"" + outputPath + "\"";
-            case 9:
-                return "cl.exe /nologo /std:c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "/link /force:multiple /Fe:\"" + outputPath + "\"";
-            case 10:
-                return "clang++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 11:
-                return "g++ -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            default:
-                return "";
-        }
-#elif defined(__APPLE__)
-        switch (index) {
-            case 0:
-                return "clang++ -w \"" + objPath + "\" -Wl,-force_load,\"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
-            case 1:
-                return "clang++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
-            case 2:
-                return "clang++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
-            case 3:
-                return "g++ -w \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
-            case 4:
-                return "g++ -w -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
-            case 5:
-                return "clang++ -w -Wl,-all_load \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-multiply_defined,suppress -o \"" + outputPath + "\"";
-            default:
-                return "";
-        }
-#else
-        switch (index) {
-            case 0:
-                return "clang++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 1:
-                return "g++ -no-pie \"" + objPath + "\" -Wl,--whole-archive \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " -Wl,--no-whole-archive " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 2:
-                return "clang++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 3:
-                return "g++ -no-pie \"" + objPath + "\" \"" + s_state.libStr + "\" " + s_state.unixRuntimeLibs + " " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 4:
-                return "clang++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 5:
-                return "g++ -no-pie -std=c++20 \"" + objPath + "\" \"" + s_state.cppStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + "-Wl,-z,muldefs -pthread -ldl -lm -o \"" + outputPath + "\"";
-            case 6:
-                return "lld-link /nologo /subsystem:console /include:main /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
-            case 7:
-                if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /subsystem:console /include:main /force:multiple /out:\"" + outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\" " + (s_state.brassLibStr.empty() ? "" : (s_state.brassLibStr + " ")) + s_state.runtimeLibStr;
-            default:
-                return "";
-        }
-#endif
-    };
-
-    std::string tried;
-    if (runFirstWorkingCommand(s_state, 12, makeCommand, outputPath, tried)) return true;
-
-    diags.error(Span{}, "Failed to link an executable. Tried: " +
-                            (tried.empty() ? std::string("nothing — no linker bronze knows was "
-                                                         "found on PATH")
-                                           : tried) +
-                            ". bronze needs a system linker: on Windows lld-link, or MSVC's "
-                            "link.exe from a developer prompt; elsewhere clang++ or g++.");
-    return false;
-}
-
-bool linkSharedModule(const std::vector<std::string>& objPaths, const std::string& outputPath,
+bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& outputPath,
                       DiagnosticSink& diags, const std::string& entrySymbol) {
-    // Quote-splice join, exactly as linkExecutable does it.
-    std::string objPath;
-    for (size_t i = 0; i < objPaths.size(); ++i) {
-        if (i) objPath += "\" \"";
-        objPath += objPaths[i];
+    const std::string entry = entrySymbol.empty() ? "bronze_main" : entrySymbol;
+
+    // Every import is a runtime export or a C math function, checked here by
+    // the registry rather than left to the loader: an object naming anything
+    // else is a bronze whose backend and ABI header disagree, and that is a
+    // build error to report at build time.
+    std::vector<std::string> runtimeImports;
+    std::vector<std::string> mathImports;
+    std::string unknown;
+    for (const std::string& name : referencedUndefined(obj)) {
+        if (runtimeExports().count(name)) runtimeImports.push_back(name);
+        else if (mathExports().count(name)) mathImports.push_back(name);
+        else unknown += (unknown.empty() ? "" : ", ") + name;
     }
-    auto sharedRt = findSharedRuntime();
-    if (!sharedRt) {
-        diags.error(Span{},
-                    "--emit-shared: the shared bronze runtime was not found "
-#ifdef _WIN32
-                    "(bronze_runtime_shared.lib, the import library beside "
-                    "bronze_runtime_shared.dll). "
-#elif defined(__APPLE__)
-                    "(libbronze_runtime_shared.dylib). "
-#else
-                    "(libbronze_runtime_shared.so). "
-#endif
-                    "Point BRONZE_SHARED_RT_LIB at it, or build bronze with "
-                    "-DBRONZE_BUILD_SHARED_RUNTIME=ON. A loadable module is NOT linked "
-                    "against the static runtime as a fallback: two runtimes in one "
-                    "process means two heaps.");
+    if (!unknown.empty()) {
+        diags.error(Span{}, "the object references " + unknown +
+                                ", which the shared bronze runtime does not export (every "
+                                "symbol generated code may name is an X(...) line in "
+                                "src/abi/bronze_abi.h) and the C math library does not "
+                                "provide. The backend and the ABI header this bronze was "
+                                "built from disagree.");
         return false;
     }
 
-    static LinkerState s_state;
-    static std::once_flag s_stringsOnce;
-    std::call_once(s_stringsOnce, [&] {
-        s_state.libStr = sharedRt->string();
-        // Where the loader has to find the runtime at run time, which on the
-        // two rpath platforms is a link-time fact about the module.
-        s_state.runtimeLibStr = sharedRt->parent_path().string();
-    });
-
-#ifdef _WIN32
-    const std::string entry = entrySymbol.empty() ? "bronze_main" : entrySymbol;
-    const std::string stamp = (entry == "bronze_main") ? "bronze_object_abi_fingerprint" : (entry + "_abi_fingerprint");
-    const std::string globals = entry + "_host_globals";
-    const std::string imports = entry + "_native_imports";
-    const std::string exportFlags = " /EXPORT:" + entry + " /EXPORT:" + stamp + " /EXPORT:" + globals +
-                                    " /EXPORT:" + imports;
+    brass::target::LinkerOptions options;
+    options.module_name = fs::path(outputPath).filename().string();
+    options.soname = options.module_name;
+    options.export_all_functions = false;
+    options.explicit_exports = moduleExports(obj, entry);
+    if (!runtimeImports.empty()) options.imports.push_back({kRuntimeImportName, runtimeImports});
+    if (!mathImports.empty()) options.imports.push_back({kMathImportName, mathImports});
+#ifndef _WIN32
+    options.rpaths.push_back(kOwnDirRpath);
+    if (auto runtimeDir = findSharedRuntimeDir()) {
+        options.rpaths.push_back(runtimeDir->string());
+    }
 #endif
 
-    auto makeCommand = [&](int index) -> std::string {
-#ifdef _WIN32
-        switch (index) {
-            case 0:
-                return "lld-link /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags;
-            case 1:
-                if (!msvcLinkIsAvailable()) return "";
-                return "link.exe /nologo /DLL /DEBUG /OPT:REF /OPT:ICF /defaultlib:msvcrt /out:\"" +
-                       outputPath + "\" \"" + objPath + "\" \"" + s_state.libStr + "\"" + exportFlags;
-            default:
-                return "";
-        }
-#elif defined(__APPLE__)
-        switch (index) {
-            case 0:
-                return "clang++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
-            case 1:
-                return "g++ -w -dynamiclib \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
-            default:
-                return "";
-        }
-#else
-        switch (index) {
-            case 0:
-                return "clang++ -shared \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
-            case 1:
-                return "g++ -shared \"" + objPath + "\" \"" + s_state.libStr + "\" " +
-                       "-Wl,-rpath,\"" + s_state.runtimeLibStr + "\" -o \"" + outputPath + "\"";
-            default:
-                return "";
-        }
-#endif
-    };
+    std::error_code ec;
+    const fs::path out(outputPath);
+    if (out.has_parent_path()) fs::create_directories(out.parent_path(), ec);
 
-    std::string tried;
-    if (runFirstWorkingCommand(s_state, 2, makeCommand, outputPath, tried)) return true;
-
-    diags.error(Span{},
-                "--emit-shared: failed to link the module against " + s_state.libStr +
-                    ". Tried: " +
-                    (tried.empty() ? std::string("nothing — no linker bronze knows was found "
-                                                 "on PATH")
-                                   : tried) +
-#ifdef _WIN32
-                    ". bronze needs lld-link on PATH, or MSVC's link.exe with %LIB% set (a "
-                    "developer prompt). Point BRONZE_SHARED_RT_LIB at the runtime's import "
-                    "library if it is not the one named above."
-#else
-                    ". bronze needs clang++ or g++ on PATH. Point BRONZE_SHARED_RT_LIB at the "
-                    "shared runtime if it is not the one named above."
-#endif
-    );
-    return false;
+    std::string error;
+    if (!brass::target::AotLinker::link_to_file(obj, outputPath, options, &error)) {
+        diags.error(Span{}, "cannot write the module " + outputPath + ": " +
+                                (error.empty() ? std::string("the image writer failed") : error));
+        return false;
+    }
+    return true;
 }
 
-std::filesystem::path uniqueTempObjPath(const std::string& sourcePath) {
-    const std::string stem = std::filesystem::path(sourcePath).stem().string() + "_temp";
-#ifdef _WIN32
-    return uniqueTempPath(stem, ".obj");
-#else
-    return uniqueTempPath(stem, ".o");
-#endif
+bool linkExecutable(const brass::object::ObjectFile& obj, const std::string& outputPath,
+                    DiagnosticSink& diags) {
+    const std::optional<fs::path> runtimeDir = findSharedRuntimeDir();
+    if (!runtimeDir) {
+        diags.error(Span{}, "cannot build an executable: " + runtimeNotFoundMessage());
+        return false;
+    }
+    const fs::path host = *runtimeDir / kHostFile;
+    std::error_code ec;
+    if (!fs::exists(host, ec)) {
+        diags.error(Span{}, "cannot build an executable: the program host " + host.string() +
+                                " is not beside the shared runtime. It is the bronze_host "
+                                "target of the tree that built " + kRuntimeFile + ".");
+        return false;
+    }
+
+    fs::path out = fs::absolute(fs::path(outputPath), ec);
+    if (ec) out = fs::path(outputPath);
+    const fs::path outDir = out.parent_path().empty() ? fs::current_path() : out.parent_path();
+    fs::create_directories(outDir, ec);
+
+    // The module, named so the host's own stem finds it (host_main.cpp).
+    fs::path module = out;
+    module.replace_extension(kModuleExtension);
+    if (!linkSharedModule(obj, module.string(), diags, "bronze_main")) return false;
+
+    // The host, under the program's name.
+    if (!copyFileForExec(host, out, ec)) {
+        diags.error(Span{}, "cannot write " + out.string() + " (a copy of " + host.string() +
+                                "): " + ec.message());
+        return false;
+    }
+
+    // And the runtime the pair loads, beside them.
+    return stageRuntime(*runtimeDir, outDir, diags);
 }
 
 }  // namespace bronze::cli

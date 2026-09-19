@@ -105,6 +105,7 @@ add_subdirectory(src/cli)
 # them. It needs no backend: the backend is what EMITS a loadable module, the
 # runtime is only what one links against.
 include(cmake/bronze_shared_runtime.cmake)
+add_subdirectory(src/host)
 
 if(BRONZE_IS_TOP_LEVEL)
     add_subdirectory(tools)

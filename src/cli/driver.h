@@ -94,11 +94,13 @@ int runIl(const std::string& sourcePath, std::string* outString = nullptr, bool 
 // `toString` of a compiled function is a TypeError naming the flag rather than
 // the same wrong answer arriving quietly.
 //
-// `emitShared` links a LOADABLE MODULE instead of an executable: the same
-// object, linked with /DLL or -shared against the SHARED bronze runtime, so a
-// host opens it at run time rather than at its own link step. bronze_abi.h's
-// loadable-module section is the contract it publishes. Incoherent with
-// `emitObj` — two different outputs — and refused by name.
+// `emitShared` writes a LOADABLE MODULE instead of an executable: the same
+// object, written by brass's image writer as a DLL/.so/.dylib importing the
+// SHARED bronze runtime, so a host opens it at run time rather than at its
+// own link step. bronze_abi.h's loadable-module section is the contract it
+// publishes. Incoherent with `emitObj` — two different outputs — and refused
+// by name. An executable is the same module beside a copy of the prebuilt
+// program host (cli/link.h).
 int runBuild(const std::string& sourcePath, const std::string& outputPath,
              std::string* errOut = nullptr, bool infer = true, bool timings = false,
              bool emitObj = false, const std::string& hostGlobalsPath = {},

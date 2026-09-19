@@ -6,12 +6,12 @@ name: Nightly
 # three zips to a single rolling "nightly" release marked Latest. The tag is
 # re-pointed each run, so downloaders always find one "latest nightly".
 #
-# A package is the compiler plus the static runtime libraries `bronze build`
-# links into compiled programs, laid out flat next to the exe — exactly where
-# the driver's findRuntimeLib searches first — plus the shared runtime that
-# `--emit-shared` modules link against and a loadable-module host ships, with
-# the embed API headers under include/. Users still need a system linker
-# (link.exe / clang++ / g++) on their machine; bronze does not ship one.
+# A package is the compiler, the shared runtime every program it builds
+# imports, and the program host it copies beside every module it writes, laid
+# out flat next to the exe — exactly where the driver's findSharedRuntimeDir
+# looks first — plus the static runtime libraries an `--emit-obj` host links
+# against and the embed API headers under include/. Nothing else is needed on
+# the user's machine: bronze writes its own executables and modules.
 
 on:
   schedule:
@@ -67,8 +67,8 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
 
       # Put cl.exe on PATH so Windows can use the dev preset's Ninja generator
-      # (this is what dev.cmd does locally). Also gives ctest's oracle cases
-      # link.exe, which `bronze build` invokes to link its test executables.
+      # (this is what dev.cmd does locally). `bronze build` itself needs no
+      # toolchain: it writes its images with brass's own writers.
       - name: MSVC dev environment (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -134,9 +134,10 @@ jobs:
           BRONZE_TEST_JOBS: 4
         run: ctest --preset dev --parallel 4
 
-      # Flat layout: the driver resolves bronze_rt next to the exe first, then
-      # the sibling runtime/json/regex libs beside it — so exe + four static
-      # libs in one directory is a complete, relocatable install.
+      # Flat layout: the driver looks for the shared runtime and the program
+      # host next to the exe first — so exe + runtime + host in one directory
+      # is a complete, relocatable install. The four static libs ride along
+      # for hosts that link an `--emit-obj` object themselves.
       - name: Package
         shell: bash
         run: |
@@ -151,13 +152,15 @@ jobs:
             cp build/dev/src/$mod/libbronze_$mod.a "dist/$PKG/" 2>/dev/null || \
             cp build/dev/src/$mod/bronze_$mod.lib "dist/$PKG/"
           done
-          # The shared runtime, flat beside the exe where the driver's
-          # findSharedRuntime looks first: what `--emit-shared` modules link
-          # against and what a loadable-module host ships beside its own
-          # binary. Windows needs the import .lib next to the .dll; ELF and
-          # Mach-O link against the library itself. The embed API rides along
-          # under include/ (embed.h pulls exactly one header, runtime/value.h,
-          # so the pair is the whole surface).
+          # The shared runtime and the program host, flat beside the exe
+          # where the driver's findSharedRuntimeDir looks first: every program
+          # `bronze build` writes imports the runtime and is a copy of the
+          # host, and an `--emit-shared` module is what a loadable-module host
+          # ships beside its own binary. Windows keeps the import .lib next to
+          # the .dll for a C++ host that links the runtime. The embed API
+          # rides along under include/ (embed.h pulls exactly one header,
+          # runtime/value.h, so the pair is the whole surface).
+          cp "build/dev/shared/bronze_host$EXE" "dist/$PKG/"
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp build/dev/shared/bronze_runtime_shared.dll \
                build/dev/shared/bronze_runtime_shared.lib "dist/$PKG/"
@@ -186,10 +189,9 @@ jobs:
           OUT="$("./smoke$EXE")"
           echo "$OUT"
           [ "$OUT" = "bronze 1+4+9" ]
-          # The shared half of the layout: linking an --emit-shared module
-          # resolves bronze_runtime_shared exe-relative from the package, the
-          # same search a loadable-module host's toolchain relies on. Running
-          # the module needs a host, so the link succeeding IS the check.
+          # The module half of the layout: an --emit-shared module is written
+          # with no host beside it. Running it needs a host of its own, so the
+          # build succeeding IS the check.
           if [ "$RUNNER_OS" = "Windows" ]; then MOD="smokemod.dll";
           elif [ "$RUNNER_OS" = "macOS" ]; then MOD="smokemod.dylib";
           else MOD="smokemod.so"; fi
@@ -246,7 +248,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($bin in 'bronze.exe', 'bronze_runtime_shared.dll') {
+          foreach ($bin in 'bronze.exe', 'bronze_host.exe', 'bronze_runtime_shared.dll') {
             $sig = Get-AuthenticodeSignature (Join-Path $env:PKG_DIR $bin)
             Write-Host "$bin -> $($sig.Status) | $($sig.SignerCertificate.Subject)"
             if ($sig.Status -ne 'Valid') { throw "$bin unsigned or invalid: $($sig.Status)" }
@@ -294,7 +296,7 @@ jobs:
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
           NOTES="Automated nightly build from \`${GITHUB_SHA::7}\` on $(date -u +%Y-%m-%d), tested against the full oracle suite (three.js and pixi.js milestones included).
 
-          Each zip is the \`bronze\` compiler plus the runtime libraries it links into compiled programs — unzip anywhere and run \`bronze build app.js -o app\`. It also carries the shared runtime (\`bronze_runtime_shared\`) that \`--emit-shared\` loadable modules link against, with the embed API headers under \`include/\`, for hosts that load compiled modules. A system linker is required (Windows: MSVC's \`link.exe\`; Linux/macOS: \`clang++\` or \`g++\`)."
+          Each zip is the \`bronze\` compiler, the shared runtime (\`bronze_runtime_shared\`) every program it builds imports, and the program host (\`bronze_host\`) it copies beside each program's module — unzip anywhere and run \`bronze build app.js -o app\`. No linker or toolchain is needed. The static runtime libraries and the embed API headers under \`include/\` are there for hosts that link an \`--emit-obj\` object or load \`--emit-shared\` modules themselves."
           gh release create nightly \
             --target "$GITHUB_SHA" \
             --title "Nightly ($(date -u +%Y-%m-%d))" \

@@ -83,32 +83,16 @@ set_tests_properties(shared-load PROPERTIES LABELS shared)
 # holds is its own registered root span; this is the run that decides whether
 # that is true rather than merely intended, now with the module's data in a
 # separately loaded image.
-# The same module, linked at TEST time with the developer environment scrubbed,
-# then run. run_no_vcvars.cmake says why an ordinary build-time link cannot
-# stand in for this: ninja runs under dev.cmd and every link in this tree has
-# had a %LIB% to lean on, which is exactly the assumption that broke
-# `--emit-shared` for anyone invoking bronze from their own shell.
-#
-# Registered only when a linker survives the scrub, because the scrub removes
-# Visual Studio's bundled lld-link along with the rest of the VS installation
-# (scrub_path.cmake says why that one has to go). On a machine whose only
-# lld-link is the bundled one there is no plain-shell linker to test with, and a
-# test that reported failure there would be reporting on the machine rather than
-# on bronze. It is announced at configure time rather than skipped at run time
-# so that its absence is visible.
-include(${_sl_src}/scrub_path.cmake)
-bronze_scrub_dev_path(_sl_bare_dirs)
-find_program(BRONZE_SHARED_LOAD_BARE_LINKER
-    NAMES lld-link
-    PATHS ${_sl_bare_dirs}
-    NO_DEFAULT_PATH
-    DOC "A linker reachable without the MSVC developer environment (shared-load-no-vcvars)")
+# The same module, written at TEST time with the developer environment scrubbed,
+# then run. run_no_vcvars.cmake says why an ordinary build-time run cannot
+# stand in for this: ninja runs under dev.cmd, so every module this tree builds
+# has had a toolchain on PATH and in %LIB% to lean on, which is exactly the
+# assumption that once broke `--emit-shared` for anyone invoking bronze from
+# their own shell. bronze writes its images itself now and needs neither, and
+# this is the test that keeps that true.
 if(NOT WIN32)
     message(STATUS "shared-load-no-vcvars: not registered (the developer environment "
                    "it scrubs for is a Windows notion)")
-elseif(NOT BRONZE_SHARED_LOAD_BARE_LINKER)
-    message(STATUS "shared-load-no-vcvars: not registered (no lld-link outside the "
-                   "Visual Studio installation on this machine)")
 else()
     add_test(NAME shared-load-no-vcvars COMMAND ${CMAKE_COMMAND}
         -DBRONZE=$<TARGET_FILE:bronze>

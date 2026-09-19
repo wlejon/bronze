@@ -164,6 +164,23 @@ bool readFileBytes(const std::filesystem::path& path, std::string& content) {
     return true;
 }
 
+// A built program is the executable and the module beside it (cli/link.h);
+// removing one and leaving the other is how a stale module gets run by the
+// next build's host. The staged runtime stays: it is one file per directory,
+// shared by every case built there.
+void removeProgram(const std::filesystem::path& exe, std::error_code& ec) {
+    std::filesystem::remove(exe, ec);
+    std::filesystem::path module = exe;
+#if defined(_WIN32)
+    module.replace_extension(".dll");
+#elif defined(__APPLE__)
+    module.replace_extension(".dylib");
+#else
+    module.replace_extension(".so");
+#endif
+    std::filesystem::remove(module, ec);
+}
+
 std::filesystem::path findTestDirectory(const std::filesystem::path& baked,
                                         const std::string& suffix) {
     std::vector<std::filesystem::path> candidates = {
@@ -370,7 +387,7 @@ TEST_CASE("Oracle differential test suite") {
                 std::filesystem::path exeInfer =
                     std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle.exe");
                 std::error_code ec;
-                std::filesystem::remove(exeInfer, ec);
+                removeProgram(exeInfer, ec);
 
                 res.buildInferStatus = bronze::cli::runBuild(oracleCase.entry.string(),
                                                              exeInfer.string(), &res.buildInferErr, true);
@@ -381,12 +398,12 @@ TEST_CASE("Oracle differential test suite") {
                     // Same compiled binary re-run under GC stress to verify rooting without duplicate builds
                     res.runInferGc = runWithTimeout(exeInfer.string(), /*gcStress=*/true);
                 }
-                std::filesystem::remove(exeInfer, ec);
+                removeProgram(exeInfer, ec);
 
                 // 2. Compile with --no-infer
                 std::filesystem::path exeNoInfer =
                     std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle_noinfer.exe");
-                std::filesystem::remove(exeNoInfer, ec);
+                removeProgram(exeNoInfer, ec);
 
                 res.buildNoInferStatus = bronze::cli::runBuild(
                     oracleCase.entry.string(), exeNoInfer.string(), &res.buildNoInferErr, false);
@@ -397,7 +414,7 @@ TEST_CASE("Oracle differential test suite") {
                     // Same compiled binary re-run under GC stress to verify rooting without duplicate builds
                     res.runNoInferGc = runWithTimeout(exeNoInfer.string(), /*gcStress=*/true);
                 }
-                std::filesystem::remove(exeNoInfer, ec);
+                removeProgram(exeNoInfer, ec);
             }
         };
 
@@ -499,14 +516,14 @@ TEST_CASE("Oracle blocked test suite") {
 
             std::filesystem::path exePath =
                 std::filesystem::temp_directory_path() / (oracleCase.id + "_blocked.exe");
-            std::filesystem::remove(exePath, ec);
+            removeProgram(exePath, ec);
 
             std::string errOut;
             int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut);
 
             if (status == 0 && std::filesystem::exists(exePath)) {
                 RunResult run = runWithTimeout(exePath.string());
-                std::filesystem::remove(exePath, ec);
+                removeProgram(exePath, ec);
                 bool matches = run.ran && (expected == run.output);
                 CHECK_MESSAGE(!matches,
                               ("Blocked oracle case passes! Promote " + oracleCase.id +
@@ -535,7 +552,7 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
         std::filesystem::path exePath = std::filesystem::temp_directory_path() /
                                         (infer ? "threejs_oracle.exe" : "threejs_oracle_ni.exe");
         std::error_code ec;
-        std::filesystem::remove(exePath, ec);
+        removeProgram(exePath, ec);
 
         std::string errOut;
         int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer);
@@ -564,7 +581,7 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
             CHECK_MESSAGE(expected == stressed.output,
                           ("three.js output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
         }
-        std::filesystem::remove(exePath, ec);
+        removeProgram(exePath, ec);
     }
 }
 
@@ -595,7 +612,7 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
         std::filesystem::path exePath = std::filesystem::temp_directory_path() /
                                         (infer ? "pixi_oracle.exe" : "pixi_oracle_ni.exe");
         std::error_code ec;
-        std::filesystem::remove(exePath, ec);
+        removeProgram(exePath, ec);
 
         std::string errOut;
         int status = bronze::cli::runBuild(casePath.string(), exePath.string(), &errOut, infer,
@@ -628,6 +645,6 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
             CHECK_MESSAGE(expected == stressed.output,
                           ("pixi output differs from the pinned expectation (gc-stress" + mode + ")").c_str());
         }
-        std::filesystem::remove(exePath, ec);
+        removeProgram(exePath, ec);
     }
 }

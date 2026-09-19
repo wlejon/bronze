@@ -31,7 +31,8 @@ IL  (src/il)       — typed SSA, canonical text form. Native types where
    ▼
 Backend (src/codegen interface)
    │  src/codegen-brass — Brass native backend:
-   │                      • AOT mode: object file (.o / .obj) → system linker → exe / dll
+   │                      • AOT mode: object → brass's own image writer → dll / so / dylib
+   │                        (an executable is that module beside a copy of src/host)
    │                      • JIT mode: in-memory compilation → executable RAM (BrassJitProgram)
    ▼
 object file / executable RAM
@@ -96,13 +97,15 @@ per line, `#` comments) of globals the host promises to register with the
 runtime before the program runs: each joins the provided-globals set, so a
 read lowers to the same `global.get` a builtin's does instead of the
 unresolved-name warning and runtime ReferenceError. `--entry-symbol <name>` names the object's exported entry point,
-which defaults to `bronze_main`. `--emit-shared` links a loadable module
+which defaults to `bronze_main`. `--emit-shared` writes a loadable module
 instead of an executable (below). All four are lowering- and link-level facts,
 so `--no-infer` changes nothing about any of them.
 
 An object exports exactly four symbols — its entry, its ABI stamp, its
 host-globals manifest and its native import table, the last three named after
-the entry — and everything else it defines is internal. That is
+the entry — plus its code-range table (`<entry>_code_ranges` and
+`<entry>_code_range_count`, `bronze_object_*` for the default entry), which a
+host registers for stack walks; everything else it defines is internal. That is
 what lets a host link **more than one** compiled module into one image and
 enter them in turn. The runtime is shared, and what each module owns privately
 is its inline-cache table, its key remap, its global cache, its
@@ -117,10 +120,18 @@ exceptions pinned byte-for-byte.
 
 ### Loading a module instead of linking one
 
-`--emit-shared` links the object into a DLL/.so/.dylib against the SHARED
-bronze runtime (`bronze_runtime_shared`, `cmake/bronze_shared_runtime.cmake`)
-rather than into an executable against the static one. A host opens it at run
-time and learns everything it needs from four exported symbols, all named
+`--emit-shared` writes the object as a DLL/.so/.dylib importing the SHARED
+bronze runtime (`bronze_runtime_shared`, `cmake/bronze_shared_runtime.cmake`).
+No linker runs: brass's own image writers (`AotLinker`) lay the image out in
+process, every symbol the object leaves undefined becomes an import from the
+runtime by name — after `src/cli/link.cpp` has checked each one against the
+ABI registry, so a name the runtime does not export is a build error rather
+than a loader's — and ELF and Mach-O modules carry their own directory and
+the runtime's as run-time search paths. A `bronze build` executable is the
+same module beside a copy of the program host (`src/host/host_main.cpp`),
+which opens the module named after itself and runs it through
+`embed::runEntry`, with the runtime library staged into the same directory.
+A host opens a module at run time and learns everything it needs from four exported symbols, all named
 after the entry: `<entry>`, `<entry>_abi_fingerprint`, `<entry>_host_globals`
 — the `--host-globals` manifest the module was compiled against, as a count
 and a run of NUL-terminated names — and `<entry>_native_imports`, the table
@@ -294,9 +305,10 @@ Rules that keep iteration fast:
 | `src/runtime` | The dynamic value model: NaN-boxing, heap + GC, shapes, objects, arrays, strings, environments. The ABI helpers are `rt_state` (process-wide state and the caches rooted with it), `rt_convert`, `rt_object`, `rt_reflect` (28.1, whose members are the internal methods by name and so are forwards into the funnels `rt_object` and `rt_prop` already own), `rt_prop` (property access, split by receiver kind: `rt_prop_primitive` is the one whose answer comes from an intrinsic rather than from the receiver, `rt_prop_map` the one whose named properties are a side object beside its entries), `rt_iter`, `rt_print`, `rt_members` (what ECMA-262 defines and bronze has not built). Unicode DEFAULT CASE CONVERSION lives here rather than in `src/regex`, because it is a different operation from folding over different data: `unicode_case` is the algorithm and `unicode_case_data_*.cpp` the generated tables |
 | `src/json` | The JSON grammar alone (RFC 8259 / ECMA-262 25.5.1): code units in, a tree out. Deliberately not `src/parse` — it exists for what it REFUSES that JavaScript accepts |
 | `src/regex` | The RegExp pattern grammar (ECMA-262 22.2.1) and its backtracking matcher, on the same rule as `src/json`: a language of its own inside the source text, with its own parser and its own diagnostics. Reached from `src/lex`, which decides whether a `/` opens a pattern or divides, by what came before it. Its Unicode data — General_Category and simple case FOLDING, which is not the same table as the case CONVERSION `src/runtime` applies — is generated once by `tools/gen_unicode_tables` and checked in as ordinary sources (`unicode_data_*.cpp`); the build never runs generator tooling |
-| `src/rt` | The static library compiled output links against |
+| `src/rt` | The static library an `--emit-obj` host links against, with the `main` of a statically linked program |
+| `src/host` | The program host `bronze build` copies beside every module it writes: loads the module named after itself against the shared runtime |
 | `src/embed` | The host-facing C++ embedding API (`tests/embed` holds its suite): run a compiled program in-process, register host globals, wrap native functions and objects, hold GC-safe handles across frames (`Persistent`, RAII `HandleScope`, `Local<T>`). Depends on the runtime and only calls it — the runtime never learns it exists |
-| `src/cli` | `bronze` driver (`run`, `eval`, `lex`, `parse`, `types`, `il`, `build`, `link`, `version`) |
+| `src/cli` | `bronze` driver (`run`, `eval`, `lex`, `parse`, `types`, `il`, `build`, `version`) |
 | `tests/<module>` | doctest suites, one per module |
 | `tests/oracle` | Differential cases with pinned `.expected` stdout — see `tests/oracle/README.md`. A case is `cases/<name>.js`, or `cases/<name>/main.js` plus what it imports |
 | `tools` | Generators whose OUTPUT is committed. Run by hand, never by the build, so that no build step depends on a language bronze does not already require |

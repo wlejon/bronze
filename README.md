@@ -12,13 +12,17 @@ bronze build app.js -o app
 ```
 
 bronze compiles JavaScript to machine code through Brass. It follows `import`s 
-from your entry file, compiles the whole program, and links a standalone binary.
+from your entry file, compiles the whole program, and writes a native program —
+no linker, no toolchain, nothing on the machine but bronze itself.
 The test suite compiles three.js r160 and pixi.js v8 from unmodified source.
 
 ## What you can build
 
-**A standalone executable.** `bronze build app.js -o app` produces a single
-binary with bronze's runtime linked in.
+**A native program.** `bronze build app.js -o app` writes three files in one
+directory: `app`, the compiled program as a loadable module beside it (`app.dll`
+/ `app.so` / `app.dylib`), and bronze's shared runtime. The executable is a
+copy of bronze's program host, which opens the module named after itself; the
+three travel together.
 
 **Direct in-memory execution / JIT.** `bronze run app.js` compiles and runs
 scripts and module graphs directly in memory with zero disk I/O, and
@@ -67,17 +71,13 @@ compilation stops with an error naming the feature.
 ```
 bronze run   <entry.js>                   run JS directly in-memory via JIT
 bronze eval  <code> (or -e <code>)        evaluate JS code directly in-memory via JIT
-bronze build <entry.js> -o <exe>          compile and link an executable
+bronze build <entry.js> -o <exe>          compile to a native program (the
+                                          executable, its module, its runtime)
 bronze build <entry.js> -o <obj> \
              --emit-obj \
              --host-globals <manifest>    compile to an object for a host build
 bronze build <entry.js> -o <lib> \
              --emit-shared                compile a module a host loads at run time
-bronze build <entry.js> -o <exe> \
-             --keep-objs <dir>            keep the partition objects behind
-bronze link  <dir> -o <exe> \
-             --link-seed <n>              relink those objects in a seeded
-                                          order, without recompiling
 bronze types <entry.js>                   show what inference proved
 bronze il    <entry.js>                   dump the typed IL
 bronze lex / bronze parse                 earlier pipeline stages
@@ -93,11 +93,10 @@ path; it exists as a debugging tool for isolating inference bugs
 
 [Nightly builds](https://github.com/wlejon/bronze/releases/tag/nightly) are
 published for Windows x64, Linux x64, and macOS arm64 — each zip is the
-compiler plus the runtime libraries it links into compiled programs, tested
-against the full suite before publishing. Unzip anywhere and run
-`bronze build app.js -o app`. You need a system linker on your machine
-(Windows: MSVC's `link.exe`; Linux/macOS: `clang++` or `g++`); bronze does
-not ship one.
+compiler, the shared runtime and the program host it copies beside every
+program it builds, tested against the full suite before publishing. Unzip
+anywhere and run `bronze build app.js -o app`. Nothing else is needed: bronze
+writes its own executables and modules, so there is no linker to install.
 
 ## Building bronze
 

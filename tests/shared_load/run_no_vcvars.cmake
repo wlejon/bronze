@@ -3,13 +3,13 @@
 # bytes.
 #
 # This exists because of a defect the rest of the suite could not see. ctest
-# runs under dev.cmd, where %LIB% names the CRT and the Windows SDK, so every
-# link in this tree had an environment to lean on; a user's shell does not.
-# `bronze build -o app.exe` never needed one — bronze_rt.lib's MSVC-compiled
-# objects carry /DEFAULTLIB: directives and lld-link resolves those through its
-# own toolchain detection — and `--emit-shared` briefly did, because it named
-# `msvcrt.lib` as an input file, which is a PATH the linker opens rather than a
-# request it resolves. From a shell with an empty %LIB% it could not be opened.
+# runs under dev.cmd, where %LIB% names the CRT and the Windows SDK and PATH
+# names the toolchain, so everything this tree builds has had an environment
+# to lean on; a user's shell does not. When `--emit-shared` shelled out to a
+# linker it briefly named `msvcrt.lib` as an input file, which from a shell
+# with an empty %LIB% could not be opened. There is no linker in the path any
+# more — bronze writes the image itself — and this test is what keeps a
+# dependency on the developer environment from creeping back in.
 #
 # So the test unsets the variables rather than trusting a comment. `cmake -E
 # env --unset=` is the only portable way to run one command with a scrubbed
@@ -20,7 +20,7 @@
 # with the bug deliberately put back still passed. PATH has to be scrubbed as
 # well, and scrub_path.cmake holds the list and the reason for each entry.
 #
-# It links AND runs: a linker exiting 0 is not the claim. The claim is that the
+# It writes AND runs: a build exiting 0 is not the claim. The claim is that the
 # module it wrote loads into the shared runtime and behaves exactly like the one
 # built by the build system.
 
