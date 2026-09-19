@@ -2,6 +2,8 @@
 #include "codegen-brass/il_to_brass_ast.h"
 
 #include "abi/bronze_abi.h"
+#include "support/source.h"
+#include "support/timings.h"
 
 #include <brass/brass.hpp>
 #include <brass/codegen/jit_exec.hpp>
@@ -24,6 +26,8 @@ bool BrassBackend::optimize() const {
 
 std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const il::Module& module, DiagnosticSink& diags) {
+    // The inside of the CLI's "codegen" phase, one level deeper.
+    support::PhaseTimer timer(support::timingsEnabled(), 4);
     std::vector<std::string> uniqueNames(module.functions.size());
     std::unordered_map<std::string, size_t> nameCounts;
     auto sanitizeName = [](std::string n) {
@@ -142,7 +146,9 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     brass::DiagnosticReporter reporter;
     std::vector<uint32_t> globalReadKeys;
     auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
+    timer.mark("il->ast");
     brass::il::TranslationResult res = brass::il::translate_bronze_ast(ast, options, &reporter);
+    timer.mark("translate");
     if (!res.success || !res.module || reporter.has_errors()) {
         std::string msg = reporter.has_errors() ? reporter.format_all() : res.error_message;
         if (msg.empty()) {
@@ -325,7 +331,9 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     compiler.set_sched_options(schedOpts);
     compiler.set_enable_trace_layout(optimize);
     compiler.set_enable_mir_opts(optimize);
+    timer.mark("thunks");
     brass::object::ObjectFile obj = compiler.compile(*res.module);
+    timer.mark("brass compile");
 
     if (entrySymbol_ != "main") {
         if (auto* sym = obj.find_symbol("main")) {
@@ -612,6 +620,13 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     for (size_t f = 0; f < module.sourceFiles.size(); ++f) {
         emitStringSym(moduleSym("__bronze_file_str_" + std::to_string(f)), module.sourceFiles[f]);
     }
+    timer.mark("ro tables");
+
+    // One line index per file for the descriptors' (line, column): the
+    // per-function scan from byte 0 it replaces was 4.7 s of a pixi compile.
+    std::vector<LineTable> lineTables;
+    lineTables.reserve(module.sourceTexts.size());
+    for (const std::string& text : module.sourceTexts) lineTables.emplace_back(text);
 
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& fn = module.functions[i];
@@ -639,17 +654,10 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
 
         uint32_t line = 1, col = 1;
-        if (fn.sourceFile < module.sourceTexts.size()) {
-            const std::string& text = module.sourceTexts[fn.sourceFile];
-            uint32_t limit = std::min<uint32_t>(fn.sourceBegin, static_cast<uint32_t>(text.size()));
-            for (uint32_t c = 0; c < limit; ++c) {
-                if (text[c] == '\n') {
-                    ++line;
-                    col = 1;
-                } else {
-                    ++col;
-                }
-            }
+        if (fn.sourceFile < lineTables.size()) {
+            const SourceBuffer::LineCol lc = lineTables[fn.sourceFile].lineCol(fn.sourceBegin);
+            line = lc.line;
+            col = lc.column;
         }
 
         roSec.align_to(8);
@@ -720,6 +728,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     };
 
+    timer.mark("descriptors");
     std::unordered_map<std::string, std::string> fnToDesc;
     for (size_t i = 0; i < module.functions.size(); ++i) {
         if (module.functions[i].blocks.empty()) continue;
@@ -747,6 +756,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
+    timer.mark("pc tables");
     const std::string codeRangesSymbol = (entrySymbol_ == "bronze_main")
         ? "bronze_object_code_ranges" : (entrySymbol_ + "_code_ranges");
     const std::string codeRangeCountSymbol = (entrySymbol_ == "bronze_main")
@@ -770,7 +780,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         emitRoReloc(itPc != fnToPcTable.end() ? itPc->second : "");
     }
     addRoSym(codeRangesSymbol, rangesOff, obj.functions.size() * sizeof(bronze_code_range), brass::object::SymbolBinding::Global);
-
+    timer.mark("code ranges");
 
     std::string dataSecName = target.is_windows() ? ".data" : ".data";
     brass::object::Section& dataSec = obj.get_or_create_section(
@@ -974,6 +984,15 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
                 sym.binding = brass::object::SymbolBinding::Local;
             }
         }
+    }
+    timer.mark("data section");
+    if (support::timingsEnabled()) {
+        size_t lineEntries = 0;
+        for (const auto& dt : obj.debug_tables) lineEntries += dt.line_entries().size();
+        size_t relocs = 0;
+        for (const auto& sec : obj.sections) relocs += sec.relocations.size();
+        std::fprintf(stderr, "    functions %zu, symbols %zu, relocations %zu, line entries %zu\n",
+                     obj.functions.size(), obj.symbols.size(), relocs, lineEntries);
     }
 
     return obj;

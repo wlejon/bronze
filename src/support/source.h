@@ -33,6 +33,25 @@ private:
     uint16_t fileId_ = 0;
 };
 
+// Line starts of one text, built once, so that a (line, column) query is a
+// binary search rather than a scan from byte 0. `SourceBuffer::lineCol` scans,
+// which is right for a diagnostic (a handful per build) and wrong for the
+// backend, which asks once per IL instruction and once per function over a
+// 1.7 MB bundle: that was O(instructions × file size), 21 s of a pixi compile.
+class LineTable {
+public:
+    LineTable() = default;
+    explicit LineTable(std::string_view text);
+
+    // 1-based line and byte column of `offset`, clamped to the text's end.
+    SourceBuffer::LineCol lineCol(uint32_t offset) const;
+
+private:
+    // Byte offset of the first character of each line; lineStarts_[0] == 0.
+    std::vector<uint32_t> lineStarts_;
+    uint32_t size_ = 0;
+};
+
 // Half-open byte range [begin, end) into one SourceBuffer of the program.
 struct Span {
     uint32_t begin = 0;

@@ -35,42 +35,9 @@
 namespace bronze::cli {
 namespace {
 
-// Wall time per compilation phase, printed to stderr on `--timings`.
-//
-// This is the one thing bronze prints that cannot be deterministic, and the
-// house rule is about bronze's OWN output — so it is opt-in, it goes to stderr,
-// and nothing in the suite compares it. The alternative was measuring from
-// outside with a stopwatch, which gives one number for a five-phase pipeline
-// and cannot say which phase to attack.
-class PhaseTimer {
-public:
-    explicit PhaseTimer(bool enabled) : enabled_(enabled) {
-        if (enabled_) start_ = last_ = std::chrono::steady_clock::now();
-    }
-
-    void mark(const char* phase) {
-        if (!enabled_) return;
-        const auto now = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "  %-14s %8.1f ms\n", phase, millisSince(last_, now));
-        last_ = now;
-    }
-
-    void total() {
-        if (!enabled_) return;
-        const auto now = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "  %-14s %8.1f ms\n", "total", millisSince(start_, now));
-    }
-
-private:
-    using Clock = std::chrono::steady_clock;
-    static double millisSince(Clock::time_point from, Clock::time_point to) {
-        return std::chrono::duration<double, std::milli>(to - from).count();
-    }
-
-    bool enabled_;
-    Clock::time_point start_{};
-    Clock::time_point last_{};
-};
+// Wall time per compilation phase, printed to stderr on `--timings`
+// (support/timings.h has the reasoning and the timer).
+using support::PhaseTimer;
 
 int fail(const std::string& message) {
     std::fputs(message.c_str(), stderr);

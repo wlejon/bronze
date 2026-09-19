@@ -1,5 +1,6 @@
 #include "codegen-brass/il_to_brass_ast.h"
 #include "abi/bronze_abi.h"
+#include "support/source.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -30,7 +31,8 @@ static brass::il::BronzeBlockTarget mapBlockTarget(const il::BlockTarget& target
 static brass::il::BronzeInstruction lowerInstruction(
     const il::Instruction& inst,
     const il::Module& module,
-    const std::vector<std::string>& uniqueNames
+    const std::vector<std::string>& uniqueNames,
+    const std::vector<LineTable>& lineTables
 ) {
     brass::il::BronzeInstruction out;
     out.result_id = (inst.result != il::kNoValue) ? inst.result : UINT32_MAX;
@@ -39,20 +41,13 @@ static brass::il::BronzeInstruction lowerInstruction(
     out.target = mapBlockTarget(inst.target);
     out.else_target = mapBlockTarget(inst.elseTarget);
 
-    if ((inst.span.begin != 0 || inst.span.end != 0) && inst.span.file < module.sourceTexts.size()) {
-        const std::string& text = module.sourceTexts[inst.span.file];
-        uint32_t line = 1, col = 1;
-        uint32_t limit = std::min<uint32_t>(inst.span.begin, static_cast<uint32_t>(text.size()));
-        for (uint32_t c = 0; c < limit; ++c) {
-            if (text[c] == '\n') {
-                ++line;
-                col = 1;
-            } else {
-                ++col;
-            }
-        }
-        out.line = line;
-        out.column = col;
+    // The (line, column) brass records as the instruction's debug location,
+    // which is what an Error.stack frame reports (bronze_pc_entry). One
+    // LineTable per file, built by the caller: this runs once per instruction.
+    if ((inst.span.begin != 0 || inst.span.end != 0) && inst.span.file < lineTables.size()) {
+        const SourceBuffer::LineCol lc = lineTables[inst.span.file].lineCol(inst.span.begin);
+        out.line = lc.line;
+        out.column = lc.column;
     }
 
     auto getFnName = [&](size_t idx) -> std::string {
@@ -607,6 +602,10 @@ brass::il::BronzeModuleAST lowerToBrassAst(
     readKeys.erase(std::unique(readKeys.begin(), readKeys.end()), readKeys.end());
     if (globalReadKeys) *globalReadKeys = readKeys;
 
+    std::vector<LineTable> lineTables;
+    lineTables.reserve(module.sourceTexts.size());
+    for (const std::string& text : module.sourceTexts) lineTables.emplace_back(text);
+
     for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
         const auto& fn = module.functions[fnIdx];
 
@@ -638,7 +637,7 @@ brass::il::BronzeModuleAST lowerToBrassAst(
             }
 
             for (const auto& inst : block.instructions) {
-                bblk.instructions.push_back(lowerInstruction(inst, module, uniqueNames));
+                bblk.instructions.push_back(lowerInstruction(inst, module, uniqueNames, lineTables));
             }
 
             bfn.blocks.push_back(std::move(bblk));
