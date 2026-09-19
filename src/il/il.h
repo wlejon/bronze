@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -534,6 +535,31 @@ struct Module {
     // what `--no-fn-source` does — the ranges above stay, and address nothing.
     std::vector<std::string> sourceTexts;
     std::vector<std::string> sourceFiles;
+
+    // The inline-cache sites that belong to METHOD CALLS, in ascending order:
+    // the `icIndex` of every MethodCall / MethodCallSpread, each once. A
+    // method site's words mean something different from a property site's
+    // (bronze_abi.h, "the METHOD-CALL site"), and its env words can hold heap
+    // Values, so the backend hands exactly this list to
+    // `bronze_register_method_ic_cells` at module init. Derived from the
+    // instructions rather than kept as a field, so it cannot disagree with
+    // them; the verifier is what guarantees no index is shared between a
+    // method call and a property access.
+    std::vector<uint32_t> methodIcSites() const {
+        std::vector<uint32_t> sites;
+        for (const auto& fn : functions) {
+            for (const auto& block : fn.blocks) {
+                for (const auto& inst : block.instructions) {
+                    if (inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
+                        sites.push_back(inst.icIndex);
+                    }
+                }
+            }
+        }
+        std::sort(sites.begin(), sites.end());
+        sites.erase(std::unique(sites.begin(), sites.end()), sites.end());
+        return sites;
+    }
 };
 
 }  // namespace bronze::il

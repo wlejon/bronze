@@ -14,6 +14,8 @@
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
+#include <cstring>
+
 namespace bronze::runtime {
 
 namespace {
@@ -358,12 +360,124 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     }
 }
 
+// The site's latched entry, read exactly as the METHOD-CALL site contract
+// (bronze_abi.h) says generated code reads it — every form, both ways — and
+// dispatched on a hit. This is the helper's own hit path: a backend that
+// inlines only some of the forms (or none) still gets the cached dispatch for
+// the rest, at the price of the call, and the two readers cannot disagree
+// because both follow the one contract. Loads and compares only until the
+// dispatch; nothing here allocates before the callee runs.
+//
+// A DIRECT hit calls the cached code with the cached env under the same
+// `NewTargetScope(undefined)` `bronze_dynamic_call` pushes, and only when the
+// argument count satisfies the cached arity — fewer arguments need the
+// function object's own adapting call, which a direct entry does not hold, so
+// that case misses to the generic path. A SLOT hit re-derives the callee from
+// the live slot and hands it to `bronze_dynamic_call`, the universal dispatch
+// the contract names (Function test and TypeError included).
+bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint64_t* argv,
+                 uint64_t& result) {
+    if (!icEntry || rtTls()->method_call_ic_enabled == 0) return false;
+    const uint64_t w0 = icEntry[0];
+    if (w0 == 0) return false;
+    const Value thisVal(thisBits);
+
+    auto dispatchDirect = [&](const uint64_t* way) -> bool {
+        const uint64_t arityWord = way[BRONZE_ABI_METHOD_IC_ARITY_WORD];
+        if ((arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0) return false;
+        const auto code = reinterpret_cast<bronze_fn_code>(way[BRONZE_ABI_METHOD_IC_CODE_WORD]);
+        if (!code) return false;
+        const auto arity = static_cast<uint32_t>(arityWord);
+        if (arity != 0 && argc < arity) return false;
+        NewTargetScope targetScope(Value::fromUndefined());
+        result = rtEnterJs(code, way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);
+        return true;
+    };
+    auto dispatchSlot = [&](ObjectHeader* holder, uint64_t slotPlusOne) -> bool {
+        const Value fn = holder->getSlot(static_cast<uint32_t>(slotPlusOne - 1));
+        if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+            return false;
+        }
+        result = bronze_dynamic_call(fn.rawBits(), thisBits, argc, argv);
+        return true;
+    };
+    const uint64_t slotPlusOne =
+        icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
+
+    if (!thisVal.isObject()) {
+        // The PRIMITIVE form: the kind field carries the receiver's value tag,
+        // the env word names the intrinsic holder, the aux word pins its shape.
+        if ((w0 & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) == 0) return false;
+        if ((static_cast<uint32_t>(w0) >> BRONZE_ABI_METHOD_IC_KIND_SHIFT) != thisVal.tag()) {
+            return false;
+        }
+        if (slotPlusOne == 0) return false;
+        const Value holderVal(icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD]);
+        if (!holderVal.isObject()) return false;
+        auto* holderHdr = holderVal.asObject<HeapObjectHeader>();
+        if (holderHdr->flags != HeapKind::Plain) return false;
+        auto* holder = reinterpret_cast<ObjectHeader*>(holderHdr);
+        if (reinterpret_cast<uint64_t>(holder->shape) != icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD]) {
+            return false;
+        }
+        return dispatchSlot(holder, slotPlusOne);
+    }
+
+    auto* hdr = thisVal.asObject<HeapObjectHeader>();
+    if (w0 & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) {
+        // The EXOTIC form: kind guard, then the box or code clause on the u64
+        // at the carried offset.
+        const uint32_t kind = static_cast<uint32_t>(w0) >> BRONZE_ABI_METHOD_IC_KIND_SHIFT;
+        if (hdr->flags != kind) return false;
+        const uint64_t auxOffset = w0 >> BRONZE_ABI_METHOD_IC_BOX_SHIFT;
+        uint64_t aux;
+        std::memcpy(&aux, reinterpret_cast<const char*>(hdr) + auxOffset, sizeof(aux));
+        if (w0 & BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT) {
+            if (aux != icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD]) return false;
+        } else if (Value(aux).isObject()) {
+            return false;
+        }
+        return dispatchDirect(icEntry);
+    }
+
+    if (hdr->flags == HeapKind::Plain) {
+        auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
+        const uint64_t shapeWord = reinterpret_cast<uint64_t>(obj->shape);
+        if (shapeWord == w0) {
+            if (slotPlusOne != 0) return dispatchSlot(obj, slotPlusOne);
+            return dispatchDirect(icEntry);
+        }
+        // WAY 1 holds a plain-receiver DIRECT entry and nothing else.
+        if (rtPolyMethodIcEnabled() &&
+            icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] == shapeWord) {
+            return dispatchDirect(icEntry + BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD);
+        }
+        return false;
+    }
+    if (hdr->flags == HeapKind::Function) {
+        // A function receiver takes the SLOT form against its statics box and
+        // never a DIRECT entry (the contract's function-receiver rule).
+        if (slotPlusOne == 0) return false;
+        const Value boxVal = reinterpret_cast<FunctionHeader*>(hdr)->properties;
+        if (!boxVal.isObject()) return false;
+        auto* boxHdr = boxVal.asObject<HeapObjectHeader>();
+        if (boxHdr->flags != HeapKind::Plain) return false;
+        auto* box = reinterpret_cast<ObjectHeader*>(boxHdr);
+        if (reinterpret_cast<uint64_t>(box->shape) != w0) return false;
+        return dispatchSlot(box, slotPlusOne);
+    }
+    return false;
+}
+
 }  // namespace
 
 extern "C" {
 
 uint64_t bronze_call_method(uint64_t thisBits, uint32_t keyIndex, uint32_t argc,
                             const uint64_t* argvBits, uint64_t* icEntry) {
+    if (uint64_t hit; methodIcHit(icEntry, thisBits, argc, argvBits, hit)) {
+        return hit;
+    }
     Rooted<Value> thisRoot{Value(thisBits)};
     // A stack site, not the module's entry: the property machinery installs
     // shape/slot/depth facts here without the module's method-site words —

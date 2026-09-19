@@ -219,19 +219,6 @@ const KeyInfo& rtKeyInfo(uint32_t index) {
     return index < g_keyInfos.size() ? g_keyInfos[index] : g_emptyKeyInfo;
 }
 
-// A deque and not a vector: a site is handed out by address and consulted
-// across a walk that can run a getter, which can register a key and grow the
-// table — and a deque's growth at the end leaves every earlier element where
-// it was. Sites are zero-initialised, which is the empty site (no way names a
-// shape), so a key first read on this thread misses and fills like any other.
-static thread_local std::deque<InlineCacheSite> g_keySites;
-
-InlineCacheSite* rtKeyCacheSite(uint32_t index) {
-    if (rtTls()->key_ic_enabled == 0) return nullptr;
-    if (index >= g_keySites.size()) g_keySites.resize(static_cast<size_t>(index) + 1);
-    return &g_keySites[index];
-}
-
 // ---- Caches with heap Values ------------------------------------------------
 
 // The one function object for a top-level function declaration. A declaration

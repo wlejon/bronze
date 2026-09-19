@@ -47,10 +47,11 @@ typedef struct bronze_tls_block {
     uint64_t ta_set_fast_enabled;
     uint64_t truthy_inline_enabled;
     uint64_t* elem_set_cache_tbl;
-    /* The per-KEY inline-cache sites the property helpers consult when a call
-     * site brings no entry of its own (rt_prop.cpp). BRONZE_NO_KEY_IC=1
-     * lowers it, and every such read then takes the shape walk it always
-     * took. */
+    /* RETIRED, kept for layout: it gated the per-KEY fallback sites the
+     * property helpers consulted while the brass backend passed no site
+     * entry. Every generated site now brings its own entry from the module's
+     * `__bronze_ic_table`, nothing reads this word, and the slot stays so the
+     * offsets after it — and the ABI stamp — do not move. */
     uint64_t key_ic_enabled;
     /* The lowest stack address compiled code may run at: every function's
      * prologue compares its stack pointer against it and calls

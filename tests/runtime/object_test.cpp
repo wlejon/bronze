@@ -620,13 +620,15 @@ TEST_CASE("Object.defineProperty reads its descriptor's fields off the whole cha
     }
 }
 
-// The per-KEY site (rt_state.h): a read whose call site brings no entry —
-// every site the brass backend emits — fills and consults the key's own site,
-// under the same validity as a call site's. What is pinned is that it FILLS
-// (a cache that never fills passes every behavioural test), that it answers a
-// prototype hit from the entry, that a prototype mutation retires the entry
-// through the epoch, and that the seam leaves the key with no site at all.
-TEST_CASE("an entry-less property read fills and hits the key's own site") {
+// The per-SITE cache (bronze_abi.h, "the inline property cache contract"): a
+// read brings its own site — the backend's `__bronze_ic_table` entry, here a
+// zeroed site on the stack — and the helper fills and consults THAT, under
+// the site's validity. What is pinned is that it FILLS (a cache that never
+// fills passes every behavioural test), that it answers a prototype hit from
+// the entry, that a prototype mutation retires the entry through the epoch,
+// and that a read with NO site caches nothing anywhere — there is no per-key
+// fallback behind a null entry any more.
+TEST_CASE("a property read fills and hits the site its caller brings") {
     ShadowStackFrame frame;
     NonMovingArena& arena = runtime::rtArena();
     Heap& heap = runtime::rtHeap();
@@ -639,13 +641,19 @@ TEST_CASE("an entry-less property read fills and hits the key's own site") {
     Rooted<Value> one(Value::fromDouble(1.0));
     proto.set(proto.get()->setProp(heap, arena, key, one));
 
-    InlineCacheSite* site = runtime::rtKeyCacheSite(keyIndex);
-    REQUIRE(site != nullptr);
+    InlineCacheSite siteStorage{};
+    InlineCacheSite* site = &siteStorage;
+    auto* entry = reinterpret_cast<uint64_t*>(site);
     CHECK(site->find(inst.get()->shape, rtIcWayLimit()) == nullptr);
 
-    // A null entry is what generated code passes; the read fills the key's
-    // site at the depth the walk found the holder.
+    // A read with no site answers and leaves the site untouched: nothing else
+    // is filled on its behalf.
     CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, nullptr))
+              .asNumber() == 1.0);
+    CHECK(site->find(inst.get()->shape, rtIcWayLimit()) == nullptr);
+
+    // The read fills the caller's site at the depth the walk found the holder.
+    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, entry))
               .asNumber() == 1.0);
     InlineCache* way = site->find(inst.get()->shape, rtIcWayLimit());
     REQUIRE(way != nullptr);
@@ -656,7 +664,7 @@ TEST_CASE("an entry-less property read fills and hits the key's own site") {
     // replacing the value in place (no shape change) is seen through the slot.
     Rooted<Value> two(Value::fromDouble(2.0));
     proto.get()->setProp(heap, arena, key, two);
-    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, nullptr))
+    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, entry))
               .asNumber() == 2.0);
 
     // Shadowing on the RECEIVER changes its shape, so the entry no longer
@@ -666,7 +674,7 @@ TEST_CASE("an entry-less property read fills and hits the key's own site") {
     Rooted<Value> own(Value::fromDouble(3.0));
     inst.set(inst.get()->setProp(heap, arena, key, own));
     CHECK(inst.get()->shape != shapeBefore);
-    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, nullptr))
+    CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, entry))
               .asNumber() == 3.0);
     InlineCache* ownWay = site->find(inst.get()->shape, rtIcWayLimit());
     REQUIRE(ownWay != nullptr);
@@ -683,14 +691,16 @@ TEST_CASE("an entry-less property read fills and hits the key's own site") {
     Rooted<Value> four(Value::fromDouble(4.0));
     proto.set(proto.get()->setProp(heap, arena, unrelatedKey, four));
     CHECK_FALSE(protoWay->describes(shapeBefore));
-    CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex, nullptr))
+    CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex, entry))
               .asNumber() == 2.0);
     CHECK(site->find(shapeBefore, rtIcWayLimit())->describes(shapeBefore));
 
-    // The seam: with the sites off, a key has none and the read still answers.
-    runtime::rtTls()->key_ic_enabled = 0;
-    CHECK(runtime::rtKeyCacheSite(keyIndex) == nullptr);
-    CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex, nullptr))
+    // A SECOND site for the same key starts empty: sites are the caller's,
+    // never shared by key.
+    InlineCacheSite otherSite{};
+    CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex,
+                                reinterpret_cast<uint64_t*>(&otherSite)))
               .asNumber() == 2.0);
-    runtime::rtTls()->key_ic_enabled = 1;
+    CHECK(otherSite.find(shapeBefore, rtIcWayLimit()) != nullptr);
+    CHECK(otherSite.find(inst.get()->shape, rtIcWayLimit()) == nullptr);
 }

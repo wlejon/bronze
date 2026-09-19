@@ -101,6 +101,13 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     options.propagate_exceptions_in_entry = propagateExceptionsInEntry_;
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
+    // The inline-cache table: lowering numbered every property and method
+    // site, the verifier bounded each number, and `__bronze_ic_table` below
+    // is laid out to exactly this count, so brass may address a site as
+    // `table + index * BRONZE_ABI_IC_SITE_SIZE` without a check.
+    options.ic_site_count = module.icSiteCount;
+    const std::vector<uint32_t> methodIcSites = module.methodIcSites();
+    options.method_ic_sites = methodIcSites;
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& fn = module.functions[i];
         brass::il::FunctionMeta meta;
@@ -474,6 +481,36 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
+    // The method-call site numbers, as the u64 array the module's entry hands
+    // `bronze_register_method_ic_cells` with the IC table (bronze_abi.h). Only
+    // emitted when there is a site to register; brass emits the call under the
+    // same condition.
+    if (!methodIcSites.empty()) {
+        roSec.align_to(8);
+        const size_t sitesOffset = roSec.data.size();
+        for (uint32_t site : methodIcSites) {
+            roSec.emit64(static_cast<uint64_t>(site));
+        }
+        const size_t sitesSize = roSec.data.size() - sitesOffset;
+        const std::string sitesSymName = moduleSym("__bronze_method_ic_sites");
+        if (auto* sym = obj.find_symbol(sitesSymName)) {
+            sym->section_index = obj.get_section_index(roSecName);
+            sym->value = sitesOffset;
+            sym->size = sitesSize;
+            sym->binding = brass::object::SymbolBinding::Local;
+            sym->type = brass::object::SymbolType::Object;
+        } else {
+            brass::object::ObjectSymbol sitesSym;
+            sitesSym.name = sitesSymName;
+            sitesSym.section_index = obj.get_section_index(roSecName);
+            sitesSym.value = sitesOffset;
+            sitesSym.size = sitesSize;
+            sitesSym.binding = brass::object::SymbolBinding::Local;
+            sitesSym.type = brass::object::SymbolType::Object;
+            obj.add_symbol(std::move(sitesSym));
+        }
+    }
+
     for (uint16_t file = 0; file < module.sourceTexts.size(); ++file) {
         uint32_t entry_count = 0;
         for (size_t i = 0; i < module.functions.size(); ++i) {
@@ -836,6 +873,36 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         cacheSymbol.binding = brass::object::SymbolBinding::Local;
         cacheSymbol.type = brass::object::SymbolType::Object;
         obj.add_symbol(std::move(cacheSymbol));
+    }
+
+    // The inline-cache table (bronze_abi.h, "the inline property cache
+    // contract"): one BRONZE_ABI_IC_SITE_SIZE-byte site per property or
+    // method site lowering numbered, every word zero — the empty site. Brass
+    // addresses a site as `table + icIndex * BRONZE_ABI_IC_SITE_SIZE` and
+    // passes that pointer to the helpers, which fill it in place; the
+    // method-call sites' env words were registered above as value cells. At
+    // least one site is laid out so the symbol always has a size.
+    dataSec.align_to(8);
+    const size_t icTableOffset = dataSec.data.size();
+    const size_t icSites = std::max<size_t>(module.icSiteCount, 1);
+    const size_t icTableBytes = icSites * BRONZE_ABI_IC_SITE_SIZE;
+    dataSec.data.resize(icTableOffset + icTableBytes, 0);
+    const std::string icTableSym = moduleSym("__bronze_ic_table");
+    if (auto* sym = obj.find_symbol(icTableSym)) {
+        sym->section_index = obj.get_section_index(dataSecName);
+        sym->value = icTableOffset;
+        sym->size = icTableBytes;
+        sym->binding = brass::object::SymbolBinding::Local;
+        sym->type = brass::object::SymbolType::Object;
+    } else {
+        brass::object::ObjectSymbol icSym;
+        icSym.name = icTableSym;
+        icSym.section_index = obj.get_section_index(dataSecName);
+        icSym.value = icTableOffset;
+        icSym.size = icTableBytes;
+        icSym.binding = brass::object::SymbolBinding::Local;
+        icSym.type = brass::object::SymbolType::Object;
+        obj.add_symbol(std::move(icSym));
     }
 
     // The native import table: { u32 count; u32 namesOffset; u64 slots[];

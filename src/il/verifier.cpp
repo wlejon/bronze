@@ -611,6 +611,39 @@ bool verify(const Module& module, DiagnosticSink& diags) {
             }
         }
     }
+
+    // A site is either a property site or a method-call site, never both: the
+    // two read the same bytes under different contracts (bronze_abi.h, "the
+    // METHOD-CALL site"), and the runtime registers a method site's env words
+    // as heap-Value cells — a property entry's shape pointer in that word
+    // would be forwarded as if it were a Value. Lowering hands every site its
+    // own number; this is what makes that discipline a checked fact.
+    {
+        std::unordered_set<uint32_t> methodSites;
+        for (const auto& fn : module.functions) {
+            for (const auto& block : fn.blocks) {
+                for (const auto& inst : block.instructions) {
+                    if (inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
+                        methodSites.insert(inst.icIndex);
+                    }
+                }
+            }
+        }
+        for (const auto& fn : module.functions) {
+            for (const auto& block : fn.blocks) {
+                for (const auto& inst : block.instructions) {
+                    if ((inst.op == Op::PropGet || inst.op == Op::PropSet) &&
+                        methodSites.count(inst.icIndex)) {
+                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                                " shares inline-cache site " +
+                                                std::to_string(inst.icIndex) +
+                                                " with a method call");
+                        return false;
+                    }
+                }
+            }
+        }
+    }
     return true;
 }
 

@@ -65,8 +65,9 @@
 
 namespace bronze::runtime {
 
-// The IC table is a zero-initialized global array in the GENERATED object file,
-// one entry per property site, and `rtAsCache` (rt_property.h) takes the entry
+// The IC table is a zero-initialized global array in the GENERATED object file
+// (`__bronze_ic_table`, one BRONZE_ABI_IC_SITE_SIZE site per property or
+// method site), and `rtAsCache` (rt_property.h) takes the site's way-0 entry
 // pointer. That is what lets compiled code hold a stable address per site and
 // inline the shape check, which a std::vector — which reallocates — could never
 // offer.
@@ -74,7 +75,8 @@ namespace bronze::runtime {
 // `entry` is null only when a caller has no site to cache against (the
 // runtime's own property paths); ObjectHeader::getProp already treats a null
 // cache as "look it up and cache nothing", a difference in speed and not in
-// semantics.
+// semantics. It is a real site pointer or null and nothing else — the backend
+// never passes an index or a placeholder in its place.
 
 extern "C" {
 
@@ -148,14 +150,8 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
         }
         if (HeapKind::carriesShape(fastHdr->flags)) {
             auto* fastObj = reinterpret_cast<ObjectHeader*>(fastHdr);
-            // A site that brought no entry — every site the brass backend
-            // emits — reads and fills the KEY's site instead (rt_state.h), so
-            // `m.get(k)` on a Map, `mesh.updateMatrix()` on a three.js
-            // object, any prototype method on any plain receiver, is a shape
-            // compare and a slot load after its first walk rather than a walk
-            // every time. Consulted and filled by the same code as a call
-            // site's entry from here on; nothing below can tell the two apart.
-            if (!site) site = rtKeyCacheSite(keyIndex);
+            // `site` is the caller's own entry in its module's IC table, or
+            // null for the runtime's internal reads, which cache nothing.
             // The site's OTHER ways, which generated code also scanned and
             // also missed — so reaching here means every way disagreed with
             // the receiver's shape, or the one that matched needs a walk the
@@ -229,7 +225,6 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
         if (ki.isLength) {
             return Value::fromDouble(objVal.asString<StringHeader>()->getLength()).rawBits();
         }
-        if (!site) site = rtKeyCacheSite(keyIndex);
         if (!ki.isElemIndex && site && site->ways[0].isRealShape()) {
             // The filled way is usually the intrinsic's own, but a site that
             // saw a plain object first may meet its first string before any
@@ -253,10 +248,6 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
 }
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {
-    if (reinterpret_cast<uintptr_t>(icEntry) < 0x10000 ||
-        reinterpret_cast<uintptr_t>(icEntry) > 0x00007fffffffffffULL) {
-        icEntry = nullptr;
-    }
     if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
         // Receiver identity is read BEFORE the body: the walk below can
         // allocate, and a collection would move the receiver out from under a

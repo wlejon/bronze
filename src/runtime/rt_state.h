@@ -54,19 +54,6 @@ StringHeader* rtKeyHeader(uint32_t index);
 const KeyInfo& rtKeyInfo(uint32_t index);
 extern "C" uint32_t bronze_register_key_string_len(const char* str, size_t len);
 
-// The inline-cache site for a KEY, for a property read whose call site brought
-// no entry of its own. The brass backend passes `bronze_prop_get` a null entry
-// at every site, so without this every `o.method()` on a plain receiver walks
-// the receiver's shape and its whole prototype chain — three.js's renderer
-// pays that per property per object per frame. One site per (thread, key),
-// polymorphic across every receiver shape the key is read on, with the same
-// four ways, the same fill and the same validity (receiver shape, prototype
-// epoch, `cachedProtoHolder`) as a call site's entry: the site is the same
-// struct, and the property walk fills and consults it through the same code.
-// Per thread because a site holds a `Shape*`, and shapes are a thread's.
-// Null when BRONZE_NO_KEY_IC=1 lowered the seam. Never moves once handed out.
-struct InlineCacheSite* rtKeyCacheSite(uint32_t index);
-
 uint32_t rtArrayMethodId(const std::string& key);
 Value rtArrayMethodById(uint32_t id);
 void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
