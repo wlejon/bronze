@@ -467,6 +467,11 @@ TEST_CASE("CLI driver --target writes a module for another machine and refuses a
     REQUIRE_MESSAGE(status == 0, err);
     CHECK(readMagic(soPath) == 0x464C457Fu);      // \x7fELF
 
+#if defined(__APPLE__)
+    const char* foreignTarget = "x64-linux";
+#else
+    const char* foreignTarget = "x64-macos";
+#endif
     // A program for another machine, and an unknown machine: refused by name.
     err.clear();
     status = bronze::cli::runBuild(
@@ -477,7 +482,7 @@ TEST_CASE("CLI driver --target writes a module for another machine and refuses a
         /*retainFnSource=*/true, /*importMapPath=*/{}, /*assumeNoBigInt=*/false,
         /*pinsPath=*/{}, /*censusOutPath=*/{}, /*pinsAllowObserved=*/false,
         /*nativeManifestPath=*/{}, /*nativeLibPath=*/{}, /*entryResolvesAs=*/{},
-        /*targetName=*/"x64-macos");
+        /*targetName=*/foreignTarget);
     CHECK(status != 0);
     CHECK(err.find("--emit-shared") != std::string::npos);
     CHECK(!std::filesystem::exists(exePath));
