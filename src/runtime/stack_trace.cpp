@@ -20,6 +20,9 @@
 #else
 #include <pthread.h>
 #include <unwind.h>
+#if defined(__APPLE__)
+#include <sys/resource.h>
+#endif
 #endif
 
 #include "abi/bronze_abi.h"
@@ -128,10 +131,29 @@ static inline void get_stack_bounds(uintptr_t& low, uintptr_t& high) {
         return;
     }
 #elif defined(__APPLE__)
-    void* stack_addr = pthread_get_stackaddr_np(pthread_self());
+    char marker = 0;
+    const uintptr_t cur_sp = reinterpret_cast<uintptr_t>(&marker);
+    uintptr_t addr = reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
     size_t stack_size = pthread_get_stacksize_np(pthread_self());
-    high = reinterpret_cast<uintptr_t>(stack_addr);
-    low = high - stack_size;
+    if (pthread_main_np()) {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0) {
+            if (rl.rlim_cur >= RLIM_INFINITY || rl.rlim_cur == 0) {
+                stack_size = 8 * 1024 * 1024;
+            } else {
+                stack_size = static_cast<size_t>(rl.rlim_cur);
+            }
+        } else {
+            stack_size = 8 * 1024 * 1024;
+        }
+    }
+    if (addr > cur_sp) {
+        high = addr;
+        low = (high > stack_size) ? (high - stack_size) : 0;
+    } else {
+        low = addr;
+        high = low + stack_size;
+    }
     return;
 #elif defined(__linux__)
     pthread_attr_t attr;

@@ -144,15 +144,29 @@ void threadStackBounds(uintptr_t& low, uintptr_t& high) {
     low = static_cast<uintptr_t>(lo);
     high = static_cast<uintptr_t>(hi);
 #elif defined(__APPLE__)
-    high = reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
+    char marker = 0;
+    const uintptr_t cur_sp = reinterpret_cast<uintptr_t>(&marker);
+    uintptr_t addr = reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(pthread_self()));
     size_t size = pthread_get_stacksize_np(pthread_self());
     if (pthread_main_np()) {
         struct rlimit rl;
-        if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur > 0 && rl.rlim_cur < RLIM_INFINITY) {
-            size = static_cast<size_t>(rl.rlim_cur);
+        if (getrlimit(RLIMIT_STACK, &rl) == 0) {
+            if (rl.rlim_cur >= RLIM_INFINITY || rl.rlim_cur == 0) {
+                size = 8 * 1024 * 1024;
+            } else {
+                size = static_cast<size_t>(rl.rlim_cur);
+            }
+        } else {
+            size = 8 * 1024 * 1024;
         }
     }
-    low = high - size;
+    if (addr > cur_sp) {
+        high = addr;
+        low = (high > size) ? (high - size) : 0;
+    } else {
+        low = addr;
+        high = low + size;
+    }
 #else
     pthread_attr_t attr;
     if (pthread_getattr_np(pthread_self(), &attr) == 0) {
@@ -171,7 +185,7 @@ void threadStackBounds(uintptr_t& low, uintptr_t& high) {
 // RangeError — its message, its stack trace, the property store — and for
 // whatever the host does with it, all on the same stack. A quarter of a
 // small stack, so a 256 KB worker still gets three quarters of it.
-constexpr uintptr_t kStackReserveBytes = 256 * 1024;
+constexpr uintptr_t kStackReserveBytes = 128 * 1024;
 
 }  // namespace
 
@@ -189,17 +203,18 @@ extern "C" void* bronze_tls_enter(void) {
         if (high > low) {
             const uintptr_t size = high - low;
             const uintptr_t reserve =
-                size >= 2 * bronze::runtime::kStackReserveBytes ? bronze::runtime::kStackReserveBytes
+                size >= 4 * bronze::runtime::kStackReserveBytes ? bronze::runtime::kStackReserveBytes
                                                                  : size / 4;
             tls->stack_limit = low + reserve;
         }
-        uintptr_t cur_sp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
-        if (tls->stack_limit != 0 && cur_sp <= tls->stack_limit) {
-            if (cur_sp > bronze::runtime::kStackReserveBytes) {
-                tls->stack_limit = cur_sp - bronze::runtime::kStackReserveBytes;
-            } else {
-                tls->stack_limit = 0;
-            }
+    }
+    char marker = 0;
+    const uintptr_t cur_sp = reinterpret_cast<uintptr_t>(&marker);
+    if (tls->stack_limit != 0 && cur_sp <= tls->stack_limit + 32 * 1024) {
+        if (cur_sp > bronze::runtime::kStackReserveBytes) {
+            tls->stack_limit = cur_sp - bronze::runtime::kStackReserveBytes;
+        } else {
+            tls->stack_limit = 0;
         }
     }
     return tls;
