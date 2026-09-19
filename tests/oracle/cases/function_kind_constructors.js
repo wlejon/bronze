@@ -42,11 +42,9 @@ console.log(typeof GF.prototype);
 console.log(Object.prototype.toString.call(gen), Object.prototype.toString.call(asyncFn),
             Object.prototype.toString.call(asyncGen), Object.prototype.toString.call(plain));
 
-// CALLING one is CreateDynamicFunction — compiling source text at run time —
-// which an AOT compiler has nothing to do it with, so all three refuse the way
-// `Function` does rather than pretending.
-try {
-  GF("yield 1");
-} catch (e) {
-  console.log(e.name);
-}
+// CALLING one is CreateDynamicFunction — compiling source text at run time.
+// That is not a question this suite can pin: node compiles it, and so does
+// `bronze run`, whose evaluator answers the runtime's dynamic-function hook;
+// a BUILT program has no compiler beside it and refuses with a TypeError.
+// tests/cli/cli_test.cpp pins the refusal where it belongs, on the built
+// program alone.

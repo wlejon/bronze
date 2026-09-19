@@ -332,6 +332,47 @@ TEST_CASE("CLI driver accepts --import-map parameter in runTypes and runBuild") 
 // source texts `--no-fn-source` drops: the two builds of one program print the
 // same frames, at the lines and columns the program was written on, rather
 // than the no-source build degrading every frame to 1:1.
+// A built program has no compiler beside it, so CreateDynamicFunction — the
+// call form of %Function%, %GeneratorFunction%, %AsyncFunction% and
+// %AsyncGeneratorFunction%, and `eval` — is a TypeError naming the kind. The
+// oracle suite cannot pin this: node compiles the source, and so does
+// `bronze run`, whose evaluator answers the runtime's dynamic-code hooks.
+TEST_CASE("A built program refuses dynamic code compilation with a TypeError") {
+    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_dynamic_fn.js";
+    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_dynamic_fn.exe";
+    std::error_code ec;
+    removeProgram(exePath, ec);
+
+    writeTestFile(jsPath,
+        "function* gen() {}\n"
+        "async function af() {}\n"
+        "async function* agen() {}\n"
+        "const kinds = [Function, Object.getPrototypeOf(gen).constructor,\n"
+        "               Object.getPrototypeOf(af).constructor,\n"
+        "               Object.getPrototypeOf(agen).constructor];\n"
+        "for (const K of kinds) {\n"
+        "  try { K('return 1'); console.log('compiled'); }\n"
+        "  catch (e) { console.log(e.name + ': ' + e.message.split(':')[0]); }\n"
+        "}\n"
+        "try { eval('1'); console.log('compiled'); }\n"
+        "catch (e) { console.log(e.name + ': ' + e.message.split(':')[0]); }\n"
+    );
+
+    std::string err;
+    int status = bronze::cli::runBuild(jsPath.string(), exePath.string(), &err);
+    REQUIRE_MESSAGE(status == 0, err);
+
+    CHECK(runAndCaptureOutput(exePath) ==
+          "TypeError: Function\n"
+          "TypeError: GeneratorFunction\n"
+          "TypeError: AsyncFunction\n"
+          "TypeError: AsyncGeneratorFunction\n"
+          "TypeError: eval\n");
+
+    removeProgram(exePath, ec);
+    std::filesystem::remove(jsPath, ec);
+}
+
 TEST_CASE("CLI driver --no-fn-source keeps the Error.stack line table") {
     std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_no_fn_source.js";
     std::filesystem::path exeWith = std::filesystem::temp_directory_path() / "test_driver_fn_source.exe";

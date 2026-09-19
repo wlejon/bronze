@@ -10,4 +10,3 @@ true
 true
 object
 [object GeneratorFunction] [object AsyncFunction] [object AsyncGeneratorFunction] [object Function]
-TypeError
