@@ -1,0 +1,10 @@
+true ReferenceError: missingName is not defined secondOperand@35:19
+true ReferenceError: missingFn is not defined calledSecond@40
+true ReferenceError: missingCounter is not defined updateStatement@46:3
+true ReferenceError: missingAcc is not defined compoundStatement@52:3
+true ReferenceError: missingName is not defined returnDirect@58
+true ReferenceError: missingFn is not defined callDirect@63
+true ReferenceError: missingArg is not defined asArgument@68:27
+true ReferenceError: missingInMethod is not defined K.m@74:21
+true ReferenceError: missingDeep is not defined inner@81:18,outer@86:14
+undefined

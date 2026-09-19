@@ -114,4 +114,10 @@ bool rtErrorText(Value v, std::string& out);
 // newline. Shared by `bronze_uncaught_exception` and its test.
 std::string rtUncaughtText(Value thrown);
 
+// The whole report: an Error instance is inspected with its stack, the way
+// node prints one, and anything else is rtUncaughtText. What a program with
+// an exception still pending at its end prints, and what `bronze run` prints
+// for the same program, so the two entry points report one thing.
+std::string rtUncaughtReport(Value thrown);
+
 }  // namespace bronze::runtime

@@ -105,6 +105,10 @@ Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
     inst.type = il::Type::Dynamic;
     inst.result = res;
     inst.keyIndex = getKeyConstantIndex(name);
+    // The identifier's own span, like every other site that can raise: it is
+    // the position the ReferenceError's stack frame and the uncaught-error
+    // report point at, and V8 points at the identifier too.
+    inst.span = span;
     emitInst(ilFn, inst);
     return Value{res, il::Type::Dynamic};
 }

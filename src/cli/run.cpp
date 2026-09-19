@@ -7,23 +7,28 @@
 
 #include "eval/eval.h"
 #include "embed/embed.h"
+#include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/sampler.h"
 
 namespace bronze::cli {
 
-
+// The report a built program makes at its end with an exception pending
+// (bronze_uncaught_exception): an Error with its stack, anything else
+// inspected. `bronze run` of the same program prints the same lines.
+static int reportUncaught(Value thrown) {
+    const std::string text = runtime::rtUncaughtReport(thrown);
+    std::fflush(stdout);
+    std::fprintf(stderr, "%s\n", text.c_str());
+    return 1;
+}
 
 int runEvalReal(std::string_view code) {
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
     embed::CallResult res = eval::evalScript(code, eval::EvalOptions{.filename = "<eval>"});
-    if (res.thrown) {
-        std::string errStr = embed::toUtf8(res.value);
-        std::fprintf(stderr, "Uncaught %s\n", errStr.c_str());
-        return 1;
-    }
+    if (res.thrown) return reportUncaught(res.value);
     if (!res.value.isUndefined()) {
         std::string out = embed::toUtf8(res.value);
         std::printf("%s\n", out.c_str());
@@ -41,11 +46,7 @@ int runFileInJitReal(const std::string& filePath) {
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
     embed::CallResult res = eval::evalFile(filePath, eval::EvalOptions{.filename = filePath});
-    if (res.thrown) {
-        std::string errStr = embed::toUtf8(res.value);
-        std::fprintf(stderr, "Uncaught %s\n", errStr.c_str());
-        return 1;
-    }
+    if (res.thrown) return reportUncaught(res.value);
     return 0;
 }
 

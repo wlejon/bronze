@@ -529,6 +529,10 @@ std::string rtUncaughtText(Value thrown) {
     return "Uncaught " + rtInspect(thrown);
 }
 
+std::string rtUncaughtReport(Value thrown) {
+    return rtIsErrorInstance(thrown) ? rtInspectErrorWithStack(thrown) : rtUncaughtText(thrown);
+}
+
 extern "C" {
 
 // A name lowering's closed ladder could not resolve, RESOLVED AT RUN TIME.
@@ -637,7 +641,7 @@ void bronze_pin_check_array(uint32_t keyIndex, uint64_t bits) {
 // pinnable: stdout holds exactly what the program printed before it died.
 void bronze_uncaught_exception() {
     Value thrown(rtTls()->exception_cell);
-    const std::string text = rtIsErrorInstance(thrown) ? rtInspectErrorWithStack(thrown) : rtUncaughtText(thrown);
+    const std::string text = rtUncaughtReport(thrown);
     std::fflush(stdout);
     std::fprintf(stderr, "%s\n", text.c_str());
     std::fflush(stderr);
