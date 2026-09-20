@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstddef>
 #include <iterator>
+#include <limits>
 #include <string>
 
 #include "abi/bronze_abi.h"
@@ -261,27 +262,31 @@ uint64_t dateToPrimitive(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     return rtOrdinaryToPrimitive(self, tryFirst).rawBits();
 }
 
-// ---- the members ECMA-262 defines and bronze does not build ------------------
-
-// Each needs its own code pointer, because `rtNativeFunction` interns on it —
-// one shared thunk would make all six the same function object and the message
-// would name the wrong member. They refuse when CALLED rather than when read,
-// which is the honest split: `typeof d.toLocaleString === 'function'` is true in
-// every engine, and the wrong answer only exists once the call is made.
-[[noreturn]] void refuse(const char* member, const char* why) {
-    fatal((std::string("unsupported: Date.prototype.") + member + " is not implemented (" + why +
-           ")")
-              .c_str());
+uint64_t dateGetYear(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
+    double t = 0.0;
+    if (!rtDateThisTimeValue(Value(thisBits), "getYear", t)) {
+        return Value::fromUndefined().rawBits();
+    }
+    if (std::isnan(t)) return Value::fromDouble(t).rawBits();
+    return Value::fromDouble(dt::yearFromTime(dt::localTime(t)) - 1900.0).rawBits();
 }
 
-constexpr const char* kAnnexBWhy =
-    "it is an Annex B legacy member; use the four-digit getFullYear / setFullYear pair";
-
-uint64_t dateGetYear(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    refuse("getYear", kAnnexBWhy);
-}
-uint64_t dateSetYear(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    refuse("setYear", kAnnexBWhy);
+uint64_t dateSetYear(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> self{Value(thisBits)};
+    double t = 0.0;
+    if (!rtDateThisTimeValue(self.get(), "setYear", t)) {
+        return Value::fromUndefined().rawBits();
+    }
+    double y = args.count() > 0 ? rtToNumber(args[0]) : std::numeric_limits<double>::quiet_NaN();
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    double zoned = std::isnan(t) ? 0.0 : dt::localTime(t);
+    y = dt::makeFullYear(y);
+    const double day = dt::makeDay(y, dt::monthFromTime(zoned), dt::dateFromTime(zoned));
+    const double when = dt::makeDate(day, dt::timeWithinDay(zoned));
+    const double u = dt::timeClip(dt::utcFromLocal(when));
+    rtDateSetTimeValue(self.get(), u);
+    return Value::fromDouble(u).rawBits();
 }
 
 const NativeMethod kStringMembers[] = {

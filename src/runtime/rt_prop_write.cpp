@@ -317,7 +317,8 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             return;
         }
         if (!valVal.isObject()) {
-            fatal("assigning a non-object to a function's `prototype` is unsupported");
+            rtThrowTypeError("Assigning a non-object to a function's prototype is not supported");
+            return;
         }
         auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
         fn->prototype = valVal;
@@ -341,10 +342,8 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // that exists and changes nothing, which is the silent lie the refusal
     // exists to prevent.
     if (rtIsArrayPrototypeObject(objVal)) {
-        fatal(("decorating Array.prototype is unsupported (an array answers its members "
-               "beside the value, so a member written here would never be found on one; "
-               "tried to write `" + keyStr + "`)")
-                  .c_str());
+        rtThrowTypeError("Cannot decorate Array.prototype (tried to write `" + keyStr + "`)");
+        return;
     }
 
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
@@ -740,8 +739,9 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // A namespace refuses a SYMBOL key on the same terms as a string one:
         // 10.4.6.9 returns false without ever looking at the key.
         if (rtModuleNamespaceWriteRefused(recv.get(), "<symbol>", strict)) return;
-        fatal("a symbol-keyed property write is only supported on a plain object, a "
-              "function or an array (a typed array carries no shape at all)");
+        rtThrowTypeError("a symbol-keyed property write is only supported on a plain object, a "
+                         "function or an array (a typed array carries no shape at all)");
+        return;
     }
     // A write through `o[i]` to something that is not an object, answered
     // exactly as `bronze_prop_set` answers `o.k`: the nullish TypeError first,

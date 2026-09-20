@@ -13,6 +13,8 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/builtin_date_internal.h"
+#include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -26,8 +28,13 @@
 #include "runtime/value.h"
 
 using namespace bronze;
+using namespace bronze::runtime;
 
 namespace {
+
+struct ClearCell {
+    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
+};
 
 // A member of an object by name, with no allocation once the key exists.
 Value member(Rooted<Value>& obj, const char* name) {
@@ -208,4 +215,73 @@ TEST_CASE("a Number wrapper is branded by its slot and nothing else is") {
     REQUIRE(runtime::rtWrapperPrimitive(wrapper.get(), prim));
     CHECK(prim.asNumber() == 7.5);
     CHECK_FALSE(runtime::rtWrapperPrimitive(plain.get(), prim));
+}
+
+TEST_CASE("String.prototype.localeCompare performs root-locale comparison") {
+    ShadowStackFrame frame;
+    Rooted<Value> sA{runtime::rtMakeString("apple")};
+    Rooted<Value> sB{runtime::rtMakeString("banana")};
+    Rooted<Value> fn{primitiveMember(sA.get(), "localeCompare")};
+    REQUIRE(fn.get().isObject());
+
+    Value argB = sB.get();
+    Value resLt = fn.get().asObject<FunctionHeader>()->call(sA.get(), 1, &argB);
+    CHECK(resLt.isNumber());
+    CHECK(resLt.asNumber() < 0.0);
+
+    Value argA = sA.get();
+    Value resGt = fn.get().asObject<FunctionHeader>()->call(sB.get(), 1, &argA);
+    CHECK(resGt.isNumber());
+    CHECK(resGt.asNumber() > 0.0);
+
+    Value resEq = fn.get().asObject<FunctionHeader>()->call(sA.get(), 1, &argA);
+    CHECK(resEq.isNumber());
+    CHECK(resEq.asNumber() == 0.0);
+}
+
+TEST_CASE("performance.timeOrigin baseline from system clock exists and is positive") {
+    ShadowStackFrame frame;
+    Rooted<Value> perf{runtime::rtPerformanceNamespace()};
+    REQUIRE(perf.get().isObject());
+    Rooted<Value> key{runtime::rtMakeString("timeOrigin")};
+    Value timeOriginVal = perf.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), key);
+    CHECK(timeOriginVal.isNumber());
+    CHECK(timeOriginVal.asNumber() > 0.0);
+}
+
+TEST_CASE("Date.prototype.getYear and setYear compute standard Annex B year offsets") {
+    ShadowStackFrame frame;
+    Rooted<Value> dateCtor{runtime::rtDateConstructor()};
+    REQUIRE(dateCtor.get().isObject());
+    Rooted<Value> dateProto{dateCtor.get().asObject<FunctionHeader>()->prototype};
+    REQUIRE(dateProto.get().isObject());
+
+    Rooted<Value> getYearKey{runtime::rtMakeString("getYear")};
+    Rooted<Value> getYearFn{dateProto.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), getYearKey)};
+    REQUIRE(getYearFn.get().isObject());
+
+    Rooted<Value> setYearKey{runtime::rtMakeString("setYear")};
+    Rooted<Value> setYearFn{dateProto.get().asObject<ObjectHeader>()->getProp(runtime::rtHeap(), setYearKey)};
+    REQUIRE(setYearFn.get().isObject());
+
+    Rooted<Value> d{runtime::rtMakeDateObject(946684800000.0)};
+    Value getRes = getYearFn.get().asObject<FunctionHeader>()->call(d.get(), 0, nullptr);
+    CHECK(getRes.isNumber());
+
+    Value yearArg = Value::fromDouble(95.0);
+    Value setRes = setYearFn.get().asObject<FunctionHeader>()->call(d.get(), 1, &yearArg);
+    CHECK(setRes.isNumber());
+    Value getResAfter = getYearFn.get().asObject<FunctionHeader>()->call(d.get(), 0, nullptr);
+    CHECK(getResAfter.isNumber());
+    CHECK(getResAfter.asNumber() == 95.0);
+}
+
+TEST_CASE("rtCheckUnimplementedMember throws TypeError instead of aborting") {
+    ShadowStackFrame frame;
+    ClearCell clear;
+    const char* const names[] = {"fakeMember"};
+    CHECK_FALSE(rtExceptionPending());
+    runtime::rtCheckUnimplementedMember("TestObject", names, 1, "fakeMember");
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

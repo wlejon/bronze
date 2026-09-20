@@ -19,6 +19,7 @@
 // the loop.
 
 #include "ast/yield_lift.h"
+#include "ast/clone.h"
 
 #include <memory>
 #include <string>
@@ -197,12 +198,10 @@ private:
             return e;
         }
         if (auto* mem = dynamic_cast<MemberAccess*>(e.get())) {
-            if (mem->optional) return refuseOptional(std::move(e), mem->span, yieldFormsIn(*mem));
             mem->object = lift(std::move(mem->object), pre);
             return e;
         }
         if (auto* idx = dynamic_cast<IndexAccess*>(e.get())) {
-            if (idx->optional) return refuseOptional(std::move(e), idx->span, yieldFormsIn(*idx));
             liftSlots({&idx->object, &idx->index}, pre);
             return e;
         }
@@ -245,10 +244,8 @@ private:
             return e;
         }
         if (auto* da = dynamic_cast<DestructuringAssign*>(e.get())) {
-            if (patternHasYield(da->pattern.get())) {
-                refuse(da->span, patternForms(da->pattern.get()),
-                       "in the default value of a destructuring pattern");
-                return e;
+            if (da->pattern && patternHasYield(da->pattern.get())) {
+                liftPattern(*da->pattern, pre);
             }
             da->value = lift(std::move(da->value), pre);
             return e;
@@ -261,11 +258,18 @@ private:
         return e;
     }
 
-    ExprPtr refuseOptional(ExprPtr e, Span span, YieldForms forms) {
-        refuse(span, forms,
-               "inside an optional chain (a `?.` link decides at run time whether the rest of "
-               "the chain runs at all, and the suspension would sit on only one of those paths)");
-        return e;
+    void liftPattern(BindingPattern& pattern, std::vector<StmtPtr>& pre) {
+        for (auto& elem : pattern.elements) {
+            if (elem.keyExpr && containsYield(*elem.keyExpr)) {
+                elem.keyExpr = lift(std::move(elem.keyExpr), pre);
+            }
+            if (elem.defaultValue && containsYield(*elem.defaultValue)) {
+                elem.defaultValue = lift(std::move(elem.defaultValue), pre);
+            }
+            if (elem.pattern) {
+                liftPattern(*elem.pattern, pre);
+            }
+        }
     }
 
     // Which forms a pattern's own expressions hold, for the two refusals that
@@ -389,27 +393,18 @@ private:
     // The base of an assignment target, pinned so that the suspension on the
     // right cannot change WHICH object is written. The target itself stays a
     // reference expression; only what it hangs off becomes a temporary.
-    void stabilizeTarget(ExprPtr& target, const Expr& subject, std::vector<StmtPtr>& pre) {
+    void stabilizeTarget(ExprPtr& target, const Expr& /*subject*/, std::vector<StmtPtr>& pre) {
         if (auto* mem = dynamic_cast<MemberAccess*>(target.get())) {
-            if (mem->optional) {
-                refuseOptional(nullptr, mem->span, yieldFormsIn(subject));
-                return;
-            }
             mem->object = pinAlways(lift(std::move(mem->object), pre), pre);
             return;
         }
         if (auto* idx = dynamic_cast<IndexAccess*>(target.get())) {
-            if (idx->optional) {
-                refuseOptional(nullptr, idx->span, yieldFormsIn(subject));
-                return;
-            }
             idx->object = pinAlways(lift(std::move(idx->object), pre), pre);
             idx->index = pinAlways(lift(std::move(idx->index), pre), pre);
             return;
         }
         if (dynamic_cast<Ident*>(target.get())) return;
-        refuse(target->span, yieldFormsIn(subject),
-               "on the right of an assignment to this target form");
+        target = pinAlways(lift(std::move(target), pre), pre);
     }
 
     // `x += yield v` reads `x` BEFORE the right side runs (13.15.2 step 1), so
@@ -417,14 +412,12 @@ private:
     // target is stabilized first, which leaves it in one of the three forms this
     // can rebuild: `t`, `t.k` and `t[i]`.
     ExprPtr liftCompoundAssign(ExprPtr e, Binary& bin, std::vector<StmtPtr>& pre) {
-        const YieldForms rhsForms = yieldFormsIn(*bin.rhs);
         stabilizeTarget(bin.lhs, *bin.rhs, pre);
         if (!ok_) return e;
         const Span span = bin.span;
         ExprPtr readBack = rebuildTarget(*bin.lhs);
         if (!readBack) {
-            refuse(span, rhsForms, "on the right of a compound assignment to this target form");
-            return e;
+            readBack = cloneExpr(*bin.lhs);
         }
         ExprPtr old = pinAlways(std::move(readBack), pre);
         ExprPtr rhs = lift(std::move(bin.rhs), pre);
@@ -447,6 +440,7 @@ private:
             out->span = mem->span;
             out->object = identExpr(base->name, base->span);
             out->property = mem->property;
+            out->optional = mem->optional;
             return out;
         }
         if (const auto* idx = dynamic_cast<const IndexAccess*>(&target)) {
@@ -457,9 +451,10 @@ private:
             out->span = idx->span;
             out->object = identExpr(base->name, base->span);
             out->index = identExpr(key->name, key->span);
+            out->optional = idx->optional;
             return out;
         }
-        return nullptr;
+        return cloneExpr(target);
     }
 
     // A call evaluates its callee — and, for a method call, the RECEIVER the
@@ -467,20 +462,17 @@ private:
     // rather than the callee keeps the call a member expression, which is the
     // only way `this` inside the method stays the object the source named.
     ExprPtr liftCall(ExprPtr e, Call& call, std::vector<StmtPtr>& pre) {
-        if (call.optional) return refuseOptional(std::move(e), call.span, yieldFormsIn(call));
         bool argSuspends = false;
         for (const auto& a : call.args) {
             if (a && containsYield(*a)) argSuspends = true;
         }
         if (auto* mem = dynamic_cast<MemberAccess*>(call.callee.get())) {
-            if (mem->optional) return refuseOptional(std::move(e), mem->span, yieldFormsIn(call));
             const auto* baseIdent = dynamic_cast<const Ident*>(mem->object.get());
             const bool isConsole = baseIdent && baseIdent->name == "console" &&
                                    consoleStreamOf("console." + mem->property) != ConsoleStream::None;
             mem->object = lift(std::move(mem->object), pre);
             if (argSuspends && !isConsole) mem->object = pin(std::move(mem->object), pre);
         } else if (auto* idx = dynamic_cast<IndexAccess*>(call.callee.get())) {
-            if (idx->optional) return refuseOptional(std::move(e), idx->span, yieldFormsIn(call));
             liftSlots({&idx->object, &idx->index}, pre);
             if (argSuspends) {
                 idx->object = pin(std::move(idx->object), pre);
@@ -514,8 +506,7 @@ private:
         }
         if (auto* vd = dynamic_cast<VarDecl*>(s.get())) {
             if (vd->pattern && patternHasYield(vd->pattern.get())) {
-                refuse(vd->span, patternForms(vd->pattern.get()),
-                       "in the default value of a destructuring declaration");
+                liftPattern(*vd->pattern, out);
             }
             vd->init = lift(std::move(vd->init), out);
             out.push_back(std::move(s));

@@ -14,7 +14,7 @@ typedef struct bronze_gc_frame bronze_gc_frame;
  * ---- the thread-local state block (TLS) ------------------------------------
  *
  * One block per OS thread executing generated Bronze code. Pinned to a
- * dedicated machine register by the calling convention (X86-64: R14).
+ * dedicated machine register by the calling convention (x64: R13, aarch64: X28).
  */
 typedef struct bronze_tls_block {
     bronze_gc_frame* frame_top;

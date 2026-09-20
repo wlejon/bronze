@@ -14,6 +14,7 @@
 #include <iterator>
 #include <string>
 
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/rt_property.h"
 
@@ -33,8 +34,9 @@ const char* const kArrayMembers[] = {nullptr};
 // miss is checked against, so it is consulted after the object and after
 // `Object.prototype` above it have both failed to answer.
 //
-// `localeCompare` and `toLocaleString` stay unimplemented rather than
-// aliased to a non-locale answer: a collation or a formatted number is wrong
+// `String.prototype.localeCompare` is implemented in builtin_string.cpp using
+// deterministic root-locale code unit comparison. `toLocaleString` stays unimplemented
+// rather than aliased to a non-locale answer: a formatted number is wrong
 // quietly for exactly the inputs the member exists to get right. The
 // toLocaleLower/UpperCase pair has LEFT this list: case mapping is the one
 // locale member whose tailorings touch only non-ASCII input, and
@@ -65,7 +67,8 @@ void rtCheckUnimplementedMember(const char* receiver, const char* const* names, 
         if (!names[i] || key != names[i]) continue;
         std::string msg = std::string("unsupported: ") + receiver + "." + key +
                           " is not implemented";
-        fatal(msg.c_str());
+        rtThrowTypeError(msg);
+        return;
     }
 }
 

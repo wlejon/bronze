@@ -115,12 +115,8 @@ const char* refusedKindName(Value v) {
 // What every refused kind has in common, said once: it has no side object, so
 // there is nowhere for [[Extensible]] to go, and a bit invented for it would
 // have to be read back by every write path that kind has.
-[[noreturn]] void refuseKind(Value v, const char* operation) {
-    fatal((std::string("unsupported: Object.") + operation + " on " + refusedKindName(v) +
-           " (it keeps no property table, so bronze has nowhere to record "
-           "[[Extensible]] — and a level nothing could read back would be a "
-           "no-op reported as a success)")
-              .c_str());
+void refuseKind(Value v, const char* operation) {
+    rtThrowTypeError(std::string("unsupported: Object.") + operation + " on " + refusedKindName(v));
 }
 
 // The plain object a receiver keeps its own NAMED properties in, created on
@@ -144,7 +140,8 @@ ObjectHeader* integrityTableOwner(Rooted<Value>& self, Target target) {
             return props.get().asObject<ObjectHeader>();
         }
         default:
-            fatal("internal: an integrity table asked of a receiver that has none");
+            rtThrowTypeError("integrity table asked of a receiver that has none");
+            return nullptr;
     }
 }
 
@@ -217,7 +214,10 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
         }
         return self.get().rawBits();
     }
-    if (target == Target::Refused) refuseKind(receiver, operation);
+    if (target == Target::Refused) {
+        refuseKind(receiver, operation);
+        return Value::fromUndefined().rawBits();
+    }
     // A typed array's elements have a SPECIFIED answer: 10.4.5.3
     // [[DefineOwnProperty]] refuses any descriptor that asks an
     // integer-indexed element to stop being configurable or writable, so
@@ -236,6 +236,7 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
 
     Rooted<Value> self{receiver};
     ObjectHeader* owner = integrityTableOwner(self, target);
+    if (!owner || rtExceptionPending()) return Value::fromUndefined().rawBits();
     Dictionary& d = *owner->shape->dict;
     // `preventExtensions` is [[PreventExtensions]] alone: 7.3.14's steps 4 and
     // 5 belong to `seal` and `freeze`, and running them here would take

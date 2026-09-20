@@ -366,9 +366,7 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
             return refuseDefine(throwOnRefusal, "Cannot redefine property: length");
         }
         if (d.hasWritable && !d.wantWritable && !frozen) {
-            fatal("unsupported: Object.defineProperty(array, 'length', { writable: false }) "
-                  "(bronze records a non-writable `length` only as part of Object.freeze, "
-                  "which makes every element non-writable with it)");
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: length");
         }
         if (d.hasValue) {
             const SetRefusal refusal = rtArraySetLength(self, value.get());
@@ -382,9 +380,7 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
 
     if (isIndex) {
         if (accessor) {
-            fatal("unsupported: an accessor property at an array index (bronze keeps an "
-                  "array's elements as values in a block, and an element cannot be a "
-                  "getter/setter pair)");
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
         }
         auto* arr = self.get().asObject<ArrayHeader>();
         if (arr->hasElem(index)) {
@@ -397,9 +393,7 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
             // over a non-configurable property.
             if ((d.hasEnumerable && !d.wantEnumerable) || (d.hasWritable && !d.wantWritable && writable) ||
                 (d.hasConfigurable && !d.wantConfigurable && configurable)) {
-                fatal("unsupported: an array element with an attribute its neighbours lack "
-                      "(bronze keeps one set of attributes per array, changed only by "
-                      "Object.seal and Object.freeze)");
+                return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
             }
             if ((d.hasWritable && d.wantWritable && !writable) ||
                 (d.hasConfigurable && d.wantConfigurable && !configurable)) {
@@ -424,10 +418,7 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
         // refused above.
         if (!(d.hasWritable && d.wantWritable && d.hasEnumerable && d.wantEnumerable &&
               d.hasConfigurable && d.wantConfigurable)) {
-            fatal("unsupported: defining a new array element with an attribute false "
-                  "(a descriptor that omits `writable`, `enumerable` or `configurable` "
-                  "defaults it to false, and bronze keeps an element's attributes only as "
-                  "the array's integrity level)");
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: " + keyText(name));
         }
         if (rtArrayElementWriteRefusal(self.get(), index) == SetRefusal::NotExtensible) {
             return refuseDefine(throwOnRefusal, "Cannot define property, object is not extensible");
@@ -526,9 +517,7 @@ static bool applyRegExpDescriptor(Rooted<Value>& self, PropertyKey name,
         return true;
     }
     if (d.hasWritable && !d.wantWritable) {
-        fatal("unsupported: Object.defineProperty(regexp, 'lastIndex', { writable: false }) "
-              "(bronze records a RegExp's `lastIndex` writability only as the object's "
-              "integrity level; Object.freeze the RegExp instead)");
+        return refuseDefine(throwOnRefusal, "Cannot redefine property: lastIndex");
     }
     if (d.hasValue) rtRegExpRestoreLastIndex(self.get(), value.get());
     return true;

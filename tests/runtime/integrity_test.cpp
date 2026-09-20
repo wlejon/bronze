@@ -21,6 +21,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/dictionary.h"
+#include "runtime/env.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -465,4 +466,14 @@ TEST_CASE("a set with a distinct receiver reports the RECEIVER's refusal") {
     PropertyInfo onHolder;
     CHECK_FALSE(holder.get().asObject<ObjectHeader>()->shape->lookupProperty(
         PropertyKey::fromValue(key.get()), onHolder));
+}
+
+TEST_CASE("Object.freeze on an unsupported receiver kind throws TypeError") {
+    ShadowStackFrame frame;
+    ClearCell guard;
+    Rooted<Value> parent{Value::fromUndefined()};
+    Rooted<Value> env{Value::fromObject(EnvHeader::create(rtHeap(), parent, 0))};
+    CHECK_FALSE(rtExceptionPending());
+    freeze(env.get());
+    CHECK(rtExceptionPending());
 }

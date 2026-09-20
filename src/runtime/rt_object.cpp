@@ -333,7 +333,8 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
         return;
     }
     if (!baseVal.isObject() || baseVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
-        fatal("a class can only extend another class or a constructor function");
+        rtThrowTypeError("Superclass expression is not a constructor");
+        return;
     }
     // A native base whose instances bronze cannot allocate from NewTarget is
     // refused BY NAME here, before a single link is made — the alternative is a
@@ -347,6 +348,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // the two `Rooted` constructors below capture pre-collection addresses,
     // which showed up as a class whose methods were all `undefined`.
     rtCheckNativeBaseExtends(base);
+    if (rtExceptionPending()) return;
     rtEnsureFunctionPrototype(base);
     rtEnsureFunctionProperties(base);
     // 15.7.14 step 6 makes the base constructor the derived one's

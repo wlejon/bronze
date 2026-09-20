@@ -9,6 +9,7 @@
 #include <string>
 
 #include "runtime/array.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
@@ -195,19 +196,21 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
         // its [[ProxyTarget]] and [[ProxyHandler]] the object, not slots ON an
         // ordinary object, and every internal method it has is the handler's.
         if (std::string(name) == "Proxy") {
-            fatal("extending `Proxy` is unsupported (a Proxy IS its target and handler pair "
-                  "rather than an object carrying them, so a subclass would inherit no "
-                  "internal method at all)");
+            rtThrowTypeError("extending `Proxy` is unsupported (a Proxy IS its target and handler pair "
+                             "rather than an object carrying them, so a subclass would inherit no "
+                             "internal method at all)");
+            return;
         }
-        fatal((std::string("extending the native constructor `") + name +
-               "` is unsupported (its instances are the primitive WRAPPER its body builds from "
-               "the argument, not an object created from NewTarget, so a subclass's would "
-               "carry no wrapped value)")
-                  .c_str());
+        rtThrowTypeError(std::string("extending the native constructor `") + name +
+                         "` is unsupported (its instances are the primitive WRAPPER its body builds from "
+                         "the argument, not an object created from NewTarget, so a subclass's would "
+                         "carry no wrapped value)");
+        return;
     }
     if (rtIsDateConstructor(base.get())) {
-        fatal("extending `Date` is unsupported (a Date's [[DateValue]] is created by the "
-              "runtime's own constructor, so a subclass's instances would not carry one)");
+        rtThrowTypeError("extending `Date` is unsupported (a Date's [[DateValue]] is created by the "
+                         "runtime's own constructor, so a subclass's instances would not carry one)");
+        return;
     }
     // `%TypedArray%` itself is subclassable in the language — `class V extends
     // TypedArray {}` is legal, and `new V()` is the TypeError 23.2.1.1 throws
@@ -215,9 +218,10 @@ void rtCheckNativeBaseExtends(Rooted<Value>& base) {
     // the twelve views are what a program extends. Refused by name rather
     // than left to build a plain object that answers `undefined` to 23.2.3.
     if (rtIsTypedArrayIntrinsic(base.get())) {
-        fatal("extending the abstract `%TypedArray%` is unsupported (23.2.1.1 makes its "
-              "constructor throw, so a subclass could never be instantiated; extend one of "
-              "the twelve views instead)");
+        rtThrowTypeError("extending the abstract `%TypedArray%` is unsupported (23.2.1.1 makes its "
+                         "constructor throw, so a subclass could never be instantiated; extend one of "
+                         "the twelve views instead)");
+        return;
     }
 }
 

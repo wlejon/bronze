@@ -205,3 +205,25 @@ TEST_CASE("getGeneratorFrameNames sees destructuring and the lifter's temporarie
               return n.rfind("gen.", 0) == 0;
           }) >= 2);
 }
+
+TEST_CASE("yield and await lifting in destructuring defaults, optional chains, and compound RHS") {
+    // Destructuring defaults with yield
+    CHECK_NOTHROW(parse("function* g() { const [a = yield 1] = []; }"));
+    CHECK_NOTHROW(parse("function* g() { const {x = yield 2} = o; }"));
+    CHECK_NOTHROW(parse("function* g() { ({x = yield 3} = o); }"));
+    CHECK_NOTHROW(parse("async function f() { const [a = await p] = []; }"));
+
+    // Optional chains with yield
+    CHECK_NOTHROW(parse("function* g() { return (yield 1)?.foo; }"));
+    CHECK_NOTHROW(parse("function* g() { return o?.[yield 2]; }"));
+    CHECK_NOTHROW(parse("function* g() { return fn?.(yield 3); }"));
+    CHECK_NOTHROW(parse("function* g() { return o?.bar(yield 4); }"));
+    CHECK_NOTHROW(parse("async function f() { return (await p)?.foo; }"));
+
+    // Compound assignment with yield on RHS
+    CHECK_NOTHROW(parse("function* g() { x += yield 1; }"));
+    CHECK_NOTHROW(parse("function* g() { o.p += yield 2; }"));
+    CHECK_NOTHROW(parse("function* g() { o[k] += yield 3; }"));
+    CHECK_NOTHROW(parse("function* g() { o[yield 4] += yield 5; }"));
+    CHECK_NOTHROW(parse("async function f() { x += await p; }"));
+}

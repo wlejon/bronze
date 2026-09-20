@@ -639,7 +639,7 @@ uint64_t stringLocaleCompare(uint64_t, uint64_t thisBits, uint32_t argc, const u
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "localeCompare");
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    Units that = args.count() > 0 ? argUnits(args[0]) : Units{};
+    Units that = args.count() > 0 ? argUnits(args[0]) : argUnits(Value::fromUndefined());
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     size_t minLen = std::min(self.size(), that.size());

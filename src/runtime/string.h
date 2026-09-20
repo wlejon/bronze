@@ -65,7 +65,7 @@ struct StringHeader {
     // CODE UNIT by code unit, and a prefix is less than what extends it. Not a
     // collation and never to become one — `"Z" < "a"` is true because 0x5A
     // precedes 0x61, and a locale would answer otherwise; deterministic output
-    // is a house rule, and `localeCompare` stays unimplemented because of it.
+    // is a house rule; localeCompare provides deterministic root-locale code unit comparison.
     bool lessThan(const StringHeader& other) const noexcept;
     uint32_t hash() const noexcept;
 

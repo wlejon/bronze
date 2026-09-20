@@ -27,7 +27,9 @@
 #include <cmath>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/builtin_object.h"
+#include "runtime/regexp.h"
 #include "runtime/dictionary.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
@@ -37,6 +39,7 @@
 #include "runtime/property_key.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
@@ -318,4 +321,45 @@ TEST_CASE("a refusal is a value, and only Object.defineProperty raises it") {
     bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     CHECK(own(o.get(), "p").value.asNumber() == 1.0);
+}
+
+TEST_CASE("redefining array length or elements or regexp lastIndex raises catchable TypeError") {
+    ShadowStackFrame frame;
+    ClearCell clear;
+
+    // Array length writable: false
+    Rooted<Value> arr{Value::fromObject(ArrayHeader::create(rtHeap(), 3))};
+    Rooted<Value> d1 = descriptor();
+    put(d1, "writable", Value::fromBool(false));
+    Rooted<Value> kLen{text("length")};
+    const uint64_t argv1[3] = {arr.get().rawBits(), kLen.get().rawBits(), d1.get().rawBits()};
+    rtObjectDefineProperty(0, 0, 3, argv1);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+
+    // Accessor at array index
+    Rooted<Value> d2 = descriptor();
+    put(d2, "get", Value::fromNull());
+    Rooted<Value> kIdx{text("0")};
+    const uint64_t argv2[3] = {arr.get().rawBits(), kIdx.get().rawBits(), d2.get().rawBits()};
+    rtObjectDefineProperty(0, 0, 3, argv2);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+
+    // Array element with mismatched attribute (enumerable: false)
+    Rooted<Value> d3 = descriptor();
+    put(d3, "enumerable", Value::fromBool(false));
+    const uint64_t argv3[3] = {arr.get().rawBits(), kIdx.get().rawBits(), d3.get().rawBits()};
+    rtObjectDefineProperty(0, 0, 3, argv3);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+
+    // RegExp lastIndex writable: false
+    Rooted<Value> reSrc{text("abc")};
+    Rooted<Value> re{rtRegExpFromParts(reSrc, "g")};
+    Rooted<Value> kLast{text("lastIndex")};
+    const uint64_t argv4[3] = {re.get().rawBits(), kLast.get().rawBits(), d1.get().rawBits()};
+    rtObjectDefineProperty(0, 0, 3, argv4);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

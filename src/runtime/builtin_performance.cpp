@@ -101,11 +101,19 @@ const PerformanceFn kPerformanceFunctions[] = {
     {"getEntriesByType", performanceGetEntriesByType, 0, 1},
 };
 
+double systemTimeOriginMs() {
+    static const double origin_ms = []() {
+        const auto now = std::chrono::system_clock::now();
+        return std::chrono::duration<double, std::milli>(now.time_since_epoch()).count();
+    }();
+    return origin_ms;
+}
+
 // Real members of `performance` that bronze has NOT built. Reading one must not
 // be `undefined` — a program that feature-tests `performance.mark` and finds it
 // missing takes a branch no engine would take.
 const char* const kPerformanceUnimplemented[] = {
-    "timeOrigin", "toJSON", "eventCounter",
+    "toJSON", "eventCounter",
 };
 
 thread_local Value g_performanceObject = Value::fromUndefined();
@@ -132,6 +140,10 @@ Value rtPerformanceNamespace() {
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val);
     }
+
+    Rooted<Value> toKey{rtMakeString("timeOrigin")};
+    Rooted<Value> toVal{Value::fromDouble(systemTimeOriginMs())};
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), toKey, toVal);
 
     // hr-time-3 gives `Performance` a @@toStringTag of "Performance", which is
     // what makes `Object.prototype.toString.call(performance)` read

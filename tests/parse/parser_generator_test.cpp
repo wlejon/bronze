@@ -248,8 +248,9 @@ TEST_CASE("a generator outside what bronze implements is refused by name") {
     const auto update = parseAndDump("class C { *g() { for (let i = 0; i < 2; i += yield 1) {} } }");
     CHECK(update.find("unsupported construct: a `yield`") != std::string::npos);
 
+    // Optional chain with yield is supported via pre-hoisting.
     const auto optional = parseAndDump("class C { *g() { const x = o?.[yield 1]; } }");
-    CHECK(optional.find("unsupported construct: a `yield`") != std::string::npos);
+    CHECK(optional.substr(0, 7) != "ERRORS:");
 
     const auto increment = parseAndDump("class C { *g() { const x = delete (yield 1); } }");
     CHECK(increment.find("unsupported construct: a `yield`") != std::string::npos);
