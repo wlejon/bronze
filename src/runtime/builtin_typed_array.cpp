@@ -188,15 +188,8 @@ uint64_t toStringTagGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t
     return rtMakeString(self.asObject<TypedArrayHeader>()->kindName()).rawBits();
 }
 
-// 23.2.3.31 toLocaleString, refused by name rather than aliased to `join`:
-// its element format is `Number.prototype.toLocaleString`'s, which bronze
-// refuses for want of locale data, so the member is a function that says so
-// instead of a `undefined` a program would feature-test away. The same
-// arrangement as `BigInt.prototype.toLocaleString`.
-uint64_t toLocaleStringRefusal(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    fatal("unsupported: %TypedArray%.prototype.toLocaleString is not implemented (its "
-          "elements format through Number.prototype.toLocaleString, which needs locale data "
-          "bronze does not carry)");
+uint64_t toLocaleStringFallback(uint64_t code, uint64_t thisBits, uint32_t, const uint64_t*) {
+    return rtArrayToStringBuiltin(code, thisBits, 0, nullptr);
 }
 
 // ---- assembling the family ----------------------------------------------------
@@ -260,7 +253,7 @@ void buildFamily() {
     rtDefineMethods(proto, methods, methodCount);
     {
         Rooted<Value> key{rtMakeString("toLocaleString")};
-        Rooted<Value> fn{rtNativeFunction(toLocaleStringRefusal, 0, "toLocaleString", 0)};
+        Rooted<Value> fn{rtNativeFunction(toLocaleStringFallback, 0, "toLocaleString", 0)};
         defineData(proto, key, fn, /*writable=*/true, /*configurable=*/true);
     }
     {

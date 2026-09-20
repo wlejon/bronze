@@ -123,11 +123,6 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
 }
 
 void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
-    if (index > length) {
-        fatal("sparse array write (index past the end) is unsupported until dictionary "
-              "elements land");
-    }
-
     Rooted<Value> self(Value::fromObject(this));
     if (head_offset + index >= capacity) {
         // If there is head headroom and in-place compaction fits the write, compact to index 0
@@ -140,16 +135,24 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
             }
             head_offset = 0;
         } else {
-            uint32_t new_capacity = capacity ? capacity * 2 : 4;
-            while (new_capacity <= index) {
-                new_capacity *= 2;
+            uint64_t new_cap = capacity ? static_cast<uint64_t>(capacity) * 2 : 4;
+            while (new_cap <= index) {
+                new_cap *= 2;
             }
-            setCapacity(heap, self, new_capacity);
+            if (new_cap > 0xFFFFFFFFULL) {
+                new_cap = static_cast<uint64_t>(index) + 1;
+            }
+            setCapacity(heap, self, static_cast<uint32_t>(new_cap));
         }
     }
 
     // `this` may be stale: setCapacity allocates.
     auto* arr = self.get().asObject<ArrayHeader>();
+    if (index > arr->length) {
+        for (uint32_t i = arr->length; i < index; ++i) {
+            arr->elementsData()[i] = Value::fromHole();
+        }
+    }
     arr->elementsData()[index] = val.get();
     if (index >= arr->length) {
         arr->length = index + 1;

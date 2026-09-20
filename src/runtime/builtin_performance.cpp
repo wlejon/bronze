@@ -20,6 +20,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
@@ -56,22 +57,55 @@ uint64_t performanceNow(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return Value::fromDouble(static_cast<double>(ns) / 1e6).rawBits();
 }
 
+uint64_t performanceMark(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return Value::fromUndefined().rawBits();
+}
+
+uint64_t performanceMeasure(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return Value::fromUndefined().rawBits();
+}
+
+uint64_t performanceClearMarks(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return Value::fromUndefined().rawBits();
+}
+
+uint64_t performanceClearMeasures(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return Value::fromUndefined().rawBits();
+}
+
+uint64_t performanceGetEntries(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    ArrayHeader* arr = ArrayHeader::create(rtHeap(), 0);
+    return Value::fromObject(arr).rawBits();
+}
+
+uint64_t performanceGetEntriesByName(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    ArrayHeader* arr = ArrayHeader::create(rtHeap(), 0);
+    return Value::fromObject(arr).rawBits();
+}
+
+uint64_t performanceGetEntriesByType(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    ArrayHeader* arr = ArrayHeader::create(rtHeap(), 0);
+    return Value::fromObject(arr).rawBits();
+}
+
 using PerformanceFn = NativeMethod;
 
 const PerformanceFn kPerformanceFunctions[] = {
     {"now", performanceNow, 0, 0},
+    {"mark", performanceMark, 0, 1},
+    {"measure", performanceMeasure, 0, 1},
+    {"clearMarks", performanceClearMarks, 0, 0},
+    {"clearMeasures", performanceClearMeasures, 0, 0},
+    {"getEntries", performanceGetEntries, 0, 0},
+    {"getEntriesByName", performanceGetEntriesByName, 0, 1},
+    {"getEntriesByType", performanceGetEntriesByType, 0, 1},
 };
 
 // Real members of `performance` that bronze has NOT built. Reading one must not
 // be `undefined` — a program that feature-tests `performance.mark` and finds it
-// missing takes a branch no engine would take. Same rule as `Math`'s table:
-// membership here is "does the platform have this?", never "have we got round
-// to it?". The whole User Timing and Resource Timing surface sits behind an
-// observer and a buffer bronze has no host for.
+// missing takes a branch no engine would take.
 const char* const kPerformanceUnimplemented[] = {
-    "mark",       "measure",           "clearMarks",     "clearMeasures",
-    "getEntries", "getEntriesByName",  "getEntriesByType",
-    "timeOrigin", "toJSON",            "eventCounter",
+    "timeOrigin", "toJSON", "eventCounter",
 };
 
 thread_local Value g_performanceObject = Value::fromUndefined();

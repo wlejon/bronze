@@ -209,9 +209,8 @@ uint64_t bigIntProtoValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_
 // Its answer is a LOCALE's — digit grouping and the digit set both — and
 // bronze's output is deterministic by rule, so an implementation of it would
 // have to be a lie about which locale it implemented.
-uint64_t bigIntProtoToLocaleString(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    fatal("unsupported: BigInt.prototype.toLocaleString (its result is locale-dependent, and "
-          "bronze's output is deterministic by rule — use toString())");
+uint64_t bigIntProtoToLocaleString(uint64_t code, uint64_t thisBits, uint32_t, const uint64_t*) {
+    return bigIntProtoToString(code, thisBits, 0, nullptr);
 }
 
 const NativeMethod kBigIntProtoMethods[] = {

@@ -133,6 +133,7 @@ const ArrayMethod kArrayMethods[] = {
     {"toSorted", arrayToSorted, 1, 1},
     {"toSpliced", arrayToSpliced, 0, 2},
     {"toString", rtArrayToStringBuiltin, 0, 0},
+    {"toLocaleString", rtArrayToStringBuiltin, 0, 0},
     {"unshift", arrayUnshift, 0, 1},
     {"values", rtArrayValuesBuiltin, 0, 0},
     {"with", arrayWith, 2, 2},

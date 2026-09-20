@@ -128,6 +128,11 @@ SymbolHeader* rtSymbolIsConcatSpreadable() {
     return sym;
 }
 
+SymbolHeader* rtSymbolUnscopables() {
+    static thread_local SymbolHeader* sym = wellKnownSymbol("Symbol.unscopables");
+    return sym;
+}
+
 // The five keys of the STRING/REGEXP protocol (22.1.3 dispatches on them,
 // 22.2.6 implements them). They are one family and are written as one, because
 // what makes them well-known is that `"s".replace(x, r)` looks `x` up by

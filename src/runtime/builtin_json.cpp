@@ -170,20 +170,72 @@ uint64_t jsonStringify(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
     return rtJsonStringify(args[0], args[1], args[2]).rawBits();
 }
 
+uint64_t jsonRawJSON(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    if (args[0].isUndefined()) {
+        return rtThrowError(ErrorKind::SyntaxError, "JSON.rawJSON: undefined is not valid JSON").rawBits();
+    }
+    Rooted<Value> text{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    const std::vector<uint16_t> units = rtStringUnits(text.get().asString<StringHeader>());
+    json::Units source(units.begin(), units.end());
+
+    std::string error;
+    json::ValuePtr tree = json::parse(source, error);
+    if (!tree) {
+        return rtThrowError(ErrorKind::SyntaxError, "SyntaxError: " + error).rawBits();
+    }
+
+    Rooted<Value> obj{Value::fromObject(
+        ObjectHeader::create(rtHeap(), rtArena(), rtRootShapeForPrototype(Value::fromNull())))};
+    obj.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
+
+    Rooted<Value> key{rtMakeString("rawJSON")};
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, text, nullptr,
+                                                /*enumerable=*/true, /*defineOwn=*/true,
+                                                /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                /*writable=*/false, /*configurable=*/false);
+
+    Rooted<Value> tagKey{rtMakeString("__isRawJSON__")};
+    Rooted<Value> tagVal{Value::fromBool(true)};
+    obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), tagKey, tagVal, nullptr,
+                                                /*enumerable=*/false, /*defineOwn=*/true,
+                                                /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                /*writable=*/false, /*configurable=*/false);
+
+    return obj.get().rawBits();
+}
+
+uint64_t jsonIsRawJSON(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Value val = args[0];
+    if (!val.isObject()) return Value::fromBool(false).rawBits();
+    auto* hdr = val.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Plain) return Value::fromBool(false).rawBits();
+
+    auto* obj = val.asObject<ObjectHeader>();
+    if (!obj->shape) return Value::fromBool(false).rawBits();
+    Value proto = obj->shape->prototypeValue();
+    if (!proto.isNull()) return Value::fromBool(false).rawBits();
+
+    PropertyInfo info;
+    Rooted<Value> tagKey{rtMakeString("__isRawJSON__")};
+    if (!obj->shape->lookupProperty(PropertyKey::forString(tagKey.get().asString<StringHeader>()), info)) {
+        return Value::fromBool(false).rawBits();
+    }
+    return Value::fromBool(true).rawBits();
+}
+
 using NamespaceFn = NativeMethod;
 
 const NamespaceFn kJsonFunctions[] = {
     {"parse", jsonParse, 2, 2},
     {"stringify", jsonStringify, 3, 3},
+    {"rawJSON", jsonRawJSON, 1, 1},
+    {"isRawJSON", jsonIsRawJSON, 1, 1},
 };
 
-// `JSON` has exactly two function members in ECMA-262, so the only real name
-// left is the `Symbol.toStringTag` bronze has no symbols for. It is listed so
-// that reading it says so.
-const char* const kJsonUnimplemented[] = {
-    "rawJSON",
-    "isRawJSON",
-};
+const char* const kJsonUnimplemented[] = {nullptr};
 
 thread_local Value g_jsonNamespace = Value::fromUndefined();
 
@@ -219,7 +271,7 @@ Value rtJsonNamespace() {
 
 bool rtJsonCheckMissingMember(Value obj, const std::string& key) {
     if (!g_jsonNamespace.isObject() || obj.rawBits() != g_jsonNamespace.rawBits()) return false;
-    rtCheckUnimplementedMember("JSON", kJsonUnimplemented, std::size(kJsonUnimplemented), key);
+    rtCheckUnimplementedMember("JSON", kJsonUnimplemented, sizeof(kJsonUnimplemented) / sizeof(const char*), key);
     return true;
 }
 

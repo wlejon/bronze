@@ -81,6 +81,7 @@ SymbolHeader* rtSymbolToPrimitive();
 SymbolHeader* rtSymbolHasInstance();
 SymbolHeader* rtSymbolSpecies();
 SymbolHeader* rtSymbolIsConcatSpreadable();
+SymbolHeader* rtSymbolUnscopables();
 
 // The STRING/REGEXP protocol of 22.1.3 and 22.2.6: `"s".match(x)`,
 // `.matchAll`, `.replace`, `.replaceAll`, `.search` and `.split` each look

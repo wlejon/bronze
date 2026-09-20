@@ -24,9 +24,7 @@ namespace {
 // Array.prototype. What is NOT here is either implemented — the table in
 // builtin_array.cpp answers first — or `length` and `constructor`, which are
 // real. `sort`, `splice` and the three iterator methods left when they landed.
-const char* const kArrayMembers[] = {
-    "toLocaleString",
-};
+const char* const kArrayMembers[] = {nullptr};
 
 // String.prototype, on the same rule — and the answering side is the
 // `String.prototype` OBJECT, filled from two tables: the plain members in
@@ -64,7 +62,7 @@ const char* const kStringMembers[] = {
 void rtCheckUnimplementedMember(const char* receiver, const char* const* names, size_t count,
                                 const std::string& key) {
     for (size_t i = 0; i < count; ++i) {
-        if (key != names[i]) continue;
+        if (!names[i] || key != names[i]) continue;
         std::string msg = std::string("unsupported: ") + receiver + "." + key +
                           " is not implemented";
         fatal(msg.c_str());
@@ -77,7 +75,7 @@ void rtCheckArrayMember(const std::string& key) {
 
 bool rtArrayMemberUnimplemented(const std::string& key) {
     for (const char* name : kArrayMembers) {
-        if (key == name) return true;
+        if (name && key == name) return true;
     }
     return false;
 }

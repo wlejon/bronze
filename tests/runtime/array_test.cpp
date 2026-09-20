@@ -32,10 +32,12 @@ TEST_CASE("ArrayHeader element access and bounds") {
     CHECK(arr.get()->getElem(1).asNumber() == 20.0);
     CHECK(arr.get()->getElem(2).isUndefined());
 
-    // Out-of-bounds write is a hard error; observe it via a throwing
-    // fatal handler (the default handler aborts, which doctest can't see)
-    setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
-    Rooted<Value> v_oob(Value::fromDouble(99.0));
-    CHECK_THROWS_AS(arr.get()->setElem(heap, 10, v_oob), std::runtime_error);
-    setFatalHandler(nullptr);
+    // Sparse write grows the array and fills intermediate slots with holes
+    Rooted<Value> v_sparse(Value::fromDouble(99.0));
+    arr.get()->setElem(heap, 10, v_sparse);
+    CHECK(arr.get()->length == 11);
+    CHECK(arr.get()->getElem(10).asNumber() == 99.0);
+    CHECK(arr.get()->hasElem(10));
+    CHECK(arr.get()->getElem(5).isUndefined());
+    CHECK(!arr.get()->hasElem(5));
 }

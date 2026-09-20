@@ -7,6 +7,6 @@ true false
 true true
 true true
 0 0 0
-["parse","stringify"]
+["parse","stringify","rawJSON","isRawJSON"]
 Object.prototype Object.prototype Object.prototype Object.prototype
 reflected

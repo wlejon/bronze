@@ -320,24 +320,20 @@ uint64_t numberValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return Value::fromDouble(x).rawBits();
 }
 
+uint64_t numberToLocaleString(uint64_t code, uint64_t thisBits, uint32_t, const uint64_t*) {
+    return numberToString(code, thisBits, 0, nullptr);
+}
+
 const NativeMethod kNumberProtoMethods[] = {
     {"toFixed", numberToFixed, 1, 1},
     {"toExponential", numberToExponential, 1, 1},
     {"toPrecision", numberToPrecision, 1, 1},
     {"toString", numberToString, 1, 1},
+    {"toLocaleString", numberToLocaleString, 0, 0},
     {"valueOf", numberValueOf, 0, 0},
 };
 
-// Number.prototype members ECMA-262 defines and bronze has not built.
-// `toLocaleString` is here for the reason `Math.random` is on Math's list:
-// bronze has no locale data and deterministic output is a house rule, so a
-// locale-formatted number needs a decision before it can have an
-// implementation. `constructor` LEFT this list when the prototype became a real
-// object — 21.1.3.1 is an ordinary property of it now, wired where the two
-// intrinsics are built.
-const char* const kNumberProtoMembers[] = {
-    "toLocaleString",
-};
+const char* const kNumberProtoMembers[] = {nullptr};
 
 }  // namespace
 
@@ -347,7 +343,7 @@ void rtInstallNumberMethods(Rooted<Value>& proto) {
 
 void rtCheckNumberProtoMember(const std::string& key) {
     rtCheckUnimplementedMember("Number.prototype", kNumberProtoMembers,
-                               std::size(kNumberProtoMembers), key);
+                               sizeof(kNumberProtoMembers) / sizeof(const char*), key);
 }
 
 }  // namespace bronze::runtime

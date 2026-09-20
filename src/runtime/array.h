@@ -81,9 +81,9 @@ struct ArrayHeader {
         elementsData()[index] = Value::fromHole();
     }
 
-    // Writing at `length` appends and grows the block as needed. Writing past
-    // `length` is a sparse write and a named hard error until dictionary
-    // elements land. Growth allocates, which can move this object, so the write
+    // Writing at or past `length` appends and grows the block as needed,
+    // filling intermediate slots with holes.
+    // Growth allocates, which can move this object, so the write
     // is performed through a rooted self-reference and `this` must not be used
     // afterwards — but only on the GROWTH path: a write that lands inside the
     // current block allocates nothing, so it runs in place with no root at

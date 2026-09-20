@@ -432,10 +432,6 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
         if (rtArrayElementWriteRefusal(self.get(), index) == SetRefusal::NotExtensible) {
             return refuseDefine(throwOnRefusal, "Cannot define property, object is not extensible");
         }
-        if (index > arr->length) {
-            fatal("unsupported: defining an array element past `length` (a sparse array; "
-                  "bronze keeps elements in a dense block)");
-        }
         Rooted<Value> stored{d.hasValue ? value.get() : Value::fromUndefined()};
         self.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, stored);
         return true;

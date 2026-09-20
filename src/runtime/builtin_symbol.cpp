@@ -89,9 +89,7 @@ uint64_t symbolKeyForCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
 // `unscopables` is the one name 20.4.2 defines that bronze has no hook for
 // (`with` is not a construct bronze compiles), so it stays a diagnosed missing
 // member rather than `undefined`.
-const char* const kSymbolUnimplemented[] = {
-    "unscopables",
-};
+const char* const kSymbolUnimplemented[] = {nullptr};
 
 thread_local Value g_symbolFunction = Value::fromUndefined();
 thread_local Value g_symbolPrototype = Value::fromUndefined();
@@ -130,6 +128,7 @@ const WellKnownSymbol kWellKnownSymbols[] = {
     {"replace", rtSymbolReplace},
     {"search", rtSymbolSearch},
     {"split", rtSymbolSplit},
+    {"unscopables", rtSymbolUnscopables},
 };
 
 // ---- Symbol.prototype (20.4.3) ---------------------------------------------
@@ -301,7 +300,8 @@ Value rtSymbolPrototype() {
 
 void rtSymbolCheckMissingMember(Value fn, const std::string& key) {
     if (!g_symbolFunction.isObject() || fn.rawBits() != g_symbolFunction.rawBits()) return;
-    rtCheckUnimplementedMember("Symbol", kSymbolUnimplemented, std::size(kSymbolUnimplemented),
+    rtCheckUnimplementedMember("Symbol", kSymbolUnimplemented,
+                               sizeof(kSymbolUnimplemented) / sizeof(kSymbolUnimplemented[0]),
                                key);
 }
 

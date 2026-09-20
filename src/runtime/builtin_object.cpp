@@ -486,9 +486,42 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
         // prototype is.
         if (rtSamePrototypeAsCurrent(self.get(), proto.get())) return true;
         if (!rtIsExtensible(self.get())) return false;
-        // Shapeless objects (e.g. functions / closures) cannot alter native dispatch,
-        // but TypeScript's __extends and similar inheritance helpers call setPrototypeOf
-        // on constructors. Answer success so the call composes.
+
+        if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+            // Check for cycle (10.1.2 step 8)
+            Value link = proto.get();
+            for (uint32_t depth = 0; link.isObject() && depth <= 1000; ++depth) {
+                if (link.rawBits() == self.get().rawBits()) return false;
+                if (link.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                    Value next = link.asObject<FunctionHeader>()->parent;
+                    link = next.isUndefined() ? rtFunctionPrototypeObject() : next;
+                } else if (isPlainObject(link)) {
+                    Shape* shape = link.asObject<ObjectHeader>()->shape;
+                    link = shape ? shape->prototypeValue() : Value::fromNull();
+                } else {
+                    break;
+                }
+            }
+
+            self.get().asObject<FunctionHeader>()->parent = proto.get();
+
+            // Link statics/properties prototype chain so derived constructor inherits base statics
+            rtEnsureFunctionProperties(self);
+            Rooted<Value> selfProps{self.get().asObject<FunctionHeader>()->properties};
+
+            if (proto.get().isObject() &&
+                proto.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                rtEnsureFunctionProperties(proto);
+                Rooted<Value> protoProps{proto.get().asObject<FunctionHeader>()->properties};
+                Shape* newRoot = rtRootShapeForPrototype(protoProps.get());
+                ObjectHeader::setPrototype(rtArena(), selfProps, newRoot);
+            } else if (proto.get().isObject() || proto.get().isNull()) {
+                Shape* newRoot = rtRootShapeForPrototype(proto.get());
+                ObjectHeader::setPrototype(rtArena(), selfProps, newRoot);
+            }
+            return true;
+        }
+
         return true;
     }
     // 10.1.2.1 OrdinarySetPrototypeOf steps 2 to 4, in that order. Step 2's

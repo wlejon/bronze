@@ -18,8 +18,11 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/iterator.h"
+#include "runtime/rt_roots.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/rt_builtins.h"
@@ -256,6 +259,84 @@ uint64_t mathRandom(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return Value::fromDouble(x).rawBits();
 }
 
+uint64_t mathSumPrecise(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args(argc, argv);
+    Rooted<Value> items{args[0]};
+    if (!items.get().isObject()) {
+        return rtThrowTypeError("Math.sumPrecise requires an iterable object").rawBits();
+    }
+    Rooted<Value> rec{Value(bronze_iter_open(items.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+
+    bool anyNaN = false;
+    bool allMinusZero = true;
+    int64_t countPosInf = 0;
+    int64_t countNegInf = 0;
+    std::vector<double> partials;
+
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        if (!item.get().isNumber()) {
+            bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+            return rtThrowTypeError("Math.sumPrecise: element is not a number").rawBits();
+        }
+        double d = item.get().asNumber();
+        if (std::isnan(d)) {
+            anyNaN = true;
+        } else if (d == std::numeric_limits<double>::infinity()) {
+            countPosInf++;
+        } else if (d == -std::numeric_limits<double>::infinity()) {
+            countNegInf++;
+        } else {
+            if (d != 0.0 || !std::signbit(d)) {
+                allMinusZero = false;
+            }
+            double x = d;
+            size_t i = 0;
+            for (size_t j = 0; j < partials.size(); ++j) {
+                double y = partials[j];
+                if (std::abs(x) < std::abs(y)) std::swap(x, y);
+                double hi = x + y;
+                double lo = y - (hi - x);
+                x = hi;
+                if (lo != 0.0) {
+                    partials[i++] = lo;
+                }
+            }
+            partials.resize(i);
+            if (x != 0.0) {
+                partials.push_back(x);
+            }
+        }
+    }
+    if (rtExceptionPending()) {
+        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+        return Value::fromUndefined().rawBits();
+    }
+
+    if (anyNaN || (countPosInf > 0 && countNegInf > 0)) {
+        return Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits();
+    }
+    if (countPosInf > 0) {
+        return Value::fromDouble(std::numeric_limits<double>::infinity()).rawBits();
+    }
+    if (countNegInf > 0) {
+        return Value::fromDouble(-std::numeric_limits<double>::infinity()).rawBits();
+    }
+    if (partials.empty()) {
+        return Value::fromDouble(allMinusZero ? -0.0 : 0.0).rawBits();
+    }
+
+    double sum = 0.0;
+    for (double p : partials) {
+        sum += p;
+    }
+    if (sum == 0.0 && !allMinusZero) {
+        sum = 0.0;
+    }
+    return Value::fromDouble(sum).rawBits();
+}
+
 using MathFn = NativeMethod;
 
 struct MathConst {
@@ -293,6 +374,7 @@ const MathFn kMathFunctions[] = {
     // is 21.3.2's 2 all the same (21.3.2.24, 21.3.2.25, 21.3.2.18).
     {"min", bronze_math_min, 0, 2},         {"max", bronze_math_max, 0, 2},
     {"hypot", mathHypot, 0, 2},             {"random", mathRandom, 0, 0},
+    {"sumPrecise", mathSumPrecise, 1, 1},
 };
 
 const MathConst kMathConstants[] = {
@@ -302,18 +384,7 @@ const MathConst kMathConstants[] = {
     {"SQRT1_2", 0.7071067811865476}, {"SQRT2", 1.4142135623730951},
 };
 
-// Real members of the Math namespace that bronze has NOT built. Reading one
-// must not be `undefined`: a program that feature-tests a member and finds it
-// missing takes a branch no JS engine would take. Same rule as the prototype
-// tables in rt_helpers.cpp — membership here is ECMA-262's "does this exist?",
-// never "have we got round to it?".
-const char* const kMathUnimplemented[] = {
-    // `Math.sumPrecise` is 21.3.2.27, and what it asks for is a sum with a
-    // SINGLE rounding over an arbitrary number of terms — a full-precision
-    // accumulator, not a fold of `+`. Refused by name until that exists rather
-    // than answered with a fold whose result differs in the last bit.
-    "sumPrecise",
-};
+const char* const kMathUnimplemented[] = {nullptr};
 
 thread_local Value g_mathObject = Value::fromUndefined();
 
@@ -439,7 +510,8 @@ Value rtMathObject() {
 
 bool rtMathCheckMissingMember(Value obj, const std::string& key) {
     if (!g_mathObject.isObject() || obj.rawBits() != g_mathObject.rawBits()) return false;
-    rtCheckUnimplementedMember("Math", kMathUnimplemented, std::size(kMathUnimplemented), key);
+    rtCheckUnimplementedMember("Math", kMathUnimplemented,
+                               sizeof(kMathUnimplemented) / sizeof(kMathUnimplemented[0]), key);
     return true;
 }
 
