@@ -198,7 +198,11 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
 void applyModuleRegistry(const EvalOptions& options, modules::ModuleOptions& modOpts) {
     if (!options.moduleRegistry) return;
     modOpts.publishModules = true;
-    modOpts.externalModules = runtime::rtModuleRegistryPaths();
+    if (!options.externalModules.empty()) {
+        modOpts.externalModules = options.externalModules;
+    } else {
+        modOpts.externalModules = runtime::rtModuleRegistryPaths();
+    }
 }
 
 std::unique_ptr<BrassJitProgram> compileSourceToJit(
@@ -294,49 +298,79 @@ void retainJitProgram(std::unique_ptr<BrassJitProgram> program) {
     retainedPrograms().push_back(std::move(program));
 }
 
-embed::CallResult evalScript(std::string_view source, const EvalOptions& options) {
-    bronze::ShadowStackFrame rootFrame;
+std::unique_ptr<CompiledScript> compileScript(std::string_view source, const EvalOptions& options) {
+    auto res = std::make_unique<CompiledScript>();
     if (source.empty()) {
-        return embed::CallResult{embed::undefined(), false};
+        res->success = true;
+        return res;
     }
 
     const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
-    const std::string resName = "__bronze_eval_res_" + std::to_string(evalId);
+    res->resName = "__bronze_eval_res_" + std::to_string(evalId);
 
     SourceSet sources;
     DiagnosticSink diags;
     std::string codeStr(source);
 
-    auto jitProgram = compileSourceToJit(codeStr, options, resName, diags, sources);
-    if (!jitProgram) {
-        std::string err = diags.render(sources);
-        runtime::rtThrowSyntaxError(err);
-        Value syntaxErr(runtime::rtTls()->exception_cell);
-        runtime::rtClearException();
-        return embed::CallResult{syntaxErr, /*thrown=*/true};
+    res->jitProgram = compileSourceToJit(codeStr, options, res->resName, diags, sources);
+    if (!res->jitProgram) {
+        res->errorMessage = diags.render(sources);
+        res->success = false;
+        return res;
     }
 
-    return runJitProgramAndCollectResult(std::move(jitProgram), resName, options.moduleHandleOut);
+    res->success = true;
+    return res;
 }
 
-embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options) {
-    bronze::ShadowStackFrame rootFrame;
+std::unique_ptr<CompiledScript> compileFile(const std::string& filePath, const EvalOptions& options) {
+    auto res = std::make_unique<CompiledScript>();
     const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
-    const std::string resName = "__bronze_eval_res_" + std::to_string(evalId);
+    res->resName = "__bronze_eval_res_" + std::to_string(evalId);
 
     SourceSet sources;
     DiagnosticSink diags;
 
-    auto jitProgram = compileFileToJit(filePath, options, resName, diags, sources);
-    if (!jitProgram) {
-        std::string err = diags.render(sources);
+    res->jitProgram = compileFileToJit(filePath, options, res->resName, diags, sources);
+    if (!res->jitProgram) {
+        res->errorMessage = diags.render(sources);
+        res->success = false;
+        return res;
+    }
+
+    res->success = true;
+    return res;
+}
+
+embed::CallResult runCompiledScript(std::unique_ptr<CompiledScript> script, const EvalOptions& options) {
+    bronze::ShadowStackFrame rootFrame;
+    if (!script) {
+        return embed::CallResult{embed::undefined(), false};
+    }
+
+    if (!script->success) {
+        std::string err = !script->errorMessage.empty() ? script->errorMessage : "compilation failed";
         runtime::rtThrowSyntaxError(err);
         Value syntaxErr(runtime::rtTls()->exception_cell);
         runtime::rtClearException();
         return embed::CallResult{syntaxErr, /*thrown=*/true};
     }
 
-    return runJitProgramAndCollectResult(std::move(jitProgram), resName, options.moduleHandleOut);
+    if (!script->jitProgram) {
+        return embed::CallResult{embed::undefined(), false};
+    }
+
+    return runJitProgramAndCollectResult(std::move(script->jitProgram), script->resName, options.moduleHandleOut);
+}
+
+embed::CallResult evalScript(std::string_view source, const EvalOptions& options) {
+    auto script = compileScript(source, options);
+    return runCompiledScript(std::move(script), options);
+}
+
+embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options) {
+    auto script = compileFile(filePath, options);
+    return runCompiledScript(std::move(script), options);
 }
 
 Value evalScriptDirect(std::string_view source, const EvalOptions& options) {

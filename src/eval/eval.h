@@ -45,24 +45,29 @@ struct EvalOptions {
     // semantics, slower code — the tier for a host's edit-and-reload loop,
     // not for the build it ships.
     bool optimize = true;
-    // Share module instances with the other units compiled in this realm
-    // (runtime/module_registry.h). With it on, every non-entry file this unit
-    // evaluates publishes a module namespace under its canonical path, and a
-    // specifier resolving to a path some earlier unit already published binds
-    // THAT instance instead of evaluating the file again.
-    //
-    // Off by default, because it is a property of the HOST and not of the
-    // language: a standalone `bronze run` is one unit and a registry it never
-    // reads is a namespace object per module for nothing. A host that compiles
-    // a page and then compiles scripts against that page — a document and its
-    // test driver — turns it on, which is what "one module map per context"
-    // meant when the map was the runtime's.
     bool moduleRegistry = false;
+    std::vector<std::string> externalModules = {};
+};
+
+struct CompiledScript {
+    std::unique_ptr<BrassJitProgram> jitProgram;
+    std::string resName;
+    std::string errorMessage;
+    bool success = false;
 };
 
 // Retains a JIT compiled program in memory for the process lifetime so its machine
 // code, data sections, and function pointers remain valid across executions.
 BRONZE_EMBED_API void retainJitProgram(std::unique_ptr<BrassJitProgram> program);
+
+// Compiles a script to JIT machine code. Safe to invoke on background worker threads.
+BRONZE_EMBED_API std::unique_ptr<CompiledScript> compileScript(std::string_view source, const EvalOptions& options = {});
+
+// Compiles a file to JIT machine code. Safe to invoke on background worker threads.
+BRONZE_EMBED_API std::unique_ptr<CompiledScript> compileFile(const std::string& filePath, const EvalOptions& options = {});
+
+// Executes a previously compiled script on the mutator thread and returns the result.
+BRONZE_EMBED_API embed::CallResult runCompiledScript(std::unique_ptr<CompiledScript> script, const EvalOptions& options = {});
 
 // Evaluates a script in memory using the Brass JIT and returns the result as a CallResult.
 // If code execution throws an exception, CallResult::thrown is true and value is the thrown error.
