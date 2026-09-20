@@ -334,9 +334,15 @@ TEST_CASE("proxy array refused mutator throws TypeError") {
 
 TEST_CASE("Atomics.wait, waitAsync, notify behave safely without fatal") {
     embed::CallResult r1 = evalScript(
-        "typeof Atomics.wait === 'undefined' && !('wait' in Atomics);");
+        "let res = 'no-throw';\n"
+        "try {\n"
+        "  let w = Atomics.wait;\n"
+        "} catch (e) {\n"
+        "  res = (e instanceof TypeError ? 'type-error' : 'other-error');\n"
+        "}\n"
+        "res;\n");
     CHECK(!r1.thrown);
-    CHECK(r1.value.asBool() == true);
+    CHECK(embed::toUtf8(r1.value) == "type-error");
 
     embed::CallResult r2 = evalScript(
         "let res = 'no-throw';\n"

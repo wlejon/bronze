@@ -476,7 +476,8 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 // pair and hand the name a data slot at the same position.
                 // Dictionary mode can express that; nothing asks for it yet,
                 // so it is named rather than half-built.
-                fatal("redefining an accessor property as a data property is unsupported");
+                runtime::rtThrowTypeError("redefining an accessor property as a data property is unsupported");
+                return this;
             }
             if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
                 ic->fillAccessor(shape, own.slot, /*depth=*/0);

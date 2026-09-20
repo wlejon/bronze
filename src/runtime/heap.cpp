@@ -535,6 +535,9 @@ void Heap::refill_inline_lab() {
 NonMovingArena::NonMovingArena(size_t chunk_size) : chunk_size_(chunk_size) {}
 
 NonMovingArena::~NonMovingArena() {
+    for (auto& d : destructors_) {
+        d.dtor(d.ptr);
+    }
     for (size_t i = 0; i < chunks_.size(); ++i) {
         VirtualMemory::release(chunks_[i], chunk_capacities_[i]);
     }

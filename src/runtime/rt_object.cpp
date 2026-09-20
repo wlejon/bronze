@@ -309,7 +309,8 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
         // none of the function-specific realization below applies, because
         // the proxy has no prototype slot or statics box of its own.
         if (!base.get().asObject<ProxyHeader>()->constructible.asBool()) {
-            fatal("a class can only extend another class or a constructor function");
+            rtThrowTypeError("a class can only extend another class or a constructor function");
+            return;
         }
         Rooted<Value> key{rtMakeString("prototype")};
         Rooted<Value> protoParent{rtProxyGet(base.get(), key.get(), base.get())};

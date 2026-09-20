@@ -634,11 +634,12 @@ Value rtAtomicsObject() {
 }
 
 bool rtAtomicsCheckMissingMember(Value obj, const std::string& key) {
-    (void)obj;
-    (void)key;
-    // Single-agent runtime does not implement wait, waitAsync, or notify.
-    // Property access / inspection returns undefined or false without aborting.
-    // If called as a function, JS invocation of undefined throws a TypeError.
+    if (g_atomicsObject.isObject() && obj.rawBits() == g_atomicsObject.rawBits()) {
+        rtCheckUnimplementedMember("Atomics", kAtomicsUnimplemented,
+                                   sizeof(kAtomicsUnimplemented) / sizeof(kAtomicsUnimplemented[0]),
+                                   key);
+        return true;
+    }
     return false;
 }
 

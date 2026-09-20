@@ -52,9 +52,9 @@ struct PendingCleanup {
 // WeakRef object itself survived is precisely what the sweep asks.
 thread_local std::vector<HeapObjectHeader*> g_weakRefs;
 
-// The registries, held STRONGLY (weak_ref.h says why), and their cells. Two
-// parallel vectors indexed by the block id stored in the registry's slot: a
-// registry is never removed, so the index is stable for the run.
+// The registries, held WEAKLY (weak_ref.h says why), and their cells. Two
+// parallel vectors indexed by the block id stored in the registry's slot:
+// slots whose registry was collected are recycled by subsequent inits.
 thread_local std::vector<Value> g_registries;
 thread_local std::vector<std::vector<Cell>> g_cells;
 
@@ -138,11 +138,24 @@ void sweepWeakReferences() {
     }
     g_weakRefs.resize(keep);
 
-    // Registry cells. A cell whose TARGET died is removed and its held value
-    // parked for a cleanup job; a cell whose TOKEN died keeps working, with the
-    // token cleared — 26.2.3.2 can no longer name it, which is what a dead
-    // token means and not a reason to drop the registration.
+    // Registry cells. A registry whose own object died is removed from
+    // g_registries, and its cells and pending cleanups are cleared.
     for (uint32_t block = 0; block < g_cells.size(); ++block) {
+        if (block >= g_registries.size() || g_registries[block].isUndefined()) {
+            g_cells[block].clear();
+            continue;
+        }
+        Value& regVal = g_registries[block];
+        auto* regHdr = reinterpret_cast<HeapObjectHeader*>(regVal.payload());
+        HeapObjectHeader* live = heap.survivor_of(regHdr);
+        if (!live) {
+            regVal = Value::fromUndefined();
+            g_cells[block].clear();
+            g_cells[block].shrink_to_fit();
+            continue;
+        }
+        regVal = Value::fromTagAndPayload(regVal.tag(), reinterpret_cast<uintptr_t>(live));
+
         std::vector<Cell>& cells = g_cells[block];
         size_t live_cells = 0;
         for (size_t i = 0; i < cells.size(); ++i) {
@@ -159,6 +172,15 @@ void sweepWeakReferences() {
         cells.resize(live_cells);
     }
 
+    size_t keep_pending = 0;
+    for (size_t i = 0; i < g_pending.size(); ++i) {
+        if (g_pending[i].blockId < g_registries.size() &&
+            !g_registries[g_pending[i].blockId].isUndefined()) {
+            g_pending[keep_pending++] = g_pending[i];
+        }
+    }
+    g_pending.resize(keep_pending);
+
     // The kept-objects membership index is keyed on addresses every relocation
     // moves. The vector's Values were forwarded by the root source above, so
     // rebuilding from it is exact.
@@ -173,9 +195,9 @@ void sweepWeakReferences() {
 void ensureWeakRegistries() {
     static thread_local const bool registered = [] {
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
-            for (Value& registry : g_registries) visit(registry);
-            for (std::vector<Cell>& cells : g_cells) {
-                for (Cell& cell : cells) visit(cell.heldValue);
+            for (size_t b = 0; b < g_cells.size(); ++b) {
+                if (b < g_registries.size() && g_registries[b].isUndefined()) continue;
+                for (Cell& cell : g_cells[b]) visit(cell.heldValue);
             }
             for (PendingCleanup& p : g_pending) visit(p.heldValue);
             for (Value& kept : g_kept) visit(kept);
@@ -239,12 +261,20 @@ Value rtWeakRefDeref(Value weakRef) {
 
 void rtFinalizationRegistryInit(Rooted<Value>& self, Rooted<Value>& callback) {
     ensureWeakRegistries();
-    // `g_cells.emplace_back` is C++ memory and cannot move the heap, so the
-    // object is read once and written twice with nothing between that could
-    // retire the pointer.
-    const auto blockId = static_cast<uint32_t>(g_cells.size());
-    g_cells.emplace_back();
-    g_registries.push_back(self.get());
+    uint32_t blockId = UINT32_MAX;
+    for (size_t i = 0; i < g_registries.size(); ++i) {
+        if (g_registries[i].isUndefined()) {
+            blockId = static_cast<uint32_t>(i);
+            g_registries[i] = self.get();
+            g_cells[i].clear();
+            break;
+        }
+    }
+    if (blockId == UINT32_MAX) {
+        blockId = static_cast<uint32_t>(g_cells.size());
+        g_cells.emplace_back();
+        g_registries.push_back(self.get());
+    }
     auto* obj = self.get().asObject<ObjectHeader>();
     obj->setInternalSlot(RegistrySlot::CleanupCallback, callback.get());
     obj->setInternalSlot(RegistrySlot::CellBlockId,
@@ -320,6 +350,7 @@ void rtRunFinalizationCleanupJob() {
         const PendingCleanup entry = g_pending.front();
         g_pending.pop_front();
         if (entry.blockId >= g_registries.size()) continue;
+        if (g_registries[entry.blockId].isUndefined()) continue;
         Rooted<Value> registry{g_registries[entry.blockId]};
         Rooted<Value> held{entry.heldValue};
         Rooted<Value> callback{registry.get().asObject<ObjectHeader>()->internalSlot(
@@ -350,7 +381,10 @@ size_t rtWeakRefCellCount() { return g_weakRefs.size(); }
 
 size_t rtFinalizationCellCount() {
     size_t total = 0;
-    for (const std::vector<Cell>& cells : g_cells) total += cells.size();
+    for (size_t b = 0; b < g_cells.size(); ++b) {
+        if (b < g_registries.size() && g_registries[b].isUndefined()) continue;
+        total += g_cells[b].size();
+    }
     return total;
 }
 

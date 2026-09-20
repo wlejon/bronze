@@ -28,9 +28,9 @@ namespace bronze::runtime {
 //    tag, in slots the scan reads as numbers and never as a pointer (a heap
 //    address is below 2^47, so the double is exact); and
 //  - a FinalizationRegistry's cells live in a C++ table in weak_ref.cpp, whose
-//    STRONG halves (the held value, the callback) are visited by a registered
-//    root source and whose WEAK halves (the target, the unregister token) are
-//    raw bits nothing traces.
+//    STRONG halves (the held value) are visited by a registered root source
+//    and whose WEAK halves (the registry reference, target, unregister token)
+//    are raw bits nothing traces.
 //
 // What makes them weak rather than merely untraced is the post-collection
 // sweep. `Heap::add_post_collection_hook` runs it inside `collect()`, after the
@@ -49,12 +49,10 @@ namespace bronze::runtime {
 //    `wr.deref() === wr.deref()` is true however many collections land between
 //    them. The list is cleared at the microtask checkpoint (ClearKeptObjects),
 //    which is the "no ECMAScript code is running" point 9.13 names.
-//  - A FinalizationRegistry, once constructed, is retained for the rest of the
-//    run: the registry table holds it STRONGLY. The specification lets a host
-//    collect a registry (and then never call its callbacks); bronze keeps it,
-//    which over-retains one object per registry and buys a cleanup queue that
-//    cannot lose a callback to the death of its own registry. Over-retention
-//    is the safe direction and the one deliberately taken.
+//  - A FinalizationRegistry is collected when no user code or other roots reach
+//    it. Its registration in the registry table is weak; when the registry
+//    object is collected, its cell block and any uncalled pending cleanups are
+//    cleared, and its block ID is recycled for future registries.
 //  - Cleanup callbacks run from the JOB QUEUE (microtask.cpp's drain), never
 //    from inside `collect()`. The sweep only moves a dead cell's held value
 //    onto a pending list; user code runs later, with the heap consistent.

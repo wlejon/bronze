@@ -10,7 +10,9 @@
 #include <algorithm>
 
 #include "runtime/fatal.h"
+#include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 
 namespace bronze {
@@ -130,6 +132,48 @@ uint32_t Dictionary::allocateSlots(uint32_t width) {
     return slot;
 }
 
+void Dictionary::releaseMemory() noexcept {
+    entries.clear();
+    entries.shrink_to_fit();
+    freeSlots.clear();
+    freeSlots.shrink_to_fit();
+    index_.clear();
+    index_.shrink_to_fit();
+    used_ = 0;
+    live_ = 0;
+}
+
+struct TrackedDictionary {
+    ObjectHeader* owner;
+    Dictionary* dict;
+};
+
+thread_local std::vector<TrackedDictionary> g_dictionaries;
+
+void sweepDictionaries() {
+    Heap& heap = runtime::rtHeap();
+    size_t keep = 0;
+    for (size_t i = 0; i < g_dictionaries.size(); ++i) {
+        auto& item = g_dictionaries[i];
+        HeapObjectHeader* live = heap.survivor_of(&item.owner->header);
+        if (!live) {
+            item.dict->releaseMemory();
+            continue;
+        }
+        item.owner = reinterpret_cast<ObjectHeader*>(live);
+        g_dictionaries[keep++] = item;
+    }
+    g_dictionaries.resize(keep);
+}
+
+void ensureDictionarySweep() {
+    static thread_local const bool registered = [] {
+        runtime::rtHeap().add_post_collection_hook(sweepDictionaries);
+        return true;
+    }();
+    (void)registered;
+}
+
 // A dictionary object's shape is PRIVATE to that object: minted fresh here,
 // never a transition target, never shared. Two consequences the rest of the
 // system leans on. It can never collide with an inline cache entry, because no
@@ -181,6 +225,8 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     d.reindex();
 
     obj->shape = dictShape;
+    ensureDictionarySweep();
+    g_dictionaries.push_back({obj, dictShape->dict});
 }
 
 bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {

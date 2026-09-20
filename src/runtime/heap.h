@@ -369,10 +369,19 @@ public:
 
     void* allocate(size_t bytes, size_t alignment = 8);
 
+    struct DestructorEntry {
+        void* ptr;
+        void (*dtor)(void*);
+    };
+
     template <typename T, typename... Args>
     T* create(Args&&... args) {
         void* mem = allocate(sizeof(T), alignof(T));
-        return new (mem) T(std::forward<Args>(args)...);
+        T* obj = new (mem) T(std::forward<Args>(args)...);
+        if constexpr (!std::is_trivially_destructible_v<T>) {
+            destructors_.push_back({obj, [](void* p) { static_cast<T*>(p)->~T(); }});
+        }
+        return obj;
     }
 
     size_t chunk_count() const noexcept { return chunks_.size(); }
@@ -387,6 +396,7 @@ private:
     size_t total_allocated_{0};
     std::vector<uint8_t*> chunks_;
     std::vector<size_t> chunk_capacities_;
+    std::vector<DestructorEntry> destructors_;
 };
 
 }  // namespace bronze

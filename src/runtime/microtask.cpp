@@ -153,7 +153,11 @@ void rtDrainMicrotasks() {
         // exception still pending here is a runtime that lost its unwind,
         // not a program error — same rule as rtThrow's double-raise check.
         if (rtExceptionPending()) {
-            fatal("internal: an exception escaped a microtask job");
+            const std::string text = rtUncaughtText(Value(rtTls()->exception_cell));
+            rtClearException();
+            std::fflush(stdout);
+            std::fprintf(stderr, "%s in a microtask job\n", text.c_str());
+            std::fflush(stderr);
         }
         // Between jobs is the other "no ECMAScript code is running" point, so
         // a target a reaction handler deref'd stops being kept here rather than

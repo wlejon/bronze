@@ -131,6 +131,9 @@ public:
     // the index current themselves.
     void reindex();
 
+    // Releases all vector memory when the owning object is collected by GC.
+    void releaseMemory() noexcept;
+
 private:
     // Drops the tombstones and reindexes. Called from `remove` once the dead
     // outnumber the living, so a delete-heavy map stays bounded at twice its
