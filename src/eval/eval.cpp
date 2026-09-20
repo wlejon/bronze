@@ -17,6 +17,7 @@
 #include "lower/native_manifest.h"
 #include "parse/parser.h"
 #include "runtime/exception.h"
+#include "runtime/gc.h"
 #include "runtime/host_globals.h"
 #include "runtime/module_registry.h"
 #include "runtime/rt_builtins.h"
@@ -264,7 +265,11 @@ embed::CallResult runJitProgramAndCollectResult(
 
     using RawEntryFn = uint64_t (*)();
     auto entryFn = reinterpret_cast<RawEntryFn>(programPtr->entryPoint());
-    uint64_t entryBits = entryFn ? entryFn() : 0;
+    uint64_t entryBits = 0;
+    {
+        bronze::ShadowStackFrame stackFrame;
+        entryBits = entryFn ? entryFn() : 0;
+    }
     embed::drainMicrotasks();
     embed::endModuleLoad(handle);
 
@@ -284,7 +289,7 @@ embed::CallResult runJitProgramAndCollectResult(
 
     embed::GlobalValue glob = embed::globalValue("globalThis");
     if (glob.found) {
-        embed::setProperty(glob.value, resName, embed::undefined());
+        embed::deleteProperty(glob.value, resName);
     }
 
     return embed::CallResult{result.get(), /*thrown=*/false};
@@ -296,6 +301,11 @@ void retainJitProgram(std::unique_ptr<BrassJitProgram> program) {
     if (!program) return;
     std::lock_guard<std::mutex> lock(g_programsMutex);
     retainedPrograms().push_back(std::move(program));
+}
+
+void clearRetainedJitPrograms() {
+    std::lock_guard<std::mutex> lock(g_programsMutex);
+    retainedPrograms().clear();
 }
 
 std::unique_ptr<CompiledScript> compileScript(std::string_view source, const EvalOptions& options) {
@@ -436,7 +446,7 @@ Value evalFunction(runtime::DynamicFunctionKind kind, std::span<const Value> arg
 
     embed::GlobalValue glob = embed::globalValue("globalThis");
     if (glob.found) {
-        embed::setProperty(glob.value, fnName, embed::undefined());
+        embed::deleteProperty(glob.value, fnName);
     }
 
     return fnObj.get();
@@ -485,7 +495,7 @@ Value evalFunction(std::span<const std::string> params, std::string_view body,
 
     embed::GlobalValue glob = embed::globalValue("globalThis");
     if (glob.found) {
-        embed::setProperty(glob.value, fnName, embed::undefined());
+        embed::deleteProperty(glob.value, fnName);
     }
 
     return fnObj.get();

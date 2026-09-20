@@ -627,6 +627,9 @@ BRONZE_EMBED_API Value makeArray(uint32_t length = 0);
 // Value the host holds must be re-read from a Persistent.
 BRONZE_EMBED_API Value setProperty(Value obj, std::string_view key, Value v);
 
+// Delete an own property from `obj`. Returns true if deletion succeeded or property was absent.
+BRONZE_EMBED_API bool deleteProperty(Value obj, std::string_view key);
+
 // `obj[3] = v` spelled from the host, for any receiver the program could
 // write through: an Array grows and renumbers, a typed array converts and
 // stores (or drops the write, out of range, exactly as JS does), a plain

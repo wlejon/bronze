@@ -111,9 +111,10 @@ uint64_t proxyArraySort(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 // `set` trap, which is the silent wrong answer the vetting exists to prevent.
 #define BRONZE_PROXY_REFUSED_MUTATOR(fn, name)                                                \
     uint64_t fn(uint64_t, uint64_t, uint32_t, const uint64_t*) {                              \
-        fatal("unsupported: Array.prototype." name                                            \
-              " on a Proxy (its writes would bypass the handler's `set` trap; push and sort " \
-              "are built)");                                                                  \
+        return rtThrowTypeError("unsupported: Array.prototype." name                          \
+                                " on a Proxy (its writes would bypass the handler's `set` trap; push and sort " \
+                                "are built)")                                                 \
+            .rawBits();                                                                       \
     }
 BRONZE_PROXY_REFUSED_MUTATOR(proxyArrayPop, "pop")
 BRONZE_PROXY_REFUSED_MUTATOR(proxyArrayShift, "shift")

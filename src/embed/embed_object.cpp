@@ -122,6 +122,17 @@ Value setProperty(Value obj, std::string_view key, Value v) {
     return Value::fromObject(live);
 }
 
+bool deleteProperty(Value obj, std::string_view key) {
+    ShadowStackFrame frame;
+    Rooted<Value> self{obj};
+    Rooted<Value> keyRoot{runtime::rtMakeString(key)};
+    bool result = bronze_elem_delete(self.get().rawBits(), keyRoot.get().rawBits(), /*strict=*/false);
+    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
+        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    }
+    return result;
+}
+
 Value setElement(Value obj, uint32_t index, Value v) {
     // A plain object keeps the definition semantics setProperty has, for the
     // reason setProperty has them: a host building an object must not run an

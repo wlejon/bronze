@@ -634,18 +634,12 @@ Value rtAtomicsObject() {
 }
 
 bool rtAtomicsCheckMissingMember(Value obj, const std::string& key) {
-    if (!g_atomicsObject.isObject() || obj.rawBits() != g_atomicsObject.rawBits()) return false;
-    for (const char* name : kAtomicsUnimplemented) {
-        if (key != name) continue;
-        // Its own message rather than the shared table's, because the REASON is
-        // the interesting half: these three are not missing work, they are
-        // operations on a second agent, and bronze has one.
-        fatal((std::string("unsupported: Atomics.") + key +
-               " is not implemented (it operates on an agent cluster; bronze programs are a "
-               "single agent, so there is nothing to wait for and nothing to wake)")
-                  .c_str());
-    }
-    return true;
+    (void)obj;
+    (void)key;
+    // Single-agent runtime does not implement wait, waitAsync, or notify.
+    // Property access / inspection returns undefined or false without aborting.
+    // If called as a function, JS invocation of undefined throws a TypeError.
+    return false;
 }
 
 }  // namespace bronze::runtime

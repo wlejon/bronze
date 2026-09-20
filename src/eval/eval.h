@@ -60,6 +60,9 @@ struct CompiledScript {
 // code, data sections, and function pointers remain valid across executions.
 BRONZE_EMBED_API void retainJitProgram(std::unique_ptr<BrassJitProgram> program);
 
+// Clears all retained JIT compiled programs.
+BRONZE_EMBED_API void clearRetainedJitPrograms();
+
 // Compiles a script to JIT machine code. Safe to invoke on background worker threads.
 BRONZE_EMBED_API std::unique_ptr<CompiledScript> compileScript(std::string_view source, const EvalOptions& options = {});
 

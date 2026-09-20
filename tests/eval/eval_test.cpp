@@ -317,3 +317,102 @@ TEST_CASE("evalScript evaluates code within isolated realms") {
     embed::destroyRealm(realmA);
     embed::destroyRealm(realmB);
 }
+
+TEST_CASE("proxy array refused mutator throws TypeError") {
+    embed::CallResult r1 = evalScript(
+        "let p = new Proxy([], {});\n"
+        "let res = 'no-throw';\n"
+        "try {\n"
+        "  p.pop();\n"
+        "} catch (e) {\n"
+        "  res = (e instanceof TypeError ? 'type-error' : 'other-error');\n"
+        "}\n"
+        "res;\n");
+    CHECK(!r1.thrown);
+    CHECK(embed::toUtf8(r1.value) == "type-error");
+}
+
+TEST_CASE("Atomics.wait, waitAsync, notify behave safely without fatal") {
+    embed::CallResult r1 = evalScript(
+        "typeof Atomics.wait === 'undefined' && !('wait' in Atomics);");
+    CHECK(!r1.thrown);
+    CHECK(r1.value.asBool() == true);
+
+    embed::CallResult r2 = evalScript(
+        "let res = 'no-throw';\n"
+        "try {\n"
+        "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);\n"
+        "} catch (e) {\n"
+        "  res = (e instanceof TypeError ? 'type-error' : 'other-error');\n"
+        "}\n"
+        "res;\n");
+    CHECK(!r2.thrown);
+    CHECK(embed::toUtf8(r2.value) == "type-error");
+}
+
+TEST_CASE("performance marks and measures") {
+    embed::CallResult r1 = evalScript(
+        "performance.clearMarks();\n"
+        "performance.clearMeasures();\n"
+        "performance.mark('m1');\n"
+        "performance.mark('m2');\n"
+        "performance.measure('meas1', 'm1', 'm2');\n"
+        "let entries = performance.getEntries();\n"
+        "let marks = performance.getEntriesByType('mark');\n"
+        "let measures = performance.getEntriesByType('measure');\n"
+        "let m1List = performance.getEntriesByName('m1');\n"
+        "entries.length === 3 && marks.length === 2 && measures.length === 1 && m1List.length === 1;\n");
+    CHECK(!r1.thrown);
+    CHECK(r1.value.asBool() == true);
+
+    embed::CallResult r2 = evalScript(
+        "performance.clearMarks('m1');\n"
+        "let marksAfter = performance.getEntriesByType('mark');\n"
+        "marksAfter.length === 1 && marksAfter[0].name === 'm2';\n");
+    CHECK(!r2.thrown);
+    CHECK(r2.value.asBool() == true);
+
+    embed::CallResult r3 = evalScript(
+        "performance.clearMeasures();\n"
+        "performance.getEntriesByType('measure').length === 0;\n");
+    CHECK(!r3.thrown);
+    CHECK(r3.value.asBool() == true);
+}
+
+TEST_CASE("dynamic functions and eval clean up globalThis temporary bindings") {
+    std::vector<std::string> params{"x"};
+    Value fn = evalFunction(params, "return x + 1;");
+    REQUIRE(embed::isFunction(fn));
+
+    embed::CallResult r = evalScript(
+        "let found = false;\n"
+        "for (let k of Object.keys(globalThis)) {\n"
+        "  if (k.startsWith('__bronze_dyn_fn_')) found = true;\n"
+        "}\n"
+        "found;\n");
+    CHECK(!r.thrown);
+    CHECK(r.value.asBool() == false);
+
+    evalScript("123 + 456;");
+    embed::CallResult r2 = evalScript(
+        "let count = 0;\n"
+        "for (let k of Object.keys(globalThis)) {\n"
+        "  if (k.startsWith('__bronze_eval_res_')) count++;\n"
+        "}\n"
+        "count;\n");
+    CHECK(!r2.thrown);
+    CHECK(r2.value.asNumber() <= 1.0);
+}
+
+TEST_CASE("clearRetainedJitPrograms and embed::deleteProperty") {
+    clearRetainedJitPrograms();
+
+    Value obj = embed::createObject();
+    embed::setProperty(obj, "testKey", embed::fromDouble(42.0));
+    CHECK(embed::getProperty(obj, "testKey").asNumber() == 42.0);
+
+    bool deleted = embed::deleteProperty(obj, "testKey");
+    CHECK(deleted);
+    CHECK(embed::isUndefined(embed::getProperty(obj, "testKey")));
+}
+
