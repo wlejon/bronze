@@ -53,6 +53,11 @@ Value createObject() {
     return Value::fromObject(obj);
 }
 
+Value makeArray(uint32_t length) {
+    ShadowStackFrame frame;
+    return Value(bronze_create_array(length));
+}
+
 Value setProperty(Value obj, std::string_view key, Value v) {
     ShadowStackFrame frame;
     Rooted<Value> self{obj};

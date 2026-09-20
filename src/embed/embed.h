@@ -611,9 +611,10 @@ BRONZE_EMBED_API Value throwRangeError(const std::string& message);
 
 // ---- object building (embed_object.cpp) ------------------------------------
 
-// A plain `{}` with the shape every literal shares, so host-built objects sit
-// on the same inline-cache paths as program-built ones. ALLOCATES.
 BRONZE_EMBED_API Value createObject();
+
+// Allocate a fresh JavaScript Array (`[]`), inheriting Array.prototype. ALLOCATES.
+BRONZE_EMBED_API Value makeArray(uint32_t length = 0);
 
 // Define an own data property (enumerable, like an assignment). The receiver
 // may be a plain object or a FUNCTION: `URL.createObjectURL` is a property on
