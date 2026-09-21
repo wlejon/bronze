@@ -12,6 +12,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_regexp_internal.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/object.h"
@@ -297,3 +298,55 @@ TEST_CASE("a fresh RegExp's chain is pristine and an own key ends that") {
     Rooted<Value> fresh{makeRegExp("b", "")};
     CHECK(rtRegExpChainPristine(fresh.get().asObject<RegExpHeader>()));
 }
+
+TEST_CASE("RegExp.prototype.exec throws catchable RangeError on step budget exhaustion") {
+    ShadowStackFrame frame;
+    rtClearException();
+
+    Rooted<Value> re{makeRegExp("(a+)+$", "")};
+    Rooted<Value> input{rtMakeString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")};
+    Rooted<Value> result{rtRegExpExec(re, input)};
+
+    CHECK(rtExceptionPending());
+    Value exVal = Value(rtTls()->exception_cell);
+    CHECK(exVal.isObject());
+    std::string errText;
+    CHECK(rtErrorText(exVal, errText));
+    CHECK(errText.find("RangeError") != std::string::npos);
+    CHECK(errText.find("backtracking") != std::string::npos);
+
+    rtClearException();
+}
+
+TEST_CASE("RegExp compilation cache is bounded and LRU evicts cleanly") {
+    ShadowStackFrame frame;
+
+    // Create 600 distinct regular expressions
+    std::vector<Rooted<Value>> regexes;
+    regexes.reserve(600);
+    for (int i = 0; i < 600; ++i) {
+        std::string pattern = "pattern_" + std::to_string(i);
+        regexes.emplace_back(makeRegExp(pattern.c_str(), ""));
+    }
+
+    // Cache must be bounded at 512
+    CHECK(rtRegExpCacheSize() <= 512);
+
+    // regexes[0] was compiled early and evicted by the subsequent 599 patterns.
+    // Executing it should transparently re-compile and match accurately without crashing.
+    Rooted<Value> testInput0{rtMakeString("pattern_0")};
+    Rooted<Value> match0{rtRegExpExec(regexes[0], testInput0)};
+    CHECK_FALSE(rtExceptionPending());
+    REQUIRE(match0.get().isObject());
+    CHECK(match0.get().asObject<ArrayHeader>()->length == 1);
+
+    // Similarly test an evicted non-matching input
+    Rooted<Value> testInputMiss{rtMakeString("no_match")};
+    Rooted<Value> miss0{rtRegExpExec(regexes[0], testInputMiss)};
+    CHECK_FALSE(rtExceptionPending());
+    CHECK(miss0.get().isNull());
+
+    // Cache size still stays <= 512
+    CHECK(rtRegExpCacheSize() <= 512);
+}
+

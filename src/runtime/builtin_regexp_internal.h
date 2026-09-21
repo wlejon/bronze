@@ -34,4 +34,7 @@ uint64_t rtRegExpEscapeBody(uint64_t env, uint64_t thisBits, uint32_t argc, cons
 // in the clause's order.
 void rtInstallRegExpSymbolMethods(Rooted<Value>& proto);
 
+// Cache inspection for testing.
+size_t rtRegExpCacheSize();
+
 }  // namespace bronze::runtime

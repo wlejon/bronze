@@ -179,21 +179,22 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
                 holder = fastObj->cachedProtoHolder(depth, crossedDictionary);
             }
             if (holder) {
-                Value setter = holder->getSlot(ic->cached_slot + 1);
-                if (setter.isObject() &&
-                    setter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-                    FunctionHeader* fn = setter.asObject<FunctionHeader>();
+                Rooted<Value> holderRoot{Value::fromObject(holder)};
+                Rooted<Value> recv{objVal};
+                Rooted<Value> valRoot{valVal};
+                Value setter = holderRoot.get().asObject<ObjectHeader>()->getSlot(ic->cached_slot + 1);
+                Rooted<Value> fnRoot{setter};
+                if (fnRoot.get().isObject() &&
+                    fnRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                    FunctionHeader* fn = fnRoot.get().asObject<FunctionHeader>();
                     if (fn->code && fn->arity == 1) {
-                        uint64_t argBits = valVal.rawBits();
-                        rtEnterJs(fn->code, fn->env_record.rawBits(), objBits, 1, &argBits);
+                        rtEnterJs(fn->code, fn->env_record.rawBits(), recv.get().rawBits(), 1,
+                                  reinterpret_cast<const uint64_t*>(valRoot.slot_ptr()));
                         return;
                     }
                 }
-                Rooted<Value> live{objVal};
-                Rooted<Value> recv{objVal};
-                Rooted<Value> v{valVal};
                 bool noSetter = false;
-                callSetter(setter, recv, v, &noSetter);
+                callSetter(fnRoot.get(), recv, valRoot, &noSetter);
                 if (noSetter) rtReportSetRefusal(SetRefusal::NoSetter, strict, rtKeyString(keyIndex));
                 return;
             }

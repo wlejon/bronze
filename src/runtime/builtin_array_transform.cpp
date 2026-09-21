@@ -136,11 +136,13 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
         if (elem.get().isNull() || elem.get().isUndefined()) continue;
         if (isArray(elem.get())) {
             Rooted<Value> joinKey{rtMakeString("join")};
-            Value joinMethod(bronze_elem_get(elem.get().rawBits(), joinKey.get().rawBits()));
-            if (isCallable(joinMethod)) {
-                uint64_t res = bronze_dynamic_call(joinMethod.rawBits(), elem.get().rawBits(), 0, nullptr);
+            Rooted<Value> joinMethod{Value(bronze_elem_get(elem.get().rawBits(), joinKey.get().rawBits()))};
+            if (isCallable(joinMethod.get())) {
+                uint64_t res = bronze_dynamic_call(joinMethod.get().rawBits(), elem.get().rawBits(), 0, nullptr);
                 if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-                result += rtUtf8Chars(Value(res).asString<StringHeader>());
+                Rooted<Value> resStr{rtValueToString(Value(res))};
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+                result += rtUtf8Chars(resStr.get().asString<StringHeader>());
                 continue;
             }
         }

@@ -38,6 +38,7 @@
 #include "runtime/object.h"
 #include "runtime/property_key.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
@@ -363,3 +364,65 @@ TEST_CASE("redefining array length or elements or regexp lastIndex raises catcha
     CHECK(rtExceptionPending());
     bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }
+
+inline Value g_lastSetterArg = Value::fromUndefined();
+
+inline uint64_t gcTriggeringGetter(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    // Force a GC collection inside the getter
+    rtHeap().collect();
+    return Value::fromDouble(123.0).rawBits();
+}
+
+inline uint64_t gcTriggeringSetter(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    // Force a GC collection inside the setter
+    rtHeap().collect();
+    if (argc > 0) {
+        g_lastSetterArg = Value(argv[0]);
+    }
+    return Value::fromUndefined().rawBits();
+}
+
+TEST_CASE("accessor getter and setter IC invocation safely roots holder, fn, and arguments") {
+    ShadowStackFrame frame;
+
+    Rooted<Value> obj{object()};
+    Rooted<Value> getterFn{rtNativeFunction(gcTriggeringGetter, 0, "get", 0)};
+    Rooted<Value> setterFn{rtNativeFunction(gcTriggeringSetter, 0, "set", 1)};
+
+    Rooted<Value> d = descriptor();
+    put(d, "get", getterFn.get());
+    put(d, "set", setterFn.get());
+    put(d, "configurable", Value::fromBool(true));
+    put(d, "enumerable", Value::fromBool(true));
+    REQUIRE(define(obj, "propWithGc", d));
+
+    const uint32_t keyIndex = bronze_register_key_string("propWithGc");
+    InlineCacheSite getSiteStorage{};
+    auto* getEntry = reinterpret_cast<uint64_t*>(&getSiteStorage);
+
+    // First get: fills IC
+    Value val1(bronze_prop_get(obj.get().rawBits(), keyIndex, getEntry));
+    CHECK(val1.asNumber() == 123.0);
+
+    // Second get: hits accessor IC and calls rtEnterJs with holder, fn, self rooted
+    Value val2(bronze_prop_get(obj.get().rawBits(), keyIndex, getEntry));
+    CHECK(val2.asNumber() == 123.0);
+
+    // Test setter IC
+    InlineCacheSite setSiteStorage{};
+    auto* setEntry = reinterpret_cast<uint64_t*>(&setSiteStorage);
+
+    Rooted<Value> testArg{text("argToRoot")};
+
+    // First set: fills IC
+    bronze_prop_set(obj.get().rawBits(), keyIndex, testArg.get().rawBits(), setEntry, false);
+    CHECK(g_lastSetterArg.isString());
+    CHECK(rtUtf8Chars(g_lastSetterArg.asString<StringHeader>()) == "argToRoot");
+
+    // Second set: hits accessor IC and calls rtEnterJs with holder, fn, recv, val rooted
+    Rooted<Value> testArg2{text("argToRoot2")};
+    bronze_prop_set(obj.get().rawBits(), keyIndex, testArg2.get().rawBits(), setEntry, false);
+    CHECK(g_lastSetterArg.isString());
+    CHECK(rtUtf8Chars(g_lastSetterArg.asString<StringHeader>()) == "argToRoot2");
+}
+

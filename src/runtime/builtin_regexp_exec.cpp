@@ -44,22 +44,123 @@ namespace bronze::runtime {
 
 namespace {
 
-// Compiled patterns, and the memo that keeps one per (source, flags). Both
-// outlive every RegExp that names them: a `regex::Pattern` is small, a program
-// has finitely many distinct patterns, and freeing one would need a reference
-// count on a table the collector cannot see into.
-std::vector<regex::PatternPtr>& programs() {
-    static thread_local std::vector<regex::PatternPtr> table;
-    return table;
-}
+// Bounded LRU cache for compiled regex patterns (capped at 512 entries).
+// When capacity is exceeded, the least recently used pattern is evicted and deleted.
+// If an older RegExp whose pattern was evicted is executed, programOf detects the
+// eviction via the encoded slot/generation ID and re-compiles the pattern transparently.
+class RegExpCache {
+public:
+    static constexpr size_t kCapacity = 512;
+    static constexpr uint32_t kInvalid = UINT32_MAX;
 
-// Keyed on the flags and the source with a separator no flag letter can be, so
-// `/ab/g` and `/abg/` cannot collide. A std::map and not a hash map because the
-// project forbids hash-map iteration order in output paths and one table that
-// is never iterated is not worth a second rule to remember.
-std::map<std::string, uint32_t>& programIndex() {
-    static thread_local std::map<std::string, uint32_t> table;
-    return table;
+    struct Entry {
+        std::string key;
+        regex::PatternPtr pattern;
+        uint32_t prev{kInvalid};
+        uint32_t next{kInvalid};
+        uint64_t id{0};
+    };
+
+    RegExpCache() : entries_(kCapacity) {}
+
+    uint32_t lookup(const std::string& key) {
+        auto it = keyToSlot_.find(key);
+        if (it == keyToSlot_.end()) return kInvalid;
+        uint32_t slot = it->second;
+        touch(slot);
+        return slot;
+    }
+
+    uint32_t insert(const std::string& key, regex::PatternPtr pattern) {
+        auto it = keyToSlot_.find(key);
+        if (it != keyToSlot_.end()) {
+            uint32_t slot = it->second;
+            entries_[slot].pattern = std::move(pattern);
+            entries_[slot].id = makeId(slot);
+            touch(slot);
+            return slot;
+        }
+
+        uint32_t slot = kInvalid;
+        if (size_ < kCapacity) {
+            slot = static_cast<uint32_t>(size_++);
+        } else {
+            // Evict least-recently used (tail)
+            slot = tail_;
+            keyToSlot_.erase(entries_[slot].key);
+            unlink(slot);
+            entries_[slot].pattern.reset();
+        }
+
+        entries_[slot].key = key;
+        entries_[slot].pattern = std::move(pattern);
+        entries_[slot].id = makeId(slot);
+        keyToSlot_[key] = slot;
+        pushFront(slot);
+        return slot;
+    }
+
+    bool isValid(uint32_t slot, uint64_t expectedId) const {
+        return slot < size_ && entries_[slot].id == expectedId && entries_[slot].pattern != nullptr;
+    }
+
+    const Entry& entry(uint32_t slot) const { return entries_[slot]; }
+    uint64_t entryId(uint32_t slot) const { return entries_[slot].id; }
+
+    void touch(uint32_t slot) {
+        if (head_ == slot) return;
+        unlink(slot);
+        pushFront(slot);
+    }
+
+    size_t size() const { return size_; }
+
+private:
+    uint64_t makeId(uint32_t slot) {
+        generation_ = (generation_ + 1) & 0x1FFFFFFFFULL;
+        return (generation_ << 16) | (static_cast<uint64_t>(slot) & 0xFFFFULL);
+    }
+
+    void unlink(uint32_t slot) {
+        Entry& e = entries_[slot];
+        if (e.prev != kInvalid) {
+            entries_[e.prev].next = e.next;
+        } else if (head_ == slot) {
+            head_ = e.next;
+        }
+        if (e.next != kInvalid) {
+            entries_[e.next].prev = e.prev;
+        } else if (tail_ == slot) {
+            tail_ = e.prev;
+        }
+        e.prev = kInvalid;
+        e.next = kInvalid;
+    }
+
+    void pushFront(uint32_t slot) {
+        Entry& e = entries_[slot];
+        e.prev = kInvalid;
+        e.next = head_;
+        if (head_ != kInvalid) {
+            entries_[head_].prev = slot;
+        }
+        head_ = slot;
+        if (tail_ == kInvalid) {
+            tail_ = slot;
+        }
+    }
+
+    std::vector<Entry> entries_;
+    std::map<std::string, uint32_t> keyToSlot_;
+    uint32_t head_{kInvalid};
+    uint32_t tail_{kInvalid};
+    size_t size_{0};
+    uint64_t generation_{0};
+};
+
+RegExpCache& regExpCache() {
+    static thread_local RegExpCache cache;
+    return cache;
 }
 
 regex::Units unitsOfString(const StringHeader* str) {
@@ -72,7 +173,7 @@ regex::Units unitsOfString(const StringHeader* str) {
 // not parse a SyntaxError, and a pattern bronze refuses names itself in the
 // same message (`src/regex` writes both).
 bool programFor(const std::string& sourceUtf8, const regex::Units& source,
-                const std::string& flagsText, regex::Flags& flags, uint32_t& out) {
+                const std::string& flagsText, regex::Flags& flags, uint64_t& out) {
     std::string error;
     if (!regex::parseFlags(flagsText, flags, error)) {
         rtThrowSyntaxError(error);
@@ -82,9 +183,10 @@ bool programFor(const std::string& sourceUtf8, const regex::Units& source,
     // compilation: the flag letters are a set, and two spellings of the same
     // set describe the same pattern.
     const std::string key = flags.text() + "\n" + sourceUtf8;
-    auto it = programIndex().find(key);
-    if (it != programIndex().end()) {
-        out = it->second;
+    auto& cache = regExpCache();
+    uint32_t slot = cache.lookup(key);
+    if (slot != RegExpCache::kInvalid) {
+        out = cache.entryId(slot);
         return true;
     }
     regex::PatternPtr pattern = regex::compile(source, flags, error);
@@ -93,9 +195,8 @@ bool programFor(const std::string& sourceUtf8, const regex::Units& source,
                            error);
         return false;
     }
-    out = static_cast<uint32_t>(programs().size());
-    programs().push_back(std::move(pattern));
-    programIndex().emplace(key, out);
+    slot = cache.insert(key, std::move(pattern));
+    out = cache.entryId(slot);
     return true;
 }
 
@@ -104,10 +205,39 @@ bool isRegExp(Value v) {
 }
 
 const regex::Pattern& programOf(Value re) {
-    const auto* header = re.asObject<RegExpHeader>();
-    const auto index = static_cast<size_t>(header->programIndex.asNumber());
-    if (index >= programs().size()) fatal("internal: a RegExp with no compiled pattern");
-    return *programs()[index];
+    auto* header = re.asObject<RegExpHeader>();
+    uint64_t id = static_cast<uint64_t>(header->programIndex.asNumber());
+    uint32_t slot = static_cast<uint32_t>(id & 0xFFFF);
+    auto& cache = regExpCache();
+    if (cache.isValid(slot, id)) {
+        cache.touch(slot);
+        return *cache.entry(slot).pattern;
+    }
+
+    // Cache miss or slot was evicted: recover using source and flagsText.
+    const std::string flagsText = rtUtf8Chars(header->flagsText.asString<StringHeader>());
+    const std::string sourceUtf8 = rtUtf8Chars(header->source.asString<StringHeader>());
+    const std::string key = flagsText + "\n" + sourceUtf8;
+
+    uint32_t existing = cache.lookup(key);
+    if (existing != RegExpCache::kInvalid) {
+        header->programIndex = Value::fromDouble(static_cast<double>(cache.entryId(existing)));
+        return *cache.entry(existing).pattern;
+    }
+
+    regex::Flags flags;
+    std::string error;
+    if (!regex::parseFlags(flagsText, flags, error)) {
+        fatal("internal: stored RegExp flags failed to re-parse");
+    }
+    const regex::Units source = unitsOfString(header->source.asString<StringHeader>());
+    regex::PatternPtr pattern = regex::compile(source, flags, error);
+    if (!pattern) {
+        fatal("internal: stored RegExp pattern failed to re-compile");
+    }
+    uint32_t newSlot = cache.insert(key, std::move(pattern));
+    header->programIndex = Value::fromDouble(static_cast<double>(cache.entryId(newSlot)));
+    return *cache.entry(newSlot).pattern;
 }
 
 // 22.2.6.10 EscapeRegExpPattern. `source` is the text a LITERAL of this
@@ -309,7 +439,7 @@ bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::
     const std::string sourceUtf8 = escapeRegExpPattern(written);
     if (sourceUtf8 != written) sourceStr.set(rtMakeString(sourceUtf8.c_str()));
     const regex::Units source = unitsOfString(sourceStr.get().asString<StringHeader>());
-    uint32_t index = 0;
+    uint64_t index = 0;
     regex::Flags flags;
     if (!programFor(sourceUtf8, source, flagsText, flags, index)) return false;
 
@@ -320,7 +450,7 @@ bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::
     header->source = sourceStr.get();
     header->flagsText = canonicalFlags.get();
     header->lastIndex = Value::fromDouble(0.0);
-    header->programIndex = Value::fromDouble(index);
+    header->programIndex = Value::fromDouble(static_cast<double>(index));
     return true;
 }
 
@@ -373,10 +503,7 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
                               : regex::search(pattern, input, from, match, error);
     }
     if (status == regex::ExecStatus::Error) {
-        // The matcher gave up rather than answering: a case fold bronze has no
-        // table for, or a backtracking budget. Both are hard errors and not
-        // catchable throws, because both mean bronze does not know the answer.
-        fatal(error.c_str());
+        return rtThrowRangeError(error);
     }
     if (status != regex::ExecStatus::Match) {
         if (tracksLastIndex && !storeLastIndex(re, 0.0)) return Value::fromUndefined();
@@ -424,6 +551,10 @@ uint64_t rtRegExpExecBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     Rooted<Value> input{rtValueToString(args[0])};
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpExec(self, input).rawBits();
+}
+
+size_t rtRegExpCacheSize() {
+    return regExpCache().size();
 }
 
 }  // namespace bronze::runtime

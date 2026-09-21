@@ -172,16 +172,18 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
                             holder = fastObj->cachedProtoHolder(depth, crossedDictionary);
                         }
                         if (holder) {
-                            Value getter = holder->getSlot(ic->cached_slot);
-                            if (getter.isObject() &&
-                                getter.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-                                FunctionHeader* fn = getter.asObject<FunctionHeader>();
+                            Rooted<Value> holderRoot{Value::fromObject(holder)};
+                            Rooted<Value> self{objVal};
+                            Value getter = holderRoot.get().asObject<ObjectHeader>()->getSlot(ic->cached_slot);
+                            Rooted<Value> fnRoot{getter};
+                            if (fnRoot.get().isObject() &&
+                                fnRoot.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+                                FunctionHeader* fn = fnRoot.get().asObject<FunctionHeader>();
                                 if (fn->code && fn->arity == 0) {
-                                    return rtEnterJs(fn->code, fn->env_record.rawBits(), objBits, 0, nullptr);
+                                    return rtEnterJs(fn->code, fn->env_record.rawBits(), self.get().rawBits(), 0, nullptr);
                                 }
                             }
-                            Rooted<Value> self{objVal};
-                            return callGetter(getter, self).rawBits();
+                            return callGetter(fnRoot.get(), self).rawBits();
                         }
                     } else {
                         if (ic->cached_depth == 0) return fastObj->getSlot(ic->cached_slot).rawBits();
