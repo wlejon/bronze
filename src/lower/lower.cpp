@@ -235,10 +235,8 @@ std::optional<il::Module> Lowerer::lower() {
 
         openModuleEnv(topLevelStmts, mainFn);
 
-        const auto topLevelVars = ast::getTopLevelVarDeclarations(topLevelStmts);
         const auto allHoistedVars = ast::getHoistedVarDeclarations(topLevelStmts);
-        const auto& hoistedVarsToDeclare = topLevelAsync ? allHoistedVars : topLevelVars;
-        for (const auto& varName : hoistedVarsToDeclare) {
+        for (const auto& varName : allHoistedVars) {
             if (activeVarMap_.find(varName) == activeVarMap_.end()) {
                 il::ValueId undefVal = emitConstUndefined(mainFn);
                 if (!declareVariable(varName, il::Type::Dynamic, /*isConst=*/false, /*isLet=*/false,
@@ -253,13 +251,6 @@ std::optional<il::Module> Lowerer::lower() {
             }
         }
         functionVarNames_.clear();
-        if (!topLevelAsync) {
-            for (const auto& v : allHoistedVars) {
-                if (std::find(topLevelVars.begin(), topLevelVars.end(), v) == topLevelVars.end()) {
-                    functionVarNames_.push_back(v);
-                }
-            }
-        }
 
         if (topLevelAsync) {
             mainFn.returnType = il::Type::Dynamic;

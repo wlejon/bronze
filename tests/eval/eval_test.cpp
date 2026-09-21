@@ -422,3 +422,143 @@ TEST_CASE("clearRetainedJitPrograms and embed::deleteProperty") {
     CHECK(embed::isUndefined(embed::getProperty(obj, "testKey")));
 }
 
+TEST_CASE("Part B: Object, String, RegExp, and block var improvements") {
+    // 1. Object.defineProperty on TypedArray, RegExp, ArrayBuffer, DataView
+    {
+        embed::CallResult r1 = evalScript(
+            "let ta = new Uint8Array(4);\n"
+            "Object.defineProperty(ta, '0', { value: 99 });\n"
+            "ta[0] === 99;\n");
+        CHECK(!r1.thrown);
+        CHECK(r1.value.asBool() == true);
+
+        embed::CallResult r2 = evalScript(
+            "let re = /abc/;\n"
+            "Object.defineProperty(re, 'lastIndex', { value: 5 });\n"
+            "re.lastIndex === 5;\n");
+        CHECK(!r2.thrown);
+        CHECK(r2.value.asBool() == true);
+
+        embed::CallResult r3 = evalScript(
+            "let ab = new ArrayBuffer(8);\n"
+            "Object.defineProperty(ab, 'foo', { value: 123 });\n"
+            "ab.foo === 123;\n");
+        CHECK(!r3.thrown);
+        CHECK(r3.value.asBool() == true);
+
+        embed::CallResult r4 = evalScript(
+            "let dv = new DataView(new ArrayBuffer(8));\n"
+            "Object.defineProperty(dv, 'bar', { value: 456 });\n"
+            "dv.bar === 456;\n");
+        CHECK(!r4.thrown);
+        CHECK(r4.value.asBool() == true);
+
+        embed::CallResult r5 = evalScript(
+            "let caught = false;\n"
+            "try {\n"
+            "  Object.defineProperty(123, 'foo', { value: 1 });\n"
+            "} catch (e) {\n"
+            "  caught = (e instanceof TypeError);\n"
+            "}\n"
+            "caught;\n");
+        CHECK(!r5.thrown);
+        CHECK(r5.value.asBool() == true);
+    }
+
+    // 2. Object.keys and Object.getOwnPropertyNames on ArrayBuffer and DataView
+    {
+        embed::CallResult r1 = evalScript(
+            "let ab = new ArrayBuffer(8);\n"
+            "let k1 = Object.keys(ab);\n"
+            "let p1 = Object.getOwnPropertyNames(ab);\n"
+            "k1.length === 0 && p1.length === 0;\n");
+        CHECK(!r1.thrown);
+        CHECK(r1.value.asBool() == true);
+
+        embed::CallResult r2 = evalScript(
+            "let dv = new DataView(new ArrayBuffer(8));\n"
+            "let k2 = Object.keys(dv);\n"
+            "let p2 = Object.getOwnPropertyNames(dv);\n"
+            "k2.length === 0 && p2.length === 0;\n");
+        CHECK(!r2.thrown);
+        CHECK(r2.value.asBool() == true);
+    }
+
+    // 3. Object.getPrototypeOf on RegExp
+    {
+        embed::CallResult r = evalScript(
+            "let re = /test/;\n"
+            "Object.getPrototypeOf(re) === RegExp.prototype;\n");
+        CHECK(!r.thrown);
+        CHECK(r.value.asBool() == true);
+    }
+
+    // 4. String.prototype.split with object separator
+    {
+        embed::CallResult r = evalScript(
+            "let sep = { toString() { return '-'; } };\n"
+            "let parts = 'foo-bar-baz'.split(sep);\n"
+            "parts.length === 3 && parts[0] === 'foo' && parts[1] === 'bar' && parts[2] === 'baz';\n");
+        CHECK(!r.thrown);
+        CHECK(r.value.asBool() == true);
+    }
+
+    // 5. RegExp.prototype.compile throws catchable TypeError
+    {
+        embed::CallResult r = evalScript(
+            "let caught = false;\n"
+            "try {\n"
+            "  RegExp.prototype.compile('abc');\n"
+            "} catch (e) {\n"
+            "  caught = (e instanceof TypeError);\n"
+            "}\n"
+            "caught;\n");
+        CHECK(!r.thrown);
+        CHECK(r.value.asBool() == true);
+    }
+
+    // 6. Block-scoped var hoisting
+    {
+        embed::CallResult r1 = evalScript(
+            "{\n"
+            "  var blockVar1 = 123;\n"
+            "}\n"
+            "blockVar1 === 123;\n");
+        CHECK(!r1.thrown);
+        CHECK(r1.value.asBool() == true);
+
+        embed::CallResult r2 = evalScript(
+            "function testBlockVar() {\n"
+            "  if (true) {\n"
+            "    var inner = 456;\n"
+            "  }\n"
+            "  return inner;\n"
+            "}\n"
+            "testBlockVar() === 456;\n");
+        CHECK(!r2.thrown);
+        CHECK(r2.value.asBool() == true);
+    }
+
+    // 7. Embed exception reporting in deleteProperty and setElement
+    {
+        embed::CallResult r1 = evalScript(
+            "new Proxy({}, {\n"
+            "  deleteProperty() { throw new Error('delete trap error'); }\n"
+            "});\n");
+        CHECK(!r1.thrown);
+        (void)embed::deleteProperty(r1.value, "foo");
+        CHECK(runtime::rtExceptionPending());
+        runtime::rtClearException();
+
+        embed::CallResult r2 = evalScript(
+            "new Proxy([], {\n"
+            "  set() { throw new Error('set trap error'); }\n"
+            "});\n");
+        CHECK(!r2.thrown);
+        (void)embed::setElement(r2.value, 0, embed::fromDouble(42.0));
+        CHECK(runtime::rtExceptionPending());
+        runtime::rtClearException();
+    }
+}
+
+

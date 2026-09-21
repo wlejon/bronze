@@ -454,8 +454,8 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         // SplitMatcher, which also yields the separator's captures), so it is
         // handed to the module that owns the matcher.
         if (rtIsRegExp(args[0])) return rtStringSplitWithRegExp(thisBits, argc, argv);
-        fatal("unsupported: String.prototype.split with a separator that is neither a string "
-              "nor a RegExp nor an object with a [Symbol.split] method is not implemented");
+        // An object separator lacking [Symbol.split] falls through to
+        // ToString(separator) below per 22.1.3.23.
     }
 
     // Step 4, and it runs BEFORE the separator is looked at — which is the

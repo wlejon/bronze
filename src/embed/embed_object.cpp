@@ -126,11 +126,7 @@ bool deleteProperty(Value obj, std::string_view key) {
     ShadowStackFrame frame;
     Rooted<Value> self{obj};
     Rooted<Value> keyRoot{runtime::rtMakeString(key)};
-    bool result = bronze_elem_delete(self.get().rawBits(), keyRoot.get().rawBits(), /*strict=*/false);
-    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-    }
-    return result;
+    return bronze_elem_delete(self.get().rawBits(), keyRoot.get().rawBits(), /*strict=*/false);
 }
 
 Value setElement(Value obj, uint32_t index, Value v) {
@@ -157,13 +153,6 @@ Value setElement(Value obj, uint32_t index, Value v) {
     Rooted<Value> val{v};
     bronze_elem_set(self.get().rawBits(), Value::fromDouble(index).rawBits(),
                     val.get().rawBits(), /*strict=*/false);
-    // The host boundary is where propagation ends — getProperty's rule, and
-    // for the same reason: there is no enclosing JS frame to unwind into, and
-    // a cell left set would make the next entry into compiled code appear to
-    // throw this write's exception.
-    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-    }
     return self.get();
 }
 

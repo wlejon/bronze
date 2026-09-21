@@ -121,7 +121,9 @@ uint64_t regexpToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
 // function, as node has it, but its body is a refusal — re-initialising a
 // pattern in place is a legacy path nothing in the milestones takes.
 uint64_t regexpCompileRefusal(uint64_t, uint64_t, uint32_t, const uint64_t*) {
-    fatal("unsupported: RegExp.prototype.compile (Annex B.2.4.1; build a new RegExp instead)");
+    return rtThrowTypeError(
+               "unsupported: RegExp.prototype.compile (Annex B.2.4.1; build a new RegExp instead)")
+        .rawBits();
 }
 
 // ---- the constructor (22.2.4.1) --------------------------------------------------

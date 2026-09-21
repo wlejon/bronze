@@ -76,20 +76,6 @@ void Lowerer::warnUnresolved(const std::string& name, Span span) {
 // or may not fire, where before it always did.
 Lowerer::Value Lowerer::emitReferenceError(const std::string& name, Span span,
                                            il::Function& ilFn) {
-    // A `var` written inside a block of this function. 8.6.2 hoists it to the
-    // function whatever depth it sits at; bronze creates the slot only for the
-    // ones written at the function's top level, so a read of any other one
-    // arrives here having resolved to nothing. It is the same class of thing as
-    // the named function expression above — declared, and bronze's own gap —
-    // and it had been passing through as `unresolved name 'j'`, which sends the
-    // reader looking for a missing global instead of at the hoisting.
-    if (std::find(functionVarNames_.begin(), functionVarNames_.end(), name) !=
-        functionVarNames_.end()) {
-        diags_.error(span, "unsupported construct: '" + name +
-                               "' is declared by a `var` inside a block, and bronze hoists "
-                               "`var` only from a function's top level");
-        return Value{il::kNoValue, il::Type::Dynamic};
-    }
     // `eval` never reaches here any more: it is a provided global now
     // (lower_util.cpp), a real function object whose body defers to the
     // host's eval hook and refuses with a catchable TypeError without one —

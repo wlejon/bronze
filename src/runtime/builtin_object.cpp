@@ -165,12 +165,16 @@ bool rtObjectRequirePropertyTable(Value v, const char* member) {
     // trap, which the apply reaches as one more receiver kind
     // (builtin_object_define.cpp).
     if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) return true;
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::TypedArray) return true;
+    if (v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::RegExp) return true;
     if (!v.isObject()) {
         rtThrowTypeError(std::string("Object.") + member +
                          " called on a value that is not an object");
         return false;
     }
-    refuseObjectKind(v, member);
+    rtThrowTypeError(std::string("unsupported: Object.") + member + " on " +
+                     rtObjectKindName(v) + " (" + propertyStoreReason(v) + ")");
+    return false;
 }
 
 ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
@@ -196,7 +200,13 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Array) return ObjectOwnKeys::Array;
     if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) return ObjectOwnKeys::Proxy;
     if (rtIsModuleNamespace(v)) return ObjectOwnKeys::Namespace;
-    refuseObjectKind(v, member);
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::ArrayBuffer ||
+        v.asObject<HeapObjectHeader>()->flags == HeapKind::DataView) {
+        return ObjectOwnKeys::None;
+    }
+    rtThrowTypeError(std::string("unsupported: Object.") + member + " on " +
+                     rtObjectKindName(v) + " (" + propertyStoreReason(v) + ")");
+    return ObjectOwnKeys::None;
 }
 
 std::string rtObjectKeyTextOf(Value keyVal) {
@@ -247,6 +257,10 @@ bool rtShapelessPrototypeOf(Value obj, Value& out) {
     }
     if (kind == HeapKind::Array) {
         out = rtArrayPrototypeObject();
+        return true;
+    }
+    if (kind == HeapKind::RegExp) {
+        out = rtRegExpPrototypeObject();
         return true;
     }
     if (kind != HeapKind::Function) return false;
@@ -318,11 +332,13 @@ uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         // never built as an object: `RegExp.prototype` is answered by the
         // property path from a C table beside the value, so there is no object
         // to hand back and `null` would be a lie about a chain that works.
-        fatal((std::string("unsupported: Object.getPrototypeOf of ") +
-               rtObjectKindName(args[0]) +
-               " (bronze builds no prototype OBJECT for this intrinsic; its members are "
-               "answered from a table beside the value)")
-                  .c_str());
+        if (args[0].isObject() &&
+            args[0].asObject<HeapObjectHeader>()->flags == HeapKind::RegExp) {
+            return rtRegExpPrototypeObject().rawBits();
+        }
+        return rtThrowTypeError(std::string("unsupported: Object.getPrototypeOf of ") +
+                                rtObjectKindName(args[0]))
+            .rawBits();
     }
     Shape* shape = args[0].asObject<ObjectHeader>()->shape;
     const Value proto = shape ? shape->prototypeValue() : Value::fromUndefined();
