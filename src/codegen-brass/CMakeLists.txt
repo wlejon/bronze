@@ -90,6 +90,7 @@ if(BRONZE_BUILD_TESTS)
     add_executable(bronze_codegen_brass_tests
         ../../tests/codegen_brass/codegen_brass_test.cpp
         ../../tests/codegen_brass/tiered_engine_test.cpp
+        ../../tests/codegen_brass/optimization_test.cpp
     )
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass

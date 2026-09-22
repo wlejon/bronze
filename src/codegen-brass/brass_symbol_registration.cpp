@@ -4,6 +4,7 @@
 #include "runtime/value.h"
 
 #include <brass/il_translator/il_translator.hpp>
+#include <brass/runtime/parallel_runtime.hpp>
 #include <cmath>
 #include <type_traits>
 #include <vector>
@@ -157,6 +158,16 @@ void registerBronzeBaselineSymbols(brass::codegen::BaselineJitCompiler& compiler
     compiler.register_external_symbol("ceil", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::ceil)));
     compiler.register_external_symbol("trunc", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::trunc)));
 
+    // 3b. Register ParallelRuntime symbols
+    compiler.register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(&brass_parallel_for));
+    compiler.register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(&brass_parallel_for));
+    compiler.register_external_symbol("brass_set_parallel_workers", reinterpret_cast<void*>(&brass_set_parallel_workers));
+    compiler.register_external_symbol("brass_get_parallel_workers", reinterpret_cast<void*>(&brass_get_parallel_workers));
+    compiler.register_external_symbol("brass_parallel_reduce_i64", reinterpret_cast<void*>(&brass_parallel_reduce_i64));
+    compiler.register_external_symbol("brass_parallel_reduce_f64", reinterpret_cast<void*>(&brass_parallel_reduce_f64));
+    compiler.register_external_symbol("brass_parallel_alloc_context", reinterpret_cast<void*>(&brass_parallel_alloc_context));
+    compiler.register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
+
     // 4. Register default fallback data symbols
     compiler.register_external_symbol("__bronze_module_env", &s_default_module_env);
     compiler.register_external_symbol("__bronze_key_map", s_default_key_map);
@@ -192,6 +203,16 @@ void registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline& pipeline)
     pipeline.register_external_function("ceil", wrapAbiFunction(static_cast<double(*)(double)>(&std::ceil)));
     pipeline.register_external_symbol("trunc", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::trunc)));
     pipeline.register_external_function("trunc", wrapAbiFunction(static_cast<double(*)(double)>(&std::trunc)));
+
+    // 3b. Register ParallelRuntime symbols
+    pipeline.register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(&brass_parallel_for));
+    pipeline.register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(&brass_parallel_for));
+    pipeline.register_external_symbol("brass_set_parallel_workers", reinterpret_cast<void*>(&brass_set_parallel_workers));
+    pipeline.register_external_symbol("brass_get_parallel_workers", reinterpret_cast<void*>(&brass_get_parallel_workers));
+    pipeline.register_external_symbol("brass_parallel_reduce_i64", reinterpret_cast<void*>(&brass_parallel_reduce_i64));
+    pipeline.register_external_symbol("brass_parallel_reduce_f64", reinterpret_cast<void*>(&brass_parallel_reduce_f64));
+    pipeline.register_external_symbol("brass_parallel_alloc_context", reinterpret_cast<void*>(&brass_parallel_alloc_context));
+    pipeline.register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
 
     pipeline.register_external_symbol("__bronze_module_env", &s_default_module_env);
     pipeline.register_external_symbol("__bronze_key_map", s_default_key_map);

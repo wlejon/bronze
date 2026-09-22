@@ -242,8 +242,12 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     const bool optimize = this->optimize();
     brass::il::TranslatorOptions options;
     options.enable_optimizations = optimize;
-    options.enable_inlining = false;
+    options.run_alias_analysis = optimize;
+    options.enable_inlining = optimize;
+    options.inline_leaf_only = true;
     options.enable_speculative_inlining = false;
+    options.enable_parallel_loops = optimize;
+    options.parallel_threshold = 1000;
     options.enable_sroa = true;
     options.enable_gvn = true;
     options.enable_sccp = true;
@@ -268,7 +272,10 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // other way in, and generated code reads the exception cell, the
     // allocation window and the stack limit through it without a call.
     options.pin_tls_register = true;
-    if (target_ == brass::Target::host() && target_.is_x64()) {
+    if (target_.is_aarch64()) {
+        options.vector_width = 128;
+        options.enable_fma = true;
+    } else if (target_ == brass::Target::host() && target_.is_x64()) {
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
         if (__builtin_cpu_supports("avx2")) {
