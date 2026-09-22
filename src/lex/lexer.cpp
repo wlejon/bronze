@@ -1,4 +1,5 @@
 #include "lex/lexer.h"
+#include "lex/lexer_utf8.h"
 
 namespace bronze {
 
@@ -112,12 +113,6 @@ const char* tokenKindName(TokenKind kind) {
     return "unknown";
 }
 
-static bool isIdentStart(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
-}
-static bool isIdentPart(char c) {
-    return isIdentStart(c) || (c >= '0' && c <= '9');
-}
 static bool isDigit(char c) { return c >= '0' && c <= '9'; }
 static bool isHexDigit(char c) {
     return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -127,6 +122,10 @@ char Lexer::peek(uint32_t ahead) const {
     const auto text = buffer_.text();
     const uint64_t idx = static_cast<uint64_t>(pos_) + ahead;
     return idx < text.size() ? text[static_cast<size_t>(idx)] : '\0';
+}
+
+DecodedCodePoint Lexer::peekCodePoint(uint32_t ahead) const {
+    return decodeUtf8(buffer_.text(), static_cast<size_t>(pos_) + ahead);
 }
 
 bool Lexer::atEnd() const { return pos_ >= buffer_.text().size(); }
@@ -160,6 +159,16 @@ bool Lexer::skipTrivia() {
             // alone. Editors emit it at the head of a file; the source is
             // otherwise rejected at its first character.
             pos_ += 3;
+        } else if (static_cast<unsigned char>(c) >= 0x80) {
+            const auto dec = peekCodePoint();
+            if (dec.len > 0 && (dec.cp == 0x2028 || dec.cp == 0x2029)) {
+                sawNewline = true;
+                pos_ += dec.len;
+            } else if (dec.len > 0 && isUnicodeWhitespace(dec.cp)) {
+                pos_ += dec.len;
+            } else {
+                return sawNewline;
+            }
         } else if (c == '/' && peek(1) == '/') {
             // The terminating newline is left for the branch above, so a line
             // comment reports through it like any other newline.
@@ -187,7 +196,22 @@ bool Lexer::skipTrivia() {
 
 Token Lexer::lexIdentifierOrKeyword() {
     const uint32_t begin = pos_;
-    while (isIdentPart(peek())) ++pos_;
+    for (;;) {
+        const char c = peek();
+        if (c != '\0' && static_cast<unsigned char>(c) < 0x80) {
+            if (isIdentPart(static_cast<uint32_t>(c))) {
+                ++pos_;
+                continue;
+            }
+            break;
+        }
+        const auto dec = peekCodePoint();
+        if (dec.len > 0 && isIdentPart(dec.cp)) {
+            pos_ += dec.len;
+            continue;
+        }
+        break;
+    }
     const auto text = buffer_.text().substr(begin, pos_ - begin);
     struct Keyword {
         std::string_view text;
@@ -262,8 +286,9 @@ Token Lexer::lexNumber() {
     // `1.foo` is a property access on a number, not a literal ending in a
     // dot, so the dot is only part of the literal when it is not a property
     // access (or when a separator `_` follows, so the parser names the error).
+    const auto propAhead = peekCodePoint(1);
     const bool isPropertyAccess =
-        (isIdentStart(peek(1)) && peek(1) != '_') && !isExponentAhead;
+        (propAhead.len > 0 && isIdentStart(propAhead.cp) && propAhead.cp != '_') && !isExponentAhead;
     if (peek() == '.' && !isPropertyAccess) {
         ++pos_;
         takeDigits(isDigit);
@@ -640,18 +665,36 @@ std::vector<Token> Lexer::lex() {
         newlineBefore = skipTrivia();
         if (atEnd() || diags_.hasErrors()) break;
         const char c = peek();
-        if (isIdentStart(c)) {
+        const auto dec = (static_cast<unsigned char>(c) < 0x80)
+            ? DecodedCodePoint{static_cast<uint32_t>(c), 1}
+            : peekCodePoint();
+        if (dec.len > 0 && isIdentStart(dec.cp)) {
             tokens.push_back(lexIdentifierOrKeyword());
-        } else if (c == '#' && isIdentStart(peek(1))) {
-            // 12.7.2 PrivateIdentifier: `#` and the name it prefixes are one
-            // token, and the `#` alone is not a token at all — a `#` followed
-            // by anything else still reaches lexPunctuation's refusal below,
-            // so `a # b` names the stray character rather than an empty
-            // private name.
-            const uint32_t begin = pos_;
-            ++pos_;  // '#'
-            while (isIdentPart(peek())) ++pos_;
-            tokens.push_back(make(TokenKind::PrivateName, begin));
+        } else if (c == '#') {
+            const auto afterHash = peekCodePoint(1);
+            if (afterHash.len > 0 && isIdentStart(afterHash.cp)) {
+                const uint32_t begin = pos_;
+                pos_ += 1;  // '#'
+                for (;;) {
+                    const char c2 = peek();
+                    if (c2 != '\0' && static_cast<unsigned char>(c2) < 0x80) {
+                        if (isIdentPart(static_cast<uint32_t>(c2))) {
+                            ++pos_;
+                            continue;
+                        }
+                        break;
+                    }
+                    const auto nextDec = peekCodePoint();
+                    if (nextDec.len > 0 && isIdentPart(nextDec.cp)) {
+                        pos_ += nextDec.len;
+                        continue;
+                    }
+                    break;
+                }
+                tokens.push_back(make(TokenKind::PrivateName, begin));
+            } else {
+                tokens.push_back(lexPunctuation());
+            }
         } else if (isDigit(c) || (c == '.' && isDigit(peek(1)))) {
             // A DecimalLiteral may begin with the point (`.5`). The digit
             // lookahead is what keeps `...` a spread and `a.b` a member

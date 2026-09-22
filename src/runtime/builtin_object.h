@@ -104,6 +104,7 @@ uint64_t rtObjectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
                                            const uint64_t* argv);
 uint64_t objectGetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
+uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 
 // [[SetPrototypeOf]] answering its BOOLEAN (10.1.2.1 for an ordinary object,
 // 10.5.2 for a proxy): what `Reflect.setPrototypeOf` reports and what

@@ -7,6 +7,11 @@
 
 namespace bronze {
 
+struct DecodedCodePoint {
+    uint32_t cp = 0;
+    uint32_t len = 0;
+};
+
 // Hand-written single-pass lexer over a SourceBuffer. Produces the full
 // token vector (always terminated by EndOfFile). Unrecognized input is a
 // diagnosed error, never skipped silently.
@@ -26,6 +31,7 @@ private:
     std::vector<uint32_t> substitutionBraces_;
 
     char peek(uint32_t ahead = 0) const;
+    DecodedCodePoint peekCodePoint(uint32_t ahead = 0) const;
     bool atEnd() const;
     Token make(TokenKind kind, uint32_t begin) const;
     // True when the trivia it consumed contained a line terminator.

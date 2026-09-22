@@ -624,3 +624,27 @@ TEST_CASE("debugger statement executes as no-op") {
     CHECK(!r2.thrown);
     CHECK(r2.value.asNumber() == 100.0);
 }
+
+TEST_CASE("unicode identifier evaluation") {
+    embed::CallResult r1 = evalScript("const π = 3.14; π;");
+    CHECK(!r1.thrown);
+    CHECK(r1.value.asNumber() == 3.14);
+
+    embed::CallResult r2 = evalScript("let α = 10, café = 20; α + café;");
+    CHECK(!r2.thrown);
+    CHECK(r2.value.asNumber() == 30.0);
+
+    embed::CallResult r3 = evalScript(
+        "function area(r) {\n"
+        "  const π = 3.14159;\n"
+        "  return π * r * r;\n"
+        "}\n"
+        "area(2);\n");
+    CHECK(!r3.thrown);
+    CHECK(doctest::Approx(r3.value.asNumber()) == 12.56636);
+
+    embed::CallResult r4 = evalScript("const obj = { café: 'espresso' }; obj.café;");
+    CHECK(!r4.thrown);
+    CHECK(embed::toUtf8(r4.value) == "espresso");
+}
+

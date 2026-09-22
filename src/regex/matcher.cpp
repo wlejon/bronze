@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "regex/pattern.h"
+#include "regex/unicode.h"
 
 namespace bronze::regex {
 
@@ -469,19 +470,16 @@ private:
                 // folds across the BMP boundary — so a width disagreement is a
                 // pair that cannot be equal under any canonicalization.
                 if (a.width != b.width) return false;
-                if (ignoreCase_ && !unicode_ &&
-                    (isUnknownCasedUnit(a.code) || isUnknownCasedUnit(b.code))) {
-                    // Both sides of a backreference are INPUT, so neither
-                    // passed the parser's case-table check. Answering
-                    // "different" here would be a guess about a case pair
-                    // bronze cannot see — and only the uppercase table has
-                    // pairs it cannot see.
-                    return giveUp("unsupported: a case-insensitive backreference compared "
-                                  "characters bronze has no case table for without the `u` "
-                                  "flag (only ASCII, Latin-1, Latin Extended-A, Greek, "
-                                  "Cyrillic and Armenian fold under `i` alone)");
+                if (ignoreCase_) {
+                    if (canonical(a.code) != canonical(b.code)) {
+                        // Standard case folding fallback for characters outside the basic blocks
+                        if (simpleCaseFold(a.code) != simpleCaseFold(b.code)) {
+                            return false;
+                        }
+                    }
+                } else {
+                    return false;
                 }
-                if (canonical(a.code) != canonical(b.code)) return false;
             }
             i += a.width;
         }

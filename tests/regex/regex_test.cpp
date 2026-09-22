@@ -133,6 +133,16 @@ TEST_CASE("groups, backreferences and named groups") {
     CHECK(firstMatch(*compileOk("(a)?\\1b"), "b") == "b");
 }
 
+TEST_CASE("case-insensitive backreference outside basic blocks") {
+    // Non-Unicode mode case-insensitive backreference on characters outside
+    // Latin/Greek/Cyrillic/Armenian (e.g. U+1E00 / U+1E01 Latin capital/small letter A with ring below)
+    auto pat = compileOk("(.+)\\1", "i");
+    CHECK(matches(*pat, unitsOf({0x1E00, 0x1E01})));
+    CHECK(extent(*pat, unitsOf({0x1E00, 0x1E01})) == "0..2");
+    // Mismatched characters should not match and should not error
+    CHECK_FALSE(matches(*pat, unitsOf({0x1E00, 0x1E02})));
+}
+
 TEST_CASE("a repeated group clears its captures each turn") {
     // 22.2.2.5.1 step 4: the second turn must not inherit the first turn's
     // capture, so group 1 is undefined after matching "ab".

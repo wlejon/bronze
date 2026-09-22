@@ -1,126 +1,40 @@
-// The iterator protocol: the key `Symbol.iterator` denotes, the prototype chain
-// every iterator object hangs from, and the two walks a for-of can take.
-//
-// Two walks live here and they are deliberately not two mechanisms. The FAST
-// kinds — an array, a string, a typed array, a Map, a Set — step a cursor the
-// runtime owns: no iterator object, no result object, no call into user code
-// per element, which is what the index walk bought and what this must not give
-// back. The PROTOCOL kind is the general answer: read `[Symbol.iterator]`, call it,
-// call `next` until `done`, and call `return` if the loop is abandoned. A
-// user-defined iterable is the whole reason it exists.
-//
-// Which one a value gets is decided ONCE, at open time, and recorded in the
-// record — so the loop's step is a switch on an integer rather than a
-// re-derivation per element.
+// The iterator protocol: %IteratorPrototype%, %AsyncIteratorPrototype%,
+// the per-kind prototypes and shape initialization, and result object creation.
 
-#include "runtime/async_generator.h"
-#include "runtime/generator.h"
 #include "runtime/iterator.h"
+#include "runtime/iterator_internal.h"
 
-#include <bit>
-#include <cstddef>
+#include <cstring>
 #include <string>
 
 #include "abi/bronze_abi.h"
-#include "runtime/tls_block.h"
-#include "runtime/array.h"
+#include "runtime/async_generator.h"
 #include "runtime/exception.h"
-#include "runtime/fatal.h"
 #include "runtime/fn.h"
-#include "runtime/map.h"
+#include "runtime/generator.h"
+#include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
-#include "runtime/rt_property.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
+#include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/symbol.h"
-#include "runtime/bigint.h"
-#include "runtime/typed_array.h"
-
-namespace bronze {
-
-// The record layout as generated code reads it (bronze_abi_tls.h): the inline
-// step/value fast paths load these fields at fixed offsets, and the inline
-// `iter.open` fast path bump-allocates the whole record at this size — so the
-// struct below is ABI, and a field moving is a compile error here rather than
-// a silent miscompile there.
-static_assert(offsetof(IterRecordHeader, target) == BRONZE_ABI_ITER_TARGET_OFFSET);
-static_assert(offsetof(IterRecordHeader, nextFn) == BRONZE_ABI_ITER_NEXTFN_OFFSET);
-static_assert(offsetof(IterRecordHeader, current) == BRONZE_ABI_ITER_CURRENT_OFFSET);
-static_assert(offsetof(IterRecordHeader, cursor) == BRONZE_ABI_ITER_CURSOR_OFFSET);
-static_assert(offsetof(IterRecordHeader, kind) == BRONZE_ABI_ITER_KIND_OFFSET);
-static_assert(offsetof(IterRecordHeader, done) == BRONZE_ABI_ITER_DONE_OFFSET);
-static_assert(sizeof(IterRecordHeader) == BRONZE_ABI_ITER_RECORD_BYTES);
-static_assert(IterRecordHeader::kFlags == BRONZE_ABI_OBJ_FLAGS_ITERATOR);
-// The inline `iter.close` skips every kind below Protocol as a double
-// compare, so the kinds that own their cursor must all sit below it and the
-// kinds holding an iterator object all at or above it.
-static_assert(IterRecordHeader::SetValues < IterRecordHeader::Protocol);
-static_assert(IterRecordHeader::MapIterator > IterRecordHeader::Protocol);
-static_assert(IterRecordHeader::ArrayIterator > IterRecordHeader::Protocol);
-static_assert(IterRecordHeader::Protocol == 5);
-static_assert(BRONZE_ABI_ITER_KIND_OWNED_LIMIT_BITS == 0x4014000000000000ull);  // 5.0
-static_assert(std::bit_cast<uint64_t>(static_cast<double>(IterRecordHeader::MapEntries)) ==
-              BRONZE_ABI_ITER_KIND_MAP_ENTRIES_BITS);
-static_assert(std::bit_cast<uint64_t>(static_cast<double>(IterRecordHeader::MapIterator)) ==
-              BRONZE_ABI_ITER_KIND_MAP_ITERATOR_BITS);
-
-IterRecordHeader* IterRecordHeader::create(Heap& heap, uint32_t kind) {
-    HeapObjectHeader* raw =
-        heap.allocate(sizeof(IterRecordHeader) - sizeof(HeapObjectHeader), Tag::Object);
-    auto* rec = reinterpret_cast<IterRecordHeader*>(raw);
-    rec->header.flags = kFlags;
-    rec->target = Value::fromUndefined();
-    rec->nextFn = Value::fromUndefined();
-    rec->current = Value::fromUndefined();
-    rec->cursor = Value::fromDouble(0.0);
-    rec->kind = Value::fromDouble(static_cast<double>(kind));
-    rec->done = Value::fromBool(false);
-    return rec;
-}
-
-}  // namespace bronze
 
 namespace bronze::runtime {
 
-namespace {
-
-constexpr uint16_t kHighSurrogateFirst = 0xD800;
-constexpr uint16_t kHighSurrogateLast = 0xDBFF;
-constexpr uint16_t kLowSurrogateFirst = 0xDC00;
-constexpr uint16_t kLowSurrogateLast = 0xDFFF;
-
-bool isSurrogatePair(uint16_t high, uint16_t low) {
-    return high >= kHighSurrogateFirst && high <= kHighSurrogateLast &&
-           low >= kLowSurrogateFirst && low <= kLowSurrogateLast;
-}
-
-// 7.2.3 IsCallable: a function, or a proxy whose target is one. The protocol
-// calls whatever this admits through `callMethod` below, which dispatches a
-// proxy to its `apply` trap — so an iterator whose `next` is a proxied
-// function, or a proxied iterable's `[Symbol.iterator]`, runs the trap.
 bool isCallable(Value v) {
     return rtIsCallableValue(v);
 }
 
-// 7.3.14 Call(fn, thisValue) with no arguments, for any callable `isCallable`
-// admits. `bronze_dynamic_call` is the one dispatcher that knows every
-// callable kind (ordinary, bound, proxy); the direct FunctionHeader call it
-// replaces here knew one.
 Value callMethod(Rooted<Value>& fn, Rooted<Value>& thisValue) {
     return Value(bronze_dynamic_call(fn.get().rawBits(), thisValue.get().rawBits(), 0, nullptr));
 }
 
-// A named property of an object, by its arena-interned key. Every object this
-// asks about is one the protocol built or was handed — an iterator, or the
-// `{ value, done }` record `next` returned. A plain object is read off its
-// shape; a Proxy is asked through its [[Get]] (10.5.8), because a proxied
-// iterator's `next` is the `get` trap's to answer. Anything else answers
-// `undefined` and the caller's own check reports it.
 Value namedProp(Value obj, StringHeader* key) {
     if (!obj.isObject()) return Value::fromUndefined();
     const uint16_t kind = obj.asObject<HeapObjectHeader>()->flags;
@@ -135,8 +49,6 @@ Value namedProp(Value obj, StringHeader* key) {
     return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
 }
 
-// The `[Symbol.iterator]` / `[Symbol.asyncIterator]` method of a Proxy: a
-// 7.3.10 GetMethod through the proxy's own [[Get]], receiver the proxy.
 Value proxyMethodOf(Value proxy, Value symbolKey) {
     Rooted<Value> objRoot{proxy};
     Rooted<Value> keyRoot{symbolKey};
@@ -146,7 +58,7 @@ Value proxyMethodOf(Value proxy, Value symbolKey) {
     return method.get();
 }
 
-StringHeader* internKey(const char* text) {
+static StringHeader* internKey(const char* text) {
     return StringHeader::createLatin1InArena(rtArena(), text, static_cast<uint32_t>(std::strlen(text)));
 }
 
@@ -167,184 +79,20 @@ StringHeader* keyReturn() {
     return k;
 }
 
-// The `[Symbol.iterator]` method of a value, or `undefined`. Only a plain
-// object can carry one: an array, a string and a typed array take the fast
-// kinds above, and a Map answers for itself in `openRecord`.
-//
-// The key is a SYMBOL, so this walks the prototype chain looking for a symbol
-// key and can no longer be confused by a string property that happens to spell
-// the hook's old name.
-Value iteratorMethodOf(Value v) {
-    if (!v.isObject()) return Value::fromUndefined();
-    if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
-        return proxyMethodOf(v, rtIteratorKey());
-    }
-    if (!HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
-        return Value::fromUndefined();
-    }
-    Rooted<Value> objRoot{v};
-    Rooted<Value> keyRoot{rtIteratorKey()};
-    return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
-}
-
-// Is `v` a built-in iterator object of `kind` whose protocol is still the
-// intrinsic one — its own `next` the native `nextCode` was installed as, and
-// its `[Symbol.iterator]` resolving to %IteratorPrototype%'s self-hook? Then
-// 7.4.2 on it would call the hook (which answers `v`), read `next` (which is
-// `nextCode`), and every step would be `nextCode` on `v`: exactly what the
-// MapIterator / ArrayIterator record kinds do without the call and the result
-// object. Both halves are asked, because either is a program's to replace.
-//
-// `v` is rooted by the caller: `iteratorMethodOf` walks a prototype chain and
-// nothing in that walk allocates for a plain object, but the rule is the
-// caller's root and not this function's luck.
-uint64_t iteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*);
-
-bool pristineBuiltinIterator(Value v, IteratorProto kind, bronze_fn_code nextCode) {
-    if (!rtIsIteratorObject(v, kind)) return false;
-    auto* obj = v.asObject<ObjectHeader>();
-    PropertyInfo info;
-    if (!obj->shape || !obj->shape->lookupProperty(PropertyKey::forString(keyNext()), info)) {
-        return false;
-    }
-    if (info.accessor) return false;
-    const Value next = obj->getSlot(info.slot);
-    if (!next.isObject() || next.asObject<HeapObjectHeader>()->flags != HeapKind::Function ||
-        next.asObject<FunctionHeader>()->code != nextCode) {
-        return false;
-    }
-    const Value hook = iteratorMethodOf(v);
-    return hook.isObject() && hook.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
-           hook.asObject<FunctionHeader>()->code == iteratorProtoSelf;
-}
-
-// 7.4.3 GetIteratorFromMethod, into an already-created record: the call of
-// a fetched `[Symbol.iterator]`, then 7.4.7 GetIteratorDirect's `next` read.
-// `recRoot` holds the record; `srcRoot` the value being iterated.
-void openProtocolFromMethod(Rooted<Value>& recRoot, Rooted<Value>& srcRoot,
-                            Rooted<Value>& method) {
-    Rooted<Value> iter{callMethod(method, srcRoot)};
-    if (rtExceptionPending()) return;
-    if (!iter.get().isObject()) {
-        rtThrowTypeError("the result of Symbol.iterator is not an object");
-        return;
-    }
-    Rooted<Value> next{namedProp(iter.get(), keyNext())};
-    if (rtExceptionPending()) return;
-    if (!isCallable(next.get())) {
-        rtThrowTypeError("the iterator has no `next` method");
-        return;
-    }
-    auto* rec = recRoot.get().asObject<IterRecordHeader>();
-    rec->kind = Value::fromDouble(static_cast<double>(IterRecordHeader::Protocol));
-    rec->target = iter.get();
-    rec->nextFn = next.get();
-}
-
-// Everything 7.4.2 GetIterator does, into an already-created record: the
-// GetMethod of `[Symbol.iterator]`, then the open above.
-void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
-    Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
-    if (rtExceptionPending()) return;
-    if (!isCallable(method.get())) {
-        rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
-        return;
-    }
-    openProtocolFromMethod(recRoot, srcRoot, method);
-}
-
-bool stepFast(IterRecordHeader* rec) {
-    const uint32_t i = rec->cursorOf();
-    switch (rec->kindOf()) {
-        case IterRecordHeader::Array: {
-            auto* arr = rec->target.asObject<ArrayHeader>();
-            if (i >= arr->length) return false;
-            // 23.1.5.1 reads with Get, so a HOLE iterates as `undefined` rather
-            // than being skipped.
-            rec->current = arr->getElem(i);
-            rec->cursor = Value::fromDouble(static_cast<double>(i + 1));
-            return true;
-        }
-        case IterRecordHeader::TypedArray: {
-            auto* view = rec->target.asObject<TypedArrayHeader>();
-            if (i >= view->length) {
-                // 23.1.5.1's next() asks IsTypedArrayOutOfBounds BEFORE the
-                // length, so a loop whose buffer was transferred or shrunk
-                // away mid-iteration ends in a TypeError, not a quiet `done`.
-                // Asked only on this branch because a closed view's length is
-                // 0 — every index lands here — which keeps the live loop's
-                // per-element cost at the one compare above. The throw's
-                // false is the Protocol path's own convention: the caller
-                // marks the record done and the pending exception carries.
-                auto* buf = view->buffer.asObject<ArrayBufferHeader>();
-                if (buf->isDetached()) {
-                    rtThrowTypeError("ArrayBuffer is detached");
-                } else if (view->isOutOfBounds()) {
-                    rtThrowTypeError("TypedArray is out of bounds of its ArrayBuffer");
-                }
-                return false;
-            }
-            if (isBigIntElementKind(view->elementKind())) {
-                // The one fast kind whose element ALLOCATES: a BigInt is a heap
-                // value. So the bytes are read first, the record is held
-                // through a root across the allocation, and both the record and
-                // the caller's pointer to it are re-derived afterwards.
-                const uint64_t bits = view->rawBits64(i);
-                const bool isSigned = view->elementKind() == ElementKind::BigInt64;
-                Rooted<Value> recRoot{Value::fromObject(rec)};
-                Rooted<Value> elem{rtBigIntFromRawBits64(bits, isSigned)};
-                auto* live = recRoot.get().asObject<IterRecordHeader>();
-                live->current = elem.get();
-                live->cursor = Value::fromDouble(static_cast<double>(i + 1));
-                return true;
-            }
-            rec->current = Value::fromDouble(view->get(i));
-            rec->cursor = Value::fromDouble(static_cast<double>(i + 1));
-            return true;
-        }
-        case IterRecordHeader::SetValues:
-        case IterRecordHeader::MapEntries: {
-            auto* map = rec->target.asObject<MapHeader>();
-            uint32_t slot = i;
-            while (slot < map->used() && !map->liveAt(slot)) ++slot;
-            if (slot >= map->used()) return false;
-            rec->cursor = Value::fromDouble(static_cast<double>(slot + 1));
-            rec->current = map->keyAt(slot);
-            return true;
-        }
-        default:
-            return false;
-    }
-}
-
-}  // namespace
-
 Value rtIteratorKey() { return Value::fromSymbol(rtSymbolIterator()); }
 Value rtAsyncIteratorKey() { return Value::fromSymbol(rtSymbolAsyncIterator()); }
 
-namespace {
-
-// %IteratorPrototype%'s one member (27.1.2.1): an iterator is its own iterable,
-// which is what lets `for (const x of m.keys())` and `[...gen()]` work — the
-// for-of opens the value it is given, and the value it is given is already an
-// iterator.
 uint64_t iteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return thisBits;
 }
 
-// 27.1.3.1: the same operation for %AsyncIteratorPrototype%, and a second
-// code pointer because it is a second function OBJECT with its own name
-// ("[Symbol.asyncIterator]") — interning is by code pointer. The profile
-// record is what keeps it a second pointer: MSVC's `/OPT:ICF` (on in the
-// Release the `dev` preset builds) folds two identical bodies into ONE
-// address, and a folded body would be the sync hook, name and identity both.
+namespace {
+
 uint64_t asyncIteratorProtoSelf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     recordHelperCall("asyncIteratorProtoSelf");
     return thisBits;
 }
 
-// The per-kind prototypes plus %IteratorPrototype% / %AsyncIteratorPrototype%,
-// in one table indexed by `IteratorProto`.
 struct ProtoEntry {
     Value proto = Value::fromUndefined();
     Shape* shape = nullptr;
@@ -355,9 +103,6 @@ ProtoEntry& protoEntry(IteratorProto kind) {
     return table[static_cast<uint32_t>(kind)];
 }
 
-// %IteratorPrototype% (27.1.2). Inherits Object.prototype, like every other
-// intrinsic object, so `m.entries().hasOwnProperty` is the method a program
-// would find in a spec engine rather than `undefined`.
 Value iteratorPrototypeRoot() {
     static thread_local Value root = Value::fromUndefined();
     if (root.isObject()) return root;
@@ -366,23 +111,13 @@ Value iteratorPrototypeRoot() {
     Rooted<Value> key{rtIteratorKey()};
     Rooted<Value> self{rtNativeFunction(iteratorProtoSelf, 0, "[Symbol.iterator]", 0)};
     obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, self);
-    // 27.1.4.1's eleven helpers. Rooted and installed BEFORE the static is
-    // published, so nothing can observe a half-built %IteratorPrototype% — and
-    // published from `obj` afterwards, because every `setProp` inside can move
-    // it.
     rtInstallIteratorHelpers(obj);
-    // 27.1.4.3 and 27.1.4.4, the two accessors. Their setter compares the
-    // receiver against this object through `rtIteratorSharedPrototype`, which
-    // reads the static published below — so they are installed before it is
-    // published, and no program can write through them until it is.
     rtInstallIteratorPrototypeAccessors(obj);
     root = obj.get();
     rtHeap().add_permanent_root(&root);
     return root;
 }
 
-// %AsyncIteratorPrototype% (27.1.3). Inherits Object.prototype.
-// Has [Symbol.asyncIterator]() { return this; }.
 Value asyncIteratorPrototypeRoot() {
     static thread_local Value root = Value::fromUndefined();
     if (root.isObject()) return root;
@@ -396,9 +131,6 @@ Value asyncIteratorPrototypeRoot() {
     return root;
 }
 
-// How many internal slots each kind's objects are allocated with, in the order
-// `IteratorProto` declares. Half the brand, so it is written once and read by
-// both the creator and the check.
 constexpr uint32_t kInternalSlots[] = {
     MapIteratorSlot::kCount,
     MapIteratorSlot::kCount,
@@ -407,9 +139,6 @@ constexpr uint32_t kInternalSlots[] = {
     GeneratorSlot::kCount,
     StringIteratorSlot::kCount,
     AsyncGeneratorSlot::kCount,
-    // A helper and a `from` wrapper are allocated with the SAME count, and are
-    // therefore distinguished by the other half of the brand — their prototype.
-    // iterator.h's IteratorHelperSlot comment says why one layout serves both.
     IteratorHelperSlot::kCount,
     IteratorHelperSlot::kCount,
 };
@@ -417,11 +146,6 @@ constexpr uint32_t kInternalSlots[] = {
 Shape* iteratorObjectShape(IteratorProto kind) {
     ProtoEntry& entry = protoEntry(kind);
     if (entry.shape) return entry.shape;
-    // The kind's own prototype. For all but the generator's it has NO members
-    // of its own: bronze puts their `next` on the iterator itself, which is a
-    // divergence recorded in cases/collection_internal_slots.js and not one
-    // this seam decides. %GeneratorPrototype% and %AsyncGeneratorPrototype%
-    // are the exceptions.
     Rooted<Value> parent{kind == IteratorProto::AsyncGenerator ? asyncIteratorPrototypeRoot()
                                                               : iteratorPrototypeRoot()};
     Rooted<Value> proto{Value::fromObject(
@@ -441,39 +165,32 @@ Shape* iteratorObjectShape(IteratorProto kind) {
         rtInstallIteratorWrapPrototype(proto);
         entry.proto = proto.get();
     }
-    // `@@toStringTag`
     switch (kind) {
         case IteratorProto::Map:
-            rtDefineToStringTag(proto, "Map Iterator");  // 24.1.5.2.2
+            rtDefineToStringTag(proto, "Map Iterator");
             break;
         case IteratorProto::Set:
-            rtDefineToStringTag(proto, "Set Iterator");  // 24.2.5.2.2
+            rtDefineToStringTag(proto, "Set Iterator");
             break;
         case IteratorProto::Array:
-            // 23.1.5.2.2 — and a typed array's iterator shares this prototype
-            // by 23.2.5.2, so the one object really is the one ECMA-262 has.
             rtDefineToStringTag(proto, "Array Iterator");
             break;
         case IteratorProto::RegExpString:
-            rtDefineToStringTag(proto, "RegExp String Iterator");  // 22.2.9.1.2
+            rtDefineToStringTag(proto, "RegExp String Iterator");
             break;
         case IteratorProto::Generator:
-            rtDefineToStringTag(proto, "Generator");  // 27.5.1.5
+            rtDefineToStringTag(proto, "Generator");
             break;
         case IteratorProto::String:
-            rtDefineToStringTag(proto, "String Iterator");  // 22.1.5.1.2
+            rtDefineToStringTag(proto, "String Iterator");
             break;
         case IteratorProto::AsyncGenerator:
-            rtDefineToStringTag(proto, "AsyncGenerator");  // 27.6.1.5
+            rtDefineToStringTag(proto, "AsyncGenerator");
             break;
         case IteratorProto::Helper:
-            rtDefineToStringTag(proto, "Iterator Helper");  // 27.1.4.2.3
+            rtDefineToStringTag(proto, "Iterator Helper");
             break;
         case IteratorProto::Wrap:
-            // 27.1.3.2.1 gives %WrapForValidIteratorPrototype% no @@toStringTag
-            // at all: the wrapper is meant to be invisible, and a tag would make
-            // `Object.prototype.toString.call(Iterator.from(x))` announce a
-            // wrapper the program never asked for.
             break;
     }
     entry.proto = proto.get();
@@ -484,9 +201,6 @@ Shape* iteratorObjectShape(IteratorProto kind) {
 }  // namespace
 
 Value rtCreateIterResult(Rooted<Value>& value, bool done) {
-    // The one shape: the plain root, then `value`, then `done` — the same two
-    // edges a `{ value, done }` literal takes, so a program comparing the two
-    // sees one layout. Boxed slots deliberately: a result's `value` is anything.
     static thread_local Shape* shape = nullptr;
     if (shape == nullptr) {
         uint32_t slot = 0;
@@ -521,10 +235,6 @@ bool rtIsIteratorObject(Value v, IteratorProto kind) {
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
     auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
     if (obj->internalSlotCount() != kInternalSlots[static_cast<uint32_t>(kind)]) return false;
-    // The prototype lives on the shape's ROOT, which a delete carries across
-    // into dictionary mode — so an iterator a program has deleted a property
-    // from is still branded. `Object.setPrototypeOf` is the one thing that
-    // unbrands one, and that is a program saying it is no longer that object.
     const Shape* root = obj->shape ? obj->shape->root : nullptr;
     return root && root->prototype.rawBits() == rtIteratorPrototype(kind).rawBits();
 }
@@ -535,455 +245,5 @@ Value rtIteratorPrototype(IteratorProto kind) {
 }
 
 Value rtIteratorSharedPrototype() { return iteratorPrototypeRoot(); }
-
-// The kind of a value, for the "is not iterable" TypeError. Its own function
-// because `rt_object.cpp`'s copy answers the same question for "is not a
-// function" and neither wants the other's spelling of `undefined`.
-std::string rtIterableKindName(Value v) {
-    if (v.isNumber()) return "a number";
-    if (v.isString()) return "a string";
-    if (v.isBool()) return "a boolean";
-    if (v.isNull()) return "null";
-    if (v.isUndefined()) return "undefined";
-    if (!v.isObject()) return "a value";
-    switch (v.asObject<HeapObjectHeader>()->flags) {
-        case 2: return "a function";
-        case ArrayBufferHeader::kFlags: return "an ArrayBuffer";
-        // Neither is iterable, and both are the mistake a program makes when it
-        // means the view over the buffer rather than the bytes themselves.
-        case DataViewHeader::kFlags: return "a DataView";
-        default: return "an object";
-    }
-}
-
-Value rtOpenIterator(Value source) {
-    Rooted<Value> srcRoot{source};
-    uint32_t kind = IterRecordHeader::Protocol;
-    if (source.isString()) {
-        kind = IterRecordHeader::String;
-    } else if (source.isObject()) {
-        switch (source.asObject<HeapObjectHeader>()->flags) {
-            case 1: kind = IterRecordHeader::Array; break;
-            case TypedArrayHeader::kFlags: {
-                // 23.2.3.34 puts `[Symbol.iterator]` on `%TypedArray%.prototype`
-                // as a real property, and the cursor kind steps the elements
-                // directly — which is what 7.4.2 GetIterator would do only
-                // while that hook is still the intrinsic `values`. A pristine
-                // chain proves it without a read (rt_receivers.h); otherwise
-                // the hook is read ONCE, as for a Map below.
-                if (rtTypedArrayIteratorPristine(source.asObject<TypedArrayHeader>())) {
-                    kind = IterRecordHeader::TypedArray;
-                    break;
-                }
-                Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
-                if (!rtExceptionPending() && rtIsIntrinsicTypedArrayIterator(method.get())) {
-                    kind = IterRecordHeader::TypedArray;
-                    break;
-                }
-                if (rtExceptionPending() || !isCallable(method.get())) {
-                    if (!rtExceptionPending()) {
-                        rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
-                    }
-                    return Value::fromObject(
-                        IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol));
-                }
-                return rtGetIteratorFromMethod(srcRoot, method);
-            }
-            case BRONZE_ABI_OBJ_FLAGS_PLAIN:
-                // A Map or a Set is a plain object whose `[Symbol.iterator]`
-                // is a real property of its prototype (24.1.3.12, 24.2.3.11),
-                // and the MapEntries / SetValues cursor kinds step its entry
-                // table directly — which is what 7.4.2 GetIterator would do
-                // only while that hook is still the intrinsic one. So the hook
-                // is read ONCE here: intrinsic, the cursor kind; anything else
-                // — a program's own iterator, a getter, `undefined` — opens
-                // the protocol on the value just read rather than reading it a
-                // second time, so a getter runs once as the spec has it.
-                if (rtIsMapOrSet(source)) {
-                    const bool isSet = rtIsSetKind(source);
-                    Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
-                    if (!rtExceptionPending() &&
-                        rtIsIntrinsicCollectionIterator(method.get(), isSet)) {
-                        kind = isSet ? IterRecordHeader::SetValues : IterRecordHeader::MapEntries;
-                        break;
-                    }
-                    // Same shape of answer as a failed `openProtocol` below: a
-                    // Protocol record, with the exception left pending for the
-                    // caller when the hook's getter threw or the hook is not
-                    // callable.
-                    if (rtExceptionPending() || !isCallable(method.get())) {
-                        if (!rtExceptionPending()) {
-                            rtThrowTypeError(rtIterableKindName(srcRoot.get()) +
-                                             " is not iterable");
-                        }
-                        return Value::fromObject(
-                            IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol));
-                    }
-                    return rtGetIteratorFromMethod(srcRoot, method);
-                }
-                // `for (const u of map.values())`, `Array.from(set.keys())`,
-                // `[...arr.entries()]`: the value is already an iterator, and
-                // when it is one of the runtime's own with its protocol
-                // intact, the record steps its slots directly (iterator.h,
-                // MapIterator). Not gated on the iter-fast seam, which is the
-                // CODEGEN seam: with it off the helper still takes this walk,
-                // and BRONZE_NO_ITER_FAST measures the inline arms alone.
-                if (pristineBuiltinIterator(source, IteratorProto::Map, rtMapIteratorNextCode()) ||
-                    pristineBuiltinIterator(source, IteratorProto::Set, rtMapIteratorNextCode())) {
-                    kind = IterRecordHeader::MapIterator;
-                } else if (pristineBuiltinIterator(source, IteratorProto::Array,
-                                                   rtArrayIteratorNextCode())) {
-                    kind = IterRecordHeader::ArrayIterator;
-                }
-                break;
-            default: break;
-        }
-    }
-
-    Rooted<Value> recRoot{Value::fromObject(IterRecordHeader::create(rtHeap(), kind))};
-    if (kind == IterRecordHeader::Protocol) {
-        openProtocol(recRoot, srcRoot);
-    } else {
-        recRoot.get().asObject<IterRecordHeader>()->target = srcRoot.get();
-    }
-    return recRoot.get();
-}
-
-Value rtGetIteratorFromMethod(Rooted<Value>& source, Rooted<Value>& method) {
-    Rooted<Value> recRoot{
-        Value::fromObject(IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol))};
-    openProtocolFromMethod(recRoot, source, method);
-    return recRoot.get();
-}
-
-}  // namespace bronze::runtime
-
-namespace bronze::runtime {
-
-extern "C" {
-
-uint64_t bronze_iter_open(uint64_t srcBits) {
-    recordHelperCall("bronze_iter_open");
-    Rooted<Value> rec{rtOpenIterator(Value(srcBits))};
-    // The inline `iter.open` fast path (codegen-llvm/llvm_iter.cpp) builds an
-    // ARRAY record out of the inline-allocation window, and the window is
-    // refilled only by a helper that missed — the same contract
-    // bronze_create_object keeps for the inline `new` path. Without this, a
-    // loop that opens iterators but constructs nothing drains the window once
-    // and misses forever after. Array records only: they are the one kind the
-    // inline path serves, so a protocol-heavy program pays nothing here. The
-    // refill may collect, which is what the root above is for.
-    if (rec.get().isObject() &&
-        rec.get().asObject<HeapObjectHeader>()->flags == IterRecordHeader::kFlags &&
-        (rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::Array ||
-         rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::MapEntries)) {
-        const bronze_tls_block* tls = bronze_tls_block_addr();
-        if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_ITER_RECORD_BYTES) {
-            rtHeap().refill_inline_lab();
-        }
-    }
-    return rec.get().rawBits();
-}
-
-bool bronze_iter_step(uint64_t recBits) {
-    recordHelperCall("bronze_iter_step");
-    Value recVal(recBits);
-    if (!recVal.isObject() ||
-        recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
-        fatal("internal: iter.step on a value that is not an iteration record");
-    }
-    Rooted<Value> recRoot{recVal};
-    auto* rec = recRoot.get().asObject<IterRecordHeader>();
-    if (rec->done.asBool()) return false;
-
-    const uint32_t kind = rec->kindOf();
-
-    // A string steps by CODE POINT: a surrogate pair is one iteration
-    // yielding a two-unit string, which is why the cursor is not an `i + 1`
-    // anywhere (kept).
-    if (kind == IterRecordHeader::String) {
-        StringHeader* str = rec->target.asString<StringHeader>();
-        const uint32_t i = rec->cursorOf();
-        const uint32_t len = str->getLength();
-        if (i >= len) {
-            rec->done = Value::fromBool(true);
-            rec->current = Value::fromUndefined();
-            return false;
-        }
-        const uint16_t unit = str->charCodeAt(i);
-        const bool pair = i + 1 < len && isSurrogatePair(unit, str->charCodeAt(i + 1));
-        Value piece;
-        if (pair) {
-            const uint16_t units[2] = {unit, str->charCodeAt(i + 1)};
-            piece = Value::fromString(StringHeader::createUTF16(rtHeap(), units, 2));
-        } else if (unit < 0x100) {
-            const char byte = static_cast<char>(unit);
-            piece = Value::fromString(StringHeader::createLatin1(rtHeap(), &byte, 1));
-        } else {
-            piece = Value::fromString(StringHeader::createUTF16(rtHeap(), &unit, 1));
-        }
-        // Re-derived: creating the piece allocates, so the record may have
-        // moved out from under the pointer taken above.
-        rec = recRoot.get().asObject<IterRecordHeader>();
-        rec->current = piece;
-        rec->cursor = Value::fromDouble(static_cast<double>(i + (pair ? 2 : 1)));
-        return true;
-    }
-
-    // A MapEntries record is only ever opened over a branded Map (rtOpenIterator),
-    // so the kind alone says what the target is.
-    if (kind == IterRecordHeader::MapEntries) {
-        // A Map's default iterator yields [key, value] pairs (24.1.3.12), so
-        // this is the one fast kind that allocates per element.
-        const bool stepped = stepFast(rec);
-        // stepFast can allocate (a BigInt view's element), so the pointer taken
-        // before it is not the record any more.
-        rec = recRoot.get().asObject<IterRecordHeader>();
-        if (!stepped) {
-            rec->done = Value::fromBool(true);
-            rec->current = Value::fromUndefined();
-            return false;
-        }
-        const uint32_t slot = rec->cursorOf() - 1;
-        Rooted<Value> k{rec->target.asObject<MapHeader>()->keyAt(slot)};
-        Rooted<Value> v{rec->target.asObject<MapHeader>()->valueAt(slot)};
-        Rooted<Value> pair{Value(bronze_create_array(2))};
-        auto* arr = pair.get().asObject<ArrayHeader>();
-        arr->elementsData()[0] = k.get();
-        arr->elementsData()[1] = v.get();
-        recRoot.get().asObject<IterRecordHeader>()->current = pair.get();
-        return true;
-    }
-
-    if (kind == IterRecordHeader::MapIterator || kind == IterRecordHeader::ArrayIterator) {
-        // The object's own `next`, inlined: the slots move exactly as it would
-        // move them, and only the `{value, done}` is not built. The step can
-        // allocate (an entries pair), so the record is re-derived after it and
-        // the produced value is stored before anything else can.
-        Rooted<Value> it{rec->target};
-        Value produced = Value::fromUndefined();
-        const bool stepped = kind == IterRecordHeader::MapIterator
-                                 ? rtMapIteratorStep(it, produced)
-                                 : rtArrayIteratorStep(it, produced);
-        rec = recRoot.get().asObject<IterRecordHeader>();
-        if (!stepped) {
-            rec->done = Value::fromBool(true);
-            rec->current = Value::fromUndefined();
-            return false;
-        }
-        rec->current = produced;
-        return true;
-    }
-
-    if (kind != IterRecordHeader::Protocol) {
-        const bool stepped = stepFast(rec);
-        rec = recRoot.get().asObject<IterRecordHeader>();
-        if (stepped) return true;
-        rec->done = Value::fromBool(true);
-        rec->current = Value::fromUndefined();
-        return false;
-    }
-
-    // The protocol: one call into user code per element (7.4.6 IteratorStep).
-    Rooted<Value> nextFn{rec->nextFn};
-    Rooted<Value> iterObj{rec->target};
-    Rooted<Value> result{callMethod(nextFn, iterObj)};
-    if (rtExceptionPending()) {
-        // Nothing more to close: 7.4.6 leaves an iterator whose `next` threw
-        // for the caller's throw completion to carry, and calling `return` on
-        // it afterwards is exactly what 7.4.9 does not do.
-        recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
-        return false;
-    }
-    if (!result.get().isObject()) {
-        rtThrowTypeError("the iterator result is not an object");
-        recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
-        return false;
-    }
-    // 7.4.4 / 7.4.5: `done` then `value`, each a Get that can run a trap (or
-    // a getter) and so can throw; a throw ends the iteration as `next`'s did.
-    const bool finished = bronze_truthy(namedProp(result.get(), keyDone()).rawBits());
-    if (finished || rtExceptionPending()) {
-        rec = recRoot.get().asObject<IterRecordHeader>();
-        rec->done = Value::fromBool(true);
-        rec->current = Value::fromUndefined();
-        return false;
-    }
-    Rooted<Value> produced{namedProp(result.get(), keyValue())};
-    if (rtExceptionPending()) {
-        recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
-        return false;
-    }
-    recRoot.get().asObject<IterRecordHeader>()->current = produced.get();
-    return true;
-}
-
-uint64_t bronze_iter_value(uint64_t recBits) {
-    recordHelperCall("bronze_iter_value");
-    Value recVal(recBits);
-    if (!recVal.isObject() ||
-        recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
-        fatal("internal: iter.value on a value that is not an iteration record");
-    }
-    return recVal.asObject<IterRecordHeader>()->current.rawBits();
-}
-
-// IteratorClose (7.4.9). A fast kind has nothing to close; a protocol
-// iterator that is already exhausted has nothing to close either, because
-// 7.4.9 is only reached for an iteration abandoned before `done`.
-//
-// `suppress` is step 6: when a throw is already on its way out, an error the
-// `return` method raises is DISCARDED rather than replacing it. The caller
-// that passes true has already taken the pending value with `exc.take`, so
-// "already on its way out" is not something this can see for itself.
-void bronze_iter_close(uint64_t recBits, bool suppress) {
-    recordHelperCall("bronze_iter_close");
-    Value recVal(recBits);
-    if (!recVal.isObject() ||
-        recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
-        fatal("internal: iter.close on a value that is not an iteration record");
-    }
-    Rooted<Value> recRoot{recVal};
-    auto* rec = recRoot.get().asObject<IterRecordHeader>();
-    // Below Protocol the record owns the cursor and there is no object a
-    // `return` could be found on; at and above it `target` IS an iterator
-    // object, and 7.4.9 asks it — a built-in one included, since a program may
-    // have given it a `return` after the open read its `next`.
-    if (rec->kindOf() < IterRecordHeader::Protocol || rec->done.asBool()) return;
-    rec->done = Value::fromBool(true);
-
-    // 7.4.9 with a THROW completion already in flight. Generated code takes
-    // the pending value (ExcTake) before it closes and re-raises it after;
-    // the native callers — `Array.from` around its mapper, `new Map` around
-    // a bad entry, the promise combinators — reach here with the exception
-    // still in the cell. `return` has to run with the cell CLEAR: its own
-    // compiled body checks the cell after every call it makes and would
-    // unwind at the first one, so `return() { log(); ... }` never logged.
-    // And step 5 keeps the original completion, so whatever `return` did is
-    // discarded and the original is put back — where before, `suppress`
-    // cleared the original along with it and `Array.from(it, throwingMap)`
-    // returned normally.
-    const bool inFlight = rtExceptionPending();
-    Rooted<Value> inFlightValue{inFlight ? Value(rtTls()->exception_cell)
-                                         : Value::fromUndefined()};
-    if (inFlight) rtClearException();
-
-    Rooted<Value> iterObj{rec->target};
-    Rooted<Value> ret{namedProp(iterObj.get(), keyReturn())};
-    // 7.4.9 step 4: an iterator with no `return` closes by doing nothing.
-    Rooted<Value> result{Value::fromUndefined()};
-    if (isCallable(ret.get())) {
-        result.set(callMethod(ret, iterObj));
-    } else if (!inFlight) {
-        return;
-    }
-    if (inFlight) {
-        rtClearException();
-        rtThrow(inFlightValue.get());
-        return;
-    }
-    if (suppress) {
-        if (rtExceptionPending()) rtClearException();
-        return;
-    }
-    // Step 7: a normal completion whose `return` answered a non-object is
-    // the TypeError, after an error `return` itself raised (step 6).
-    if (!rtExceptionPending() && !result.get().isObject()) {
-        rtThrowTypeError("iterator return() result is not an object");
-    }
-}
-
-// A rest element's value: everything the cursor has left, as a fresh array.
-// Drains the same record the elements before it were stepped from, which is
-// what makes `const [a,...rest] = someSet` see the elements after `a` rather
-// than restarting the iteration.
-uint64_t bronze_iter_rest(uint64_t recBits) {
-    recordHelperCall("bronze_iter_rest");
-    Rooted<Value> recRoot{Value(recBits)};
-    Rooted<Value> out{Value(bronze_create_array(0))};
-    while (bronze_iter_step(recRoot.get().rawBits())) {
-        Rooted<Value> elem{Value(bronze_iter_value(recRoot.get().rawBits()))};
-        const uint32_t at = out.get().asObject<ArrayHeader>()->length;
-        out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, elem);
-        if (rtExceptionPending()) break;
-    }
-    return out.get().rawBits();
-}
-
-uint64_t bronze_async_iter_open(uint64_t srcBits) {
-    recordHelperCall("bronze_async_iter_open");
-    return rtOpenAsyncIterator(Value(srcBits)).rawBits();
-}
-
-uint64_t bronze_async_iter_next(uint64_t recBits) {
-    recordHelperCall("bronze_async_iter_next");
-    Value recVal(recBits);
-    if (!recVal.isObject() ||
-        recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
-        fatal("internal: async_iter.next on a value that is not an iteration record");
-    }
-    Rooted<Value> recRoot{recVal};
-    auto* rec = recRoot.get().asObject<IterRecordHeader>();
-    if (rec->kindOf() == IterRecordHeader::Protocol) {
-        Rooted<Value> nextFn{rec->nextFn};
-        Rooted<Value> target{rec->target};
-        return callMethod(nextFn, target).rawBits();
-    }
-    bool hasVal = bronze_iter_step(recRoot.get().rawBits());
-    Rooted<Value> valVal{hasVal ? Value(bronze_iter_value(recRoot.get().rawBits())) : Value::fromUndefined()};
-    Rooted<Value> resObj{Value(bronze_create_object())};
-    Rooted<Value> keyDone{rtMakeString("done")};
-    Rooted<Value> valDone{Value::fromBool(!hasVal)};
-    Rooted<Value> keyVal{rtMakeString("value")};
-    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyDone, valDone);
-    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyVal, valVal);
-    return resObj.get().rawBits();
-}
-
-void bronze_async_iter_close(uint64_t recBits, bool suppress) {
-    bronze_iter_close(recBits, suppress);
-}
-
-}  // extern "C"
-
-Value asyncIteratorMethodOf(Value v) {
-    if (!v.isObject()) return Value::fromUndefined();
-    if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
-        return proxyMethodOf(v, rtAsyncIteratorKey());
-    }
-    if (!HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
-        return Value::fromUndefined();
-    }
-    Rooted<Value> objRoot{v};
-    Rooted<Value> keyRoot{rtAsyncIteratorKey()};
-    return objRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), keyRoot);
-}
-
-Value rtOpenAsyncIterator(Value source) {
-    Rooted<Value> srcRoot{source};
-    Rooted<Value> asyncMethod{asyncIteratorMethodOf(srcRoot.get())};
-    if (rtExceptionPending()) return Value::fromUndefined();
-    if (isCallable(asyncMethod.get())) {
-        Rooted<Value> iter{callMethod(asyncMethod, srcRoot)};
-        if (rtExceptionPending()) return Value::fromUndefined();
-        if (!iter.get().isObject()) {
-            rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
-            return Value::fromUndefined();
-        }
-        Rooted<Value> next{namedProp(iter.get(), keyNext())};
-        if (rtExceptionPending()) return Value::fromUndefined();
-        if (!isCallable(next.get())) {
-            rtThrowTypeError("the async iterator has no `next` method");
-            return Value::fromUndefined();
-        }
-        Rooted<Value> recRoot{
-            Value::fromObject(IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol))};
-        auto* rec = recRoot.get().asObject<IterRecordHeader>();
-        rec->target = iter.get();
-        rec->nextFn = next.get();
-        return recRoot.get();
-    }
-    return rtOpenIterator(srcRoot.get());
-}
 
 }  // namespace bronze::runtime

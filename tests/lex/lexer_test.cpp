@@ -509,3 +509,38 @@ TEST_CASE("slash disambiguation after await and yield") {
     }
 }
 
+TEST_CASE("unicode identifier support") {
+    // Basic Greek, accents, math symbols, and mixed identifiers
+    auto lexed1 = lexAll("const π = 3.14;");
+    auto& tokens1 = lexed1.tokens;
+    REQUIRE(tokens1.size() == 6);  // const, π, =, 3.14, ;, eof
+    CHECK(tokens1[0].kind == TokenKind::KwConst);
+    CHECK(tokens1[1].kind == TokenKind::Identifier);
+    CHECK(tokens1[1].text == "π");
+    CHECK(tokens1[2].kind == TokenKind::Assign);
+    CHECK(tokens1[3].kind == TokenKind::NumberLiteral);
+
+    auto lexed2 = lexAll("let α = 1, café = 2, x_β = 3;");
+    auto& tokens2 = lexed2.tokens;
+    CHECK(tokens2[1].kind == TokenKind::Identifier);
+    CHECK(tokens2[1].text == "α");
+    CHECK(tokens2[5].kind == TokenKind::Identifier);
+    CHECK(tokens2[5].text == "café");
+    CHECK(tokens2[9].kind == TokenKind::Identifier);
+    CHECK(tokens2[9].text == "x_β");
+
+    // Math symbols
+    auto lexed3 = lexAll("let ∑ = 10, √ = 4;");
+    auto& tokens3 = lexed3.tokens;
+    CHECK(tokens3[1].kind == TokenKind::Identifier);
+    CHECK(tokens3[1].text == "∑");
+    CHECK(tokens3[5].kind == TokenKind::Identifier);
+    CHECK(tokens3[5].text == "√");
+
+    // Property access with unicode identifier
+    auto lexed4 = lexAll("obj.π;");
+    auto& tokens4 = lexed4.tokens;
+    CHECK(tokens4[2].kind == TokenKind::Identifier);
+    CHECK(tokens4[2].text == "π");
+}
+

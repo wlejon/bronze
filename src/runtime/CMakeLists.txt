@@ -112,6 +112,7 @@ bronze_add_module(runtime
         rt_delete.cpp
         rt_private.cpp
         iterator.cpp
+        iterator_records.cpp
         iterator_delegate.cpp
         iterator_helpers.cpp
         iterator_terminal.cpp
@@ -130,6 +131,7 @@ bronze_add_module(runtime
         builtin_shared_memory.cpp
     builtin_weak_ref.cpp
         builtin_object.cpp
+        builtin_object_prototype.cpp
         builtin_object_descriptor.cpp
         builtin_object_define.cpp
         builtin_object_methods.cpp
