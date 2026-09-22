@@ -128,6 +128,9 @@ void Heap::scan_plain_object(ObjectHeader* obj, size_t obj_size) {
                       static_cast<unsigned long long>(shape_bits));
         fatal(buf);
     }
+    if (shape->root != nullptr && shape->root->prototype.isPointer()) {
+        forward_value(shape->root->prototype);
+    }
     const uint64_t doubles = shape->double_slots;
 
     Value* words = reinterpret_cast<Value*>(obj->header.payload());

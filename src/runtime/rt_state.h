@@ -31,6 +31,7 @@ Shape* rtNewRootShape(Value proto);
 // class per object — every one of them would be a shape no inline cache had
 // ever seen, and each would leak an immortal arena shape.
 Shape* rtRootShapeForPrototype(Value proto);
+size_t rtUserPrototypeShapeCount();
 
 // The one root shape every plain `{}` literal starts from. Per-literal root
 // shapes would give two identical literals unrelated hidden classes, so a site

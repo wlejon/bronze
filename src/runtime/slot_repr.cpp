@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,11 @@ bool envIsOne(const char* name) {
 // report runs from `std::atexit`, and a function-local static constructed after
 // the handler was registered is destroyed BEFORE it runs. Every container in
 // this file that the report reads is allocated the same way.
+std::shared_mutex& eligibleNamesMutex() {
+    static auto* m = new std::shared_mutex();
+    return *m;
+}
+
 std::vector<StringHeader*>& eligibleNames() {
     static auto* v = new std::vector<StringHeader*>();
     return *v;
@@ -115,7 +121,10 @@ void slotReprSetObservesUnpinnedForTesting(bool enabled) noexcept {
 }
 
 void slotReprResetForTesting() {
-    eligibleNames().clear();
+    {
+        std::unique_lock<std::shared_mutex> lock(eligibleNamesMutex());
+        eligibleNames().clear();
+    }
     slotReprMutableCounters() = SlotReprCounters{};
     std::lock_guard<std::mutex> lock(censusMutex());
     censusTable().clear();
@@ -130,6 +139,7 @@ const SlotReprCounters& slotReprCounters() noexcept { return slotReprMutableCoun
 void slotReprRegisterName(StringHeader* name) {
     if (name == nullptr) return;
     const PropertyKey incoming = PropertyKey::forString(name);
+    std::unique_lock<std::shared_mutex> lock(eligibleNamesMutex());
     for (StringHeader* existing : eligibleNames()) {
         if (PropertyKey::forString(existing).matches(incoming)) return;
     }
@@ -137,12 +147,14 @@ void slotReprRegisterName(StringHeader* name) {
 }
 
 uint32_t slotReprEligibleCount() noexcept {
+    std::shared_lock<std::shared_mutex> lock(eligibleNamesMutex());
     return static_cast<uint32_t>(eligibleNames().size());
 }
 
 bool slotReprEligible(PropertyKey key) noexcept {
     if (!key.valid() || key.isSymbol()) return false;
     if (config().observesUnpinned) return true;
+    std::shared_lock<std::shared_mutex> lock(eligibleNamesMutex());
     for (StringHeader* name : eligibleNames()) {
         if (PropertyKey::forString(name).matches(key)) return true;
     }

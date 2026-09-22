@@ -14,8 +14,14 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/string.h"
+#include "abi/bronze_abi.h"
+#include "runtime/object.h"
+#include "runtime/rt_state.h"
+#include "runtime/shape.h"
+#include "runtime/value.h"
 
 using namespace bronze;
+using namespace bronze::runtime;
 
 namespace {
 struct FatalGuard {
@@ -413,5 +419,59 @@ TEST_CASE("heap enforces thread affinity") {
     auto* obj = heap.allocate(16, Tag::Object);
     CHECK(obj != nullptr);
     heap.check_thread_affinity();
+}
+
+TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
+    Heap& heap = rtHeap();
+    NonMovingArena& arena = rtArena();
+    ShadowStackFrame frame;
+    const bool wasStress = heap.gc_stress();
+
+    const size_t initialUserProtoCount = rtUserPrototypeShapeCount();
+
+    // 1. Create temporary prototype objects and root shapes.
+    heap.set_gc_stress(false);
+    for (int i = 0; i < 50; ++i) {
+        Rooted<Value> proto{Value(bronze_create_object())};
+        Shape* shape = rtRootShapeForPrototype(proto.get());
+        CHECK(shape != nullptr);
+    }
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 50);
+
+    // 2. Run GC. All 50 temporary prototypes are unreferenced and should be reclaimed.
+    heap.collect();
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount);
+
+    // 3. Test that a prototype kept alive by a Rooted survives GC, and its shape is preserved.
+    Rooted<Value> liveProto{Value(bronze_create_object())};
+    Shape* liveShape = rtRootShapeForPrototype(liveProto.get());
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 1);
+
+    heap.collect();
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 1);
+    CHECK(rtRootShapeForPrototype(liveProto.get()) == liveShape);
+
+    // 4. Test that a prototype kept alive via an object instance created with it survives GC.
+    Rooted<Value> liveInstance;
+    {
+        Rooted<Value> protoObj{Value(bronze_create_object())};
+        Shape* pShape = rtRootShapeForPrototype(protoObj.get());
+        liveInstance.set(Value::fromObject(ObjectHeader::create(heap, arena, pShape)));
+    }
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 2);
+
+    heap.collect();
+    // liveInstance kept its prototype alive through object scanning!
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 2);
+    auto* instObj = liveInstance.get().asObject<ObjectHeader>();
+    CHECK(instObj->shape != nullptr);
+    CHECK(instObj->shape->prototypeValue().isObject());
+
+    // 5. Clear roots and collect again; everything should be swept.
+    liveProto.set(Value::fromUndefined());
+    liveInstance.set(Value::fromUndefined());
+    heap.collect();
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount);
+    heap.set_gc_stress(wasStress);
 }
 

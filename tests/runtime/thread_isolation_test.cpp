@@ -15,15 +15,21 @@
 
 #include <doctest/doctest.h>
 
+#include <atomic>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/class_family.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/property_key.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape.h"
+#include "runtime/slot_repr.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/value.h"
@@ -104,3 +110,135 @@ TEST_CASE("a second thread gets its own runtime and its collections leave the fi
     CHECK(rtHeap().collection_count() == mainCollectionsBefore);
     CHECK(readString(keepsake.get()) == "main-thread-keepsake");
 }
+
+TEST_CASE("class family registry concurrent registration and lookup safety") {
+    classFamilyResetForTesting();
+    std::atomic<bool> start{false};
+    std::atomic<bool> done{false};
+
+    uint32_t keyX = bronze_register_key_string("thread_x");
+    uint32_t keyY = bronze_register_key_string("thread_y");
+    uint32_t keyZ = bronze_register_key_string("thread_z");
+    uint32_t keyMap[] = {keyX, keyY, keyZ};
+    uint32_t classTable[] = {0, 2};
+    uint32_t fieldTable[] = {(0u << 1) | 1u, (1u << 1) | 1u};
+    uint64_t base = 0;
+    bronze_register_class_family(classTable, 1, fieldTable, keyMap, &base);
+
+    std::vector<uint64_t> stamps;
+    std::thread reader([&] {
+        while (!start.load(std::memory_order_acquire)) {}
+        ShadowStackFrame frame;
+        Heap& heap = rtHeap();
+        NonMovingArena& arena = rtArena();
+        Shape* root = Shape::createRoot(arena, Value::fromNull());
+        Rooted<Value> nameX(Value::fromString(StringHeader::createFromUTF8(heap, "thread_x")));
+        Rooted<Value> nameY(Value::fromString(StringHeader::createFromUTF8(heap, "thread_y")));
+        uint32_t slot = 0;
+        Shape* s1 = root->addProperty(arena, heap, nameX, slot, true, false, true, true);
+        Shape* s2 = s1->addProperty(arena, heap, nameY, slot, true, false, true, true);
+
+        while (!done.load(std::memory_order_relaxed)) {
+            uint64_t id = classFamilyIdFor(s2);
+            stamps.push_back(id);
+        }
+    });
+
+    std::thread writer([&] {
+        while (!start.load(std::memory_order_acquire)) {}
+        for (int i = 0; i < 50; ++i) {
+            uint32_t ct[] = {0, 2};
+            uint32_t ft[] = {(0u << 1) | 1u, (1u << 1) | 1u};
+            uint64_t b = 0;
+            bronze_register_class_family(ct, 1, ft, keyMap, &b);
+            std::this_thread::yield();
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    start.store(true, std::memory_order_release);
+    writer.join();
+    reader.join();
+
+    CHECK(!stamps.empty());
+    for (uint64_t s : stamps) {
+        CHECK(s >= BRONZE_ABI_FAMILY_FIRST_ID);
+    }
+}
+
+TEST_CASE("slot representation registry concurrent registration and check safety") {
+    slotReprResetForTesting();
+    std::atomic<bool> start{false};
+    std::atomic<bool> done{false};
+
+    NonMovingArena& arena = rtArena();
+    StringHeader* name1 = StringHeader::createFromUTF8InArena(arena, "slot_prop_alpha");
+    slotReprRegisterName(name1);
+
+    std::atomic<uint64_t> matchCount{0};
+    std::thread reader([&] {
+        while (!start.load(std::memory_order_acquire)) {}
+        NonMovingArena& wArena = rtArena();
+        StringHeader* checkHdr = StringHeader::createFromUTF8InArena(wArena, "slot_prop_alpha");
+        PropertyKey key = PropertyKey::forString(checkHdr);
+        while (!done.load(std::memory_order_relaxed)) {
+            if (slotReprEligible(key)) {
+                matchCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    std::thread writer([&] {
+        while (!start.load(std::memory_order_acquire)) {}
+        NonMovingArena& wArena = rtArena();
+        for (int i = 0; i < 100; ++i) {
+            StringHeader* newName = StringHeader::createFromUTF8InArena(wArena, "slot_prop_" + std::to_string(i));
+            slotReprRegisterName(newName);
+            std::this_thread::yield();
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    start.store(true, std::memory_order_release);
+    writer.join();
+    reader.join();
+
+    CHECK(matchCount.load() > 0);
+    CHECK(slotReprEligibleCount() >= 101);
+}
+
+TEST_CASE("key info registry thread-local caching eliminates mutex contention across threads") {
+    std::vector<uint32_t> keyIndices;
+    for (int i = 0; i < 20; ++i) {
+        std::string name = (i % 2 == 0) ? std::to_string(i * 10) : ("key_info_prop_" + std::to_string(i));
+        keyIndices.push_back(bronze_register_key_string(name.c_str()));
+    }
+
+    constexpr int kNumThreads = 4;
+    std::vector<std::thread> threads;
+    std::atomic<bool> start{false};
+
+    for (int t = 0; t < kNumThreads; ++t) {
+        threads.emplace_back([&, t] {
+            while (!start.load(std::memory_order_acquire)) {}
+            for (int iter = 0; iter < 1000; ++iter) {
+                for (size_t idx = 0; idx < keyIndices.size(); ++idx) {
+                    uint32_t k = keyIndices[idx];
+                    const KeyInfo& info = rtKeyInfo(k);
+                    if (idx % 2 == 0) {
+                        CHECK(info.isElemIndex);
+                        CHECK(info.elemIndex == static_cast<uint32_t>(idx * 10));
+                    } else {
+                        CHECK(!info.isElemIndex);
+                    }
+                }
+            }
+        });
+    }
+
+    start.store(true, std::memory_order_release);
+    for (auto& th : threads) {
+        th.join();
+    }
+}
+

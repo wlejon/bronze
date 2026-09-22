@@ -41,6 +41,8 @@
 #include "runtime/class_family.h"
 
 #include <cstddef>
+#include <mutex>
+#include <shared_mutex>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -80,14 +82,13 @@ struct FamilyClass {
     uint32_t fieldCount = 0;
 };
 
-// Process-wide, because a Shape is process-wide: two modules that both extend
-// `Object3D` meet the same shapes, and the id space has to be one space for the
-// stamp on a shape to mean anything to either of them.
-//
-// No lock. Registration happens from a module's init, which runs on the thread
-// that loaded the module, before any of its code executes; the stamper only
-// reads. That is the same discipline `bronze_register_key_string` keeps, and
-// for the same reason.
+// Process-wide, protected by `familyMutex()`. Registration takes a unique_lock
+// while concurrent worker threads perform lookups under a shared_lock.
+std::shared_mutex& familyMutex() {
+    static std::shared_mutex m;
+    return m;
+}
+
 std::vector<FamilyClass>& classes() {
     static std::vector<FamilyClass> v;
     return v;
@@ -163,7 +164,11 @@ bool prefixMatches(const FamilyClass& cls, const std::vector<const Shape*>& node
 }  // namespace
 
 uint64_t classFamilyIdFor(Shape* shape) {
-    if (shape == nullptr || shape->isDictionary() || classes().empty()) {
+    if (shape == nullptr || shape->isDictionary()) {
+        return BRONZE_ABI_FAMILY_NONE;
+    }
+    std::shared_lock<std::shared_mutex> lock(familyMutex());
+    if (classes().empty()) {
         return BRONZE_ABI_FAMILY_NONE;
     }
     // A shape with a DOUBLE SLOT (slot_repr.h) is stamped like any other. The
@@ -196,9 +201,13 @@ uint64_t classFamilyIdFor(Shape* shape) {
     return best;
 }
 
-uint32_t classFamilyCount() { return static_cast<uint32_t>(classes().size()); }
+uint32_t classFamilyCount() {
+    std::shared_lock<std::shared_mutex> lock(familyMutex());
+    return static_cast<uint32_t>(classes().size());
+}
 
 void classFamilyResetForTesting() {
+    std::unique_lock<std::shared_mutex> lock(familyMutex());
     classes().clear();
     fields().clear();
     longestFieldCount() = 0;
@@ -211,6 +220,7 @@ void bronze_register_class_family(const uint32_t* classTable, uint32_t classCoun
                                   const uint32_t* fieldTable, const uint32_t* keyMap,
                                   uint64_t* baseCell) {
     recordHelperCall("bronze_register_class_family");
+    std::unique_lock<std::shared_mutex> lock(familyMutex());
     if (baseCell != nullptr) *baseCell = nextId();
     if (classTable == nullptr || fieldTable == nullptr || keyMap == nullptr || classCount == 0) {
         return;

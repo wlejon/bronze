@@ -46,13 +46,13 @@
 
 namespace bronze::runtime {
 
-// Root shapes the runtime has created. Shapes are immortal but the prototype
-// objects they name are not, so the collector has to forward them; this table
-// is what the heap's first root source walks. It lives beside the heap and
-// arena because that is where the three lifetimes match — a global registry
-// would outlive the per-test arenas unit tests create and hand the collector
-// dangling shapes.
+// Root shapes for intrinsics and builtins. Shapes are immortal and builtins must
+// stay rooted across collections; this table is what the heap's first root source walks.
 static thread_local std::vector<Shape*> g_rootShapes;
+
+// User-created prototype root shapes (e.g. from Object.create(proto) or setPrototypeOf).
+// Swept after collections so dead prototype objects and their subgraphs can be collected.
+static thread_local std::vector<Shape*> g_userPrototypeShapes;
 
 // The heap and arena are LEAKED POINTERS behind lazy accessors, not
 // thread_local objects, for two reasons. Lazy: a thread that never touches
@@ -95,28 +95,41 @@ Shape* rtNewRootShape(Value proto) {
 }
 
 Shape* rtRootShapeForPrototype(Value proto) {
-    // Memoized, and the memo needs no roots of its own: `g_rootShapes` already
-    // forwards every root shape's prototype slot, so comparing against that
-    // slot compares two CURRENT addresses. A table keyed on a private copy of
-    // the prototype would be the Map index's problem all over again — an
-    // address recorded before a collection and compared after one.
-    //
-    // Memoizing at all is what keeps `Object.create(proto)` in a loop from
-    // minting a hidden class per object: without it every created object would
-    // have a shape no inline cache had ever seen, and each call would leak an
-    // arena shape and a root-source entry.
-    //
-    // The list is its own and not a scan of `g_rootShapes`, because the
-    // namespace objects hold root shapes with no prototype ON PURPOSE — so
-    // that a site reading `Math.sqrt` does not share a transition tree with
-    // `{}` literals — and a scan would hand one of those out.
-    static thread_local std::vector<Shape*> prototypeShapes;
-    for (Shape* root : prototypeShapes) {
+    // Memoized, without permanently rooting user prototypes. User prototype
+    // root shapes live in `g_userPrototypeShapes` and are swept after collections
+    // when their prototype object dies in Cheney from-space (`Heap::survivor_of`).
+    for (Shape* root : g_userPrototypeShapes) {
         if (root->prototype.rawBits() == proto.rawBits()) return root;
     }
-    Shape* root = rtNewRootShape(proto);
-    prototypeShapes.push_back(root);
+    Shape* root = Shape::createRoot(rtArena(), proto);
+    g_userPrototypeShapes.push_back(root);
     return root;
+}
+
+size_t rtUserPrototypeShapeCount() {
+    return g_userPrototypeShapes.size();
+}
+
+static void sweepUserPrototypeShapes() {
+    Heap& heap = rtHeap();
+    size_t keep = 0;
+    for (size_t i = 0; i < g_userPrototypeShapes.size(); ++i) {
+        Shape* root = g_userPrototypeShapes[i];
+        Value proto = root->prototype;
+        if (!proto.isPointer()) {
+            g_userPrototypeShapes[keep++] = root;
+            continue;
+        }
+        auto* hdr = reinterpret_cast<HeapObjectHeader*>(proto.payload());
+        HeapObjectHeader* live = heap.survivor_of(hdr);
+        if (!live) {
+            root->prototype = Value::fromUndefined();
+            continue;
+        }
+        root->prototype = Value::fromTagAndPayload(proto.tag(), reinterpret_cast<uintptr_t>(live));
+        g_userPrototypeShapes[keep++] = root;
+    }
+    g_userPrototypeShapes.resize(keep);
 }
 
 static thread_local Shape* g_plainObjectShape = nullptr;
@@ -215,9 +228,21 @@ StringHeader* rtKeyHeader(uint32_t index) {
     return hdr;
 }
 
+static thread_local std::vector<const KeyInfo*> g_threadKeyInfos;
+
 const KeyInfo& rtKeyInfo(uint32_t index) {
+    if (index < g_threadKeyInfos.size()) {
+        const KeyInfo* cached = g_threadKeyInfos[index];
+        if (cached != nullptr) return *cached;
+    }
     std::lock_guard<std::mutex> lock(g_keyMutex);
-    return index < g_keyInfos.size() ? g_keyInfos[index] : g_emptyKeyInfo;
+    if (index >= g_keyInfos.size()) return g_emptyKeyInfo;
+    const KeyInfo* ptr = &g_keyInfos[index];
+    if (index >= g_threadKeyInfos.size()) {
+        g_threadKeyInfos.resize(index + 1, nullptr);
+    }
+    g_threadKeyInfos[index] = ptr;
+    return *ptr;
 }
 
 // ---- Caches with heap Values ------------------------------------------------
@@ -358,6 +383,9 @@ static thread_local std::vector<std::pair<std::string, Value>> g_hostGlobals;
 static void registerThreadRootSources(Heap& heap) {
     heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (Shape* root : g_rootShapes) visit(root->prototype);
+    });
+    heap.add_post_collection_hook([]() {
+        sweepUserPrototypeShapes();
     });
     heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (auto& entry : g_functionSingletons) visit(entry.second);
