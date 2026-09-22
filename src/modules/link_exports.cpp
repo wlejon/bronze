@@ -192,6 +192,7 @@ bool Linker::collectImports(ModuleFile& file) {
         }
         void visit(const ast::BreakStmt&) override {}
         void visit(const ast::ContinueStmt&) override {}
+        void visit(const ast::DebuggerStmt&) override {}
         void visit(const ast::SwitchStmt& s) override {
             scan(s.discriminant.get());
             for (const auto& c : s.cases) {

@@ -235,7 +235,8 @@ private:
         } else if (auto* fd = dynamic_cast<ast::FunctionDecl*>(&s)) {
             rewrite(fd->name);
             functionBody(fd->params, fd->body, std::string());
-        } else if (dynamic_cast<ast::BreakStmt*>(&s) || dynamic_cast<ast::ContinueStmt*>(&s)) {
+        } else if (dynamic_cast<ast::BreakStmt*>(&s) || dynamic_cast<ast::ContinueStmt*>(&s) ||
+                   dynamic_cast<ast::DebuggerStmt*>(&s)) {
             // A label is a jump target, not a binding (ECMA-262 14.13), and
             // neither statement has any other child.
         } else if (dynamic_cast<ast::ImportDecl*>(&s) ||

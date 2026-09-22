@@ -40,6 +40,7 @@
 
 #include "runtime/class_family.h"
 
+#include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <shared_mutex>
@@ -268,11 +269,12 @@ void bronze_family_stamp(uint64_t objBits) {
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Plain) return;
     Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
-    // One-shot per shape, re-checked here as well as in generated code: a site
-    // whose guard just missed calls this, and two sites can miss on the same
-    // shape before either has run.
-    if (shape == nullptr || shape->family_stamp != BRONZE_ABI_FAMILY_UNSTAMPED) return;
-    shape->family_stamp = classFamilyIdFor(shape);
+    if (shape == nullptr) return;
+    std::atomic_ref<uint64_t> stampRef(shape->family_stamp);
+    if (stampRef.load(std::memory_order_acquire) != BRONZE_ABI_FAMILY_UNSTAMPED) return;
+    uint64_t id = classFamilyIdFor(shape);
+    uint64_t expected = BRONZE_ABI_FAMILY_UNSTAMPED;
+    stampRef.compare_exchange_strong(expected, id, std::memory_order_acq_rel);
 }
 
 }  // extern "C"

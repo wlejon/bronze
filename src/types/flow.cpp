@@ -29,6 +29,7 @@ const char* statementLabel(const ast::Stmt& s) {
     if (dynamic_cast<const ast::BlockStmt*>(&s)) return "block";
     if (dynamic_cast<const ast::BreakStmt*>(&s)) return "break";
     if (dynamic_cast<const ast::ContinueStmt*>(&s)) return "continue";
+    if (dynamic_cast<const ast::DebuggerStmt*>(&s)) return "debugger";
     if (dynamic_cast<const ast::SwitchStmt*>(&s)) return "switch";
     if (dynamic_cast<const ast::ForInStmt*>(&s)) return "for-in";
     if (dynamic_cast<const ast::ForOfStmt*>(&s)) return "for-of";
@@ -386,6 +387,9 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
     }
     if (dynamic_cast<const ast::ContinueStmt*>(&s)) {
         if (!continueStack_.empty()) continueStack_.back().push_back(scope_.env);
+        return;
+    }
+    if (dynamic_cast<const ast::DebuggerStmt*>(&s)) {
         return;
     }
     if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&s)) {

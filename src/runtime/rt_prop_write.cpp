@@ -440,10 +440,14 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
     recordPropCall("bronze_method_def", keyIndex, nullptr);
     Value objVal(objBits);
     if (!objVal.isObject()) {
-        fatal("internal: a class method defined on a value that is not an object");
+        rtThrowTypeError("a class method defined on a value that is not an object");
+        return;
     }
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
-    if (!keyHeader) fatal("class method definition with an unregistered key index");
+    if (!keyHeader) {
+        rtThrowTypeError("class method definition with an unregistered key index");
+        return;
+    }
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     Rooted<Value> val{Value(valBits)};
@@ -459,7 +463,8 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
         return;
     }
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        fatal("internal: a class method defined on a receiver that is not a plain object");
+        rtThrowTypeError("a class method defined on a receiver that is not a plain object");
+        return;
     }
     Rooted<Value> objRoot{objVal};
     Rooted<Value> key(Value::fromString(keyHeader));
@@ -486,7 +491,8 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
     recordElemCall("bronze_method_def_computed", objBits, keyBits);
     Value objVal(objBits);
     if (!objVal.isObject()) {
-        fatal("internal: a computed class method defined on a receiver that is not an object");
+        rtThrowTypeError("a computed class method defined on a receiver that is not an object");
+        return;
     }
     Rooted<Value> objRoot0{objVal};
     Rooted<Value> val{Value(valBits)};
@@ -510,8 +516,8 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
         return;
     }
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        fatal("internal: a computed class method defined on a receiver that is not a plain "
-              "object");
+        rtThrowTypeError("a computed class method defined on a receiver that is not a plain object");
+        return;
     }
     Rooted<Value> objRoot{objVal};
     objRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
@@ -532,10 +538,14 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
     recordPropCall("bronze_accessor_def", keyIndex, nullptr);
     Value objVal(objBits);
     if (!objVal.isObject()) {
-        fatal("internal: an accessor defined on a value that is not an object");
+        rtThrowTypeError("an accessor defined on a value that is not an object");
+        return;
     }
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
-    if (!keyHeader) fatal("accessor definition with an unregistered key index");
+    if (!keyHeader) {
+        rtThrowTypeError("accessor definition with an unregistered key index");
+        return;
+    }
 
     Rooted<Value> getter{Value(getterBits)};
     Rooted<Value> setter{Value(setterBits)};
@@ -551,17 +561,9 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
         return;
     }
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        // Every receiver that is not a plain object and not a function, named
-        // rather than guessed at: an accessor lives in a shape, and each of
-        // these kinds answers its members from a table beside the value with no
-        // shape of its own to put a getter/setter pair in. The side property
-        // object an array carries is the storage a fix would use, but the
-        // READ paths that would have to consult it are per-kind and
-        // per-member, so the refusal stands rather than half of it.
-        fatal((std::string("an accessor property on ") + rtObjectKindName(objVal) +
-               " is unsupported (its members are answered from a table beside the value, not "
-               "from a shape an accessor could live in)")
-                  .c_str());
+        rtThrowTypeError(std::string("an accessor property on ") + rtObjectKindName(objVal) +
+                         " is unsupported");
+        return;
     }
     Rooted<Value> objRoot{objVal};
     ObjectHeader::defineAccessor(rtHeap(), rtArena(), objRoot, key, getter, setter, enumerable);
@@ -572,7 +574,8 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
     recordElemCall("bronze_accessor_def_computed", objBits, keyBits);
     Value objVal(objBits);
     if (!objVal.isObject()) {
-        fatal("internal: an accessor defined on a value that is not an object");
+        rtThrowTypeError("an accessor defined on a value that is not an object");
+        return;
     }
     Rooted<Value> objRoot0{objVal};
     Rooted<Value> getter{Value(getterBits)};
@@ -595,17 +598,9 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
         return;
     }
     if (hdr->flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        // Every receiver that is not a plain object and not a function, named
-        // rather than guessed at: an accessor lives in a shape, and each of
-        // these kinds answers its members from a table beside the value with no
-        // shape of its own to put a getter/setter pair in. The side property
-        // object an array carries is the storage a fix would use, but the
-        // READ paths that would have to consult it are per-kind and
-        // per-member, so the refusal stands rather than half of it.
-        fatal((std::string("an accessor property on ") + rtObjectKindName(objVal) +
-               " is unsupported (its members are answered from a table beside the value, not "
-               "from a shape an accessor could live in)")
-                  .c_str());
+        rtThrowTypeError(std::string("an accessor property on ") + rtObjectKindName(objVal) +
+                         " is unsupported");
+        return;
     }
     Rooted<Value> objRoot{objVal};
     ObjectHeader::defineAccessor(rtHeap(), rtArena(), objRoot, key, getter, setter, enumerable);
@@ -939,8 +934,8 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             return;
         }
     }
-    fatal("computed index writes are only supported on arrays, plain objects "
-          "and typed arrays");
+    rtThrowTypeError("computed index writes are only supported on arrays, plain objects "
+                     "and typed arrays");
 }
 
 }  // extern "C"

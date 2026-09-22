@@ -196,6 +196,7 @@ public:
 
     void visit(const BreakStmt&) override {}
     void visit(const ContinueStmt&) override {}
+    void visit(const DebuggerStmt&) override {}
     // A switch writes from three places — the discriminant, the case
     // expressions and the case bodies — and every one of them runs where the
     // switch is written. A variable left out here would be missing from the

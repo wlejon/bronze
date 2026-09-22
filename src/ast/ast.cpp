@@ -55,6 +55,7 @@ void DoWhileStmt::accept(Visitor& v) const { v.visit(*this); }
 void ForStmt::accept(Visitor& v) const { v.visit(*this); }
 void BreakStmt::accept(Visitor& v) const { v.visit(*this); }
 void ContinueStmt::accept(Visitor& v) const { v.visit(*this); }
+void DebuggerStmt::accept(Visitor& v) const { v.visit(*this); }
 void SwitchStmt::accept(Visitor& v) const { v.visit(*this); }
 void ForInStmt::accept(Visitor& v) const { v.visit(*this); }
 void ForOfStmt::accept(Visitor& v) const { v.visit(*this); }

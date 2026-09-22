@@ -125,9 +125,9 @@ TEST_CASE("class family registry concurrent registration and lookup safety") {
     uint64_t base = 0;
     bronze_register_class_family(classTable, 1, fieldTable, keyMap, &base);
 
+    std::atomic<bool> readerReady{false};
     std::vector<uint64_t> stamps;
     std::thread reader([&] {
-        while (!start.load(std::memory_order_acquire)) {}
         ShadowStackFrame frame;
         Heap& heap = rtHeap();
         NonMovingArena& arena = rtArena();
@@ -137,6 +137,9 @@ TEST_CASE("class family registry concurrent registration and lookup safety") {
         uint32_t slot = 0;
         Shape* s1 = root->addProperty(arena, heap, nameX, slot, true, false, true, true);
         Shape* s2 = s1->addProperty(arena, heap, nameY, slot, true, false, true, true);
+        readerReady.store(true, std::memory_order_release);
+
+        while (!start.load(std::memory_order_acquire)) {}
 
         do {
             uint64_t id = classFamilyIdFor(s2);
@@ -156,6 +159,9 @@ TEST_CASE("class family registry concurrent registration and lookup safety") {
         done.store(true, std::memory_order_release);
     });
 
+    while (!readerReady.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
     start.store(true, std::memory_order_release);
     writer.join();
     reader.join();

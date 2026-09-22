@@ -46,6 +46,7 @@ enum class TokenKind {
     KwCatch,
     KwConst,
     KwContinue,
+    KwDebugger,
     KwDefault,
     KwDo,
     KwElse,

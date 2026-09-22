@@ -180,6 +180,13 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     if (check(TokenKind::KwFor)) return one(out, parseFor());
     if (check(TokenKind::KwBreak)) return one(out, parseBreak());
     if (check(TokenKind::KwContinue)) return one(out, parseContinue());
+    if (check(TokenKind::KwDebugger)) {
+        const Token& kw = advance();
+        consumeSemicolon("debugger");
+        auto stmt = std::make_unique<DebuggerStmt>();
+        stmt->span = kw.span;
+        return one(out, std::move(stmt));
+    }
     if (check(TokenKind::KwSwitch)) return one(out, parseSwitch());
     if (check(TokenKind::KwClass)) return one(out, parseClass());
     if (check(TokenKind::KwTry)) return one(out, parseTry());

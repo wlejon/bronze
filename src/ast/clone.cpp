@@ -384,6 +384,11 @@ StmtPtr cloneStmtNode(const Stmt& stmt, CloneOrigins* origins) {
         res->label = cont->label;
         return res;
     }
+    if (dynamic_cast<const DebuggerStmt*>(&stmt)) {
+        auto res = std::make_unique<DebuggerStmt>();
+        res->span = stmt.span;
+        return res;
+    }
     if (const auto* sw = dynamic_cast<const SwitchStmt*>(&stmt)) {
         auto res = std::make_unique<SwitchStmt>();
         res->span = sw->span;

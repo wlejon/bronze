@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
@@ -74,11 +75,17 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
                                   Rooted<Value>& setter, bool enumerable, bool configurable) {
     const PropertyKey name = PropertyKey::fromValue(key.get());
     if (!name.valid()) {
-        fatal("property name must be a string or a symbol");
+        runtime::rtThrowTypeError("property name must be a string or a symbol");
+        return;
+    }
+    if (!self.get().isObject()) {
+        runtime::rtThrowTypeError("an accessor defined on a value that is not an object");
+        return;
     }
     auto* obj = self.get().asObject<ObjectHeader>();
     if (!obj->shape) {
-        fatal("internal: an accessor defined on an object with no shape");
+        runtime::rtThrowTypeError("internal: an accessor defined on an object with no shape");
+        return;
     }
 
     uint32_t slot = 0;

@@ -51,6 +51,7 @@ public:
     void visit(const Ident&) override {}
     void visit(const BreakStmt&) override {}
     void visit(const ContinueStmt&) override {}
+    void visit(const DebuggerStmt&) override {}
     void visit(const SuperMember&) override {}
     // The boundary. Both forms declare a function of their own, so nothing
     // under them suspends the body being scanned.

@@ -612,6 +612,10 @@ struct ContinueStmt final : Stmt {
     void accept(Visitor& v) const override;
 };
 
+struct DebuggerStmt final : Stmt {
+    void accept(Visitor& v) const override;
+};
+
 // One `case e:` or `default:` clause. `test` is null for the default clause,
 // which may sit anywhere in the list: where it is written decides what falls
 // through into it and out of it, and only whether any `case` matched decides
@@ -887,6 +891,7 @@ public:
     virtual void visit(const ForStmt&) = 0;
     virtual void visit(const BreakStmt&) = 0;
     virtual void visit(const ContinueStmt&) = 0;
+    virtual void visit(const DebuggerStmt&) = 0;
     virtual void visit(const SwitchStmt&) = 0;
     virtual void visit(const ForInStmt&) = 0;
     virtual void visit(const LabeledStmt&) = 0;

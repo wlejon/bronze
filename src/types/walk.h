@@ -28,6 +28,7 @@ public:
     void visit(const ast::Ident&) override {}
     void visit(const ast::BreakStmt&) override {}
     void visit(const ast::ContinueStmt&) override {}
+    void visit(const ast::DebuggerStmt&) override {}
 
     // None of a try statement's three parts is a function boundary, so every
     // analysis that walks a body has to reach into all three. Leaving them

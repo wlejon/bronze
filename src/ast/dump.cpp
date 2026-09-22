@@ -407,6 +407,7 @@ public:
     }
     void visit(const BreakStmt& n) override { emit("(break" + (n.label.empty() ? "" : " " + n.label) + ")"); }
     void visit(const ContinueStmt& n) override { emit("(continue" + (n.label.empty() ? "" : " " + n.label) + ")"); }
+    void visit(const DebuggerStmt&) override { emit("(debugger)"); }
     void visit(const SwitchStmt& n) override {
         emit("(switch");
         indented([&] {

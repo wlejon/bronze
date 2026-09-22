@@ -198,3 +198,47 @@ TEST_CASE("code range registry registration and lookup") {
     bronze_unregister_code_ranges(&r, 1);
     CHECK(find_code_range(dummyCode) == nullptr);
 }
+
+TEST_CASE("exotic receiver and invalid operations raise catchable TypeError rather than fatal abort") {
+    ShadowStackFrame frame;
+    ClearCell guard;
+
+    // 1. bronze_object_rest on non-plain receiver
+    Value restRes(bronze_object_rest(Value::fromDouble(42.0).rawBits(), Value::fromUndefined().rawBits()));
+    CHECK(rtExceptionPending());
+    Value thrown1 = takePending();
+    CHECK(rtIsErrorInstance(thrown1));
+    CHECK(textOf(thrown1).find("TypeError") != std::string::npos);
+
+    // 2. bronze_elem_set on invalid receiver (null)
+    bronze_elem_set(Value::fromNull().rawBits(), Value::fromDouble(0.0).rawBits(), Value::fromDouble(1.0).rawBits(), false);
+    CHECK(rtExceptionPending());
+    Value thrown2 = takePending();
+    CHECK(rtIsErrorInstance(thrown2));
+    CHECK(textOf(thrown2).find("TypeError") != std::string::npos);
+
+    // 3. bronze_accessor_def on exotic receiver (Array)
+    const uint32_t keyIndex = bronze_register_key_string("exoticProp");
+    Rooted<Value> arr{Value(bronze_create_array(0))};
+    bronze_accessor_def(arr.get().rawBits(), keyIndex, Value::fromUndefined().rawBits(), Value::fromUndefined().rawBits(), false);
+    CHECK(rtExceptionPending());
+    Value thrown3 = takePending();
+    CHECK(rtIsErrorInstance(thrown3));
+    CHECK(textOf(thrown3).find("TypeError") != std::string::npos);
+
+    // 4. bronze_method_def on exotic receiver (Array)
+    bronze_method_def(arr.get().rawBits(), keyIndex, Value::fromUndefined().rawBits());
+    CHECK(rtExceptionPending());
+    Value thrown4 = takePending();
+    CHECK(rtIsErrorInstance(thrown4));
+    CHECK(textOf(thrown4).find("TypeError") != std::string::npos);
+
+    // 5. ObjectHeader::getProp with invalid property key
+    Rooted<Value> obj{Value(bronze_create_object())};
+    Rooted<Value> invalidKey{Value::fromBool(true)};
+    obj.get().asObject<ObjectHeader>()->getProp(rtHeap(), invalidKey);
+    CHECK(rtExceptionPending());
+    Value thrown5 = takePending();
+    CHECK(rtIsErrorInstance(thrown5));
+    CHECK(textOf(thrown5).find("TypeError") != std::string::npos);
+}

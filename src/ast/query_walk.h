@@ -199,6 +199,7 @@ public:
     }
     void visit(const BreakStmt&) override {}
     void visit(const ContinueStmt&) override {}
+    void visit(const DebuggerStmt&) override {}
     void visit(const SwitchStmt& n) override {
         if (n.discriminant) n.discriminant->accept(*this);
         for (const auto& c : n.cases) {
@@ -437,6 +438,7 @@ public:
     }
     void visit(const BreakStmt&) override {}
     void visit(const ContinueStmt&) override {}
+    void visit(const DebuggerStmt&) override {}
     void visit(const SwitchStmt& n) override {
         if (n.discriminant) n.discriminant->accept(*this);
         for (const auto& c : n.cases) {

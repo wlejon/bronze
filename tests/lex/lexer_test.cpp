@@ -480,3 +480,32 @@ TEST_CASE("trailing-dot float literals and property access") {
     CHECK(t5[0].text == "1._5");
 }
 
+TEST_CASE("debugger keyword") {
+    auto lexed = lexAll("debugger;");
+    auto& tokens = lexed.tokens;
+    REQUIRE(tokens.size() == 3);
+    CHECK(tokens[0].kind == TokenKind::KwDebugger);
+    CHECK(tokens[0].text == "debugger");
+    CHECK(tokens[1].kind == TokenKind::Semicolon);
+    CHECK(tokens[2].kind == TokenKind::EndOfFile);
+}
+
+TEST_CASE("slash disambiguation after await and yield") {
+    for (const char* src : {"await /abc/", "yield /abc/", "await /abc/g", "yield /abc/i"}) {
+        auto lexed = lexAll(src);
+        const auto kinds = kindsOf(lexed);
+        CAPTURE(src);
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::RegExpLiteral) != kinds.end());
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::Slash) == kinds.end());
+    }
+
+    // Normal identifiers before / should still be division
+    for (const char* src : {"foo / bar", "awaiting / 2", "yielding / 2"}) {
+        auto lexed = lexAll(src);
+        const auto kinds = kindsOf(lexed);
+        CAPTURE(src);
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::Slash) != kinds.end());
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::RegExpLiteral) == kinds.end());
+    }
+}
+

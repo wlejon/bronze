@@ -180,3 +180,15 @@ TEST_CASE("contextual keyword 'of' in statements and declarations") {
     CHECK(labeledOf.find("(break of)") != std::string::npos);
     CHECK(labeledOf.find("(continue of)") != std::string::npos);
 }
+
+TEST_CASE("debugger statement") {
+    const auto out = parseAndDump("debugger;\n");
+    CHECK(out ==
+          "(module t\n"
+          "  (debugger)\n"
+          ")\n");
+
+    const auto withoutSemi = parseAndDump("function f() { debugger }\n");
+    CHECK(withoutSemi.substr(0, 7) != "ERRORS:");
+    CHECK(withoutSemi.find("(debugger)") != std::string::npos);
+}

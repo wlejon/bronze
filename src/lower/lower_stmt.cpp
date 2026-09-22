@@ -115,6 +115,10 @@ bool Lowerer::lowerStmt(const ast::Stmt& stmt, il::Function& ilFn) {
         return lowerContinueStmt(continueStmt, ilFn);
     }
 
+    if (dynamic_cast<const ast::DebuggerStmt*>(&stmt)) {
+        return true;
+    }
+
     if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&stmt)) {
         return lowerSwitchStmt(sw, ilFn);
     }

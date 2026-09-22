@@ -610,4 +610,17 @@ TEST_CASE("Part B: Object, String, RegExp, and block var improvements") {
     }
 }
 
+TEST_CASE("debugger statement executes as no-op") {
+    embed::CallResult r1 = evalScript("debugger; 42;");
+    CHECK(!r1.thrown);
+    CHECK(r1.value.asNumber() == 42.0);
 
+    embed::CallResult r2 = evalScript(
+        "function foo() {\n"
+        "  debugger;\n"
+        "  return 100;\n"
+        "}\n"
+        "foo();\n");
+    CHECK(!r2.thrown);
+    CHECK(r2.value.asNumber() == 100.0);
+}

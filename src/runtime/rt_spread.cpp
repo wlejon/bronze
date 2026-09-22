@@ -613,11 +613,13 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
     // elements are own keys ahead of the names (10.4.5.7) and live outside the
     // shape, and a rest pattern over one is refused by name until that walk
     // takes them — the alternative is a rest object silently missing them.
-    if (!HeapKind::carriesShape(src.get().asObject<HeapObjectHeader>()->flags) ||
+    if (!src.get().isObject() ||
+        !HeapKind::carriesShape(src.get().asObject<HeapObjectHeader>()->flags) ||
         src.get().asObject<HeapObjectHeader>()->flags == TypedArrayHeader::kFlags) {
-        fatal((std::string("object rest from ") + rtObjectKindName(src.get()) +
-               " is unsupported (only a receiver whose own keys are all in its shape)")
-                  .c_str());
+        const std::string name = src.get().isObject() ? rtObjectKindName(src.get()) : "primitive";
+        rtThrowTypeError(std::string("object rest from ") + name +
+                         " is unsupported (only a receiver whose own keys are all in its shape)");
+        return out.get().rawBits();
     }
 
     // The exclusions are compared as KEYS: 14.3.3.2 step 2 (and 13.15.5.6 for

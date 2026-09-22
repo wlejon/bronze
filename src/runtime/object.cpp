@@ -270,7 +270,8 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
     (void)heap;
     const PropertyKey prop_name = PropertyKey::fromValue(key.get());
     if (!prop_name.valid()) {
-        fatal("property key must be a string or a symbol");
+        runtime::rtThrowTypeError("property key must be a string or a symbol");
+        return Value::fromUndefined();
     }
 
     // A symbol key never reaches an inline cache, and that is a fact about the
@@ -382,7 +383,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
         if (!HeapKind::carriesShape(protoHdr->flags)) return Value::fromUndefined();
         holder = reinterpret_cast<ObjectHeader*>(protoHdr);
     }
-    fatal("prototype chain too deep (a cycle?)");
+    return runtime::rtThrowTypeError("prototype chain too deep (a cycle?)");
 }
 
 ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Value>& key,
@@ -391,7 +392,8 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                                     bool writable, bool configurable) {
     const PropertyKey prop_name = PropertyKey::fromValue(key.get());
     if (!prop_name.valid()) {
-        fatal("property key must be a string or a symbol");
+        runtime::rtThrowTypeError("property key must be a string or a symbol");
+        return this;
     }
 
     // A set-site entry only ever describes an OWN DATA property of a

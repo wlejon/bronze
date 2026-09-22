@@ -19,6 +19,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwCatch: return "catch";
         case TokenKind::KwConst: return "const";
         case TokenKind::KwContinue: return "continue";
+        case TokenKind::KwDebugger: return "debugger";
         case TokenKind::KwDefault: return "default";
         case TokenKind::KwDo: return "do";
         case TokenKind::KwElse: return "else";
@@ -195,7 +196,8 @@ Token Lexer::lexIdentifierOrKeyword() {
     static constexpr Keyword kKeywords[] = {
         {"break", TokenKind::KwBreak},       {"case", TokenKind::KwCase},
         {"catch", TokenKind::KwCatch},       {"const", TokenKind::KwConst},
-        {"continue", TokenKind::KwContinue}, {"default", TokenKind::KwDefault},
+        {"continue", TokenKind::KwContinue}, {"debugger", TokenKind::KwDebugger},
+        {"default", TokenKind::KwDefault},
         {"delete", TokenKind::KwDelete},
         {"class", TokenKind::KwClass},     {"extends", TokenKind::KwExtends},
         {"super", TokenKind::KwSuper},
@@ -465,7 +467,11 @@ Token Lexer::lexTemplatePart(bool isHead) {
 bool Lexer::regexAllowedAfter(const std::vector<Token>& tokens) {
     if (tokens.empty()) return true;
     switch (tokens.back().kind) {
-        case TokenKind::Identifier:
+        case TokenKind::Identifier: {
+            const auto text = tokens.back().text;
+            if (text == "await" || text == "yield") return true;
+            return false;
+        }
         case TokenKind::NumberLiteral:
         case TokenKind::StringLiteral:
         case TokenKind::TemplateWhole:
