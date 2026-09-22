@@ -1,6 +1,7 @@
 #pragma once
 
 #include "abi/bronze_abi.h"
+#include <cstddef>
 
 // The per-thread ABI block, reachable WITHOUT a call.
 //
@@ -29,5 +30,10 @@ extern thread_local bronze_tls_block g_tls_block;
 inline bronze_tls_block* rtTls() noexcept {
     return &g_tls_block;
 }
+
+void setShadowStackCapacityForTesting(size_t words);
+void resetShadowStackCapacityForTesting();
+bool isShadowStackFrame(const bronze_gc_frame* frame);
+size_t shadowStackCapacityWords();
 
 }  // namespace bronze::runtime

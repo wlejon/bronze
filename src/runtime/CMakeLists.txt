@@ -204,6 +204,7 @@ bronze_add_module(runtime
         ../../tests/runtime/call_out_test.cpp
         ../../tests/runtime/root_slots_test.cpp
         ../../tests/runtime/class_family_test.cpp
+        ../../tests/runtime/shadow_stack_test.cpp
 )
 
 # On the SysV targets Error.stack is the frame-pointer chain

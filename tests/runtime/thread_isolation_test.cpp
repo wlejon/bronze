@@ -138,10 +138,10 @@ TEST_CASE("class family registry concurrent registration and lookup safety") {
         Shape* s1 = root->addProperty(arena, heap, nameX, slot, true, false, true, true);
         Shape* s2 = s1->addProperty(arena, heap, nameY, slot, true, false, true, true);
 
-        while (!done.load(std::memory_order_relaxed)) {
+        do {
             uint64_t id = classFamilyIdFor(s2);
             stamps.push_back(id);
-        }
+        } while (!done.load(std::memory_order_relaxed));
     });
 
     std::thread writer([&] {
