@@ -738,7 +738,6 @@ int runDriver(int argc, char** argv) {
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
         std::string targetName;
-        bool targetNameSet = false;
         bool emitDebugInfo = false;
         bool publishModules = false;
 

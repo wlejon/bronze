@@ -12,6 +12,17 @@ namespace bronze {
 
 namespace {
 
+// A raw interpreter slot becomes either a pointer or an integer argument;
+// reinterpret_cast only covers the pointer case (MSVC rejects it int-to-int).
+template <typename T>
+T fromSlot(uint64_t raw) {
+    if constexpr (std::is_pointer_v<T>) {
+        return reinterpret_cast<T>(static_cast<uintptr_t>(raw));
+    } else {
+        return static_cast<T>(raw);
+    }
+}
+
 template <typename Ret, typename... Args>
 brass::FastHostFn makeFastHostFn(Ret (*fn)(Args...)) {
     return [fn](brass::FastInterpreter&, const std::vector<brass::RuntimeValue>& args) -> brass::RuntimeValue {
@@ -23,12 +34,12 @@ brass::FastHostFn makeFastHostFn(Ret (*fn)(Args...)) {
 
         if constexpr (std::is_void_v<Ret>) {
             if constexpr (sizeof...(Args) == 1) {
-                fn(reinterpret_cast<Args>(unpack(0))...);
+                fn(fromSlot<Args>(unpack(0))...);
             }
             return brass::RuntimeValue::from_void();
         } else if constexpr (std::is_same_v<Ret, uint32_t>) {
             if constexpr (sizeof...(Args) == 1) {
-                return brass::RuntimeValue::from_i32(static_cast<int32_t>(fn(reinterpret_cast<Args>(unpack(0))...)));
+                return brass::RuntimeValue::from_i32(static_cast<int32_t>(fn(fromSlot<Args>(unpack(0))...)));
             }
         } else if constexpr (std::is_same_v<Ret, uintptr_t>) {
             if constexpr (sizeof...(Args) == 3) {

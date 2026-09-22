@@ -208,7 +208,7 @@ TEST_CASE("Line entries map back to source lines and filenames") {
     bool foundFileInCtx = false;
     uint32_t mathFileId = 0;
     for (size_t f = 1; f <= obj->debug_context.file_count(); ++f) {
-        if (obj->debug_context.get_file(f) == filename) {
+        if (obj->debug_context.get_file(static_cast<uint32_t>(f)) == filename) {
             foundFileInCtx = true;
             mathFileId = static_cast<uint32_t>(f);
             break;

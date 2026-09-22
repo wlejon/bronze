@@ -798,8 +798,8 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
         CHECK_FALSE(rtExceptionPending());
     }
     {
-        uint64_t setArgs[2] = {nonExt.get().rawBits(), customProto.get().rawBits()};
-        runtime::objectSetPrototypeOf(0, 0, 2, setArgs);
+        uint64_t nonExtSetArgs[2] = {nonExt.get().rawBits(), customProto.get().rawBits()};
+        runtime::objectSetPrototypeOf(0, 0, 2, nonExtSetArgs);
         CHECK(rtExceptionPending());
         Value exVal = Value(rtTls()->exception_cell);
         CHECK(exVal.isObject());
@@ -809,8 +809,8 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
         rtClearException();
     }
     {
-        uint64_t protoArgs[1] = {customProto.get().rawBits()};
-        runtime::objectProtoSetProto(0, nonExt.get().rawBits(), 1, protoArgs);
+        uint64_t nonExtProtoArgs[1] = {customProto.get().rawBits()};
+        runtime::objectProtoSetProto(0, nonExt.get().rawBits(), 1, nonExtProtoArgs);
         CHECK(rtExceptionPending());
         Value exVal = Value(rtTls()->exception_cell);
         CHECK(exVal.isObject());

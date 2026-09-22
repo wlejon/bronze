@@ -23,7 +23,7 @@ function(bronze_add_module name)
         # C/C++ only: the runtime carries a MASM source, and ml64 rejects
         # these as command-line options.
         target_compile_options(bronze_${name} PRIVATE
-            $<$<COMPILE_LANGUAGE:C,CXX>:/W4 /WX /permissive- /wd4324>)
+            $<$<COMPILE_LANGUAGE:C,CXX>:/W4 /WX /permissive- /wd4324 /utf-8>)
         # The CRT-deprecation opt-out (getenv and friends are standard C++),
         # not a blanket C4996 disable. Target-wide because a per-file #define
         # placed after the first include is silently too late.
@@ -48,7 +48,9 @@ function(bronze_add_module name)
             target_link_libraries(bronze_${name}_tests PRIVATE bronze::${dep})
         endforeach()
         if(MSVC)
-            target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive- /wd4324)
+            # /utf-8: string literals carry \u escapes as UTF-8 bytes whatever
+            # the machine's ANSI code page is (C4566 under /WX otherwise).
+            target_compile_options(bronze_${name}_tests PRIVATE /W4 /WX /permissive- /wd4324 /utf-8)
             target_compile_definitions(bronze_${name}_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
             target_link_options(bronze_${name}_tests PRIVATE /FORCE:MULTIPLE)
         else()
