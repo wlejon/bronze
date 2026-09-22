@@ -350,3 +350,53 @@ TEST_CASE("RegExp compilation cache is bounded and LRU evicts cleanly") {
     CHECK(rtRegExpCacheSize() <= 512);
 }
 
+TEST_CASE("RegExp symbols throw catchable RangeError on ReDoS / execution limit exceeded") {
+    ShadowStackFrame frame;
+    rtClearException();
+
+    Rooted<Value> re{makeRegExp("(a+)+$", "")};
+    Rooted<Value> input{rtMakeString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")};
+
+    // search
+    Rooted<Value> searchRes{rtRegExpSearch(re, input)};
+    CHECK(rtExceptionPending());
+    Value exVal = Value(rtTls()->exception_cell);
+    CHECK(exVal.isObject());
+    std::string errText;
+    CHECK(rtErrorText(exVal, errText));
+    CHECK(errText.find("RangeError") != std::string::npos);
+    rtClearException();
+
+    // replace
+    Rooted<Value> replacement{rtMakeString("x")};
+    Rooted<Value> replaceRes{rtRegExpReplace(re, input, replacement)};
+    CHECK(rtExceptionPending());
+    exVal = Value(rtTls()->exception_cell);
+    CHECK(exVal.isObject());
+    errText.clear();
+    CHECK(rtErrorText(exVal, errText));
+    CHECK(errText.find("RangeError") != std::string::npos);
+    rtClearException();
+
+    // split
+    Rooted<Value> splitRes{rtRegExpSplit(re, input, Value::fromUndefined())};
+    CHECK(rtExceptionPending());
+    exVal = Value(rtTls()->exception_cell);
+    CHECK(exVal.isObject());
+    errText.clear();
+    CHECK(rtErrorText(exVal, errText));
+    CHECK(errText.find("RangeError") != std::string::npos);
+    rtClearException();
+
+    // match (with global flag)
+    Rooted<Value> reGlobal{makeRegExp("(a+)+$", "g")};
+    Rooted<Value> matchRes{rtRegExpMatch(reGlobal, input)};
+    CHECK(rtExceptionPending());
+    exVal = Value(rtTls()->exception_cell);
+    CHECK(exVal.isObject());
+    errText.clear();
+    CHECK(rtErrorText(exVal, errText));
+    CHECK(errText.find("RangeError") != std::string::npos);
+    rtClearException();
+}
+

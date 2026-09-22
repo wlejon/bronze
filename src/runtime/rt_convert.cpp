@@ -336,13 +336,36 @@ std::string rtAsciiChars(const StringHeader* s) {
 // unsigned, and anything the whole of which is not consumed is NaN.
 // Deliberately NOT std::strtod: that accepts `0x` forms with a sign, `nan`,
 // and locale decimal points, none of which JS does.
+static bool isEcmaWhitespace(uint16_t u) {
+    switch (u) {
+        case 0x0009: case 0x000A: case 0x000B: case 0x000C: case 0x000D:
+        case 0x0020: case 0x00A0: case 0x1680: case 0x2028: case 0x2029:
+        case 0x202F: case 0x205F: case 0x3000: case 0xFEFF:
+            return true;
+        default:
+            return u >= 0x2000 && u <= 0x200A;
+    }
+}
+
 static double stringToNumber(const StringHeader* s) {
-    static constexpr std::string_view kSpace = " \t\n\r\f\v";
-    std::string text = rtAsciiChars(s);
-    size_t begin = text.find_first_not_of(kSpace);
-    if (begin == std::string::npos) return 0.0;
-    size_t end = text.find_last_not_of(kSpace) + 1;
-    std::string_view body(text.data() + begin, end - begin);
+    if (!s) return 0.0;
+    const uint32_t len = s->getLength();
+    uint32_t begin = 0;
+    while (begin < len && isEcmaWhitespace(s->charCodeAt(begin))) {
+        ++begin;
+    }
+    if (begin == len) return 0.0;
+    uint32_t end = len;
+    while (end > begin && isEcmaWhitespace(s->charCodeAt(end - 1))) {
+        --end;
+    }
+    std::string body;
+    body.reserve(end - begin);
+    for (uint32_t i = begin; i < end; ++i) {
+        uint16_t c = s->charCodeAt(i);
+        if (c > 0x7F) return std::numeric_limits<double>::quiet_NaN();
+        body.push_back(static_cast<char>(c));
+    }
     if (body.empty()) return 0.0;
 
     if (body.size() > 2 && body[0] == '0') {

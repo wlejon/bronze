@@ -99,3 +99,34 @@ TEST_CASE("Array.prototype.join safely converts non-string join result without t
     CHECK(rtUtf8Chars(res.get().asString<StringHeader>()) == "true,end");
 }
 
+TEST_CASE("ArrayHeader large index assignment throws RangeError instead of bad_alloc") {
+    Heap heap;
+    ShadowStackFrame frame;
+    rtClearException();
+
+    Rooted<ArrayHeader*> arr(ArrayHeader::create(heap, 4));
+    Rooted<Value> val(Value::fromDouble(1.0));
+
+    // Large index >= 1000000000u
+    arr.get()->setElem(heap, 1000000000u, val);
+    CHECK(rtExceptionPending());
+    Value exVal = Value(rtTls()->exception_cell);
+    CHECK(exVal.isObject());
+    std::string errText;
+    CHECK(rtErrorText(exVal, errText));
+    CHECK(errText.find("RangeError") != std::string::npos);
+    CHECK(errText.find("Array allocation failed") != std::string::npos);
+    rtClearException();
+
+    // Large index exceeding heap capacity
+    arr.get()->setElem(heap, 100000000u, val);
+    CHECK(rtExceptionPending());
+    exVal = Value(rtTls()->exception_cell);
+    CHECK(exVal.isObject());
+    errText.clear();
+    CHECK(rtErrorText(exVal, errText));
+    CHECK(errText.find("RangeError") != std::string::npos);
+    CHECK(errText.find("Array allocation failed") != std::string::npos);
+    rtClearException();
+}
+

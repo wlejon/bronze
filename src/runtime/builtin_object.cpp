@@ -251,7 +251,7 @@ bool rtShapelessPrototypeOf(Value obj, Value& out) {
     // `Object.getPrototypeOf(new (class extends Array)())` would report
     // %Array.prototype% and skip the subclass's, which is the one link the
     // program can see.
-    if (Value proto = rtExoticSubclassPrototype(obj); proto.isObject()) {
+    if (Value proto = rtExoticSubclassPrototype(obj); proto.isObject() || proto.isNull()) {
         out = proto;
         return true;
     }
@@ -538,7 +538,42 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
             return true;
         }
 
-        return true;
+        if (self.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+            // Check for cycle (10.1.2 step 8)
+            Value link = proto.get();
+            for (uint32_t depth = 0; link.isObject() && depth <= 1000; ++depth) {
+                if (link.rawBits() == self.get().rawBits()) return false;
+                Value next;
+                if (rtShapelessPrototypeOf(link, next)) {
+                    link = next;
+                } else if (isPlainObject(link)) {
+                    Shape* shape = link.asObject<ObjectHeader>()->shape;
+                    link = shape ? shape->prototypeValue() : Value::fromNull();
+                } else {
+                    break;
+                }
+            }
+
+            if (proto.get().isObject()) {
+                if (ObjectHeader* protoObj = proto.get().asObject<ObjectHeader>(); protoObj->shape) {
+                    protoObj->shape->used_as_prototype = true;
+                }
+            }
+
+            Shape* newRoot = rtRootShapeForPrototype(proto.get());
+            if (!self.get().asObject<ArrayHeader>()->properties.isObject()) {
+                ObjectHeader* box = ObjectHeader::create(rtHeap(), rtArena(), newRoot);
+                box->header.flags = HeapKind::Plain;
+                self.get().asObject<ArrayHeader>()->properties = Value::fromObject(box);
+            } else {
+                Rooted<Value> props{self.get().asObject<ArrayHeader>()->properties};
+                ObjectHeader::setPrototype(rtArena(), props, newRoot);
+            }
+            self.get().asObject<ArrayHeader>()->reserved |= ArrayHeader::kHasCustomPrototype;
+            return true;
+        }
+
+        return false;
     }
     // 10.1.2.1 OrdinarySetPrototypeOf steps 2 to 4, in that order. Step 2's
     // SameValue comes FIRST, so a write of the prototype the object already has

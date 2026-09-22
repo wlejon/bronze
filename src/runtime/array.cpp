@@ -4,6 +4,7 @@
 
 #include "abi/bronze_abi.h"
 
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/object.h"
 #include "runtime/rt_state.h"
@@ -141,6 +142,12 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
             }
             if (new_cap > 0xFFFFFFFFULL) {
                 new_cap = static_cast<uint64_t>(index) + 1;
+            }
+            if (index >= 1000000000u ||
+                static_cast<size_t>(new_cap) * sizeof(Value) + 64 >= heap.reserved_size() / 2) {
+                runtime::rtThrowRangeError(
+                    "Array allocation failed: index exceeds maximum heap capacity");
+                return;
             }
             setCapacity(heap, self, static_cast<uint32_t>(new_cap));
         }

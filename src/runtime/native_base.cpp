@@ -61,6 +61,7 @@ void attachSubclassPrototype(Rooted<Value>& self, Rooted<Value>& proto) {
     box->header.flags = HeapKind::Plain;
     // Re-derived through the root: `create` above may have moved the instance.
     self.get().asObject<ArrayHeader>()->properties = Value::fromObject(box);
+    self.get().asObject<ArrayHeader>()->reserved |= ArrayHeader::kHasCustomPrototype;
 }
 
 }  // namespace
@@ -233,8 +234,16 @@ Value rtExoticPropertyBox(Value obj) {
 }
 
 Value rtExoticSubclassPrototype(Value obj) {
-    const Value box = rtExoticPropertyBox(obj);
+    if (!obj.isObject() || obj.asObject<HeapObjectHeader>()->flags != HeapKind::Array) {
+        return Value::fromUndefined();
+    }
+    auto* arr = obj.asObject<ArrayHeader>();
+    const Value box = arr->properties;
     if (!box.isObject()) return Value::fromUndefined();
+    if (arr->reserved & ArrayHeader::kHasCustomPrototype) {
+        ObjectHeader* boxObj = box.asObject<ObjectHeader>();
+        return boxObj->shape ? boxObj->shape->prototypeValue() : Value::fromNull();
+    }
     ObjectHeader* proto = box.asObject<ObjectHeader>()->protoAncestor(1);
     return proto ? Value::fromObject(proto) : Value::fromUndefined();
 }

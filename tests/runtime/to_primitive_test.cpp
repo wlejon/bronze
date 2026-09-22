@@ -340,3 +340,34 @@ TEST_CASE("loose equality converts an object with hint default and restarts") {
 
     reset();
 }
+
+TEST_CASE("ToNumber trims all ECMA-262 whitespace and line terminators including Unicode") {
+    ShadowStackFrame frame;
+    reset();
+
+    // U+00A0 NO-BREAK SPACE
+    CHECK(rtToNumber(rtMakeString(" \u00A0 42")) == 42.0);
+    CHECK(rtToNumber(rtMakeString("\u00A0-12.5\u00A0")) == -12.5);
+
+    // U+FEFF ZERO WIDTH NO-BREAK SPACE (BOM)
+    CHECK(rtToNumber(rtMakeString("\uFEFF123\uFEFF")) == 123.0);
+
+    // U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR
+    CHECK(rtToNumber(rtMakeString("\u2028 99 \u2029")) == 99.0);
+
+    // U+3000 IDEOGRAPHIC SPACE (Unicode Zs category)
+    CHECK(rtToNumber(rtMakeString("\u3000 77 \u3000")) == 77.0);
+
+    // Mixed Unicode whitespace and ASCII whitespace
+    CHECK(rtToNumber(rtMakeString("\t\n \u00A0 \u2000 \u3000 \uFEFF 1.5e2 \u2028 \r\f")) == 150.0);
+
+    // Only whitespace trims to 0
+    CHECK(rtToNumber(rtMakeString(" \u00A0 \u3000 \uFEFF ")) == 0.0);
+
+    // Non-whitespace character or whitespace within the digits is NaN
+    double nanVal = rtToNumber(rtMakeString("42\u00A01"));
+    CHECK(std::isnan(nanVal));
+
+    reset();
+}
+

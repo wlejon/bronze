@@ -41,6 +41,8 @@ struct ArrayHeader {
     // (rt_prop_array.cpp owns every rule about what is in here).
     Value properties;
 
+    static constexpr uint32_t kHasCustomPrototype = 1;
+
     static ArrayHeader* create(Heap& heap, uint32_t initial_capacity = 4);
 
     // The named-property object, created if this is the first one. Allocates,

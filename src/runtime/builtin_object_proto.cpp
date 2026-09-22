@@ -616,6 +616,8 @@ uint64_t objectProtoToLocaleString(uint64_t, uint64_t thisBits, uint32_t, const 
     return bronze_dynamic_call(method.get().rawBits(), self.get().rawBits(), 0, nullptr);
 }
 
+}  // namespace
+
 // Annex B.2.2.1.1 get Object.prototype.__proto__
 uint64_t objectProtoGetProto(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};
@@ -648,17 +650,11 @@ uint64_t objectProtoSetProto(uint64_t, uint64_t thisBits, uint32_t argc, const u
     // prototype the object already has. Delegating rather than restating is
     // what keeps `a.__proto__ = Array.prototype` and
     // `Object.setPrototypeOf(a, Array.prototype)` from disagreeing.
-    if (!HeapKind::carriesShape(self.get().asObject<HeapObjectHeader>()->flags) &&
-        !rtSamePrototypeAsCurrent(self.get(), protoVal)) {
-        fatal((std::string("unsupported: __proto__ write on ") +
-               rtObjectKindName(self.get()) +
-               " to a DIFFERENT prototype (only a plain object's prototype is a shape word "
-               "a write can replace)")
-                  .c_str());
-    }
     const uint64_t args[2] = {self.get().rawBits(), protoVal.rawBits()};
     return objectSetPrototypeOf(0, 0, 2, args);
 }
+
+namespace {
 
 const NativeMethod kObjectProtoMethods[] = {
     {"hasOwnProperty", objectProtoHasOwnProperty, 1, 1},

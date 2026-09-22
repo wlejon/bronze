@@ -83,16 +83,19 @@ MatchPieces piecesOf(const regex::Pattern& pattern, const Units& input,
     return out;
 }
 
-// The matcher, run without the exception machinery: a failure here is bronze
-// not knowing the answer, which stays a hard error rather than becoming a
-// catchable throw.
+// The matcher, run with the exception machinery: a failure here throws a
+// catchable RangeError.
 regex::ExecStatus runMatch(const regex::Pattern& pattern, const regex::Units& input, size_t from,
                            bool sticky, regex::MatchResult& match) {
     std::string error;
     const regex::ExecStatus status =
         sticky ? regex::matchAt(pattern, input, from, match, error)
                : regex::search(pattern, input, from, match, error);
-    if (status == regex::ExecStatus::Error) fatal(error.c_str());
+    if (status == regex::ExecStatus::Error) {
+        rtThrowRangeError(error.empty() ? "regular expression execution limit exceeded"
+                                        : error.c_str());
+        return regex::ExecStatus::Error;
+    }
     return status;
 }
 
@@ -199,6 +202,7 @@ Value rtRegExpSearch(Rooted<Value>& re, Rooted<Value>& str) {
     const regex::Pattern& pattern = rtRegExpPattern(re.get());
     const regex::ExecStatus status = runMatch(pattern, toRegexUnits(input), 0, false, match);
     rtRegExpRestoreLastIndex(re.get(), saved.get());
+    if (status == regex::ExecStatus::Error || rtExceptionPending()) return Value::fromUndefined();
     if (status != regex::ExecStatus::Match) return Value::fromDouble(-1.0);
     return Value::fromDouble(static_cast<double>(match.start()));
 }
@@ -310,8 +314,15 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
     const bool stickyOnly = !everyMatch && flags.sticky;
     for (;;) {
         regex::MatchResult match;
-        if (from > input.size() ||
-            runMatch(pattern, haystack, from, flags.sticky, match) != regex::ExecStatus::Match) {
+        if (from > input.size()) {
+            if (stickyOnly && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
+            break;
+        }
+        const regex::ExecStatus status = runMatch(pattern, haystack, from, flags.sticky, match);
+        if (status == regex::ExecStatus::Error || rtExceptionPending()) {
+            return Value::fromUndefined();
+        }
+        if (status != regex::ExecStatus::Match) {
             if (stickyOnly && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
             break;
         }
@@ -368,7 +379,11 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     // matches it, nothing at all.
     if (input.empty()) {
         regex::MatchResult match;
-        if (runMatch(pattern, haystack, 0, false, match) == regex::ExecStatus::Match) {
+        const regex::ExecStatus status = runMatch(pattern, haystack, 0, false, match);
+        if (status == regex::ExecStatus::Error || rtExceptionPending()) {
+            return Value::fromUndefined();
+        }
+        if (status == regex::ExecStatus::Match) {
             return out.get();
         }
         Rooted<Value> whole{stringOf(input)};
@@ -384,7 +399,11 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     size_t at = 0;
     while (at < input.size()) {
         regex::MatchResult match;
-        if (runMatch(pattern, haystack, at, true, match) != regex::ExecStatus::Match) {
+        const regex::ExecStatus status = runMatch(pattern, haystack, at, true, match);
+        if (status == regex::ExecStatus::Error || rtExceptionPending()) {
+            return Value::fromUndefined();
+        }
+        if (status != regex::ExecStatus::Match) {
             at = advanceOver(haystack, at, unicode);
             continue;
         }
