@@ -302,7 +302,11 @@ public:
     bool tainted = false;
 
     void visit(const ast::Ident& i) override {
-        if (i.name == "Math" || i.name == "globalThis") tainted = true;
+        if (i.name == "Math" || i.name == "globalThis" || i.name == "eval" ||
+            i.name == "Function" || i.name == "AsyncFunction" ||
+            i.name == "GeneratorFunction") {
+            tainted = true;
+        }
     }
     void visit(const ast::MemberAccess& m) override {
         if (isMath(m.object.get())) return;
@@ -332,7 +336,10 @@ public:
     void visit(const ast::DestructuringAssign& d) override {
         ast::detail::IdentVisitor mentions;
         ast::detail::visitPatternExprs(d.pattern.get(), mentions);
-        if (mentions.names.count("Math") != 0 || mentions.names.count("globalThis") != 0) {
+        if (mentions.names.count("Math") != 0 || mentions.names.count("globalThis") != 0 ||
+            mentions.names.count("eval") != 0 || mentions.names.count("Function") != 0 ||
+            mentions.names.count("AsyncFunction") != 0 ||
+            mentions.names.count("GeneratorFunction") != 0) {
             tainted = true;
         }
         d.value->accept(*this);

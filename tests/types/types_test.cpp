@@ -816,3 +816,75 @@ TEST_CASE("an update on a possibly-BigInt binding does not sharpen it to number"
     CHECK(r.signatureOf(*r.functionIndexOf("big")).returnType == types::Type::dynamic());
     CHECK(r.signatureOf(*r.functionIndexOf("small")).returnType == types::Type::number());
 }
+
+TEST_CASE("MathTaintScan: eval taints Math pristine state") {
+    const auto inferred = infer(
+        "const y = Math.sqrt(4.0);\n"
+        "eval('Math.sqrt = function() { return 0; }');\n");
+    CHECK_FALSE(inferred.result->classLayouts.mathPristine());
+    CHECK(inferred.result->pristineMathCalls.empty());
+}
+
+TEST_CASE("MathTaintScan: dynamic Function constructors taint Math pristine state") {
+    for (const char* ctor : {"Function", "AsyncFunction", "GeneratorFunction"}) {
+        const auto inferred = infer(
+            "const y = Math.sqrt(4.0);\n"
+            "const f = new " + std::string(ctor) + "('return 1');\n");
+        CHECK_FALSE(inferred.result->classLayouts.mathPristine());
+        CHECK(inferred.result->pristineMathCalls.empty());
+    }
+}
+
+TEST_CASE("flow analysis: switch statement preserves unmutated bindings") {
+    const auto inferred = infer(
+        "function f(x) {\n"
+        "  const a = 10;\n"
+        "  let b = 20;\n"
+        "  let c = 30;\n"
+        "  switch (x) {\n"
+        "    case 1: c = 'hello'; break;\n"
+        "    default: c = 'world'; break;\n"
+        "  }\n"
+        "  return a + b;\n"
+        "}\n");
+    const auto& r = *inferred.result;
+    REQUIRE(r.isDirectCallable("f"));
+    CHECK(r.signatureOf(*r.functionIndexOf("f")).returnType == types::Type::number());
+}
+
+TEST_CASE("flow analysis: try statement preserves unmutated bindings") {
+    const auto inferred = infer(
+        "function g() {\n"
+        "  const a = 5;\n"
+        "  let b = 15;\n"
+        "  let c = 25;\n"
+        "  try {\n"
+        "    c = 'err';\n"
+        "  } catch (e) {\n"
+        "    c = 'caught';\n"
+        "  }\n"
+        "  return a + b;\n"
+        "}\n");
+    const auto& r = *inferred.result;
+    REQUIRE(r.isDirectCallable("g"));
+    CHECK(r.signatureOf(*r.functionIndexOf("g")).returnType == types::Type::number());
+}
+
+TEST_CASE("flow analysis: loop variable preserved across switch inside loop") {
+    const auto inferred = infer(
+        "function h() {\n"
+        "  let sum = 0;\n"
+        "  for (let i = 0; i < 10; ++i) {\n"
+        "    const factor = 2;\n"
+        "    switch (i) {\n"
+        "      case 0: break;\n"
+        "      default: break;\n"
+        "    }\n"
+        "    sum = sum + i * factor;\n"
+        "  }\n"
+        "  return sum;\n"
+        "}\n");
+    const auto& r = *inferred.result;
+    REQUIRE(r.isDirectCallable("h"));
+    CHECK(r.signatureOf(*r.functionIndexOf("h")).returnType == types::Type::number());
+}

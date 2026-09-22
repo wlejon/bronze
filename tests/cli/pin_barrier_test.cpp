@@ -476,3 +476,24 @@ TEST_CASE("a store through a dynamic receiver to a pinned field emits a pin barr
     CHECK(out.find("dyn true pin 'Point.x: number' violated") != std::string::npos);
     CHECK(out.find("after 2") != std::string::npos);
 }
+
+TEST_CASE("an untyped dynamic receiver write to a pinned slot name throws TypeError") {
+    if (barriersOff()) return;
+    const std::string src = std::string(kReport) +
+                            "class Point { constructor(x) { this.x = x; } }\n"
+                            "function writeX(dyn, val) {\n"
+                            "  dyn.x = val;\n"
+                            "}\n"
+                            "const obj = { x: 1 };\n"
+                            "report('dyn_obj', function () { writeX(obj, 'boom'); });\n"
+                            "console.log('obj.x ' + obj.x);\n";
+    const std::string manifest = "Point.x: number\n";
+
+    const std::string il = ilWithPins("dyn_untyped", src, manifest);
+    CHECK(il.find("pin.guard") != std::string::npos);
+    CHECK(il.find("\"Point.x: number\"") != std::string::npos);
+
+    const std::string out = buildAndRun("dyn_untyped", src, manifest);
+    CHECK(out.find("dyn_obj true pin 'Point.x: number' violated") != std::string::npos);
+    CHECK(out.find("obj.x 1") != std::string::npos);
+}

@@ -216,6 +216,17 @@ void FlowAnalyzer::widenAll() {
     for (auto& entry : scope_.cells) entry.second = Type::dynamic();
 }
 
+void FlowAnalyzer::widenAssigned(const std::unordered_set<std::string>& assigned) {
+    for (const auto& name : assigned) {
+        if (const auto it = scope_.env.find(name); it != scope_.env.end()) {
+            it->second = Type::dynamic();
+        }
+        if (const auto it = scope_.cells.find(name); it != scope_.cells.end()) {
+            it->second = Type::dynamic();
+        }
+    }
+}
+
 // ---- dump recording ----------------------------------------------------
 
 size_t FlowAnalyzer::pushStmt(const char* label, uint32_t index, uint32_t depth) {
@@ -476,7 +487,7 @@ void FlowAnalyzer::switchStmt(const ast::SwitchStmt& sw, uint32_t depth) {
     }
     breakStack_.pop_back();
     scope_.env = entry;
-    widenAll();
+    widenAssigned(ast::getAssignedNames(sw));
     recordMerge(sw, scope_.env);
 }
 
@@ -488,10 +499,10 @@ void FlowAnalyzer::switchStmt(const ast::SwitchStmt& sw, uint32_t depth) {
 //
 // Walking all three matters for more than precision: a call written only inside
 // a `try` has to be visible to the call-graph signature fixpoint, and an
-// invisible call site is an unsound proof. Every binding these bodies assign is
-// already a CELL, so the widening below is belt-and-braces over a set that is
-// normally empty.
+// invisible call site is an unsound proof. Only bindings assigned in the try,
+// catch, or finally are widened; unmutated bindings preserve their proven types.
 void FlowAnalyzer::tryStmt(const ast::TryStmt& t, uint32_t depth) {
+    const Env entry = scope_.env;
     pushMarker("block", depth + 1);
     scopedStmtList(t.body, depth + 2);
     if (t.hasCatch) {
@@ -517,7 +528,8 @@ void FlowAnalyzer::tryStmt(const ast::TryStmt& t, uint32_t depth) {
         pushMarker("finally", depth + 1);
         scopedStmtList(t.finallyBody, depth + 2);
     }
-    widenAll();
+    scope_.env = entry;
+    widenAssigned(ast::getAssignedNames(t));
     recordMerge(t, scope_.env);
 }
 

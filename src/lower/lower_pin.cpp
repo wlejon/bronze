@@ -80,7 +80,14 @@ const types::PinKind* Lowerer::pinnedFieldAt(const ast::Expr& receiver, const st
                                              std::string* pinTextOut) const {
     if (pins_ == nullptr || inference_ == nullptr) return nullptr;
     const types::Type recv = inferredType(receiver);
-    if (!recv.is(types::TypeKind::Object) || recv.shapeClass() == types::kNoShapeClass) {
+    std::string name;
+    const types::ClassLayout* layout = nullptr;
+    if (recv.is(types::TypeKind::Object) && recv.shapeClass() != types::kNoShapeClass) {
+        layout = inference_->classLayouts.byShapeClass(recv.shapeClass());
+        name = layout != nullptr ? layout->name
+                                 : inference_->shapes.at(recv.shapeClass()).constructorName;
+    }
+    if (name.empty()) {
         std::string matchedClass;
         if (const types::PinKind* pin = pins_->lookupField(key, &matchedClass)) {
             if (pinTextOut != nullptr) {
@@ -90,17 +97,6 @@ const types::PinKind* Lowerer::pinnedFieldAt(const ast::Expr& receiver, const st
         }
         return nullptr;
     }
-    // Resolved exactly the way the READ resolves it (types/flow_expr.cpp
-    // `pinnedField`): same shape class, same fallback to the interned
-    // constructor name for a shape with no class layout, same walk up
-    // `extends`. Two different answers here and there would be a barrier
-    // holding a promise nobody spent, or worse, a promise spent with no
-    // barrier — so this is a duplicate of that rule on purpose, and the tests
-    // pin the pair.
-    const types::ClassLayout* layout = inference_->classLayouts.byShapeClass(recv.shapeClass());
-    std::string name = layout != nullptr ? layout->name
-                                         : inference_->shapes.at(recv.shapeClass()).constructorName;
-    if (name.empty()) return nullptr;
     for (uint32_t hop = 0; hop < kMaxExtendsHops; ++hop) {
         if (const types::PinKind* pin = pins_->lookup(name, key)) {
             if (pinTextOut != nullptr) {

@@ -118,6 +118,7 @@ private:
     // binding. Widening to Dynamic is sound and is the designed fallback,
     // not a silent lie about semantics.
     void widenAll();
+    void widenAssigned(const std::unordered_set<std::string>& assigned);
 
     // ---- dump recording ----------------------------------------------------
 
