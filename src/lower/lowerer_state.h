@@ -295,4 +295,19 @@ struct InlineFrame {
     std::map<std::string, LowererValue> params;
 };
 
+struct CachedTypedElemGet {
+    size_t blockIdx = 0;
+    il::ValueId objId = il::kNoValue;
+    il::ValueId idxId = il::kNoValue;
+    uint32_t elemKind = 0;
+    LowererValue val;
+};
+
+// Operators whose EVERY operand goes through ToNumeric on every branch.
+bool alwaysCoercingBinary(ast::BinaryOp op);
+
+// The BRONZE_ABI_FN_FLAG_* byte for a function the source wrote.
+uint32_t functionObjectFlags(ast::FunctionKind kind, bool isGenerator, bool isAsync);
+
 }  // namespace bronze::lower
+

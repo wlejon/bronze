@@ -15,6 +15,38 @@
 
 namespace bronze::lower {
 
+Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
+                 const types::InferenceResult* inference,
+                 const std::vector<std::string>* hostGlobals,
+                 const SourceSet* sources,
+                 InferStatsCollector* stats,
+                 bool assumeNoBigInt,
+                 const types::PinManifest* pins,
+                 const std::string& censusOutPath,
+                 const NativeManifest* nativeManifest)
+    : astModule_(astModule), diags_(diags), inference_(inference),
+      pins_(pins), sources_(sources), stats_(stats),
+      nativeManifest_(nativeManifest) {
+    censusOutPath_ = censusOutPath;
+    if (hostGlobals) {
+        hostGlobals_.insert(hostGlobals->begin(), hostGlobals->end());
+    }
+    if (nativeManifest_) {
+        initNativeManifestGlobals();
+    }
+    if (stats_ && sources_) stats_->setSourceSet(sources_);
+    typedElemDisabled_ = typedElemSeamDisabled() ||
+                         hostGlobals_.count("Float64Array") != 0 ||
+                         hostGlobals_.count("Float32Array") != 0;
+    staticShapesDisabled_ = staticShapeSeamDisabled();
+    familyGuardDisabled_ = familyGuardSeamDisabled();
+    unboxedFieldsDisabled_ = unboxedFieldSeamDisabled();
+    numericArithDisabled_ =
+        numericArithSeamDisabled() || !assumeNoBigInt ||
+        bigIntMayReach(astModule, hostGlobals ? *hostGlobals
+                                              : std::vector<std::string>{});
+}
+
 std::optional<il::Module> Lowerer::lower() {
     ilModule_.name = astModule_.name;
 
