@@ -455,18 +455,13 @@ Token Lexer::lexTemplatePart(bool isHead) {
 // that must be followed by an expression, the start of the file — leaves a
 // regular expression the only reading.
 //
-// Two entries are judgement calls the specification leaves to the parser,
-// which knows more than this does:
-//
-//  - `)` divides. `(a + b) / 2` is overwhelmingly what a `)` before a slash
-//    means; `if (x) /re/.test(y)` is the case this gets wrong, and it needs
-//    the parenthesis's OWN opener to be known, which is a parser fact.
-//  - `}` starts a regular expression. A `}` almost always ends a block or a
-//    function body, after which a slash begins a statement; `({}) / 2` is
-//    the reading this gives up, and it needs a `{` disambiguated as an object
-//    literal, which is again a parser fact.
-//
-// Both are pinned in tests/lex so a change of mind is a change of test.
+// Two entries use contextual token awareness:
+//  - `)` checks the token preceding the matching `(`: if preceded by `if`,
+//    `while`, `for`, or `with`, it is a statement condition so `/` starts a
+//    regular expression; otherwise it ends an expression and divides.
+//  - `}` checks the token preceding the matching `{`: if part of an expression
+//    or object literal (e.g. `({})` or `func({})` or `x = {}`), `/` divides;
+//    otherwise it ends a block or body, so `/` starts a regular expression.
 bool Lexer::regexAllowedAfter(const std::vector<Token>& tokens) {
     if (tokens.empty()) return true;
     switch (tokens.back().kind) {
@@ -476,7 +471,6 @@ bool Lexer::regexAllowedAfter(const std::vector<Token>& tokens) {
         case TokenKind::TemplateWhole:
         case TokenKind::TemplateTail:
         case TokenKind::RegExpLiteral:
-        case TokenKind::RParen:
         case TokenKind::RBracket:
         // `a++ / b` divides: the operand is behind the operator, so the
         // increment is what ends the expression.
@@ -489,6 +483,102 @@ bool Lexer::regexAllowedAfter(const std::vector<Token>& tokens) {
         case TokenKind::KwNull:
         case TokenKind::KwUndefined:
             return false;
+        case TokenKind::RParen: {
+            int depth = 0;
+            for (int i = static_cast<int>(tokens.size()) - 1; i >= 0; --i) {
+                if (tokens[i].kind == TokenKind::RParen) {
+                    ++depth;
+                } else if (tokens[i].kind == TokenKind::LParen) {
+                    --depth;
+                    if (depth == 0) {
+                        if (i > 0) {
+                            TokenKind pk = tokens[i - 1].kind;
+                            if (pk == TokenKind::KwIf || pk == TokenKind::KwWhile ||
+                                pk == TokenKind::KwFor ||
+                                (pk == TokenKind::Identifier && tokens[i - 1].text == "with")) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                }
+            }
+            return false;
+        }
+        case TokenKind::RBrace: {
+            int depth = 0;
+            for (int i = static_cast<int>(tokens.size()) - 1; i >= 0; --i) {
+                if (tokens[i].kind == TokenKind::RBrace) {
+                    ++depth;
+                } else if (tokens[i].kind == TokenKind::LBrace) {
+                    --depth;
+                    if (depth == 0) {
+                        if (i > 0) {
+                            switch (tokens[i - 1].kind) {
+                                case TokenKind::LParen:
+                                case TokenKind::LBracket:
+                                case TokenKind::Comma:
+                                case TokenKind::Assign:
+                                case TokenKind::PlusAssign:
+                                case TokenKind::MinusAssign:
+                                case TokenKind::StarAssign:
+                                case TokenKind::SlashAssign:
+                                case TokenKind::PercentAssign:
+                                case TokenKind::StarStarAssign:
+                                case TokenKind::AmpAssign:
+                                case TokenKind::PipeAssign:
+                                case TokenKind::CaretAssign:
+                                case TokenKind::LessLessAssign:
+                                case TokenKind::GreaterGreaterAssign:
+                                case TokenKind::GreaterGreaterGreaterAssign:
+                                case TokenKind::AmpAmpAssign:
+                                case TokenKind::PipePipeAssign:
+                                case TokenKind::QuestionQuestionAssign:
+                                case TokenKind::Plus:
+                                case TokenKind::Minus:
+                                case TokenKind::Star:
+                                case TokenKind::Slash:
+                                case TokenKind::Percent:
+                                case TokenKind::StarStar:
+                                case TokenKind::AmpAmp:
+                                case TokenKind::PipePipe:
+                                case TokenKind::QuestionQuestion:
+                                case TokenKind::EqualEqual:
+                                case TokenKind::EqualEqualEqual:
+                                case TokenKind::BangEqual:
+                                case TokenKind::BangEqualEqual:
+                                case TokenKind::Less:
+                                case TokenKind::LessEqual:
+                                case TokenKind::Greater:
+                                case TokenKind::GreaterEqual:
+                                case TokenKind::Amp:
+                                case TokenKind::Pipe:
+                                case TokenKind::Caret:
+                                case TokenKind::LessLess:
+                                case TokenKind::GreaterGreater:
+                                case TokenKind::GreaterGreaterGreater:
+                                case TokenKind::Question:
+                                case TokenKind::Colon:
+                                case TokenKind::Bang:
+                                case TokenKind::Tilde:
+                                case TokenKind::KwReturn:
+                                case TokenKind::KwThrow:
+                                case TokenKind::KwTypeof:
+                                case TokenKind::KwVoid:
+                                case TokenKind::KwDelete:
+                                case TokenKind::KwIn:
+                                case TokenKind::KwInstanceof:
+                                    return false;
+                                default:
+                                    break;
+                            }
+                        }
+                        return true;
+                    }
+                }
+            }
+            return true;
+        }
         default:
             return true;
     }

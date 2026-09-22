@@ -299,6 +299,10 @@ bool rtThisBigIntValue(Value self, Value& out);
 // the value `s[i]` is. `undefined` past the end. ALLOCATES.
 Value rtStringCharAsString(Value str, uint32_t index);
 
+uint64_t stringSlice(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t stringSubstring(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+uint64_t stringSubstr(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64_t* argv);
+
 // 7.1.1's answer for a primitive WRAPPER, without running the algorithm:
 // OrdinaryToPrimitive would call `valueOf`, and for a pristine wrapper that
 // call answers exactly the internal slot. False for every other object, so the

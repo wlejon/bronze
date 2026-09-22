@@ -281,38 +281,118 @@ uint64_t stringEndsWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 
 // ---- producers ------------------------------------------------------------
 
+Value directSlice(const Rooted<Value>& strRoot, uint32_t start, uint32_t end) {
+    if (end <= start) {
+        return rtMakeString("");
+    }
+    const uint32_t sliceLen = end - start;
+    const StringHeader* s = strRoot.get().asString<StringHeader>();
+    if (s->isLatin1()) {
+        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
+        const StringHeader* src = strRoot.get().asString<StringHeader>();
+        std::memcpy(res->latin1Data(), src->latin1Data() + start, sliceLen);
+        return Value::fromString(res);
+    }
+    const uint16_t* u16 = s->utf16Data() + start;
+    bool allLatin1 = true;
+    for (uint32_t i = 0; i < sliceLen; ++i) {
+        if (u16[i] > 0xFF) {
+            allLatin1 = false;
+            break;
+        }
+    }
+    if (allLatin1) {
+        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
+        const StringHeader* src = strRoot.get().asString<StringHeader>();
+        const uint16_t* srcU16 = src->utf16Data() + start;
+        char* dst = res->latin1Data();
+        for (uint32_t i = 0; i < sliceLen; ++i) {
+            dst[i] = static_cast<char>(srcU16[i]);
+        }
+        return Value::fromString(res);
+    }
+    StringHeader* res = StringHeader::createUTF16(rtHeap(), nullptr, sliceLen);
+    const StringHeader* src = strRoot.get().asString<StringHeader>();
+    std::memcpy(res->utf16Data(), src->utf16Data() + start, sliceLen * sizeof(uint16_t));
+    return Value::fromString(res);
+}
+
+}  // namespace
+
 uint64_t stringSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "slice");
-    uint32_t start = args.count() > 0 ? relativeIndex(toInteger(rtToNumber(args[0])), self.size()) : 0;
-    uint32_t end = args.count() > 1 && !args[1].isUndefined()
-                       ? relativeIndex(toInteger(rtToNumber(args[1])), self.size())
-                       : static_cast<uint32_t>(self.size());
+    Value strVal;
+    if (!rtThisStringValue(Value(thisBits), strVal)) {
+        return rtThrowTypeError("String.prototype.slice called on a value that is not a string").rawBits();
+    }
+    Rooted<Value> strRoot{strVal};
+    double startArg = 0.0;
+    if (args.count() > 0) {
+        startArg = toInteger(rtToNumber(args[0]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
+    bool hasEnd = args.count() > 1 && !args[1].isUndefined();
+    double endArg = 0.0;
+    if (hasEnd) {
+        endArg = toInteger(rtToNumber(args[1]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
+    const StringHeader* s = strRoot.get().asString<StringHeader>();
+    const uint32_t len = s->getLength();
+    uint32_t start = args.count() > 0 ? relativeIndex(startArg, len) : 0;
+    uint32_t end = hasEnd ? relativeIndex(endArg, len) : len;
     if (end < start) end = start;
-    return stringFromUnits(Units(self.begin() + start, self.begin() + end)).rawBits();
+    return directSlice(strRoot, start, end).rawBits();
 }
 
 uint64_t stringSubstring(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "substring");
-    uint32_t a = args.count() > 0 ? clampIndex(toInteger(rtToNumber(args[0])), self.size()) : 0;
-    uint32_t b = args.count() > 1 && !args[1].isUndefined()
-                     ? clampIndex(toInteger(rtToNumber(args[1])), self.size())
-                     : static_cast<uint32_t>(self.size());
-    // substring SWAPS its arguments when they are the wrong way round;
-    // slice, one function up, answers "" instead. That difference is the
-    // whole reason both exist.
+    Value strVal;
+    if (!rtThisStringValue(Value(thisBits), strVal)) {
+        return rtThrowTypeError("String.prototype.substring called on a value that is not a string").rawBits();
+    }
+    Rooted<Value> strRoot{strVal};
+    double startArg = 0.0;
+    if (args.count() > 0) {
+        startArg = toInteger(rtToNumber(args[0]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
+    bool hasEnd = args.count() > 1 && !args[1].isUndefined();
+    double endArg = 0.0;
+    if (hasEnd) {
+        endArg = toInteger(rtToNumber(args[1]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
+    const StringHeader* s = strRoot.get().asString<StringHeader>();
+    const uint32_t len = s->getLength();
+    uint32_t a = args.count() > 0 ? clampIndex(startArg, len) : 0;
+    uint32_t b = hasEnd ? clampIndex(endArg, len) : len;
     if (a > b) std::swap(a, b);
-    return stringFromUnits(Units(self.begin() + a, self.begin() + b)).rawBits();
+    return directSlice(strRoot, a, b).rawBits();
 }
 
 // Annex B.2.3.1 String.prototype.substr(start, length)
 uint64_t stringSubstr(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "substr");
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
-    const size_t size = self.size();
-    double start = args.count() > 0 ? toInteger(rtToNumber(args[0])) : 0.0;
+    Value strVal;
+    if (!rtThisStringValue(Value(thisBits), strVal)) {
+        return rtThrowTypeError("String.prototype.substr called on a value that is not a string").rawBits();
+    }
+    Rooted<Value> strRoot{strVal};
+    double startArg = 0.0;
+    if (args.count() > 0) {
+        startArg = toInteger(rtToNumber(args[0]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
+    bool hasLen = args.count() > 1 && !args[1].isUndefined();
+    double lenArg = 0.0;
+    if (hasLen) {
+        lenArg = toInteger(rtToNumber(args[1]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    }
+    const StringHeader* s = strRoot.get().asString<StringHeader>();
+    const size_t size = s->getLength();
+    double start = startArg;
     if (std::isinf(start) && start < 0.0) {
         start = 0.0;
     } else if (start < 0.0) {
@@ -320,13 +400,15 @@ uint64_t stringSubstr(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     } else {
         start = std::min(start, static_cast<double>(size));
     }
-    double len = args.count() > 1 && !args[1].isUndefined() ? toInteger(rtToNumber(args[1]))
-                                                           : static_cast<double>(size);
+    double len = hasLen ? lenArg : static_cast<double>(size);
     if (len <= 0.0 || std::isnan(len)) return rtMakeString("").rawBits();
     uint32_t intStart = static_cast<uint32_t>(start);
     uint32_t intLength = static_cast<uint32_t>(std::min(len, static_cast<double>(size - intStart)));
-    return stringFromUnits(Units(self.begin() + intStart, self.begin() + intStart + intLength)).rawBits();
+    return directSlice(strRoot, intStart, intStart + intLength).rawBits();
 }
+
+namespace {
+
 
 uint64_t stringConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);

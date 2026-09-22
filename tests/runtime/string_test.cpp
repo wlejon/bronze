@@ -5,6 +5,7 @@
 
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -204,4 +205,213 @@ TEST_CASE("string concatenation") {
     CHECK(sRes2->charCodeAt(5) == ' ');
     CHECK(sRes2->charCodeAt(6) == 0xD83C);
     CHECK(sRes2->charCodeAt(7) == 0xDF0D);
+}
+
+static Value callSlice(Value str, Value start = Value::fromUndefined(), Value end = Value::fromUndefined()) {
+    uint64_t argv[2];
+    uint32_t argc = 0;
+    if (!start.isUndefined()) {
+        argv[argc++] = start.rawBits();
+        if (!end.isUndefined()) {
+            argv[argc++] = end.rawBits();
+        }
+    }
+    return Value(runtime::stringSlice(0, str.rawBits(), argc, argv));
+}
+
+static Value callSubstring(Value str, Value start = Value::fromUndefined(), Value end = Value::fromUndefined()) {
+    uint64_t argv[2];
+    uint32_t argc = 0;
+    if (!start.isUndefined()) {
+        argv[argc++] = start.rawBits();
+        if (!end.isUndefined()) {
+            argv[argc++] = end.rawBits();
+        }
+    }
+    return Value(runtime::stringSubstring(0, str.rawBits(), argc, argv));
+}
+
+static Value callSubstr(Value str, Value start = Value::fromUndefined(), Value length = Value::fromUndefined()) {
+    uint64_t argv[2];
+    uint32_t argc = 0;
+    if (!start.isUndefined()) {
+        argv[argc++] = start.rawBits();
+        if (!length.isUndefined()) {
+            argv[argc++] = length.rawBits();
+        }
+    }
+    return Value(runtime::stringSubstr(0, str.rawBits(), argc, argv));
+}
+
+TEST_CASE("fast direct string slicing - Latin-1 strings (ASCII)") {
+    Heap heap;
+    ShadowStackFrame frame;
+
+    Rooted<Value> rStr(heap, Value::fromString(StringHeader::createFromUTF8(heap, "Hello, World!")));
+    Value str = rStr.get();
+
+    // slice(7, 12) -> "World"
+    Value sl1 = callSlice(str, Value::fromDouble(7), Value::fromDouble(12));
+    CHECK(sl1.isString());
+    StringHeader* h1 = sl1.asString<StringHeader>();
+    CHECK(h1->isLatin1());
+    CHECK(!h1->isUTF16());
+    CHECK(h1->length == 5);
+    CHECK(std::string(h1->latin1Data(), h1->length) == "World");
+
+    // slice(7) -> "World!"
+    Value sl2 = callSlice(str, Value::fromDouble(7));
+    StringHeader* h2 = sl2.asString<StringHeader>();
+    CHECK(h2->isLatin1());
+    CHECK(h2->length == 6);
+    CHECK(std::string(h2->latin1Data(), h2->length) == "World!");
+
+    // slice(-6, -1) -> "World"
+    Value sl3 = callSlice(str, Value::fromDouble(-6), Value::fromDouble(-1));
+    StringHeader* h3 = sl3.asString<StringHeader>();
+    CHECK(h3->isLatin1());
+    CHECK(std::string(h3->latin1Data(), h3->length) == "World");
+
+    // slice(-100, 5) -> "Hello"
+    Value sl4 = callSlice(str, Value::fromDouble(-100), Value::fromDouble(5));
+    StringHeader* h4 = sl4.asString<StringHeader>();
+    CHECK(h4->isLatin1());
+    CHECK(std::string(h4->latin1Data(), h4->length) == "Hello");
+
+    // slice(5, 2) -> ""
+    Value sl5 = callSlice(str, Value::fromDouble(5), Value::fromDouble(2));
+    StringHeader* h5 = sl5.asString<StringHeader>();
+    CHECK(h5->isLatin1());
+    CHECK(h5->length == 0);
+
+    // substring(7, 12) -> "World"
+    Value sub1 = callSubstring(str, Value::fromDouble(7), Value::fromDouble(12));
+    StringHeader* sh1 = sub1.asString<StringHeader>();
+    CHECK(sh1->isLatin1());
+    CHECK(std::string(sh1->latin1Data(), sh1->length) == "World");
+
+    // substring(12, 7) -> "World" (swaps arguments)
+    Value sub2 = callSubstring(str, Value::fromDouble(12), Value::fromDouble(7));
+    StringHeader* sh2 = sub2.asString<StringHeader>();
+    CHECK(sh2->isLatin1());
+    CHECK(std::string(sh2->latin1Data(), sh2->length) == "World");
+
+    // substring(-5, 5) -> "Hello" (clamps negative to 0)
+    Value sub3 = callSubstring(str, Value::fromDouble(-5), Value::fromDouble(5));
+    StringHeader* sh3 = sub3.asString<StringHeader>();
+    CHECK(sh3->isLatin1());
+    CHECK(std::string(sh3->latin1Data(), sh3->length) == "Hello");
+
+    // substr(7, 5) -> "World"
+    Value sstr1 = callSubstr(str, Value::fromDouble(7), Value::fromDouble(5));
+    StringHeader* ssh1 = sstr1.asString<StringHeader>();
+    CHECK(ssh1->isLatin1());
+    CHECK(std::string(ssh1->latin1Data(), ssh1->length) == "World");
+
+    // substr(-6, 5) -> "World"
+    Value sstr2 = callSubstr(str, Value::fromDouble(-6), Value::fromDouble(5));
+    StringHeader* ssh2 = sstr2.asString<StringHeader>();
+    CHECK(ssh2->isLatin1());
+    CHECK(std::string(ssh2->latin1Data(), ssh2->length) == "World");
+
+    // substr(7, 0) -> ""
+    Value sstr3 = callSubstr(str, Value::fromDouble(7), Value::fromDouble(0));
+    StringHeader* ssh3 = sstr3.asString<StringHeader>();
+    CHECK(ssh3->length == 0);
+}
+
+TEST_CASE("fast direct string slicing - UTF-16 strings (BMP non-ASCII and surrogate pairs)") {
+    Heap heap;
+    ShadowStackFrame frame;
+
+    // BMP non-ASCII: "Hello 世界!"
+    Rooted<Value> rBmp(heap, Value::fromString(StringHeader::createFromUTF8(heap, "Hello 世界!")));
+    Value bmpStr = rBmp.get();
+    StringHeader* bmpH = bmpStr.asString<StringHeader>();
+    REQUIRE(bmpH->isUTF16());
+    REQUIRE(bmpH->length == 9);
+
+    // Slicing UTF-16 non-ASCII range [6, 8) -> "世界"
+    Value slBmp1 = callSlice(bmpStr, Value::fromDouble(6), Value::fromDouble(8));
+    StringHeader* hBmp1 = slBmp1.asString<StringHeader>();
+    CHECK(hBmp1->isUTF16());
+    CHECK(!hBmp1->isLatin1());
+    CHECK(hBmp1->length == 2);
+    CHECK(hBmp1->charCodeAt(0) == 0x4E16);
+    CHECK(hBmp1->charCodeAt(1) == 0x754C);
+
+    // Slicing ASCII range [0, 5) from UTF-16 string -> "Hello" (MUST promote to Latin-1!)
+    Value slBmp2 = callSlice(bmpStr, Value::fromDouble(0), Value::fromDouble(5));
+    StringHeader* hBmp2 = slBmp2.asString<StringHeader>();
+    CHECK(hBmp2->isLatin1());
+    CHECK(!hBmp2->isUTF16());
+    CHECK(hBmp2->length == 5);
+    CHECK(std::string(hBmp2->latin1Data(), hBmp2->length) == "Hello");
+
+    // Slicing mixed range [6, 9) -> "世界!" (contains > 0xFF and <= 0xFF, so UTF-16)
+    Value slBmp3 = callSlice(bmpStr, Value::fromDouble(6), Value::fromDouble(9));
+    StringHeader* hBmp3 = slBmp3.asString<StringHeader>();
+    CHECK(hBmp3->isUTF16());
+    CHECK(hBmp3->length == 3);
+    CHECK(hBmp3->charCodeAt(2) == '!');
+
+    // substring swap on UTF-16: substring(8, 6) -> "世界"
+    Value subBmp1 = callSubstring(bmpStr, Value::fromDouble(8), Value::fromDouble(6));
+    StringHeader* hSubBmp1 = subBmp1.asString<StringHeader>();
+    CHECK(hSubBmp1->isUTF16());
+    CHECK(hSubBmp1->length == 2);
+    CHECK(hSubBmp1->charCodeAt(0) == 0x4E16);
+
+    // substring on ASCII range: substring(5, 0) -> "Hello" (swapped, Latin-1)
+    Value subBmp2 = callSubstring(bmpStr, Value::fromDouble(5), Value::fromDouble(0));
+    StringHeader* hSubBmp2 = subBmp2.asString<StringHeader>();
+    CHECK(hSubBmp2->isLatin1());
+    CHECK(hSubBmp2->length == 5);
+    CHECK(std::string(hSubBmp2->latin1Data(), hSubBmp2->length) == "Hello");
+
+    // substr on UTF-16: substr(6, 2) -> "世界"
+    Value sstrBmp = callSubstr(bmpStr, Value::fromDouble(6), Value::fromDouble(2));
+    StringHeader* hSstrBmp = sstrBmp.asString<StringHeader>();
+    CHECK(hSstrBmp->isUTF16());
+    CHECK(hSstrBmp->length == 2);
+
+    // Surrogate pairs: "Hi 🌍 there"
+    Rooted<Value> rEmoji(heap, Value::fromString(StringHeader::createFromUTF8(heap, "Hi 🌍 there")));
+    Value emojiStr = rEmoji.get();
+    StringHeader* emojiH = emojiStr.asString<StringHeader>();
+    REQUIRE(emojiH->isUTF16());
+    REQUIRE(emojiH->length == 11);
+    CHECK(emojiH->charCodeAt(3) == 0xD83C);
+    CHECK(emojiH->charCodeAt(4) == 0xDF0D);
+
+    // Slicing the surrogate pair [3, 5) -> "🌍"
+    Value slEmoji1 = callSlice(emojiStr, Value::fromDouble(3), Value::fromDouble(5));
+    StringHeader* hEmoji1 = slEmoji1.asString<StringHeader>();
+    CHECK(hEmoji1->isUTF16());
+    CHECK(hEmoji1->length == 2);
+    CHECK(hEmoji1->charCodeAt(0) == 0xD83C);
+    CHECK(hEmoji1->charCodeAt(1) == 0xDF0D);
+
+    // Slicing ASCII prefix [0, 2) from emoji string -> "Hi" (Latin-1)
+    Value slEmoji2 = callSlice(emojiStr, Value::fromDouble(0), Value::fromDouble(2));
+    StringHeader* hEmoji2 = slEmoji2.asString<StringHeader>();
+    CHECK(hEmoji2->isLatin1());
+    CHECK(!hEmoji2->isUTF16());
+    CHECK(hEmoji2->length == 2);
+    CHECK(std::string(hEmoji2->latin1Data(), hEmoji2->length) == "Hi");
+
+    // Slicing ASCII suffix [5, 11) from emoji string -> " there" (Latin-1)
+    Value slEmoji3 = callSlice(emojiStr, Value::fromDouble(5), Value::fromDouble(11));
+    StringHeader* hEmoji3 = slEmoji3.asString<StringHeader>();
+    CHECK(hEmoji3->isLatin1());
+    CHECK(!hEmoji3->isUTF16());
+    CHECK(hEmoji3->length == 6);
+    CHECK(std::string(hEmoji3->latin1Data(), hEmoji3->length) == " there");
+
+    // Splitting a surrogate pair [3, 4) -> leading surrogate unit 0xD83C (UTF-16)
+    Value slEmoji4 = callSlice(emojiStr, Value::fromDouble(3), Value::fromDouble(4));
+    StringHeader* hEmoji4 = slEmoji4.asString<StringHeader>();
+    CHECK(hEmoji4->isUTF16());
+    CHECK(hEmoji4->length == 1);
+    CHECK(hEmoji4->charCodeAt(0) == 0xD83C);
 }

@@ -289,6 +289,34 @@ TEST_CASE("a slash anywhere an expression may start is a regular expression") {
     }
 }
 
+TEST_CASE("slash disambiguation after RParen and RBrace") {
+    // RParen preceded by if/while/for/with is a statement condition, so / is regex
+    for (const char* src : {"if (x) /re/.test(y)", "while (x) /re/", "for (;;) /re/", "with (x) /re/"}) {
+        auto lexed = lexAll(src);
+        const auto kinds = kindsOf(lexed);
+        CAPTURE(src);
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::RegExpLiteral) != kinds.end());
+    }
+
+    // RParen in an expression ends the expression, so / is division
+    for (const char* src : {"(x) / 2", "f(x) / 2", "({}) / 2", "func({}) / 2"}) {
+        auto lexed = lexAll(src);
+        const auto kinds = kindsOf(lexed);
+        CAPTURE(src);
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::Slash) != kinds.end());
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::RegExpLiteral) == kinds.end());
+    }
+
+    // RBrace in an expression or object literal ends the expression, so / is division
+    for (const char* src : {"({} / 2)", "func({} / 2)", "x = {} / 2", "[{} / 2]"}) {
+        auto lexed = lexAll(src);
+        const auto kinds = kindsOf(lexed);
+        CAPTURE(src);
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::Slash) != kinds.end());
+        CHECK(std::find(kinds.begin(), kinds.end(), TokenKind::RegExpLiteral) == kinds.end());
+    }
+}
+
 TEST_CASE("a regular expression literal is one token, delimiters and flags included") {
     auto lexed = lexAll("x = /ab+c/gi;");
     REQUIRE(lexed.tokens.size() == 5);  // x, =, /ab+c/gi, ;, eof
