@@ -6,7 +6,7 @@ bronze_add_module(lower
             lower_update.cpp lower_private.cpp lower_typed_elem.cpp bigint_reach.cpp
             lower_concat_chain.cpp lower_define_props.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_build.cpp
-            guard_region_runs.cpp loop_prop_hoist.cpp
+            guard_region_runs.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp
             lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp
             lower_pattern.cpp lower_pin.cpp lower_census.cpp native_manifest.cpp lower_native.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
@@ -30,6 +30,7 @@ bronze_add_module(lower
                  ../../tests/lower/guard_region_entry_test.cpp
                  ../../tests/lower/guard_region_placement_test.cpp
                  ../../tests/lower/guard_region_run_test.cpp
+                 ../../tests/lower/loop_prop_hoist_test.cpp
     # Test-only: the fixtures need a lexer and parser to produce an AST.
     # `bronze::lower` itself consumes an AST it is handed and includes
     # neither (see the note on TEST_DEPS in cmake/bronze_module.cmake).

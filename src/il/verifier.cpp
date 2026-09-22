@@ -1,7 +1,9 @@
 #include "il/verifier.h"
 
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace bronze::il {
 
@@ -221,6 +223,106 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         }
     }
 
+    // Build CFG and compute dominators for cross-block dominance verification
+    const size_t numBlocks = fn.blocks.size();
+    std::vector<std::vector<BlockId>> succs(numBlocks);
+    std::vector<std::vector<BlockId>> preds(numBlocks);
+
+    auto addEdge = [&](BlockId from, BlockId to) {
+        if (to == kNoBlock || to >= numBlocks) return;
+        auto& s = succs[from];
+        if (std::find(s.begin(), s.end(), to) == s.end()) s.push_back(to);
+        auto& p = preds[to];
+        if (std::find(p.begin(), p.end(), from) == p.end()) p.push_back(from);
+    };
+
+    for (size_t b = 0; b < numBlocks; ++b) {
+        const auto& blk = fn.blocks[b];
+        if (blk.handler != kNoBlock) {
+            addEdge(static_cast<BlockId>(b), blk.handler);
+        }
+        if (!blk.instructions.empty()) {
+            const auto& term = blk.instructions.back();
+            if (term.op == Op::Jump) {
+                addEdge(static_cast<BlockId>(b), term.target.block);
+            } else if (term.op == Op::Branch) {
+                addEdge(static_cast<BlockId>(b), term.target.block);
+                addEdge(static_cast<BlockId>(b), term.elseTarget.block);
+            }
+        }
+    }
+
+    // Compute reverse post-order (RPO) from block 0
+    std::vector<uint8_t> seen(numBlocks, 0);
+    std::vector<BlockId> postorder;
+    std::vector<std::pair<BlockId, size_t>> dfsStack;
+    seen[0] = 1;
+    dfsStack.push_back({0, 0});
+    while (!dfsStack.empty()) {
+        auto& [b, next] = dfsStack.back();
+        if (next < succs[b].size()) {
+            const BlockId s = succs[b][next++];
+            if (!seen[s]) {
+                seen[s] = 1;
+                dfsStack.push_back({s, 0});
+            }
+            continue;
+        }
+        postorder.push_back(b);
+        dfsStack.pop_back();
+    }
+
+    std::vector<BlockId> rpo(postorder.rbegin(), postorder.rend());
+    std::vector<uint32_t> rpoIndex(numBlocks, UINT32_MAX);
+    for (uint32_t i = 0; i < rpo.size(); ++i) {
+        rpoIndex[rpo[i]] = i;
+    }
+
+    // Cooper-Harvey-Kennedy dominator tree computation
+    std::vector<BlockId> idom(numBlocks, kNoBlock);
+    idom[0] = 0;
+
+    auto intersectIdom = [&](BlockId b1, BlockId b2) -> BlockId {
+        while (b1 != b2) {
+            while (rpoIndex[b1] > rpoIndex[b2]) {
+                b1 = idom[b1];
+                if (b1 == kNoBlock) return b2;
+            }
+            while (rpoIndex[b2] > rpoIndex[b1]) {
+                b2 = idom[b2];
+                if (b2 == kNoBlock) return b1;
+            }
+        }
+        return b1;
+    };
+
+    bool domChanged = true;
+    while (domChanged) {
+        domChanged = false;
+        for (BlockId b : rpo) {
+            if (b == 0) continue;
+            BlockId newIdom = kNoBlock;
+            for (BlockId p : preds[b]) {
+                if (rpoIndex[p] == UINT32_MAX || idom[p] == kNoBlock) continue;
+                newIdom = (newIdom == kNoBlock) ? p : intersectIdom(newIdom, p);
+            }
+            if (newIdom != kNoBlock && idom[b] != newIdom) {
+                idom[b] = newIdom;
+                domChanged = true;
+            }
+        }
+    }
+    idom[0] = kNoBlock;
+
+    auto dominates = [&](BlockId a, BlockId b) -> bool {
+        if (a == b) return true;
+        if (b >= idom.size() || rpoIndex[b] == UINT32_MAX) return false;
+        for (BlockId cur = idom[b]; cur != kNoBlock; cur = idom[cur]) {
+            if (cur == a) return true;
+        }
+        return false;
+    };
+
     // Helper to check use of a value
     auto checkUse = [&](ValueId id, size_t useBlockIdx, size_t useInstIdx) -> bool {
         auto it = definedTypes.find(id);
@@ -275,6 +377,15 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                                         " is defined in " + where(defBlock) +
                                         " and used in " + where(useBlock) +
                                         ", which is a different copy of a guarded region");
+                return false;
+            }
+        }
+
+        if (id >= static_cast<ValueId>(fn.params.size()) && loc.blockIdx != useBlockIdx) {
+            if (!dominates(static_cast<BlockId>(loc.blockIdx), static_cast<BlockId>(useBlockIdx))) {
+                diags.error(Span{}, "Function " + fn.name + ": definition of %" +
+                                      std::to_string(id) + " in b" + std::to_string(loc.blockIdx) +
+                                      " does not dominate use in b" + std::to_string(useBlockIdx));
                 return false;
             }
         }

@@ -210,6 +210,56 @@ TEST_CASE("IL Verifier catches errors") {
         CHECK_FALSE(verify(m, diags));
         CHECK(diags.hasErrors());
     }
+
+    SUBCASE("cross-block use without dominance") {
+        Module m;
+        m.name = "bad_dom";
+        Function fn;
+        fn.name = "test";
+        fn.params = {{"cond", Type::Bool}};
+        fn.valueCount = 3;
+
+        // b0: br %0, b1, b2
+        Block b0{.id = 0};
+        Instruction br;
+        br.op = Op::Branch;
+        br.operands = {0};
+        br.target = BlockTarget{.block = 1, .args = {}};
+        br.elseTarget = BlockTarget{.block = 2, .args = {}};
+        b0.instructions.push_back(br);
+        fn.blocks.push_back(std::move(b0));
+
+        // b1: %1 = const.f64 5.0; jump b3
+        Block b1{.id = 1};
+        b1.instructions.push_back({Op::ConstF64, Type::F64, 1, {}, 5.0});
+        Instruction j1;
+        j1.op = Op::Jump;
+        j1.target = BlockTarget{.block = 3, .args = {}};
+        b1.instructions.push_back(j1);
+        fn.blocks.push_back(std::move(b1));
+
+        // b2: jump b3
+        Block b2{.id = 2};
+        Instruction j2;
+        j2.op = Op::Jump;
+        j2.target = BlockTarget{.block = 3, .args = {}};
+        b2.instructions.push_back(j2);
+        fn.blocks.push_back(std::move(b2));
+
+        // b3: %2 = add %1, %1; ret
+        // %1 is defined in b1, which does not dominate b3
+        Block b3{.id = 3};
+        b3.instructions.push_back({Op::Add, Type::F64, 2, {1, 1}});
+        b3.instructions.push_back({Op::Ret, Type::Void, kNoValue, {}});
+        fn.blocks.push_back(std::move(b3));
+
+        m.functions.push_back(std::move(fn));
+
+        bronze::DiagnosticSink diags;
+        CHECK_FALSE(verify(m, diags));
+        CHECK(diags.hasErrors());
+        CHECK(diags.all().front().message.find("does not dominate use") != std::string::npos);
+    }
 }
 
 // "Argument count and types match target block parameters" is one of the

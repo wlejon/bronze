@@ -559,6 +559,55 @@ TEST_CASE("Part B: Object, String, RegExp, and block var improvements") {
         CHECK(runtime::rtExceptionPending());
         runtime::rtClearException();
     }
+
+    // 8. Loop property hoisting correctness: guarded nullable reads and interprocedural mutation
+    {
+        // Guarded nullable property read in while loop should not eagerly throw TypeError
+        embed::CallResult r1 = evalScript(
+            "function testNullableWhile(o) {\n"
+            "  var count = 0;\n"
+            "  while (o !== null) {\n"
+            "    count += o.prop;\n"
+            "  }\n"
+            "  return count;\n"
+            "}\n"
+            "testNullableWhile(null);\n");
+        CHECK(!r1.thrown);
+        CHECK(r1.value.asNumber() == 0.0);
+
+        // Guarded nullable property read in for loop with if guard
+        embed::CallResult r2 = evalScript(
+            "function testNullableFor(o) {\n"
+            "  var sum = 0;\n"
+            "  for (var i = 0; i < 3; i++) {\n"
+            "    if (o !== null) {\n"
+            "      sum += o.prop;\n"
+            "    }\n"
+            "  }\n"
+            "  return sum;\n"
+            "}\n"
+            "testNullableFor(null);\n");
+        CHECK(!r2.thrown);
+        CHECK(r2.value.asNumber() == 0.0);
+
+        // Interprocedural mutation: callee mutates property on global object
+        embed::CallResult r3 = evalScript(
+            "var gObj = { x: 1 };\n"
+            "function mutateG() {\n"
+            "  gObj.x = 2;\n"
+            "}\n"
+            "function testMutation(obj) {\n"
+            "  var sum = 0;\n"
+            "  for (var i = 0; i < 2; i++) {\n"
+            "    mutateG();\n"
+            "    sum += obj.x;\n"
+            "  }\n"
+            "  return sum;\n"
+            "}\n"
+            "testMutation(gObj);\n");
+        CHECK(!r3.thrown);
+        CHECK(r3.value.asNumber() == 4.0);
+    }
 }
 
 
