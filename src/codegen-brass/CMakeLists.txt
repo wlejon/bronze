@@ -93,6 +93,7 @@ if(BRONZE_BUILD_TESTS)
         ../../tests/codegen_brass/tiered_engine_test.cpp
         ../../tests/codegen_brass/optimization_test.cpp
         ../../tests/codegen_brass/debug_test.cpp
+        ../../tests/codegen_brass/gc_write_barrier_test.cpp
     )
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass

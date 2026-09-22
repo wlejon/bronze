@@ -3,6 +3,10 @@
 #include <memory>
 #include <string_view>
 
+namespace brass {
+class ModuleStackMap;
+}
+
 namespace brass::codegen {
 class JitExecutionEngine;
 }
@@ -24,6 +28,7 @@ public:
     void* entryPoint() const noexcept;
     void* symbolAddress(std::string_view name) const;
     brass::codegen::JitExecutionEngine* engine() const noexcept { return engine_.get(); }
+    const brass::ModuleStackMap* stackMaps() const noexcept;
     void run();
 
 private:

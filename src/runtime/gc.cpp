@@ -1,8 +1,13 @@
 #include "runtime/gc.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+
+#include <brass/gc/card_table.hpp>
+#include <brass/gc/generational_gc.hpp>
+#include <brass/gc/runtime_gc.hpp>
 
 #include "abi/bronze_abi.h"
 #include "runtime/fatal.h"
@@ -82,11 +87,162 @@ void RootValueBlock::blockAllocationFailed(uint32_t count) {
           "only rooted for as long as the caller's frame is");
 }
 
+WriteBarrierStats g_writeBarrierStats;
+
+static ActiveCardTableDescriptor g_activeCardTableStorage;
+static const ActiveCardTableDescriptor* g_activeCardTable = nullptr;
+
+void set_active_card_table(const ActiveCardTableDescriptor* desc) noexcept {
+    g_activeCardTable = desc;
+}
+
+void set_active_card_table(brass::CardTable* ct,
+                           uintptr_t old_space_base, size_t old_space_size,
+                           uintptr_t young_space_base, size_t young_space_size) noexcept {
+    if (!ct) {
+        g_activeCardTable = nullptr;
+        return;
+    }
+    g_activeCardTableStorage.card_table = ct;
+    g_activeCardTableStorage.old_space_base = old_space_base;
+    g_activeCardTableStorage.old_space_size = old_space_size;
+    g_activeCardTableStorage.young_space_base = young_space_base;
+    g_activeCardTableStorage.young_space_size = young_space_size;
+    g_activeCardTableStorage.is_old_fn = nullptr;
+    g_activeCardTableStorage.is_young_fn = nullptr;
+    g_activeCardTable = &g_activeCardTableStorage;
+}
+
+void set_active_card_table(brass::CardTable* ct,
+                           bool (*is_old)(uintptr_t),
+                           bool (*is_young)(uintptr_t)) noexcept {
+    if (!ct) {
+        g_activeCardTable = nullptr;
+        return;
+    }
+    g_activeCardTableStorage.card_table = ct;
+    g_activeCardTableStorage.old_space_base = 0;
+    g_activeCardTableStorage.old_space_size = 0;
+    g_activeCardTableStorage.young_space_base = 0;
+    g_activeCardTableStorage.young_space_size = 0;
+    g_activeCardTableStorage.is_old_fn = is_old;
+    g_activeCardTableStorage.is_young_fn = is_young;
+    g_activeCardTable = &g_activeCardTableStorage;
+}
+
+const ActiveCardTableDescriptor* get_active_card_table_descriptor() noexcept {
+    return g_activeCardTable;
+}
+
+brass::CardTable* get_active_card_table() noexcept {
+    return g_activeCardTable ? g_activeCardTable->card_table : nullptr;
+}
+
+static inline bool is_gc_log_enabled() noexcept {
+    static const bool enabled = (std::getenv("BRONZE_GC_LOG") != nullptr);
+    return enabled;
+}
+
 }  // namespace bronze
 
 extern "C" void brass_gc_write_barrier(uint64_t obj, uint64_t val) {
-    (void)obj;
-    (void)val;
+    bronze::g_writeBarrierStats.total_invocations++;
+
+    // Unmask obj to extract raw heap address (handles both raw pointer and NaN-tagged pointer)
+    const uintptr_t obj_addr = static_cast<uintptr_t>(obj & bronze::kPayloadMask);
+    if (obj_addr == 0) {
+        return;
+    }
+
+    // Inspect val: is it a pointer to a young-generation GC object?
+    if (val == 0) {
+        bronze::g_writeBarrierStats.filtered_non_pointer++;
+        return;
+    }
+
+    uintptr_t ptr_val = 0;
+    const uint64_t high16 = val >> bronze::kTagShift;
+
+    if (high16 == 0) {
+        // Raw 48-bit address in user space
+        ptr_val = static_cast<uintptr_t>(val);
+    } else if (high16 == static_cast<uint64_t>(bronze::Tag::Object) ||
+               high16 == static_cast<uint64_t>(bronze::Tag::String) ||
+               high16 == static_cast<uint64_t>(bronze::Tag::BigInt)) {
+        // Bronze NaN-boxed pointer payload
+        ptr_val = static_cast<uintptr_t>(val & bronze::kPayloadMask);
+        if (ptr_val == 0) {
+            bronze::g_writeBarrierStats.filtered_non_pointer++;
+            return;
+        }
+    } else {
+        // Non-pointer / scalar: IEEE double, Bool, Undefined, Null, Int32, Hole, etc.
+        bronze::g_writeBarrierStats.filtered_non_pointer++;
+        return;
+    }
+
+    // 1. Dispatch to Brass active generational GC if present
+    if (auto* gen_gc = brass::brass_get_active_generational_gc()) {
+        if (!gen_gc->is_old(obj_addr)) {
+            bronze::g_writeBarrierStats.filtered_non_old_obj++;
+            return;
+        }
+        if (!gen_gc->is_young(ptr_val)) {
+            bronze::g_writeBarrierStats.filtered_non_young_val++;
+            return;
+        }
+        gen_gc->card_table().mark_card(obj_addr);
+        bronze::g_writeBarrierStats.old_to_young_marked++;
+        if (BRONZE_UNLIKELY(bronze::is_gc_log_enabled())) {
+            std::fprintf(stderr, "[BRONZE_GC_WRITE_BARRIER] old=0x%llx -> young=0x%llx (card %zu marked)\n",
+                         static_cast<unsigned long long>(obj_addr),
+                         static_cast<unsigned long long>(ptr_val),
+                         gen_gc->card_table().card_index(obj_addr));
+        }
+        return;
+    }
+
+    // 2. Dispatch to active Bronze heap card-table if present
+    if (auto* desc = bronze::get_active_card_table_descriptor()) {
+        if (desc->card_table) {
+            bool is_old = false;
+            if (desc->is_old_fn) {
+                is_old = desc->is_old_fn(obj_addr);
+            } else if (desc->old_space_size > 0) {
+                is_old = (obj_addr >= desc->old_space_base &&
+                          obj_addr < desc->old_space_base + desc->old_space_size);
+            }
+            if (!is_old) {
+                bronze::g_writeBarrierStats.filtered_non_old_obj++;
+                return;
+            }
+
+            bool is_young = false;
+            if (desc->is_young_fn) {
+                is_young = desc->is_young_fn(ptr_val);
+            } else if (desc->young_space_size > 0) {
+                is_young = (ptr_val >= desc->young_space_base &&
+                            ptr_val < desc->young_space_base + desc->young_space_size);
+            }
+            if (!is_young) {
+                bronze::g_writeBarrierStats.filtered_non_young_val++;
+                return;
+            }
+
+            desc->card_table->mark_card(obj_addr);
+            bronze::g_writeBarrierStats.old_to_young_marked++;
+            if (BRONZE_UNLIKELY(bronze::is_gc_log_enabled())) {
+                std::fprintf(stderr, "[BRONZE_GC_WRITE_BARRIER] old=0x%llx -> young=0x%llx (card %zu marked)\n",
+                             static_cast<unsigned long long>(obj_addr),
+                             static_cast<unsigned long long>(ptr_val),
+                             desc->card_table->card_index(obj_addr));
+            }
+            return;
+        }
+    }
+
+    // No active generational GC or card table
+    bronze::g_writeBarrierStats.filtered_non_old_obj++;
 }
 
 #ifdef _MSC_VER

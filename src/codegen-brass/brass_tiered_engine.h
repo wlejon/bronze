@@ -77,6 +77,7 @@ public:
     const std::vector<brass::codegen::BaselineCompiledFunction>& baselineCompiledFunctions() const noexcept {
         return compiledFunctions_;
     }
+    const brass::ModuleStackMap* stackMaps() const noexcept;
 
     void initDataBuffers(const il::Module& ilMod, const std::vector<uint32_t>& globalReadKeys);
     void registerSymbolsWithEngines();
@@ -100,6 +101,7 @@ private:
     std::unique_ptr<brass::codegen::BaselineJitCompiler> baselineCompiler_;
     std::vector<brass::codegen::BaselineCompiledFunction> compiledFunctions_;
     std::unordered_map<std::string, size_t> functionIndexMap_;
+    brass::ModuleStackMap moduleStackMap_;
 
     uint64_t moduleEnv_ = 0;
     std::vector<uint32_t> keyMap_;

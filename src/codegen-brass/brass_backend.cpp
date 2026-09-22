@@ -219,6 +219,11 @@ void renameEntrySymbol(brass::object::ObjectFile& obj, const std::string& entryS
             dt.set_function_name(entrySymbol);
         }
     }
+    for (auto& fn : obj.stack_maps.functions()) {
+        if (fn.function_name == "main") {
+            fn.function_name = entrySymbol;
+        }
+    }
     for (auto& sec : obj.sections) {
         for (auto& reloc : sec.relocations) {
             if (reloc.symbol_name == "main") {

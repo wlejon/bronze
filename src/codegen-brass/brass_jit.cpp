@@ -4,6 +4,7 @@
 #include "abi/bronze_abi.h"
 
 #include <brass/codegen/jit_exec.hpp>
+#include <brass/gc/runtime_gc.hpp>
 #include <brass/il_translator/il_translator.hpp>
 #include <brass/runtime/parallel_runtime.hpp>
 #include <brass/target/target.hpp>
@@ -17,9 +18,16 @@ BrassJitProgram::BrassJitProgram(std::unique_ptr<brass::codegen::JitExecutionEng
     : engine_(std::move(engine)),
       entryPoint_(entryPoint),
       codeRanges_(codeRanges),
-      codeRangeCount_(codeRangeCount) {}
+      codeRangeCount_(codeRangeCount) {
+    if (engine_) {
+        brass::brass_set_active_stack_maps(&engine_->stack_maps());
+    }
+}
 
 BrassJitProgram::~BrassJitProgram() {
+    if (engine_ && brass::brass_get_active_stack_maps() == &engine_->stack_maps()) {
+        brass::brass_set_active_stack_maps(nullptr);
+    }
     if (codeRanges_ && codeRangeCount_ > 0) {
         bronze_unregister_code_ranges(codeRanges_, codeRangeCount_);
         codeRanges_ = nullptr;
@@ -31,10 +39,17 @@ BrassJitProgram::BrassJitProgram(BrassJitProgram&& other) noexcept
     : engine_(std::move(other.engine_)),
       entryPoint_(std::exchange(other.entryPoint_, nullptr)),
       codeRanges_(std::exchange(other.codeRanges_, nullptr)),
-      codeRangeCount_(std::exchange(other.codeRangeCount_, 0)) {}
+      codeRangeCount_(std::exchange(other.codeRangeCount_, 0)) {
+    if (engine_) {
+        brass::brass_set_active_stack_maps(&engine_->stack_maps());
+    }
+}
 
 BrassJitProgram& BrassJitProgram::operator=(BrassJitProgram&& other) noexcept {
     if (this != &other) {
+        if (engine_ && brass::brass_get_active_stack_maps() == &engine_->stack_maps()) {
+            brass::brass_set_active_stack_maps(nullptr);
+        }
         if (codeRanges_ && codeRangeCount_ > 0) {
             bronze_unregister_code_ranges(codeRanges_, codeRangeCount_);
         }
@@ -42,6 +57,9 @@ BrassJitProgram& BrassJitProgram::operator=(BrassJitProgram&& other) noexcept {
         entryPoint_ = std::exchange(other.entryPoint_, nullptr);
         codeRanges_ = std::exchange(other.codeRanges_, nullptr);
         codeRangeCount_ = std::exchange(other.codeRangeCount_, 0);
+        if (engine_) {
+            brass::brass_set_active_stack_maps(&engine_->stack_maps());
+        }
     }
     return *this;
 }
@@ -57,7 +75,14 @@ void* BrassJitProgram::symbolAddress(std::string_view name) const {
     return engine_->get_symbol_address(name);
 }
 
+const brass::ModuleStackMap* BrassJitProgram::stackMaps() const noexcept {
+    return engine_ ? &engine_->stack_maps() : nullptr;
+}
+
 void BrassJitProgram::run() {
+    if (engine_) {
+        brass::brass_set_active_stack_maps(&engine_->stack_maps());
+    }
     if (entryPoint_) {
         auto fn = reinterpret_cast<void (*)()>(entryPoint_);
         fn();

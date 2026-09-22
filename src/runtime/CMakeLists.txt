@@ -220,6 +220,13 @@ if(NOT MSVC)
     target_compile_options(bronze_runtime PRIVATE -fno-omit-frame-pointer)
 endif()
 
+if(DEFINED BRASS_ROOT AND EXISTS "${BRASS_ROOT}/include")
+    target_include_directories(bronze_runtime PUBLIC "${BRASS_ROOT}/include")
+endif()
+if(TARGET brass)
+    target_link_libraries(bronze_runtime PUBLIC brass)
+endif()
+
 # The same test binary, run again with per-allocation collection forced on.
 # This surfaces unrooted-pointer-across-allocation bugs that a lazily
 # collecting run can never catch.

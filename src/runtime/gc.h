@@ -186,4 +186,62 @@ private:
     ShadowStackFrame* frame_{nullptr};
 };
 
+struct WriteBarrierStats {
+    uint64_t total_invocations = 0;
+    uint64_t old_to_young_marked = 0;
+    uint64_t filtered_non_old_obj = 0;
+    uint64_t filtered_non_young_val = 0;
+    uint64_t filtered_non_pointer = 0;
+
+    void reset() noexcept {
+        total_invocations = 0;
+        old_to_young_marked = 0;
+        filtered_non_old_obj = 0;
+        filtered_non_young_val = 0;
+        filtered_non_pointer = 0;
+    }
+};
+
+extern WriteBarrierStats g_writeBarrierStats;
+
+inline WriteBarrierStats& get_write_barrier_stats() noexcept {
+    return g_writeBarrierStats;
+}
+
+inline void reset_write_barrier_stats() noexcept {
+    g_writeBarrierStats.reset();
+}
+
+}  // namespace bronze
+
+namespace brass {
+class CardTable;
+class GenerationalGC;
+}  // namespace brass
+
+namespace bronze {
+
+struct ActiveCardTableDescriptor {
+    brass::CardTable* card_table = nullptr;
+    uintptr_t old_space_base = 0;
+    size_t old_space_size = 0;
+    uintptr_t young_space_base = 0;
+    size_t young_space_size = 0;
+    bool (*is_old_fn)(uintptr_t) = nullptr;
+    bool (*is_young_fn)(uintptr_t) = nullptr;
+};
+
+void set_active_card_table(const ActiveCardTableDescriptor* desc) noexcept;
+void set_active_card_table(brass::CardTable* ct,
+                           uintptr_t old_space_base = 0, size_t old_space_size = 0,
+                           uintptr_t young_space_base = 0, size_t young_space_size = 0) noexcept;
+void set_active_card_table(brass::CardTable* ct,
+                           bool (*is_old)(uintptr_t),
+                           bool (*is_young)(uintptr_t)) noexcept;
+inline void set_active_card_table(std::nullptr_t) noexcept {
+    set_active_card_table(static_cast<const ActiveCardTableDescriptor*>(nullptr));
+}
+const ActiveCardTableDescriptor* get_active_card_table_descriptor() noexcept;
+brass::CardTable* get_active_card_table() noexcept;
+
 }  // namespace bronze
