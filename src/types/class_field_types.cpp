@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "types/class_layout.h"
+#include "types/math_builtins.h"
+#include "types/operator_types.h"
 #include "types/walk.h"
 
 namespace bronze::types {
@@ -14,7 +16,8 @@ namespace {
 
 Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>& classByName,
                       const std::vector<ClassLayout>& classes,
-                      const std::map<std::string, Type>* paramTypes) {
+                      const std::map<std::string, Type>* paramTypes,
+                      bool mathPristine = false) {
     if (paramTypes != nullptr) {
         if (const auto* id = dynamic_cast<const ast::Ident*>(&rhs)) {
             const auto it = paramTypes->find(id->name);
@@ -30,7 +33,7 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
     if (const auto* u = dynamic_cast<const ast::Unary*>(&rhs)) {
         if (u->op == ast::UnaryOp::Negate || u->op == ast::UnaryOp::Posate ||
             u->op == ast::UnaryOp::BitNot) {
-            const Type opT = harvestFieldType(*u->operand, classByName, classes, paramTypes);
+            const Type opT = harvestFieldType(*u->operand, classByName, classes, paramTypes, mathPristine);
             if (opT.is(TypeKind::Number)) return Type::number();
         }
         return Type::dynamic();
@@ -42,16 +45,24 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
             b->op == ast::BinaryOp::BitOr || b->op == ast::BinaryOp::BitXor ||
             b->op == ast::BinaryOp::Shl || b->op == ast::BinaryOp::Shr ||
             b->op == ast::BinaryOp::UShr || b->op == ast::BinaryOp::Exp) {
-            const Type lhsT = harvestFieldType(*b->lhs, classByName, classes, paramTypes);
-            const Type rhsT = harvestFieldType(*b->rhs, classByName, classes, paramTypes);
+            const Type lhsT = harvestFieldType(*b->lhs, classByName, classes, paramTypes, mathPristine);
+            const Type rhsT = harvestFieldType(*b->rhs, classByName, classes, paramTypes, mathPristine);
             if (lhsT.is(TypeKind::Number) && rhsT.is(TypeKind::Number)) return Type::number();
             if (b->op != ast::BinaryOp::Add &&
+                isNeverBigInt(lhsT) && isNeverBigInt(rhsT) &&
                 (lhsT.is(TypeKind::Number) || rhsT.is(TypeKind::Number))) {
                 return Type::number();
             }
         }
     }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&rhs)) {
+        if (mathPristine && !m->optional) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
+                if (id->name == "Math" && isMathValueProperty(m->property)) {
+                    return Type::number();
+                }
+            }
+        }
         if (paramTypes != nullptr) {
             if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
                 const auto it = paramTypes->find(id->name);
@@ -68,15 +79,21 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
         }
     }
     if (const auto* c = dynamic_cast<const ast::Call*>(&rhs)) {
-        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
-            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
-                if (id->name == "Math") return Type::number();
+        if (mathPristine && !c->optional) {
+            if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
+                if (!m->optional) {
+                    if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
+                        if (id->name == "Math" && isMathMethodReturningNumber(m->property)) {
+                            return Type::number();
+                        }
+                    }
+                }
             }
         }
     }
     if (const auto* t = dynamic_cast<const ast::Ternary*>(&rhs)) {
-        const Type thenT = harvestFieldType(*t->thenExpr, classByName, classes, paramTypes);
-        const Type elseT = harvestFieldType(*t->elseExpr, classByName, classes, paramTypes);
+        const Type thenT = harvestFieldType(*t->thenExpr, classByName, classes, paramTypes, mathPristine);
+        const Type elseT = harvestFieldType(*t->elseExpr, classByName, classes, paramTypes, mathPristine);
         return join(thenT, elseT);
     }
     if (const auto* n = dynamic_cast<const ast::NewExpr*>(&rhs)) {
@@ -105,8 +122,10 @@ public:
     FieldTypeWalker(std::map<std::string, Type>& out,
                     const std::map<std::string, size_t>& classByName,
                     const std::vector<ClassLayout>& classes,
-                    const std::map<std::string, Type>* paramTypes = nullptr)
-        : out_(out), classByName_(classByName), classes_(classes), paramTypes_(paramTypes) {}
+                    const std::map<std::string, Type>* paramTypes = nullptr,
+                    bool mathPristine = false)
+        : out_(out), classByName_(classByName), classes_(classes), paramTypes_(paramTypes),
+          mathPristine_(mathPristine) {}
 
     void visit(const ast::FunctionExpr& n) override {
         if (n.isArrow) Walker::visit(n);
@@ -120,13 +139,13 @@ public:
             if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
                 if (dynamic_cast<const ast::ThisExpr*>(m->object.get()) && !m->isPrivate) {
                     record(m->property,
-                           harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_));
+                           harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_, mathPristine_));
                 }
             }
         } else if (ast::isAssignOp(n.op)) {
             if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
                 if (dynamic_cast<const ast::ThisExpr*>(m->object.get()) && !m->isPrivate) {
-                    const Type rhsT = harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_);
+                    const Type rhsT = harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_, mathPristine_);
                     const auto it = out_.find(m->property);
                     if (it != out_.end() && it->second.is(TypeKind::Number) && rhsT.is(TypeKind::Number)) {
                         record(m->property, Type::number());
@@ -148,6 +167,7 @@ private:
     const std::map<std::string, size_t>& classByName_;
     const std::vector<ClassLayout>& classes_;
     const std::map<std::string, Type>* paramTypes_ = nullptr;
+    bool mathPristine_ = false;
 };
 
 }  // namespace
@@ -179,11 +199,11 @@ void ClassLayoutTable::harvestFieldTypes(
                     const auto it = classMethods->find(m.name);
                     if (it != classMethods->end()) fnParams = &it->second;
                 }
-                FieldTypeWalker walker(classes_[i].fieldTypes, byName_, classes_, fnParams);
+                FieldTypeWalker walker(classes_[i].fieldTypes, byName_, classes_, fnParams, mathPristine_);
                 walker.walkList(m.fn->body);
             } else if (m.init && !m.name.empty()) {
                 classes_[i].fieldTypes[m.name] =
-                    harvestFieldType(*m.init, byName_, classes_, nullptr);
+                    harvestFieldType(*m.init, byName_, classes_, nullptr, mathPristine_);
             }
         }
     }

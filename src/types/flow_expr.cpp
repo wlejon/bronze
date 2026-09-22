@@ -10,6 +10,7 @@
 
 #include "ast/queries.h"
 #include "types/flow_analyzer.h"
+#include "types/math_builtins.h"
 #include "types/operator_types.h"
 #include "types/walk.h"
 
@@ -164,9 +165,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // non-configurable, though what carries the proof here is the
         // program-wide pristine bit, not the attributes.
         if (!m->optional && isPristineMathBase(*m->object) &&
-            (m->property == "PI" || m->property == "E" || m->property == "LN2" ||
-             m->property == "LN10" || m->property == "LOG2E" || m->property == "LOG10E" ||
-             m->property == "SQRT1_2" || m->property == "SQRT2")) {
+            isMathValueProperty(m->property)) {
             return Type::number();
         }
         // A field of a class the layout analysis modelled: the type joined over
@@ -264,7 +263,10 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                 if (record_) mod_.result->provenFieldReads.insert(m);
                 return field;
             }
-            if (!mod_.methodParamTypes && !base.builtHere()) {
+            const bool classFamilyValidated =
+                mod_.methodParamTypes &&
+                mod_.result->classLayouts.familyMemberOf(base.shapeClass()) != nullptr;
+            if (!base.builtHere() && !classFamilyValidated) {
                 if (record_) ++mod_.result->fieldAudit.refusedNotBuiltHere;
                 return Type::dynamic();
             }

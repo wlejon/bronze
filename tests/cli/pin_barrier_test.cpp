@@ -454,3 +454,25 @@ TEST_CASE("the pin text a barrier names reads back as a line of the manifest") {
     }
     CHECK(guards > 0);
 }
+
+TEST_CASE("a store through a dynamic receiver to a pinned field emits a pin barrier") {
+    if (barriersOff()) return;
+    const std::string src = std::string(kReport) +
+                            "class Point { constructor(x) { this.x = x; } }\n"
+                            "function setField(obj, val) { obj.x = val; }\n"
+                            "const p = new Point(1);\n"
+                            "setField(p, 2);\n"
+                            "console.log('before ' + p.x);\n"
+                            "report('dyn', function () { setField(p, 'violation'); });\n"
+                            "console.log('after ' + p.x);\n";
+    const std::string manifest = "Point.x: number\n";
+
+    const std::string il = ilWithPins("dyn_recv", src, manifest);
+    CHECK(il.find("pin.guard") != std::string::npos);
+    CHECK(il.find("\"Point.x: number\"") != std::string::npos);
+
+    const std::string out = buildAndRun("dyn_recv", src, manifest);
+    CHECK(out.find("before 2") != std::string::npos);
+    CHECK(out.find("dyn true pin 'Point.x: number' violated") != std::string::npos);
+    CHECK(out.find("after 2") != std::string::npos);
+}

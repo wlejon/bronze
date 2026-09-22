@@ -225,6 +225,25 @@ const PinKind* PinManifest::lookup(const std::string& className, const std::stri
     return nullptr;
 }
 
+const PinKind* PinManifest::lookupField(const std::string& field,
+                                       std::string* matchedClassOut) const {
+    for (const auto& [cls, fields] : byClass_) {
+        const auto it = fields.find(field);
+        if (it != fields.end()) {
+            if (matchedClassOut != nullptr) *matchedClassOut = cls;
+            return &it->second;
+        }
+    }
+    for (const auto& [cls, fields] : byClass_) {
+        const auto it = fields.find("*");
+        if (it != fields.end()) {
+            if (matchedClassOut != nullptr) *matchedClassOut = cls;
+            return &it->second;
+        }
+    }
+    return nullptr;
+}
+
 bool PinManifest::envSlotPinned(const std::string& functionName,
                                 const std::string& binding) const {
     // No `extends` walk and no wildcard: a function's captured bindings are its

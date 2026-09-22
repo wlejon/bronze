@@ -181,6 +181,9 @@ public:
     // reason -> how many classes it refused. The chunk's histogram.
     std::map<std::string, uint32_t> refusalHistogram() const;
 
+    void setMathPristine(bool pristine) { mathPristine_ = pristine; }
+    bool mathPristine() const { return mathPristine_; }
+
     // Re-runs the field-type harvest with a constructor's PARAMETERS answered
     // from `byClass` (class name -> parameter name -> type), and says whether
     // any field type moved.
@@ -235,6 +238,7 @@ private:
     std::vector<bool> resolved_;
     std::vector<const ClassLayout*> preorder_;
     ShapeClassTable* shapes_ = nullptr;
+    bool mathPristine_ = false;
 };
 
 }  // namespace bronze::types

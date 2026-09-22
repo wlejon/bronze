@@ -81,6 +81,13 @@ const types::PinKind* Lowerer::pinnedFieldAt(const ast::Expr& receiver, const st
     if (pins_ == nullptr || inference_ == nullptr) return nullptr;
     const types::Type recv = inferredType(receiver);
     if (!recv.is(types::TypeKind::Object) || recv.shapeClass() == types::kNoShapeClass) {
+        std::string matchedClass;
+        if (const types::PinKind* pin = pins_->lookupField(key, &matchedClass)) {
+            if (pinTextOut != nullptr) {
+                *pinTextOut = matchedClass + "." + key + ": " + pinKindWord(*pin);
+            }
+            return pin;
+        }
         return nullptr;
     }
     // Resolved exactly the way the READ resolves it (types/flow_expr.cpp

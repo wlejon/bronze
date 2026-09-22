@@ -205,6 +205,11 @@ public:
     // the module linker's prefix.
     const PinKind* lookup(const std::string& className, const std::string& field) const;
 
+    // Is any class pinned with `field` (exact match or wildcard)? Returns the
+    // pin kind and sets `matchedClassOut` to the matching class name if found.
+    const PinKind* lookupField(const std::string& field,
+                               std::string* matchedClassOut = nullptr) const;
+
     // Is `functionName.binding` pinned as a numeric env slot? `functionName`
     // may carry the module linker's prefix.
     bool envSlotPinned(const std::string& functionName, const std::string& binding) const;

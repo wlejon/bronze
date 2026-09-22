@@ -11,6 +11,7 @@
 #include "ast/assigned.h"
 #include "ast/queries.h"
 #include "types/flow_analyzer.h"
+#include "types/math_builtins.h"
 
 namespace bronze::types {
 namespace {
@@ -132,14 +133,7 @@ bool FlowAnalyzer::isPristineMathBase(const ast::Expr& e) const {
 bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
     const auto* ma = dynamic_cast<const ast::MemberAccess*>(c.callee.get());
     if (ma == nullptr || ma->optional || !isPristineMathBase(*ma->object)) return false;
-    // 21.3.2's own function properties, every one of which returns a Number.
-    static const std::set<std::string> kMathFns = {
-        "abs",   "acos",  "acosh", "asin",  "asinh",   "atan",  "atan2", "atanh",
-        "cbrt",  "ceil",  "clz32", "cos",   "cosh",    "exp",   "expm1", "floor",
-        "fround", "f16round", "hypot", "imul", "log",  "log1p", "log10", "log2",
-        "max",   "min",   "pow",   "random", "round",  "sign",  "sin",   "sinh",
-        "sqrt",  "tan",   "tanh",  "trunc"};
-    return kMathFns.count(ma->property) != 0;
+    return isMathMethodReturningNumber(ma->property);
 }
 
 void FlowAnalyzer::declare(const std::string& name, Type t) {

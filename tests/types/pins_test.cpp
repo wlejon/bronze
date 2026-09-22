@@ -178,3 +178,41 @@ TEST_CASE("a malformed signature line is named, never skipped") {
     CHECK(rejected("return 9f: number\n").find("not a valid function name") !=
           std::string::npos);
 }
+
+// ---- lookupField for dynamic receiver pin write barrier --------------------
+
+TEST_CASE("lookupField finds pinned field across any class including wildcards") {
+    const auto m = parsed(
+        "Vector3.x: number\n"
+        "Point.y: number-or-nullish\n"
+        "Matrix4.elements: numeric-elements\n"
+        "Wildcard.*: number\n");
+    std::string matchedClass;
+    const auto* pinX = m.lookupField("x", &matchedClass);
+    REQUIRE(pinX != nullptr);
+    CHECK(*pinX == PinKind::Number);
+    CHECK(matchedClass == "Vector3");
+
+    const auto* pinY = m.lookupField("y", &matchedClass);
+    REQUIRE(pinY != nullptr);
+    CHECK(*pinY == PinKind::NumberOrNullish);
+    CHECK(matchedClass == "Point");
+
+    const auto* pinElem = m.lookupField("elements", &matchedClass);
+    REQUIRE(pinElem != nullptr);
+    CHECK(*pinElem == PinKind::NumericElements);
+    CHECK(matchedClass == "Matrix4");
+
+    const auto* pinWild = m.lookupField("anythingElse", &matchedClass);
+    REQUIRE(pinWild != nullptr);
+    CHECK(*pinWild == PinKind::Number);
+    CHECK(matchedClass == "Wildcard");
+}
+
+TEST_CASE("lookupField without wildcard returns null for unknown field") {
+    const auto m = parsed("Vector3.x: number\n");
+    std::string matchedClass;
+    CHECK(m.lookupField("x", &matchedClass) != nullptr);
+    CHECK(matchedClass == "Vector3");
+    CHECK(m.lookupField("unknown", &matchedClass) == nullptr);
+}

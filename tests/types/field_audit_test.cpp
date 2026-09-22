@@ -265,3 +265,63 @@ TEST_CASE("a numeric compound assignment preserves the field's proof") {
     CHECK(r.fieldAudit.namesClean == 1);
     CHECK(r.provenFieldReads.size() >= 6);
 }
+
+TEST_CASE("unsound identifier name whitelist in computed key is eliminated") {
+    // When an identifier named 'index' holds a string, writing obj[index] = 'bad'
+    // must NOT be treated as provably numeric key. It must refuse property 'x'.
+    const auto inferred = infer(
+        "class V { constructor() { this.x = 0; } }\n"
+        "function read(v) { return v.x; }\n"
+        "function poke(v, index, val) { v[index] = val; }\n"
+        "const v = new V();\n"
+        "poke(v, 'x', 'bad');\n"
+        "console.log(read(v));\n");
+    const auto& r = *inferred.result;
+    CHECK(r.provenFieldReads.empty());
+    CHECK(r.fieldAudit.computedSites >= 1);
+    CHECK(r.fieldAudit.computedRefuted >= 1);
+}
+
+TEST_CASE("field harvest requires pristine Math and actual number-returning methods") {
+    // Math tainted by user declaration must not type this.x as Number
+    const auto inferredShadowed = infer(
+        "const Math = { random: () => 'not a number' };\n"
+        "class C { constructor() { this.x = Math.random(); } }\n"
+        "function read(c) { return c.x; }\n"
+        "console.log(read(new C()));\n");
+    CHECK(inferredShadowed.result->provenFieldReads.empty());
+
+    // Non-numeric Math method must not type this.x as Number
+    const auto inferredNonMath = infer(
+        "class C { constructor() { this.x = Math.notAFunction(); } }\n"
+        "function read(c) { return c.x; }\n"
+        "console.log(read(new C()));\n");
+    CHECK(inferredNonMath.result->provenFieldReads.empty());
+}
+
+TEST_CASE("field harvest arithmetic rejects dynamic operand that may be BigInt") {
+    // In 1 - b, if b is dynamic (could be 2n), this.x must not be typed Number in field harvest
+    const auto inferredDynamic = infer(
+        "class C { constructor(b) { this.x = 1 - b; } }\n");
+    const auto* cl = inferredDynamic.result->classLayouts.byName("C");
+    REQUIRE(cl != nullptr);
+    const auto it = cl->fieldTypes.find("x");
+    CHECK((it == cl->fieldTypes.end() || it->second.is(types::TypeKind::Dynamic)));
+
+    // When both operands are proven numbers, this.x IS typed Number
+    const auto inferredNumeric = infer(
+        "class D { constructor() { this.x = 10 - 2; } }\n");
+    const auto* dl = inferredNumeric.result->classLayouts.byName("D");
+    REQUIRE(dl != nullptr);
+    CHECK(dl->fieldTypes.at("x").is(types::TypeKind::Number));
+}
+
+TEST_CASE("foreign object passed to method does not qualify for raw f64 unboxing") {
+    // Foreign object without class family validation must not have its fields treated as provenFieldReads
+    const auto inferred = infer(
+        "function read(obj) { return obj.x; }\n"
+        "const foreign = { x: 1 };\n"
+        "read(foreign);\n");
+    const auto& r = *inferred.result;
+    CHECK(r.provenFieldReads.empty());
+}

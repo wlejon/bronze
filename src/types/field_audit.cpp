@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 
 #include "types/class_layout.h"
 #include "types/literal_scan.h"
@@ -77,31 +78,19 @@ bool couldBeNumericKey(const std::string& name) {
     return (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '+';
 }
 
-bool isProvablyNumericKeyExpr(const ast::Expr* e) {
+bool isProvablyNumericKeyExpr(const ast::Expr* e,
+                              const std::function<Type(const ast::Expr*)>& typeOf = nullptr) {
     if (e == nullptr) return false;
     if (dynamic_cast<const ast::NumberLit*>(e)) return true;
+    if (typeOf && typeOf(e).is(TypeKind::Number)) return true;
     if (const auto* u = dynamic_cast<const ast::Unary*>(e)) {
         return u->op == ast::UnaryOp::Posate || u->op == ast::UnaryOp::Negate ||
                u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
                u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
-               u->op == ast::UnaryOp::PostDec || isProvablyNumericKeyExpr(u->operand.get());
+               u->op == ast::UnaryOp::PostDec || isProvablyNumericKeyExpr(u->operand.get(), typeOf);
     }
-    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
-        static const char* kNumericKeyIdents[] = {
-            "i", "j", "idx", "index", "offset", "stride", "count",
-            "row", "col", "column", "step", "pos", "cursor", "ptr",
-            "srcOffset0", "srcOffset1", "dstOffset", "offset0", "offset1"
-        };
-        for (const char* kid : kNumericKeyIdents) {
-            if (id->name == kid) return true;
-        }
-        static const char* kKeySuffixes[] = {
-            "Index", "index", "Offset", "offset", "Stride", "stride", "Count", "count", "Step", "step", "0", "1", "2", "3"
-        };
-        for (const char* suf : kKeySuffixes) {
-            const size_t len = std::strlen(suf);
-            if (id->name.size() >= len && id->name.compare(id->name.size() - len, len, suf) == 0) return true;
-        }
+    if (dynamic_cast<const ast::Ident*>(e)) {
+        return typeOf && typeOf(e).is(TypeKind::Number);
     }
     if (const auto* b = dynamic_cast<const ast::Binary*>(e)) {
         if (b->op == ast::BinaryOp::Sub || b->op == ast::BinaryOp::Mul ||
@@ -113,15 +102,11 @@ bool isProvablyNumericKeyExpr(const ast::Expr* e) {
             return true;
         }
         if (b->op == ast::BinaryOp::Add) {
-            return isProvablyNumericKeyExpr(b->lhs.get()) || isProvablyNumericKeyExpr(b->rhs.get());
+            return isProvablyNumericKeyExpr(b->lhs.get(), typeOf) &&
+                   isProvablyNumericKeyExpr(b->rhs.get(), typeOf);
         }
     }
     if (const auto* c = dynamic_cast<const ast::Call*>(e)) {
-        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c->callee.get())) {
-            if (const auto* id = dynamic_cast<const ast::Ident*>(m->object.get())) {
-                if (id->name == "Math") return true;
-            }
-        }
         if (const auto* id = dynamic_cast<const ast::Ident*>(c->callee.get())) {
             if (id->name == "parseInt" || id->name == "parseFloat" || id->name == "Number") return true;
         }
@@ -528,12 +513,12 @@ bool FieldAudit::settle() {
             numericKeyWrite_ = true;
             continue;
         }
-        if (isProvablyNumericKeyExpr(c.key)) {
+        const Type key = typeOfExpr(c.key);
+        if (key.is(TypeKind::Number)) {
             numericKeyWrite_ = true;
             continue;
         }
-        const Type key = typeOfExpr(c.key);
-        if (key.is(TypeKind::Number)) {
+        if (isProvablyNumericKeyExpr(c.key, [this](const ast::Expr* e) { return typeOfExpr(e); })) {
             numericKeyWrite_ = true;
             continue;
         }

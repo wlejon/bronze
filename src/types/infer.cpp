@@ -440,6 +440,27 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
 
     ModuleContext mod;
     mod.result = &result;
+    mod.diags = &diags;
+    for (const auto& name : ast::getScopeDeclarations(module.body)) {
+        mod.moduleScopeNames.insert(name);
+    }
+    for (const auto& name : ast::getHoistedVarDeclarations(module.body)) {
+        mod.moduleScopeNames.insert(name);
+    }
+    for (const auto& stmt : module.body) {
+        if (const auto* imp = dynamic_cast<const ast::ImportDecl*>(stmt.get())) {
+            for (const auto& spec : imp->specifiers) mod.moduleScopeNames.insert(spec.local);
+        }
+    }
+    for (const auto& name : hostClaimNames) mod.moduleScopeNames.insert(name);
+    if (!hostOverridesMath && mod.moduleScopeNames.count("Math") == 0) {
+        MathTaintScan taint;
+        for (const auto& stmt : module.body) {
+            if (stmt) stmt->accept(taint);
+        }
+        mod.mathPristine = !taint.tainted;
+    }
+    result.classLayouts.setMathPristine(mod.mathPristine);
     // Before any body is walked: the flow pass reads class identities to type
     // `this` and `new C()`, and it must read the SAME identity on the probe
     // passes and the recording pass, so the table cannot be built lazily as
@@ -480,26 +501,6 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         // in the loop below climbs, so the whole sequence is monotone from the
         // first round rather than from the second.
         refineFieldHarvest(mod, result);
-    }
-    mod.diags = &diags;
-    for (const auto& name : ast::getScopeDeclarations(module.body)) {
-        mod.moduleScopeNames.insert(name);
-    }
-    for (const auto& name : ast::getHoistedVarDeclarations(module.body)) {
-        mod.moduleScopeNames.insert(name);
-    }
-    for (const auto& stmt : module.body) {
-        if (const auto* imp = dynamic_cast<const ast::ImportDecl*>(stmt.get())) {
-            for (const auto& spec : imp->specifiers) mod.moduleScopeNames.insert(spec.local);
-        }
-    }
-    for (const auto& name : hostClaimNames) mod.moduleScopeNames.insert(name);
-    if (!hostOverridesMath) {
-        MathTaintScan taint;
-        for (const auto& stmt : module.body) {
-            if (stmt) stmt->accept(taint);
-        }
-        mod.mathPristine = !taint.tainted;
     }
     for (uint32_t i = 0; i < split.decls.size(); ++i) {
         const ast::FunctionDecl* decl = split.decls[i];
