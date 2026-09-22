@@ -10,6 +10,18 @@
 
 namespace bronze {
 
+constexpr brass::Type brassTypeOf(il::Type t) noexcept {
+    switch (t) {
+        case il::Type::Void: return brass::Type::void_type();
+        case il::Type::Bool: return brass::Type::i8();
+        case il::Type::I32: return brass::Type::i32();
+        case il::Type::F64: return brass::Type::f64();
+        case il::Type::Str: return brass::Type::ptr();
+        case il::Type::Dynamic: return brass::Type::i64();
+    }
+    return brass::Type::i64();
+}
+
 class BrassBackend : public Backend {
 public:
     BrassBackend() = default;
@@ -34,6 +46,10 @@ public:
     // a program needs the target's own host binary, so it stays native.
     void setTarget(const brass::Target& target) { target_ = target; }
     const brass::Target& target() const { return target_; }
+
+    std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
+                                                  DiagnosticSink& diags,
+                                                  std::vector<uint32_t>* globalReadKeysOut = nullptr);
 
     std::optional<brass::object::ObjectFile> buildObjectFile(const il::Module& module,
                                                             DiagnosticSink& diags);

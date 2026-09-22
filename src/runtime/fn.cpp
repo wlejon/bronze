@@ -83,4 +83,14 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
                            reinterpret_cast<const uint64_t*>(args_data)));
 }
 
+static thread_local EnterJsHook s_enter_js_hook = nullptr;
+
+EnterJsHook rtGetEnterJsHook() noexcept {
+    return s_enter_js_hook;
+}
+
+void rtSetEnterJsHook(EnterJsHook hook) noexcept {
+    s_enter_js_hook = hook;
+}
+
 }  // namespace bronze

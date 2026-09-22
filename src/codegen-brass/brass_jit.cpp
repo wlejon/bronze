@@ -85,6 +85,15 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
     BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_JIT)
 #undef BRONZE_ABI_REG_JIT
 
+    for (const auto& fn : module.functions) {
+        std::vector<brass::Type> paramTypes;
+        paramTypes.reserve(fn.params.size());
+        for (const auto& p : fn.params) {
+            paramTypes.push_back(brassTypeOf(p.type));
+        }
+        engine->register_function_signature(fn.name, brassTypeOf(fn.returnType), std::move(paramTypes));
+    }
+
     if (!engine->load_object(*obj)) {
         diags.error(Span{}, "Failed to load object into JIT execution engine");
         return nullptr;

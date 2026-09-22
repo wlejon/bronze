@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include "codegen-brass/brass_jit.h"
+#include "codegen-brass/brass_tiered_engine.h"
 #include "embed/embed.h"
 #include "modules/modules.h"
 #include "runtime/host_globals.h"
@@ -47,10 +48,13 @@ struct EvalOptions {
     bool optimize = true;
     bool moduleRegistry = false;
     std::vector<std::string> externalModules = {};
+    std::optional<ExecutionTier> tier = std::nullopt;
 };
 
 struct CompiledScript {
     std::unique_ptr<BrassJitProgram> jitProgram;
+    std::unique_ptr<BrassTieredProgram> tieredProgram;
+    ExecutionTier tier = ExecutionTier::Tier2_Optimized;
     std::string resName;
     std::string errorMessage;
     bool success = false;
@@ -59,6 +63,9 @@ struct CompiledScript {
 // Retains a JIT compiled program in memory for the process lifetime so its machine
 // code, data sections, and function pointers remain valid across executions.
 BRONZE_EMBED_API void retainJitProgram(std::unique_ptr<BrassJitProgram> program);
+
+// Retains a tiered program (interpreter, baseline, or multi-tier) in memory.
+BRONZE_EMBED_API void retainTieredProgram(std::unique_ptr<BrassTieredProgram> program);
 
 // Clears all retained JIT compiled programs.
 BRONZE_EMBED_API void clearRetainedJitPrograms();

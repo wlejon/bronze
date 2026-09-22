@@ -23,11 +23,12 @@ static int reportUncaught(Value thrown) {
     return 1;
 }
 
-int runEvalReal(std::string_view code) {
+int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier) {
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
-    embed::CallResult res = eval::evalScript(code, eval::EvalOptions{.filename = "<eval>"});
+    embed::CallResult res = eval::evalScript(
+        code, eval::EvalOptions{.filename = "<eval>", .tier = tier});
     if (res.thrown) return reportUncaught(res.value);
     if (!res.value.isUndefined()) {
         std::string out = embed::toUtf8(res.value);
@@ -36,7 +37,8 @@ int runEvalReal(std::string_view code) {
     return 0;
 }
 
-int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals) {
+int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals,
+                     std::optional<ExecutionTier> tier) {
     embed::setupIo();
     // This thread runs the program's JIT-compiled JS: the same note the
     // standalone main and the embed entry make, so BRONZE_SAMPLE=1 profiles
@@ -46,7 +48,7 @@ int runFileInJitReal(const std::string& filePath, const std::vector<std::string>
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
     embed::CallResult res = eval::evalFile(
-        filePath, eval::EvalOptions{.filename = filePath, .hostGlobals = hostGlobals});
+        filePath, eval::EvalOptions{.filename = filePath, .hostGlobals = hostGlobals, .tier = tier});
     if (res.thrown) return reportUncaught(res.value);
     return 0;
 }

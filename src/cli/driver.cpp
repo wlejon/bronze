@@ -566,13 +566,14 @@ void registerRunHooks(RunEvalFn evalFn, RunFileInJitFn fileFn) {
     s_runFileInJitFn = fileFn;
 }
 
-static int runEval(std::string_view code) {
-    if (s_runEvalFn) return s_runEvalFn(code);
+static int runEval(std::string_view code, std::optional<ExecutionTier> tier = std::nullopt) {
+    if (s_runEvalFn) return s_runEvalFn(code, tier);
     return fail("error: eval not supported in this build\n");
 }
 
-static int runFileInJit(const std::string& filePath, const std::vector<std::string>& hostGlobals) {
-    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals);
+static int runFileInJit(const std::string& filePath, const std::vector<std::string>& hostGlobals,
+                        std::optional<ExecutionTier> tier = std::nullopt) {
+    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier);
     return fail("error: run not supported in this build\n");
 }
 
@@ -606,8 +607,32 @@ int runDriver(int argc, char** argv) {
     }
 
     if (command == "-e" || command == "eval") {
-        if (argc < 3) return fail("error: missing code to evaluate\n");
-        return runEval(argv[2]);
+        std::string code;
+        std::optional<ExecutionTier> tier;
+        for (int i = 2; i < argc; ++i) {
+            std::string_view arg = argv[i];
+            if (arg == "--interp") {
+                tier = ExecutionTier::Tier0_Interpreter;
+            } else if (arg.rfind("--tier=", 0) == 0) {
+                auto parsed = parseExecutionTier(arg.substr(7));
+                if (!parsed) return fail("error: invalid tier: " + std::string(arg.substr(7)) + "\n");
+                tier = parsed;
+            } else if (arg == "--tier") {
+                if (i + 1 < argc) {
+                    auto parsed = parseExecutionTier(argv[++i]);
+                    if (!parsed) return fail("error: invalid tier: " + std::string(argv[i]) + "\n");
+                    tier = parsed;
+                } else {
+                    return fail("error: missing argument for --tier\n");
+                }
+            } else if (code.empty()) {
+                code = argv[i];
+            } else {
+                return fail("error: unexpected argument " + std::string(arg) + "\n");
+            }
+        }
+        if (code.empty()) return fail("error: missing code to evaluate\n");
+        return runEval(code, tier);
     }
 
     if (command == "run") {
@@ -616,18 +641,33 @@ int runDriver(int argc, char** argv) {
         // lowered against the same provided-globals set both ways.
         std::string sourcePath;
         std::string hostGlobalsPath;
+        std::optional<ExecutionTier> tier;
         for (int i = 2; i < argc; ++i) {
-            std::string arg = argv[i];
+            std::string_view arg = argv[i];
             if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
                 } else {
                     return fail("error: missing argument for --host-globals\n");
                 }
+            } else if (arg == "--interp") {
+                tier = ExecutionTier::Tier0_Interpreter;
+            } else if (arg.rfind("--tier=", 0) == 0) {
+                auto parsed = parseExecutionTier(arg.substr(7));
+                if (!parsed) return fail("error: invalid tier: " + std::string(arg.substr(7)) + "\n");
+                tier = parsed;
+            } else if (arg == "--tier") {
+                if (i + 1 < argc) {
+                    auto parsed = parseExecutionTier(argv[++i]);
+                    if (!parsed) return fail("error: invalid tier: " + std::string(argv[i]) + "\n");
+                    tier = parsed;
+                } else {
+                    return fail("error: missing argument for --tier\n");
+                }
             } else if (sourcePath.empty()) {
-                sourcePath = arg;
+                sourcePath = argv[i];
             } else {
-                return fail("error: unexpected argument " + arg + "\n");
+                return fail("error: unexpected argument " + std::string(arg) + "\n");
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
@@ -636,7 +676,7 @@ int runDriver(int argc, char** argv) {
             std::string err;
             if (!loadHostGlobals(hostGlobalsPath, hostGlobals, err)) return fail(err);
         }
-        return runFileInJit(sourcePath, hostGlobals);
+        return runFileInJit(sourcePath, hostGlobals, tier);
     }
 
 

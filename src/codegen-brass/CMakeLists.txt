@@ -25,6 +25,8 @@ add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
     brass_backend_sections.cpp
     brass_jit.cpp
+    brass_symbol_registration.cpp
+    brass_tiered_engine.cpp
     il_to_brass_ast.cpp
 )
 add_library(bronze::codegen_brass ALIAS bronze_codegen_brass)
@@ -70,6 +72,7 @@ target_link_libraries(bronze_codegen_brass PUBLIC
     bronze::abi
     bronze::codegen
     bronze::il
+    bronze::runtime
     bronze::support
     ${BRASS_LIB}
     Threads::Threads
@@ -86,9 +89,12 @@ endif()
 if(BRONZE_BUILD_TESTS)
     add_executable(bronze_codegen_brass_tests
         ../../tests/codegen_brass/codegen_brass_test.cpp
+        ../../tests/codegen_brass/tiered_engine_test.cpp
     )
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass
+        bronze::eval
+        bronze::embed
         bronze::cli
         bronze::runtime
         doctest::doctest

@@ -205,8 +205,20 @@ extern "C" uint64_t bronze_enter_js(bronze_fn_code code, uint64_t env_bits, uint
 // from C++ therefore runs the callee against whatever the register happens
 // to hold. The trampoline is the only C++ -> compiled entry besides the
 // module entry function, which loads the register itself.
+using EnterJsHook = bool (*)(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
+                            uint32_t argc, const uint64_t* argv, uint64_t* out_result);
+
+EnterJsHook rtGetEnterJsHook() noexcept;
+void rtSetEnterJsHook(EnterJsHook hook) noexcept;
+
 inline uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
                           uint32_t argc, const uint64_t* argv) {
+    if (auto* hook = rtGetEnterJsHook()) {
+        uint64_t result = 0;
+        if (hook(code, env_bits, this_bits, argc, argv, &result)) {
+            return result;
+        }
+    }
     return bronze_enter_js(code, env_bits, this_bits, argc, argv);
 }
 

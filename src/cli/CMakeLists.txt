@@ -32,7 +32,7 @@ if(BRONZE_BUILD_TESTS)
                                    ../../tests/cli/numeric_arith_boundary_test.cpp
                                    ../../tests/cli/lowering_determinism_test.cpp
                                    ../../tests/cli/large_arg_call_test.cpp)
-    target_link_libraries(bronze_cli_tests PRIVATE bronze::cli doctest::doctest)
+    target_link_libraries(bronze_cli_tests PRIVATE bronze::cli bronze::runtime bronze::embed doctest::doctest)
     # The determinism test needs a graph big enough for the hazard to have room
     # to happen in, and the vendored three.js one is already in the tree.
     target_compile_definitions(bronze_cli_tests PRIVATE

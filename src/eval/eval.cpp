@@ -37,6 +37,10 @@ static std::vector<std::unique_ptr<BrassJitProgram>>& retainedPrograms() {
     static auto* list = new std::vector<std::unique_ptr<BrassJitProgram>>();
     return *list;
 }
+static std::vector<std::unique_ptr<BrassTieredProgram>>& retainedTieredPrograms() {
+    static auto* list = new std::vector<std::unique_ptr<BrassTieredProgram>>();
+    return *list;
+}
 static std::mutex g_programsMutex;
 static std::mutex g_jitCompileMutex;
 static std::atomic<uint64_t> s_evalCounter{0};
@@ -242,6 +246,178 @@ std::unique_ptr<BrassJitProgram> compileFileToJit(
     return compileAstToJit(std::move(astModule), options, resName, diags, sources);
 }
 
+std::unique_ptr<BrassTieredProgram> compileAstToTiered(
+    std::unique_ptr<ast::Module> astModule,
+    const EvalOptions& options,
+    const std::string& resName,
+    DiagnosticSink& diags,
+    SourceSet& sources) {
+
+    if (!astModule) return nullptr;
+    std::lock_guard<std::mutex> compileLock(g_jitCompileMutex);
+    transformEvalAst(*astModule, resName);
+
+    std::vector<std::string> hostGlobals = options.hostGlobals;
+    if (hostGlobals.empty()) {
+        for (const auto& entry : runtime::rtHostGlobalEntries()) {
+            hostGlobals.push_back(entry.first);
+        }
+    }
+
+    std::optional<lower::NativeManifest> nativeManifest;
+    if (!embed::hostNativeNames().empty()) {
+        std::string err;
+        nativeManifest = lower::NativeManifest::parse(embed::nativeManifestJson(), "<registry>", err);
+        if (!nativeManifest) {
+            diags.error(Span{}, err);
+            return nullptr;
+        }
+        for (const auto& root : nativeManifest->namespaceRoots()) {
+            hostGlobals.push_back(root);
+        }
+    }
+
+    types::PinManifest pins;
+    if (!options.pinsPath.empty()) {
+        std::ifstream in(options.pinsPath, std::ios::binary);
+        if (in) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            std::string err;
+            pins.parse(ss.str(), options.pinsPath, err, /*allowObserved=*/true);
+        }
+    }
+
+    auto inferred = types::inferModule(*astModule, diags,
+                                       hostGlobals.empty() ? nullptr : &hostGlobals,
+                                       pins.empty() ? nullptr : &pins);
+    if (diags.hasErrors() || !inferred) return nullptr;
+
+    auto ilModule = lower::lowerModule(*astModule, diags,
+                                       inferred ? &*inferred : nullptr,
+                                       hostGlobals.empty() ? nullptr : &hostGlobals,
+                                       &sources,
+                                       /*stats=*/nullptr,
+                                       /*assumeNoBigInt=*/false,
+                                       pins.empty() ? nullptr : &pins,
+                                       options.censusOutPath,
+                                       nativeManifest ? &*nativeManifest : nullptr);
+    if (diags.hasErrors() || !ilModule) return nullptr;
+
+    if (!options.retainSource) {
+        ilModule->sourceTexts.clear();
+    }
+
+    const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
+    const std::string entrySym = "__bronze_dyn_entry_" + std::to_string(evalId);
+
+    TieredEngineConfig tieredConfig;
+    tieredConfig.tier = options.tier.value_or(ExecutionTier::Tier0_Interpreter);
+    tieredConfig.entrySymbol = entrySym;
+    tieredConfig.hostGlobals = hostGlobals;
+    tieredConfig.optimize = options.optimize;
+    tieredConfig.propagateExceptionsInEntry = true;
+
+    BrassTieredEngine tieredEngine(tieredConfig);
+    auto tieredProgram = tieredEngine.compile(*ilModule, diags);
+    if (!tieredProgram) return nullptr;
+
+    if (!ilModule->nativeImports.empty()) {
+        void* table = tieredProgram->symbolAddress(entrySym + "_native_imports");
+        std::vector<std::string> missing;
+        if (!table || !embed::bindNativeImports(table, &missing)) {
+            std::string msg = "native imports unbound: the host registered no native for";
+            for (const auto& m : missing) msg += "\n  " + m;
+            if (!table) msg += "\n  (the program's import table symbol is missing)";
+            diags.error(Span{}, msg);
+            return nullptr;
+        }
+    }
+    return tieredProgram;
+}
+
+std::unique_ptr<BrassTieredProgram> compileSourceToTiered(
+    const std::string& code,
+    const EvalOptions& options,
+    const std::string& resName,
+    DiagnosticSink& diags,
+    SourceSet& sources) {
+
+    modules::ModuleOptions modOpts;
+    modOpts.moduleRoots = options.moduleRoots;
+    modOpts.entryResolvesAs = options.entryResolvesAs;
+    applyModuleRegistry(options, modOpts);
+
+    auto astModule = modules::loadProgramSource(code, options.filename, sources, diags, modOpts);
+    if (diags.hasErrors() || !astModule) return nullptr;
+
+    return compileAstToTiered(std::move(astModule), options, resName, diags, sources);
+}
+
+std::unique_ptr<BrassTieredProgram> compileFileToTiered(
+    const std::string& filePath,
+    const EvalOptions& options,
+    const std::string& resName,
+    DiagnosticSink& diags,
+    SourceSet& sources) {
+
+    modules::ModuleOptions modOpts;
+    modOpts.moduleRoots = options.moduleRoots;
+    modOpts.entryResolvesAs = options.entryResolvesAs;
+    applyModuleRegistry(options, modOpts);
+
+    auto astModule = modules::loadProgram(filePath, sources, diags, modOpts);
+    if (diags.hasErrors() || !astModule) return nullptr;
+
+    return compileAstToTiered(std::move(astModule), options, resName, diags, sources);
+}
+
+embed::CallResult runTieredProgramAndCollectResult(
+    std::unique_ptr<BrassTieredProgram> tieredProgram,
+    const std::string& resName,
+    embed::ModuleHandle* moduleHandleOut) {
+
+    auto* programPtr = tieredProgram.get();
+    retainTieredProgram(std::move(tieredProgram));
+
+    if (runtime::rtExceptionPending()) {
+        runtime::rtClearException();
+    }
+
+    const embed::ModuleHandle handle = moduleHandleOut ? embed::beginModuleLoad() : 0;
+    if (moduleHandleOut) *moduleHandleOut = handle;
+
+    uint64_t entryBits = 0;
+    {
+        bronze::ShadowStackFrame stackFrame;
+        brass::RuntimeValue ret = programPtr->run();
+        entryBits = ret.as_u64();
+    }
+    embed::drainMicrotasks();
+    embed::endModuleLoad(handle);
+
+    if (runtime::rtExceptionPending()) {
+        Value thrown(runtime::rtTls()->exception_cell);
+        runtime::rtClearException();
+        return embed::CallResult{thrown, /*thrown=*/true};
+    }
+
+    Value entryVal(entryBits);
+    if (entryVal.isObject() && embed::isPromise(entryVal)) {
+        return embed::CallResult{entryVal, /*thrown=*/false};
+    }
+
+    embed::GlobalValue g = embed::globalValue(resName);
+    embed::Persistent result{g.found ? g.value : embed::undefined()};
+
+    embed::GlobalValue glob = embed::globalValue("globalThis");
+    if (glob.found) {
+        embed::deleteProperty(glob.value, resName);
+    }
+
+    return embed::CallResult{result.get(), /*thrown=*/false};
+}
+
 embed::CallResult runJitProgramAndCollectResult(
     std::unique_ptr<BrassJitProgram> jitProgram,
     const std::string& resName,
@@ -303,9 +479,16 @@ void retainJitProgram(std::unique_ptr<BrassJitProgram> program) {
     retainedPrograms().push_back(std::move(program));
 }
 
+void retainTieredProgram(std::unique_ptr<BrassTieredProgram> program) {
+    if (!program) return;
+    std::lock_guard<std::mutex> lock(g_programsMutex);
+    retainedTieredPrograms().push_back(std::move(program));
+}
+
 void clearRetainedJitPrograms() {
     std::lock_guard<std::mutex> lock(g_programsMutex);
     retainedPrograms().clear();
+    retainedTieredPrograms().clear();
 }
 
 std::unique_ptr<CompiledScript> compileScript(std::string_view source, const EvalOptions& options) {
@@ -317,16 +500,26 @@ std::unique_ptr<CompiledScript> compileScript(std::string_view source, const Eva
 
     const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
     res->resName = "__bronze_eval_res_" + std::to_string(evalId);
+    res->tier = options.tier.value_or(ExecutionTier::Tier2_Optimized);
 
     SourceSet sources;
     DiagnosticSink diags;
     std::string codeStr(source);
 
-    res->jitProgram = compileSourceToJit(codeStr, options, res->resName, diags, sources);
-    if (!res->jitProgram) {
-        res->errorMessage = diags.render(sources);
-        res->success = false;
-        return res;
+    if (options.tier.has_value() && *options.tier != ExecutionTier::Tier2_Optimized) {
+        res->tieredProgram = compileSourceToTiered(codeStr, options, res->resName, diags, sources);
+        if (!res->tieredProgram) {
+            res->errorMessage = diags.render(sources);
+            res->success = false;
+            return res;
+        }
+    } else {
+        res->jitProgram = compileSourceToJit(codeStr, options, res->resName, diags, sources);
+        if (!res->jitProgram) {
+            res->errorMessage = diags.render(sources);
+            res->success = false;
+            return res;
+        }
     }
 
     res->success = true;
@@ -337,15 +530,25 @@ std::unique_ptr<CompiledScript> compileFile(const std::string& filePath, const E
     auto res = std::make_unique<CompiledScript>();
     const uint64_t evalId = s_evalCounter.fetch_add(1, std::memory_order_relaxed);
     res->resName = "__bronze_eval_res_" + std::to_string(evalId);
+    res->tier = options.tier.value_or(ExecutionTier::Tier2_Optimized);
 
     SourceSet sources;
     DiagnosticSink diags;
 
-    res->jitProgram = compileFileToJit(filePath, options, res->resName, diags, sources);
-    if (!res->jitProgram) {
-        res->errorMessage = diags.render(sources);
-        res->success = false;
-        return res;
+    if (options.tier.has_value() && *options.tier != ExecutionTier::Tier2_Optimized) {
+        res->tieredProgram = compileFileToTiered(filePath, options, res->resName, diags, sources);
+        if (!res->tieredProgram) {
+            res->errorMessage = diags.render(sources);
+            res->success = false;
+            return res;
+        }
+    } else {
+        res->jitProgram = compileFileToJit(filePath, options, res->resName, diags, sources);
+        if (!res->jitProgram) {
+            res->errorMessage = diags.render(sources);
+            res->success = false;
+            return res;
+        }
     }
 
     res->success = true;
@@ -364,6 +567,10 @@ embed::CallResult runCompiledScript(std::unique_ptr<CompiledScript> script, cons
         Value syntaxErr(runtime::rtTls()->exception_cell);
         runtime::rtClearException();
         return embed::CallResult{syntaxErr, /*thrown=*/true};
+    }
+
+    if (script->tieredProgram) {
+        return runTieredProgramAndCollectResult(std::move(script->tieredProgram), script->resName, options.moduleHandleOut);
     }
 
     if (!script->jitProgram) {

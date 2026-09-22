@@ -23,6 +23,7 @@ public:
 
     void* entryPoint() const noexcept;
     void* symbolAddress(std::string_view name) const;
+    brass::codegen::JitExecutionEngine* engine() const noexcept { return engine_.get(); }
     void run();
 
 private:

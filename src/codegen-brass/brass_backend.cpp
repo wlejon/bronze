@@ -71,17 +71,6 @@ std::vector<std::string> computeUniqueFunctionNames(const il::Module& module) {
     return uniqueNames;
 }
 
-constexpr brass::Type brassTypeOf(il::Type t) noexcept {
-    switch (t) {
-        case il::Type::Void: return brass::Type::void_type();
-        case il::Type::Bool: return brass::Type::i8();
-        case il::Type::I32: return brass::Type::i32();
-        case il::Type::F64: return brass::Type::f64();
-        case il::Type::Str: return brass::Type::ptr();
-        case il::Type::Dynamic: return brass::Type::i64();
-    }
-    return brass::Type::i64();
-}
 
 void emitGlobalReadThunks(brass::Module& mod, const std::string& entrySymbol,
                           const std::vector<uint32_t>& globalReadKeys) {
@@ -245,10 +234,9 @@ bool BrassBackend::optimize() const {
     return optimize_ && !forcedOff;
 }
 
-std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
-    const il::Module& module, DiagnosticSink& diags) {
-    // The inside of the CLI's "codegen" phase, one level deeper.
-    support::PhaseTimer timer(support::timingsEnabled(), 4);
+std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
+    const il::Module& module, DiagnosticSink& diags,
+    std::vector<uint32_t>* globalReadKeysOut) {
     const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
 
     const bool optimize = this->optimize();
@@ -345,9 +333,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     brass::DiagnosticReporter reporter;
     std::vector<uint32_t> globalReadKeys;
     auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
-    timer.mark("il->ast");
     brass::il::TranslationResult res = brass::il::translate_bronze_ast(ast, options, &reporter);
-    timer.mark("translate");
 
     if (!res.success || !res.module || reporter.has_errors()) {
         if (reporter.has_errors() || reporter.has_warnings()) {
@@ -363,18 +349,40 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
             std::string msg = !res.error_message.empty() ? res.error_message : "Failed to translate Bronze IL to Brass MIR";
             diags.error(Span{}, std::move(msg));
         }
-        return std::nullopt;
+        return nullptr;
     }
 
     if (entrySymbol_ != "main") {
         if (auto* fn = res.module->get_function("main")) {
-            fn->set_name(res.module->string_pool().intern(entrySymbol_));
+            res.module->rename_function(fn, entrySymbol_);
         }
     }
 
-    const size_t globalCacheCount = globalReadKeys.size();
     emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys);
     emitNativeImportThunks(*res.module, module, entrySymbol_);
+
+    if (globalReadKeysOut) {
+        *globalReadKeysOut = std::move(globalReadKeys);
+    }
+
+    return std::move(res.module);
+}
+
+std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
+    const il::Module& module, DiagnosticSink& diags) {
+    // The inside of the CLI's "codegen" phase, one level deeper.
+    support::PhaseTimer timer(support::timingsEnabled(), 4);
+    const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
+    std::vector<uint32_t> globalReadKeys;
+
+    auto mirMod = buildMirModule(module, diags, &globalReadKeys);
+    if (!mirMod) {
+        return std::nullopt;
+    }
+
+    const size_t globalCacheCount = globalReadKeys.size();
+    const std::vector<uint32_t> methodIcSites = module.methodIcSites();
+    const bool optimize = this->optimize();
 
     const brass::Target target = target_;
     brass::object::ModuleCompiler compiler(target);
@@ -385,7 +393,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     compiler.set_enable_trace_layout(optimize);
     compiler.set_enable_mir_opts(optimize);
     timer.mark("thunks");
-    brass::object::ObjectFile obj = compiler.compile(*res.module);
+    brass::object::ObjectFile obj = compiler.compile(*mirMod);
     timer.mark("brass compile");
 
     renameEntrySymbol(obj, entrySymbol_);
