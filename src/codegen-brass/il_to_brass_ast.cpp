@@ -458,7 +458,7 @@ brass::il::BronzeModuleAST lowerToBrassAst(
     std::vector<uint32_t>* globalReadKeys
 ) {
     brass::il::BronzeModuleAST ast;
-    ast.name = module.name;
+    ast.name = !module.name.empty() ? module.name : (!module.sourceFiles.empty() ? module.sourceFiles[0] : "");
     ast.functions.reserve(module.functions.size());
 
     if (globalReadKeys) {

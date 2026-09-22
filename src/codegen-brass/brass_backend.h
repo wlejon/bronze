@@ -46,6 +46,8 @@ public:
     // a program needs the target's own host binary, so it stays native.
     void setTarget(const brass::Target& target) { target_ = target; }
     const brass::Target& target() const { return target_; }
+    void setEmitDebugInfo(bool on) { emitDebugInfo_ = on; }
+    bool emitDebugInfo() const { return emitDebugInfo_; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -65,6 +67,7 @@ private:
     bool sharedRuntime_ = false;
     bool propagateExceptionsInEntry_ = false;
     bool optimize_ = true;
+    bool emitDebugInfo_ = false;
     brass::Target target_ = brass::Target::host();
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;

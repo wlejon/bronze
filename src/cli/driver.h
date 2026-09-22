@@ -129,7 +129,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // against a page it already loaded — binds these instances instead
              // of compiling a second copy. Off by default: a standalone program
              // is one unit and the namespaces would be built for nothing.
-             bool publishModules = false);
+             bool publishModules = false,
+             bool emitDebugInfo = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

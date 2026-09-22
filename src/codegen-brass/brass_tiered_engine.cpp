@@ -322,6 +322,7 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         backend.setHostGlobals(config_.hostGlobals);
         backend.setOptimize(config_.optimize);
         backend.setPropagateExceptionsInEntry(config_.propagateExceptionsInEntry);
+        backend.setEmitDebugInfo(config_.emitDebugInfo);
 
         auto jitProg = backend.compileToJit(module, diags);
         if (!jitProg) return nullptr;
@@ -336,6 +337,7 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     backend.setHostGlobals(config_.hostGlobals);
     backend.setOptimize(config_.optimize);
     backend.setPropagateExceptionsInEntry(config_.propagateExceptionsInEntry);
+    backend.setEmitDebugInfo(config_.emitDebugInfo);
 
     std::vector<uint32_t> globalReadKeys;
     auto mirMod = backend.buildMirModule(module, diags, &globalReadKeys);

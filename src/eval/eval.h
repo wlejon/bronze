@@ -46,6 +46,7 @@ struct EvalOptions {
     // semantics, slower code — the tier for a host's edit-and-reload loop,
     // not for the build it ships.
     bool optimize = true;
+    bool emitDebugInfo = false;
     bool moduleRegistry = false;
     std::vector<std::string> externalModules = {};
     std::optional<ExecutionTier> tier = std::nullopt;

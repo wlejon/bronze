@@ -23,6 +23,7 @@ endif()
 
 add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
+    brass_backend_debug.cpp
     brass_backend_sections.cpp
     brass_jit.cpp
     brass_symbol_registration.cpp
@@ -91,6 +92,7 @@ if(BRONZE_BUILD_TESTS)
         ../../tests/codegen_brass/codegen_brass_test.cpp
         ../../tests/codegen_brass/tiered_engine_test.cpp
         ../../tests/codegen_brass/optimization_test.cpp
+        ../../tests/codegen_brass/debug_test.cpp
     )
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass

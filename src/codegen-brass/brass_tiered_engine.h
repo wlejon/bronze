@@ -36,6 +36,7 @@ struct TieredEngineConfig {
     std::vector<std::string> hostGlobals;
     bool optimize = true;
     bool propagateExceptionsInEntry = true;
+    bool emitDebugInfo = false;
     size_t gcSemispaceSize = 1024 * 1024;
 };
 

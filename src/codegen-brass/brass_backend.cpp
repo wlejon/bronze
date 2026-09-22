@@ -1,4 +1,5 @@
 #include "codegen-brass/brass_backend.h"
+#include "codegen-brass/brass_backend_debug.h"
 #include "codegen-brass/brass_backend_sections.h"
 #include "codegen-brass/il_to_brass_ast.h"
 
@@ -410,7 +411,10 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // table (brass_backend_sections.cpp).
     codegen::SectionInputs sectionInputs{module, uniqueNames, entrySymbol_, hostGlobals_,
                                          globalCacheCount, methodIcSites};
+    codegen::translateDebugLocations(obj, module, uniqueNames, entrySymbol_);
     codegen::emitBronzeSections(obj, target, sectionInputs, timer);
+    codegen::emitNativeDebugSections(obj, module, uniqueNames, entrySymbol_, emitDebugInfo_);
+    timer.mark("native debug");
 
     return obj;
 }

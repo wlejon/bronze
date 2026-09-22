@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ast/dump.h"
+#include "cli/driver_helpers.h"
 #include "cli/link.h"
 #include "cli/run.h"
 #include "cli/usage.h"
@@ -38,131 +39,6 @@ namespace {
 // Wall time per compilation phase, printed to stderr on `--timings`
 // (support/timings.h has the reasoning and the timer).
 using support::PhaseTimer;
-
-int fail(const std::string& message) {
-    std::fputs(message.c_str(), stderr);
-    return 1;
-}
-
-// Diagnostics from a compilation that SUCCEEDED — warnings, since an error
-// would have taken an early return. They go to stderr because stdout is the
-// artefact (the IL dump, the type dump) and a caller pipes it. Rendering them
-// only on failure, as the error path does, drops every annotation warning a
-// discarded hint emits — and a diagnostic nobody prints is not a diagnostic.
-void reportWarnings(const DiagnosticSink& diags, const SourceSet& sources) {
-    if (diags.all().empty()) return;
-    std::fputs(diags.render(sources).c_str(), stderr);
-}
-
-bool readFile(const std::string& path, std::string& out) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    out = ss.str();
-    return true;
-}
-
-// The `--host-globals` manifest: one JavaScript identifier per line, `#`
-// starts a comment, blank lines ignored. Validation is strict and ASCII —
-// IdentifierStart [A-Za-z_$], IdentifierPart adds digits — which is narrower
-// than the lexer's own identifier grammar on purpose: the manifest is a
-// contract between two builds (this one and the host's registration calls),
-// and a contract is the wrong place for Unicode spellings two editors can
-// disagree about. A name outside the envelope is a hard error naming the
-// line, never a silent skip.
-bool loadHostGlobals(const std::string& path, std::vector<std::string>& out, std::string& err) {
-    std::string text;
-    if (!readFile(path, text)) {
-        err = "error: cannot read host-globals manifest " + path + "\n";
-        return false;
-    }
-    std::istringstream lines(text);
-    std::string line;
-    int lineNo = 0;
-    while (std::getline(lines, line)) {
-        ++lineNo;
-        if (auto hash = line.find('#'); hash != std::string::npos) line.erase(hash);
-        // Trim: the manifest is hand-written, and trailing whitespace (or a
-        // \r from a CRLF editor) must not turn a valid name into an error.
-        const auto first = line.find_first_not_of(" \t\r");
-        if (first == std::string::npos) continue;
-        const auto last = line.find_last_not_of(" \t\r");
-        std::string name = line.substr(first, last - first + 1);
-
-        auto isStart = [](char c) {
-            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
-        };
-        auto isPart = [&](char c) { return isStart(c) || (c >= '0' && c <= '9'); };
-        bool valid = isStart(name[0]);
-        for (size_t i = 1; valid && i < name.size(); ++i) valid = isPart(name[i]);
-        if (!valid) {
-            err = "error: " + path + ":" + std::to_string(lineNo) +
-                  ": not a valid identifier in host-globals manifest: '" + name + "'\n";
-            return false;
-        }
-        out.push_back(std::move(name));
-    }
-    return true;
-}
-
-// The `--pins` manifest. The grammar and what an entry promises are in
-// types/pins.h; this reads the file and reports an unreadable one through the
-// same path a bad host-globals manifest takes.
-bool loadPins(const std::string& path, types::PinManifest& out, std::string& err,
-              bool allowObserved) {
-    std::string text;
-    if (!readFile(path, text)) {
-        err = "error: cannot read pin manifest " + path + "\n";
-        return false;
-    }
-    return out.parse(text, path, err, allowObserved);
-}
-
-// Does this invocation have a HOST BOUNDARY — a channel through which a value
-// no part of the compiled text ever built can reach the compiled code?
-//
-// There are exactly three, and each is named on the command line: a
-// `--host-globals` manifest (the host registers whatever those names hold),
-// `--emit-obj` (the host's own link step puts the object beside its own code
-// and calls the exported entry with whatever it likes), and `--emit-shared`
-// (the same, resolved at run time). Any of them and the compiled program is
-// half a program. None of them and `bronze build` linked the WHOLE of it: the
-// only values that can reach an operator are the ones the module graph's own
-// text builds, and a whole-program scan of that text is a proof rather than a
-// guess.
-//
-// One predicate rather than three tests spelled out at each use, because the
-// answer is what a promise flag is FOR: `--assume-no-bigint` asserts something
-// about exactly the part of the program this predicate says the compiler
-// cannot see, so a build for which it answers false needs no promise at all.
-bool hasHostBoundary(const std::string& hostGlobalsPath, bool emitObj, bool emitShared) {
-    return !hostGlobalsPath.empty() || emitObj || emitShared;
-}
-
-// `--target <arch>-<os>`: the machines brass has a code generator and an
-// image writer for. The object and the module written from it are the only
-// things that change; the runtime a module imports is that machine's.
-bool parseTargetName(const std::string& name, brass::Target& out, std::string& err) {
-    static const struct { const char* name; brass::Target target; } kTargets[] = {
-        {"x64-windows", brass::Target::x64_windows()},
-        {"x64-linux", brass::Target::x64_linux()},
-        {"x64-macos", brass::Target::x64_macos()},
-        {"aarch64-linux", brass::Target::aarch64_linux()},
-        {"aarch64-macos", brass::Target::aarch64_macos()},
-        {"aarch64-windows", brass::Target::aarch64_windows()},
-    };
-    for (const auto& t : kTargets) {
-        if (name == t.name) {
-            out = t.target;
-            return true;
-        }
-    }
-    err = "error: unknown --target " + name + "; one of";
-    for (const auto& t : kTargets) err += std::string(" ") + t.name;
-    err += "\n";
-    return false;
-}
 
 // `--native-manifest <path>`: the JSON `embed::writeNativeManifest` printed
 // (lower/native_manifest.h), or a directory of them. Empty path = no natives.
@@ -354,7 +230,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& pinsPath, const std::string& censusOutPath,
              bool pinsAllowObserved, const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
-             const std::string& targetName, bool publishModules) {
+             const std::string& targetName, bool publishModules, bool emitDebugInfo) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -511,6 +387,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         if (!entrySymbol.empty()) objBackend.setEntrySymbol(entrySymbol);
         objBackend.setHostGlobals(hostGlobals);
         objBackend.setTarget(target);
+        objBackend.setEmitDebugInfo(emitDebugInfo);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
         timer.total();
@@ -532,6 +409,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     backend.setHostGlobals(hostGlobals);
     backend.setSharedRuntime(emitShared);
     backend.setTarget(target);
+    backend.setEmitDebugInfo(emitDebugInfo);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     timer.mark("codegen");
     if (!obj) {
@@ -566,14 +444,14 @@ void registerRunHooks(RunEvalFn evalFn, RunFileInJitFn fileFn) {
     s_runFileInJitFn = fileFn;
 }
 
-static int runEval(std::string_view code, std::optional<ExecutionTier> tier = std::nullopt) {
-    if (s_runEvalFn) return s_runEvalFn(code, tier);
+static int runEval(std::string_view code, std::optional<ExecutionTier> tier = std::nullopt, bool emitDebugInfo = false) {
+    if (s_runEvalFn) return s_runEvalFn(code, tier, emitDebugInfo);
     return fail("error: eval not supported in this build\n");
 }
 
 static int runFileInJit(const std::string& filePath, const std::vector<std::string>& hostGlobals,
-                        std::optional<ExecutionTier> tier = std::nullopt) {
-    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier);
+                        std::optional<ExecutionTier> tier = std::nullopt, bool emitDebugInfo = false) {
+    if (s_runFileInJitFn) return s_runFileInJitFn(filePath, hostGlobals, tier, emitDebugInfo);
     return fail("error: run not supported in this build\n");
 }
 
@@ -609,9 +487,12 @@ int runDriver(int argc, char** argv) {
     if (command == "-e" || command == "eval") {
         std::string code;
         std::optional<ExecutionTier> tier;
+        bool emitDebugInfo = false;
         for (int i = 2; i < argc; ++i) {
             std::string_view arg = argv[i];
-            if (arg == "--interp") {
+            if (arg == "-g" || arg == "--debug") {
+                emitDebugInfo = true;
+            } else if (arg == "--interp") {
                 tier = ExecutionTier::Tier0_Interpreter;
             } else if (arg.rfind("--tier=", 0) == 0) {
                 auto parsed = parseExecutionTier(arg.substr(7));
@@ -632,7 +513,7 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (code.empty()) return fail("error: missing code to evaluate\n");
-        return runEval(code, tier);
+        return runEval(code, tier, emitDebugInfo);
     }
 
     if (command == "run") {
@@ -642,9 +523,12 @@ int runDriver(int argc, char** argv) {
         std::string sourcePath;
         std::string hostGlobalsPath;
         std::optional<ExecutionTier> tier;
+        bool emitDebugInfo = false;
         for (int i = 2; i < argc; ++i) {
             std::string_view arg = argv[i];
-            if (arg == "--host-globals") {
+            if (arg == "-g" || arg == "--debug") {
+                emitDebugInfo = true;
+            } else if (arg == "--host-globals") {
                 if (i + 1 < argc) {
                     hostGlobalsPath = argv[++i];
                 } else {
@@ -676,7 +560,7 @@ int runDriver(int argc, char** argv) {
             std::string err;
             if (!loadHostGlobals(hostGlobalsPath, hostGlobals, err)) return fail(err);
         }
-        return runFileInJit(sourcePath, hostGlobals, tier);
+        return runFileInJit(sourcePath, hostGlobals, tier, emitDebugInfo);
     }
 
 
@@ -854,11 +738,15 @@ int runDriver(int argc, char** argv) {
         bool pinsAllowObserved = false;
         std::string nativeManifestPath;
         std::string targetName;
+        bool targetNameSet = false;
+        bool emitDebugInfo = false;
         bool publishModules = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
-            if (arg == "--no-infer") {
+            if (arg == "-g" || arg == "--debug") {
+                emitDebugInfo = true;
+            } else if (arg == "--no-infer") {
                 infer = false;
             } else if (arg == "--target") {
                 if (i + 1 < argc) {
@@ -970,7 +858,7 @@ int runDriver(int argc, char** argv) {
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
-                        targetName, publishModules);
+                        targetName, publishModules, emitDebugInfo);
     }
 
     return fail(kUsage);

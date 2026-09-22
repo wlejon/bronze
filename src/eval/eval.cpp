@@ -173,6 +173,7 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
     backend.setEntrySymbol(entrySym);
     backend.setHostGlobals(hostGlobals);
     backend.setOptimize(options.optimize);
+    backend.setEmitDebugInfo(options.emitDebugInfo);
 
     auto program = backend.compileToJit(*ilModule, diags);
     if (!program) return nullptr;
@@ -317,6 +318,7 @@ std::unique_ptr<BrassTieredProgram> compileAstToTiered(
     tieredConfig.hostGlobals = hostGlobals;
     tieredConfig.optimize = options.optimize;
     tieredConfig.propagateExceptionsInEntry = true;
+    tieredConfig.emitDebugInfo = options.emitDebugInfo;
 
     BrassTieredEngine tieredEngine(tieredConfig);
     auto tieredProgram = tieredEngine.compile(*ilModule, diags);
