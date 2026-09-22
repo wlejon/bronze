@@ -16,8 +16,229 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace bronze {
+
+namespace {
+
+std::string sanitizeFunctionName(std::string_view name) {
+    std::string s;
+    s.reserve(name.size());
+    for (char c : name) {
+        s.push_back(c == ' ' ? '_' : c);
+    }
+    return s;
+}
+
+std::vector<std::string> computeUniqueFunctionNames(const il::Module& module) {
+    const size_t numFns = module.functions.size();
+    std::vector<std::string> uniqueNames(numFns);
+    std::unordered_map<std::string, size_t> nameCounts;
+    nameCounts.reserve(numFns);
+
+    for (const auto& fn : module.functions) {
+        nameCounts[sanitizeFunctionName(fn.name)]++;
+    }
+
+    std::unordered_set<std::string> usedNames;
+    usedNames.reserve(numFns);
+
+    for (size_t i = 0; i < numFns; ++i) {
+        const auto& fn = module.functions[i];
+        if (fn.isEntryPoint || (fn.name == "main" && nameCounts["main"] == 1)) {
+            uniqueNames[i] = "main";
+            usedNames.insert("main");
+        }
+    }
+
+    for (size_t i = 0; i < numFns; ++i) {
+        if (!uniqueNames[i].empty()) continue;
+        const auto& fn = module.functions[i];
+        std::string sName = sanitizeFunctionName(fn.name);
+        if (nameCounts[sName] == 1 && !usedNames.contains(sName)) {
+            usedNames.insert(sName);
+            uniqueNames[i] = std::move(sName);
+        } else {
+            std::string uname = sName + "$" + std::to_string(i);
+            usedNames.insert(uname);
+            uniqueNames[i] = std::move(uname);
+        }
+    }
+
+    return uniqueNames;
+}
+
+constexpr brass::Type brassTypeOf(il::Type t) noexcept {
+    switch (t) {
+        case il::Type::Void: return brass::Type::void_type();
+        case il::Type::Bool: return brass::Type::i8();
+        case il::Type::I32: return brass::Type::i32();
+        case il::Type::F64: return brass::Type::f64();
+        case il::Type::Str: return brass::Type::ptr();
+        case il::Type::Dynamic: return brass::Type::i64();
+    }
+    return brass::Type::i64();
+}
+
+void emitGlobalReadThunks(brass::Module& mod, const std::string& entrySymbol,
+                          const std::vector<uint32_t>& globalReadKeys) {
+    if (globalReadKeys.empty()) return;
+
+    const std::string globalCacheSym = codegen::moduleSymbolName(entrySymbol, "__bronze_global_cache");
+    const std::string keyMapSym = codegen::moduleSymbolName(entrySymbol, "__bronze_key_map");
+    const auto globalCacheCount = static_cast<int64_t>(globalReadKeys.size());
+
+    mod.add_external_symbol(globalCacheSym);
+    mod.add_external_symbol("bronze_global_get_cached");
+
+    for (size_t slot = 0; slot < globalReadKeys.size(); ++slot) {
+        const uint32_t key = globalReadKeys[slot];
+        brass::Function* thunk = mod.create_function(codegen::globalReadThunkName(key), brass::Type::i64());
+        brass::Builder b(mod);
+        b.set_function(thunk);
+
+        brass::BasicBlock* entry = b.append_block("entry");
+        brass::BasicBlock* hit = b.append_block("hit");
+        brass::BasicBlock* miss = b.append_block("miss");
+
+        b.position_at_end(entry);
+        brass::Value* cells = b.build_func_addr(globalCacheSym);
+        brass::Value* cached = b.build_load(brass::Type::i64(), cells, static_cast<int32_t>(slot * sizeof(uint64_t)));
+        brass::Value* hole = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NO_EXCEPTION_BITS));
+        brass::Value* isHole = b.build_eq(cached, hole);
+        b.build_br_if(isHole, miss, hit);
+
+        b.position_at_end(hit);
+        b.build_ret(cached);
+
+        b.position_at_end(miss);
+        brass::Value* keyMap = b.build_func_addr(keyMapSym);
+        brass::Value* keyId = b.build_load(brass::Type::i32(), keyMap, static_cast<int32_t>(key * sizeof(uint32_t)));
+        brass::Value* count = b.build_iconst_i64(globalCacheCount);
+        brass::Value* slotVal = b.build_iconst_i32(static_cast<int32_t>(slot));
+        brass::Value* resolved = b.build_call("bronze_global_get_cached", brass::Type::i64(), {keyId, cells, count, slotVal});
+        b.build_ret(resolved);
+
+        thunk->rebuild_cfg_predecessors();
+    }
+}
+
+void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
+                            const std::string& entrySymbol) {
+    const auto& imports = module.nativeImports;
+    if (imports.empty()) return;
+
+    const std::string importsSymbol = entrySymbol + "_native_imports";
+    mod.add_external_symbol(importsSymbol);
+    mod.add_external_symbol("bronze_native_bind");
+    mod.add_external_symbol("bronze_native_unbound");
+    mod.add_external_symbol("bronze_native_buffer_slot");
+    mod.add_external_symbol("bronze_native_buffer_wrap");
+
+    for (size_t i = 0; i < imports.size(); ++i) {
+        const il::Function& decl = module.functions[imports[i].functionIndex];
+        const bool isClassSlot = imports[i].name.rfind("class ", 0) == 0;
+
+        std::vector<brass::Type> paramTypes;
+        paramTypes.reserve(decl.params.size());
+        for (const auto& p : decl.params) {
+            paramTypes.push_back(brassTypeOf(p.type));
+        }
+
+        const brass::Type retType = (decl.returnType == il::Type::Bool)
+                                        ? brass::Type::i32()
+                                        : brassTypeOf(decl.returnType);
+
+        brass::Function* thunk = mod.get_function(decl.name);
+        if (!thunk) {
+            thunk = mod.create_function(
+                decl.name, retType, brass::Span<const brass::Type>(paramTypes.data(), paramTypes.size()));
+        }
+
+        brass::Builder b(mod);
+        b.set_function(thunk);
+        brass::BasicBlock* entry = b.append_block("entry");
+
+        std::vector<brass::Value*> args;
+        args.reserve(paramTypes.size());
+        for (const auto& t : paramTypes) {
+            args.push_back(b.add_block_param(entry, t));
+        }
+
+        b.position_at_end(entry);
+        brass::Value* table = b.build_func_addr(importsSymbol);
+        const auto slotOffset = static_cast<int32_t>(8 + i * sizeof(uint64_t));
+
+        if (isClassSlot) {
+            b.build_ret(b.build_load(brass::Type::i64(), table, slotOffset));
+        } else if (imports[i].bufferReturnKind != UINT32_MAX) {
+            brass::Value* slot = b.build_call("bronze_native_buffer_slot", brass::Type::ptr());
+            std::vector<brass::Value*> withSlot;
+            withSlot.reserve(args.size() + 1);
+            withSlot = args;
+            withSlot.push_back(slot);
+
+            brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
+            b.build_call_indirect(callee, brass::Type::void_type(),
+                                  brass::Span<brass::Value* const>(withSlot.data(), withSlot.size()));
+
+            brass::Value* kind = b.build_iconst_i32(static_cast<int32_t>(imports[i].bufferReturnKind));
+            b.build_ret(b.build_call("bronze_native_buffer_wrap", brass::Type::i64(), {kind}));
+        } else {
+            brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
+            brass::Value* result = b.build_call_indirect(
+                callee, retType, brass::Span<brass::Value* const>(args.data(), args.size()));
+
+            if (retType.is_void()) {
+                b.build_ret_void();
+            } else if (decl.returnType == il::Type::Bool) {
+                b.build_ret(b.build_and(result, b.build_iconst_i32(1)));
+            } else {
+                b.build_ret(result);
+            }
+        }
+        thunk->rebuild_cfg_predecessors();
+    }
+
+    brass::Function* bind = mod.create_function("__bronze_native_bind", brass::Type::void_type());
+    brass::Builder b(mod);
+    b.set_function(bind);
+    b.append_block("entry");
+    brass::Value* table = b.build_func_addr(importsSymbol);
+    b.build_call("bronze_native_bind", brass::Type::void_type(), {table});
+    b.build_ret_void();
+    bind->rebuild_cfg_predecessors();
+}
+
+void renameEntrySymbol(brass::object::ObjectFile& obj, const std::string& entrySymbol) {
+    if (entrySymbol.empty() || entrySymbol == "main") return;
+
+    if (auto* sym = obj.find_symbol("main")) {
+        sym->name = entrySymbol;
+    }
+    for (auto& cfi : obj.functions) {
+        if (cfi.name == "main") {
+            cfi.name = entrySymbol;
+        }
+    }
+    for (auto& dt : obj.debug_tables) {
+        if (dt.function_name() == "main") {
+            dt.set_function_name(entrySymbol);
+        }
+    }
+    for (auto& sec : obj.sections) {
+        for (auto& reloc : sec.relocations) {
+            if (reloc.symbol_name == "main") {
+                reloc.symbol_name = entrySymbol;
+            }
+        }
+    }
+}
+
+} // namespace
 
 bool BrassBackend::optimize() const {
     static const bool forcedOff = std::getenv("BRONZE_NO_OPT") != nullptr;
@@ -28,38 +249,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     const il::Module& module, DiagnosticSink& diags) {
     // The inside of the CLI's "codegen" phase, one level deeper.
     support::PhaseTimer timer(support::timingsEnabled(), 4);
-    std::vector<std::string> uniqueNames(module.functions.size());
-    std::unordered_map<std::string, size_t> nameCounts;
-    auto sanitizeName = [](std::string n) {
-        for (char& c : n) {
-            if (c == ' ') c = '_';
-        }
-        return n;
-    };
-    for (const auto& fn : module.functions) {
-        nameCounts[sanitizeName(fn.name)]++;
-    }
-    std::unordered_set<std::string> usedNames;
-    for (size_t i = 0; i < module.functions.size(); ++i) {
-        const auto& fn = module.functions[i];
-        if (fn.isEntryPoint || (fn.name == "main" && nameCounts["main"] == 1)) {
-            uniqueNames[i] = "main";
-            usedNames.insert("main");
-        }
-    }
-    for (size_t i = 0; i < module.functions.size(); ++i) {
-        if (!uniqueNames[i].empty()) continue;
-        const auto& fn = module.functions[i];
-        std::string sName = sanitizeName(fn.name);
-        if (nameCounts[sName] == 1 && !usedNames.count(sName)) {
-            uniqueNames[i] = sName;
-            usedNames.insert(sName);
-        } else {
-            std::string uname = sName + "$" + std::to_string(i);
-            uniqueNames[i] = uname;
-            usedNames.insert(uname);
-        }
-    }
+    const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
 
     const bool optimize = this->optimize();
     brass::il::TranslatorOptions options;
@@ -116,6 +306,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     options.ic_site_count = module.icSiteCount;
     const std::vector<uint32_t> methodIcSites = module.methodIcSites();
     options.method_ic_sites = methodIcSites;
+
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& fn = module.functions[i];
         brass::il::FunctionMeta meta;
@@ -129,12 +320,16 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         meta.name_key = fn.nameKeyIndex;
         meta.required_args = fn.requiredArgs;
         meta.adapt_arity = fn.adaptArity();
+        meta.params_pinned.reserve(fn.params.size());
+        meta.param_pin_keys.reserve(fn.params.size());
         for (const auto& p : fn.params) {
             meta.params_pinned.push_back(p.pinned);
             meta.param_pin_keys.push_back(p.pinKeyIndex);
         }
-        options.function_meta[uniqueNames[i]] = meta;
+        options.function_meta[uniqueNames[i]] = std::move(meta);
     }
+
+    options.source_files.reserve(module.sourceTexts.size());
     for (uint16_t file = 0; file < module.sourceTexts.size(); ++file) {
         brass::il::TranslatorOptions::SourceFileMeta sf;
         sf.text_len = static_cast<uint32_t>(module.sourceTexts[file].size());
@@ -153,12 +348,21 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     timer.mark("il->ast");
     brass::il::TranslationResult res = brass::il::translate_bronze_ast(ast, options, &reporter);
     timer.mark("translate");
+
     if (!res.success || !res.module || reporter.has_errors()) {
-        std::string msg = reporter.has_errors() ? reporter.format_all() : res.error_message;
-        if (msg.empty()) {
-            msg = "Failed to translate Bronze IL to Brass MIR";
+        if (reporter.has_errors() || reporter.has_warnings()) {
+            for (const auto& diag : reporter.diagnostics()) {
+                if (diag.severity == brass::DiagnosticSeverity::Error) {
+                    diags.error(Span{}, diag.to_string());
+                } else if (diag.severity == brass::DiagnosticSeverity::Warning) {
+                    diags.warning(Span{}, diag.to_string());
+                }
+            }
         }
-        diags.error(Span{}, msg);
+        if (!diags.hasErrors()) {
+            std::string msg = !res.error_message.empty() ? res.error_message : "Failed to translate Bronze IL to Brass MIR";
+            diags.error(Span{}, std::move(msg));
+        }
         return std::nullopt;
     }
 
@@ -168,161 +372,9 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
         }
     }
 
-    auto moduleSym = [&](const std::string& base) -> std::string {
-        return codegen::moduleSymbolName(entrySymbol_, base);
-    };
-
-    // Host-global read cache. One i64 cell per distinct key the module reads,
-    // in `__bronze_global_cache` (module-suffixed like the key map), every
-    // cell born as the hole. Each `global.get` calls the thunk for its key:
-    //
-    //   __bronze_global_read_k<k>():
-    //       v = cache[slot]
-    //       if v != HOLE: return v
-    //       return bronze_global_get_cached(keyMap[k], cache, count, slot)
-    //
-    // The runtime registers the cell array as a module root span on first
-    // sight, fills the slot for builtin and host answers, and pours the hole
-    // back into every registered cell when registerGlobal replaces a name —
-    // so the fast path is a load and a compare, and the resolve rules stay
-    // entirely in bronze_global_get_cached.
-    const std::string globalCacheSym = moduleSym("__bronze_global_cache");
     const size_t globalCacheCount = globalReadKeys.size();
-    {
-        brass::Module& mod = *res.module;
-        mod.add_external_symbol(globalCacheSym);
-        mod.add_external_symbol("bronze_global_get_cached");
-        for (size_t slot = 0; slot < globalReadKeys.size(); ++slot) {
-            const uint32_t key = globalReadKeys[slot];
-            brass::Function* thunk = mod.create_function(codegen::globalReadThunkName(key), brass::Type::i64());
-            brass::Builder b(mod);
-            b.set_function(thunk);
-            brass::BasicBlock* entry = b.append_block("entry");
-            brass::BasicBlock* hit = b.append_block("hit");
-            brass::BasicBlock* miss = b.append_block("miss");
-            b.position_at_end(entry);
-            brass::Value* cells = b.build_func_addr(globalCacheSym);
-            brass::Value* cached = b.build_load(brass::Type::i64(), cells, static_cast<int32_t>(slot * sizeof(uint64_t)));
-            brass::Value* hole = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NO_EXCEPTION_BITS));
-            brass::Value* isHole = b.build_eq(cached, hole);
-            b.build_br_if(isHole, miss, hit);
-
-            b.position_at_end(hit);
-            b.build_ret(cached);
-
-            b.position_at_end(miss);
-            brass::Value* keyMap = b.build_func_addr(moduleSym("__bronze_key_map"));
-            brass::Value* keyId = b.build_load(brass::Type::i32(), keyMap, static_cast<int32_t>(key * sizeof(uint32_t)));
-            brass::Value* count = b.build_iconst_i64(static_cast<int64_t>(globalCacheCount));
-            brass::Value* slotVal = b.build_iconst_i32(static_cast<int32_t>(slot));
-            brass::Value* resolved = b.build_call("bronze_global_get_cached", brass::Type::i64(), {keyId, cells, count, slotVal});
-            b.build_ret(resolved);
-            thunk->rebuild_cfg_predecessors();
-        }
-    }
-
-    // The native import table and the thunks that call through it
-    // (bronze_abi.h, `<entry>_native_imports`). Lowering declared one external
-    // IL function per import, `__bronze_native_<i>`, typed as the native's C
-    // signature; each becomes
-    //
-    //   __bronze_native_<i>(args...):  callee = table.slots[i]; return callee(args...)
-    //   __bronze_native_<i>():         return table.slots[i]          (a class tag)
-    //   __bronze_native_bind():        bronze_native_bind(&table)
-    //
-    // so a call site is one load and one indirect call, and NOTHING in the
-    // object names a native's own symbol. A returned C `bool` is masked to
-    // its low bit: the ABI defines only `al` for it and the thunk's caller
-    // reads an i32. A native answering `T[]` (bufferReturnKind set) is the
-    // one thunk with more in it:
-    //
-    //   __bronze_native_<i>(args...):  slot = bronze_native_buffer_slot();
-    //                                  callee(args..., slot);
-    //                                  return bronze_native_buffer_wrap(kind)
-    //
-    // The IL still sees a Dynamic-returning call; the descriptor and the
-    // wrap are sequenced here, identically for the JIT and for an emitted
-    // object, and the exception check the IL places after the call is what
-    // unwinds when the native threw (wrap answered undefined, releasing a
-    // transferred block first).
-    const std::string importsSymbol = entrySymbol_ + "_native_imports";
-    const auto& imports = module.nativeImports;
-    {
-        brass::Module& mod = *res.module;
-        mod.add_external_symbol(importsSymbol);
-        mod.add_external_symbol("bronze_native_bind");
-        mod.add_external_symbol("bronze_native_unbound");
-        mod.add_external_symbol("bronze_native_buffer_slot");
-        mod.add_external_symbol("bronze_native_buffer_wrap");
-        auto brassTypeOf = [](il::Type t) -> brass::Type {
-            switch (t) {
-                case il::Type::Void: return brass::Type::void_type();
-                case il::Type::Bool: return brass::Type::i8();
-                case il::Type::I32: return brass::Type::i32();
-                case il::Type::F64: return brass::Type::f64();
-                case il::Type::Str: return brass::Type::ptr();
-                case il::Type::Dynamic: return brass::Type::i64();
-            }
-            return brass::Type::i64();
-        };
-        for (size_t i = 0; i < imports.size(); ++i) {
-            const il::Function& decl = module.functions[imports[i].functionIndex];
-            const bool isClassSlot = imports[i].name.rfind("class ", 0) == 0;
-            std::vector<brass::Type> paramTypes;
-            for (const auto& p : decl.params) paramTypes.push_back(brassTypeOf(p.type));
-            const brass::Type retType = decl.returnType == il::Type::Bool
-                                            ? brass::Type::i32()
-                                            : brassTypeOf(decl.returnType);
-            brass::Function* thunk = mod.get_function(decl.name);
-            if (!thunk) {
-                thunk = mod.create_function(
-                    decl.name, retType, brass::Span<const brass::Type>(paramTypes.data(), paramTypes.size()));
-            }
-            brass::Builder b(mod);
-            b.set_function(thunk);
-            brass::BasicBlock* entry = b.append_block("entry");
-            std::vector<brass::Value*> args;
-            for (const auto& t : paramTypes) args.push_back(b.add_block_param(entry, t));
-            b.position_at_end(entry);
-            brass::Value* table = b.build_func_addr(importsSymbol);
-            const auto slotOffset = static_cast<int32_t>(8 + i * sizeof(uint64_t));
-            if (isClassSlot) {
-                b.build_ret(b.build_load(brass::Type::i64(), table, slotOffset));
-            } else if (imports[i].bufferReturnKind != UINT32_MAX) {
-                brass::Value* slot = b.build_call("bronze_native_buffer_slot", brass::Type::ptr());
-                std::vector<brass::Value*> withSlot = args;
-                withSlot.push_back(slot);
-                brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
-                b.build_call_indirect(callee, brass::Type::void_type(),
-                                      brass::Span<brass::Value* const>(withSlot.data(), withSlot.size()));
-                brass::Value* kind =
-                    b.build_iconst_i32(static_cast<int32_t>(imports[i].bufferReturnKind));
-                b.build_ret(b.build_call("bronze_native_buffer_wrap", brass::Type::i64(), {kind}));
-            } else {
-                brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
-                brass::Value* result = b.build_call_indirect(
-                    callee, retType, brass::Span<brass::Value* const>(args.data(), args.size()));
-                if (retType.is_void()) {
-                    b.build_ret_void();
-                } else if (decl.returnType == il::Type::Bool) {
-                    b.build_ret(b.build_and(result, b.build_iconst_i32(1)));
-                } else {
-                    b.build_ret(result);
-                }
-            }
-            thunk->rebuild_cfg_predecessors();
-        }
-        if (!imports.empty()) {
-            brass::Function* bind = mod.create_function("__bronze_native_bind", brass::Type::void_type());
-            brass::Builder b(mod);
-            b.set_function(bind);
-            b.append_block("entry");
-            brass::Value* table = b.build_func_addr(importsSymbol);
-            b.build_call("bronze_native_bind", brass::Type::void_type(), {table});
-            b.build_ret_void();
-            bind->rebuild_cfg_predecessors();
-        }
-    }
+    emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys);
+    emitNativeImportThunks(*res.module, module, entrySymbol_);
 
     const brass::Target target = target_;
     brass::object::ModuleCompiler compiler(target);
@@ -336,28 +388,7 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     brass::object::ObjectFile obj = compiler.compile(*res.module);
     timer.mark("brass compile");
 
-    if (entrySymbol_ != "main") {
-        if (auto* sym = obj.find_symbol("main")) {
-            sym->name = entrySymbol_;
-        }
-        for (auto& cfi : obj.functions) {
-            if (cfi.name == "main") {
-                cfi.name = entrySymbol_;
-            }
-        }
-        for (auto& dt : obj.debug_tables) {
-            if (dt.function_name() == "main") {
-                dt.set_function_name(entrySymbol_);
-            }
-        }
-        for (auto& sec : obj.sections) {
-            for (auto& reloc : sec.relocations) {
-                if (reloc.symbol_name == "main") {
-                    reloc.symbol_name = entrySymbol_;
-                }
-            }
-        }
-    }
+    renameEntrySymbol(obj, entrySymbol_);
 
     // Everything the runtime reads by name beside brass's code: the rodata
     // tables, the descriptors and pc tables, the data cells and the import

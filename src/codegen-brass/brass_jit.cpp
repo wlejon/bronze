@@ -7,20 +7,43 @@
 #include <brass/il_translator/il_translator.hpp>
 #include <brass/target/target.hpp>
 
+#include <utility>
+
 namespace bronze {
 
 BrassJitProgram::BrassJitProgram(std::unique_ptr<brass::codegen::JitExecutionEngine> engine,
                                  void* entryPoint, const void* codeRanges, uint32_t codeRangeCount)
-    : engine_(std::move(engine)), entryPoint_(entryPoint), codeRanges_(codeRanges), codeRangeCount_(codeRangeCount) {}
+    : engine_(std::move(engine)),
+      entryPoint_(entryPoint),
+      codeRanges_(codeRanges),
+      codeRangeCount_(codeRangeCount) {}
 
 BrassJitProgram::~BrassJitProgram() {
     if (codeRanges_ && codeRangeCount_ > 0) {
         bronze_unregister_code_ranges(codeRanges_, codeRangeCount_);
+        codeRanges_ = nullptr;
+        codeRangeCount_ = 0;
     }
 }
 
-BrassJitProgram::BrassJitProgram(BrassJitProgram&&) noexcept = default;
-BrassJitProgram& BrassJitProgram::operator=(BrassJitProgram&&) noexcept = default;
+BrassJitProgram::BrassJitProgram(BrassJitProgram&& other) noexcept
+    : engine_(std::move(other.engine_)),
+      entryPoint_(std::exchange(other.entryPoint_, nullptr)),
+      codeRanges_(std::exchange(other.codeRanges_, nullptr)),
+      codeRangeCount_(std::exchange(other.codeRangeCount_, 0)) {}
+
+BrassJitProgram& BrassJitProgram::operator=(BrassJitProgram&& other) noexcept {
+    if (this != &other) {
+        if (codeRanges_ && codeRangeCount_ > 0) {
+            bronze_unregister_code_ranges(codeRanges_, codeRangeCount_);
+        }
+        engine_ = std::move(other.engine_);
+        entryPoint_ = std::exchange(other.entryPoint_, nullptr);
+        codeRanges_ = std::exchange(other.codeRanges_, nullptr);
+        codeRangeCount_ = std::exchange(other.codeRangeCount_, 0);
+    }
+    return *this;
+}
 
 void* BrassJitProgram::entryPoint() const noexcept {
     return entryPoint_;
@@ -42,10 +65,14 @@ void BrassJitProgram::run() {
 
 std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& module,
                                                             DiagnosticSink& diags) {
-    const bool prevPropagate = propagateExceptionsInEntry_;
-    propagateExceptionsInEntry_ = true;
+    struct PropagateGuard {
+        bool& flag;
+        bool prev;
+        PropagateGuard(bool& f, bool val) : flag(f), prev(f) { flag = val; }
+        ~PropagateGuard() { flag = prev; }
+    } guard(propagateExceptionsInEntry_, true);
+
     auto obj = buildObjectFile(module, diags);
-    propagateExceptionsInEntry_ = prevPropagate;
     if (!obj) {
         return nullptr;
     }
@@ -64,11 +91,15 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
     }
 
     void* entry = engine->get_symbol_address(entrySymbol_);
-    std::string rangesSym = (entrySymbol_ == "bronze_main") ? "bronze_object_code_ranges" : (entrySymbol_ + "_code_ranges");
-    std::string countSym = (entrySymbol_ == "bronze_main") ? "bronze_object_code_range_count" : (entrySymbol_ + "_code_range_count");
+    const std::string rangesSym = (entrySymbol_ == "bronze_main")
+                                      ? "bronze_object_code_ranges"
+                                      : (entrySymbol_ + "_code_ranges");
+    const std::string countSym = (entrySymbol_ == "bronze_main")
+                                     ? "bronze_object_code_range_count"
+                                     : (entrySymbol_ + "_code_range_count");
     void* rangesAddr = engine->get_symbol_address(rangesSym);
     void* countAddr = engine->get_symbol_address(countSym);
-    uint32_t count = countAddr ? *reinterpret_cast<const uint32_t*>(countAddr) : 0;
+    const uint32_t count = countAddr ? *reinterpret_cast<const uint32_t*>(countAddr) : 0;
     if (rangesAddr && count > 0) {
         bronze_register_code_ranges(rangesAddr, count);
     }
