@@ -1,4 +1,5 @@
 #include "codegen-brass/brass_symbol_registration.h"
+#include "codegen-brass/brass_coroutine_bridge.h"
 #include "abi/bronze_abi.h"
 #include "runtime/fn.h"
 #include "runtime/value.h"
@@ -137,6 +138,9 @@ void registerBronzeFastInterpreterSymbols(brass::FastInterpreter& interp) {
     interp.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
     interp.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
     interp.register_external_symbol("main_key_constants", s_default_key_manifest);
+
+    // 5. Register Brass coroutine runtime symbols
+    registerBrassCoroutineSymbols(interp);
 }
 
 void registerBronzeBaselineSymbols(brass::codegen::BaselineJitCompiler& compiler) {
@@ -177,6 +181,9 @@ void registerBronzeBaselineSymbols(brass::codegen::BaselineJitCompiler& compiler
     compiler.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
     compiler.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
     compiler.register_external_symbol("main_key_constants", s_default_key_manifest);
+
+    // 5. Register Brass coroutine runtime symbols
+    registerBrassCoroutineSymbols(compiler);
 }
 
 void registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline& pipeline) {
@@ -197,8 +204,8 @@ void registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline& pipeline)
     pipeline.register_external_function("sqrt", wrapAbiFunction(static_cast<double(*)(double)>(&std::sqrt)));
     pipeline.register_external_symbol("fabs", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::fabs)));
     pipeline.register_external_function("fabs", wrapAbiFunction(static_cast<double(*)(double)>(&std::fabs)));
-    pipeline.register_external_symbol("floor", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::floor)));
     pipeline.register_external_function("floor", wrapAbiFunction(static_cast<double(*)(double)>(&std::floor)));
+    pipeline.register_external_symbol("floor", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::floor)));
     pipeline.register_external_symbol("ceil", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::ceil)));
     pipeline.register_external_function("ceil", wrapAbiFunction(static_cast<double(*)(double)>(&std::ceil)));
     pipeline.register_external_symbol("trunc", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::trunc)));
@@ -222,6 +229,9 @@ void registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline& pipeline)
     pipeline.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
     pipeline.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
     pipeline.register_external_symbol("main_key_constants", s_default_key_manifest);
+
+    // 5. Register Brass coroutine runtime symbols
+    registerBrassCoroutineSymbols(pipeline);
 }
 
 }  // namespace bronze

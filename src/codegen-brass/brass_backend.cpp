@@ -1,6 +1,7 @@
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_backend_debug.h"
 #include "codegen-brass/brass_backend_sections.h"
+#include "codegen-brass/brass_coroutine_bridge.h"
 #include "codegen-brass/il_to_brass_ast.h"
 
 #include "abi/bronze_abi.h"
@@ -392,6 +393,8 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     if (!mirMod) {
         return std::nullopt;
     }
+
+    transformCoroutinesIfNeeded(*mirMod);
 
     const size_t globalCacheCount = globalReadKeys.size();
     const std::vector<uint32_t> methodIcSites = module.methodIcSites();

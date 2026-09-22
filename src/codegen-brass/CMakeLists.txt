@@ -25,6 +25,7 @@ add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
     brass_backend_debug.cpp
     brass_backend_sections.cpp
+    brass_coroutine_bridge.cpp
     brass_jit.cpp
     brass_symbol_registration.cpp
     brass_tiered_engine.cpp
@@ -94,6 +95,7 @@ if(BRONZE_BUILD_TESTS)
         ../../tests/codegen_brass/optimization_test.cpp
         ../../tests/codegen_brass/debug_test.cpp
         ../../tests/codegen_brass/gc_write_barrier_test.cpp
+        ../../tests/codegen_brass/coroutine_test.cpp
     )
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass

@@ -1,5 +1,6 @@
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_backend.h"
+#include "codegen-brass/brass_coroutine_bridge.h"
 
 #include "abi/bronze_abi.h"
 
@@ -119,6 +120,8 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
     engine->register_external_symbol("brass_parallel_reduce_f64", reinterpret_cast<void*>(&brass_parallel_reduce_f64));
     engine->register_external_symbol("brass_parallel_alloc_context", reinterpret_cast<void*>(&brass_parallel_alloc_context));
     engine->register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
+
+    registerBrassCoroutineSymbols(*engine);
 
     for (const auto& fn : module.functions) {
         std::vector<brass::Type> paramTypes;

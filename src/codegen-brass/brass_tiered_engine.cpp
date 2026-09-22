@@ -2,6 +2,7 @@
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_symbol_registration.h"
+#include "codegen-brass/brass_coroutine_bridge.h"
 #include "codegen-brass/brass_backend_sections.h"
 
 #include "abi/bronze_abi.h"
@@ -387,6 +388,8 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     std::vector<uint32_t> globalReadKeys;
     auto mirMod = backend.buildMirModule(module, diags, &globalReadKeys);
     if (!mirMod) return nullptr;
+
+    transformCoroutinesIfNeeded(*mirMod);
 
     auto prog = std::make_unique<BrassTieredProgram>(tier, entrySymbol);
     prog->initDataBuffers(module, globalReadKeys);
