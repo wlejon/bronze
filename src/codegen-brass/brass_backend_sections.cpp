@@ -325,7 +325,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
 
     dataSec.align_to(8);
     const size_t tplOffset = dataSec.data.size();
-    const size_t tplCount = 1024;
+    const size_t tplCount = std::max<size_t>(1024, static_cast<size_t>(module.templateSiteCount) + 128);
     const size_t tplBytes = tplCount * sizeof(uint64_t);
     dataSec.data.resize(tplOffset + tplBytes);
     for (size_t i = 0; i < tplCount; ++i) {

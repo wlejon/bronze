@@ -140,7 +140,14 @@ extern "C" uint64_t bronze_call_dynamic_16(uint64_t callee, uint64_t thisVal, ui
 }
 
 extern "C" uint64_t bronze_call_dynamic_n(uint64_t callee, uint64_t thisVal, uint32_t argc, const uint64_t* argv) {
-    return bronze_dynamic_call(callee, thisVal, argc, argv);
+    if (argc == 0) return bronze_dynamic_call(callee, thisVal, 0, nullptr);
+    bronze_gc_frame* frame = bronze_gc_frame_push(argc);
+    for (uint32_t i = 0; i < argc; ++i) {
+        frame->slots[i] = argv ? argv[i] : BRONZE_ABI_UNDEFINED_BITS;
+    }
+    uint64_t res = bronze_dynamic_call(callee, thisVal, argc, frame->slots);
+    bronze_gc_frame_pop();
+    return res;
 }
 
 extern "C" uint64_t bronze_super_call(uint64_t baseBits, uint64_t thisBits, uint32_t argc, const uint64_t* argvBits);
@@ -218,7 +225,14 @@ extern "C" uint64_t bronze_super_call_16(uint64_t base, uint64_t thisVal, uint64
 }
 
 extern "C" uint64_t bronze_super_call_n(uint64_t base, uint64_t thisVal, uint32_t argc, const uint64_t* argv) {
-    return bronze_super_call(base, thisVal, argc, argv);
+    if (argc == 0) return bronze_super_call(base, thisVal, 0, nullptr);
+    bronze_gc_frame* frame = bronze_gc_frame_push(argc);
+    for (uint32_t i = 0; i < argc; ++i) {
+        frame->slots[i] = argv ? argv[i] : BRONZE_ABI_UNDEFINED_BITS;
+    }
+    uint64_t res = bronze_super_call(base, thisVal, argc, frame->slots);
+    bronze_gc_frame_pop();
+    return res;
 }
 
 template <typename... Args>
@@ -291,6 +305,16 @@ extern "C" uint64_t bronze_construct_15(uint64_t callee, uint64_t a0, uint64_t a
 }
 extern "C" uint64_t bronze_construct_16(uint64_t callee, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9, uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14, uint64_t a15) {
     return bronze_construct_helper(callee, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
+}
+extern "C" uint64_t bronze_construct_n(uint64_t callee, uint32_t argc, const uint64_t* argv) {
+    if (argc == 0) return bronze_construct(callee, 0, nullptr);
+    bronze_gc_frame* frame = bronze_gc_frame_push(argc);
+    for (uint32_t i = 0; i < argc; ++i) {
+        frame->slots[i] = argv ? argv[i] : BRONZE_ABI_UNDEFINED_BITS;
+    }
+    uint64_t res = bronze_construct(callee, argc, frame->slots);
+    bronze_gc_frame_pop();
+    return res;
 }
 
 extern "C" uint64_t bronze_exception_get() {

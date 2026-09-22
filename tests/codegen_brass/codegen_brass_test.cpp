@@ -1,5 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
+#include "abi/bronze_abi.h"
+#include "runtime/gc.h"
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_jit.h"
 #include "il/il.h"
@@ -84,4 +86,78 @@ TEST_CASE("brass backend compileToJit compiles and executes in-memory cleanly") 
 
     // Run the entry point in-memory (calls add, prints 579, returns cleanly)
     program->run();
+}
+
+TEST_CASE("tagged template cells buffer sizing scales dynamically with templateSiteCount") {
+    bronze::BrassBackend backend;
+    bronze::DiagnosticSink diags;
+
+    bronze::il::Module m;
+    m.name = "template_site_test";
+    m.templateSiteCount = 1500;
+
+    bronze::il::Function mainFn;
+    mainFn.name = "main";
+    mainFn.isEntryPoint = true;
+    mainFn.returnType = bronze::il::Type::Void;
+    bronze::il::Block mb0;
+    mb0.id = 0;
+    mb0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::Void, bronze::il::kNoValue, {}, 0, 0, 0});
+    mainFn.blocks.push_back(std::move(mb0));
+    m.functions.push_back(std::move(mainFn));
+
+    auto obj = backend.buildObjectFile(m, diags);
+    REQUIRE(!diags.hasErrors());
+    REQUIRE(obj.has_value());
+
+    auto* tplSym = obj->find_symbol("__bronze_template_cells");
+    REQUIRE(tplSym != nullptr);
+    constexpr size_t expectedCells = 1500 + 128;
+    constexpr size_t expectedBytes = expectedCells * sizeof(uint64_t);
+    CHECK(tplSym->size == expectedBytes);
+
+    auto* cacheSym = obj->find_symbol("__bronze_global_cache");
+    REQUIRE(cacheSym != nullptr);
+    CHECK(cacheSym->value >= tplSym->value + expectedBytes);
+}
+
+TEST_CASE("cross compilation target does not leak host AVX2/FMA features") {
+    bronze::BrassBackend backend;
+    backend.setTarget(brass::Target::aarch64_linux());
+    bronze::DiagnosticSink diags;
+
+    bronze::il::Module m;
+    m.name = "cross_compile_test";
+
+    bronze::il::Function mainFn;
+    mainFn.name = "main";
+    mainFn.isEntryPoint = true;
+    mainFn.returnType = bronze::il::Type::Void;
+    bronze::il::Block mb0;
+    mb0.id = 0;
+    mb0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::Void, bronze::il::kNoValue, {}, 0, 0, 0});
+    mainFn.blocks.push_back(std::move(mb0));
+    m.functions.push_back(std::move(mainFn));
+
+    auto obj = backend.buildObjectFile(m, diags);
+    REQUIRE(!diags.hasErrors());
+    REQUIRE(obj.has_value());
+    CHECK(obj->target.arch() == brass::Arch::aarch64);
+}
+
+TEST_CASE("shadow stack overflow guard sets pending RangeError and prevents segfault") {
+    bronze::ShadowStackFrame rootFrame;
+    constexpr size_t kCapacityWords = (64 * 1024 * 1024) / sizeof(uint64_t);
+    uint32_t hugeCount = static_cast<uint32_t>(kCapacityWords + 10);
+
+    bronze_gc_frame* frame = bronze_gc_frame_push(hugeCount);
+    REQUIRE(frame != nullptr);
+    frame->slots[0] = 42;
+    frame->slots[hugeCount - 1] = 42;
+
+    CHECK(bronze_exception_pending() != 0);
+    uint64_t exBits = bronze_exception_take();
+    CHECK(exBits != BRONZE_ABI_NO_EXCEPTION_BITS);
+
+    bronze_gc_frame_pop();
 }

@@ -90,21 +90,24 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     // other way in, and generated code reads the exception cell, the
     // allocation window and the stack limit through it without a call.
     options.pin_tls_register = true;
+    if (target_ == brass::Target::host() && target_.is_x64()) {
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
-    if (__builtin_cpu_supports("avx2")) {
-        options.enable_avx2 = true;
-        options.vector_width = 256;
+        if (__builtin_cpu_supports("avx2")) {
+            options.enable_avx2 = true;
+            options.vector_width = 256;
+        }
+        options.enable_fma = true;
+#endif
+#endif
     }
-    options.enable_fma = true;
-#endif
-#endif
     options.enable_pic = sharedRuntime_;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
     options.propagate_exceptions_in_entry = propagateExceptionsInEntry_;
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
+    options.template_site_count = module.templateSiteCount;
     // The inline-cache table: lowering numbered every property and method
     // site, the verifier bounded each number, and `__bronze_ic_table`
     // (brass_backend_sections.cpp) is laid out to exactly this count, so brass

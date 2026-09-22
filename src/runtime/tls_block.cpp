@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -223,12 +224,15 @@ extern "C" void* bronze_tls_enter(void) {
 namespace {
 
 struct ShadowStack {
+    static constexpr size_t kCapacityBytes = 64 * 1024 * 1024; // 64 MB virtual address reservation
+    static constexpr size_t kCapacityWords = kCapacityBytes / sizeof(uint64_t);
+
     uint64_t* base = nullptr;
     uint64_t* top = nullptr;
 
     void init() {
         if (!base) {
-            size_t bytes = 64 * 1024 * 1024; // 64 MB virtual address reservation
+            size_t bytes = kCapacityBytes;
 #if defined(_WIN32)
             base = reinterpret_cast<uint64_t*>(
                 VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
@@ -250,6 +254,24 @@ extern "C" bronze_gc_frame* bronze_gc_frame_push(uint32_t count) {
         g_shadow_stack.init();
     }
     bronze_tls_block* tls = bronze_tls_block_addr();
+
+    if (BRONZE_UNLIKELY(g_shadow_stack.top + 2 + count >
+                        g_shadow_stack.base + ShadowStack::kCapacityWords)) {
+        bronze_stack_overflow();
+        static thread_local std::vector<uint64_t> s_overflow_buffer;
+        if (s_overflow_buffer.size() < 2 + count) {
+            s_overflow_buffer.resize(2 + count);
+        }
+        bronze_gc_frame* overflow_frame = reinterpret_cast<bronze_gc_frame*>(s_overflow_buffer.data());
+        overflow_frame->prev = tls->frame_top;
+        overflow_frame->count = count;
+        for (uint32_t i = 0; i < count; ++i) {
+            overflow_frame->slots[i] = BRONZE_ABI_UNDEFINED_BITS;
+        }
+        tls->frame_top = overflow_frame;
+        return overflow_frame;
+    }
+
     bronze_gc_frame* frame = reinterpret_cast<bronze_gc_frame*>(g_shadow_stack.top);
     g_shadow_stack.top += 2 + count;
 
@@ -267,6 +289,10 @@ extern "C" void bronze_gc_frame_pop(void) {
     bronze_gc_frame* frame = tls->frame_top;
     if (BRONZE_LIKELY(frame != nullptr)) {
         tls->frame_top = frame->prev;
-        g_shadow_stack.top = reinterpret_cast<uint64_t*>(frame);
+        uint64_t* frame_ptr = reinterpret_cast<uint64_t*>(frame);
+        if (frame_ptr >= g_shadow_stack.base &&
+            frame_ptr <= g_shadow_stack.base + ShadowStack::kCapacityWords) {
+            g_shadow_stack.top = frame_ptr;
+        }
     }
 }
