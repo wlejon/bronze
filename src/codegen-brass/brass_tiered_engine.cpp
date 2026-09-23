@@ -263,6 +263,9 @@ void* BrassTieredProgram::symbolAddress(std::string_view name) const {
 }
 
 brass::RuntimeValue BrassTieredProgram::run() {
+    // Native entries (Tier 1) open no scope of their own; this makes brass's
+    // runtime name lookups resolve in this program rather than the default one.
+    brass::runtime::ProgramScope scope(*dispatchTable_);
     if (tier_ == ExecutionTier::Tier1_Baseline) {
         brass::brass_set_active_stack_maps(&moduleStackMap_);
     } else if (tier_ == ExecutionTier::Tier2_Optimized && jitProgram_ && jitProgram_->stackMaps()) {
@@ -302,6 +305,7 @@ brass::RuntimeValue BrassTieredProgram::run() {
 
 brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
                                               const std::vector<brass::RuntimeValue>& args) {
+    brass::runtime::ProgramScope scope(*dispatchTable_);
     if (tier_ == ExecutionTier::Tier1_Baseline) {
         brass::brass_set_active_stack_maps(&moduleStackMap_);
     } else if (tier_ == ExecutionTier::Tier2_Optimized && jitProgram_ && jitProgram_->stackMaps()) {
