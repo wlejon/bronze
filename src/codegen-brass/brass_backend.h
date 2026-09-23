@@ -48,6 +48,12 @@ public:
     const brass::Target& target() const { return target_; }
     void setEmitDebugInfo(bool on) { emitDebugInfo_ = on; }
     bool emitDebugInfo() const { return emitDebugInfo_; }
+    // Whether the module init registers function source slices
+    // (`__bronze_source_text_N` / `__bronze_source_entries_N`). Only an
+    // object file (buildObjectFile) defines those tables; a MIR module
+    // compiled by another engine must leave the registration out, since the
+    // data symbols would not resolve.
+    void setRegisterFnSources(bool on) { registerFnSources_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -68,6 +74,7 @@ private:
     bool propagateExceptionsInEntry_ = false;
     bool optimize_ = true;
     bool emitDebugInfo_ = false;
+    bool registerFnSources_ = true;
     brass::Target target_ = brass::Target::host();
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;

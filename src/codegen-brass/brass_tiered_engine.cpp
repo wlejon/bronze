@@ -378,6 +378,10 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     backend.setOptimize(config_.optimize);
     backend.setPropagateExceptionsInEntry(config_.propagateExceptionsInEntry);
     backend.setEmitDebugInfo(config_.emitDebugInfo);
+    // No object file holds the source text and entry tables in these tiers
+    // (brass_backend_sections.cpp builds them), so their data symbols would
+    // not resolve: the baseline JIT rejects an unresolved data symbol.
+    backend.setRegisterFnSources(false);
 
     std::vector<uint32_t> globalReadKeys;
     auto mirMod = backend.buildMirModule(module, diags, &globalReadKeys);

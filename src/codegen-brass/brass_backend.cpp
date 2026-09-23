@@ -331,8 +331,9 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         options.function_meta[uniqueNames[i]] = std::move(meta);
     }
 
-    options.source_files.reserve(module.sourceTexts.size());
-    for (uint16_t file = 0; file < module.sourceTexts.size(); ++file) {
+    const size_t sourceFileCount = registerFnSources_ ? module.sourceTexts.size() : 0;
+    options.source_files.reserve(sourceFileCount);
+    for (uint16_t file = 0; file < sourceFileCount; ++file) {
         brass::il::TranslatorOptions::SourceFileMeta sf;
         sf.text_len = static_cast<uint32_t>(module.sourceTexts[file].size());
         for (size_t i = 0; i < module.functions.size(); ++i) {
