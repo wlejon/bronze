@@ -210,6 +210,19 @@ using ModuleEntry = void (*)();
 // setup in disguise.
 BRONZE_EMBED_API void runEntry(ModuleEntry entry);
 
+// Install (or, with nullptr, remove) the calling thread's C++ -> JS entry hook
+// (runtime/fn.h rtSetEnterJsHook): the tiered engine uses it to route calls
+// into functions it is still interpreting. It lives on this surface because the
+// hook is runtime state, and the compiler backend that installs it must reach
+// the ONE runtime in the process — the shared image's, in a host that loads
+// modules — rather than link a static copy of its own.
+// `code` is bronze_abi.h's bronze_fn_code, spelled out so this header does not
+// pull in the whole ABI registry.
+using EnterJsHook = bool (*)(uint64_t (*code)(uint64_t, uint64_t, uint32_t, const uint64_t*),
+                             uint64_t env_bits, uint64_t this_bits, uint32_t argc,
+                             const uint64_t* argv, uint64_t* out_result);
+BRONZE_EMBED_API void setEnterJsHook(EnterJsHook hook);
+
 // ---- module unload / hot swap ----------------------------------------------
 //
 // A module's entry registers the module's own root spans (its global cache,

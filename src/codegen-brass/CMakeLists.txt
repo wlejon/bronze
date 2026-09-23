@@ -70,11 +70,20 @@ else()
     set(PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
 endif()
 
+# bronze::runtime is deliberately NOT linked here, although the tiered engine
+# and the coroutine bridge include runtime headers and call into it. This
+# library reaches a host through bronze::cli, and a host that loads compiled
+# modules links bronze::runtime_shared instead: naming the static runtime here
+# would put a second runtime (second heap, key registry, shadow stack) into that
+# process — bro aborts at boot with "Rooted<> with no ShadowStackFrame open".
+# Whoever links this library supplies exactly one runtime: bronze::eval and the
+# tests link the static one, runtime_shared compiles its own.
+target_include_directories(bronze_codegen_brass PUBLIC
+    $<TARGET_PROPERTY:bronze_runtime,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(bronze_codegen_brass PUBLIC
     bronze::abi
     bronze::codegen
     bronze::il
-    bronze::runtime
     bronze::support
     ${BRASS_LIB}
     Threads::Threads

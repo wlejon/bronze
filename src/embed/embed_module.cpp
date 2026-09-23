@@ -13,6 +13,7 @@
 
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/microtask.h"
@@ -28,6 +29,8 @@ extern std::atomic<uint64_t> g_shapeTransitions;
 namespace bronze::embed {
 
 uint32_t abiFingerprint() { return BRONZE_ABI_FINGERPRINT; }
+
+void setEnterJsHook(EnterJsHook hook) { bronze::rtSetEnterJsHook(hook); }
 
 void runEntry(ModuleEntry entry) {
     if (entry == nullptr) return;

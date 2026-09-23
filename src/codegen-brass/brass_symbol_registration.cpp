@@ -1,6 +1,7 @@
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_coroutine_bridge.h"
 #include "abi/bronze_abi.h"
+#include "embed/embed.h"
 #include "runtime/fn.h"
 #include "runtime/value.h"
 
@@ -108,8 +109,10 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
 }  // namespace
 
 void registerBronzeFastInterpreterSymbols(brass::FastInterpreter& interp) {
-    // Install the trampoline interceptor for interpreted Bronze functions
-    rtSetEnterJsHook(&brassTieredEnterJsHook);
+    // Install the trampoline interceptor for interpreted Bronze functions.
+    // Through embed, not rtSetEnterJsHook: the hook must land in the process's
+    // one runtime (embed.h, setEnterJsHook).
+    embed::setEnterJsHook(&brassTieredEnterJsHook);
 
     // 1. Built-in registration from Brass il translator
     brass::il::register_bronze_fast_interpreter_symbols(&interp);
@@ -187,7 +190,7 @@ void registerBronzeBaselineSymbols(brass::codegen::BaselineJitCompiler& compiler
 }
 
 void registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline& pipeline) {
-    rtSetEnterJsHook(&brassTieredEnterJsHook);
+    embed::setEnterJsHook(&brassTieredEnterJsHook);
     registerBronzeBaselineSymbols(pipeline.baseline_compiler());
 
 #define BRONZE_ABI_REG_PIPELINE(name, ret, args) \
