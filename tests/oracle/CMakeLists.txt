@@ -6,7 +6,9 @@ target_compile_definitions(bronze_oracle_tests PRIVATE
     TEST_PIXI_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pixi"
     TEST_BRONZE_CLI="$<TARGET_FILE:bronze>")
 
-target_link_libraries(bronze_oracle_tests PRIVATE bronze::cli doctest::doctest)
+# bronze::cli no longer carries the static runtime (module-loading hosts must
+# not get a second copy), so a static consumer names it, as bronze_cli_tests does.
+target_link_libraries(bronze_oracle_tests PRIVATE bronze::cli bronze::runtime bronze::embed doctest::doctest)
 # The JIT half runs every case through the CLI's `bronze run`, so the CLI is
 # part of what the harness tests.
 add_dependencies(bronze_oracle_tests bronze)
