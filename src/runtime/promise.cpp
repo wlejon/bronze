@@ -232,6 +232,7 @@ Value rtNewPromiseWithShape(Shape* shape) {
     p->setInternalSlot(PromiseSlot::State, Value::fromDouble(PromiseState::Pending));
     p->setInternalSlot(PromiseSlot::IsHandled, Value::fromBool(false));
     p->setInternalSlot(PromiseSlot::AlreadyResolved, Value::fromBool(false));
+    p->setInternalSlot(PromiseSlot::Reported, Value::fromBool(false));
     return Value::fromObject(p);
 }
 
@@ -295,8 +296,18 @@ void rtPerformPromiseThen(Rooted<Value>& promise, Rooted<Value>& onFulfilled,
     // 27.2.5.4.1 step 10: subscribing HANDLES the promise — before the
     // reaction runs, which is what lets `p.catch(...)` added in the same
     // tick as the rejection cancel the report.
+    const bool wasHandled =
+        bronze_truthy(readSlot(promise.get(), PromiseSlot::IsHandled).rawBits());
     writeSlot(promise.get(), PromiseSlot::IsHandled, Value::fromBool(true));
     rtUnparkRejection(promise.get());
+    // HostPromiseRejectionTracker(promise, "handle") for a promise the
+    // embedder was already told about: HTML's rejectionhandled. Last, so the
+    // hook sees a promise whose subscription is complete.
+    if (!wasHandled && state == PromiseState::Rejected &&
+        bronze_truthy(readSlot(promise.get(), PromiseSlot::Reported).rawBits())) {
+        writeSlot(promise.get(), PromiseSlot::Reported, Value::fromBool(false));
+        rtNotifyRejectionHandled(promise.get());
+    }
 }
 
 Value rtMakeNativeClosure(NativeFunctionCode code, Rooted<Value>& env, uint32_t arity) {

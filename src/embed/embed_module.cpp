@@ -32,6 +32,23 @@ uint32_t abiFingerprint() { return BRONZE_ABI_FINGERPRINT; }
 
 void setEnterJsHook(EnterJsHook hook) { bronze::rtSetEnterJsHook(hook); }
 
+namespace {
+// The runtime's hook takes the op as a plain integer (the runtime does not
+// see embed.h); this thread's embed-level hook is forwarded through one
+// trampoline so the enum crosses exactly here.
+thread_local PromiseRejectionHook t_rejectionHook = nullptr;
+void rejectionTrampoline(uint32_t op, Value promise, Value reason) {
+    if (t_rejectionHook != nullptr) {
+        t_rejectionHook(static_cast<PromiseRejectionOperation>(op), promise, reason);
+    }
+}
+}  // namespace
+
+void setPromiseRejectionHook(PromiseRejectionHook hook) {
+    t_rejectionHook = hook;
+    runtime::rtSetRejectionHook(hook != nullptr ? &rejectionTrampoline : nullptr);
+}
+
 void runEntry(ModuleEntry entry) {
     if (entry == nullptr) return;
     // The thread that runs a module's entry is the thread that runs its

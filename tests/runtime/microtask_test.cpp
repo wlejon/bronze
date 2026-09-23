@@ -187,3 +187,76 @@ TEST_CASE("a parked promise survives collections until the drain reports it") {
     rtDrainMicrotasks();
     CHECK(rtParkedRejectionCount() == 0);
 }
+
+namespace {
+struct HookCall {
+    uint32_t op;
+    uint64_t promiseBits;
+    std::string reason;
+};
+std::vector<HookCall> g_hookCalls;
+void recordingHook(uint32_t op, Value promise, Value reason) {
+    g_hookCalls.push_back(
+        HookCall{op, promise.rawBits(), rtUtf8Chars(reason.asString<StringHeader>())});
+}
+struct HookGuard {
+    HookGuard() {
+        g_hookCalls.clear();
+        rtSetRejectionHook(&recordingHook);
+    }
+    ~HookGuard() { rtSetRejectionHook(nullptr); }
+};
+}  // namespace
+
+TEST_CASE("an installed rejection hook gets the end-of-drain report, then the late handler") {
+    ShadowStackFrame frame;
+    DrainGuard guard;
+    rtDrainMicrotasks();
+    HookGuard hook;
+
+    Rooted<Value> handledInTime{rtNewPromise()};
+    Rooted<Value> late{rtNewPromise()};
+    Rooted<Value> r1{rtMakeString("caught in time")};
+    Rooted<Value> r2{rtMakeString("caught late")};
+    rtRejectPromise(handledInTime, r1);
+    rtRejectPromise(late, r2);
+    Rooted<Value> onF{Value::fromUndefined()};
+    Rooted<Value> onR{makeLogger("caught")};
+    Rooted<Value> cap{Value::fromUndefined()};
+    rtPerformPromiseThen(handledInTime, onF, onR, cap);
+
+    rtDrainMicrotasks();
+    REQUIRE(g_hookCalls.size() == 1);
+    CHECK(g_hookCalls[0].op == 0);
+    CHECK(g_hookCalls[0].promiseBits == late.get().rawBits());
+    CHECK(g_hookCalls[0].reason == "caught late");
+    CHECK(rtParkedRejectionCount() == 0);
+
+    // A second drain says nothing more; a handler arriving now is "handled",
+    // exactly once however many handlers follow it.
+    rtDrainMicrotasks();
+    CHECK(g_hookCalls.size() == 1);
+    rtPerformPromiseThen(late, onF, onR, cap);
+    rtPerformPromiseThen(late, onF, onR, cap);
+    REQUIRE(g_hookCalls.size() == 2);
+    CHECK(g_hookCalls[1].op == 1);
+    CHECK(g_hookCalls[1].promiseBits == late.get().rawBits());
+    CHECK(g_hookCalls[1].reason == "caught late");
+}
+
+TEST_CASE("a promise handled before any report never reaches the hook as handled") {
+    ShadowStackFrame frame;
+    DrainGuard guard;
+    rtDrainMicrotasks();
+    HookGuard hook;
+
+    Rooted<Value> promise{rtNewPromise()};
+    Rooted<Value> reason{rtMakeString("quiet")};
+    rtRejectPromise(promise, reason);
+    Rooted<Value> onF{Value::fromUndefined()};
+    Rooted<Value> onR{makeLogger("caught")};
+    Rooted<Value> cap{Value::fromUndefined()};
+    rtPerformPromiseThen(promise, onF, onR, cap);
+    rtDrainMicrotasks();
+    CHECK(g_hookCalls.empty());
+}

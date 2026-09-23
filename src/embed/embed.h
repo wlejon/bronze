@@ -223,6 +223,26 @@ using EnterJsHook = bool (*)(uint64_t (*code)(uint64_t, uint64_t, uint32_t, cons
                              const uint64_t* argv, uint64_t* out_result);
 BRONZE_EMBED_API void setEnterJsHook(EnterJsHook hook);
 
+// Install (or, with nullptr, remove) the calling thread's promise-rejection
+// hook: HostPromiseRejectionTracker as an embedder with an event loop wants it
+// (HTML "notify about rejected promises").
+//
+//  * Unhandled — at the end of every microtask drain, once per promise that
+//    was rejected with no handler and still has none, in rejection order.
+//    With a hook installed this REPLACES the stderr "Unhandled promise
+//    rejection" line; with none, bronze prints it as before.
+//  * Handled — a promise the hook was told about as Unhandled has just been
+//    given its first handler (a `then`, `catch` or `await`). Called
+//    synchronously from inside that subscription, so it runs in the middle of
+//    user code: record it and act later (HTML queues a task), never call back
+//    into JS from here.
+//
+// `promise` and `reason` are raw Values, current only until the next
+// allocation: a hook that keeps them puts them in Persistents first.
+enum class PromiseRejectionOperation : uint32_t { Unhandled = 0, Handled = 1 };
+using PromiseRejectionHook = void (*)(PromiseRejectionOperation op, Value promise, Value reason);
+BRONZE_EMBED_API void setPromiseRejectionHook(PromiseRejectionHook hook);
+
 // ---- module unload / hot swap ----------------------------------------------
 //
 // A module's entry registers the module's own root spans (its global cache,

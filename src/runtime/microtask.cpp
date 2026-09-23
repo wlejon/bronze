@@ -13,6 +13,7 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/object.h"
 #include "runtime/promise.h"
 #include "runtime/rt_state.h"
 #include "runtime/weak_ref.h"
@@ -43,6 +44,9 @@ thread_local std::deque<Job> g_queue;
 // almost always empty or one deep.
 thread_local std::vector<Value> g_parked;
 
+// The embedder's report sink (rtSetRejectionHook); null = stderr.
+thread_local RejectionHook g_rejectionHook = nullptr;
+
 // Registered on FIRST USE, not at static initialization, for the reason
 // exception.cpp's ensureExceptionRoots records: rtHeap() lives in another
 // translation unit, and registering into it from a static initializer here
@@ -72,6 +76,23 @@ void ensureQueueRoots() {
 // rejection the program ignored.
 void reportParkedRejections() {
     if (g_parked.empty()) return;
+    if (g_rejectionHook != nullptr) {
+        // HTML "notify about rejected promises": the embedder decides what a
+        // report is. Only the promises parked NOW are reported in this pass —
+        // the hook may run code that parks more, and those are appended past
+        // `n`, left for the next checkpoint. Each is taken off the registry
+        // into a frame root before the call, so the hook can allocate freely.
+        const size_t n = g_parked.size();
+        for (size_t i = 0; i < n && !g_parked.empty(); ++i) {
+            Rooted<Value> promise{g_parked.front()};
+            g_parked.erase(g_parked.begin());
+            promise.get().asObject<ObjectHeader>()->setInternalSlot(PromiseSlot::Reported,
+                                                                    Value::fromBool(true));
+            const Value reason = rtPromiseResultOf(promise.get());
+            g_rejectionHook(0, promise.get(), reason);
+        }
+        return;
+    }
     std::fflush(stdout);
     for (const Value& promise : g_parked) {
         const std::string text = rtPromiseRejectionText(promise);
@@ -182,6 +203,15 @@ void rtUnparkRejection(Value promise) {
             return;
         }
     }
+}
+
+void rtSetRejectionHook(RejectionHook hook) { g_rejectionHook = hook; }
+
+void rtNotifyRejectionHandled(Value promise) {
+    if (g_rejectionHook == nullptr) return;
+    Rooted<Value> p{promise};
+    const Value reason = rtPromiseResultOf(p.get());
+    g_rejectionHook(1, p.get(), reason);
 }
 
 size_t rtMicrotaskQueueLength() { return g_queue.size(); }

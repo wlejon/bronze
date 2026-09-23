@@ -45,6 +45,18 @@ void rtDrainMicrotasks();
 void rtParkRejection(Value promise);
 void rtUnparkRejection(Value promise);
 
+// The embedder's rejection hook (embed.h setPromiseRejectionHook), per thread
+// like the rest of the runtime. With one installed, the end-of-drain report
+// goes to it instead of stderr — op 0 ("unhandled") per parked promise, which
+// also marks the promise Reported — and a later subscription to a Reported
+// promise calls it with op 1 ("handled"). `promise` and `reason` are current
+// only until the hook's first allocation.
+using RejectionHook = void (*)(uint32_t op, Value promise, Value reason);
+void rtSetRejectionHook(RejectionHook hook);
+// promise.cpp's "handle" half: the promise was Reported and just got its
+// first handler. A no-op with no hook installed.
+void rtNotifyRejectionHandled(Value promise);
+
 // Test accessors: the queue's depth and the registry's population, so a unit
 // test can pin "one await of a settled promise is ONE job" and the
 // parked/unparked transitions without capturing stderr.

@@ -32,6 +32,10 @@ namespace bronze::runtime {
 // runtime-internal settle — kept on the promise itself because that pair's
 // env IS the promise. A thenable job's pair carries a latch of its own
 // (27.2.1.3 gives every pair a fresh one), in the pair's env object.
+// `Reported` is not a spec slot: it is true once the embedder's rejection hook
+// has been told this promise went unhandled (HTML's "outstanding rejected
+// promises weak set", kept on the promise so it is weak for free), which is
+// what makes a later handler a `rejectionhandled` rather than nothing.
 namespace PromiseSlot {
 enum : uint32_t {
     State,
@@ -40,6 +44,7 @@ enum : uint32_t {
     RejectReactions,
     IsHandled,
     AlreadyResolved,
+    Reported,
     kCount,
 };
 }
