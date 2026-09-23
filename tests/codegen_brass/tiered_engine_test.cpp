@@ -6,7 +6,144 @@
 #include "runtime/gc.h"
 #include "support/diagnostics.h"
 
+#include <brass/runtime/code_installer.hpp>
+#include <brass/runtime/multi_tier_pipeline.hpp>
+#include <brass/runtime/tiering.hpp>
+
 using namespace bronze;
+
+namespace {
+
+// An IL module whose `pp_work(a, b)` computes a+b (isMul false) or a*b, and
+// whose `main` calls it once.
+il::Module makeWorkModule(const std::string& name, bool isMul) {
+    il::Module m;
+    m.name = name;
+
+    il::Function workFn;
+    workFn.name = "pp_work";
+    workFn.params = {{"a", il::Type::F64}, {"b", il::Type::F64}};
+    workFn.returnType = il::Type::F64;
+    workFn.isExported = true;
+    workFn.valueCount = 3;
+    il::Block b0;
+    b0.id = 0;
+    b0.instructions.push_back({isMul ? il::Op::Mul : il::Op::Add, il::Type::F64, 2, {0, 1}, 0, 0, 0});
+    b0.instructions.push_back({il::Op::Ret, il::Type::F64, il::kNoValue, {2}, 0, 0, 0});
+    workFn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(workFn));
+
+    il::Function mainFn;
+    mainFn.name = "main";
+    mainFn.isEntryPoint = true;
+    mainFn.returnType = il::Type::Void;
+    mainFn.valueCount = 3;
+    il::Block mb0;
+    mb0.id = 0;
+    mb0.instructions.push_back({il::Op::ConstF64, il::Type::F64, 0, {}, 6.0, 0, 0});
+    mb0.instructions.push_back({il::Op::ConstF64, il::Type::F64, 1, {}, 7.0, 0, 0});
+    il::Instruction callInst;
+    callInst.op = il::Op::Call;
+    callInst.type = il::Type::F64;
+    callInst.result = 2;
+    callInst.operands = {0, 1};
+    callInst.calleeIndex = 0;
+    mb0.instructions.push_back(callInst);
+    mb0.instructions.push_back({il::Op::Ret, il::Type::Void, il::kNoValue, {}, 0, 0, 0});
+    mainFn.blocks.push_back(std::move(mb0));
+    m.functions.push_back(std::move(mainFn));
+    return m;
+}
+
+brass::runtime::TieringConfig tier1Config(uint64_t threshold) {
+    brass::runtime::TieringConfig cfg;
+    cfg.set_tier0_interpreter(brass::runtime::Tier0Interpreter::Fast);
+    cfg.invocation_tier1_threshold = threshold;
+    cfg.invocation_tier2_threshold = 1000000;
+    cfg.enable_background_compile = false;
+    return cfg;
+}
+
+uint64_t invocations(const BrassTieredProgram& prog, std::string_view name) {
+    const brass::runtime::TieringFeedback* fb = prog.dispatchTable().tiering().find_feedback(name);
+    return fb ? fb->invocation_count() : 0;
+}
+
+}  // namespace
+
+TEST_CASE("two live auto-tiered programs keep separate same-named functions and tier-up counts") {
+    TieredEngineConfig config;
+    config.tier = ExecutionTier::Auto;
+    config.entrySymbol = "main";
+    BrassTieredEngine engine(config);
+
+    DiagnosticSink diagsA;
+    DiagnosticSink diagsB;
+    auto progA = engine.compile(makeWorkModule("pp_prog_a", false), diagsA);
+    REQUIRE(!diagsA.hasErrors());
+    REQUIRE(progA != nullptr);
+    // Compiling B must not disturb A (no global clears between programs).
+    auto progB = engine.compile(makeWorkModule("pp_prog_b", true), diagsB);
+    REQUIRE(!diagsB.hasErrors());
+    REQUIRE(progB != nullptr);
+
+    auto& tableA = progA->dispatchTable();
+    auto& tableB = progB->dispatchTable();
+    CHECK(&tableA != &tableB);
+    CHECK(&tableA != &brass::runtime::FunctionDispatchTable::instance());
+    CHECK(&tableA.pipeline() != &tableB.pipeline());
+    CHECK(&tableA.tiering() != &tableB.tiering());
+
+    // A tiers pp_work up quickly; B effectively never does.
+    tableA.pipeline().initialize(tier1Config(3));
+    tableB.pipeline().initialize(tier1Config(1000));
+
+    progA->run();
+    progB->run();
+    // main's call may be inlined, so count B's invokes from here.
+    const uint64_t b0 = invocations(*progB, "pp_work");
+
+    const auto a = brass::RuntimeValue::from_f64(6.0);
+    const auto b = brass::RuntimeValue::from_f64(7.0);
+    for (int i = 0; i < 10; ++i) {
+        CHECK(progA->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(13.0));
+        if (i < 4) {
+            CHECK(progB->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
+        }
+    }
+
+    // Each program counted only its own calls.
+    CHECK(invocations(*progA, "pp_work") >= 10);
+    CHECK_EQ(invocations(*progB, "pp_work"), b0 + 4);
+
+    // A's pp_work crossed its threshold and runs baseline code; B's did not.
+    brass::runtime::FunctionHandle* hA = tableA.find("pp_work");
+    brass::runtime::FunctionHandle* hB = tableB.find("pp_work");
+    REQUIRE(hA != nullptr);
+    REQUIRE(hB != nullptr);
+    CHECK(hA != hB);
+    CHECK(hA->tier() == brass::runtime::TierLevel::Tier1_Baseline);
+    CHECK(!hB->has_native_entry());
+    CHECK(tableA.tiering().get_feedback("pp_work").current_tier() == brass::runtime::TierLevel::Tier1_Baseline);
+    CHECK(tableB.tiering().get_feedback("pp_work").current_tier() == brass::runtime::TierLevel::Tier0_Interpreter);
+    CHECK(tableA.pipeline().find_baseline_compiled("pp_work") != nullptr);
+    CHECK(tableB.pipeline().find_baseline_compiled("pp_work") == nullptr);
+
+    // The default program saw none of it.
+    CHECK(!brass::runtime::TieringRegistry::instance().has("pp_work"));
+    CHECK(!brass::runtime::FunctionDispatchTable::instance().has("pp_work"));
+
+    // Tiered-up A and interpreted B still give their own results, and B's
+    // count moves only with B's calls.
+    CHECK(progA->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(13.0));
+    CHECK(progB->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
+    CHECK_EQ(invocations(*progB, "pp_work"), b0 + 5);
+
+    // Destroying A leaves B intact.
+    progA.reset();
+    CHECK(progB->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
+    CHECK_EQ(invocations(*progB, "pp_work"), b0 + 6);
+}
 
 TEST_CASE("execution tier parsing and string conversion") {
     CHECK(parseExecutionTier("0") == ExecutionTier::Tier0_Interpreter);

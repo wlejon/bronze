@@ -12,6 +12,10 @@
 #include <brass/codegen/baseline_jit.hpp>
 #include <brass/vm/fast_interpreter.hpp>
 
+namespace brass::runtime {
+class FunctionDispatchTable;
+}
+
 namespace bronze {
 
 namespace il {
@@ -48,8 +52,10 @@ public:
     BrassTieredProgram(const BrassTieredProgram&) = delete;
     BrassTieredProgram& operator=(const BrassTieredProgram&) = delete;
 
-    BrassTieredProgram(BrassTieredProgram&&) noexcept;
-    BrassTieredProgram& operator=(BrassTieredProgram&&) noexcept;
+    // Not movable: engines and brass handles hold pointers into this
+    // program's data buffers and dispatch table.
+    BrassTieredProgram(BrassTieredProgram&&) = delete;
+    BrassTieredProgram& operator=(BrassTieredProgram&&) = delete;
 
     ExecutionTier tier() const noexcept { return tier_; }
     std::string_view entrySymbol() const noexcept { return entrySymbol_; }
@@ -66,6 +72,11 @@ public:
 
     void setMirModule(std::unique_ptr<brass::Module> mirMod);
     brass::Module* mirModule() const noexcept { return mirModule_.get(); }
+
+    // This program's runtime state (function handles, tiering feedback,
+    // MultiTierPipeline, background compiler). Owned per program so two
+    // live programs never share handles or counters.
+    brass::runtime::FunctionDispatchTable& dispatchTable() const noexcept { return *dispatchTable_; }
 
     void setFastInterpreter(std::unique_ptr<brass::FastInterpreter> interp);
     brass::FastInterpreter* fastInterpreter() const noexcept { return fastInterpreter_.get(); }
@@ -97,6 +108,10 @@ private:
 
     std::unique_ptr<BrassJitProgram> jitProgram_;
     std::unique_ptr<brass::Module> mirModule_;
+    // Declared after mirModule_ (destroyed before it, as brass requires) and
+    // before the interpreter, compiler and compiled code (which it must
+    // outlive).
+    std::unique_ptr<brass::runtime::FunctionDispatchTable> dispatchTable_;
     std::unique_ptr<brass::FastInterpreter> fastInterpreter_;
     std::unique_ptr<brass::codegen::BaselineJitCompiler> baselineCompiler_;
     std::vector<brass::codegen::BaselineCompiledFunction> compiledFunctions_;

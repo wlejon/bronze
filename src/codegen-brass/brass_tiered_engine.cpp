@@ -48,25 +48,18 @@ std::optional<ExecutionTier> parseExecutionTier(std::string_view str) noexcept {
 }
 
 BrassTieredProgram::BrassTieredProgram(ExecutionTier tier, std::string entrySymbol)
-    : tier_(tier), entrySymbol_(std::move(entrySymbol)) {}
+    : tier_(tier), entrySymbol_(std::move(entrySymbol)),
+      dispatchTable_(std::make_unique<brass::runtime::FunctionDispatchTable>()) {}
 
+// Member order does the teardown: compiled code, compiler and interpreter
+// go first, then the dispatch table (which stops this program's background
+// compiler and hands the GC's stack maps back), then the MIR module.
 BrassTieredProgram::~BrassTieredProgram() {
-    brass::runtime::FunctionDispatchTable::instance().clear();
-    brass::runtime::TieringRegistry::instance().clear();
     if (brass::brass_get_active_stack_maps() == &moduleStackMap_ ||
         (jitProgram_ && jitProgram_->stackMaps() && brass::brass_get_active_stack_maps() == jitProgram_->stackMaps())) {
         brass::brass_set_active_stack_maps(nullptr);
     }
-    if (tier_ == ExecutionTier::Auto) {
-        if (brass::brass_get_active_stack_maps() == &brass::runtime::MultiTierPipeline::instance().active_stack_maps()) {
-            brass::brass_set_active_stack_maps(nullptr);
-        }
-        registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline::instance());
-    }
 }
-
-BrassTieredProgram::BrassTieredProgram(BrassTieredProgram&&) noexcept = default;
-BrassTieredProgram& BrassTieredProgram::operator=(BrassTieredProgram&&) noexcept = default;
 
 void BrassTieredProgram::setJitProgram(std::unique_ptr<BrassJitProgram> jitProg) {
     jitProgram_ = std::move(jitProg);
@@ -123,7 +116,7 @@ const brass::ModuleStackMap* BrassTieredProgram::stackMaps() const noexcept {
         return jitProgram_->stackMaps();
     }
     if (tier_ == ExecutionTier::Auto) {
-        return &brass::runtime::MultiTierPipeline::instance().active_stack_maps();
+        return &dispatchTable_->pipeline().active_stack_maps();
     }
     return nullptr;
 }
@@ -200,7 +193,7 @@ void BrassTieredProgram::registerSymbolsWithEngines() {
             baselineCompiler_->register_external_symbol(name, addr);
         }
         if (tier_ == ExecutionTier::Auto) {
-            brass::runtime::MultiTierPipeline::instance().register_external_symbol(name, addr);
+            dispatchTable_->pipeline().register_external_symbol(name, addr);
         }
     };
 
@@ -263,7 +256,7 @@ void* BrassTieredProgram::symbolAddress(std::string_view name) const {
         return compiledFunctions_[fnIt->second].entry_point();
     }
     if (tier_ == ExecutionTier::Auto) {
-        auto fn = brass::runtime::MultiTierPipeline::instance().find_baseline_compiled(name);
+        auto fn = dispatchTable_->pipeline().find_baseline_compiled(name);
         if (fn) return fn->entry_point();
     }
     return nullptr;
@@ -275,7 +268,7 @@ brass::RuntimeValue BrassTieredProgram::run() {
     } else if (tier_ == ExecutionTier::Tier2_Optimized && jitProgram_ && jitProgram_->stackMaps()) {
         brass::brass_set_active_stack_maps(jitProgram_->stackMaps());
     } else if (tier_ == ExecutionTier::Auto) {
-        brass::brass_set_active_stack_maps(&brass::runtime::MultiTierPipeline::instance().active_stack_maps());
+        brass::brass_set_active_stack_maps(&dispatchTable_->pipeline().active_stack_maps());
     }
 
     switch (tier_) {
@@ -301,7 +294,7 @@ brass::RuntimeValue BrassTieredProgram::run() {
         }
         case ExecutionTier::Auto: {
             if (!mirModule_) return brass::RuntimeValue::from_u64(0);
-            return brass::runtime::MultiTierPipeline::instance().execute(*mirModule_, entrySymbol_);
+            return dispatchTable_->pipeline().execute(*mirModule_, entrySymbol_);
         }
     }
     return brass::RuntimeValue::from_u64(0);
@@ -314,7 +307,7 @@ brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
     } else if (tier_ == ExecutionTier::Tier2_Optimized && jitProgram_ && jitProgram_->stackMaps()) {
         brass::brass_set_active_stack_maps(jitProgram_->stackMaps());
     } else if (tier_ == ExecutionTier::Auto) {
-        brass::brass_set_active_stack_maps(&brass::runtime::MultiTierPipeline::instance().active_stack_maps());
+        brass::brass_set_active_stack_maps(&dispatchTable_->pipeline().active_stack_maps());
     }
 
     switch (tier_) {
@@ -342,7 +335,7 @@ brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
         }
         case ExecutionTier::Auto: {
             if (!mirModule_) return brass::RuntimeValue::from_u64(0);
-            return brass::runtime::MultiTierPipeline::instance().execute(*mirModule_, fnName, args);
+            return dispatchTable_->pipeline().execute(*mirModule_, fnName, args);
         }
     }
     return brass::RuntimeValue::from_u64(0);
@@ -355,9 +348,6 @@ BrassTieredEngine::~BrassTieredEngine() = default;
 
 std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     const il::Module& module, DiagnosticSink& diags) {
-
-    brass::runtime::FunctionDispatchTable::instance().clear();
-    brass::runtime::TieringRegistry::instance().clear();
 
     const ExecutionTier tier = config_.tier;
     const std::string entrySymbol = config_.entrySymbol.empty() ? "main" : config_.entrySymbol;
@@ -397,24 +387,24 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     if (tier == ExecutionTier::Tier0_Interpreter) {
         auto interp = std::make_unique<brass::FastInterpreter>(config_.gcSemispaceSize);
         registerBronzeFastInterpreterSymbols(*interp);
+        interp->set_dispatch_table(&prog->dispatchTable());
         interp->set_module(mirMod.get());
         prog->setFastInterpreter(std::move(interp));
         prog->registerSymbolsWithEngines();
     } else if (tier == ExecutionTier::Tier1_Baseline) {
         auto compiler = std::make_unique<brass::codegen::BaselineJitCompiler>(brass::Target::host());
         registerBronzeBaselineSymbols(*compiler);
+        compiler->set_dispatch_table(&prog->dispatchTable());
         prog->setBaselineCompiler(std::move(compiler));
         prog->registerSymbolsWithEngines();
 
         auto compiledFns = prog->baselineCompiler()->compile_module(*mirMod);
         prog->setBaselineCompiledFunctions(std::move(compiledFns));
     } else if (tier == ExecutionTier::Auto) {
-        auto& pipeline = brass::runtime::MultiTierPipeline::instance();
-        if (!pipeline.is_initialized()) {
-            brass::runtime::TieringConfig tierConfig;
-            tierConfig.set_tier0_interpreter(brass::runtime::Tier0Interpreter::Fast);
-            pipeline.initialize(tierConfig);
-        }
+        auto& pipeline = prog->dispatchTable().pipeline();
+        brass::runtime::TieringConfig tierConfig;
+        tierConfig.set_tier0_interpreter(brass::runtime::Tier0Interpreter::Fast);
+        pipeline.initialize(tierConfig);
         registerBronzeMultiTierSymbols(pipeline);
         prog->registerSymbolsWithEngines();
         brass::brass_set_active_stack_maps(&pipeline.active_stack_maps());
