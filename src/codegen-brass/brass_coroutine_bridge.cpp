@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <type_traits>
+#include <utility>
 
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/mir/opcodes.hpp>
@@ -23,48 +24,35 @@ T fromSlot(uint64_t raw) {
     }
 }
 
-template <typename Ret, typename... Args>
+// How a host function's result is boxed. uintptr_t and uint64_t are the same
+// type on LP64 Linux and on Windows but distinct on macOS, so a pointer-sized
+// handle is named at the call site rather than inferred from the type.
+enum class HostRet { Auto, Handle };
+
+template <HostRet As, typename Ret, typename... Args, size_t... I>
+brass::RuntimeValue invokeFromSlots(Ret (*fn)(Args...),
+                                    const std::vector<brass::RuntimeValue>& args,
+                                    std::index_sequence<I...>) {
+    auto slot = [&args](size_t idx) -> uint64_t {
+        return idx < args.size() ? args[idx].as_u64() : 0;
+    };
+    (void)slot;  // unused when the function takes no arguments
+    if constexpr (std::is_void_v<Ret>) {
+        fn(fromSlot<Args>(slot(I))...);
+        return brass::RuntimeValue::from_void();
+    } else if constexpr (As == HostRet::Handle) {
+        return brass::RuntimeValue::from_ptr(static_cast<uintptr_t>(fn(fromSlot<Args>(slot(I))...)));
+    } else if constexpr (sizeof(Ret) <= sizeof(uint32_t)) {
+        return brass::RuntimeValue::from_i32(static_cast<int32_t>(fn(fromSlot<Args>(slot(I))...)));
+    } else {
+        return brass::RuntimeValue::from_u64(static_cast<uint64_t>(fn(fromSlot<Args>(slot(I))...)));
+    }
+}
+
+template <HostRet As = HostRet::Auto, typename Ret, typename... Args>
 brass::FastHostFn makeFastHostFn(Ret (*fn)(Args...)) {
     return [fn](brass::FastInterpreter&, const std::vector<brass::RuntimeValue>& args) -> brass::RuntimeValue {
-        auto unpack = [&](size_t idx) -> uint64_t {
-            if (idx < args.size()) return args[idx].as_u64();
-            return 0;
-        };
-        (void)unpack;
-
-        if constexpr (std::is_void_v<Ret>) {
-            if constexpr (sizeof...(Args) == 1) {
-                fn(fromSlot<Args>(unpack(0))...);
-            }
-            return brass::RuntimeValue::from_void();
-        } else if constexpr (std::is_same_v<Ret, uint32_t>) {
-            if constexpr (sizeof...(Args) == 1) {
-                return brass::RuntimeValue::from_i32(static_cast<int32_t>(fn(fromSlot<Args>(unpack(0))...)));
-            }
-        } else if constexpr (std::is_same_v<Ret, uintptr_t>) {
-            if constexpr (sizeof...(Args) == 3) {
-                void* a0 = args.size() > 0 ? reinterpret_cast<void*>(args[0].as_ptr()) : nullptr;
-                uint32_t a1 = args.size() > 1 ? static_cast<uint32_t>(args[1].as_u32()) : 0;
-                uint64_t a2 = args.size() > 2 ? args[2].as_u64() : 0;
-                return brass::RuntimeValue::from_ptr(brass_coro_create(a0, a1, a2));
-            }
-        } else if constexpr (std::is_same_v<Ret, uint64_t>) {
-            if constexpr (sizeof...(Args) == 1) {
-                uint64_t a0 = args.size() > 0 ? args[0].as_u64() : 0;
-                return brass::RuntimeValue::from_u64(fn(a0));
-            } else if constexpr (sizeof...(Args) == 2) {
-                uint64_t a0 = args.size() > 0 ? args[0].as_u64() : 0;
-                uint64_t a1 = args.size() > 1 ? args[1].as_u64() : 0;
-                return brass::RuntimeValue::from_u64(fn(a0, a1));
-            } else if constexpr (sizeof...(Args) == 4) {
-                void* a0 = args.size() > 0 ? reinterpret_cast<void*>(args[0].as_ptr()) : nullptr;
-                uint32_t a1 = args.size() > 1 ? static_cast<uint32_t>(args[1].as_u32()) : 0;
-                uint64_t a2 = args.size() > 2 ? args[2].as_u64() : 0;
-                uint64_t a3 = args.size() > 3 ? args[3].as_u64() : 0;
-                return brass::RuntimeValue::from_u64(brass::runtime::bronze_create_async_machine(a0, a1, a2, a3));
-            }
-        }
-        return brass::RuntimeValue::from_u64(0);
+        return invokeFromSlots<As>(fn, args, std::index_sequence_for<Args...>{});
     };
 }
 
@@ -100,7 +88,7 @@ static inline void traceSingleWord(Heap& heap, const Heap::RootVisitor& visit, u
 void registerBrassCoroutineSymbols(brass::FastInterpreter& interp) {
     // 1. Coroutine ABI functions
     interp.register_external_symbol("brass_coro_create", reinterpret_cast<void*>(&::brass_coro_create));
-    interp.register_external_function("brass_coro_create", makeFastHostFn(&::brass_coro_create));
+    interp.register_external_function("brass_coro_create", makeFastHostFn<HostRet::Handle>(&::brass_coro_create));
 
     interp.register_external_symbol("brass_coro_resume", reinterpret_cast<void*>(&::brass_coro_resume));
     interp.register_external_function("brass_coro_resume", makeFastHostFn(&::brass_coro_resume));
@@ -136,7 +124,7 @@ void registerBrassCoroutineSymbols(brass::codegen::JitExecutionEngine& engine) {
 
 void registerBrassCoroutineSymbols(brass::runtime::MultiTierPipeline& pipeline) {
     pipeline.register_external_symbol("brass_coro_create", reinterpret_cast<void*>(&::brass_coro_create));
-    pipeline.register_external_function("brass_coro_create", makeFastHostFn(&::brass_coro_create));
+    pipeline.register_external_function("brass_coro_create", makeFastHostFn<HostRet::Handle>(&::brass_coro_create));
 
     pipeline.register_external_symbol("brass_coro_resume", reinterpret_cast<void*>(&::brass_coro_resume));
     pipeline.register_external_function("brass_coro_resume", makeFastHostFn(&::brass_coro_resume));
