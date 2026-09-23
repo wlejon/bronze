@@ -98,6 +98,12 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
         PropagateGuard(bool& f, bool val) : flag(f), prev(f) { flag = val; }
         ~PropagateGuard() { flag = prev; }
     } guard(propagateExceptionsInEntry_, true);
+    // A JIT program is compiled and run on one thread (eval, new Function,
+    // a host's evalScript), and there are many of them: per-thread instances
+    // would buy it nothing and keep each one's pristine snapshot alive for
+    // the life of the process (runtime/module_instance.cpp). Only an image
+    // loaded once and entered on N threads needs them.
+    PropagateGuard perThreadGuard(perThreadModuleData_, false);
 
     auto obj = buildObjectFile(module, diags);
     if (!obj) {

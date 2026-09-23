@@ -382,6 +382,7 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // (brass_backend_sections.cpp builds them), so their data symbols would
     // not resolve: the baseline JIT rejects an unresolved data symbol.
     backend.setRegisterFnSources(false);
+    backend.setPerThreadModuleData(false);
 
     std::vector<uint32_t> globalReadKeys;
     auto mirMod = backend.buildMirModule(module, diags, &globalReadKeys);

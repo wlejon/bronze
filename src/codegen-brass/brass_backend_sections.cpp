@@ -295,10 +295,13 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     );
     const int32_t dataIdx = obj.get_section_index(dataSecName);
 
+    // SHARED by every thread that runs the image: the slot cell
+    // bronze_module_instance fills once, and the key remap, whose entries are
+    // process-wide interned ids and so the same on every thread.
     dataSec.align_to(8);
-    const size_t envOffset = dataSec.data.size();
-    dataSec.emit64(BRONZE_ABI_UNDEFINED_BITS);
-    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_module_env"), dataIdx, envOffset, 8,
+    const size_t slotOffset = dataSec.data.size();
+    dataSec.emit64(0);
+    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_module_slot"), dataIdx, slotOffset, 8,
                  SymbolBinding::Local);
 
     dataSec.align_to(4);
@@ -308,6 +311,21 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     dataSec.data.resize(dataSec.data.size() + keyMapBytes, 0);
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_key_map"), dataIdx, keyMapOffset,
                  keyMapBytes, SymbolBinding::Local);
+
+    // PER THREAD from here to `__bronze_instance_end`: every table that holds
+    // a Value or a thread's registration. The home thread uses these bytes;
+    // every other thread a copy of them taken before the home thread wrote
+    // any (bronze_abi.h, bronze_module_instance). Every table's offset from
+    // the run's start is a multiple of its alignment, and the copies are
+    // allocated at least that aligned, so a table is aligned in every copy.
+    dataSec.align_to(64);
+    const size_t instanceOffset = dataSec.data.size();
+
+    dataSec.align_to(8);
+    const size_t envOffset = dataSec.data.size();
+    dataSec.emit64(BRONZE_ABI_UNDEFINED_BITS);
+    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_module_env"), dataIdx, envOffset, 8,
+                 SymbolBinding::Local);
 
     dataSec.align_to(8);
     const size_t tplOffset = dataSec.data.size();
@@ -357,6 +375,16 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     }
     defineSymbol(obj, importsSymbol, dataIdx, importsOffset, dataSec.data.size() - importsOffset,
                  SymbolBinding::Global);
+
+    // The run's bounds. The end is a real word rather than a zero-size
+    // symbol at the section's edge, which not every image writer places.
+    dataSec.align_to(8);
+    const size_t instanceEnd = dataSec.data.size();
+    dataSec.emit64(0);
+    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_instance"), dataIdx, instanceOffset,
+                 instanceEnd - instanceOffset, SymbolBinding::Local);
+    defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_instance_end"), dataIdx, instanceEnd, 8,
+                 SymbolBinding::Local);
     if (!obj.find_symbol("bronze_native_unbound")) {
         ObjectSymbol unbound;
         unbound.name = "bronze_native_unbound";

@@ -1,0 +1,6 @@
+A summary=calls=0 proto=true
+A first=A0 n=1 acc=435,0 len2=189 last=A29(29,0) sq=15 json=[0,1] arr=true hist=1 same:call|of|:1,A
+A hammer iters=64 failures=0
+B summary=calls=0 proto=true
+B first=B0 n=1 acc=435,0 len2=189 last=B29(29,0) sq=15 json=[0,1] arr=true hist=1 same:call|of|:1,B
+B hammer iters=64 failures=0

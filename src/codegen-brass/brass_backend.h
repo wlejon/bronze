@@ -54,6 +54,12 @@ public:
     // compiled by another engine must leave the registration out, since the
     // data symbols would not resolve.
     void setRegisterFnSources(bool on) { registerFnSources_ = on; }
+    // Whether the module's writable tables are addressed per THREAD
+    // (bronze_abi.h, `bronze_module_instance`): one contiguous instance run
+    // in the object's data, a delta per thread. Only an object file
+    // (buildObjectFile) lays the run out; a MIR module compiled by another
+    // engine, which registers each table as its own buffer, turns it off.
+    void setPerThreadModuleData(bool on) { perThreadModuleData_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -75,6 +81,7 @@ private:
     bool optimize_ = true;
     bool emitDebugInfo_ = false;
     bool registerFnSources_ = true;
+    bool perThreadModuleData_ = true;
     brass::Target target_ = brass::Target::host();
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;

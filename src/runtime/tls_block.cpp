@@ -88,6 +88,7 @@ static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
               BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF);
 static_assert(offsetof(bronze_tls_block, key_ic_enabled) == BRONZE_TLS_KEY_IC_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, stack_limit) == BRONZE_TLS_STACK_LIMIT_OFF);
+static_assert(offsetof(bronze_tls_block, module_deltas) == BRONZE_TLS_MODULE_DELTAS_OFF);
 
 namespace bronze::runtime {
 
@@ -132,6 +133,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*elem_set_cache_tbl=*/nullptr,
     /*key_ic_enabled=*/1,
     /*stack_limit=*/0,
+    /*module_deltas=*/nullptr,
 };
 
 namespace {

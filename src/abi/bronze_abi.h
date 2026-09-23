@@ -79,7 +79,12 @@
  *                              asks, and by the entry's own first call
  *                              (bronze_native_bind) regardless. A module
  *                              compiled against no natives defines the table
- *                              with count 0.
+ *                              with count 0. The symbol names the image's
+ *                              own table, which is its HOME thread's (the
+ *                              first to run the entry): each other thread
+ *                              runs on a per-thread copy of the module's
+ *                              writable data (bronze_module_instance) and
+ *                              its entry binds that copy for itself.
  *
  * The manifest is what the module was compiled against — the `--host-globals`
  * list, verbatim and in the order the manifest gave it. It exists because
@@ -545,6 +550,23 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * touch, and a null one means the slot was never filled. */ \
     X(bronze_register_value_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     X(bronze_register_fn_slots,    BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+    /* The calling thread's INSTANCE of the module's writable tables, the
+     * entry's first call (before any registration above, which it feeds).
+     * A module's writable tables — environment cell, template cells, global
+     * cache, inline-cache table, native import table — are one contiguous
+     * run of its data, [`__bronze_instance`, `__bronze_instance_end`), and
+     * every address generated code forms into them is the image address
+     * plus the calling thread's DELTA. The first thread to enter the module
+     * (its home) uses the image's run itself, delta 0; every later thread
+     * gets a copy of the run as it was before the home thread wrote to it.
+     * `slotCell` is the module's `__bronze_module_slot`, a u64 OUTSIDE the
+     * run that the first call fills with a process-wide slot number; the
+     * answer is also stored at that slot of the thread's
+     * `bronze_tls_block.module_deltas`, which is where every function other
+     * than the entry reads it. Idempotent per thread. So one image runs on
+     * any number of threads, each against its own heap; the one rule left is
+     * that a thread runs the module's entry before its code. */ \
+    X(bronze_module_instance,      BRONZE_ABI_U64,  (BRONZE_ABI_MU64, BRONZE_ABI_MU64, BRONZE_ABI_MU64)) \
     /* ---- host natives (runtime/native_registry.cpp) ------------------------
      *
      * A native is a C function the HOST registered under a JS path

@@ -233,18 +233,28 @@ them). Values, Persistents and everything reachable from them are bound to
 the thread that made them; cross-thread data travel is the host's job, by
 serializing on one side and re-creating on the other.
 
-A module image is thread-bound too, and this is a RULE, not a suggestion:
-the private tables listed above — IC table, key remap, global cache,
-fn-singleton slots, environment cell — are arrays in the module's own
-`.data`, per-image rather than per-thread, and the entry registers them with
-the CALLING thread's runtime. So the thread that ran a module's entry (its
-home thread) is the only thread that may ever enter it. A host that wants
-the same script on N workers loads N copies of the image from N distinct
-paths — the loader refcounts images by path and would otherwise hand every
-worker one shared `.data`; the distinct-path copy is the same fresh-image
-rule hot swap already imposes. `src/embed/embed.h` states the full contract;
+A module image is NOT thread-bound: one image runs on any number of threads
+at once. Everything compiled code writes that can hold a heap reference —
+IC table, global cache, template cells, environment cell, native import
+table — is laid out as one contiguous run of the module's `.data`,
+`[__bronze_instance, __bronze_instance_end)`, and that run is per THREAD.
+The entry calls `bronze_module_instance(slot, begin, end)`: the first thread
+(the image's home thread) gets delta 0 and uses the image's own bytes, and
+the runtime snapshots the run while it is still pristine; every later thread
+gets a 64-aligned heap copy of that snapshot. The answer is a byte delta,
+kept in a per-thread array the TLS block publishes (`module_deltas`, indexed
+by the image's slot id in the shared `__bronze_module_slot` cell), and every
+table address generated code forms is the image address plus the calling
+thread's delta — loaded once per function from the pinned TLS register. The
+key remap stays shared: it holds process-wide interned ids, identical from
+every thread. The runtime-side registrations of those tables were already
+per-thread, so each thread's collector forwards only its own copy. The one
+rule left is that a thread runs the entry before it calls any of the
+module's functions. The tiered JIT engine keeps separate per-tier buffers and
+compiles without the delta. `src/embed/embed.h` states the full contract;
 `tests/threaded_modules` is the worked example — two compiled modules on two
-threads concurrently, each hammered under per-allocation collection.
+threads concurrently, and one image entered on two threads at once, each
+hammered under per-allocation collection.
 
 ## In-Memory Dynamic Execution and JIT (`src/eval`)
 

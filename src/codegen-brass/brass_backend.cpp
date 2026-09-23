@@ -74,8 +74,27 @@ std::vector<std::string> computeUniqueFunctionNames(const il::Module& module) {
 }
 
 
+// The calling thread's address of one of the module's writable tables
+// (bronze_abi.h, bronze_module_instance): the image symbol plus the thread's
+// delta, read from `module_deltas[*__bronze_module_slot]` through the pinned
+// TLS register, exactly as brass's lowering reads it for the functions it
+// lowers. The thunks here are only ever called from compiled code of this
+// module on a thread that already ran its entry, so the slot is registered.
+brass::Value* moduleDataAddr(brass::Builder& b, const std::string& entrySymbol,
+                             const std::string& tableSym, bool perThread) {
+    brass::Value* addr = b.build_func_addr(tableSym);
+    if (!perThread) return addr;
+    brass::Value* tls = b.build_pinned_tls_read();
+    brass::Value* deltas = b.build_load(brass::Type::i64(), tls, BRONZE_TLS_MODULE_DELTAS_OFF);
+    brass::Value* slotCell = b.build_func_addr(codegen::moduleSymbolName(entrySymbol, "__bronze_module_slot"));
+    brass::Value* slot = b.build_load(brass::Type::i64(), slotCell, 0);
+    brass::Value* entry = b.build_add(deltas, b.build_shl(slot, b.build_iconst_i64(3)));
+    brass::Value* delta = b.build_load(brass::Type::i64(), entry, 0);
+    return b.build_add(addr, delta);
+}
+
 void emitGlobalReadThunks(brass::Module& mod, const std::string& entrySymbol,
-                          const std::vector<uint32_t>& globalReadKeys) {
+                          const std::vector<uint32_t>& globalReadKeys, bool perThread) {
     if (globalReadKeys.empty()) return;
 
     const std::string globalCacheSym = codegen::moduleSymbolName(entrySymbol, "__bronze_global_cache");
@@ -96,7 +115,7 @@ void emitGlobalReadThunks(brass::Module& mod, const std::string& entrySymbol,
         brass::BasicBlock* miss = b.append_block("miss");
 
         b.position_at_end(entry);
-        brass::Value* cells = b.build_func_addr(globalCacheSym);
+        brass::Value* cells = moduleDataAddr(b, entrySymbol, globalCacheSym, perThread);
         brass::Value* cached = b.build_load(brass::Type::i64(), cells, static_cast<int32_t>(slot * sizeof(uint64_t)));
         brass::Value* hole = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NO_EXCEPTION_BITS));
         brass::Value* isHole = b.build_eq(cached, hole);
@@ -118,7 +137,7 @@ void emitGlobalReadThunks(brass::Module& mod, const std::string& entrySymbol,
 }
 
 void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
-                            const std::string& entrySymbol) {
+                            const std::string& entrySymbol, bool perThread) {
     const auto& imports = module.nativeImports;
     if (imports.empty()) return;
 
@@ -160,7 +179,7 @@ void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
         }
 
         b.position_at_end(entry);
-        brass::Value* table = b.build_func_addr(importsSymbol);
+        brass::Value* table = moduleDataAddr(b, entrySymbol, importsSymbol, perThread);
         const auto slotOffset = static_cast<int32_t>(8 + i * sizeof(uint64_t));
 
         if (isClassSlot) {
@@ -198,7 +217,9 @@ void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
     brass::Builder b(mod);
     b.set_function(bind);
     b.append_block("entry");
-    brass::Value* table = b.build_func_addr(importsSymbol);
+    // This thread's table: the entry binds the instance its registration
+    // just made, from this thread's registry.
+    brass::Value* table = moduleDataAddr(b, entrySymbol, importsSymbol, perThread);
     b.build_call("bronze_native_bind", brass::Type::void_type(), {table});
     b.build_ret_void();
     bind->rebuild_cfg_predecessors();
@@ -300,6 +321,10 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
     options.template_site_count = module.templateSiteCount;
+    // One image, any number of threads: every writable table is addressed
+    // through the calling thread's delta (bronze_abi.h,
+    // bronze_module_instance), laid out by brass_backend_sections.cpp.
+    options.per_thread_module_data = perThreadModuleData_;
     // The inline-cache table: lowering numbered every property and method
     // site, the verifier bounded each number, and `__bronze_ic_table`
     // (brass_backend_sections.cpp) is laid out to exactly this count, so brass
@@ -373,8 +398,8 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         }
     }
 
-    emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys);
-    emitNativeImportThunks(*res.module, module, entrySymbol_);
+    emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys, perThreadModuleData_);
+    emitNativeImportThunks(*res.module, module, entrySymbol_, perThreadModuleData_);
 
     if (globalReadKeysOut) {
         *globalReadKeysOut = std::move(globalReadKeys);

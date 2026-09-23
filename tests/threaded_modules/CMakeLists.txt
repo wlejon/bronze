@@ -61,3 +61,42 @@ add_test(NAME threaded-modules-gc-stress COMMAND ${CMAKE_COMMAND}
 set_tests_properties(threaded-modules-gc-stress PROPERTIES
     LABELS threaded_modules
     ENVIRONMENT "BRONZE_GC_STRESS=1")
+
+# ONE image on two threads at once (host_shared.cpp): the object is linked
+# once and both threads enter the same entry symbol, so every writable table
+# the image owns must be per thread (bronze_abi.h, bronze_module_instance).
+bronze_threaded_module_object(${_thr_src}/mod_shared.js bronze_shared_mod ${_thr_bin}/mod_shared.obj)
+set_source_files_properties(${_thr_bin}/mod_shared.obj PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+
+add_executable(bronze_threaded_shared_host
+    host_shared.cpp
+    ${_thr_bin}/mod_shared.obj)
+target_link_libraries(bronze_threaded_shared_host PRIVATE bronze::embed Threads::Threads ${PLATFORM_LIBS})
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(bronze_threaded_shared_host PRIVATE -no-pie -Wl,-z,muldefs)
+endif()
+if(MSVC)
+    target_compile_options(bronze_threaded_shared_host PRIVATE /W4 /WX /permissive-)
+    target_link_options(bronze_threaded_shared_host PRIVATE /FORCE:MULTIPLE)
+else()
+    target_compile_options(bronze_threaded_shared_host PRIVATE -Wall -Wextra -Werror)
+endif()
+
+add_test(NAME threaded-shared-image COMMAND ${CMAKE_COMMAND}
+    -DEXE=$<TARGET_FILE:bronze_threaded_shared_host>
+    -DEXPECTED=${_thr_src}/expected_shared.txt
+    -DACTUAL=${_thr_bin}/actual_shared.txt
+    -P ${_thr_src}/run.cmake)
+set_tests_properties(threaded-shared-image PROPERTIES LABELS threaded_modules)
+
+# Per-allocation collection with the from-space poisoned, on both threads:
+# a cell one thread latched and the other read, or one a collector did not
+# forward, is a jump into poison here rather than a quiet wrong answer.
+add_test(NAME threaded-shared-image-gc-stress COMMAND ${CMAKE_COMMAND}
+    -DEXE=$<TARGET_FILE:bronze_threaded_shared_host>
+    -DEXPECTED=${_thr_src}/expected_shared.txt
+    -DACTUAL=${_thr_bin}/actual_shared_gc.txt
+    -P ${_thr_src}/run.cmake)
+set_tests_properties(threaded-shared-image-gc-stress PROPERTIES
+    LABELS threaded_modules
+    ENVIRONMENT "BRONZE_GC_STRESS=1;BRONZE_GC_POISON=1")

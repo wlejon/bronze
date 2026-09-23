@@ -45,15 +45,19 @@
 //    data travel is the HOST's job — serialize on one side, re-create on the
 //    other.
 //
-//  * A compiled MODULE is thread-bound too. Its entry registers the module
-//    image's own .data — its inline caches, global cache, function-singleton
-//    slots, environment cell, key remap — with the CALLING thread's runtime,
-//    and those tables are per-image, not per-thread. So one module image
-//    belongs to one thread: the thread that ran its entry (its HOME thread)
-//    is the only thread that may ever enter it, call its functions, or touch
-//    values it produced. A host that wants the same script on N workers loads
-//    N copies of the image from N distinct paths — the same fresh-image rule
-//    the unload section below already imposes for hot swap.
+//  * A compiled MODULE is NOT thread-bound: one image may run on any number
+//    of threads at once. Everything it writes — inline caches, global cache,
+//    template cells, environment cell, native import table — lives in a run
+//    of its data that is per THREAD: the first thread to run the entry uses
+//    the image's own bytes, every later thread's entry makes that thread a
+//    copy of them as they were before anything wrote to them
+//    (bronze_abi.h, bronze_module_instance), and compiled code reaches the
+//    calling thread's copy through its TLS block. The shared remainder is
+//    immutable once filled (the key remap holds process-wide interned ids).
+//    The one rule: a thread runs the module's entry before it calls any of
+//    the module's code — which it must anyway, since the entry is what makes
+//    the functions a thread can reach. The values each thread's run
+//    produces are that thread's, like every other Value.
 //
 //  * There is NO TEARDOWN. A thread's runtime lives until its thread exits and
 //    its memory until process exit — deliberately leaked, because proving no
@@ -61,7 +65,8 @@
 //    worker threads rather than churning them.
 //
 // tests/threaded_modules is this contract in executable form: two compiled
-// modules on two threads, concurrently, each against its own runtime.
+// modules on two threads, concurrently, each against its own runtime — and
+// one module image entered on two threads at once.
 //
 // THE GC CONTRACT, which every function below is written against: the heap is
 // a moving semispace collector, so any allocation may relocate every heap
@@ -427,9 +432,11 @@ BRONZE_EMBED_API GlobalValue globalValue(std::string_view name);
 //                         (bindNativeImports), or by its entry's own first
 //                         call if the loader did not.
 //
-// Per-thread, like the host globals. A module's import table is one per
-// process, so two threads loading one module against two different
-// registries share a table — bind on the thread that runs the module.
+// Per-thread, like the host globals, and so is a module's import table: the
+// image's own table is its HOME thread's (the first to run the entry), and
+// every other thread's entry binds its own copy from that thread's registry.
+// bindNativeImports on the image's table therefore checks and binds only the
+// home thread's; a worker's entry binds, or refuses fatally, for itself.
 //
 // The type vocabulary is abi/bronze_native_type.h, and it is closed: a type
 // spelling not in it and not a registered class is a refused registration,

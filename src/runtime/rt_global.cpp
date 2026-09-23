@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -345,8 +346,14 @@ extern "C" void bronze_register_key_manifest(const uint8_t* data, uint32_t* key_
         std::memcpy(&len, ptr, sizeof(uint32_t));
         ptr += sizeof(uint32_t);
         uint32_t id = bronze_register_key_string_len(reinterpret_cast<const char*>(ptr), len);
+        // The remap is shared by every thread that runs the module (it sits
+        // outside the per-thread instance run, bronze_module_instance), and
+        // interning is process-wide, so a second thread's entry computes the
+        // same ids: written only when different, and atomically, so a thread
+        // already reading the map never meets a torn or racing store.
         if (key_map) {
-            key_map[i] = id;
+            std::atomic_ref<uint32_t> cell(key_map[i]);
+            if (cell.load(std::memory_order_relaxed) != id) cell.store(id, std::memory_order_relaxed);
         }
         ptr += len + 1;
     }

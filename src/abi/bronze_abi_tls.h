@@ -60,6 +60,14 @@ typedef struct bronze_tls_block {
      * Armed by `bronze_tls_enter` the first time a thread enters compiled
      * code; zero until then, which no stack pointer is below. */
     uint64_t stack_limit;
+    /* This thread's module DELTAS, indexed by a module's slot cell: the
+     * offset from the image's writable tables to this thread's own copy of
+     * them (bronze_abi.h, `bronze_module_instance`). Generated code adds the
+     * entry at its module's slot to every table address, so one image run on
+     * several threads keeps one set of inline caches, global cache, template
+     * cells, environment cell and import table per thread. Null until the
+     * thread runs its first module entry; grown by the runtime, never freed. */
+    uint64_t* module_deltas;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -94,6 +102,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF        232
 #define BRONZE_TLS_KEY_IC_ENABLED_OFF            240
 #define BRONZE_TLS_STACK_LIMIT_OFF               248
+#define BRONZE_TLS_MODULE_DELTAS_OFF             256
 
 /*
  * ---- the pinned register -----------------------------------------------
