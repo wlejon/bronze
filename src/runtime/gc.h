@@ -202,15 +202,12 @@ struct WriteBarrierStats {
     }
 };
 
-extern WriteBarrierStats g_writeBarrierStats;
-
-inline WriteBarrierStats& get_write_barrier_stats() noexcept {
-    return g_writeBarrierStats;
-}
-
-inline void reset_write_barrier_stats() noexcept {
-    g_writeBarrierStats.reset();
-}
+// The calling thread's barrier counters. Per thread because every compiled
+// store on every thread bumps them: one process-wide block would be a data
+// race on each store, and a counter any thread can move tells no test
+// anything.
+WriteBarrierStats& get_write_barrier_stats() noexcept;
+void reset_write_barrier_stats() noexcept;
 
 }  // namespace bronze
 

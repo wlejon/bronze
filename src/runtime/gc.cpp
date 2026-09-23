@@ -87,10 +87,16 @@ void RootValueBlock::blockAllocationFailed(uint32_t count) {
           "only rooted for as long as the caller's frame is");
 }
 
-WriteBarrierStats g_writeBarrierStats;
+static thread_local WriteBarrierStats g_writeBarrierStats;
 
-static ActiveCardTableDescriptor g_activeCardTableStorage;
-static const ActiveCardTableDescriptor* g_activeCardTable = nullptr;
+WriteBarrierStats& get_write_barrier_stats() noexcept { return g_writeBarrierStats; }
+void reset_write_barrier_stats() noexcept { g_writeBarrierStats.reset(); }
+
+// The card table a thread's barrier marks, per thread like the heap it
+// describes: a table installed by one thread's collector names that thread's
+// old and young spaces, which mean nothing to a store on another thread.
+static thread_local ActiveCardTableDescriptor g_activeCardTableStorage;
+static thread_local const ActiveCardTableDescriptor* g_activeCardTable = nullptr;
 
 void set_active_card_table(const ActiveCardTableDescriptor* desc) noexcept {
     g_activeCardTable = desc;
