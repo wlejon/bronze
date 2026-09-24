@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
+#include <optional>
 #include <string>
+#include <thread>
 #include "embed/embed.h"
 #include "runtime/heap.h"
 #include "runtime/value.h"
@@ -87,4 +89,22 @@ TEST_CASE("Local handle copy, move, and mutation semantics") {
     CHECK(copy.isEmpty());
     CHECK(!moved.isEmpty());
     CHECK(embed::toDouble(moved.get()) == 2.0);
+}
+
+// A Persistent that outlives its thread's slot registry: the shape of a host
+// keeping a callback in a static, whose destructor runs after exit() has torn
+// down the main thread's thread_locals. The holder is constructed before the
+// registry (the Persistent inside it is what first touches the registry), so
+// thread exit destroys the registry first and the holder's release comes
+// after. Under ASan or a debug heap, releasing into the dead registry is a
+// use-after-free.
+TEST_CASE("Persistent released after its thread's registry is torn down") {
+    bool readBack = false;
+    std::thread worker([&readBack] {
+        thread_local std::optional<embed::Persistent> holder;
+        holder.emplace(embed::fromUtf8("outlives the registry"));
+        readBack = embed::toUtf8(holder->get()) == "outlives the registry";
+    });
+    worker.join();
+    CHECK(readBack);
 }

@@ -29,9 +29,26 @@ namespace {
 // Persistent slots. Free slots hold undefined and are recycled through the
 // free list; the root source visits every slot, which costs one no-op visit
 // per free slot and keeps the source a plain loop.
-thread_local std::vector<Value> g_persistentSlots;
-thread_local std::vector<uint32_t> g_persistentFreeSlots;
-thread_local std::vector<Value> g_localHandleSlots;
+//
+// The registries are thread_locals, and a thread's thread_locals are destroyed
+// before the process's statics (exit() runs the TLS destructors first). A host
+// that keeps a Persistent in a static (a module-level callback holder) has
+// its destructor run after the slot vectors are gone, so releasing into them
+// would write freed memory. `g_registriesGone` is trivially destructible, so
+// it stays readable for the rest of the thread's life; once it is set a
+// Persistent's release is a no-op (the slots it would free no longer exist)
+// and a read answers undefined.
+thread_local bool g_registriesGone = false;
+
+struct Registries {
+    std::vector<Value> persistent;
+    std::vector<uint32_t> persistentFree;
+    std::vector<Value> local;
+    ~Registries() { g_registriesGone = true; }
+};
+thread_local Registries g_registries;
+// Persistent::kNoSlot, the moved-from marker.
+constexpr uint32_t kNoPersistentSlot = UINT32_MAX;
 thread_local HandleScope* g_currentHandleScope = nullptr;
 
 // Registration with the collector, on FIRST USE rather than at static
@@ -43,8 +60,9 @@ thread_local HandleScope* g_currentHandleScope = nullptr;
 void ensureRegistries() {
     static thread_local const bool registered = [] {
         runtime::rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
-            for (Value& slot : g_persistentSlots) visit(slot);
-            for (Value& slot : g_localHandleSlots) visit(slot);
+            if (g_registriesGone) return;
+            for (Value& slot : g_registries.persistent) visit(slot);
+            for (Value& slot : g_registries.local) visit(slot);
         });
         return true;
     }();
@@ -52,20 +70,23 @@ void ensureRegistries() {
 }
 
 uint32_t acquireSlot(Value v) {
+    // During the thread's teardown: the handle behaves as moved-from.
+    if (g_registriesGone) return kNoPersistentSlot;
     ensureRegistries();
-    if (!g_persistentFreeSlots.empty()) {
-        uint32_t slot = g_persistentFreeSlots.back();
-        g_persistentFreeSlots.pop_back();
-        g_persistentSlots[slot] = v;
+    if (!g_registries.persistentFree.empty()) {
+        uint32_t slot = g_registries.persistentFree.back();
+        g_registries.persistentFree.pop_back();
+        g_registries.persistent[slot] = v;
         return slot;
     }
-    g_persistentSlots.push_back(v);
-    return static_cast<uint32_t>(g_persistentSlots.size() - 1);
+    g_registries.persistent.push_back(v);
+    return static_cast<uint32_t>(g_registries.persistent.size() - 1);
 }
 
 void releaseSlot(uint32_t slot) {
-    g_persistentSlots[slot] = Value::fromUndefined();
-    g_persistentFreeSlots.push_back(slot);
+    if (g_registriesGone) return;
+    g_registries.persistent[slot] = Value::fromUndefined();
+    g_registries.persistentFree.push_back(slot);
 }
 
 }  // namespace
@@ -81,8 +102,7 @@ Persistent::~Persistent() {
 }
 
 Persistent::Persistent(const Persistent& other)
-    : slot_(acquireSlot(other.slot_ != kNoSlot ? g_persistentSlots[other.slot_]
-                                               : Value::fromUndefined())) {}
+    : slot_(acquireSlot(other.get())) {}
 
 Persistent& Persistent::operator=(const Persistent& other) {
     if (this != &other) {
@@ -108,14 +128,16 @@ Value Persistent::get() const {
     // Moved-from answers undefined rather than tripping: reading a moved-from
     // handle is host code that compiles either way, and undefined is the
     // answer that fails soft in JS terms.
-    return slot_ != kNoSlot ? g_persistentSlots[slot_] : Value::fromUndefined();
+    return slot_ != kNoSlot && !g_registriesGone ? g_registries.persistent[slot_]
+                                                 : Value::fromUndefined();
 }
 
 void Persistent::set(Value v) {
+    if (g_registriesGone) return;
     if (slot_ == kNoSlot) {
         slot_ = acquireSlot(v);
     } else {
-        g_persistentSlots[slot_] = v;
+        g_registries.persistent[slot_] = v;
     }
 }
 
@@ -126,35 +148,35 @@ uint32_t createLocalSlot(Value v) {
     if (!g_currentHandleScope) {
         fatal("embed: Local handle created without an active HandleScope");
     }
-    g_localHandleSlots.push_back(v);
-    return static_cast<uint32_t>(g_localHandleSlots.size() - 1);
+    g_registries.local.push_back(v);
+    return static_cast<uint32_t>(g_registries.local.size() - 1);
 }
 
 Value getLocalValue(uint32_t index) {
-    if (index >= g_localHandleSlots.size()) return Value::fromUndefined();
-    return g_localHandleSlots[index];
+    if (index >= g_registries.local.size()) return Value::fromUndefined();
+    return g_registries.local[index];
 }
 
 void setLocalValue(uint32_t index, Value v) {
-    if (index < g_localHandleSlots.size()) {
-        g_localHandleSlots[index] = v;
+    if (index < g_registries.local.size()) {
+        g_registries.local[index] = v;
     }
 }
 
 HandleScope::HandleScope() {
     ensureRegistries();
-    prev_top_ = static_cast<uint32_t>(g_localHandleSlots.size());
+    prev_top_ = static_cast<uint32_t>(g_registries.local.size());
     prev_scope_ = g_currentHandleScope;
     g_currentHandleScope = this;
 }
 
 HandleScope::~HandleScope() {
-    g_localHandleSlots.resize(prev_top_);
+    g_registries.local.resize(prev_top_);
     g_currentHandleScope = prev_scope_;
 }
 
 size_t HandleScope::numberOfHandles() const noexcept {
-    return g_localHandleSlots.size() >= prev_top_ ? (g_localHandleSlots.size() - prev_top_) : 0;
+    return g_registries.local.size() >= prev_top_ ? (g_registries.local.size() - prev_top_) : 0;
 }
 
 EscapableHandleScope::EscapableHandleScope() : HandleScope() {}
@@ -165,15 +187,15 @@ uint32_t EscapableHandleScope::escapeSlot(uint32_t index) {
     if (escaped_) {
         fatal("embed: EscapableHandleScope::escape called more than once on the same scope");
     }
-    if (index >= g_localHandleSlots.size()) {
+    if (index >= g_registries.local.size()) {
         fatal("embed: EscapableHandleScope::escape passed invalid handle index");
     }
     escaped_ = true;
-    Value v = g_localHandleSlots[index];
-    if (prev_top_ < g_localHandleSlots.size()) {
-        g_localHandleSlots[prev_top_] = v;
+    Value v = g_registries.local[index];
+    if (prev_top_ < g_registries.local.size()) {
+        g_registries.local[prev_top_] = v;
     } else {
-        g_localHandleSlots.push_back(v);
+        g_registries.local.push_back(v);
     }
     uint32_t ret_index = prev_top_;
     prev_top_++;
