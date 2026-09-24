@@ -162,6 +162,11 @@ std::optional<fs::path> findSharedRuntimeDir() {
         candidates.push_back(exeDir / "shared");
         candidates.push_back(exeDir / ".." / "shared");
         candidates.push_back(exeDir / ".." / ".." / "shared");
+        // A multi-config generator puts the exe one level deeper, in its
+        // config directory (build/src/cli/Release), and the runtime in the
+        // matching one under shared/ (build/shared/Release) — the same config,
+        // so a Debug bronze never stages a Release runtime.
+        candidates.push_back(exeDir / ".." / ".." / ".." / "shared" / exeDir.filename());
 
         const fs::path cwd = fs::current_path();
         candidates.push_back(cwd);
