@@ -47,6 +47,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/atomic_ref.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
@@ -270,7 +271,7 @@ void bronze_family_stamp(uint64_t objBits) {
     if (hdr->flags != HeapKind::Plain) return;
     Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
     if (shape == nullptr) return;
-    std::atomic_ref<uint64_t> stampRef(shape->family_stamp);
+    AtomicRef<uint64_t> stampRef(shape->family_stamp);
     if (stampRef.load(std::memory_order_acquire) != BRONZE_ABI_FAMILY_UNSTAMPED) return;
     uint64_t id = classFamilyIdFor(shape);
     uint64_t expected = BRONZE_ABI_FAMILY_UNSTAMPED;

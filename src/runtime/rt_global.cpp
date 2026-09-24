@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "abi/bronze_abi.h"
+#include "runtime/atomic_ref.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
@@ -352,7 +353,7 @@ extern "C" void bronze_register_key_manifest(const uint8_t* data, uint32_t* key_
         // same ids: written only when different, and atomically, so a thread
         // already reading the map never meets a torn or racing store.
         if (key_map) {
-            std::atomic_ref<uint32_t> cell(key_map[i]);
+            AtomicRef<uint32_t> cell(key_map[i]);
             if (cell.load(std::memory_order_relaxed) != id) cell.store(id, std::memory_order_relaxed);
         }
         ptr += len + 1;

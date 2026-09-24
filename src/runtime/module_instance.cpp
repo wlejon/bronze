@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/atomic_ref.h"
 #include "runtime/fatal.h"
 #include "runtime/tls_block.h"
 
@@ -98,7 +99,7 @@ extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, 
     if (!slotCell || !begin || !end || end < begin) {
         bronze::fatal("bronze_module_instance: a module entry passed no instance run");
     }
-    std::atomic_ref<uint64_t> slotRef(*slotCell);
+    AtomicRef<uint64_t> slotRef(*slotCell);
     uint64_t slot = slotRef.load(std::memory_order_acquire);
     if (slot != 0 && slot < t_deltaCapacity && t_deltas[slot] != kNoDelta) {
         return t_deltas[slot];
