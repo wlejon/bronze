@@ -228,7 +228,7 @@ TEST_CASE("key info registry thread-local caching eliminates mutex contention ac
     std::atomic<bool> start{false};
 
     for (int t = 0; t < kNumThreads; ++t) {
-        threads.emplace_back([&, t] {
+        threads.emplace_back([&] {
             while (!start.load(std::memory_order_acquire)) {}
             for (int iter = 0; iter < 1000; ++iter) {
                 for (size_t idx = 0; idx < keyIndices.size(); ++idx) {
