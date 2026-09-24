@@ -430,6 +430,9 @@ static void registerThreadRootSources(Heap& heap) {
 // its boxed values): forwarded as an object reference and written back
 // under the same upper bits.
 static void visitBrassThreadRoots(const Heap::RootVisitor& visit) {
+    // brass holds its host coroutine registry locked from gathering these
+    // slots until the last one is updated, below.
+    brass::HostHeapCollectionScope collecting;
     static thread_local std::vector<uintptr_t*> slots;
     slots.clear();
     brass::brass_enumerate_thread_roots(0, 0, slots);
