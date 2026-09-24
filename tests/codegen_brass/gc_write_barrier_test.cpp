@@ -1,7 +1,6 @@
 #include <doctest/doctest.h>
 
 #include <brass/gc/card_table.hpp>
-#include <brass/gc/generational_gc.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/gc/stack_map.hpp>
 
@@ -21,27 +20,33 @@
 
 using namespace bronze;
 
-TEST_CASE("write barrier - GenerationalGC old stores young marks CardTable (raw and NaN-tagged)") {
-    brass::brass_set_active_generational_gc(nullptr);
-    set_active_card_table(nullptr);
+namespace {
+// A heap split into an old half and a young half, installed as bronze's
+// active card table: the barrier's only generational state.
+struct SplitHeap {
+    static constexpr size_t kSize = 64 * 1024;
+    static constexpr size_t kHalf = kSize / 2;
 
-    brass::GenerationalGC gc(64 * 1024, 32 * 1024, 128 * 1024);
-    gc.set_tenuring_threshold(2);
-    brass::brass_set_active_generational_gc(&gc);
+    std::vector<uint8_t> bytes = std::vector<uint8_t>(kSize);
+    uintptr_t base = reinterpret_cast<uintptr_t>(bytes.data());
+    brass::CardTable ct{base, kSize};
 
-    // Allocate an object in nursery and tenure it through two collections
-    uintptr_t old_obj = gc.allocate(32, 1ULL, 10);
-    gc.write_field(old_obj, 0, 0);
-    uintptr_t root = old_obj;
-    std::vector<uintptr_t*> roots = {&root};
-    gc.collect(roots); // Nursery -> Survivor
-    gc.collect(roots); // Survivor -> Tenured
-    old_obj = root;
-    REQUIRE(gc.is_in_tenured(old_obj));
+    SplitHeap() { set_active_card_table(&ct, base, kHalf, base + kHalf, kHalf); }
+    ~SplitHeap() { set_active_card_table(nullptr); }
+    SplitHeap(const SplitHeap&) = delete;
+    SplitHeap& operator=(const SplitHeap&) = delete;
 
-    // Allocate young object in nursery
-    uintptr_t young_obj = gc.allocate(32, 0ULL, 20);
-    REQUIRE(gc.is_in_nursery(young_obj));
+    // The i-th 64-byte object of each generation.
+    uintptr_t old_obj(size_t i) const { return base + 64 * (i + 1); }
+    uintptr_t young_obj(size_t i) const { return base + kHalf + 64 * (i + 1); }
+    brass::CardTable& card_table() { return ct; }
+};
+}  // namespace
+
+TEST_CASE("write barrier - old stores young marks the CardTable (raw and NaN-tagged)") {
+    SplitHeap gc;
+    const uintptr_t old_obj = gc.old_obj(0);
+    const uintptr_t young_obj = gc.young_obj(0);
 
     // 1. Raw pointers: old -> young
     gc.card_table().clean_all();
@@ -107,26 +112,11 @@ TEST_CASE("write barrier - GenerationalGC old stores young marks CardTable (raw 
 
     CHECK(gc.card_table().is_dirty_addr(old_obj));
     CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    brass::brass_set_active_generational_gc(nullptr);
 }
 
 TEST_CASE("write barrier - ignores non-pointer and scalar values") {
-    brass::brass_set_active_generational_gc(nullptr);
-    set_active_card_table(nullptr);
-
-    brass::GenerationalGC gc(64 * 1024, 32 * 1024, 128 * 1024);
-    gc.set_tenuring_threshold(2);
-    brass::brass_set_active_generational_gc(&gc);
-
-    uintptr_t old_obj = gc.allocate(32, 1ULL, 10);
-    gc.write_field(old_obj, 0, 0);
-    uintptr_t root = old_obj;
-    std::vector<uintptr_t*> roots = {&root};
-    gc.collect(roots);
-    gc.collect(roots);
-    old_obj = root;
-    REQUIRE(gc.is_in_tenured(old_obj));
+    SplitHeap gc;
+    const uintptr_t old_obj = gc.old_obj(0);
 
     gc.card_table().clean_all();
     reset_write_barrier_stats();
@@ -160,35 +150,14 @@ TEST_CASE("write barrier - ignores non-pointer and scalar values") {
     CHECK(!gc.card_table().is_dirty_addr(old_obj));
     CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 0ULL);
     CHECK_EQ(get_write_barrier_stats().filtered_non_pointer, 14ULL);
-
-    brass::brass_set_active_generational_gc(nullptr);
 }
 
 TEST_CASE("write barrier - ignores young-to-young and old-to-old writes") {
-    brass::brass_set_active_generational_gc(nullptr);
-    set_active_card_table(nullptr);
-
-    brass::GenerationalGC gc(64 * 1024, 32 * 1024, 128 * 1024);
-    gc.set_tenuring_threshold(2);
-    brass::brass_set_active_generational_gc(&gc);
-
-    // Two old objects
-    uintptr_t obj1 = gc.allocate(32, 1ULL, 1);
-    uintptr_t obj2 = gc.allocate(32, 1ULL, 2);
-    uintptr_t r1 = obj1, r2 = obj2;
-    std::vector<uintptr_t*> roots = {&r1, &r2};
-    gc.collect(roots);
-    gc.collect(roots);
-    uintptr_t old1 = r1;
-    uintptr_t old2 = r2;
-    REQUIRE(gc.is_in_tenured(old1));
-    REQUIRE(gc.is_in_tenured(old2));
-
-    // Two young objects
-    uintptr_t young1 = gc.allocate(32, 0ULL, 3);
-    uintptr_t young2 = gc.allocate(32, 0ULL, 4);
-    REQUIRE(gc.is_in_nursery(young1));
-    REQUIRE(gc.is_in_nursery(young2));
+    SplitHeap gc;
+    const uintptr_t old1 = gc.old_obj(0);
+    const uintptr_t old2 = gc.old_obj(1);
+    const uintptr_t young1 = gc.young_obj(0);
+    const uintptr_t young2 = gc.young_obj(1);
 
     // 1. Young-to-young write
     gc.card_table().clean_all();
@@ -217,13 +186,9 @@ TEST_CASE("write barrier - ignores young-to-young and old-to-old writes") {
     CHECK(!gc.card_table().is_dirty_addr(old1));
     CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 0ULL);
     CHECK_EQ(get_write_barrier_stats().filtered_non_young_val, 1ULL);
-
-    brass::brass_set_active_generational_gc(nullptr);
 }
 
 TEST_CASE("write barrier - active Bronze CardTable descriptor integration") {
-    brass::brass_set_active_generational_gc(nullptr);
-
     constexpr size_t HEAP_SZ = 64 * 1024;
     std::vector<uint8_t> heap(HEAP_SZ);
     const uintptr_t base = reinterpret_cast<uintptr_t>(heap.data());

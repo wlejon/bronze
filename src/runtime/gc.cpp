@@ -6,7 +6,6 @@
 #include <iterator>
 
 #include <brass/gc/card_table.hpp>
-#include <brass/gc/generational_gc.hpp>
 #include <brass/gc/runtime_gc.hpp>
 
 #include "abi/bronze_abi.h"
@@ -187,28 +186,10 @@ extern "C" void brass_gc_write_barrier(uint64_t obj, uint64_t val) {
         return;
     }
 
-    // 1. Dispatch to Brass active generational GC if present
-    if (auto* gen_gc = brass::brass_get_active_generational_gc()) {
-        if (!gen_gc->is_old(obj_addr)) {
-            bronze::g_writeBarrierStats.filtered_non_old_obj++;
-            return;
-        }
-        if (!gen_gc->is_young(ptr_val)) {
-            bronze::g_writeBarrierStats.filtered_non_young_val++;
-            return;
-        }
-        gen_gc->card_table().mark_card(obj_addr);
-        bronze::g_writeBarrierStats.old_to_young_marked++;
-        if (BRONZE_UNLIKELY(bronze::is_gc_log_enabled())) {
-            std::fprintf(stderr, "[BRONZE_GC_WRITE_BARRIER] old=0x%llx -> young=0x%llx (card %zu marked)\n",
-                         static_cast<unsigned long long>(obj_addr),
-                         static_cast<unsigned long long>(ptr_val),
-                         gen_gc->card_table().card_index(obj_addr));
-        }
-        return;
-    }
-
-    // 2. Dispatch to active Bronze heap card-table if present
+    // Bronze owns the heap, so the card table is bronze's: brass's own
+    // generational collector never holds a bronze object, and this barrier —
+    // the process's one definition of brass_gc_write_barrier, overriding
+    // brass's brass_default_gc_write_barrier — never consults it.
     if (auto* desc = bronze::get_active_card_table_descriptor()) {
         if (desc->card_table) {
             bool is_old = false;
@@ -247,18 +228,6 @@ extern "C" void brass_gc_write_barrier(uint64_t obj, uint64_t val) {
         }
     }
 
-    // No active generational GC or card table
+    // No active card table
     bronze::g_writeBarrierStats.filtered_non_old_obj++;
-}
-
-#ifdef _MSC_VER
-#define BRONZE_STUB_WEAK __declspec(selectany)
-#else
-#define BRONZE_STUB_WEAK __attribute__((weak))
-#endif
-
-extern "C" {
-BRONZE_STUB_WEAK uintptr_t brass_tlab_top = 0;
-BRONZE_STUB_WEAK uintptr_t brass_tlab_end = 0;
-BRONZE_STUB_WEAK void* brass_root_shape = nullptr;
 }

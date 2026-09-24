@@ -11,8 +11,10 @@ namespace bronze {
 // now on every engine brass builds on its own — the tiered pipeline's
 // baseline compiler, fast and reference interpreters, the tier-2 installer's
 // JIT, a deoptimization's interpreter — is handed bronze's ABI helpers, the
-// math and parallel runtimes, brass's coroutine runtime and the fallback
-// module tables (brass::runtime::HostSymbolProvider). Idempotent.
+// math and parallel runtimes and the fallback module tables
+// (brass::runtime::HostSymbolProvider). It also makes bronze the owner of
+// the heap (brass::HostHeap): no allocation brass's runtime makes on its own
+// behalf can land outside bronze's collector. Idempotent.
 void installBronzeHostSymbols();
 
 // The same set, into an engine bronze builds itself. Each installs the

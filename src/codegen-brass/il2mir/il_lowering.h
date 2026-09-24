@@ -78,9 +78,7 @@ private:
     Value* current_fn_frame_ptr_ = nullptr;
     uint32_t method_argv_slot_ = 0;
     // The function's per-thread module-data delta, computed at its entry;
-    // null in a coroutine body (a value held across a suspension is the
-    // coroutine transform's to carry, and a reload is three loads) and
-    // before the entry computed it.
+    // null before the entry computed it.
     Value* current_module_delta_ = nullptr;
     Value* load_module_delta(Builder& b);
     // The stack-limit check the function was given at entry (pinned-register

@@ -1,15 +1,17 @@
 #include "codegen-brass/brass_symbol_registration.h"
-#include "codegen-brass/brass_coroutine_bridge.h"
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
 #include "runtime/fn.h"
 #include "runtime/value.h"
 
+#include <brass/gc/host_heap.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/host_symbols.hpp>
 #include <brass/runtime/parallel_runtime.hpp>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <type_traits>
 #include <vector>
 #include <string>
@@ -144,13 +146,11 @@ public:
     void install(brass::codegen::JitExecutionEngine& engine) override {
         registerNativeSymbols(engine);
         registerDefaultDataSymbols(engine);
-        registerBrassCoroutineSymbols(engine);
     }
 
     void install(brass::codegen::BaselineJitCompiler& compiler) override {
         registerNativeSymbols(compiler);
         registerDefaultDataSymbols(compiler);
-        registerBrassCoroutineSymbols(compiler);
     }
 
     void install(brass::Interpreter& interp) override {
@@ -174,7 +174,6 @@ public:
         interp.register_external_symbol("brass_gc_card_table_base", reinterpret_cast<void*>(&brass_gc_card_table_base));
         interp.register_external_symbol("brass_gc_heap_base", reinterpret_cast<void*>(&brass_gc_heap_base));
         registerDefaultDataSymbols(interp);
-        registerBrassCoroutineSymbols(interp);
     }
 
     // The block a pinned-TLS read sees before the module entry has loaded the
@@ -186,6 +185,38 @@ public:
 BronzeHostSymbols& hostSymbols() {
     static BronzeHostSymbols provider;
     return provider;
+}
+
+// Bronze's heap, as brass's runtime sees it. Everything code bronze compiled
+// allocates — objects, arrays, environments, closures, the async machines
+// and generator state an `.resume` closure carries — is allocated by
+// bronze's runtime helpers into bronze's heap and rooted by the function's GC
+// frame, whichever tier runs it. What reaches this class is an allocation
+// brass's own runtime makes (`brass_gc_alloc` from MIR, a brass coroutine
+// frame), which bronze's lowering never emits. It is a hard stop rather than
+// a quiet malloc so that no object can ever live outside bronze's collector.
+// It aborts itself rather than calling bronze::fatal: this library does not
+// link the runtime (see CMakeLists.txt), and the shared runtime a host like
+// bro loads does not export fatal.
+class BronzeHostHeap final : public brass::HostHeap {
+public:
+    uintptr_t allocate(size_t size, uint64_t /*pointer_mask*/, uint32_t type_tag) override {
+        std::fprintf(stderr,
+                     "bronze: fatal: brass's runtime asked for a %zu-byte object (type tag %u) "
+                     "while running bronze code; bronze allocates only through its own runtime, "
+                     "so a brass heap allocation means compiled code reached a brass allocator "
+                     "it must not\n",
+                     size, static_cast<unsigned>(type_tag));
+        std::fflush(stderr);
+        std::abort();
+    }
+    // bronze collects at its own allocation points; brass's safepoints and
+    // explicit collections carry no request of bronze's.
+};
+
+BronzeHostHeap& hostHeap() {
+    static BronzeHostHeap heap;
+    return heap;
 }
 
 bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
@@ -214,6 +245,7 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
 
 void installBronzeHostSymbols() {
     brass::runtime::set_host_symbol_provider(&hostSymbols());
+    brass::set_host_heap(&hostHeap());
 }
 
 void registerBronzeFastInterpreterSymbols(brass::FastInterpreter& interp) {

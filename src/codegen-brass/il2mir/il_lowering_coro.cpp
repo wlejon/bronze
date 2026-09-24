@@ -19,7 +19,6 @@ bool is_coro_il_op(BronzeOp op) {
         case BronzeOp::AsyncIterOpen:
         case BronzeOp::AsyncIterNext:
         case BronzeOp::AsyncIterClose:
-        case BronzeOp::Yield:
             return true;
         default:
             return false;
@@ -150,12 +149,6 @@ bool lower_coro_instruction(
             Value* suppress = b.build_iconst_i32(inst_ast.imm_i64 != 0 ? 1 : 0);
             b.build_call("bronze_async_iter_close", Type::void_type(), {iter, suppress});
             if (emit_exception_check) emit_exception_check();
-            return true;
-        }
-
-        case BronzeOp::Yield: {
-            Value* yield_val = get_opd(0);
-            res_val = b.build_coro_suspend(yield_val, 0, Type::i64());
             return true;
         }
 

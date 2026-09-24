@@ -5,7 +5,9 @@
 
 Everything is in the top-level namespace `il2mir`, which pulls in `brass` (`il_ast.h`). The value/TLS/IC layout constants come from the bronze ABI header (`il_abi.h`), not from copies.
 
-The lowered code calls the bronze runtime (`bronze_*`, `brass_gc_*`) by name. Brass resolves those names through its generic host-symbol hook, `brass/runtime/host_symbols.hpp`. `codegen-brass/brass_symbol_registration.cpp` installs a `HostSymbolProvider` that binds the real bronze ABI (the `BRONZE_ABI_FUNCTIONS` X-macro), the math and parallel helpers, and the coroutine bridge into every engine a brass tier creates: the fast interpreter, the baseline JIT, the tier-2 installer JIT, deopt and the reference interpreter.
+The lowered code calls the bronze runtime (`bronze_*`, `brass_gc_*`) by name. Brass resolves those names through its generic host-symbol hook, `brass/runtime/host_symbols.hpp`. `codegen-brass/brass_symbol_registration.cpp` installs a `HostSymbolProvider` that binds the real bronze ABI (the `BRONZE_ABI_FUNCTIONS` X-macro), and the math and parallel helpers into every engine a brass tier creates: the fast interpreter, the baseline JIT, the tier-2 installer JIT, deopt and the reference interpreter.
+
+Bronze owns the heap. Every object bronze-run code creates (objects, arrays, environments, closures, strings, and the `.resume` closures that carry a generator's or async function's state) comes from bronze's runtime and collector, never from a brass heap. The same installer makes bronze the process's `brass::HostHeap` (`brass/gc/host_heap.hpp`). If brass's own runtime tried to allocate on bronze's behalf, that allocation would reach bronze, and bronze fails it loudly because no lowering asks for one. Bronze's `brass_gc_write_barrier` (`runtime/gc.cpp`) is the process's only definition of that name. It marks bronze's active card table and overrides brass's `brass_default_gc_write_barrier` through the symbol table.
 
 There is no textual IL front door and no mock runtime. The only input is the IL bronze's compiler builds in memory.
 
@@ -29,10 +31,10 @@ There is no textual IL front door and no mock runtime. The only input is the IL 
 | **Environments & Scope**| `env.create`, `env.get`, `env.set`, `env.get.tdz`, `env.init.tdz` | Heap-allocated lexical environment chains (`BronzeEnv`) | Supported |
 | **Closures** | `create.func @fn, <param_count>, %env` | Code pointer + environment pairing (`BronzeClosure`) | Supported |
 | **Direct Calls & Prints**| `call @name(...)`, `print %0, ...`, `print.err %0, ...` | Direct internal/external subroutine calls & formatted printers | Supported |
-| **Objects & Properties**| `create.object`, `create.array`, `prop.get`, `prop.set`, `elem.get`, `elem.set`, `method.def` | Polymorphic inline caches (PICs), Shape hidden class transitions, moving GC DynamicObject | Supported |
+| **Objects & Properties**| `create.object`, `create.array`, `prop.get`, `prop.set`, `elem.get`, `elem.set`, `method.def` | Bronze's inline caches and shapes (the IC layout comes from `il_abi.h`), with objects allocated by bronze's runtime | Supported |
 | **Accessor Properties** | `accessor.def %obj, "key", %getter, %setter`, `accessor.def.computed %obj, %key, %getter, %setter` | Lowered to `bronze_accessor_def` and `bronze_accessor_def_computed` runtime descriptors | Supported |
 | **Exception Handling**| `handler b<id>`, `throw %val`, `exc.take` | MIR `invoke`, `throw`, `landing_pad` with zero-cost Win64 SEH & SysV DWARF LSDA unwinding | Supported |
-| **Coroutines & Async**| `create.async_machine`, `async.start`, `async.await`, `iter.open`, `iter.step`, `yield` | `CoroTransformPass`, `coro_create`, `coro_suspend`, `coro_resume`, `brass_coro_*`, `bronze_iter_*`, `bronze_async_*` | Supported |
+| **Coroutines & Async**| `create.async_machine`, `async.start`, `async.await`, `iter.open`, `iter.step`, `iter.value`, `iter.close` | Runtime calls (`bronze_iter_*`, `bronze_async_*`). Generators and async functions arrive already desugared into `.resume` state machines on bronze's heap, so MIR sees ordinary functions | Supported |
 
 ---
 
@@ -44,7 +46,7 @@ The 37-program corpus lives in `tests/oracle/cases/tiers_*.js` with pinned `.exp
 - **14–22**: Arrays, nested accumulation, parameter bounds, overflow handling, vector/matrix math, and bounding boxes.
 - **23–24**: Object instantiation, hidden class Shape transitions, and polymorphic inline caching.
 - **25–26**: Exception handling with nested `try`-`catch` and `try`-`finally` unwind frames.
-- **27–28**: Fibonacci generators (`iter.step`, `yield`) and multi-stage async promise chains.
+- **27–28**: Fibonacci generators (`iter.step`) and multi-stage async promise chains.
 - **29–30**: Generational GC allocation churn and On-Stack Replacement (OSR) hot-loop migration.
 - **31–33**: GVN-PRE diamond hoisting, loop fusion with array contraction, and AVX2 FMA matrix multiplication.
 - **34–37**: Background multi-tier JIT compilation, parallel matrix-vector dispatch, DWARF/CodeView source line mapping, and fuzz-hardened kernels.

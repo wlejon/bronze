@@ -204,17 +204,14 @@ std::string runtimeNotFoundMessage() {
 
 // The export surface of the shared runtime, as the object sees it: the ABI
 // registry, expanded here the same way cmake/bronze_abi_exports.cmake expands
-// it into the .def / version script / exported-symbols list, plus the three
-// brass words that script appends. One registry, two consumers, no drift.
+// it into the .def / version script / exported-symbols list. One registry,
+// two consumers, no drift.
 const std::unordered_set<std::string>& runtimeExports() {
     static const std::unordered_set<std::string> s_names = [] {
         std::unordered_set<std::string> names;
 #define BRONZE_LINK_EXPORT_NAME(name, ret, args) names.insert(#name);
         BRONZE_ABI_FUNCTIONS(BRONZE_LINK_EXPORT_NAME)
 #undef BRONZE_LINK_EXPORT_NAME
-        names.insert("brass_tlab_top");
-        names.insert("brass_tlab_end");
-        names.insert("brass_root_shape");
         return names;
     }();
     return s_names;

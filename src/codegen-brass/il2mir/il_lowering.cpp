@@ -3,7 +3,6 @@
 #include "il_abi.h"
 #include "il_pipeline.h"
 #include <brass/mir/verifier.hpp>
-#include <brass/mir/coro_transform.hpp>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -470,12 +469,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         return nullptr;
     }
 
-    // 4. Transform coroutines into state machines
-    CoroTransformOptions coro_opts;
-    coro_opts.first_slot_index = 1;
-    CoroTransformPass(coro_opts).run_on_module(*mod);
-
-    // 5. Optionally optimize module
+    // 4. Optionally optimize module
     if (options_.enable_optimizations) {
         PassPipelineHooks hooks;
         hooks.after_pass = [&](std::string_view name) {
@@ -510,67 +504,57 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     method_argv_slot_ = 0;
     uint32_t total_slots = 0;
 
-    bool is_coro_fn = false;
-    for (const auto& blk : fn_ast.blocks) {
-        for (const auto& inst : blk.instructions) {
-            if (inst.op == BronzeOp::Yield) {
-                is_coro_fn = true;
-                break;
+    // Every dynamic value gets a slot in the function's GC frame — bronze's
+    // collector finds a live Value through these at every tier, whichever
+    // engine runs the function.
+    for (const auto& p : fn_ast.params) {
+        if (p.second == BronzeType::Dynamic || p.second == BronzeType::Unknown) {
+            if (!current_fn_slot_of_.count(p.first)) {
+                current_fn_slot_of_[p.first] = total_slots++;
             }
         }
-        if (is_coro_fn) break;
     }
-
-    if (!is_coro_fn) {
-        for (const auto& p : fn_ast.params) {
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& p : blk.params) {
             if (p.second == BronzeType::Dynamic || p.second == BronzeType::Unknown) {
                 if (!current_fn_slot_of_.count(p.first)) {
                     current_fn_slot_of_[p.first] = total_slots++;
                 }
             }
         }
-        for (const auto& blk : fn_ast.blocks) {
-            for (const auto& p : blk.params) {
-                if (p.second == BronzeType::Dynamic || p.second == BronzeType::Unknown) {
-                    if (!current_fn_slot_of_.count(p.first)) {
-                        current_fn_slot_of_[p.first] = total_slots++;
-                    }
-                }
-            }
-            for (const auto& inst : blk.instructions) {
-                if (inst.result_id != UINT32_MAX &&
-                    (inst.result_type == BronzeType::Dynamic || inst.result_type == BronzeType::Unknown)) {
-                    if (!current_fn_slot_of_.count(inst.result_id)) {
-                        current_fn_slot_of_[inst.result_id] = total_slots++;
-                    }
+        for (const auto& inst : blk.instructions) {
+            if (inst.result_id != UINT32_MAX &&
+                (inst.result_type == BronzeType::Dynamic || inst.result_type == BronzeType::Unknown)) {
+                if (!current_fn_slot_of_.count(inst.result_id)) {
+                    current_fn_slot_of_[inst.result_id] = total_slots++;
                 }
             }
         }
-        // The argv block a dynamic method call stages its arguments in
-        // (`bronze_call_method` takes `const uint64_t* argv`): the widest
-        // method call's worth of slots at the END of the same GC frame, so
-        // the arguments are rooted — and forwarded — exactly as the frame's
-        // other Values are while the helper's property read can collect.
-        // Nested calls cannot overlap: an argument is a value already
-        // computed by the time its call stores it, and the stores happen
-        // right before the call. Sized over every method call, including
-        // the ones that resolve to a direct edge, which merely leaves a few
-        // slots holding the `undefined` the push gave them.
-        uint32_t widest_method_argc = 0;
-        for (const auto& blk : fn_ast.blocks) {
-            for (const auto& inst : blk.instructions) {
-                if (inst.op == BronzeOp::MethodCall && inst.param_count > widest_method_argc) {
-                    widest_method_argc = inst.param_count;
-                }
-                if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
-                    inst.param_count > 16 && inst.param_count > widest_method_argc) {
-                    widest_method_argc = inst.param_count;
-                }
-            }
-        }
-        method_argv_slot_ = total_slots;
-        total_slots += widest_method_argc;
     }
+    // The argv block a dynamic method call stages its arguments in
+    // (`bronze_call_method` takes `const uint64_t* argv`): the widest
+    // method call's worth of slots at the END of the same GC frame, so
+    // the arguments are rooted — and forwarded — exactly as the frame's
+    // other Values are while the helper's property read can collect.
+    // Nested calls cannot overlap: an argument is a value already
+    // computed by the time its call stores it, and the stores happen
+    // right before the call. Sized over every method call, including
+    // the ones that resolve to a direct edge, which merely leaves a few
+    // slots holding the `undefined` the push gave them.
+    uint32_t widest_method_argc = 0;
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == BronzeOp::MethodCall && inst.param_count > widest_method_argc) {
+                widest_method_argc = inst.param_count;
+            }
+            if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
+                inst.param_count > 16 && inst.param_count > widest_method_argc) {
+                widest_method_argc = inst.param_count;
+            }
+        }
+    }
+    method_argv_slot_ = total_slots;
+    total_slots += widest_method_argc;
 
     Builder b(mod);
     b.set_function(fn);
@@ -644,17 +628,15 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             // per_thread_module_data). The entry registers this thread's
             // instance before anything can touch a table; every other
             // function reads the delta once here, and an unused one is dead
-            // code the optimizer drops. A coroutine body reloads it per use.
-            Value* delta = nullptr;
+            // code the optimizer drops.
             if (fn_name == "main") {
-                delta = b.build_call("bronze_module_instance", Type::i64(), {
+                current_module_delta_ = b.build_call("bronze_module_instance", Type::i64(), {
                     b.build_func_addr(module_sym("__bronze_module_slot")),
                     b.build_func_addr(module_sym("__bronze_instance")),
                     b.build_func_addr(module_sym("__bronze_instance_end"))});
-            } else if (!is_coro_fn) {
-                delta = load_module_delta(b);
+            } else {
+                current_module_delta_ = load_module_delta(b);
             }
-            if (!is_coro_fn) current_module_delta_ = delta;
         }
         if (total_slots > 0) {
             current_fn_frame_ptr_ = b.build_call("bronze_gc_frame_push", Type::ptr(),

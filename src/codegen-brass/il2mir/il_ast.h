@@ -96,7 +96,6 @@ enum class BronzeOp {
     AsyncAwait,
     IterOpen,
     IterStep,
-    Yield,
     ModuleEnvSet,
     ModuleEnvGet,
     ConcatBegin,

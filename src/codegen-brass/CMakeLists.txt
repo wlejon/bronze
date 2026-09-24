@@ -32,7 +32,6 @@ add_library(bronze_codegen_brass STATIC
     brass_backend.cpp
     brass_backend_debug.cpp
     brass_backend_sections.cpp
-    brass_coroutine_bridge.cpp
     brass_jit.cpp
     brass_symbol_registration.cpp
     brass_tiered_engine.cpp
@@ -68,7 +67,7 @@ if(NOT MSVC)
 endif()
 
 # bronze::runtime is deliberately NOT linked here, although the tiered engine
-# and the coroutine bridge include runtime headers and call into it. This
+# and the symbol registration include runtime headers and call into it. This
 # library reaches a host through bronze::cli, and a host that loads compiled
 # modules links bronze::runtime_shared instead: naming the static runtime here
 # would put a second runtime (second heap, key registry, shadow stack) into that
@@ -106,7 +105,6 @@ if(BRONZE_BUILD_TESTS)
         ../../tests/codegen_brass/optimization_test.cpp
         ../../tests/codegen_brass/debug_test.cpp
         ../../tests/codegen_brass/gc_write_barrier_test.cpp
-        ../../tests/codegen_brass/coroutine_test.cpp
     )
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass
@@ -119,7 +117,6 @@ if(BRONZE_BUILD_TESTS)
     if(MSVC)
         target_compile_options(bronze_codegen_brass_tests PRIVATE /W4 /WX /permissive-)
         target_compile_definitions(bronze_codegen_brass_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
-        target_link_options(bronze_codegen_brass_tests PRIVATE /FORCE:MULTIPLE)
     else()
         target_compile_options(bronze_codegen_brass_tests PRIVATE -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-trigraphs)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

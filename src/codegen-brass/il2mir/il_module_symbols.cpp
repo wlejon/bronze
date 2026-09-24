@@ -23,7 +23,6 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_get_new_target", "bronze_bigint_literal", "bronze_async_machine",
         "bronze_async_start", "bronze_async_await", "bronze_to_string", "bronze_prop_delete", "bronze_elem_delete",
         "bronze_iter_open", "bronze_iter_step",
-        "brass_coro_create", "brass_coro_resume", "brass_coro_is_done", "brass_coro_destroy",
         "bronze_tls_block_addr", "__bronze_key_map", "__bronze_template_cells", "bronze_template_object",
         "bronze_register_value_cells", "bronze_register_fn_sources", "bronze_concat_begin", "bronze_concat_append",
         "bronze_concat_end", "bronze_global_get_name", "bronze_global_get", "bronze_typeof",
