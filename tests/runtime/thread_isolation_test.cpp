@@ -187,11 +187,14 @@ TEST_CASE("slot representation registry concurrent registration and check safety
         NonMovingArena& wArena = rtArena();
         StringHeader* checkHdr = StringHeader::createFromUTF8InArena(wArena, "slot_prop_alpha");
         PropertyKey key = PropertyKey::forString(checkHdr);
-        while (!done.load(std::memory_order_relaxed)) {
+        // At least one check whatever the scheduling: under load the writer's
+        // hundred registrations can finish before this thread first runs,
+        // and a `while (!done)` loop would then never look at all.
+        do {
             if (slotReprEligible(key)) {
                 matchCount.fetch_add(1, std::memory_order_relaxed);
             }
-        }
+        } while (!done.load(std::memory_order_relaxed));
     });
 
     std::thread writer([&] {
