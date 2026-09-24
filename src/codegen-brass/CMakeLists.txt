@@ -6,7 +6,6 @@ if(NOT TARGET brass)
             "${CMAKE_CURRENT_SOURCE_DIR}/../../../brass"
             "${CMAKE_SOURCE_DIR}/../brass"
             "${CMAKE_SOURCE_DIR}/third_party/brass"
-            "D:/projects/brass"
         )
             if(EXISTS "${_candidate}/include/brass/brass.hpp")
                 get_filename_component(BRASS_ROOT "${_candidate}" ABSOLUTE)
@@ -19,6 +18,14 @@ if(NOT TARGET brass)
         set(BRASS_ROOT "${BRASS_ROOT}" CACHE PATH "Path to Brass root directory" FORCE)
         add_subdirectory("${BRASS_ROOT}" "${CMAKE_BINARY_DIR}/brass-build" EXCLUDE_FROM_ALL)
     endif()
+endif()
+# brass is always compiled in this build tree, never linked prebuilt: the
+# backend and the runtime cross a C++ boundary that needs one compiler and one
+# CRT on both sides, which a library built elsewhere cannot promise.
+if(NOT TARGET brass)
+    message(FATAL_ERROR
+        "brass not found (BRASS_ROOT='${BRASS_ROOT}'). Check it out beside bronze "
+        "(../brass) or pass -DBRASS_ROOT=<brass source tree>.")
 endif()
 
 add_library(bronze_codegen_brass STATIC
@@ -42,31 +49,9 @@ endif()
 
 find_package(Threads REQUIRED)
 
-if(TARGET brass)
-    set(BRASS_LIB brass)
-    set(PLATFORM_LIBS)
-    if(NOT MSVC)
-        set(PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
-    endif()
-elseif(MSVC)
-    if(EXISTS "${BRASS_ROOT}/build_msvc/brass.lib")
-        set(BRASS_LIB "${BRASS_ROOT}/build_msvc/brass.lib")
-    elseif(EXISTS "${BRASS_ROOT}/build/Release/brass.lib")
-        set(BRASS_LIB "${BRASS_ROOT}/build/Release/brass.lib")
-    elseif(EXISTS "${BRASS_ROOT}/build/brass.lib")
-        set(BRASS_LIB "${BRASS_ROOT}/build/brass.lib")
-    else()
-        set(BRASS_LIB "${BRASS_ROOT}/build/libbrass.a")
-    endif()
-    set(PLATFORM_LIBS)
-else()
-    if(EXISTS "${BRASS_ROOT}/build/Release/libbrass.a")
-        set(BRASS_LIB "${BRASS_ROOT}/build/Release/libbrass.a")
-    elseif(EXISTS "${BRASS_ROOT}/build/libbrass.a")
-        set(BRASS_LIB "${BRASS_ROOT}/build/libbrass.a")
-    else()
-        set(BRASS_LIB "${BRASS_ROOT}/build/brass.a")
-    endif()
+set(BRASS_LIB brass)
+set(PLATFORM_LIBS)
+if(NOT MSVC)
     set(PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
 endif()
 
