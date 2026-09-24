@@ -710,13 +710,19 @@ namespace {
 
 // A milestone library through `bronze run`: the whole bundle compiled by the
 // JIT in one process and run there, held to the same expectation the built
-// program is. The gc-stress budget is the one the built program gets, plus
-// the compile, which now happens inside the stressed process too.
+// program is. Both budgets are the built program's run budget PLUS the
+// compile, because under `bronze run` the whole-library compile happens
+// inside the timed process. The compile is the larger half for a big bundle
+// (pixi: ~60 s of a ~61 s run on a fast desktop, over 120 s on a CI runner
+// sharing its cores with three other suites), and it moves with the backend's
+// optimizer, so it gets its own allowance rather than hiding in a multiple of
+// the run budget until the optimizer grows past it.
 void checkJitMilestone(const char* name, const std::filesystem::path& entry,
                        const std::string& expected, const std::string& hostGlobals,
-                       uint32_t gcStressTimeoutMs) {
+                       uint32_t runTimeoutMs, uint32_t gcStressRunTimeoutMs,
+                       uint32_t compileAllowanceMs) {
     const std::string what = std::string(name) + " (jit)";
-    RunResult run = runInJit(entry, /*gcStress=*/false, kRunTimeoutMs * 4, hostGlobals);
+    RunResult run = runInJit(entry, /*gcStress=*/false, runTimeoutMs + compileAllowanceMs, hostGlobals);
     CHECK_MESSAGE(!run.timedOut, (what + " did not finish within the timeout").c_str());
     if (run.ran) {
         CHECK_MESSAGE(run.exitCode == 0,
@@ -724,7 +730,8 @@ void checkJitMilestone(const char* name, const std::filesystem::path& entry,
         CHECK_MESSAGE(expected == run.output, (what + " output differs from the pinned expectation").c_str());
     }
 
-    RunResult stressed = runInJit(entry, /*gcStress=*/true, gcStressTimeoutMs, hostGlobals);
+    RunResult stressed =
+        runInJit(entry, /*gcStress=*/true, gcStressRunTimeoutMs + compileAllowanceMs, hostGlobals);
     CHECK_MESSAGE(!stressed.timedOut, (what + " did not finish within the timeout (gc-stress)").c_str());
     if (stressed.ran) {
         CHECK_MESSAGE(stressed.exitCode == 0,
@@ -744,7 +751,10 @@ TEST_CASE("threejs-jit milestone: unmodified r160 runs under bronze run") {
     std::string expected;
     REQUIRE_MESSAGE(readFileBytes(dir / "main.expected", expected),
                     ("Missing pinned expectation " + (dir / "main.expected").string()).c_str());
-    checkJitMilestone("three.js", dir / "main.js", expected, {}, kRunTimeoutMs * 4);
+    // Run budgets as the built program's (runWithTimeout's default for both);
+    // the compile allowance is the old 4x budget less the run it contained.
+    checkJitMilestone("three.js", dir / "main.js", expected, {}, kRunTimeoutMs, kRunTimeoutMs,
+                      /*compileAllowanceMs=*/kRunTimeoutMs * 3);
 }
 
 TEST_CASE("pixi-jit milestone: unmodified v8.19.0 runs under bronze run") {
@@ -756,5 +766,8 @@ TEST_CASE("pixi-jit milestone: unmodified v8.19.0 runs under bronze run") {
                     ("Missing pinned expectation " + (dir / "main.expected").string()).c_str());
     const std::string hostGlobals = (dir / "host.globals").string();
     REQUIRE(std::filesystem::exists(hostGlobals));
-    checkJitMilestone("pixi", dir / "main.js", expected, hostGlobals, /*gcStressTimeoutMs=*/300000);
+    // The built program's budgets (the pixi milestone above: the default run
+    // budget, 300 s under gc-stress) plus a whole-pixi compile allowance.
+    checkJitMilestone("pixi", dir / "main.js", expected, hostGlobals, kRunTimeoutMs,
+                      /*gcStressRunTimeoutMs=*/300000, /*compileAllowanceMs=*/300000);
 }

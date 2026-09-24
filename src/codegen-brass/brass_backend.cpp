@@ -265,6 +265,9 @@ bool BrassBackend::optimize() const {
 std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     const il::Module& module, DiagnosticSink& diags,
     std::vector<uint32_t>* globalReadKeysOut) {
+    // One level inside buildObjectFile's "mir" phase: "translate" is brass's
+    // IL lowering plus its whole MIR optimization pipeline.
+    support::PhaseTimer mtimer(support::timingsEnabled(), 6);
     const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
 
     const bool optimize = this->optimize();
@@ -372,8 +375,11 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
 
     brass::DiagnosticReporter reporter;
     std::vector<uint32_t> globalReadKeys;
+    mtimer.mark("options");
     auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
+    mtimer.mark("brass ast");
     brass::il::TranslationResult res = brass::il::translate_bronze_ast(ast, options, &reporter);
+    mtimer.mark("translate");
 
     if (!res.success || !res.module || reporter.has_errors()) {
         if (reporter.has_errors() || reporter.has_warnings()) {
@@ -400,6 +406,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
 
     emitGlobalReadThunks(*res.module, entrySymbol_, globalReadKeys, perThreadModuleData_);
     emitNativeImportThunks(*res.module, module, entrySymbol_, perThreadModuleData_);
+    mtimer.mark("thunks");
 
     if (globalReadKeysOut) {
         *globalReadKeysOut = std::move(globalReadKeys);
@@ -419,8 +426,10 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     if (!mirMod) {
         return std::nullopt;
     }
+    timer.mark("mir");
 
     transformCoroutinesIfNeeded(*mirMod);
+    timer.mark("coroutines");
 
     const size_t globalCacheCount = globalReadKeys.size();
     const std::vector<uint32_t> methodIcSites = module.methodIcSites();
@@ -434,7 +443,6 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     compiler.set_sched_options(schedOpts);
     compiler.set_enable_trace_layout(optimize);
     compiler.set_enable_mir_opts(optimize);
-    timer.mark("thunks");
     brass::object::ObjectFile obj = compiler.compile(*mirMod);
     timer.mark("brass compile");
 
