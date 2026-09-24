@@ -192,7 +192,7 @@ void BrassTieredProgram::registerSymbolsWithEngines() {
         if (baselineCompiler_) {
             baselineCompiler_->register_external_symbol(name, addr);
         }
-        if (tier_ == ExecutionTier::Auto) {
+        if (tier_ == ExecutionTier::Auto || tier_ == ExecutionTier::Tier0_Interpreter) {
             dispatchTable_->pipeline().register_external_symbol(name, addr);
         }
     };
@@ -394,6 +394,17 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     prog->initDataBuffers(module, globalReadKeys);
 
     if (tier == ExecutionTier::Tier0_Interpreter) {
+        // A function pointer is its lazy stub in every tier
+        // (MultiTierPipeline::function_address): a coroutine's resume
+        // function, entered natively by brass_coro_resume, compiles through
+        // the pipeline's baseline compiler on its first call, so the pipeline
+        // is set up here too, as for Auto.
+        auto& pipeline = prog->dispatchTable().pipeline();
+        brass::runtime::TieringConfig tierConfig;
+        tierConfig.set_tier0_interpreter(brass::runtime::Tier0Interpreter::Fast);
+        pipeline.initialize(tierConfig);
+        registerBronzeMultiTierSymbols(pipeline);
+
         auto interp = std::make_unique<brass::FastInterpreter>(config_.gcSemispaceSize);
         registerBronzeFastInterpreterSymbols(*interp);
         interp->set_dispatch_table(&prog->dispatchTable());

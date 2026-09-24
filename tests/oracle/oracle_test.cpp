@@ -26,6 +26,7 @@
 // built program and the JIT run of the same source.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstdio>
@@ -77,6 +78,14 @@ RunResult runInJit(const std::filesystem::path& entry, bool gcStress = false,
     std::string cmd = oracle::quoted(TEST_BRONZE_CLI) + " run " + oracle::quoted(entry.string());
     if (!hostGlobals.empty()) cmd += " --host-globals " + oracle::quoted(hostGlobals);
     return oracle::runCommand(cmd, gcStress, timeoutMs);
+}
+
+// `bronze run --tier=<tier> <entry>`: the same in-process run pinned to one
+// execution tier (0 fast interpreter, 1 baseline, 2 optimizing, auto tiered).
+RunResult runAtTier(const std::filesystem::path& entry, const std::string& tier, bool gcStress) {
+    std::string cmd = oracle::quoted(TEST_BRONZE_CLI) + " run --tier=" + tier + " " +
+                      oracle::quoted(entry.string());
+    return oracle::runCommand(cmd, gcStress, kRunTimeoutMs);
 }
 
 bool readFileBytes(const std::filesystem::path& path, std::string& content) {
@@ -543,6 +552,80 @@ TEST_CASE("Oracle JIT differential test suite") {
                           ("Compiled case did not finish within the timeout: " +
                            res.oracleCase.entry.string()).c_str());
             checkJitMatchesBuilt(res);
+        }
+    }
+}
+
+// The tiers_* cases (OSR, generators, async, try/finally, GC churn) run at each
+// execution tier on its own, then tiered, plain and under gc-stress: every
+// tier's lowering of the same program is held to the same pinned bytes.
+TEST_CASE("Oracle tiers test suite") {
+    std::filesystem::path casesDir = findCasesDirectory();
+    REQUIRE_MESSAGE(!casesDir.empty(), "Oracle test cases directory not found");
+    REQUIRE_MESSAGE(std::filesystem::exists(TEST_BRONZE_CLI),
+                    "bronze CLI not found at " TEST_BRONZE_CLI);
+
+    std::vector<OracleCase> caseFiles;
+    for (auto& c : casesIn(casesDir)) {
+        if (c.id.rfind("tiers_", 0) == 0) caseFiles.push_back(std::move(c));
+    }
+    REQUIRE_MESSAGE(!caseFiles.empty(), "No tiers_* cases found in cases directory");
+
+    static const std::array<std::string, 4> kTiers = {"0", "1", "2", "auto"};
+    struct TierRuns {
+        std::string expected;
+        bool expectedReadOk = false;
+        std::array<RunResult, 4> plain;
+        std::array<RunResult, 4> gc;
+    };
+    static std::vector<TierRuns> results;
+    static std::once_flag resultsOnce;
+
+    std::call_once(resultsOnce, [&] {
+        results.resize(caseFiles.size());
+        const unsigned int numJobs = getWorkerJobCount();
+        std::atomic<size_t> nextCaseIdx{0};
+
+        auto worker = [&] {
+            while (true) {
+                size_t idx = nextCaseIdx.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= caseFiles.size()) break;
+                TierRuns& res = results[idx];
+                std::filesystem::path expectedPath = caseFiles[idx].entry;
+                expectedPath.replace_extension(".expected");
+                res.expectedReadOk = readFileBytes(expectedPath, res.expected);
+                if (!res.expectedReadOk) continue;
+                for (size_t t = 0; t < kTiers.size(); ++t) {
+                    res.plain[t] = runAtTier(caseFiles[idx].entry, kTiers[t], /*gcStress=*/false);
+                    res.gc[t] = runAtTier(caseFiles[idx].entry, kTiers[t], /*gcStress=*/true);
+                }
+            }
+        };
+
+        std::vector<std::thread> threads;
+        threads.reserve(numJobs);
+        for (unsigned int i = 0; i < numJobs; ++i) threads.emplace_back(worker);
+        for (auto& t : threads) t.join();
+    });
+
+    for (size_t i = 0; i < caseFiles.size(); ++i) {
+        const std::string& id = caseFiles[i].id;
+        const TierRuns& res = results[i];
+        SUBCASE(id.c_str()) {
+            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + id).c_str());
+            for (size_t t = 0; t < kTiers.size(); ++t) {
+                const std::string where = id + " at --tier=" + kTiers[t];
+                CHECK_MESSAGE(!res.plain[t].timedOut, ("timed out: " + where).c_str());
+                CHECK_MESSAGE(res.plain[t].exitCode == 0,
+                              ("exit " + std::to_string(res.plain[t].exitCode) + ": " + where +
+                               "\n" + res.plain[t].errors).c_str());
+                CHECK_MESSAGE(res.expected == res.plain[t].output,
+                              ("output differs from the pinned expectation: " + where).c_str());
+                CHECK_MESSAGE(!res.gc[t].timedOut, ("timed out (gc-stress): " + where).c_str());
+                CHECK_MESSAGE(res.expected == res.gc[t].output,
+                              ("output differs from the pinned expectation (gc-stress): " + where +
+                               "\n" + res.gc[t].errors).c_str());
+            }
         }
     }
 }

@@ -98,10 +98,6 @@ void registerBrassCoroutineSymbols(brass::FastInterpreter& interp) {
 
     interp.register_external_symbol("brass_coro_destroy", reinterpret_cast<void*>(&::brass_coro_destroy));
     interp.register_external_function("brass_coro_destroy", makeFastHostFn(&::brass_coro_destroy));
-
-    // 2. Coroutine-based Async Helper
-    interp.register_external_symbol("bronze_create_async_machine", reinterpret_cast<void*>(&brass::runtime::bronze_create_async_machine));
-    interp.register_external_function("bronze_create_async_machine", makeFastHostFn(&brass::runtime::bronze_create_async_machine));
 }
 
 void registerBrassCoroutineSymbols(brass::codegen::BaselineJitCompiler& compiler) {
@@ -109,8 +105,6 @@ void registerBrassCoroutineSymbols(brass::codegen::BaselineJitCompiler& compiler
     compiler.register_external_symbol("brass_coro_resume", reinterpret_cast<void*>(&::brass_coro_resume));
     compiler.register_external_symbol("brass_coro_is_done", reinterpret_cast<void*>(&::brass_coro_is_done));
     compiler.register_external_symbol("brass_coro_destroy", reinterpret_cast<void*>(&::brass_coro_destroy));
-
-    compiler.register_external_symbol("bronze_create_async_machine", reinterpret_cast<void*>(&brass::runtime::bronze_create_async_machine));
 }
 
 void registerBrassCoroutineSymbols(brass::codegen::JitExecutionEngine& engine) {
@@ -118,8 +112,6 @@ void registerBrassCoroutineSymbols(brass::codegen::JitExecutionEngine& engine) {
     engine.register_external_symbol("brass_coro_resume", reinterpret_cast<void*>(&::brass_coro_resume));
     engine.register_external_symbol("brass_coro_is_done", reinterpret_cast<void*>(&::brass_coro_is_done));
     engine.register_external_symbol("brass_coro_destroy", reinterpret_cast<void*>(&::brass_coro_destroy));
-
-    engine.register_external_symbol("bronze_create_async_machine", reinterpret_cast<void*>(&brass::runtime::bronze_create_async_machine));
 }
 
 void registerBrassCoroutineSymbols(brass::runtime::MultiTierPipeline& pipeline) {
@@ -134,9 +126,6 @@ void registerBrassCoroutineSymbols(brass::runtime::MultiTierPipeline& pipeline) 
 
     pipeline.register_external_symbol("brass_coro_destroy", reinterpret_cast<void*>(&::brass_coro_destroy));
     pipeline.register_external_function("brass_coro_destroy", makeFastHostFn(&::brass_coro_destroy));
-
-    pipeline.register_external_symbol("bronze_create_async_machine", reinterpret_cast<void*>(&brass::runtime::bronze_create_async_machine));
-    pipeline.register_external_function("bronze_create_async_machine", makeFastHostFn(&brass::runtime::bronze_create_async_machine));
 }
 
 // ============================================================================

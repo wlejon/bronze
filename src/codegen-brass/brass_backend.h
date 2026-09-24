@@ -29,7 +29,6 @@ public:
 
     const char* name() const override { return "brass"; }
     void setEntrySymbol(std::string symbol) { entrySymbol_ = std::move(symbol); }
-    void setSharedRuntime(bool on) { sharedRuntime_ = on; }
     void setHostGlobals(std::vector<std::string> names) { hostGlobals_ = std::move(names); }
     void setEmittedPathsOut(std::vector<std::string>* out) { emittedPathsOut_ = out; }
     void setPropagateExceptionsInEntry(bool val) { propagateExceptionsInEntry_ = val; }
@@ -76,7 +75,6 @@ public:
 
 private:
     std::string entrySymbol_ = "bronze_main";
-    bool sharedRuntime_ = false;
     bool propagateExceptionsInEntry_ = false;
     bool optimize_ = true;
     bool emitDebugInfo_ = false;

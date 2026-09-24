@@ -1,7 +1,7 @@
 #pragma once
 
 #include "il/il.h"
-#include <brass/il_translator/il_ast.hpp>
+#include "codegen-brass/il2mir/il_ast.h"
 #include <string>
 #include <vector>
 
@@ -12,7 +12,7 @@ namespace bronze::codegen {
 // builds those thunks over a per-module cache array (see brass_backend.cpp).
 // `globalReadKeys`, when given, receives the distinct key indices the module
 // reads, in ascending order — each is one cache slot.
-brass::il::BronzeModuleAST lowerToBrassAst(
+il2mir::BronzeModuleAST lowerToBrassAst(
     const il::Module& module,
     const std::vector<std::string>& uniqueNames,
     std::vector<uint32_t>* globalReadKeys = nullptr

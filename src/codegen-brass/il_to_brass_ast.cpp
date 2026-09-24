@@ -12,20 +12,20 @@ namespace bronze::codegen {
 
 namespace {
 
-constexpr brass::il::BronzeType mapType(il::Type t) noexcept {
+constexpr il2mir::BronzeType mapType(il::Type t) noexcept {
     switch (t) {
-        case il::Type::Void: return brass::il::BronzeType::Void;
-        case il::Type::Bool: return brass::il::BronzeType::Bool;
-        case il::Type::I32: return brass::il::BronzeType::I32;
-        case il::Type::F64: return brass::il::BronzeType::F64;
-        case il::Type::Str: return brass::il::BronzeType::Str;
-        case il::Type::Dynamic: return brass::il::BronzeType::Dynamic;
+        case il::Type::Void: return il2mir::BronzeType::Void;
+        case il::Type::Bool: return il2mir::BronzeType::Bool;
+        case il::Type::I32: return il2mir::BronzeType::I32;
+        case il::Type::F64: return il2mir::BronzeType::F64;
+        case il::Type::Str: return il2mir::BronzeType::Str;
+        case il::Type::Dynamic: return il2mir::BronzeType::Dynamic;
     }
-    return brass::il::BronzeType::Unknown;
+    return il2mir::BronzeType::Unknown;
 }
 
-brass::il::BronzeBlockTarget mapBlockTarget(const il::BlockTarget& target) {
-    brass::il::BronzeBlockTarget bt;
+il2mir::BronzeBlockTarget mapBlockTarget(const il::BlockTarget& target) {
+    il2mir::BronzeBlockTarget bt;
     bt.block_id = target.block;
     bt.args = target.args;
     return bt;
@@ -56,8 +56,8 @@ struct LowerContext {
     }
 };
 
-brass::il::BronzeInstruction lowerInstruction(const il::Instruction& inst, const LowerContext& ctx) {
-    brass::il::BronzeInstruction out;
+il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const LowerContext& ctx) {
+    il2mir::BronzeInstruction out;
     out.result_id = (inst.result != il::kNoValue) ? inst.result : UINT32_MAX;
     out.result_type = mapType(inst.type);
 
@@ -82,99 +82,99 @@ brass::il::BronzeInstruction lowerInstruction(const il::Instruction& inst, const
     switch (inst.op) {
         // --- Constants ---
         case il::Op::ConstF64:
-            out.op = brass::il::BronzeOp::ConstF64;
+            out.op = il2mir::BronzeOp::ConstF64;
             out.imm_f64 = inst.immF64;
             break;
         case il::Op::ConstI32:
-            out.op = brass::il::BronzeOp::ConstI32;
+            out.op = il2mir::BronzeOp::ConstI32;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::ConstBool:
-            out.op = brass::il::BronzeOp::ConstBool;
+            out.op = il2mir::BronzeOp::ConstBool;
             out.imm_bool = (inst.immI32 != 0);
             break;
         case il::Op::ConstUndefined:
-            out.op = brass::il::BronzeOp::ConstUndefined;
+            out.op = il2mir::BronzeOp::ConstUndefined;
             break;
         case il::Op::ConstNull:
-            out.op = brass::il::BronzeOp::ConstNull;
+            out.op = il2mir::BronzeOp::ConstNull;
             break;
         case il::Op::ConstBigInt:
-            out.op = brass::il::BronzeOp::ConstBigInt;
+            out.op = il2mir::BronzeOp::ConstBigInt;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
 
         // --- Arithmetic & String Operations ---
-        case il::Op::Add: out.op = brass::il::BronzeOp::Add; break;
+        case il::Op::Add: out.op = il2mir::BronzeOp::Add; break;
         case il::Op::ConcatBegin:
-            out.op = brass::il::BronzeOp::ConcatBegin;
+            out.op = il2mir::BronzeOp::ConcatBegin;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::ConcatAppend: out.op = brass::il::BronzeOp::ConcatAppend; break;
-        case il::Op::ConcatEnd: out.op = brass::il::BronzeOp::ConcatEnd; break;
-        case il::Op::Sub: out.op = brass::il::BronzeOp::Sub; break;
-        case il::Op::Neg: out.op = brass::il::BronzeOp::Neg; break;
-        case il::Op::Mul: out.op = brass::il::BronzeOp::Mul; break;
-        case il::Op::Div: out.op = brass::il::BronzeOp::Div; break;
-        case il::Op::Mod: out.op = brass::il::BronzeOp::Mod; break;
-        case il::Op::Pow: out.op = brass::il::BronzeOp::Pow; break;
-        case il::Op::ToNumeric: out.op = brass::il::BronzeOp::ToNumeric; break;
+        case il::Op::ConcatAppend: out.op = il2mir::BronzeOp::ConcatAppend; break;
+        case il::Op::ConcatEnd: out.op = il2mir::BronzeOp::ConcatEnd; break;
+        case il::Op::Sub: out.op = il2mir::BronzeOp::Sub; break;
+        case il::Op::Neg: out.op = il2mir::BronzeOp::Neg; break;
+        case il::Op::Mul: out.op = il2mir::BronzeOp::Mul; break;
+        case il::Op::Div: out.op = il2mir::BronzeOp::Div; break;
+        case il::Op::Mod: out.op = il2mir::BronzeOp::Mod; break;
+        case il::Op::Pow: out.op = il2mir::BronzeOp::Pow; break;
+        case il::Op::ToNumeric: out.op = il2mir::BronzeOp::ToNumeric; break;
         case il::Op::NumericStep:
-            out.op = brass::il::BronzeOp::NumericStep;
+            out.op = il2mir::BronzeOp::NumericStep;
             out.imm_i64 = (inst.immI32 > 0) ? 1 : -1;
             break;
-        case il::Op::ToInt32: out.op = brass::il::BronzeOp::ToInt32; break;
+        case il::Op::ToInt32: out.op = il2mir::BronzeOp::ToInt32; break;
 
         // --- Bitwise Operations ---
-        case il::Op::BitAnd: out.op = brass::il::BronzeOp::BitAnd; break;
-        case il::Op::BitOr: out.op = brass::il::BronzeOp::BitOr; break;
-        case il::Op::BitXor: out.op = brass::il::BronzeOp::BitXor; break;
-        case il::Op::MathImul: out.op = brass::il::BronzeOp::MathImul; break;
-        case il::Op::Shl: out.op = brass::il::BronzeOp::Shl; break;
-        case il::Op::Shr: out.op = brass::il::BronzeOp::Shr; break;
-        case il::Op::UShr: out.op = brass::il::BronzeOp::UShr; break;
-        case il::Op::BitNot: out.op = brass::il::BronzeOp::BitNot; break;
+        case il::Op::BitAnd: out.op = il2mir::BronzeOp::BitAnd; break;
+        case il::Op::BitOr: out.op = il2mir::BronzeOp::BitOr; break;
+        case il::Op::BitXor: out.op = il2mir::BronzeOp::BitXor; break;
+        case il::Op::MathImul: out.op = il2mir::BronzeOp::MathImul; break;
+        case il::Op::Shl: out.op = il2mir::BronzeOp::Shl; break;
+        case il::Op::Shr: out.op = il2mir::BronzeOp::Shr; break;
+        case il::Op::UShr: out.op = il2mir::BronzeOp::UShr; break;
+        case il::Op::BitNot: out.op = il2mir::BronzeOp::BitNot; break;
 
         // --- Comparisons & Predicates ---
-        case il::Op::CmpLt: out.op = brass::il::BronzeOp::CmpLt; break;
-        case il::Op::CmpGt: out.op = brass::il::BronzeOp::CmpGt; break;
-        case il::Op::CmpLe: out.op = brass::il::BronzeOp::CmpLe; break;
-        case il::Op::CmpGe: out.op = brass::il::BronzeOp::CmpGe; break;
-        case il::Op::CmpEq: out.op = brass::il::BronzeOp::CmpEq; break;
-        case il::Op::CmpNe: out.op = brass::il::BronzeOp::CmpNe; break;
-        case il::Op::NumTruthy: out.op = brass::il::BronzeOp::NumTruthy; break;
-        case il::Op::StrictEq: out.op = brass::il::BronzeOp::StrictEq; break;
-        case il::Op::LooseEq: out.op = brass::il::BronzeOp::LooseEq; break;
-        case il::Op::RelLt: out.op = brass::il::BronzeOp::RelLt; break;
-        case il::Op::RelGt: out.op = brass::il::BronzeOp::RelGt; break;
-        case il::Op::RelLe: out.op = brass::il::BronzeOp::RelLe; break;
-        case il::Op::RelGe: out.op = brass::il::BronzeOp::RelGe; break;
-        case il::Op::TypeOf: out.op = brass::il::BronzeOp::TypeOf; break;
-        case il::Op::ToStr: out.op = brass::il::BronzeOp::ToStr; break;
-        case il::Op::InstanceOf: out.op = brass::il::BronzeOp::InstanceOf; break;
-        case il::Op::In: out.op = brass::il::BronzeOp::In; break;
-        case il::Op::IsNullish: out.op = brass::il::BronzeOp::IsNullish; break;
-        case il::Op::IsNumber: out.op = brass::il::BronzeOp::IsNumber; break;
+        case il::Op::CmpLt: out.op = il2mir::BronzeOp::CmpLt; break;
+        case il::Op::CmpGt: out.op = il2mir::BronzeOp::CmpGt; break;
+        case il::Op::CmpLe: out.op = il2mir::BronzeOp::CmpLe; break;
+        case il::Op::CmpGe: out.op = il2mir::BronzeOp::CmpGe; break;
+        case il::Op::CmpEq: out.op = il2mir::BronzeOp::CmpEq; break;
+        case il::Op::CmpNe: out.op = il2mir::BronzeOp::CmpNe; break;
+        case il::Op::NumTruthy: out.op = il2mir::BronzeOp::NumTruthy; break;
+        case il::Op::StrictEq: out.op = il2mir::BronzeOp::StrictEq; break;
+        case il::Op::LooseEq: out.op = il2mir::BronzeOp::LooseEq; break;
+        case il::Op::RelLt: out.op = il2mir::BronzeOp::RelLt; break;
+        case il::Op::RelGt: out.op = il2mir::BronzeOp::RelGt; break;
+        case il::Op::RelLe: out.op = il2mir::BronzeOp::RelLe; break;
+        case il::Op::RelGe: out.op = il2mir::BronzeOp::RelGe; break;
+        case il::Op::TypeOf: out.op = il2mir::BronzeOp::TypeOf; break;
+        case il::Op::ToStr: out.op = il2mir::BronzeOp::ToStr; break;
+        case il::Op::InstanceOf: out.op = il2mir::BronzeOp::InstanceOf; break;
+        case il::Op::In: out.op = il2mir::BronzeOp::In; break;
+        case il::Op::IsNullish: out.op = il2mir::BronzeOp::IsNullish; break;
+        case il::Op::IsNumber: out.op = il2mir::BronzeOp::IsNumber; break;
         case il::Op::IsDenseArray:
-            out.op = brass::il::BronzeOp::IsDenseArray;
+            out.op = il2mir::BronzeOp::IsDenseArray;
             out.imm_i64 = inst.immI32;
             break;
 
         // --- Control Flow & Call Termination ---
-        case il::Op::Ret: out.op = brass::il::BronzeOp::Ret; break;
-        case il::Op::Throw: out.op = brass::il::BronzeOp::Throw; break;
-        case il::Op::ExcTake: out.op = brass::il::BronzeOp::ExcTake; break;
-        case il::Op::Jump: out.op = brass::il::BronzeOp::Jump; break;
-        case il::Op::Branch: out.op = brass::il::BronzeOp::Branch; break;
+        case il::Op::Ret: out.op = il2mir::BronzeOp::Ret; break;
+        case il::Op::Throw: out.op = il2mir::BronzeOp::Throw; break;
+        case il::Op::ExcTake: out.op = il2mir::BronzeOp::ExcTake; break;
+        case il::Op::Jump: out.op = il2mir::BronzeOp::Jump; break;
+        case il::Op::Branch: out.op = il2mir::BronzeOp::Branch; break;
         case il::Op::Call:
-            out.op = brass::il::BronzeOp::Call;
+            out.op = il2mir::BronzeOp::Call;
             out.callee_name = ctx.fnName(inst.calleeIndex);
             out.env_hops = (inst.callEnvHops != il::Instruction::kNoEnvHops) ? inst.callEnvHops : UINT32_MAX;
             break;
 
         // --- Boxing / Unboxing ---
         case il::Op::Box:
-            out.op = brass::il::BronzeOp::Box;
+            out.op = il2mir::BronzeOp::Box;
             out.box_type = mapType(inst.boxType);
             out.index = inst.keyIndex;
             if (inst.operands.empty()) {
@@ -183,13 +183,13 @@ brass::il::BronzeInstruction lowerInstruction(const il::Instruction& inst, const
             }
             break;
         case il::Op::Unbox:
-            out.op = brass::il::BronzeOp::Unbox;
+            out.op = il2mir::BronzeOp::Unbox;
             out.raw_unbox = inst.rawUnbox;
             break;
 
         // --- Properties & Elements ---
         case il::Op::PropGet:
-            out.op = brass::il::BronzeOp::PropGet;
+            out.op = il2mir::BronzeOp::PropGet;
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
@@ -198,16 +198,16 @@ brass::il::BronzeInstruction lowerInstruction(const il::Instruction& inst, const
             out.static_slot = inst.staticSlot;
             break;
         case il::Op::SuperGet:
-            out.op = brass::il::BronzeOp::SuperGet;
+            out.op = il2mir::BronzeOp::SuperGet;
             out.index = inst.keyIndex;
             break;
         case il::Op::SuperSet:
-            out.op = brass::il::BronzeOp::SuperSet;
+            out.op = il2mir::BronzeOp::SuperSet;
             out.index = inst.keyIndex;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::PropSet:
-            out.op = brass::il::BronzeOp::PropSet;
+            out.op = il2mir::BronzeOp::PropSet;
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
@@ -216,173 +216,173 @@ brass::il::BronzeInstruction lowerInstruction(const il::Instruction& inst, const
             out.static_slot = inst.staticSlot;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::ElemGet: out.op = brass::il::BronzeOp::ElemGet; break;
+        case il::Op::ElemGet: out.op = il2mir::BronzeOp::ElemGet; break;
         case il::Op::ElemSet:
-            out.op = brass::il::BronzeOp::ElemSet;
+            out.op = il2mir::BronzeOp::ElemSet;
             out.index = static_cast<uint32_t>(inst.immI32);
             break;
         case il::Op::ElemGetTyped:
-            out.op = brass::il::BronzeOp::ElemGetTyped;
+            out.op = il2mir::BronzeOp::ElemGetTyped;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::ElemSetTyped:
-            out.op = brass::il::BronzeOp::ElemSetTyped;
+            out.op = il2mir::BronzeOp::ElemSetTyped;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::MathUnary:
-            out.op = brass::il::BronzeOp::MathUnary;
+            out.op = il2mir::BronzeOp::MathUnary;
             out.imm_i64 = inst.immI32;
             break;
 
         // --- Dynamic Calls & Objects ---
         case il::Op::DynamicCall:
-            out.op = brass::il::BronzeOp::CallDynamic;
+            out.op = il2mir::BronzeOp::CallDynamic;
             out.param_count = inst.operands.size() >= 2 ? static_cast<uint32_t>(inst.operands.size() - 2) : 0;
             break;
         case il::Op::FunctionRef:
-            out.op = brass::il::BronzeOp::FuncRef;
+            out.op = il2mir::BronzeOp::FuncRef;
             out.callee_name = ctx.fnName(inst.calleeIndex);
             break;
         case il::Op::Construct:
-            out.op = brass::il::BronzeOp::Construct;
+            out.op = il2mir::BronzeOp::Construct;
             out.param_count = inst.operands.empty() ? 0 : static_cast<uint32_t>(inst.operands.size() - 1);
             break;
-        case il::Op::CreateObject: out.op = brass::il::BronzeOp::CreateObject; break;
-        case il::Op::CreateGeneratorObject: out.op = brass::il::BronzeOp::CreateGeneratorObject; break;
-        case il::Op::CreateAsyncGeneratorObject: out.op = brass::il::BronzeOp::CreateAsyncGeneratorObject; break;
-        case il::Op::CreateAsyncMachine: out.op = brass::il::BronzeOp::CreateAsyncMachine; break;
-        case il::Op::AsyncStart: out.op = brass::il::BronzeOp::AsyncStart; break;
-        case il::Op::AsyncAwait: out.op = brass::il::BronzeOp::AsyncAwait; break;
+        case il::Op::CreateObject: out.op = il2mir::BronzeOp::CreateObject; break;
+        case il::Op::CreateGeneratorObject: out.op = il2mir::BronzeOp::CreateGeneratorObject; break;
+        case il::Op::CreateAsyncGeneratorObject: out.op = il2mir::BronzeOp::CreateAsyncGeneratorObject; break;
+        case il::Op::CreateAsyncMachine: out.op = il2mir::BronzeOp::CreateAsyncMachine; break;
+        case il::Op::AsyncStart: out.op = il2mir::BronzeOp::AsyncStart; break;
+        case il::Op::AsyncAwait: out.op = il2mir::BronzeOp::AsyncAwait; break;
         case il::Op::DynamicImport:
-            out.op = brass::il::BronzeOp::DynamicImport;
+            out.op = il2mir::BronzeOp::DynamicImport;
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
-        case il::Op::ModuleNamespace: out.op = brass::il::BronzeOp::ModuleNamespace; break;
-        case il::Op::ObjectKeys: out.op = brass::il::BronzeOp::ObjectKeys; break;
-        case il::Op::ForInKeys: out.op = brass::il::BronzeOp::ForInKeys; break;
+        case il::Op::ModuleNamespace: out.op = il2mir::BronzeOp::ModuleNamespace; break;
+        case il::Op::ObjectKeys: out.op = il2mir::BronzeOp::ObjectKeys; break;
+        case il::Op::ForInKeys: out.op = il2mir::BronzeOp::ForInKeys; break;
         case il::Op::MethodDef:
-            out.op = brass::il::BronzeOp::MethodDef;
+            out.op = il2mir::BronzeOp::MethodDef;
             out.index = inst.keyIndex;
             break;
-        case il::Op::MethodDefComputed: out.op = brass::il::BronzeOp::MethodDefComputed; break;
+        case il::Op::MethodDefComputed: out.op = il2mir::BronzeOp::MethodDefComputed; break;
         case il::Op::AccessorDef:
-            out.op = brass::il::BronzeOp::AccessorDef;
+            out.op = il2mir::BronzeOp::AccessorDef;
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             out.imm_bool = (inst.immI32 != 0);
             break;
         case il::Op::AccessorDefComputed:
-            out.op = brass::il::BronzeOp::AccessorDefComputed;
+            out.op = il2mir::BronzeOp::AccessorDefComputed;
             out.imm_bool = (inst.immI32 != 0);
             break;
         case il::Op::DefineOwnAttr:
-            out.op = brass::il::BronzeOp::DefineOwnAttr;
+            out.op = il2mir::BronzeOp::DefineOwnAttr;
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::GetNewTarget: out.op = brass::il::BronzeOp::GetNewTarget; break;
+        case il::Op::GetNewTarget: out.op = il2mir::BronzeOp::GetNewTarget; break;
         case il::Op::ImportMeta:
-            out.op = brass::il::BronzeOp::ImportMeta;
+            out.op = il2mir::BronzeOp::ImportMeta;
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
         case il::Op::SuperCall:
-            out.op = brass::il::BronzeOp::SuperCall;
+            out.op = il2mir::BronzeOp::SuperCall;
             out.param_count = inst.operands.size() >= 2 ? static_cast<uint32_t>(inst.operands.size() - 2) : 0;
             break;
-        case il::Op::SuperCallSpread: out.op = brass::il::BronzeOp::SuperCallSpread; break;
+        case il::Op::SuperCallSpread: out.op = il2mir::BronzeOp::SuperCallSpread; break;
         case il::Op::TemplateCached:
-            out.op = brass::il::BronzeOp::TemplateCached;
+            out.op = il2mir::BronzeOp::TemplateCached;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::TemplateObject:
-            out.op = brass::il::BronzeOp::TemplateObject;
+            out.op = il2mir::BronzeOp::TemplateObject;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::ArrayAppendHole: out.op = brass::il::BronzeOp::ArrayAppendHole; break;
+        case il::Op::ArrayAppendHole: out.op = il2mir::BronzeOp::ArrayAppendHole; break;
         case il::Op::PropDelete:
-            out.op = brass::il::BronzeOp::PropDelete;
+            out.op = il2mir::BronzeOp::PropDelete;
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::ElemDelete:
-            out.op = brass::il::BronzeOp::ElemDelete;
+            out.op = il2mir::BronzeOp::ElemDelete;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::GlobalGet:
             // A cached read: calls the per-key thunk that queries the module's cache slot.
-            out.op = brass::il::BronzeOp::Call;
+            out.op = il2mir::BronzeOp::Call;
             out.callee_name = globalReadThunkName(inst.keyIndex);
             break;
         case il::Op::ResolveName:
-            out.op = brass::il::BronzeOp::NameResolve;
+            out.op = il2mir::BronzeOp::NameResolve;
             out.string_literal = ctx.keyString(inst.keyIndex);
             out.index = (inst.immI32 != 0) ? 1 : 0;
             break;
         case il::Op::ImmutableAssign:
-            out.op = brass::il::BronzeOp::ImmutableAssign;
+            out.op = il2mir::BronzeOp::ImmutableAssign;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
         case il::Op::PinGuard:
-            out.op = brass::il::BronzeOp::PinGuard;
+            out.op = il2mir::BronzeOp::PinGuard;
             out.imm_i64 = static_cast<int64_t>(inst.immI32);
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
         case il::Op::CensusRecord:
-            out.op = brass::il::BronzeOp::CensusRecord;
+            out.op = il2mir::BronzeOp::CensusRecord;
             out.imm_i64 = inst.immI32 & BRONZE_ABI_CENSUS_KIND_MASK;
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
-        case il::Op::ClassExtend: out.op = brass::il::BronzeOp::ClassExtend; break;
-        case il::Op::PrivateNew: out.op = brass::il::BronzeOp::PrivateNew; break;
+        case il::Op::ClassExtend: out.op = il2mir::BronzeOp::ClassExtend; break;
+        case il::Op::PrivateNew: out.op = il2mir::BronzeOp::PrivateNew; break;
         case il::Op::PrivateHas:
-            out.op = brass::il::BronzeOp::PrivateHas;
+            out.op = il2mir::BronzeOp::PrivateHas;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
         case il::Op::PrivateGet:
-            out.op = brass::il::BronzeOp::PrivateGet;
+            out.op = il2mir::BronzeOp::PrivateGet;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
-        case il::Op::PrivateAdd: out.op = brass::il::BronzeOp::PrivateAdd; break;
+        case il::Op::PrivateAdd: out.op = il2mir::BronzeOp::PrivateAdd; break;
         case il::Op::PrivateSet:
-            out.op = brass::il::BronzeOp::PrivateSet;
+            out.op = il2mir::BronzeOp::PrivateSet;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
         case il::Op::PrivateMisuse:
-            out.op = brass::il::BronzeOp::PrivateMisuse;
+            out.op = il2mir::BronzeOp::PrivateMisuse;
             out.string_literal = ctx.keyString(inst.keyIndex);
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::IterOpen: out.op = brass::il::BronzeOp::IterOpen; break;
-        case il::Op::AsyncIterOpen: out.op = brass::il::BronzeOp::AsyncIterOpen; break;
-        case il::Op::AsyncIterNext: out.op = brass::il::BronzeOp::AsyncIterNext; break;
+        case il::Op::IterOpen: out.op = il2mir::BronzeOp::IterOpen; break;
+        case il::Op::AsyncIterOpen: out.op = il2mir::BronzeOp::AsyncIterOpen; break;
+        case il::Op::AsyncIterNext: out.op = il2mir::BronzeOp::AsyncIterNext; break;
         case il::Op::AsyncIterClose:
-            out.op = brass::il::BronzeOp::AsyncIterClose;
+            out.op = il2mir::BronzeOp::AsyncIterClose;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::IterStep: out.op = brass::il::BronzeOp::IterStep; break;
-        case il::Op::IterValue: out.op = brass::il::BronzeOp::IterValue; break;
+        case il::Op::IterStep: out.op = il2mir::BronzeOp::IterStep; break;
+        case il::Op::IterValue: out.op = il2mir::BronzeOp::IterValue; break;
         case il::Op::IterClose:
-            out.op = brass::il::BronzeOp::IterClose;
+            out.op = il2mir::BronzeOp::IterClose;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::IterRest: out.op = brass::il::BronzeOp::IterRest; break;
-        case il::Op::IterDelegate: out.op = brass::il::BronzeOp::IterDelegate; break;
+        case il::Op::IterRest: out.op = il2mir::BronzeOp::IterRest; break;
+        case il::Op::IterDelegate: out.op = il2mir::BronzeOp::IterDelegate; break;
         case il::Op::PatternCheck:
-            out.op = brass::il::BronzeOp::PatternCheck;
+            out.op = il2mir::BronzeOp::PatternCheck;
             out.imm_i64 = inst.immI32;
             break;
-        case il::Op::ArrayAppend: out.op = brass::il::BronzeOp::ArrayAppend; break;
-        case il::Op::ArraySpread: out.op = brass::il::BronzeOp::ArraySpread; break;
-        case il::Op::ObjectSpread: out.op = brass::il::BronzeOp::ObjectSpread; break;
-        case il::Op::ObjectRest: out.op = brass::il::BronzeOp::ObjectRest; break;
-        case il::Op::DynamicCallSpread: out.op = brass::il::BronzeOp::DynamicCallSpread; break;
+        case il::Op::ArrayAppend: out.op = il2mir::BronzeOp::ArrayAppend; break;
+        case il::Op::ArraySpread: out.op = il2mir::BronzeOp::ArraySpread; break;
+        case il::Op::ObjectSpread: out.op = il2mir::BronzeOp::ObjectSpread; break;
+        case il::Op::ObjectRest: out.op = il2mir::BronzeOp::ObjectRest; break;
+        case il::Op::DynamicCallSpread: out.op = il2mir::BronzeOp::DynamicCallSpread; break;
         case il::Op::MethodCall:
-            out.op = brass::il::BronzeOp::MethodCall;
+            out.op = il2mir::BronzeOp::MethodCall;
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
@@ -394,53 +394,53 @@ brass::il::BronzeInstruction lowerInstruction(const il::Instruction& inst, const
             out.param_count = inst.operands.size() > 1 ? static_cast<uint32_t>(inst.operands.size() - 1) : 0;
             break;
         case il::Op::MethodCallSpread:
-            out.op = brass::il::BronzeOp::MethodCallSpread;
+            out.op = il2mir::BronzeOp::MethodCallSpread;
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
             out.ic_index = inst.icIndex;
             out.is_mono = inst.icMonomorphic;
             break;
-        case il::Op::ConstructSpread: out.op = brass::il::BronzeOp::ConstructSpread; break;
+        case il::Op::ConstructSpread: out.op = il2mir::BronzeOp::ConstructSpread; break;
         case il::Op::CreateArray:
-            out.op = brass::il::BronzeOp::CreateArray;
+            out.op = il2mir::BronzeOp::CreateArray;
             out.param_count = static_cast<uint32_t>(inst.immI32);
             break;
         case il::Op::CreateFunction:
-            out.op = brass::il::BronzeOp::CreateFunc;
+            out.op = il2mir::BronzeOp::CreateFunc;
             out.callee_name = ctx.fnName(inst.calleeIndex);
             out.param_count = static_cast<uint32_t>(inst.immI32);
             break;
         case il::Op::EnvCreate:
-            out.op = brass::il::BronzeOp::EnvCreate;
+            out.op = il2mir::BronzeOp::EnvCreate;
             out.param_count = static_cast<uint32_t>(inst.immI32);
             break;
         case il::Op::EnvGet:
-            out.op = brass::il::BronzeOp::EnvGet;
+            out.op = il2mir::BronzeOp::EnvGet;
             out.depth = inst.envDepth;
             out.index = inst.envIndex;
             break;
         case il::Op::EnvSet:
-            out.op = brass::il::BronzeOp::EnvSet;
+            out.op = il2mir::BronzeOp::EnvSet;
             out.depth = inst.envDepth;
             out.index = inst.envIndex;
             break;
         case il::Op::EnvInitTdz:
-            out.op = brass::il::BronzeOp::EnvInitTdz;
+            out.op = il2mir::BronzeOp::EnvInitTdz;
             out.depth = inst.envDepth;
             out.index = inst.envIndex;
             break;
         case il::Op::EnvGetTdz:
-            out.op = brass::il::BronzeOp::EnvGetTdz;
+            out.op = il2mir::BronzeOp::EnvGetTdz;
             out.depth = inst.envDepth;
             out.index = inst.envIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             break;
-        case il::Op::ModuleEnvSet: out.op = brass::il::BronzeOp::ModuleEnvSet; break;
-        case il::Op::ModuleEnvGet: out.op = brass::il::BronzeOp::ModuleEnvGet; break;
-        case il::Op::Print: out.op = brass::il::BronzeOp::Print; break;
-        case il::Op::PrintErr: out.op = brass::il::BronzeOp::PrintErr; break;
-        case il::Op::PrintSpread: out.op = brass::il::BronzeOp::PrintSpread; break;
-        case il::Op::PrintSpreadErr: out.op = brass::il::BronzeOp::PrintSpreadErr; break;
+        case il::Op::ModuleEnvSet: out.op = il2mir::BronzeOp::ModuleEnvSet; break;
+        case il::Op::ModuleEnvGet: out.op = il2mir::BronzeOp::ModuleEnvGet; break;
+        case il::Op::Print: out.op = il2mir::BronzeOp::Print; break;
+        case il::Op::PrintErr: out.op = il2mir::BronzeOp::PrintErr; break;
+        case il::Op::PrintSpread: out.op = il2mir::BronzeOp::PrintSpread; break;
+        case il::Op::PrintSpreadErr: out.op = il2mir::BronzeOp::PrintSpreadErr; break;
     }
 
     return out;
@@ -452,12 +452,12 @@ std::string globalReadThunkName(uint32_t keyIndex) {
     return "__bronze_global_read_k" + std::to_string(keyIndex);
 }
 
-brass::il::BronzeModuleAST lowerToBrassAst(
+il2mir::BronzeModuleAST lowerToBrassAst(
     const il::Module& module,
     const std::vector<std::string>& uniqueNames,
     std::vector<uint32_t>* globalReadKeys
 ) {
-    brass::il::BronzeModuleAST ast;
+    il2mir::BronzeModuleAST ast;
     ast.name = !module.name.empty() ? module.name : (!module.sourceFiles.empty() ? module.sourceFiles[0] : "");
     ast.functions.reserve(module.functions.size());
 
@@ -473,12 +473,12 @@ brass::il::BronzeModuleAST lowerToBrassAst(
     for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
         const auto& fn = module.functions[fnIdx];
 
-        brass::il::BronzeFunction bfn;
+        il2mir::BronzeFunction bfn;
         bfn.name = (fnIdx < uniqueNames.size() && !uniqueNames[fnIdx].empty())
                        ? uniqueNames[fnIdx]
                        : fn.name;
         bfn.return_type = (fn.returnType == il::Type::Bool)
-                              ? brass::il::BronzeType::I32
+                              ? il2mir::BronzeType::I32
                               : mapType(fn.returnType);
         bfn.is_exported = fn.isExported;
 
@@ -494,7 +494,7 @@ brass::il::BronzeModuleAST lowerToBrassAst(
 
         bfn.blocks.reserve(fn.blocks.size());
         for (const auto& block : fn.blocks) {
-            brass::il::BronzeBlock bblk;
+            il2mir::BronzeBlock bblk;
             bblk.id = block.id;
             bblk.handler_id = (block.handler != il::kNoBlock) ? block.handler : UINT32_MAX;
 

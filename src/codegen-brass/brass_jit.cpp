@@ -1,13 +1,11 @@
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_backend.h"
-#include "codegen-brass/brass_coroutine_bridge.h"
+#include "codegen-brass/brass_symbol_registration.h"
 
 #include "abi/bronze_abi.h"
 
 #include <brass/codegen/jit_exec.hpp>
 #include <brass/gc/runtime_gc.hpp>
-#include <brass/il_translator/il_translator.hpp>
-#include <brass/runtime/parallel_runtime.hpp>
 #include <brass/target/target.hpp>
 
 #include <utility>
@@ -111,23 +109,7 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
     }
 
     auto engine = std::make_unique<brass::codegen::JitExecutionEngine>(brass::Target::host());
-    brass::il::register_bronze_runtime_symbols(engine.get());
-
-#define BRONZE_ABI_REG_JIT(name, ret, args) \
-    engine->register_external_symbol(#name, reinterpret_cast<void*>(&::name));
-    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_JIT)
-#undef BRONZE_ABI_REG_JIT
-
-    engine->register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(&brass_parallel_for));
-    engine->register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(&brass_parallel_for));
-    engine->register_external_symbol("brass_set_parallel_workers", reinterpret_cast<void*>(&brass_set_parallel_workers));
-    engine->register_external_symbol("brass_get_parallel_workers", reinterpret_cast<void*>(&brass_get_parallel_workers));
-    engine->register_external_symbol("brass_parallel_reduce_i64", reinterpret_cast<void*>(&brass_parallel_reduce_i64));
-    engine->register_external_symbol("brass_parallel_reduce_f64", reinterpret_cast<void*>(&brass_parallel_reduce_f64));
-    engine->register_external_symbol("brass_parallel_alloc_context", reinterpret_cast<void*>(&brass_parallel_alloc_context));
-    engine->register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
-
-    registerBrassCoroutineSymbols(*engine);
+    registerBronzeJitSymbols(*engine);
 
     for (const auto& fn : module.functions) {
         std::vector<brass::Type> paramTypes;

@@ -26,7 +26,7 @@ endif()
 # on its own without the case list forking into a second harness. The filters
 # are case-INSENSITIVE and anchored at the start of the name: `*jit*` would
 # also select the two `-jit` milestones.
-set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*)
+set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*)
 
 # The cases are compiled and run both with and without inference, and re-run
 # under BRONZE_GC_STRESS=1 on the same built executable to verify rooting without
@@ -40,6 +40,12 @@ set_tests_properties(oracle PROPERTIES LABELS oracle)
 # results and can be selected apart (`-L jit`).
 add_test(NAME oracle-jit COMMAND bronze_oracle_tests "--test-case=Oracle JIT*")
 set_tests_properties(oracle-jit PROPERTIES LABELS "oracle;jit")
+
+# The tiers_* cases through `bronze run --tier=0|1|2|auto`: the fast
+# interpreter, the baseline JIT and the optimizing tier each run the program
+# alone, then the tiered pipeline with OSR, all held to the same pinned bytes.
+add_test(NAME oracle-tiers COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
+set_tests_properties(oracle-tiers PROPERTIES LABELS "oracle;jit;tiers")
 
 # Unmodified three.js r160 (tests/oracle/threejs/README.md). Its own label
 # because it costs more than the whole rest of the suite: `-L threejs` runs

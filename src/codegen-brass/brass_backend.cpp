@@ -9,7 +9,7 @@
 
 #include <brass/brass.hpp>
 #include <brass/codegen/jit_exec.hpp>
-#include <brass/il_translator/il_translator.hpp>
+#include "codegen-brass/il2mir/il_translator.h"
 #include <brass/object/coff_writer.hpp>
 #include <brass/object/elf_writer.hpp>
 #include <brass/object/macho_writer.hpp>
@@ -271,7 +271,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
 
     const bool optimize = this->optimize();
-    brass::il::TranslatorOptions options;
+    il2mir::TranslatorOptions options;
     options.enable_optimizations = optimize;
     options.run_alias_analysis = optimize;
     options.enable_inlining = optimize;
@@ -297,7 +297,6 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.enable_partial_escape = true;
     options.enable_allocation_sinking = true;
     options.enable_tlab = true;
-    options.use_bronze_tlab = true;
     // The TLS block rides in a callee-saved register (bronze_abi_tls.h): the
     // entry loads it, the runtime's rtEnterJs trampoline loads it for every
     // other way in, and generated code reads the exception cell, the
@@ -317,7 +316,6 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
 #endif
 #endif
     }
-    options.enable_pic = sharedRuntime_;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
     options.propagate_exceptions_in_entry = propagateExceptionsInEntry_;
@@ -339,7 +337,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
 
     for (size_t i = 0; i < module.functions.size(); ++i) {
         const auto& fn = module.functions[i];
-        brass::il::FunctionMeta meta;
+        il2mir::FunctionMeta meta;
         meta.needs_env = fn.needsEnv;
         meta.needs_this = fn.needsThis;
         meta.needs_arguments = fn.needsArguments;
@@ -362,7 +360,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     const size_t sourceFileCount = registerFnSources_ ? module.sourceTexts.size() : 0;
     options.source_files.reserve(sourceFileCount);
     for (uint16_t file = 0; file < sourceFileCount; ++file) {
-        brass::il::TranslatorOptions::SourceFileMeta sf;
+        il2mir::TranslatorOptions::SourceFileMeta sf;
         sf.text_len = static_cast<uint32_t>(module.sourceTexts[file].size());
         for (size_t i = 0; i < module.functions.size(); ++i) {
             const auto& fn = module.functions[i];
@@ -378,7 +376,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     mtimer.mark("options");
     auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
     mtimer.mark("brass ast");
-    brass::il::TranslationResult res = brass::il::translate_bronze_ast(ast, options, &reporter);
+    il2mir::TranslationResult res = il2mir::translate_bronze_ast(ast, options, &reporter);
     mtimer.mark("translate");
 
     if (!res.success || !res.module || reporter.has_errors()) {

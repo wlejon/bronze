@@ -28,17 +28,12 @@ namespace bronze {
 // 1. Symbol Registration Helpers for Brass Coroutine Runtime
 // ============================================================================
 
-// Registers Brass coroutine runtime functions:
-//   - brass_coro_create
-//   - brass_coro_resume
-//   - brass_coro_is_done
-//   - brass_coro_destroy
-//   - bronze_iter_open
-//   - bronze_iter_step
-//   - bronze_create_async_machine
-//   - bronze_async_start
-//   - bronze_async_await
-// across JIT, baseline, fast interpreter, and multi-tier execution engines.
+// Registers brass's coroutine runtime (brass_coro_create, brass_coro_resume,
+// brass_coro_is_done, brass_coro_destroy) — what brass's coroutine transform
+// lowers generator and async bodies onto — across the JIT, baseline, fast
+// interpreter and multi-tier engines. The JS-level helpers over it
+// (bronze_iter_*, bronze_async_*) are bronze ABI functions and register
+// with the rest of the ABI.
 void registerBrassCoroutineSymbols(brass::FastInterpreter& interp);
 void registerBrassCoroutineSymbols(brass::codegen::BaselineJitCompiler& compiler);
 void registerBrassCoroutineSymbols(brass::codegen::JitExecutionEngine& engine);

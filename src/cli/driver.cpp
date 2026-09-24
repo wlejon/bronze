@@ -407,7 +407,6 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     BrassBackend backend;
     if (!entrySymbol.empty()) backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(hostGlobals);
-    backend.setSharedRuntime(emitShared);
     backend.setTarget(target);
     backend.setEmitDebugInfo(emitDebugInfo);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);

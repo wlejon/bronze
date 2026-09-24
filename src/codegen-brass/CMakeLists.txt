@@ -37,6 +37,18 @@ add_library(bronze_codegen_brass STATIC
     brass_symbol_registration.cpp
     brass_tiered_engine.cpp
     il_to_brass_ast.cpp
+    # il2mir: the bronze IL → brass MIR translator.
+    il2mir/il_alloc_lowering.cpp
+    il2mir/il_lowering.cpp
+    il2mir/il_lowering_calls.cpp
+    il2mir/il_lowering_coro.cpp
+    il2mir/il_lowering_inst.cpp
+    il2mir/il_lowering_ops.cpp
+    il2mir/il_lowering_wrapper.cpp
+    il2mir/il_module_symbols.cpp
+    il2mir/il_pipeline.cpp
+    il2mir/il_property_lowering.cpp
+    il2mir/il_translator.cpp
 )
 add_library(bronze::codegen_brass ALIAS bronze_codegen_brass)
 

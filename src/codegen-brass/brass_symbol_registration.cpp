@@ -5,7 +5,9 @@
 #include "runtime/fn.h"
 #include "runtime/value.h"
 
-#include <brass/il_translator/il_translator.hpp>
+#include <brass/gc/runtime_gc.hpp>
+#include <brass/interpreter/interpreter.hpp>
+#include <brass/runtime/host_symbols.hpp>
 #include <brass/runtime/parallel_runtime.hpp>
 #include <cmath>
 #include <type_traits>
@@ -77,11 +79,113 @@ brass::RuntimeValue invokeHelper(Ret (*fn)(Args...), const std::vector<brass::Ru
     }
 }
 
-template <typename Ret, typename... Args>
-brass::FastHostFn wrapAbiFunction(Ret (*fn)(Args...)) {
-    return [fn](brass::FastInterpreter&, const std::vector<brass::RuntimeValue>& args) -> brass::RuntimeValue {
+// A native helper as an interpreter host function: the fast interpreter's
+// (FastHostFn) or the reference interpreter's (brass::HostFn).
+template <typename Interp, typename Ret, typename... Args>
+auto wrapAbiFunction(Ret (*fn)(Args...)) {
+    return [fn](Interp&, const std::vector<brass::RuntimeValue>& args) -> brass::RuntimeValue {
         return invokeHelper(fn, args, std::index_sequence_for<Args...>{});
     };
+}
+
+using UnaryMath = double (*)(double);
+struct MathSymbol {
+    const char* name;
+    UnaryMath fn;
+};
+const MathSymbol kMathSymbols[] = {
+    {"sin", static_cast<UnaryMath>(&std::sin)},
+    {"cos", static_cast<UnaryMath>(&std::cos)},
+    {"sqrt", static_cast<UnaryMath>(&std::sqrt)},
+    {"fabs", static_cast<UnaryMath>(&std::fabs)},
+    {"floor", static_cast<UnaryMath>(&std::floor)},
+    {"ceil", static_cast<UnaryMath>(&std::ceil)},
+    {"trunc", static_cast<UnaryMath>(&std::trunc)},
+};
+
+// Every symbol a native engine (a JIT or the baseline compiler) links the
+// translator's MIR against, by address.
+template <typename Engine>
+void registerNativeSymbols(Engine& e) {
+#define BRONZE_ABI_REG_NATIVE(name, ret, args) \
+    e.register_external_symbol(#name, reinterpret_cast<void*>(&::name));
+    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_NATIVE)
+#undef BRONZE_ABI_REG_NATIVE
+
+    for (const MathSymbol& m : kMathSymbols) e.register_external_symbol(m.name, reinterpret_cast<void*>(m.fn));
+
+    e.register_external_symbol("brass_gc_card_table_base", reinterpret_cast<void*>(&brass_gc_card_table_base));
+    e.register_external_symbol("brass_gc_heap_base", reinterpret_cast<void*>(&brass_gc_heap_base));
+    e.register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(&brass_parallel_for));
+    e.register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(&brass_parallel_for));
+    e.register_external_symbol("brass_set_parallel_workers", reinterpret_cast<void*>(&brass_set_parallel_workers));
+    e.register_external_symbol("brass_get_parallel_workers", reinterpret_cast<void*>(&brass_get_parallel_workers));
+    e.register_external_symbol("brass_parallel_reduce_i64", reinterpret_cast<void*>(&brass_parallel_reduce_i64));
+    e.register_external_symbol("brass_parallel_reduce_f64", reinterpret_cast<void*>(&brass_parallel_reduce_f64));
+    e.register_external_symbol("brass_parallel_alloc_context", reinterpret_cast<void*>(&brass_parallel_alloc_context));
+    e.register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
+}
+
+// The fallback module tables, for a module whose own the engine lacks.
+template <typename Engine>
+void registerDefaultDataSymbols(Engine& e) {
+    e.register_external_symbol("__bronze_module_env", &s_default_module_env);
+    e.register_external_symbol("__bronze_key_map", s_default_key_map);
+    e.register_external_symbol("__bronze_template_cells", s_default_template_cells);
+    e.register_external_symbol("__bronze_global_cache", s_default_global_cache);
+    e.register_external_symbol("__bronze_ic_table", s_default_ic_table);
+    e.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
+    e.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
+    e.register_external_symbol("main_key_constants", s_default_key_manifest);
+}
+
+class BronzeHostSymbols final : public brass::runtime::HostSymbolProvider {
+public:
+    void install(brass::codegen::JitExecutionEngine& engine) override {
+        registerNativeSymbols(engine);
+        registerDefaultDataSymbols(engine);
+        registerBrassCoroutineSymbols(engine);
+    }
+
+    void install(brass::codegen::BaselineJitCompiler& compiler) override {
+        registerNativeSymbols(compiler);
+        registerDefaultDataSymbols(compiler);
+        registerBrassCoroutineSymbols(compiler);
+    }
+
+    void install(brass::Interpreter& interp) override {
+#define BRONZE_ABI_REG_INTERP(name, ret, args) \
+        interp.register_external_function(#name, wrapAbiFunction<brass::Interpreter>(&::name));
+        BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_INTERP)
+#undef BRONZE_ABI_REG_INTERP
+        for (const MathSymbol& m : kMathSymbols) {
+            interp.register_external_function(m.name, wrapAbiFunction<brass::Interpreter>(m.fn));
+        }
+    }
+
+    void install(brass::FastInterpreter& interp) override {
+#define BRONZE_ABI_REG_FAST(name, ret, args) \
+        interp.register_external_function(#name, brass::FastHostFn(wrapAbiFunction<brass::FastInterpreter>(&::name)));
+        BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_FAST)
+#undef BRONZE_ABI_REG_FAST
+        for (const MathSymbol& m : kMathSymbols) {
+            interp.register_external_function(m.name, brass::FastHostFn(wrapAbiFunction<brass::FastInterpreter>(m.fn)));
+        }
+        interp.register_external_symbol("brass_gc_card_table_base", reinterpret_cast<void*>(&brass_gc_card_table_base));
+        interp.register_external_symbol("brass_gc_heap_base", reinterpret_cast<void*>(&brass_gc_heap_base));
+        registerDefaultDataSymbols(interp);
+        registerBrassCoroutineSymbols(interp);
+    }
+
+    // The block a pinned-TLS read sees before the module entry has loaded the
+    // register, and that native code entered from C++ (a tiered-up function
+    // the interpreter calls) finds there: the calling thread's.
+    void* pinned_tls_block() override { return ::bronze_tls_block_addr(); }
+};
+
+BronzeHostSymbols& hostSymbols() {
+    static BronzeHostSymbols provider;
+    return provider;
 }
 
 bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
@@ -108,133 +212,33 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
 
 }  // namespace
 
+void installBronzeHostSymbols() {
+    brass::runtime::set_host_symbol_provider(&hostSymbols());
+}
+
 void registerBronzeFastInterpreterSymbols(brass::FastInterpreter& interp) {
+    installBronzeHostSymbols();
     // Install the trampoline interceptor for interpreted Bronze functions.
     // Through embed, not rtSetEnterJsHook: the hook must land in the process's
     // one runtime (embed.h, setEnterJsHook).
     embed::setEnterJsHook(&brassTieredEnterJsHook);
-
-    // 1. Built-in registration from Brass il translator
-    brass::il::register_bronze_fast_interpreter_symbols(&interp);
-
-    // 2. Register all Bronze ABI functions with universal typed wrappers
-#define BRONZE_ABI_REG_FAST(name, ret, args) \
-    interp.register_external_function(#name, wrapAbiFunction(&::name));
-    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_FAST)
-#undef BRONZE_ABI_REG_FAST
-
-    // 3. Register standard math functions
-    interp.register_external_function("sin", wrapAbiFunction(static_cast<double(*)(double)>(&std::sin)));
-    interp.register_external_function("cos", wrapAbiFunction(static_cast<double(*)(double)>(&std::cos)));
-    interp.register_external_function("sqrt", wrapAbiFunction(static_cast<double(*)(double)>(&std::sqrt)));
-    interp.register_external_function("fabs", wrapAbiFunction(static_cast<double(*)(double)>(&std::fabs)));
-    interp.register_external_function("floor", wrapAbiFunction(static_cast<double(*)(double)>(&std::floor)));
-    interp.register_external_function("ceil", wrapAbiFunction(static_cast<double(*)(double)>(&std::ceil)));
-    interp.register_external_function("trunc", wrapAbiFunction(static_cast<double(*)(double)>(&std::trunc)));
-
-    // 4. Register default fallback data symbols
-    interp.register_external_symbol("__bronze_module_env", &s_default_module_env);
-    interp.register_external_symbol("__bronze_key_map", s_default_key_map);
-    interp.register_external_symbol("__bronze_template_cells", s_default_template_cells);
-    interp.register_external_symbol("__bronze_global_cache", s_default_global_cache);
-    interp.register_external_symbol("__bronze_ic_table", s_default_ic_table);
-    interp.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
-    interp.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
-    interp.register_external_symbol("main_key_constants", s_default_key_manifest);
-
-    // 5. Register Brass coroutine runtime symbols
-    registerBrassCoroutineSymbols(interp);
+    hostSymbols().install(interp);
 }
 
 void registerBronzeBaselineSymbols(brass::codegen::BaselineJitCompiler& compiler) {
-    // 1. Register symbols via Brass il translator
-    brass::il::register_bronze_baseline_symbols(&compiler);
+    installBronzeHostSymbols();
+    hostSymbols().install(compiler);
+}
 
-    // 2. Register all ABI functions directly as native pointers
-#define BRONZE_ABI_REG_BASELINE(name, ret, args) \
-    compiler.register_external_symbol(#name, reinterpret_cast<void*>(&::name));
-    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_BASELINE)
-#undef BRONZE_ABI_REG_BASELINE
-
-    // 3. Register standard math functions
-    compiler.register_external_symbol("sin", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::sin)));
-    compiler.register_external_symbol("cos", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::cos)));
-    compiler.register_external_symbol("sqrt", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::sqrt)));
-    compiler.register_external_symbol("fabs", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::fabs)));
-    compiler.register_external_symbol("floor", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::floor)));
-    compiler.register_external_symbol("ceil", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::ceil)));
-    compiler.register_external_symbol("trunc", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::trunc)));
-
-    // 3b. Register ParallelRuntime symbols
-    compiler.register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(&brass_parallel_for));
-    compiler.register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(&brass_parallel_for));
-    compiler.register_external_symbol("brass_set_parallel_workers", reinterpret_cast<void*>(&brass_set_parallel_workers));
-    compiler.register_external_symbol("brass_get_parallel_workers", reinterpret_cast<void*>(&brass_get_parallel_workers));
-    compiler.register_external_symbol("brass_parallel_reduce_i64", reinterpret_cast<void*>(&brass_parallel_reduce_i64));
-    compiler.register_external_symbol("brass_parallel_reduce_f64", reinterpret_cast<void*>(&brass_parallel_reduce_f64));
-    compiler.register_external_symbol("brass_parallel_alloc_context", reinterpret_cast<void*>(&brass_parallel_alloc_context));
-    compiler.register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
-
-    // 4. Register default fallback data symbols
-    compiler.register_external_symbol("__bronze_module_env", &s_default_module_env);
-    compiler.register_external_symbol("__bronze_key_map", s_default_key_map);
-    compiler.register_external_symbol("__bronze_template_cells", s_default_template_cells);
-    compiler.register_external_symbol("__bronze_global_cache", s_default_global_cache);
-    compiler.register_external_symbol("__bronze_ic_table", s_default_ic_table);
-    compiler.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
-    compiler.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
-    compiler.register_external_symbol("main_key_constants", s_default_key_manifest);
-
-    // 5. Register Brass coroutine runtime symbols
-    registerBrassCoroutineSymbols(compiler);
+void registerBronzeJitSymbols(brass::codegen::JitExecutionEngine& engine) {
+    installBronzeHostSymbols();
+    hostSymbols().install(engine);
 }
 
 void registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline& pipeline) {
+    installBronzeHostSymbols();
     embed::setEnterJsHook(&brassTieredEnterJsHook);
-    registerBronzeBaselineSymbols(pipeline.baseline_compiler());
-
-#define BRONZE_ABI_REG_PIPELINE(name, ret, args) \
-    pipeline.register_external_symbol(#name, reinterpret_cast<void*>(&::name)); \
-    pipeline.register_external_function(#name, wrapAbiFunction(&::name));
-    BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_PIPELINE)
-#undef BRONZE_ABI_REG_PIPELINE
-
-    pipeline.register_external_symbol("sin", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::sin)));
-    pipeline.register_external_function("sin", wrapAbiFunction(static_cast<double(*)(double)>(&std::sin)));
-    pipeline.register_external_symbol("cos", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::cos)));
-    pipeline.register_external_function("cos", wrapAbiFunction(static_cast<double(*)(double)>(&std::cos)));
-    pipeline.register_external_symbol("sqrt", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::sqrt)));
-    pipeline.register_external_function("sqrt", wrapAbiFunction(static_cast<double(*)(double)>(&std::sqrt)));
-    pipeline.register_external_symbol("fabs", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::fabs)));
-    pipeline.register_external_function("fabs", wrapAbiFunction(static_cast<double(*)(double)>(&std::fabs)));
-    pipeline.register_external_function("floor", wrapAbiFunction(static_cast<double(*)(double)>(&std::floor)));
-    pipeline.register_external_symbol("floor", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::floor)));
-    pipeline.register_external_symbol("ceil", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::ceil)));
-    pipeline.register_external_function("ceil", wrapAbiFunction(static_cast<double(*)(double)>(&std::ceil)));
-    pipeline.register_external_symbol("trunc", reinterpret_cast<void*>(static_cast<double(*)(double)>(&std::trunc)));
-    pipeline.register_external_function("trunc", wrapAbiFunction(static_cast<double(*)(double)>(&std::trunc)));
-
-    // 3b. Register ParallelRuntime symbols
-    pipeline.register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(&brass_parallel_for));
-    pipeline.register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(&brass_parallel_for));
-    pipeline.register_external_symbol("brass_set_parallel_workers", reinterpret_cast<void*>(&brass_set_parallel_workers));
-    pipeline.register_external_symbol("brass_get_parallel_workers", reinterpret_cast<void*>(&brass_get_parallel_workers));
-    pipeline.register_external_symbol("brass_parallel_reduce_i64", reinterpret_cast<void*>(&brass_parallel_reduce_i64));
-    pipeline.register_external_symbol("brass_parallel_reduce_f64", reinterpret_cast<void*>(&brass_parallel_reduce_f64));
-    pipeline.register_external_symbol("brass_parallel_alloc_context", reinterpret_cast<void*>(&brass_parallel_alloc_context));
-    pipeline.register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
-
-    pipeline.register_external_symbol("__bronze_module_env", &s_default_module_env);
-    pipeline.register_external_symbol("__bronze_key_map", s_default_key_map);
-    pipeline.register_external_symbol("__bronze_template_cells", s_default_template_cells);
-    pipeline.register_external_symbol("__bronze_global_cache", s_default_global_cache);
-    pipeline.register_external_symbol("__bronze_ic_table", s_default_ic_table);
-    pipeline.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
-    pipeline.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
-    pipeline.register_external_symbol("main_key_constants", s_default_key_manifest);
-
-    // 5. Register Brass coroutine runtime symbols
-    registerBrassCoroutineSymbols(pipeline);
+    hostSymbols().install(pipeline.baseline_compiler());
 }
 
 }  // namespace bronze
