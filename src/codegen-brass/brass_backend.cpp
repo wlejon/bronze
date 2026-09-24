@@ -302,9 +302,13 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // other way in, and generated code reads the exception cell, the
     // allocation window and the stack limit through it without a call.
     options.pin_tls_register = true;
+    // No FMA contraction, on any target: ECMA-262 Number arithmetic rounds
+    // after every operation, and a fused a*b+c rounds once — a different
+    // double (tests/oracle/cases/tiers_20_mat4_mul differs in the 13th digit).
+    // brass's own default is right for its kernel users and wrong for JS.
+    options.enable_fma = false;
     if (target_.is_aarch64()) {
         options.vector_width = 128;
-        options.enable_fma = true;
     } else if (target_ == brass::Target::host() && target_.is_x64()) {
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(__GNUC__) || defined(__clang__)
@@ -312,7 +316,6 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
             options.enable_avx2 = true;
             options.vector_width = 256;
         }
-        options.enable_fma = true;
 #endif
 #endif
     }
