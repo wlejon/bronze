@@ -24,13 +24,14 @@
 #include <string>
 #include <vector>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 #include "types/pins.h"
 
 namespace {
 
 std::filesystem::path workDir() {
-    std::filesystem::path dir = std::filesystem::temp_directory_path() / "bronze_pin_census";
+    std::filesystem::path dir = bronze_test::tempDir() / "bronze_pin_census";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;

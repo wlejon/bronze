@@ -41,6 +41,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 #include "run_process.h"
 
@@ -316,7 +317,7 @@ TEST_CASE("Oracle differential test suite") {
 
                 // 1. Compile with inference on
                 std::filesystem::path exeInfer =
-                    std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle.exe");
+                    bronze_test::tempDir() / (oracleCase.id + "_oracle.exe");
                 std::error_code ec;
                 removeProgram(exeInfer, ec);
 
@@ -333,7 +334,7 @@ TEST_CASE("Oracle differential test suite") {
 
                 // 2. Compile with --no-infer
                 std::filesystem::path exeNoInfer =
-                    std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle_noinfer.exe");
+                    bronze_test::tempDir() / (oracleCase.id + "_oracle_noinfer.exe");
                 removeProgram(exeNoInfer, ec);
 
                 res.buildNoInferStatus = bronze::cli::runBuild(
@@ -513,7 +514,7 @@ TEST_CASE("Oracle JIT differential test suite") {
                 // Its own output name: the AOT suite may be building the same
                 // case in another ctest process at the same time.
                 std::filesystem::path exe =
-                    std::filesystem::temp_directory_path() / (oracleCase.id + "_oracle_jitref.exe");
+                    bronze_test::tempDir() / (oracleCase.id + "_oracle_jitref.exe");
                 std::error_code ec;
                 removeProgram(exe, ec);
                 res.buildStatus =
@@ -655,7 +656,7 @@ TEST_CASE("Oracle blocked test suite") {
                             ("Missing pinned expectation " + expectedPath.string()).c_str());
 
             std::filesystem::path exePath =
-                std::filesystem::temp_directory_path() / (oracleCase.id + "_blocked.exe");
+                bronze_test::tempDir() / (oracleCase.id + "_blocked.exe");
             removeProgram(exePath, ec);
 
             std::string errOut;
@@ -689,7 +690,7 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
 
     for (const bool infer : {true, false}) {
         const std::string mode = infer ? " (inference on)" : " (--no-infer)";
-        std::filesystem::path exePath = std::filesystem::temp_directory_path() /
+        std::filesystem::path exePath = bronze_test::tempDir() /
                                         (infer ? "threejs_oracle.exe" : "threejs_oracle_ni.exe");
         std::error_code ec;
         removeProgram(exePath, ec);
@@ -749,7 +750,7 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
 
     for (const bool infer : {true, false}) {
         const std::string mode = infer ? " (inference on)" : " (--no-infer)";
-        std::filesystem::path exePath = std::filesystem::temp_directory_path() /
+        std::filesystem::path exePath = bronze_test::tempDir() /
                                         (infer ? "pixi_oracle.exe" : "pixi_oracle_ni.exe");
         std::error_code ec;
         removeProgram(exePath, ec);

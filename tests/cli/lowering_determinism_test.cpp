@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 
 #ifndef TEST_THREEJS_DIR
@@ -60,7 +61,7 @@ const char* const kCtorClonePair =
 
 std::filesystem::path workDir() {
     std::filesystem::path dir =
-        std::filesystem::temp_directory_path() / "bronze_lowering_determinism";
+        bronze_test::tempDir() / "bronze_lowering_determinism";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;

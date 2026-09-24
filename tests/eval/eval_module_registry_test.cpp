@@ -16,6 +16,7 @@
 #include <fstream>
 #include <string>
 
+#include "../test_temp_dir.h"
 #include "embed/embed.h"
 #include "eval/eval.h"
 #include "runtime/module_registry.h"
@@ -26,7 +27,7 @@ using namespace bronze::eval;
 namespace {
 
 std::filesystem::path makeDir(const char* name) {
-    std::filesystem::path dir = std::filesystem::temp_directory_path() / name;
+    std::filesystem::path dir = bronze_test::tempDir() / name;
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     std::filesystem::create_directories(dir, ec);

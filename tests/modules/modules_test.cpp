@@ -14,6 +14,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "../test_temp_dir.h"
 #include "ast/dump.h"
 #include "modules/modules.h"
 
@@ -26,7 +27,7 @@ namespace {
 class Sandbox {
 public:
     explicit Sandbox(const std::string& name)
-        : root_(std::filesystem::temp_directory_path() / ("bronze_modules_" + name)) {
+        : root_(bronze_test::tempDir() / ("bronze_modules_" + name)) {
         std::error_code ec;
         std::filesystem::remove_all(root_, ec);
         std::filesystem::create_directories(root_, ec);

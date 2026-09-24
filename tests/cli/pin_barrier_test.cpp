@@ -24,6 +24,7 @@
 #include <fstream>
 #include <string>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 #include "types/pins.h"
 
@@ -40,7 +41,7 @@ namespace {
 bool barriersOff() { return !bronze::types::pinBarriersEnabled(); }
 
 std::filesystem::path workDir() {
-    std::filesystem::path dir = std::filesystem::temp_directory_path() / "bronze_pin_barrier";
+    std::filesystem::path dir = bronze_test::tempDir() / "bronze_pin_barrier";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;

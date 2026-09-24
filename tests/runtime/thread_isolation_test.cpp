@@ -182,25 +182,37 @@ TEST_CASE("slot representation registry concurrent registration and check safety
     slotReprRegisterName(name1);
 
     std::atomic<uint64_t> matchCount{0};
+    // Every check the reader completes bumps `checks`. The writer does not
+    // begin until the reader has checked once, and halfway through its
+    // registrations it waits for a further check, so at least one check is
+    // guaranteed to run while registration is in progress, whatever the
+    // scheduling.
+    std::atomic<uint64_t> checks{0};
     std::thread reader([&] {
         while (!start.load(std::memory_order_acquire)) {}
         NonMovingArena& wArena = rtArena();
         StringHeader* checkHdr = StringHeader::createFromUTF8InArena(wArena, "slot_prop_alpha");
         PropertyKey key = PropertyKey::forString(checkHdr);
-        // At least one check whatever the scheduling: under load the writer's
-        // hundred registrations can finish before this thread first runs,
-        // and a `while (!done)` loop would then never look at all.
         do {
             if (slotReprEligible(key)) {
                 matchCount.fetch_add(1, std::memory_order_relaxed);
             }
-        } while (!done.load(std::memory_order_relaxed));
+            checks.fetch_add(1, std::memory_order_release);
+            std::this_thread::yield();
+        } while (!done.load(std::memory_order_acquire));
     });
 
     std::thread writer([&] {
         while (!start.load(std::memory_order_acquire)) {}
+        auto awaitCheckAfter = [&](uint64_t seen) {
+            while (checks.load(std::memory_order_acquire) <= seen) {
+                std::this_thread::yield();
+            }
+        };
+        awaitCheckAfter(0);
         NonMovingArena& wArena = rtArena();
         for (int i = 0; i < 100; ++i) {
+            if (i == 50) awaitCheckAfter(checks.load(std::memory_order_acquire));
             StringHeader* newName = StringHeader::createFromUTF8InArena(wArena, "slot_prop_" + std::to_string(i));
             slotReprRegisterName(newName);
             std::this_thread::yield();
@@ -212,7 +224,10 @@ TEST_CASE("slot representation registry concurrent registration and check safety
     writer.join();
     reader.join();
 
-    CHECK(matchCount.load() > 0);
+    // The pre-registered name is eligible on every check, including those
+    // that overlapped registration.
+    CHECK(checks.load() >= 2);
+    CHECK(matchCount.load() == checks.load());
     CHECK(slotReprEligibleCount() >= 101);
 }
 

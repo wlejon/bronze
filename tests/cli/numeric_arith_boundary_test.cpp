@@ -28,6 +28,7 @@
 #include <fstream>
 #include <string>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 
 namespace {
@@ -53,7 +54,7 @@ const char* const kMixedOperandsWithBigInt =
 
 std::filesystem::path workDir() {
     std::filesystem::path dir =
-        std::filesystem::temp_directory_path() / "bronze_numeric_arith_boundary";
+        bronze_test::tempDir() / "bronze_numeric_arith_boundary";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;

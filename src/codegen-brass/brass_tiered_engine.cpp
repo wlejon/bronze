@@ -12,13 +12,49 @@
 #include <brass/runtime/code_installer.hpp>
 #include <brass/runtime/tiering.hpp>
 #include <brass/codegen/jit_exec.hpp>
+#include <brass/gc/native_frames.hpp>
 #include <brass/gc/runtime_gc.hpp>
+#include <brass/interpreter/interpreter.hpp>
+#include <brass/vm/fast_interpreter.hpp>
 
 #include <cstring>
 #include <algorithm>
 #include <utility>
 
 namespace bronze {
+
+namespace {
+
+// brass_enumerate_thread_roots reports the frames of the innermost running
+// Interpreter and FastInterpreter only; one of the same kind hidden beneath
+// an inner one is the host's to report. A bronze program run from inside
+// another (an eval, a host callback that runs a second program) makes
+// exactly that nesting, so every entry into a program reports, for its
+// lifetime, whichever interpreters were running when it was entered.
+// Reporting the entered interpreter itself again when it turns out to be
+// the same one is harmless: the collector visits each slot once.
+class OuterInterpreterRoots {
+public:
+    OuterInterpreterRoots() noexcept
+        : fast_(brass::FastInterpreter::current()),
+          interp_(brass::Interpreter::active_on_thread()),
+          scope_(&report, this) {}
+    OuterInterpreterRoots(const OuterInterpreterRoots&) = delete;
+    OuterInterpreterRoots& operator=(const OuterInterpreterRoots&) = delete;
+
+private:
+    static void report(void* ctx, std::vector<uintptr_t*>& roots) {
+        auto* self = static_cast<OuterInterpreterRoots*>(ctx);
+        if (self->fast_) self->fast_->collect_all_roots(roots);
+        if (self->interp_) self->interp_->collect_all_roots(roots);
+    }
+
+    brass::FastInterpreter* fast_;
+    brass::Interpreter* interp_;
+    brass::ThreadRootsScope scope_;
+};
+
+}  // namespace
 
 std::string_view executionTierToString(ExecutionTier tier) noexcept {
     switch (tier) {
@@ -265,6 +301,7 @@ brass::RuntimeValue BrassTieredProgram::run() {
     // Native entries (Tier 1) open no scope of their own; this makes brass's
     // runtime name lookups resolve in this program rather than the default one.
     brass::runtime::ProgramScope scope(*dispatchTable_);
+    OuterInterpreterRoots outerRoots;
     if (tier_ == ExecutionTier::Tier1_Baseline) {
         brass::brass_set_active_stack_maps(&moduleStackMap_);
     } else if (tier_ == ExecutionTier::Tier2_Optimized && jitProgram_ && jitProgram_->stackMaps()) {
@@ -305,6 +342,7 @@ brass::RuntimeValue BrassTieredProgram::run() {
 brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
                                               const std::vector<brass::RuntimeValue>& args) {
     brass::runtime::ProgramScope scope(*dispatchTable_);
+    OuterInterpreterRoots outerRoots;
     if (tier_ == ExecutionTier::Tier1_Baseline) {
         brass::brass_set_active_stack_maps(&moduleStackMap_);
     } else if (tier_ == ExecutionTier::Tier2_Optimized && jitProgram_ && jitProgram_->stackMaps()) {

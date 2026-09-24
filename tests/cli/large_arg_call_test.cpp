@@ -5,6 +5,7 @@
 #include <fstream>
 #include <string>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 
 namespace {
@@ -50,8 +51,8 @@ std::string runAndCaptureOutput(const std::filesystem::path& exePath) {
 } // namespace
 
 TEST_CASE("CLI large argument dynamic calls, construct, and super calls (> 16 args)") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_large_args.js";
-    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_large_args.exe";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_large_args.js";
+    std::filesystem::path exePath = bronze_test::tempDir() / "test_large_args.exe";
 
     std::error_code ec;
     removeProgram(exePath, ec);

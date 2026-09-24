@@ -7,6 +7,7 @@
 #include <future>
 #include <string>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 
 static void writeTestFile(const std::filesystem::path& path, const std::string& content) {
@@ -50,7 +51,7 @@ static void removeProgram(const std::filesystem::path& exe, std::error_code& ec)
 }
 
 TEST_CASE("CLI driver il command produces canonical IL") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_il.js";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_il.js";
     writeTestFile(jsPath, "function add(a, b) {\n  return a + b;\n}\nadd(10, 20);\n");
 
     // The CLI is the composition root: it runs inference and hands the side
@@ -79,7 +80,7 @@ TEST_CASE("CLI driver il command produces canonical IL") {
 }
 
 TEST_CASE("CLI driver types command produces the canonical type dump") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_types.js";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_types.js";
     writeTestFile(jsPath, "function add(a, b) {\n  return a + b;\n}\nadd(10, 20);\n");
 
     std::string typesOutput;
@@ -93,8 +94,8 @@ TEST_CASE("CLI driver types command produces the canonical type dump") {
 }
 
 TEST_CASE("CLI driver build command compiles and links executable") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_build.js";
-    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_build.exe";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_build.js";
+    std::filesystem::path exePath = bronze_test::tempDir() / "test_driver_build.exe";
 
     std::error_code ec;
     removeProgram(exePath, ec);
@@ -116,8 +117,8 @@ TEST_CASE("CLI driver build command compiles and links executable") {
 }
 
 TEST_CASE("CLI driver concurrent builds do not collide on temp object path") {
-    std::filesystem::path dirA = std::filesystem::temp_directory_path() / "bronze_test_cli_a";
-    std::filesystem::path dirB = std::filesystem::temp_directory_path() / "bronze_test_cli_b";
+    std::filesystem::path dirA = bronze_test::tempDir() / "bronze_test_cli_a";
+    std::filesystem::path dirB = bronze_test::tempDir() / "bronze_test_cli_b";
     std::error_code ec;
     std::filesystem::create_directories(dirA, ec);
     std::filesystem::create_directories(dirB, ec);
@@ -151,8 +152,8 @@ TEST_CASE("CLI driver concurrent builds do not collide on temp object path") {
 }
 
 TEST_CASE("CLI driver --infer-stats produces deterministic stats output") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_infer_stats.js";
-    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_infer_stats.exe";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_infer_stats.js";
+    std::filesystem::path exePath = bronze_test::tempDir() / "test_driver_infer_stats.exe";
     std::error_code ec;
     removeProgram(exePath, ec);
 
@@ -219,8 +220,8 @@ static std::string runAndCaptureStderr(const std::filesystem::path& exePath, con
 }
 
 TEST_CASE("BRONZE_PROFILE=1 runtime profile outputs helper table on stderr") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_profile.js";
-    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_profile.exe";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_profile.js";
+    std::filesystem::path exePath = bronze_test::tempDir() / "test_driver_profile.exe";
     std::error_code ec;
     removeProgram(exePath, ec);
 
@@ -245,7 +246,7 @@ TEST_CASE("BRONZE_PROFILE=1 runtime profile outputs helper table on stderr") {
 }
 
 TEST_CASE("CLI driver accepts --module-root parameter") {
-    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "test_cli_modroot";
+    std::filesystem::path tempDir = bronze_test::tempDir() / "test_cli_modroot";
     std::error_code ec;
     std::filesystem::create_directories(tempDir / "lib", ec);
     std::filesystem::create_directories(tempDir / "app", ec);
@@ -265,7 +266,7 @@ TEST_CASE("CLI driver accepts --module-root parameter") {
 }
 
 TEST_CASE("CLI driver accepts --import-map parameter in runTypes and runBuild") {
-    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "test_cli_importmap";
+    std::filesystem::path tempDir = bronze_test::tempDir() / "test_cli_importmap";
     std::error_code ec;
     std::filesystem::create_directories(tempDir / "libs" / "addons" / "controls", ec);
     std::filesystem::create_directories(tempDir / "app", ec);
@@ -338,8 +339,8 @@ TEST_CASE("CLI driver accepts --import-map parameter in runTypes and runBuild") 
 // oracle suite cannot pin this: node compiles the source, and so does
 // `bronze run`, whose evaluator answers the runtime's dynamic-code hooks.
 TEST_CASE("A built program refuses dynamic code compilation with a TypeError") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_dynamic_fn.js";
-    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_dynamic_fn.exe";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_dynamic_fn.js";
+    std::filesystem::path exePath = bronze_test::tempDir() / "test_driver_dynamic_fn.exe";
     std::error_code ec;
     removeProgram(exePath, ec);
 
@@ -374,9 +375,9 @@ TEST_CASE("A built program refuses dynamic code compilation with a TypeError") {
 }
 
 TEST_CASE("CLI driver --no-fn-source keeps the Error.stack line table") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_no_fn_source.js";
-    std::filesystem::path exeWith = std::filesystem::temp_directory_path() / "test_driver_fn_source.exe";
-    std::filesystem::path exeWithout = std::filesystem::temp_directory_path() / "test_driver_no_fn_source.exe";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_no_fn_source.js";
+    std::filesystem::path exeWith = bronze_test::tempDir() / "test_driver_fn_source.exe";
+    std::filesystem::path exeWithout = bronze_test::tempDir() / "test_driver_no_fn_source.exe";
     std::error_code ec;
     removeProgram(exeWith, ec);
     removeProgram(exeWithout, ec);
@@ -420,10 +421,10 @@ TEST_CASE("CLI driver --no-fn-source keeps the Error.stack line table") {
 // machine's host binary. The x64 macOS module is the one the codegen had to
 // become position independent for: dyld will not slide a pointer in __TEXT.
 TEST_CASE("CLI driver --target writes a module for another machine and refuses a program") {
-    std::filesystem::path jsPath = std::filesystem::temp_directory_path() / "test_driver_target.js";
-    std::filesystem::path dylibPath = std::filesystem::temp_directory_path() / "test_driver_target.dylib";
-    std::filesystem::path soPath = std::filesystem::temp_directory_path() / "test_driver_target.so";
-    std::filesystem::path exePath = std::filesystem::temp_directory_path() / "test_driver_target.exe";
+    std::filesystem::path jsPath = bronze_test::tempDir() / "test_driver_target.js";
+    std::filesystem::path dylibPath = bronze_test::tempDir() / "test_driver_target.dylib";
+    std::filesystem::path soPath = bronze_test::tempDir() / "test_driver_target.so";
+    std::filesystem::path exePath = bronze_test::tempDir() / "test_driver_target.exe";
     std::error_code ec;
     std::filesystem::remove(dylibPath, ec);
     std::filesystem::remove(soPath, ec);

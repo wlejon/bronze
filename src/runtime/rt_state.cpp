@@ -12,12 +12,16 @@
 // seam, the bronze_tls_block its prologue fetches (bronze_abi.h), so a
 // compiled module runs against whichever thread's runtime ran its entry.
 
+#include <algorithm>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <brass/gc/host_heap.hpp>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -69,6 +73,7 @@ static thread_local std::vector<Shape*> g_userPrototypeShapes;
 // lambdas read the calling thread's thread_local tables, which is the right
 // table because a heap only ever collects on its own thread.
 static void registerThreadRootSources(Heap& heap);
+static void visitBrassThreadRoots(const Heap::RootVisitor& visit);
 
 // Generated code roots its Dynamic values, so a collection is survivable and
 // the reservation does not have to postpone one. Sized so ordinary programs DO
@@ -404,6 +409,49 @@ static void registerThreadRootSources(Heap& heap) {
         rtVisitArrayMethodRoots(visit);
         rtVisitRealmRoots(visit);
     });
+    heap.add_root_source(visitBrassThreadRoots);
+}
+
+// Every gcref slot brass knows on this thread: its native-frame scopes and
+// ThreadRootsScopes (the latter carrying the frames of interpreters a nested
+// bronze program hid, brass_tiered_engine.cpp), suspended coroutine frames,
+// and the innermost running Interpreter and FastInterpreter. Bronze's own
+// code roots its values in bronze GC frames and never allocates from a brass
+// heap (BronzeHostHeap aborts if asked), so in a bronze program this is
+// normally empty; it is here so that a gcref held only by a brass frame is
+// still a root of the one heap in the process. The collection starts from
+// the runtime, not from a generated frame, so no frame pointer is passed:
+// generated frames are walked by bronze's own frame chain instead.
+//
+// brass's contract for a slot is "a gcref, or a tagged value whose low 48
+// bits are one". A slot carrying a bronze pointer Value is visited as that
+// Value. Any other slot is its low 48 bits as a heap address under whatever
+// upper bits it carries (none for a raw gcref, brass's own tag for one of
+// its boxed values): forwarded as an object reference and written back
+// under the same upper bits.
+static void visitBrassThreadRoots(const Heap::RootVisitor& visit) {
+    static thread_local std::vector<uintptr_t*> slots;
+    slots.clear();
+    brass::brass_enumerate_thread_roots(0, 0, slots);
+    // A slot may be reported more than once (an interpreter's frames through
+    // its ThreadRootsScope and as the innermost one); visit each once.
+    std::sort(slots.begin(), slots.end());
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+    constexpr uint64_t kLow48 = 0x0000FFFFFFFFFFFFULL;
+    for (uintptr_t* slot : slots) {
+        const uint64_t bits = static_cast<uint64_t>(*slot);
+        Value asBronze = Value::fromRawBits(bits);
+        if (asBronze.isPointer()) {
+            visit(asBronze);
+            *slot = static_cast<uintptr_t>(asBronze.rawBits());
+            continue;
+        }
+        const uint64_t address = bits & kLow48;
+        if (address == 0) continue;
+        Value ref = Value::fromObject(reinterpret_cast<const void*>(static_cast<uintptr_t>(address)));
+        visit(ref);
+        *slot = static_cast<uintptr_t>((bits & ~kLow48) | ref.payload());
+    }
 }
 
 void rtRegisterHostGlobal(const std::string& name, Value value) {

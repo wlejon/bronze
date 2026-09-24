@@ -198,20 +198,44 @@ BronzeHostSymbols& hostSymbols() {
 // It aborts itself rather than calling bronze::fatal: this library does not
 // link the runtime (see CMakeLists.txt), and the shared runtime a host like
 // bro loads does not export fatal.
+//
+// brass calls allocate_at() and safepoint_at() (never allocate() or
+// safepoint() directly), so those are the entry points overridden here.
+// Collections are bronze's own, at its allocation points (Heap::collect),
+// and every one of them also visits the gcref slots brass knows on the
+// thread through brass_enumerate_thread_roots (runtime/rt_state.cpp,
+// visitBrassThreadRoots): brass's native-frame scopes, thread-root scopes,
+// coroutine frames and interpreter frames are roots of the one heap.
 class BronzeHostHeap final : public brass::HostHeap {
 public:
-    uintptr_t allocate(size_t size, uint64_t /*pointer_mask*/, uint32_t type_tag) override {
+    uintptr_t allocate(size_t size, uint64_t pointer_mask, uint32_t type_tag) override {
+        return allocate_at(size, pointer_mask, type_tag, 0, 0);
+    }
+
+    uintptr_t allocate_at(size_t size, uint64_t /*pointer_mask*/, uint32_t type_tag,
+                          uintptr_t caller_fp, uintptr_t caller_ip) override {
         std::fprintf(stderr,
-                     "bronze: fatal: brass's runtime asked for a %zu-byte object (type tag %u) "
-                     "while running bronze code; bronze allocates only through its own runtime, "
-                     "so a brass heap allocation means compiled code reached a brass allocator "
-                     "it must not\n",
-                     size, static_cast<unsigned>(type_tag));
+                     "bronze: fatal: brass's runtime asked for a %zu-byte object (type tag %u, "
+                     "caller fp 0x%llx ip 0x%llx) while running bronze code; bronze allocates "
+                     "only through its own runtime, so a brass heap allocation means compiled "
+                     "code reached a brass allocator it must not\n",
+                     size, static_cast<unsigned>(type_tag),
+                     static_cast<unsigned long long>(caller_fp),
+                     static_cast<unsigned long long>(caller_ip));
         std::fflush(stderr);
         std::abort();
     }
-    // bronze collects at its own allocation points; brass's safepoints and
-    // explicit collections carry no request of bronze's.
+
+    // A safepoint is an opportunity, never a demand, and bronze takes none:
+    // its collector runs where bronze's runtime allocates, which is where its
+    // GC frames are known to be complete. Overridden explicitly so the
+    // choice is visible rather than inherited.
+    void safepoint_at(uintptr_t /*caller_fp*/, uintptr_t /*caller_ip*/) override {}
+    void safepoint() override {}
+
+    // An interpreter's explicit brass_gc_collect. bronze's lowering never
+    // emits one; declined like a safepoint for the same reason.
+    void collect() override {}
 };
 
 BronzeHostHeap& hostHeap() {

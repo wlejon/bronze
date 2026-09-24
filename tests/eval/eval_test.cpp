@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "../test_temp_dir.h"
 #include "eval/eval.h"
 #include "embed/embed.h"
 #include "runtime/exception.h"
@@ -194,7 +195,7 @@ TEST_CASE("installDefaultDynamicHooks hooks into runtime eval and Function") {
 }
 
 TEST_CASE("evalFile evaluates script file and returns result") {
-    std::string tempPath = (std::filesystem::temp_directory_path() / "bronze_test_eval_file.js").string();
+    std::string tempPath = (bronze_test::tempDir() / "bronze_test_eval_file.js").string();
     {
         std::ofstream out(tempPath);
         out << "function multiply(a, b) { return a * b; }\n";
@@ -209,7 +210,7 @@ TEST_CASE("evalFile evaluates script file and returns result") {
 }
 
 TEST_CASE("evalScript evaluates script with module imports") {
-    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "bronze_test_modules";
+    std::filesystem::path tempDir = bronze_test::tempDir() / "bronze_test_modules";
     std::error_code ec;
     std::filesystem::create_directories(tempDir, ec);
 

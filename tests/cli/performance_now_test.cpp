@@ -19,6 +19,7 @@
 #include <fstream>
 #include <string>
 
+#include "../test_temp_dir.h"
 #include "cli/driver.h"
 
 namespace {
@@ -26,7 +27,7 @@ namespace {
 
 std::filesystem::path workDir() {
     const std::filesystem::path dir =
-        std::filesystem::temp_directory_path() / "bronze_performance_now_test";
+        bronze_test::tempDir() / "bronze_performance_now_test";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;

@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "../test_temp_dir.h"
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_backend_debug.h"
 #include "cli/driver.h"
@@ -422,7 +423,7 @@ TEST_CASE("EvalOptions emitDebugInfo flag integration") {
 
 TEST_CASE("CLI runBuild emitDebugInfo flag integration") {
     namespace fs = std::filesystem;
-    fs::path tempDir = fs::temp_directory_path() / "bronze_debug_cli_test";
+    fs::path tempDir = bronze_test::tempDir() / "bronze_debug_cli_test";
     std::error_code ec;
     fs::create_directories(tempDir, ec);
 
