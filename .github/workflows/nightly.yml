@@ -1,10 +1,11 @@
 name: Nightly
 
-# Builds bronze for Windows x64, Linux x64, and macOS x64 every night, runs
-# the full test suite (oracle differential cases + the three.js and pixi.js
-# milestones), smoke-tests the packaged layout end to end, and publishes the
-# three zips to a single rolling "nightly" release marked Latest. The tag is
-# re-pointed each run, so downloaders always find one "latest nightly".
+# Builds bronze for Windows x64, Linux x64, macOS x64 and macOS arm64 every
+# night, runs the full test suite (oracle differential cases + the three.js
+# and pixi.js milestones), smoke-tests the packaged layout end to end, and
+# publishes the four zips to a single rolling "nightly" release marked
+# Latest. The tag is re-pointed each run, so downloaders always find one
+# "latest nightly".
 #
 # A package is the compiler, the shared runtime every program it builds
 # imports, and the program host it copies beside every module it writes, laid
@@ -51,7 +52,8 @@ jobs:
         include:
           - { name: windows-x64, os: windows-2022, triplet: x64-windows }
           - { name: linux-x64,   os: ubuntu-24.04, triplet: x64-linux }
-          - { name: macos-x64,   os: macos-15,     triplet: x64-osx }
+          - { name: macos-x64,   os: macos-15,     triplet: x64-osx, osx_arch: x86_64 }
+          - { name: macos-arm64, os: macos-15,     triplet: arm64-osx, osx_arch: arm64 }
     steps:
       - uses: actions/checkout@v7
 
@@ -115,7 +117,8 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             EXTRA="-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
           elif [ "$RUNNER_OS" = "macOS" ]; then
-            EXTRA="-DCMAKE_OSX_ARCHITECTURES=x86_64"
+            # The runners are Apple Silicon: arm64 natively, x86_64 under Rosetta.
+            EXTRA="-DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx_arch }}"
           fi
           cmake --preset dev \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \

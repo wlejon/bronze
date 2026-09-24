@@ -37,16 +37,10 @@ if(BRONZE_IS_TOP_LEVEL AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 
-# x86_64 is the only macOS target the code generator emits, so a standalone
-# bronze defaults to it on an Apple Silicon host (the CLI and its tests then
-# run under Rosetta). Top-level only, like the toolchain above: a subproject
-# does not decide the architecture, and a FORCEd cache write here would flip
-# every target the host defines after add_subdirectory(bronze) to x86_64 while
-# the ones before it stayed arm64. A host on arm64 builds the runtime natively
-# and stands no-op entry points in for the compiled JS (bro, the siblings).
-if(BRONZE_IS_TOP_LEVEL AND APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
-    set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "OSX Architectures" FORCE)
-endif()
+# brass generates code for x86_64 and AArch64 alike, so bronze builds for
+# the host's own architecture on macOS too - native arm64 on Apple Silicon.
+# -DCMAKE_OSX_ARCHITECTURES=x86_64 still builds (and, under Rosetta, tests)
+# the x86_64 flavour there.
 
 # C is enabled solely for src/abi/abi_check.c, which compiles the
 # generated-code ABI header as pure C to keep C++ types out of it.

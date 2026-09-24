@@ -44,7 +44,7 @@ jobs:
         include:
           - { name: windows, os: windows-2022, triplet: x64-windows }
           - { name: linux,   os: ubuntu-24.04, triplet: x64-linux }
-          - { name: macos,   os: macos-15,     triplet: x64-osx }
+          - { name: macos,   os: macos-15,     triplet: arm64-osx }
     steps:
       - uses: actions/checkout@v7
 
@@ -114,8 +114,6 @@ jobs:
             # Embedded debug info (/Z7) instead of a separate PDB (/Zi) is what
             # lets sccache cache MSVC objects at all.
             EXTRA="-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            EXTRA="-DCMAKE_OSX_ARCHITECTURES=x86_64"
           fi
           cmake --preset dev \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
