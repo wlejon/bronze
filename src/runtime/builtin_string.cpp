@@ -240,13 +240,31 @@ uint64_t stringLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "lastIndexOf");
     Units needle = argUnits(args[0]);
-    int64_t found = -1;
-    for (int64_t at = indexOfUnits(self, needle, 0); at >= 0;
-         at = indexOfUnits(self, needle, static_cast<size_t>(at) + 1)) {
-        found = at;
-        if (static_cast<size_t>(at) + 1 > self.size()) break;
+    // 22.1.3.11 steps 4-7: a NaN position (absent included) searches from the
+    // end; any other is truncated and clamped to [0, len]. The match found is
+    // the largest start at or below that position.
+    double pos = std::numeric_limits<double>::infinity();
+    if (args.count() > 1) {
+        double numPos = rtToNumber(args[1]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+        if (!std::isnan(numPos)) pos = toInteger(numPos);
     }
-    return Value::fromDouble(static_cast<double>(found)).rawBits();
+    if (needle.size() > self.size()) return Value::fromDouble(-1.0).rawBits();
+    const size_t lastStart = self.size() - needle.size();
+    size_t at = lastStart;
+    if (pos <= 0) {
+        at = 0;
+    } else if (pos < static_cast<double>(lastStart)) {
+        at = static_cast<size_t>(pos);
+    }
+    for (;;) {
+        if (std::equal(needle.begin(), needle.end(), self.begin() + at)) {
+            return Value::fromDouble(static_cast<double>(at)).rawBits();
+        }
+        if (at == 0) break;
+        --at;
+    }
+    return Value::fromDouble(-1.0).rawBits();
 }
 
 uint64_t stringIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
