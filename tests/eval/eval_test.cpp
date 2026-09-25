@@ -5,6 +5,7 @@
 #include "eval/eval.h"
 #include "embed/embed.h"
 #include "runtime/exception.h"
+#include "runtime/rt_state.h"
 #include <filesystem>
 #include <fstream>
 
@@ -163,6 +164,31 @@ TEST_CASE("evalScript with top-level await wraps into async promise") {
     CHECK(!cr.thrown);
     CHECK(embed::isPromise(cr.value));
     embed::drainMicrotasks();
+}
+
+// A top-level-await script runs everything after its first await inside the
+// microtask drain evalScript ends with, so a script that allocates there
+// collects before evalScript looks at the promise its entry returned. Poison
+// makes a stale copy of that promise's bits fault (or fail isPromise) on the
+// first read instead of reading plausible from-space residue.
+TEST_CASE("evalScript keeps a top-level-await promise alive across a collecting drain") {
+    Heap& heap = runtime::rtHeap();
+    const bool wasPoison = heap.gc_poison();
+    heap.set_gc_poison(true);
+    const uint64_t epochBefore = embed::relocationEpoch();
+    embed::CallResult cr = evalScript(
+        "await 0;\n"
+        "let keep = [];\n"
+        "for (let i = 0; i < 200000; i++) keep.push({ i, s: 'churn' + i });\n"
+        "if (keep) globalThis.__churnLength = keep.length;\n");
+    const uint64_t epochAfter = embed::relocationEpoch();
+    heap.set_gc_poison(wasPoison);
+    CHECK(epochAfter != epochBefore);
+    CHECK(!cr.thrown);
+    CHECK(embed::isPromise(cr.value));
+    embed::CallResult len = evalScript("__churnLength;");
+    CHECK(!len.thrown);
+    CHECK(len.value.asNumber() == 200000.0);
 }
 
 TEST_CASE("multiple consecutive evalScript calls retain memory and work together") {

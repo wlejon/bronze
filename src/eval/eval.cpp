@@ -251,11 +251,16 @@ embed::CallResult runProgramAndCollectResult(
     const embed::ModuleHandle handle = moduleHandleOut ? embed::beginModuleLoad() : 0;
     if (moduleHandleOut) *moduleHandleOut = handle;
 
+    // The entry's value — a module with top-level await returns its promise —
+    // is held across the drain, which runs the whole rest of such a module
+    // and so collects: a raw copy of the bits would name the promise's
+    // pre-collection address by the time isPromise reads its shape.
     uint64_t entryBits = 0;
     {
         bronze::ShadowStackFrame stackFrame;
         entryBits = programPtr->run().as_u64();
     }
+    embed::Persistent entryVal{Value(entryBits)};
     embed::drainMicrotasks();
     embed::endModuleLoad(handle);
 
@@ -265,9 +270,8 @@ embed::CallResult runProgramAndCollectResult(
         return embed::CallResult{thrown, /*thrown=*/true};
     }
 
-    Value entryVal(entryBits);
-    if (entryVal.isObject() && embed::isPromise(entryVal)) {
-        return embed::CallResult{entryVal, /*thrown=*/false};
+    if (entryVal.get().isObject() && embed::isPromise(entryVal.get())) {
+        return embed::CallResult{entryVal.get(), /*thrown=*/false};
     }
 
     embed::GlobalValue g = embed::globalValue(resName);
