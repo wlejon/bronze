@@ -45,12 +45,9 @@ public:
     // selected and allocated as it stands; what a tiered program is built
     // from (its functions are optimized one at a time as they tier up,
     // tierUpPasses). Same semantics either way; only how long the compile
-    // takes and how fast the result runs differ. BRONZE_NO_OPT=1 in the
-    // environment forces it off for every backend in the process, so an
-    // object build or the whole-program tier can be run unoptimized as a
-    // check.
+    // takes and how fast the result runs differ.
     void setOptimize(bool on) { optimize_ = on; }
-    bool optimize() const;
+    bool optimize() const { return optimize_; }
     // The passes the optimizer runs over a program, for a tiered program
     // to run over each function it tiers up (MultiTierPipeline::
     // set_tier2_passes) instead of over the whole module before it starts.

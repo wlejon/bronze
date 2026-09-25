@@ -213,7 +213,6 @@ void reset_write_barrier_stats() noexcept;
 
 namespace brass {
 class CardTable;
-class GenerationalGC;
 }  // namespace brass
 
 namespace bronze {

@@ -4,7 +4,7 @@
 #include "runtime/fn.h"
 #include "runtime/value.h"
 
-#include <brass/gc/host_heap.hpp>
+#include <brass/gc/heap.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/host_symbols.hpp>
@@ -162,60 +162,32 @@ BronzeHostSymbols& hostSymbols() {
     return provider;
 }
 
-// Bronze's heap, as brass's runtime sees it. Everything code bronze compiled
-// allocates — objects, arrays, environments, closures, the async machines
-// and generator state an `.resume` closure carries — is allocated by
-// bronze's runtime helpers into bronze's heap and rooted by the function's GC
-// frame, whichever tier runs it. What reaches this class is an allocation
+// Bronze's objects live only in bronze's heap. Everything code bronze
+// compiled allocates — objects, arrays, environments, closures, the async
+// machines and generator state an `.resume` closure carries — is allocated
+// by bronze's runtime helpers into bronze's heap and rooted by the function's
+// GC frame, whichever tier runs it. brass's heap would only see allocations
 // brass's own runtime makes (`brass_gc_alloc` from MIR, a brass coroutine
-// frame), which bronze's lowering never emits. It is a hard stop rather than
-// a quiet malloc so that no object can ever live outside bronze's collector.
-// It aborts itself rather than calling bronze::fatal: this library does not
-// link the runtime (see CMakeLists.txt), and the shared runtime a host like
-// bro loads does not export fatal.
+// frame), which bronze's lowering never emits. The heaps brass's interpreters
+// create for themselves are therefore configured to forbid allocation: one
+// is a hard stop (brass reports it and aborts) rather than an object outside
+// bronze's collector, and their collections and safepoints do nothing. They
+// reserve the least address space a heap can.
 //
-// brass calls allocate_at() and safepoint_at() (never allocate() or
-// safepoint() directly), so those are the entry points overridden here.
 // Collections are bronze's own, at its allocation points (Heap::collect),
 // and every one of them also visits the gcref slots brass knows on the
 // thread through brass_enumerate_thread_roots (runtime/rt_state.cpp,
-// visitBrassThreadRoots): brass's native-frame scopes, thread-root scopes,
-// coroutine frames and interpreter frames are roots of the one heap.
-class BronzeHostHeap final : public brass::HostHeap {
-public:
-    uintptr_t allocate(size_t size, uint64_t pointer_mask, uint32_t type_tag) override {
-        return allocate_at(size, pointer_mask, type_tag, 0, 0);
-    }
-
-    uintptr_t allocate_at(size_t size, uint64_t /*pointer_mask*/, uint32_t type_tag,
-                          uintptr_t caller_fp, uintptr_t caller_ip) override {
-        std::fprintf(stderr,
-                     "bronze: fatal: brass's runtime asked for a %zu-byte object (type tag %u, "
-                     "caller fp 0x%llx ip 0x%llx) while running bronze code; bronze allocates "
-                     "only through its own runtime, so a brass heap allocation means compiled "
-                     "code reached a brass allocator it must not\n",
-                     size, static_cast<unsigned>(type_tag),
-                     static_cast<unsigned long long>(caller_fp),
-                     static_cast<unsigned long long>(caller_ip));
-        std::fflush(stderr);
-        std::abort();
-    }
-
-    // A safepoint is an opportunity, never a demand, and bronze takes none:
-    // its collector runs where bronze's runtime allocates, which is where its
-    // GC frames are known to be complete. Overridden explicitly so the
-    // choice is visible rather than inherited.
-    void safepoint_at(uintptr_t /*caller_fp*/, uintptr_t /*caller_ip*/) override {}
-    void safepoint() override {}
-
-    // An interpreter's explicit brass_gc_collect. bronze's lowering never
-    // emits one; declined like a safepoint for the same reason.
-    void collect() override {}
-};
-
-BronzeHostHeap& hostHeap() {
-    static BronzeHostHeap heap;
-    return heap;
+// visitBrassThreadRoots): brass's native-frame scopes, thread-root scopes
+// and interpreter frames are roots of the one heap.
+brass::gc::HeapConfig forbiddenHeapConfig() {
+    brass::gc::HeapConfig config;
+    config.forbid_allocation = true;
+    config.eden_bytes = 0;
+    config.survivor_bytes = 0;
+    config.mature_reserve_bytes = 0;
+    config.large_reserve_bytes = 0;
+    config.read_environment = false;
+    return config;
 }
 
 bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
@@ -244,7 +216,7 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
 
 void installBronzeHostSymbols() {
     brass::runtime::set_host_symbol_provider(&hostSymbols());
-    brass::set_host_heap(&hostHeap());
+    brass::gc::Heap::set_default_config(forbiddenHeapConfig());
 }
 
 void installBronzeEnterJsHook() {

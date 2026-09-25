@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-#include <brass/gc/host_heap.hpp>
+#include <brass/gc/runtime_gc.hpp>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -414,10 +414,11 @@ static void registerThreadRootSources(Heap& heap) {
 
 // Every gcref slot brass knows on this thread: its native-frame scopes and
 // ThreadRootsScopes (the latter carrying the frames of interpreters a nested
-// bronze program hid, brass_tiered_engine.cpp), suspended coroutine frames,
-// and the innermost running Interpreter and FastInterpreter. Bronze's own
-// code roots its values in bronze GC frames and never allocates from a brass
-// heap (BronzeHostHeap aborts if asked), so in a bronze program this is
+// bronze program hid, brass_tiered_engine.cpp), and the innermost running
+// Interpreter and FastInterpreter. Bronze's own code roots its values in
+// bronze GC frames and never allocates from a brass heap (brass's heaps are
+// configured to forbid allocation, brass_symbol_registration.cpp), so in a
+// bronze program this is
 // normally empty; it is here so that a gcref held only by a brass frame is
 // still a root of the one heap in the process. The collection starts from
 // the runtime, not from a generated frame, so no frame pointer is passed:
@@ -430,9 +431,6 @@ static void registerThreadRootSources(Heap& heap) {
 // its boxed values): forwarded as an object reference and written back
 // under the same upper bits.
 static void visitBrassThreadRoots(const Heap::RootVisitor& visit) {
-    // brass holds its host coroutine registry locked from gathering these
-    // slots until the last one is updated, below.
-    brass::HostHeapCollectionScope collecting;
     static thread_local std::vector<uintptr_t*> slots;
     slots.clear();
     brass::brass_enumerate_thread_roots(0, 0, slots);

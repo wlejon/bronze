@@ -257,11 +257,6 @@ void renameEntrySymbol(brass::object::ObjectFile& obj, const std::string& entryS
 
 } // namespace
 
-bool BrassBackend::optimize() const {
-    static const bool forcedOff = std::getenv("BRONZE_NO_OPT") != nullptr;
-    return optimize_ && !forcedOff;
-}
-
 void BrassBackend::setOptimizationOptions(il2mir::TranslatorOptions& options, bool optimize) const {
     options.enable_optimizations = optimize;
     options.enable_inlining = optimize;
