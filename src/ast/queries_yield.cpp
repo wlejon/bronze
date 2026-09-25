@@ -188,6 +188,7 @@ private:
         if (!pattern) return;
         for (const auto& elem : pattern->elements) {
             walk(elem.keyExpr);
+            walk(elem.target);
             walk(elem.defaultValue);
             walkPattern(elem.pattern.get());
         }

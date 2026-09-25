@@ -263,6 +263,12 @@ private:
             if (elem.keyExpr && containsYield(*elem.keyExpr)) {
                 elem.keyExpr = lift(std::move(elem.keyExpr), pre);
             }
+            // A member target (`[t[yield k]] = arr`): lifting a MemberAccess
+            // or IndexAccess pins its object and key and hands back the same
+            // node kind, so the element is still a reference to assign to.
+            if (elem.target && containsYield(*elem.target)) {
+                elem.target = lift(std::move(elem.target), pre);
+            }
             if (elem.defaultValue && containsYield(*elem.defaultValue)) {
                 elem.defaultValue = lift(std::move(elem.defaultValue), pre);
             }
@@ -281,6 +287,7 @@ private:
         if (!pattern) return forms;
         for (const auto& elem : pattern->elements) {
             if (elem.keyExpr) forms = forms | yieldFormsIn(*elem.keyExpr);
+            if (elem.target) forms = forms | yieldFormsIn(*elem.target);
             if (elem.defaultValue) forms = forms | yieldFormsIn(*elem.defaultValue);
             forms = forms | patternForms(elem.pattern.get());
         }
@@ -291,6 +298,7 @@ private:
         if (!pattern) return false;
         for (const auto& elem : pattern->elements) {
             if (elem.keyExpr && containsYield(*elem.keyExpr)) return true;
+            if (elem.target && containsYield(*elem.target)) return true;
             if (elem.defaultValue && containsYield(*elem.defaultValue)) return true;
             if (patternHasYield(elem.pattern.get())) return true;
         }

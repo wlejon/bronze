@@ -254,6 +254,15 @@ PatternPtr Parser::patternFromLiteral(ExprPtr expr) {
                 return takeTarget(std::move(bin->lhs), elem);
             }
         }
+        // A NESTED pattern with a default (`[[x] = [1]] = xs`, `({ a: { b }
+        // = d } = src)`): the inner `=` has already been refined into a
+        // destructuring assignment by the time the outer one sees it, so
+        // the two halves come apart here instead of from a Binary.
+        if (auto* da = dynamic_cast<DestructuringAssign*>(value.get())) {
+            elem.pattern = std::move(da->pattern);
+            elem.defaultValue = std::move(da->value);
+            return elem.pattern != nullptr;
+        }
         return takeTarget(std::move(value), elem);
     };
 

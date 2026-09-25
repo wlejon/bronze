@@ -191,6 +191,9 @@ public:
         if (!pattern) return;
         for (const auto& elem : pattern->elements) {
             if (elem.keyExpr) elem.keyExpr->accept(*this);
+            // A member target (`({ a: o[f()] } = src)`) is evaluated code too:
+            // a call in it is a call site like any other.
+            if (elem.target) elem.target->accept(*this);
             if (elem.defaultValue) elem.defaultValue->accept(*this);
             walkPattern(elem.pattern.get());
         }

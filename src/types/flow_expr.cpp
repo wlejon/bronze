@@ -375,6 +375,11 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     // it.
     if (const auto* da = dynamic_cast<const ast::DestructuringAssign*>(&e)) {
         const Type value = expr(*da->value);
+        // The pattern's own code — computed keys, defaults, and the object and
+        // key of a member target — runs after the value, and a call in it is a
+        // call site like any other: `[h[key('x')]] = xs` passes a string to
+        // `key`, and a proof that never saw it types the parameter a number.
+        patternDefaults(*da->pattern);
         for (const auto& name : ast::patternBoundNames(*da->pattern)) {
             assign(name, Type::dynamic());
         }
