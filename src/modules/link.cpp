@@ -216,31 +216,99 @@ bool Linker::synthesizeExternalBindings(uint16_t id, std::vector<ast::StmtPtr>& 
                            renames, out);
 }
 
-// The publishing half: a namespace object for this module, left in the realm's
-// registry under the module's canonical path.
-//
-//     const mod3.*published* = { get "counter"() { return mod3.counter; } };
-//     __bronze_module_publish("<path>", mod3.*published*);
-//
-// The namespace is the same 10.4.6 exotic `import * as` builds, and it is built
-// by the same function — so an export read through the registry is a read of
-// this module's own binding, not of a copy taken when the module finished.
-bool Linker::synthesizePublish(uint16_t id, std::vector<ast::StmtPtr>& out) {
-    // Not `#ns`: the ENTRY's names are not prefixed (canonicalName), and a
-    // bare `#ns` is a private name to lowering. `*` is the spelling the
-    // linker's other unprefixable synthetic locals use (`export * as`).
-    const std::string local = "*published*";
-    auto decl = synthesizeNamespace(id, local, id);
+// The one namespace object of a module this unit evaluates, as a binding of
+// that module's own scope. Not `#ns`: the ENTRY's names are not prefixed
+// (canonicalName), and a bare `#ns` is a private name to lowering. `*` is the
+// spelling the linker's other unprefixable synthetic locals use.
+std::string Linker::moduleNamespaceName(uint16_t target) const {
+    return canonicalName(target, "*namespace*");
+}
+
+// Declares `target`'s namespace object here unless an earlier point of the
+// merge already did. Every `import * as`, `export * as`, `import()` and
+// registry publish of one module reaches it through this, so they all hold the
+// same object (16.2.1.6.2 GetModuleNamespace step 3: created once, then
+// returned from [[Namespace]]). The first asker is never later than any other
+// in the merged program, so no asker sees the declaration in its TDZ that
+// would not have seen its own.
+bool Linker::ensureModuleNamespace(uint16_t target, std::vector<ast::StmtPtr>& out) {
+    if (namespaceDeclared_.count(target)) return true;
+    auto decl = synthesizeNamespace(target, "*namespace*", target);
     if (!decl) return false;
     out.push_back(std::move(decl));
+    namespaceDeclared_.insert(target);
+    return true;
+}
+
+// The publishing half: this module's namespace object, left in the realm's
+// registry under the module's canonical path.
+//
+//     const mod3.*namespace* = { get "counter"() { return mod3.counter; } };
+//     __bronze_module_publish("<path>", mod3.*namespace*);
+//
+// The namespace is the one every `import * as` of this module in this unit
+// holds — so an export read through the registry is a read of this module's
+// own binding, not of a copy taken when the module finished, and a later
+// unit's `import * as` of it is the same object as this unit's.
+bool Linker::synthesizePublish(uint16_t id, std::vector<ast::StmtPtr>& out) {
+    if (!ensureModuleNamespace(id, out)) return false;
 
     const std::string placeholder = "bz_pub_" + std::to_string(syntheticCounter_++);
-    std::map<std::string, std::string> renames{{placeholder, canonicalName(id, local)}};
+    std::map<std::string, std::string> renames{{placeholder, moduleNamespaceName(id)}};
     const std::string src = "__bronze_module_publish(\"" +
                             quoteForJs(graph_.modules[id]->displayName) + "\", " + placeholder +
                             ");\n";
     return emitSynthesized(graph_.modules[id]->displayName + " (module registry publish)", src,
                            renames, out);
+}
+
+// An `import()` of a module the graph holds, as the rename meets it (graph.h
+// `DynamicImportRewrite`). What it returns is already in canonical names: the
+// rename has walked the specifier and will not walk the replacement.
+//
+// A string specifier resolves to the module's namespace object at once. A
+// TEMPLATE specifier the loader globbed becomes a lookup in that pattern's own
+// table, matched by head and tail rather than by position, so that this walk
+// and the loader's need not visit the file in the same order — and two
+// spellings of the same pattern in one file share one table.
+ast::ExprPtr Linker::rewriteDynamicImport(uint16_t id, ast::DynamicImportExpr& di) {
+    const ModuleFile& file = *graph_.modules[id];
+    const ModuleInfo& mi = info_[id];
+    auto ident = [&di](const std::string& name) {
+        auto n = std::make_unique<ast::Ident>();
+        n->span = di.span;
+        n->name = name;
+        return n;
+    };
+    if (const auto* str = dynamic_cast<const ast::StringLit*>(di.specifier.get())) {
+        auto it = file.deps.find(str->value);
+        if (it == file.deps.end()) return nullptr;
+        for (const auto& ns : mi.namespaceLocals) {
+            if (ns.second != it->second) continue;
+            auto mem = std::make_unique<ast::MemberAccess>();
+            mem->span = di.span;
+            mem->object = ident("Promise");
+            mem->property = "resolve";
+            auto call = std::make_unique<ast::Call>();
+            call->span = di.span;
+            call->callee = std::move(mem);
+            call->args.push_back(ident(canonicalName(id, ns.first)));
+            return call;
+        }
+        return nullptr;
+    }
+    auto* tpl = dynamic_cast<ast::TemplateLit*>(di.specifier.get());
+    std::string head, tail;
+    if (!tpl || !dynamicImportPattern(*tpl, head, tail)) return nullptr;
+    for (const auto& picker : mi.dynPickers) {
+        if (picker.head != head || picker.tail != tail) continue;
+        auto call = std::make_unique<ast::Call>();
+        call->span = di.span;
+        call->callee = ident(canonicalName(id, picker.local));
+        call->args.push_back(std::move(di.specifier));
+        return call;
+    }
+    return nullptr;
 }
 
 bool Linker::run(ast::Module& out) {
@@ -286,187 +354,6 @@ bool Linker::run(ast::Module& out) {
         }
     }
 
-    struct DynImportRewriter {
-        ModuleFile& file;
-        ModuleInfo& mi;
-
-        void visitStmt(ast::StmtPtr& s) {
-            if (!s) return;
-            if (auto* b = dynamic_cast<ast::BlockStmt*>(s.get())) {
-                for (auto& st : b->stmts) visitStmt(st);
-            } else if (auto* v = dynamic_cast<ast::VarDecl*>(s.get())) {
-                visitExpr(v->init);
-            } else if (auto* r = dynamic_cast<ast::ReturnStmt*>(s.get())) {
-                visitExpr(r->value);
-            } else if (auto* e = dynamic_cast<ast::ExprStmt*>(s.get())) {
-                visitExpr(e->expr);
-            } else if (auto* i = dynamic_cast<ast::IfStmt*>(s.get())) {
-                visitExpr(i->condition);
-                for (auto& st : i->thenBody) visitStmt(st);
-                for (auto& st : i->elseBody) visitStmt(st);
-            } else if (auto* w = dynamic_cast<ast::WhileStmt*>(s.get())) {
-                visitExpr(w->condition);
-                for (auto& st : w->body) visitStmt(st);
-            } else if (auto* d = dynamic_cast<ast::DoWhileStmt*>(s.get())) {
-                for (auto& st : d->body) visitStmt(st);
-                visitExpr(d->condition);
-            } else if (auto* f = dynamic_cast<ast::ForStmt*>(s.get())) {
-                for (auto& init : f->init) visitStmt(init);
-                visitExpr(f->condition);
-                visitExpr(f->update);
-                for (auto& st : f->body) visitStmt(st);
-            } else if (auto* sw = dynamic_cast<ast::SwitchStmt*>(s.get())) {
-                visitExpr(sw->discriminant);
-                for (auto& c : sw->cases) {
-                    visitExpr(c.test);
-                    for (auto& st : c.body) visitStmt(st);
-                }
-            } else if (auto* fi = dynamic_cast<ast::ForInStmt*>(s.get())) {
-                visitExpr(fi->object);
-                for (auto& st : fi->body) visitStmt(st);
-            } else if (auto* fo = dynamic_cast<ast::ForOfStmt*>(s.get())) {
-                visitExpr(fo->iterable);
-                for (auto& st : fo->body) visitStmt(st);
-            } else if (auto* l = dynamic_cast<ast::LabeledStmt*>(s.get())) {
-                visitStmt(l->body);
-            } else if (auto* t = dynamic_cast<ast::TryStmt*>(s.get())) {
-                for (auto& st : t->body) visitStmt(st);
-                for (auto& st : t->catchBody) visitStmt(st);
-                for (auto& st : t->finallyBody) visitStmt(st);
-            } else if (auto* th = dynamic_cast<ast::ThrowStmt*>(s.get())) {
-                visitExpr(th->value);
-            } else if (auto* c = dynamic_cast<ast::ClassDecl*>(s.get())) {
-                if (c->superClass) visitExpr(c->superClass);
-                for (auto& meth : c->methods) {
-                    visitExpr(meth.keyExpr);
-                    if (meth.fn) {
-                        for (auto& st : meth.fn->body) visitStmt(st);
-                    }
-                }
-            } else if (auto* fn = dynamic_cast<ast::FunctionDecl*>(s.get())) {
-                for (auto& st : fn->body) visitStmt(st);
-            }
-        }
-
-        void visitExpr(ast::ExprPtr& ep) {
-            if (!ep) return;
-            if (auto* di = dynamic_cast<ast::DynamicImportExpr*>(ep.get())) {
-                if (const auto* str = dynamic_cast<const ast::StringLit*>(di->specifier.get())) {
-                    auto it = file.deps.find(str->value);
-                    if (it != file.deps.end()) {
-                        uint16_t target = it->second;
-                        for (const auto& ns : mi.namespaceLocals) {
-                            if (ns.second == target) {
-                                auto call = std::make_unique<ast::Call>();
-                                call->span = di->span;
-                                auto mem = std::make_unique<ast::MemberAccess>();
-                                mem->span = di->span;
-                                auto pObj = std::make_unique<ast::Ident>();
-                                pObj->span = di->span;
-                                pObj->name = "Promise";
-                                mem->object = std::move(pObj);
-                                mem->property = "resolve";
-                                call->callee = std::move(mem);
-                                auto arg = std::make_unique<ast::Ident>();
-                                arg->span = di->span;
-                                arg->name = ns.first;
-                                call->args.push_back(std::move(arg));
-                                ep = std::move(call);
-                                return;
-                            }
-                        }
-                    }
-                }
-                // A TEMPLATE specifier the loader globbed: the call becomes a
-                // lookup in that pattern's own table. Matched by head and tail
-                // rather than by position, so that this walk and the loader's
-                // need not visit the file in the same order — and two spellings
-                // of the same pattern in one file share one table.
-                if (auto* tpl = dynamic_cast<ast::TemplateLit*>(di->specifier.get())) {
-                    std::string head, tail;
-                    if (dynamicImportPattern(*tpl, head, tail)) {
-                        for (const auto& picker : mi.dynPickers) {
-                            if (picker.head != head || picker.tail != tail) continue;
-                            auto call = std::make_unique<ast::Call>();
-                            call->span = di->span;
-                            auto callee = std::make_unique<ast::Ident>();
-                            callee->span = di->span;
-                            callee->name = picker.local;
-                            call->callee = std::move(callee);
-                            call->args.push_back(std::move(di->specifier));
-                            // The interpolation is ordinary code of this
-                            // module and still has to be walked — it is now an
-                            // argument, and may hold an `import()` of its own.
-                            visitExpr(call->args[0]);
-                            ep = std::move(call);
-                            return;
-                        }
-                    }
-                }
-                visitExpr(di->specifier);
-            } else if (auto* u = dynamic_cast<ast::Unary*>(ep.get())) {
-                visitExpr(u->operand);
-            } else if (auto* b = dynamic_cast<ast::Binary*>(ep.get())) {
-                visitExpr(b->lhs);
-                visitExpr(b->rhs);
-            } else if (auto* t = dynamic_cast<ast::Ternary*>(ep.get())) {
-                visitExpr(t->condition);
-                visitExpr(t->thenExpr);
-                visitExpr(t->elseExpr);
-            } else if (auto* m = dynamic_cast<ast::MemberAccess*>(ep.get())) {
-                visitExpr(m->object);
-            } else if (auto* i = dynamic_cast<ast::IndexAccess*>(ep.get())) {
-                visitExpr(i->object);
-                visitExpr(i->index);
-            } else if (auto* c = dynamic_cast<ast::Call*>(ep.get())) {
-                visitExpr(c->callee);
-                for (auto& a : c->args) visitExpr(a);
-            } else if (auto* n = dynamic_cast<ast::NewExpr*>(ep.get())) {
-                visitExpr(n->callee);
-                for (auto& a : n->args) visitExpr(a);
-            } else if (auto* s = dynamic_cast<ast::SuperCall*>(ep.get())) {
-                if (s->baseExpr) visitExpr(s->baseExpr);
-                for (auto& a : s->args) visitExpr(a);
-            } else if (auto* y = dynamic_cast<ast::YieldExpr*>(ep.get())) {
-                visitExpr(y->argument);
-            } else if (auto* da = dynamic_cast<ast::DestructuringAssign*>(ep.get())) {
-                visitExpr(da->value);
-            } else if (auto* o = dynamic_cast<ast::ObjectLit*>(ep.get())) {
-                for (auto& p : o->props) {
-                    visitExpr(p.keyExpr);
-                    visitExpr(p.value);
-                }
-            } else if (auto* a = dynamic_cast<ast::ArrayLit*>(ep.get())) {
-                for (auto& e : a->elements) visitExpr(e);
-            } else if (auto* f = dynamic_cast<ast::FunctionExpr*>(ep.get())) {
-                for (auto& st : f->body) visitStmt(st);
-            } else if (auto* cl = dynamic_cast<ast::ClassExpr*>(ep.get())) {
-                if (cl->superClass) visitExpr(cl->superClass);
-                for (auto& meth : cl->methods) {
-                    visitExpr(meth.keyExpr);
-                    if (meth.fn) {
-                        for (auto& st : meth.fn->body) visitStmt(st);
-                    }
-                }
-            } else if (auto* tpl = dynamic_cast<ast::TemplateLit*>(ep.get())) {
-                for (auto& e : tpl->exprs) visitExpr(e);
-            } else if (auto* tt = dynamic_cast<ast::TaggedTemplate*>(ep.get())) {
-                visitExpr(tt->tag);
-            } else if (auto* sp = dynamic_cast<ast::SpreadElement*>(ep.get())) {
-                visitExpr(sp->argument);
-            }
-        }
-    };
-
-    for (const uint16_t id : graph_.evaluationOrder) {
-        ModuleFile& file = *graph_.modules[id];
-        ModuleInfo& mi = info_[id];
-        DynImportRewriter rewriter{file, mi};
-        for (auto& stmt : file.ast->body) {
-            rewriter.visitStmt(stmt);
-        }
-    }
-
     for (const uint16_t id : graph_.evaluationOrder) {
         if (!graph_.modules[id]->isExternal) continue;
         const std::string ns = canonicalName(id, syntheticLocal("ext"));
@@ -493,8 +380,11 @@ bool Linker::run(ast::Module& out) {
         for (const auto& entry : mi.imports) {
             importedBindings[entry.first] = graph_.modules[entry.second.module]->displayName;
         }
+        const DynamicImportRewrite dynImports = [this, id](ast::DynamicImportExpr& di) {
+            return rewriteDynamicImport(id, di);
+        };
         if (!renameModuleScope(file.ast->body, mi.renames, id, importedBindings, diags_,
-                               &liveReads_)) {
+                               &liveReads_, &dynImports)) {
             return false;
         }
     }
@@ -562,9 +452,20 @@ bool Linker::run(ast::Module& out) {
                 }
                 continue;
             }
-            auto decl = synthesizeNamespace(id, ns.first, ns.second);
-            if (!decl) return false;
-            out.body.push_back(std::move(decl));
+            // One module has one namespace object, however many files ask for
+            // it and in how many spellings: this file's local is a second name
+            // for it.
+            if (!ensureModuleNamespace(ns.second, out.body)) return false;
+            const std::string placeholder = "bz_nsa_" + std::to_string(syntheticCounter_++);
+            std::map<std::string, std::string> renames{
+                {placeholder, canonicalName(id, ns.first)},
+                {placeholder + "_src", moduleNamespaceName(ns.second)}};
+            if (!emitSynthesized(graph_.modules[id]->displayName + " (namespace of " +
+                                     graph_.modules[ns.second]->displayName + ")",
+                                 "const " + placeholder + " = " + placeholder + "_src;\n",
+                                 renames, out.body)) {
+                return false;
+            }
         }
         // After the namespaces, because a picker's table holds them.
         for (const auto& picker : info_[id].dynPickers) {

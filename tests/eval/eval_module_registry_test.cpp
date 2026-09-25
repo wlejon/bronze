@@ -167,6 +167,37 @@ TEST_CASE("a namespace import and a default export cross the seam") {
     std::filesystem::remove_all(dir, ec);
 }
 
+TEST_CASE("a module has one namespace object, inside a unit and across the seam") {
+    const std::filesystem::path dir = makeDir("bronze_modreg_one_ns");
+    writeFile(dir / "shared.js", "export const v = 1;\n");
+    writeFile(dir / "a.js", "import * as ns from './shared.js'; export const nsA = ns;\n");
+    writeFile(dir / "b.js", "import * as ns from './shared.js'; export const nsB = ns;\n");
+
+    // Two files of one unit, each with its own `import * as`, and the
+    // namespace that unit publishes: 16.2.1.6.2 makes them one object.
+    embed::CallResult page = evalScript(
+        "import { nsA } from './a.js';\n"
+        "import { nsB } from './b.js';\n"
+        "globalThis.__modregOneNs = nsA;\n"
+        "nsA === nsB",
+        unitOptions(dir, "page.js"));
+    INFO((page.thrown ? embed::toUtf8(page.value) : std::string()));
+    REQUIRE(!page.thrown);
+    CHECK(page.value.asBool());
+
+    embed::CallResult driver = evalScript(
+        "import * as ns from './shared.js';\n"
+        "import { nsA } from './a.js';\n"
+        "ns === globalThis.__modregOneNs && nsA === ns",
+        unitOptions(dir, "driver.js"));
+    INFO((driver.thrown ? embed::toUtf8(driver.value) : std::string()));
+    REQUIRE(!driver.thrown);
+    CHECK(driver.value.asBool());
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 TEST_CASE("an import across the seam is a live binding, not a snapshot") {
     const std::filesystem::path dir = makeDir("bronze_modreg_live");
     writeFile(dir / "live.js",

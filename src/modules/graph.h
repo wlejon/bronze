@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -146,10 +147,20 @@ struct ExternalRead {
     std::string exportName;  // the property of it to read
 };
 
+// `dynImports` replaces an `import()` of a module the graph holds with the
+// read of that module's namespace (or of a globbed pattern's lookup table). It
+// is called once the specifier has been walked, and returns the replacement —
+// already in canonical names, since the walk does not revisit it — or null to
+// leave the call to the runtime. Doing it inside this walk rather than in a
+// walk of its own means an `import()` is found everywhere a name is renamed:
+// in a parameter default, a class field, a destructuring default or target.
+using DynamicImportRewrite = std::function<ast::ExprPtr(ast::DynamicImportExpr&)>;
+
 bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& renames, uint16_t fileId,
                        const std::map<std::string, std::string>& importedBindings,
                        DiagnosticSink& diags,
-                       const std::map<std::string, ExternalRead>* liveReads = nullptr);
+                       const std::map<std::string, ExternalRead>* liveReads = nullptr,
+                       const DynamicImportRewrite* dynImports = nullptr);
 
 }  // namespace bronze::modules

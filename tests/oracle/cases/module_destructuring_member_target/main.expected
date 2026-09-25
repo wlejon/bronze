@@ -1,0 +1,5 @@
+{"p_a":1,"withDefault":"dflt","deep":5,"first":10,"second":20,"rest":[30,40],"skipped":0,"restObj":{"u":1,"v":2},"nested":99}
+[2,[3,4]]
+1 a
+{"a":1} false
+true,true,true,true

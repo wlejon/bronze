@@ -98,6 +98,9 @@ public:
                           std::vector<ast::StmtPtr>& out);
     bool synthesizeExternalBindings(uint16_t id, std::vector<ast::StmtPtr>& out);
     bool synthesizePublish(uint16_t id, std::vector<ast::StmtPtr>& out);
+    std::string moduleNamespaceName(uint16_t target) const;
+    ast::ExprPtr rewriteDynamicImport(uint16_t id, ast::DynamicImportExpr& di);
+    bool ensureModuleNamespace(uint16_t target, std::vector<ast::StmtPtr>& out);
     bool emitSynthesized(const std::string& label, const std::string& src,
                          const std::map<std::string, std::string>& renames,
                          std::vector<ast::StmtPtr>& out);
@@ -110,6 +113,12 @@ public:
     // name: a read of one is a read through the published namespace
     // (graph.h `ExternalRead`). Built once the renames exist.
     std::map<std::string, ExternalRead> liveReads_;
+    // The modules whose one namespace object (`moduleNamespaceName`) the merge
+    // has already declared. 16.2.1.6.2 GetModuleNamespace creates a module's
+    // namespace once and returns that object to every asker, so it is
+    // declared at the first place any file needs it and every other asker
+    // binds that one.
+    std::set<uint16_t> namespaceDeclared_;
     size_t syntheticCounter_ = 0;
 };
 

@@ -30,10 +30,12 @@ class Renamer {
 public:
     Renamer(const std::map<std::string, std::string>& renames, uint16_t fileId,
             const std::map<std::string, std::string>& importedBindings, DiagnosticSink& diags,
-            const std::map<std::string, ExternalRead>* liveReads)
+            const std::map<std::string, ExternalRead>* liveReads,
+            const DynamicImportRewrite* dynImports)
         : renames_(renames),
           importedBindings_(importedBindings),
           liveReads_(liveReads),
+          dynImports_(dynImports),
           diags_(diags),
           fileId_(fileId) {}
 
@@ -116,11 +118,17 @@ private:
     // scope has already pushed the names it binds, and in a destructuring
     // ASSIGNMENT it has not, because they are references to bindings that
     // already exist.
+    //
+    // A MEMBER target (`({ a: obj[k] } = src)`, `[o.x, ...o.rest] = arr`) is
+    // an ordinary expression: its object and computed key are references like
+    // any other, an imported `obj` among them. It is a property write, not a
+    // write to the binding, so nothing here refuses it.
     void pattern(ast::BindingPattern& p) {
         p.span.file = fileId_;
         for (auto& elem : p.elements) {
             elem.span.file = fileId_;
             if (!elem.name.empty()) rewrite(elem.name);
+            if (elem.target) slot(elem.target);
             if (elem.keyExpr) slot(elem.keyExpr);
             if (elem.defaultValue) slot(elem.defaultValue);
             if (elem.pattern) pattern(*elem.pattern);
@@ -292,10 +300,20 @@ private:
     // As a CALLEE the read is `(0, ns["f"])`: `ns["f"](...)` would be a method
     // call with `this` the namespace, and calling an import binding passes
     // undefined.
+    //
+    // An `import()` of a module the graph holds is replaced here too (graph.h
+    // `DynamicImportRewrite`), after its specifier has been walked.
     void slot(ast::ExprPtr& p, bool callee = false) {
         if (!p) return;
         expr(*p);
-        if (!ok_ || !liveReads_) return;
+        if (!ok_) return;
+        if (dynImports_) {
+            if (auto* di = dynamic_cast<ast::DynamicImportExpr*>(p.get())) {
+                if (auto replacement = (*dynImports_)(*di)) p = std::move(replacement);
+                return;
+            }
+        }
+        if (!liveReads_) return;
         const auto* id = dynamic_cast<const ast::Ident*>(p.get());
         if (!id) return;
         auto it = liveReads_->find(id->name);
@@ -474,6 +492,7 @@ private:
     const std::map<std::string, std::string>& renames_;
     const std::map<std::string, std::string>& importedBindings_;
     const std::map<std::string, ExternalRead>* liveReads_ = nullptr;
+    const DynamicImportRewrite* dynImports_ = nullptr;
     DiagnosticSink& diags_;
     uint16_t fileId_ = 0;
     bool ok_ = true;
@@ -486,8 +505,9 @@ bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& renames, uint16_t fileId,
                        const std::map<std::string, std::string>& importedBindings,
                        DiagnosticSink& diags,
-                       const std::map<std::string, ExternalRead>* liveReads) {
-    return Renamer(renames, fileId, importedBindings, diags, liveReads).run(stmts);
+                       const std::map<std::string, ExternalRead>* liveReads,
+                       const DynamicImportRewrite* dynImports) {
+    return Renamer(renames, fileId, importedBindings, diags, liveReads, dynImports).run(stmts);
 }
 
 }  // namespace bronze::modules

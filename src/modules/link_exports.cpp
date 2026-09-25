@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ast/queries.h"
+#include "ast/query_walk.h"
 #include "modules/graph.h"
 #include "modules/link_internal.h"
 
@@ -62,7 +63,10 @@ bool Linker::collectImports(ModuleFile& file) {
         }
     }
 
-    struct DynImportCollector : public ast::Visitor {
+    // The loader's whole-tree walk (graph.cpp `DynamicImportFinder`), so that
+    // every `import()` the loader followed gets its namespace local here, from
+    // wherever in the file it stands.
+    struct DynImportCollector : public ast::detail::IdentVisitor {
         ModuleFile& file;
         ModuleInfo& mi;
         size_t& counter;
@@ -74,57 +78,8 @@ bool Linker::collectImports(ModuleFile& file) {
             if (n) n->accept(*this);
         }
 
-        void visit(const ast::NumberLit&) override {}
-        void visit(const ast::BigIntLit&) override {}
-        void visit(const ast::SpreadElement& s) override { scan(s.argument.get()); }
-        void visit(const ast::StringLit&) override {}
-        void visit(const ast::TemplateLit& t) override {
-            for (const auto& e : t.exprs) scan(e.get());
-        }
-        void visit(const ast::TaggedTemplate& t) override {
-            scan(t.tag.get());
-            if (t.templateLit) scan(t.templateLit.get());
-        }
-        void visit(const ast::RegExpLit&) override {}
-        void visit(const ast::BoolLit&) override {}
-        void visit(const ast::NullLit&) override {}
-        void visit(const ast::UndefinedLit&) override {}
-        void visit(const ast::ThisExpr&) override {}
-        void visit(const ast::Ident&) override {}
-        void visit(const ast::Unary& u) override { scan(u.operand.get()); }
-        void visit(const ast::Binary& b) override {
-            scan(b.lhs.get());
-            scan(b.rhs.get());
-        }
-        void visit(const ast::Ternary& t) override {
-            scan(t.condition.get());
-            scan(t.thenExpr.get());
-            scan(t.elseExpr.get());
-        }
-        void visit(const ast::MemberAccess& m) override { scan(m.object.get()); }
-        void visit(const ast::IndexAccess& i) override {
-            scan(i.object.get());
-            scan(i.index.get());
-        }
-        void visit(const ast::Call& c) override {
-            scan(c.callee.get());
-            for (const auto& a : c.args) scan(a.get());
-        }
-        void visit(const ast::NewExpr& n) override {
-            scan(n.callee.get());
-            for (const auto& a : n.args) scan(a.get());
-        }
-        void visit(const ast::NewTargetExpr&) override {}
-        void visit(const ast::ImportMetaExpr&) override {}
-        void visit(const ast::SuperCall& s) override {
-            if (s.baseExpr) scan(s.baseExpr.get());
-            for (const auto& a : s.args) scan(a.get());
-        }
-        void visit(const ast::SuperMember& s) override {
-            if (s.baseExpr) scan(s.baseExpr.get());
-            if (s.propertyExpr) scan(s.propertyExpr.get());
-        }
-        void visit(const ast::YieldExpr& y) override { scan(y.argument.get()); }
+        void mention(const std::string&) override {}
+        using IdentVisitor::visit;
         void visit(const ast::DynamicImportExpr& di) override {
             if (const auto* str = dynamic_cast<const ast::StringLit*>(di.specifier.get())) {
                 auto it = file.deps.find(str->value);
@@ -145,91 +100,6 @@ bool Linker::collectImports(ModuleFile& file) {
             }
             scan(di.specifier.get());
         }
-        void visit(const ast::DestructuringAssign& d) override { scan(d.value.get()); }
-        void visit(const ast::ObjectLit& o) override {
-            for (const auto& p : o.props) {
-                scan(p.keyExpr.get());
-                scan(p.value.get());
-            }
-        }
-        void visit(const ast::ArrayLit& a) override {
-            for (const auto& e : a.elements) scan(e.get());
-        }
-        void visit(const ast::FunctionExpr& f) override {
-            for (const auto& s : f.body) scan(s.get());
-        }
-        void visit(const ast::ClassExpr& c) override {
-            if (c.superClass) scan(c.superClass.get());
-            for (const auto& m : c.methods) {
-                scan(m.keyExpr.get());
-                if (m.fn) scan(m.fn.get());
-            }
-        }
-        void visit(const ast::BlockStmt& b) override {
-            for (const auto& s : b.stmts) scan(s.get());
-        }
-        void visit(const ast::VarDecl& v) override { scan(v.init.get()); }
-        void visit(const ast::ReturnStmt& r) override { scan(r.value.get()); }
-        void visit(const ast::ExprStmt& e) override { scan(e.expr.get()); }
-        void visit(const ast::IfStmt& i) override {
-            scan(i.condition.get());
-            for (const auto& s : i.thenBody) scan(s.get());
-            for (const auto& s : i.elseBody) scan(s.get());
-        }
-        void visit(const ast::WhileStmt& w) override {
-            scan(w.condition.get());
-            for (const auto& s : w.body) scan(s.get());
-        }
-        void visit(const ast::DoWhileStmt& d) override {
-            for (const auto& s : d.body) scan(s.get());
-            scan(d.condition.get());
-        }
-        void visit(const ast::ForStmt& f) override {
-            for (const auto& s : f.init) scan(s.get());
-            scan(f.condition.get());
-            scan(f.update.get());
-            for (const auto& s : f.body) scan(s.get());
-        }
-        void visit(const ast::BreakStmt&) override {}
-        void visit(const ast::ContinueStmt&) override {}
-        void visit(const ast::DebuggerStmt&) override {}
-        void visit(const ast::SwitchStmt& s) override {
-            scan(s.discriminant.get());
-            for (const auto& c : s.cases) {
-                scan(c.test.get());
-                for (const auto& st : c.body) scan(st.get());
-            }
-        }
-        void visit(const ast::ForInStmt& f) override {
-            scan(f.object.get());
-            for (const auto& s : f.body) scan(s.get());
-        }
-        void visit(const ast::LabeledStmt& l) override { scan(l.body.get()); }
-        void visit(const ast::ForOfStmt& f) override {
-            scan(f.iterable.get());
-            for (const auto& s : f.body) scan(s.get());
-        }
-        void visit(const ast::TryStmt& t) override {
-            for (const auto& s : t.body) scan(s.get());
-            for (const auto& s : t.catchBody) scan(s.get());
-            for (const auto& s : t.finallyBody) scan(s.get());
-        }
-        void visit(const ast::ThrowStmt& t) override { scan(t.value.get()); }
-        void visit(const ast::ClassDecl& c) override {
-            if (c.superClass) scan(c.superClass.get());
-            for (const auto& m : c.methods) {
-                scan(m.keyExpr.get());
-                if (m.fn) scan(m.fn.get());
-            }
-        }
-        void visit(const ast::FunctionDecl& f) override {
-            for (const auto& s : f.body) scan(s.get());
-        }
-        void visit(const ast::Module& m) override {
-            for (const auto& s : m.body) scan(s.get());
-        }
-        void visit(const ast::ImportDecl&) override {}
-        void visit(const ast::ExportNamesDecl&) override {}
     } dynCollector{file, mi, syntheticCounter_};
     for (const auto& stmt : file.ast->body) {
         dynCollector.scan(stmt.get());
@@ -420,23 +290,10 @@ bool Linker::buildRenames(ModuleFile& file) {
         }
         mi.renames[local] = canonicalName(defModule, defLocal);
     }
-    // The namespace locals a DYNAMIC import needs. `import * as ns from './x'`
-    // is an import binding and the loop above already renamed it; the local a
-    // bare `import('./x')` needs is invented by the linker (collectImports'
-    // DynImportCollector) and is in no other table, so without this it is the
-    // one name in the file that keeps its raw spelling. synthesizeNamespace
-    // declares the CANONICAL name, and the rewrite that replaces `import(...)`
-    // with `Promise.resolve(<local>)` writes the raw one — so the two only meet
-    // if the rename is here, and a mismatch is not a link error but a
-    // ReferenceError at the moment the program finally takes that path.
-    // Re-listing a static namespace local is harmless: it maps to the same
-    // canonical name the loop above gave it.
-    for (const auto& ns : mi.namespaceLocals) {
-        mi.renames[ns.first] = canonicalName(file.id, ns.first);
-    }
-    for (const auto& picker : mi.dynPickers) {
-        mi.renames[picker.local] = canonicalName(file.id, picker.local);
-    }
+    // The locals the linker invents for a bare `import('./x')` and for a
+    // globbed pattern's table need no entry here: no source can spell them,
+    // and the `import()` rewrite (Linker::rewriteDynamicImport) writes their
+    // canonical names directly.
     return true;
 }
 
