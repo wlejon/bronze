@@ -15,10 +15,19 @@ namespace bronze::lower {
 // Current values of the given variables, coerced (in the current block)
 // to the target block's parameter types, in parameter order.
 std::vector<il::ValueId> Lowerer::collectEdgeArgs(const std::vector<std::string>& vars,
-                                                 il::BlockId target, il::Function& ilFn) {
+                                                 il::BlockId target, il::Function& ilFn,
+                                                 size_t scopeDepth) {
     std::vector<il::ValueId> args;
     for (size_t i = 0; i < vars.size(); ++i) {
-        const auto& b = varBindings_[activeVarMap_[vars[i]]];
+        // A name a block deeper than `scopeDepth` shadows is not the name the
+        // target's parameter stands for: step out along the shadow chain to
+        // the binding that was live where the target was set up.
+        size_t index = activeVarMap_[vars[i]];
+        while (varBindings_[index].scopeDepth > scopeDepth && !varBindings_[index].isVar &&
+               varBindings_[index].shadowedBinding != SIZE_MAX) {
+            index = varBindings_[index].shadowedBinding;
+        }
+        const auto& b = varBindings_[index];
         args.push_back(coerceToType(Value{b.valueId, b.type},
                                     ilFn.blocks[target].params[i].type, ilFn).id);
     }
@@ -359,6 +368,7 @@ bool Lowerer::lowerWhileStmt(const ast::WhileStmt* whileStmt, il::Function& ilFn
     setCurrentBlock(bBody);
     jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bHeader, bExit, loopVars,
                                     cleanupStack_.size(), cleanupStack_.size()});
+    jumpStack_.back().scopeDepth = currentScopeDepth_;
     enterScope(whileStmt->body, ilFn);
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : whileStmt->body) bodyStmts.push_back(s.get());
@@ -418,6 +428,7 @@ bool Lowerer::lowerDoWhileStmt(const ast::DoWhileStmt* doWhileStmt, il::Function
 
     jumpStack_.push_back(JumpTarget{JumpKind::Loop, label, bHeader, bCond, bExit, loopVars,
                                     cleanupStack_.size(), cleanupStack_.size()});
+    jumpStack_.back().scopeDepth = currentScopeDepth_;
     enterScope(doWhileStmt->body, ilFn);
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : doWhileStmt->body) bodyStmts.push_back(s.get());
@@ -586,6 +597,7 @@ bool Lowerer::lowerForStmt(const ast::ForStmt* forStmt, il::Function& ilFn) {
                          cleanupStack_.size(), cleanupStack_.size()};
     forTarget.perIterationEnv = headerEnvParam;
     jumpStack_.push_back(forTarget);
+    jumpStack_.back().scopeDepth = currentScopeDepth_;
     enterScope(forStmt->body, ilFn);
     std::vector<const ast::Stmt*> bodyStmts;
     for (const auto& s : forStmt->body) bodyStmts.push_back(s.get());

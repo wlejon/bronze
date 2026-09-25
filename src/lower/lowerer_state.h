@@ -54,6 +54,11 @@ struct JumpTarget {
     size_t cleanupDepthAtEntry = 0;
     size_t cleanupDepthInBody = 0;
     il::ValueId perIterationEnv = il::kNoValue;
+    // The scope depth `vars` were resolved at when the target was pushed. A
+    // jump from a block nested inside may stand where one of those names is
+    // SHADOWED (`while (c) { x = 1; { let x = 2; break; } }`), and the edge
+    // has to carry the loop's `x`, not the block's.
+    size_t scopeDepth = SIZE_MAX;
 };
 
 enum class CleanupKind {

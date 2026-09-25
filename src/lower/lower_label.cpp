@@ -67,7 +67,7 @@ const Lowerer::JumpTarget* Lowerer::findJumpTarget(const std::string& label, boo
 
 void Lowerer::emitJumpToTarget(const JumpTarget& target, il::BlockId block,
                                const std::vector<il::ValueId>& extraArgs, il::Function& ilFn) {
-    auto args = collectEdgeArgs(target.vars, block, ilFn);
+    auto args = collectEdgeArgs(target.vars, block, ilFn, target.scopeDepth);
     // A `continue` is an edge into the update block like the body's
     // fall-through, so it hands over the same list — and for a `for` whose
     // head binding is copied per iteration (14.7.4.9) that list ends with the
@@ -146,6 +146,7 @@ bool Lowerer::lowerLabeledBlock(const ast::LabeledStmt* labeled, il::Function& i
     jumpStack_.push_back(
         JumpTarget{JumpKind::LabeledBlock, labeled->label, il::kNoBlock, il::kNoBlock, bExit,
                    vars, cleanupStack_.size(), cleanupStack_.size()});
+    jumpStack_.back().scopeDepth = currentScopeDepth_;
     const bool ok = lowerStmt(*labeled->body, ilFn);
     jumpStack_.pop_back();
     if (!ok) return false;

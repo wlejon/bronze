@@ -481,7 +481,8 @@ private:
 
     // --- lower_control.cpp: control flow, block-argument SSA ---
     std::vector<il::ValueId> collectEdgeArgs(const std::vector<std::string>& vars,
-                                             il::BlockId target, il::Function& ilFn);
+                                             il::BlockId target, il::Function& ilFn,
+                                             size_t scopeDepth = SIZE_MAX);
     std::vector<std::string> getActiveVarsInDeclOrder() const;
     std::vector<LoopParam> collectLoopParams(const ast::Stmt& loopStmt,
                                              const std::unordered_set<std::string>& assigned);

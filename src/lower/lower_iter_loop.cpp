@@ -200,6 +200,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                    bExit,           loopVars,
                    cleanupStack_.size(), cleanupStack_.size()};
     jumpStack_.push_back(ctx);
+    jumpStack_.back().scopeDepth = currentScopeDepth_;
     cleanupStack_.push_back(CleanupFrame{
         isAwait ? CleanupKind::AsyncIteratorClose : CleanupKind::IteratorClose, nullptr, recVal,
         frameSlot, jumpStack_.size(), outerHandler});
