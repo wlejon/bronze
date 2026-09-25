@@ -68,6 +68,7 @@ static std::atomic<ExecutionTier> s_defaultTier{ExecutionTier::Auto};
 // statics down. Queued compiles are dropped, the ones in flight finish, and
 // the process's compile pool stops.
 void stopRetainedBackgroundCompiles() {
+    if (brass::runtime::process_exiting()) return;
     stopBackgroundCompiles();
     brass::runtime::CompilePool::shared().shutdown();
 }
