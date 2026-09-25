@@ -3,6 +3,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ast/ast.h"
@@ -206,6 +207,29 @@ struct ModuleContext {
     // primitive field type a proof rather than a guess, and a compiler with it
     // switched off miscompiles.
     FieldAudit fieldAudit;
+
+    // ---- nested-function cells, carried across the enclosing fixpoint -------
+
+    // The env-backed cells each nested function's last analysis ended with,
+    // keyed by the function's AST node, for the current module round only
+    // (`runPass` clears it).
+    //
+    // A nested function is analysed inside every walk of its parent, and each
+    // analysis is itself a fixpoint over the nested function's own cells. A
+    // fixpoint that started from EMPTY cells every time needed two walks just
+    // to see its cells stop moving, plus the walk that records — and each walk
+    // re-analyses every function nested one level further in, so the cost was
+    // (walks per level) ^ (nesting depth). A parser-combinator library nests
+    // arrow callbacks fifteen deep, and a 41k-line bundle holding one never
+    // finished inferring. Starting from where the last analysis of the same
+    // body ended makes the confirming walk the only walk once nothing moves.
+    //
+    // Sound because a cell is a JOIN over every write the function makes, and
+    // starting from an earlier join only adds values the body could produce
+    // under an input no larger than today's: the lattice climbs, it never
+    // needs to come back down within a round. Cleared per round because the
+    // round loop is where inputs that NARROW (the field audit) change.
+    std::unordered_map<const ast::Node*, Env> nestedCells;
 };
 
 struct FunctionOutcome {

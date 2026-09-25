@@ -709,7 +709,14 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
     // a write late in the body has to be visible to a read early in it. That
     // is a fixpoint, not a forward walk — run the body until the cells stop
     // moving, then once more for real.
+    const bool nested = args.parent != nullptr && args.site != nullptr;
+    if (nested) {
+        if (const auto it = mod.nestedCells.find(args.site); it != mod.nestedCells.end()) {
+            scope.cells = it->second;
+        }
+    }
     bool converged = false;
+    Type probeReturn = Type::dynamic();
     for (uint32_t iter = 0; iter <= kMaxFlowIterations; ++iter) {
         const Env beforeCells = scope.cells;
         scope.env.clear();
@@ -720,9 +727,11 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
         if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
         if (scope.cells == beforeCells) {
             converged = true;
+            probeReturn = probe.inferredReturn(args.body);
             break;
         }
     }
+    if (nested) mod.nestedCells[args.site] = scope.cells;
     if (!converged) {
         mod.failed = true;
         mod.diags->error(args.span, "internal: type inference captured-variable types did not "
@@ -738,12 +747,19 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
         slot = mod.result->functions.size() - 1;
     }
 
-    scope.env.clear();
-    seedParams(scope, params, args.paramTypes);
-    FlowAnalyzer recorder(mod, scope, facts, args.qualifiedName, args.record);
-    recorder.runParamDefaults(params);
-    recorder.runBody(args.body);
-    if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
+    // The recording walk. A probe round records nothing, and its last probe
+    // walk already ran over exactly these cells, so walking again would repeat
+    // it — and, for a nested function, repeat every function nested inside it.
+    Type bodyReturn = probeReturn;
+    if (args.record) {
+        scope.env.clear();
+        seedParams(scope, params, args.paramTypes);
+        FlowAnalyzer recorder(mod, scope, facts, args.qualifiedName, /*record=*/true);
+        recorder.runParamDefaults(params);
+        recorder.runBody(args.body);
+        if (mod.failed) return FunctionOutcome{Type::dynamic(), false};
+        bodyReturn = recorder.inferredReturn(args.body);
+    }
 
     // The module top level DECLARES the module bindings, so its own scope is
     // where most of what they hold is decided — `const _vector = new Vector3()`
@@ -766,8 +782,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
     // told to expect a number coerces the object it actually gets, which is a
     // ToNumber on an object and a hard error at runtime — and only for a
     // numeric return, because the other types need no coercion to be wrong.
-    const Type returnType =
-        args.isGenerator ? Type::dynamic() : recorder.inferredReturn(args.body);
+    const Type returnType = args.isGenerator ? Type::dynamic() : bodyReturn;
     facts.signature.returnType = returnType;
     // A closure's only queryable proof (signature specialization excludes it,
     // so its parameters stay dynamic — but what its body returns is a fact

@@ -70,6 +70,7 @@ bool runTopLevel(ModuleContext& mod, const ModuleSplit& split, bool record) {
 // discovered here widen the callee's `observedParams`, which is what the
 // outer fixpoint folds back into the signatures.
 bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
+    mod.nestedCells.clear();
     for (uint32_t i = 0; i < mod.functions.size(); ++i) {
         FunctionInfo& fn = mod.functions[i];
         std::vector<const ast::Stmt*> body;
