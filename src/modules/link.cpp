@@ -79,7 +79,11 @@ ast::StmtPtr Linker::synthesizeNamespace(uint16_t owner, const std::string& loca
         diags_.error(Span{}, "internal error: synthesized module namespace did not parse");
         return nullptr;
     }
-    if (!renameModuleScope(parsed->body, renames, buffer.fileId(), {}, diags_)) return nullptr;
+    // With the live reads: a getter over an EXTERNAL module's binding (a
+    // re-export of one) reads the instance's current value, not the snapshot.
+    if (!renameModuleScope(parsed->body, renames, buffer.fileId(), {}, diags_, &liveReads_)) {
+        return nullptr;
+    }
     // The literal is 10.4.6's exotic object, not an object with getters. The
     // flag is set on the parsed node rather than spelled in the generated
     // source because no source syntax can say it — which is the point: nothing
@@ -174,8 +178,12 @@ bool Linker::emitSynthesized(const std::string& label, const std::string& src,
 //     const mod3.counter = mod3.#ext["counter"];
 //
 // Every importer of this module was renamed to `mod3.counter` by `buildRenames`
-// exactly as if the module had been evaluated here, so nothing else in the
-// linker has to know the difference.
+// exactly as if the module had been evaluated here. Those consts are a
+// SNAPSHOT, though, taken when this unit starts, and an import is a live view:
+// so every expression that reads one is rewritten, by the rename, to read
+// `mod3.#ext["counter"]` instead (`liveReads_`). The consts remain for the
+// few references that are names rather than expressions (`class C extends
+// Imported`), which read the binding once, where they stand.
 //
 // Only the names this module DECLARES are bound. A name it re-exports from
 // somewhere else resolves to that module's canonical binding, which is either
@@ -190,11 +198,15 @@ bool Linker::synthesizeExternalBindings(uint16_t id, std::vector<ast::StmtPtr>& 
     std::string src = "const " + nsPlaceholder + " = __bronze_module_lookup(\"" +
                       quoteForJs(graph_.modules[id]->displayName) + "\");\n";
     size_t slot = 0;
+    // One local exported under two names (`export { y, y as alsoY }`) is one
+    // binding, declared once.
+    std::set<std::string> bound;
     for (const auto& name : mi.exportOrder) {
         uint16_t defModule = 0;
         std::string defLocal;
         if (!resolveExport(id, name, Span{}, &diags_, defModule, defLocal)) return false;
         if (defModule != id) continue;
+        if (!bound.insert(defLocal).second) continue;
         const std::string placeholder = nsPlaceholder + "_v" + std::to_string(slot++);
         renames[placeholder] = canonicalName(defModule, defLocal);
         src += "const " + placeholder + " = " + nsPlaceholder + "[\"" + quoteForJs(name) +
@@ -207,14 +219,17 @@ bool Linker::synthesizeExternalBindings(uint16_t id, std::vector<ast::StmtPtr>& 
 // The publishing half: a namespace object for this module, left in the realm's
 // registry under the module's canonical path.
 //
-//     const mod3.#ns = { get "counter"() { return mod3.counter; } };
-//     __bronze_module_publish("<path>", mod3.#ns);
+//     const mod3.*published* = { get "counter"() { return mod3.counter; } };
+//     __bronze_module_publish("<path>", mod3.*published*);
 //
 // The namespace is the same 10.4.6 exotic `import * as` builds, and it is built
 // by the same function — so an export read through the registry is a read of
 // this module's own binding, not of a copy taken when the module finished.
 bool Linker::synthesizePublish(uint16_t id, std::vector<ast::StmtPtr>& out) {
-    const std::string local = syntheticLocal("ns");
+    // Not `#ns`: the ENTRY's names are not prefixed (canonicalName), and a
+    // bare `#ns` is a private name to lowering. `*` is the spelling the
+    // linker's other unprefixable synthetic locals use (`export * as`).
+    const std::string local = "*published*";
     auto decl = synthesizeNamespace(id, local, id);
     if (!decl) return false;
     out.push_back(std::move(decl));
@@ -453,6 +468,20 @@ bool Linker::run(ast::Module& out) {
     }
 
     for (const uint16_t id : graph_.evaluationOrder) {
+        if (!graph_.modules[id]->isExternal) continue;
+        const std::string ns = canonicalName(id, syntheticLocal("ext"));
+        for (const auto& name : info_[id].exportOrder) {
+            uint16_t defModule = 0;
+            std::string defLocal;
+            if (!resolveExport(id, name, Span{}, &diags_, defModule, defLocal)) return false;
+            if (defModule != id) continue;
+            // One local exported under two names is one binding; either name
+            // reads it.
+            liveReads_.emplace(canonicalName(id, defLocal), ExternalRead{ns, name});
+        }
+    }
+
+    for (const uint16_t id : graph_.evaluationOrder) {
         ModuleFile& file = *graph_.modules[id];
         ModuleInfo& mi = info_[id];
         // Every import binding this file has, namespace locals included: each
@@ -464,7 +493,8 @@ bool Linker::run(ast::Module& out) {
         for (const auto& entry : mi.imports) {
             importedBindings[entry.first] = graph_.modules[entry.second.module]->displayName;
         }
-        if (!renameModuleScope(file.ast->body, mi.renames, id, importedBindings, diags_)) {
+        if (!renameModuleScope(file.ast->body, mi.renames, id, importedBindings, diags_,
+                               &liveReads_)) {
             return false;
         }
     }
@@ -516,6 +546,22 @@ bool Linker::run(ast::Module& out) {
             continue;
         }
         for (const auto& ns : info_[id].namespaceLocals) {
+            // A namespace OF an external module is the one it published —
+            // the same object, not a second one with the same getters, so
+            // `ns === pageNs` holds across the seam as it does inside a unit.
+            if (graph_.modules[ns.second]->isExternal) {
+                const std::string placeholder = "bz_nsx_" + std::to_string(syntheticCounter_++);
+                std::map<std::string, std::string> renames{
+                    {placeholder, canonicalName(id, ns.first)},
+                    {placeholder + "_src", canonicalName(ns.second, syntheticLocal("ext"))}};
+                if (!emitSynthesized(graph_.modules[id]->displayName + " (namespace of " +
+                                         graph_.modules[ns.second]->displayName + ")",
+                                     "const " + placeholder + " = " + placeholder + "_src;\n",
+                                     renames, out.body)) {
+                    return false;
+                }
+                continue;
+            }
             auto decl = synthesizeNamespace(id, ns.first, ns.second);
             if (!decl) return false;
             out.body.push_back(std::move(decl));
@@ -530,10 +576,10 @@ bool Linker::run(ast::Module& out) {
             out.body.push_back(std::move(stmt));
         }
         // AFTER the statements, because what is published is the module's
-        // state once its top level has run. Never the entry (id 0): the entry
-        // is the program being run, not an instance another unit imports, and
-        // publishing it would make a second run of the same file a no-op.
-        if (graph_.publishModules && id != 0) {
+        // state once its top level has run. The entry (id 0) only when the
+        // host said it is a module file (`publishEntry`): otherwise it is the
+        // program being run, not an instance another unit imports.
+        if (graph_.publishModules && (id != 0 || graph_.publishEntry)) {
             if (!synthesizePublish(id, out.body)) return false;
         }
     }

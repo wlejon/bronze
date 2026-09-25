@@ -29,8 +29,13 @@ namespace {
 class Renamer {
 public:
     Renamer(const std::map<std::string, std::string>& renames, uint16_t fileId,
-            const std::map<std::string, std::string>& importedBindings, DiagnosticSink& diags)
-        : renames_(renames), importedBindings_(importedBindings), diags_(diags), fileId_(fileId) {}
+            const std::map<std::string, std::string>& importedBindings, DiagnosticSink& diags,
+            const std::map<std::string, ExternalRead>* liveReads)
+        : renames_(renames),
+          importedBindings_(importedBindings),
+          liveReads_(liveReads),
+          diags_(diags),
+          fileId_(fileId) {}
 
     bool run(std::vector<ast::StmtPtr>& stmts) {
         // The module's own top level pushes NO scope: its declarations are
@@ -98,7 +103,7 @@ private:
         for (const auto& n : ast::getHoistedVarDeclarations(body)) scope.insert(n);
         shadow_.push_back(std::move(scope));
         for (auto& p : params) {
-            if (p.defaultValue) expr(*p.defaultValue);
+            if (p.defaultValue) slot(p.defaultValue);
             if (p.pattern) pattern(*p.pattern);
             p.span.file = fileId_;
         }
@@ -116,8 +121,8 @@ private:
         for (auto& elem : p.elements) {
             elem.span.file = fileId_;
             if (!elem.name.empty()) rewrite(elem.name);
-            if (elem.keyExpr) expr(*elem.keyExpr);
-            if (elem.defaultValue) expr(*elem.defaultValue);
+            if (elem.keyExpr) slot(elem.keyExpr);
+            if (elem.defaultValue) slot(elem.defaultValue);
             if (elem.pattern) pattern(*elem.pattern);
         }
     }
@@ -136,21 +141,21 @@ private:
             } else {
                 rewrite(vd->name);
             }
-            if (vd->init) expr(*vd->init);
+            if (vd->init) slot(vd->init);
         } else if (auto* ret = dynamic_cast<ast::ReturnStmt*>(&s)) {
-            if (ret->value) expr(*ret->value);
+            if (ret->value) slot(ret->value);
         } else if (auto* es = dynamic_cast<ast::ExprStmt*>(&s)) {
-            expr(*es->expr);
+            slot(es->expr);
         } else if (auto* ifs = dynamic_cast<ast::IfStmt*>(&s)) {
-            expr(*ifs->condition);
+            slot(ifs->condition);
             blockList(ifs->thenBody);
             blockList(ifs->elseBody);
         } else if (auto* wh = dynamic_cast<ast::WhileStmt*>(&s)) {
-            expr(*wh->condition);
+            slot(wh->condition);
             blockList(wh->body);
         } else if (auto* dw = dynamic_cast<ast::DoWhileStmt*>(&s)) {
             blockList(dw->body);
-            expr(*dw->condition);
+            slot(dw->condition);
         } else if (auto* fs = dynamic_cast<ast::ForStmt*>(&s)) {
             // The header's bindings belong to the loop and are visible to the
             // condition, the update and the body — which is exactly why
@@ -159,18 +164,18 @@ private:
             for (const auto& name : ast::getScopeDeclarations(fs->init)) scope.insert(name);
             shadow_.push_back(std::move(scope));
             stmtList(fs->init);
-            if (fs->condition) expr(*fs->condition);
-            if (fs->update) expr(*fs->update);
+            if (fs->condition) slot(fs->condition);
+            if (fs->update) slot(fs->update);
             blockList(fs->body);
             shadow_.pop_back();
         } else if (auto* fi = dynamic_cast<ast::ForInStmt*>(&s)) {
-            expr(*fi->object);
+            slot(fi->object);
             iterationHead(fi->name, fi->pattern.get(), fi->isConst || fi->isLet || fi->isVar, fi->body);
         } else if (auto* fo = dynamic_cast<ast::ForOfStmt*>(&s)) {
-            expr(*fo->iterable);
+            slot(fo->iterable);
             iterationHead(fo->name, fo->pattern.get(), fo->isConst || fo->isLet || fo->isVar, fo->body);
         } else if (auto* sw = dynamic_cast<ast::SwitchStmt*>(&s)) {
-            expr(*sw->discriminant);
+            slot(sw->discriminant);
             // The whole switch body is one block scope (ECMA-262 14.12), so a
             // `let` in one clause shadows for every clause.
             std::set<std::string> scope;
@@ -180,7 +185,7 @@ private:
             shadow_.push_back(std::move(scope));
             for (auto& c : sw->cases) {
                 c.span.file = fileId_;
-                if (c.test) expr(*c.test);
+                if (c.test) slot(c.test);
                 stmtList(c.body);
             }
             shadow_.pop_back();
@@ -204,11 +209,11 @@ private:
             shadow_.pop_back();
             blockList(tr->finallyBody);
         } else if (auto* th = dynamic_cast<ast::ThrowStmt*>(&s)) {
-            expr(*th->value);
+            slot(th->value);
         } else if (auto* cd = dynamic_cast<ast::ClassDecl*>(&s)) {
             const std::string oldName = cd->name;
             rewrite(cd->name);
-            if (cd->superClass) expr(*cd->superClass);
+            if (cd->superClass) slot(cd->superClass);
             else rewrite(cd->superName);
             // The IL symbol of every method was built by the parser as
             // `<class>.<member>`, so it has to move with the class name or two
@@ -226,8 +231,8 @@ private:
             for (auto& m : cd->methods) {
                 // The computed member name is an expression of this file's
                 // module scope, so the names in it move with everything else.
-                if (m.keyExpr) expr(*m.keyExpr);
-                if (m.init) expr(*m.init);
+                if (m.keyExpr) slot(m.keyExpr);
+                if (m.init) slot(m.init);
                 if (!m.fn) continue;
                 m.fn->span.file = fileId_;
                 functionBody(m.fn->params, m.fn->body, std::string());
@@ -277,6 +282,50 @@ private:
 
     // ---- expressions ------------------------------------------------------
 
+    // An expression in the tree, by the owning pointer so that it can be
+    // REPLACED: after the rename, a reference to an external module's export
+    // becomes a read through that module's published namespace (graph.h
+    // `ExternalRead`), which is a different node and not a different name.
+    // Canonical names contain a `.`, so no source binding can shadow one and
+    // no scope question arises — the rename already answered it.
+    //
+    // As a CALLEE the read is `(0, ns["f"])`: `ns["f"](...)` would be a method
+    // call with `this` the namespace, and calling an import binding passes
+    // undefined.
+    void slot(ast::ExprPtr& p, bool callee = false) {
+        if (!p) return;
+        expr(*p);
+        if (!ok_ || !liveReads_) return;
+        const auto* id = dynamic_cast<const ast::Ident*>(p.get());
+        if (!id) return;
+        auto it = liveReads_->find(id->name);
+        if (it == liveReads_->end()) return;
+        const Span span = p->span;
+
+        auto ns = std::make_unique<ast::Ident>();
+        ns->span = span;
+        ns->name = it->second.ns;
+        auto key = std::make_unique<ast::StringLit>();
+        key->span = span;
+        key->value = it->second.exportName;
+        auto read = std::make_unique<ast::IndexAccess>();
+        read->span = span;
+        read->object = std::move(ns);
+        read->index = std::move(key);
+        if (!callee) {
+            p = std::move(read);
+            return;
+        }
+        auto zero = std::make_unique<ast::NumberLit>();
+        zero->span = span;
+        auto seq = std::make_unique<ast::Binary>();
+        seq->span = span;
+        seq->op = ast::BinaryOp::Comma;
+        seq->lhs = std::move(zero);
+        seq->rhs = std::move(read);
+        p = std::move(seq);
+    }
+
     void expr(ast::Expr& e) {
         if (!ok_) return;
         e.span.file = fileId_;
@@ -290,7 +339,7 @@ private:
                    dynamic_cast<ast::RegExpLit*>(&e)) {
             // Nothing below them names anything.
         } else if (auto* tpl = dynamic_cast<ast::TemplateLit*>(&e)) {
-            for (auto& sub : tpl->exprs) expr(*sub);
+            for (auto& sub : tpl->exprs) slot(sub);
         } else if (auto* un = dynamic_cast<ast::Unary*>(&e)) {
             // `x++` writes `x` exactly as `x = x + 1` does (13.4.2.1 step 5
             // PutValue), so an import binding is refused under both spellings.
@@ -300,27 +349,27 @@ private:
                     refuseImportedWrite(target->name, un->span);
                 }
             }
-            expr(*un->operand);
+            slot(un->operand);
         } else if (auto* bin = dynamic_cast<ast::Binary*>(&e)) {
             if (ast::isAssignOp(bin->op)) {
                 if (const auto* target = dynamic_cast<const ast::Ident*>(bin->lhs.get())) {
                     refuseImportedWrite(target->name, bin->span);
                 }
             }
-            expr(*bin->lhs);
-            expr(*bin->rhs);
+            slot(bin->lhs);
+            slot(bin->rhs);
         } else if (auto* ter = dynamic_cast<ast::Ternary*>(&e)) {
-            expr(*ter->condition);
-            expr(*ter->thenExpr);
-            expr(*ter->elseExpr);
+            slot(ter->condition);
+            slot(ter->thenExpr);
+            slot(ter->elseExpr);
         } else if (auto* mem = dynamic_cast<ast::MemberAccess*>(&e)) {
-            expr(*mem->object);  // `property` is a key, never a binding
+            slot(mem->object);  // `property` is a key, never a binding
         } else if (auto* idx = dynamic_cast<ast::IndexAccess*>(&e)) {
-            expr(*idx->object);
-            expr(*idx->index);
+            slot(idx->object);
+            slot(idx->index);
         } else if (auto* call = dynamic_cast<ast::Call*>(&e)) {
-            expr(*call->callee);
-            for (auto& arg : call->args) expr(*arg);
+            slot(call->callee, /*callee=*/true);
+            for (auto& arg : call->args) slot(arg);
         } else if (auto* nw = dynamic_cast<ast::NewExpr*>(&e)) {
             // The callee is an expression, so it recurses like any other one.
             // A bare name still lands on the `Ident` branch above and is
@@ -328,39 +377,39 @@ private:
             // `new imported.Ctor()`, which `rewrite` on a string could not
             // have reached and which would otherwise have bound to whatever
             // the importing file happened to call `imported`.
-            expr(*nw->callee);
-            for (auto& arg : nw->args) expr(*arg);
+            slot(nw->callee);
+            for (auto& arg : nw->args) slot(arg);
         } else if (auto* sc = dynamic_cast<ast::SuperCall*>(&e)) {
-            if (sc->baseExpr) expr(*sc->baseExpr);
+            if (sc->baseExpr) slot(sc->baseExpr);
             else rewrite(sc->baseName);
-            for (auto& arg : sc->args) expr(*arg);
+            for (auto& arg : sc->args) slot(arg);
         } else if (auto* sm = dynamic_cast<ast::SuperMember*>(&e)) {
-            if (sm->baseExpr) expr(*sm->baseExpr);
+            if (sm->baseExpr) slot(sm->baseExpr);
             else rewrite(sm->baseName);
-            if (sm->propertyExpr) expr(*sm->propertyExpr);
+            if (sm->propertyExpr) slot(sm->propertyExpr);
         } else if (auto* spr = dynamic_cast<ast::SpreadElement*>(&e)) {
-            expr(*spr->argument);
+            slot(spr->argument);
         } else if (auto* y = dynamic_cast<ast::YieldExpr*>(&e)) {
             // The operand is ordinary code of this module; the value the node
             // produces comes from a caller and names nothing.
-            expr(*y->argument);
+            slot(y->argument);
         } else if (auto* di = dynamic_cast<ast::DynamicImportExpr*>(&e)) {
-            if (di->specifier) expr(*di->specifier);
+            if (di->specifier) slot(di->specifier);
         } else if (auto* da = dynamic_cast<ast::DestructuringAssign*>(&e)) {
             // Every element of this pattern is an assignment TARGET — it
             // declares nothing — so each name it writes is refused like the
             // left side of an `=`.
             refuseImportedWrites(*da->pattern, da->span);
             pattern(*da->pattern);
-            expr(*da->value);
+            slot(da->value);
         } else if (auto* obj = dynamic_cast<ast::ObjectLit*>(&e)) {
             for (auto& prop : obj->props) {
-                if (prop.keyExpr) expr(*prop.keyExpr);
-                if (prop.value) expr(*prop.value);
+                if (prop.keyExpr) slot(prop.keyExpr);
+                if (prop.value) slot(prop.value);
             }
         } else if (auto* arr = dynamic_cast<ast::ArrayLit*>(&e)) {
             for (auto& elem : arr->elements) {
-                if (elem) expr(*elem);
+                if (elem) slot(elem);
             }
         } else if (auto* fe = dynamic_cast<ast::FunctionExpr*>(&e)) {
             // A named function expression's name is a binding visible only
@@ -369,18 +418,18 @@ private:
             // a `.` or a space, so no reference can ever spell one.
             functionBody(fe->params, fe->body, fe->isArrow ? std::string() : fe->name);
         } else if (auto* ce = dynamic_cast<ast::ClassExpr*>(&e)) {
-            if (ce->superClass) expr(*ce->superClass);
+            if (ce->superClass) slot(ce->superClass);
             else rewrite(ce->superName);
             for (auto& m : ce->methods) {
-                if (m.keyExpr) expr(*m.keyExpr);
-                if (m.init) expr(*m.init);
+                if (m.keyExpr) slot(m.keyExpr);
+                if (m.init) slot(m.init);
                 if (!m.fn) continue;
                 m.fn->span.file = fileId_;
                 functionBody(m.fn->params, m.fn->body, std::string());
             }
         } else if (auto* tt = dynamic_cast<ast::TaggedTemplate*>(&e)) {
-            expr(*tt->tag);
-            for (auto& exp : tt->templateLit->exprs) expr(*exp);
+            slot(tt->tag, /*callee=*/true);
+            for (auto& exp : tt->templateLit->exprs) slot(exp);
         } else if (dynamic_cast<ast::NewTargetExpr*>(&e)) {
             // new.target carries no identifier bindings
         } else if (dynamic_cast<ast::ImportMetaExpr*>(&e)) {
@@ -424,6 +473,7 @@ private:
 
     const std::map<std::string, std::string>& renames_;
     const std::map<std::string, std::string>& importedBindings_;
+    const std::map<std::string, ExternalRead>* liveReads_ = nullptr;
     DiagnosticSink& diags_;
     uint16_t fileId_ = 0;
     bool ok_ = true;
@@ -435,8 +485,9 @@ private:
 bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& renames, uint16_t fileId,
                        const std::map<std::string, std::string>& importedBindings,
-                       DiagnosticSink& diags) {
-    return Renamer(renames, fileId, importedBindings, diags).run(stmts);
+                       DiagnosticSink& diags,
+                       const std::map<std::string, ExternalRead>* liveReads) {
+    return Renamer(renames, fileId, importedBindings, diags, liveReads).run(stmts);
 }
 
 }  // namespace bronze::modules

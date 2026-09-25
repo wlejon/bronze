@@ -204,6 +204,7 @@ std::unique_ptr<BrassJitProgram> compileAstToJit(
 void applyModuleRegistry(const EvalOptions& options, modules::ModuleOptions& modOpts) {
     if (!options.moduleRegistry) return;
     modOpts.publishModules = true;
+    modOpts.publishEntry = options.publishEntry;  // a page's module FILE entry
     if (!options.externalModules.empty()) {
         modOpts.externalModules = options.externalModules;
     } else {

@@ -82,6 +82,9 @@ struct Graph {
     // registry under its canonical path, so a unit compiled later in the same
     // realm can bind that instance instead of building its own.
     bool publishModules = false;
+    // `ModuleOptions::publishEntry`, carried the same way: the entry is
+    // published too, under its canonical path.
+    bool publishEntry = false;
 };
 
 // Reads, lexes and parses the entry and everything it reaches. False on a
@@ -128,9 +131,25 @@ bool linkGraph(Graph& graph, SourceSet& sources, DiagnosticSink& diags, ast::Mod
 // alone: leaving one alone is a reference that keeps a name the linker has
 // moved, and the two failure modes are a wrong binding and a wrong shadow —
 // both silent.
+//
+// `liveReads` turns a READ of an EXTERNAL module's export into a read through
+// the namespace an earlier unit published (graph.h `ModuleFile::isExternal`).
+// It is keyed by the export's CANONICAL name — what the rename has just made
+// the reference — so it applies to exactly the references that resolved to
+// that binding. The binding itself is a snapshot the linker takes when the
+// unit starts; an import is a LIVE view (16.2.1.6.1 CreateImportBinding), and
+// the exporting module's later `y = 2` has to show through it. A call through
+// one is rewritten `(0, ns["f"])(...)` so the callee still sees `this`
+// undefined, as it would calling the binding.
+struct ExternalRead {
+    std::string ns;          // canonical name of the published namespace binding
+    std::string exportName;  // the property of it to read
+};
+
 bool renameModuleScope(std::vector<ast::StmtPtr>& stmts,
                        const std::map<std::string, std::string>& renames, uint16_t fileId,
                        const std::map<std::string, std::string>& importedBindings,
-                       DiagnosticSink& diags);
+                       DiagnosticSink& diags,
+                       const std::map<std::string, ExternalRead>* liveReads = nullptr);
 
 }  // namespace bronze::modules

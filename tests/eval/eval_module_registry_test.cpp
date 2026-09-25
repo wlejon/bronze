@@ -167,6 +167,92 @@ TEST_CASE("a namespace import and a default export cross the seam") {
     std::filesystem::remove_all(dir, ec);
 }
 
+TEST_CASE("an import across the seam is a live binding, not a snapshot") {
+    const std::filesystem::path dir = makeDir("bronze_modreg_live");
+    writeFile(dir / "live.js",
+              "export let y = 1;\n"
+              "export let c = null;\n"
+              "export function bump() { y++; }\n"
+              "export function rebuild() { c = { n: (c ? c.n : 0) + 1 }; }\n"
+              "export function readC() { return c; }\n"
+              "export function who() { return this; }\n"
+              "export { y as alsoY };\n");
+
+    embed::CallResult page = evalScript(
+        "import { rebuild } from './live.js'; rebuild(); 0",
+        unitOptions(dir, "page.js"));
+    REQUIRE(!page.thrown);
+
+    // Every write below happens in the exporting module's instance, after the
+    // driver's bindings exist. A snapshot would still say 1 / the first `c`.
+    embed::CallResult driver = evalScript(
+        "import { y, alsoY, c, bump, rebuild, readC, who } from './live.js';\n"
+        "import * as ns from './live.js';\n"
+        "const out = [];\n"
+        "bump();\n"
+        "out.push(y === 2, alsoY === 2, ns.y === 2);\n"
+        "rebuild();\n"
+        "out.push(c === readC(), c.n === 2, ns.c === c);\n"
+        "out.push(who() === undefined);\n"
+        "const f = () => y; bump(); out.push(f() === 3);\n"
+        "globalThis.__modregLiveNs = ns;\n"
+        "out.join(',')",
+        unitOptions(dir, "driver.js"));
+    INFO((driver.thrown ? embed::toUtf8(driver.value) : std::string()));
+    REQUIRE(!driver.thrown);
+    CHECK(embed::toUtf8(driver.value) == "true,true,true,true,true,true,true,true");
+
+    // A namespace import of an instance another unit made IS that instance's
+    // published namespace, so two later units see one object.
+    embed::CallResult third = evalScript(
+        "import * as ns from './live.js'; ns === globalThis.__modregLiveNs && ns.y === 3",
+        unitOptions(dir, "third.js"));
+    REQUIRE(!third.thrown);
+    CHECK(third.value.asBool());
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("publishEntry: a module-file entry is the instance a later unit imports") {
+    const std::filesystem::path dir = makeDir("bronze_modreg_entry");
+    std::filesystem::create_directories(dir / "sub");
+    writeFile(dir / "dep.js",
+              "globalThis.__modregDepRuns = (globalThis.__modregDepRuns || 0) + 1;\n"
+              "export const d = 1;\n");
+    const std::string mainSrc =
+        "import { d } from './dep.js';\n"
+        "globalThis.__modregMainRuns = (globalThis.__modregMainRuns || 0) + 1;\n"
+        "export let state = d;\n"
+        "export function setState(v) { state = v; }\n";
+    writeFile(dir / "main.js", mainSrc);
+
+    // As a host hands a `<script type="module" src>` over: the file's text, the
+    // file's path — spelled un-canonically, as a host's own path join may.
+    EvalOptions page;
+    page.filename = (dir / "sub" / ".." / "main.js").string();
+    page.entryResolvesAs = dir / "main.js";
+    page.moduleRegistry = true;
+    page.publishEntry = true;
+    embed::CallResult r1 = evalScript(mainSrc, page);
+    INFO((r1.thrown ? embed::toUtf8(r1.value) : std::string()));
+    REQUIRE(!r1.thrown);
+
+    embed::CallResult r2 = evalScript(
+        "import { state, setState } from './main.js'; setState(5); state",
+        unitOptions(dir, "driver.js"));
+    REQUIRE(!r2.thrown);
+    CHECK(r2.value.asNumber() == 5.0);
+
+    embed::CallResult runs =
+        evalScript("globalThis.__modregMainRuns * 10 + globalThis.__modregDepRuns", EvalOptions{});
+    REQUIRE(!runs.thrown);
+    CHECK(runs.value.asNumber() == 11.0);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 TEST_CASE("the registry is off unless the host asks, and the entry is never published") {
     const std::filesystem::path dir = makeDir("bronze_modreg_off");
     writeFile(dir / "twice.js",

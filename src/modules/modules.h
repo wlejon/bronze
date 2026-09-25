@@ -58,6 +58,15 @@ struct ModuleOptions {
     // it never reads is a namespace object per module for nothing.
     bool publishModules = false;
     std::vector<std::string> externalModules;
+    // Publish the ENTRY as well (with `publishModules`). The entry is normally
+    // the program being run, not an instance anyone imports — a driver script
+    // run twice must run twice. A host's `<script type="module" src=x.js>` is
+    // different: it IS the module instance for x.js, and a later unit's
+    // `import "x.js"` must bind it rather than run the page's boot again. The
+    // entry is then keyed by its canonical path, the key an import resolves to.
+    // Only for an entry that is a real file; inline script text has no URL a
+    // module could be imported by.
+    bool publishEntry = false;
 };
 
 // Loads an import map from a JSON file, resolving relative target paths relative

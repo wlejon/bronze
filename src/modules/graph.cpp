@@ -545,6 +545,7 @@ bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink&
     }
     uint16_t entryId = 0;
     out.publishModules = effectiveOptions.publishModules;
+    out.publishEntry = effectiveOptions.publishModules && effectiveOptions.publishEntry;
     if (!Loader(sources, diags, out, effectiveOptions).load(entry, Span{}, entryId)) return false;
     return entryId == 0;
 }
@@ -577,6 +578,16 @@ bool loadGraphSource(const std::string& code, const std::string& entryPath,
     std::filesystem::path entry(dispName);
     uint16_t entryId = 0;
     out.publishModules = effectiveOptions.publishModules;
+    out.publishEntry = effectiveOptions.publishModules && effectiveOptions.publishEntry &&
+                       !entryPath.empty();
+    if (out.publishEntry) {
+        // Keyed as an import of it would resolve (resolve.cpp canonicalizes
+        // every specifier it resolves), or the published entry is a key no
+        // later unit ever asks for.
+        std::error_code ec;
+        std::filesystem::path canonical = std::filesystem::weakly_canonical(entry, ec);
+        if (!ec) entry = canonical;
+    }
     if (!Loader(sources, diags, out, effectiveOptions).loadSource(entry, code, Span{}, entryId)) {
         return false;
     }

@@ -48,6 +48,11 @@ struct EvalOptions {
     bool optimize = true;
     bool emitDebugInfo = false;
     bool moduleRegistry = false;
+    // With moduleRegistry: publish the entry file itself too
+    // (modules::ModuleOptions::publishEntry), for a host whose entry is a
+    // module FILE another unit may import — a page's `<script type="module"
+    // src>`. Never for a driver script or inline script text.
+    bool publishEntry = false;
     std::vector<std::string> externalModules = {};
     std::optional<ExecutionTier> tier = std::nullopt;
 };

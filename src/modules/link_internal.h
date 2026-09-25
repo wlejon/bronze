@@ -106,6 +106,10 @@ public:
     SourceSet& sources_;
     DiagnosticSink& diags_;
     std::vector<ModuleInfo> info_;
+    // Every binding an EXTERNAL module declares and exports, by canonical
+    // name: a read of one is a read through the published namespace
+    // (graph.h `ExternalRead`). Built once the renames exist.
+    std::map<std::string, ExternalRead> liveReads_;
     size_t syntheticCounter_ = 0;
 };
 
