@@ -189,7 +189,12 @@ constexpr const char* kUsage =
     "                                      the module imports THAT machine's shared\n"
     "                                      runtime by name. A program (neither flag)\n"
     "                                      needs its host binary and is this\n"
-    "                                      machine's only.\n"
+    "                                      machine's only. A Darwin target may name\n"
+    "                                      its minimum OS (aarch64-macos13.0; else\n"
+    "                                      MACOSX_DEPLOYMENT_TARGET, else the one\n"
+    "                                      bronze was built for), and iOS is\n"
+    "                                      aarch64-ios[<version>] or\n"
+    "                                      <arch>-ios[<version>]-simulator.\n"
     "\n"
     "TS annotations are untrusted hints. One that inference does not prove is\n"
     "discarded with a warning and the value stays dynamic.\n";

@@ -247,10 +247,12 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     // target's own host binary) for another machine, is refused before any
     // compilation.
     brass::Target target = brass::Target::host();
+    brass::object::MachOBuildVersion machoVersion;
     if (!targetName.empty()) {
         std::string targetErr;
-        if (!parseTargetName(targetName, target, targetErr) ||
-            (target != brass::Target::host() && !emitObj && !emitShared)) {
+        if (!parseTargetName(targetName, target, targetErr, &machoVersion) ||
+            ((target != brass::Target::host() || machoVersion.platform != brass::object::macho::PLATFORM_MACOS) &&
+             !emitObj && !emitShared)) {
             std::string msg = targetErr.empty()
                 ? "error: --target " + targetName + " builds an object or a module for that "
                   "machine (--emit-obj or --emit-shared); a program needs its host binary\n"
@@ -387,6 +389,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         if (!entrySymbol.empty()) objBackend.setEntrySymbol(entrySymbol);
         objBackend.setHostGlobals(hostGlobals);
         objBackend.setTarget(target);
+        objBackend.setMachOBuildVersion(machoVersion);
         objBackend.setEmitDebugInfo(emitDebugInfo);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
@@ -418,7 +421,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         return 1;
     }
 
-    const bool linked = emitShared ? linkSharedModule(*obj, outputPath, diags, entrySymbol)
+    const bool linked = emitShared ? linkSharedModule(*obj, outputPath, diags, entrySymbol, machoVersion)
                                    : linkExecutable(*obj, outputPath, diags);
     timer.mark("link");
     timer.total();

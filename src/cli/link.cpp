@@ -432,7 +432,8 @@ bool stageRedist(const fs::path& runtimeDir, const fs::path& outDir, DiagnosticS
 }  // namespace
 
 bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& outputPath,
-                      DiagnosticSink& diags, const std::string& entrySymbol) {
+                      DiagnosticSink& diags, const std::string& entrySymbol,
+                      const brass::object::MachOBuildVersion& machoVersion) {
     const std::string entry = entrySymbol.empty() ? "bronze_main" : entrySymbol;
 
     // Every import is a runtime export or a C math function, checked here by
@@ -463,6 +464,7 @@ bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& o
     options.soname = options.module_name;
     options.export_all_functions = false;
     options.explicit_exports = moduleExports(obj, entry);
+    options.macho_build_version = machoVersion;
     if (!runtimeImports.empty()) options.imports.push_back({names.runtimeImport, runtimeImports});
     if (!mathImports.empty()) options.imports.push_back({names.mathImport, mathImports});
     if (names.ownDirRpath) {

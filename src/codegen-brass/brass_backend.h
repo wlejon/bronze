@@ -4,6 +4,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <brass/object/macho_writer.hpp>
 #include <brass/object/object_writer.hpp>
 #include "codegen/backend.h"
 #include "codegen-brass/brass_jit.h"
@@ -45,6 +46,11 @@ public:
     // a program needs the target's own host binary, so it stays native.
     void setTarget(const brass::Target& target) { target_ = target; }
     const brass::Target& target() const { return target_; }
+    // What a Mach-O object's LC_BUILD_VERSION says (`--target
+    // aarch64-ios16.0`): the platform and minimum OS; zero fields are
+    // brass's defaults (MACOSX_DEPLOYMENT_TARGET, then the deployment target
+    // brass was built for).
+    void setMachOBuildVersion(const brass::object::MachOBuildVersion& v) { machoVersion_ = v; }
     void setEmitDebugInfo(bool on) { emitDebugInfo_ = on; }
     bool emitDebugInfo() const { return emitDebugInfo_; }
     // Whether the module init registers function source slices
@@ -81,6 +87,7 @@ private:
     bool registerFnSources_ = true;
     bool perThreadModuleData_ = true;
     brass::Target target_ = brass::Target::host();
+    brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;
 };

@@ -477,7 +477,7 @@ bool BrassBackend::emitObject(const il::Module& module, const std::string& outpu
         brass::object::CoffWriter writer(*obj);
         writeSuccess = writer.write_to_file(outputPath);
     } else if (target.is_macos()) {
-        brass::object::MachOWriter writer(*obj);
+        brass::object::MachOWriter writer(*obj, machoVersion_);
         writeSuccess = writer.write_to_file(outputPath);
     } else {
         brass::object::ElfWriter writer(*obj);

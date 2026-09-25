@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include <brass/object/macho_writer.hpp>
 #include <brass/object/object_writer.hpp>
 
 #include "support/diagnostics.h"
@@ -34,9 +35,11 @@ namespace bronze::cli {
 // ELF and Mach-O modules carry a run-time search path: their own directory
 // first, then the directory the shared runtime was found in (see
 // findSharedRuntimeDir), so a host beside the runtime or with it already
-// loaded resolves the same library either way.
+// loaded resolves the same library either way. A Mach-O module's
+// LC_BUILD_VERSION is `machoVersion` (zero fields: brass's defaults).
 bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& outputPath,
-                      DiagnosticSink& diags, const std::string& entrySymbol = "bronze_main");
+                      DiagnosticSink& diags, const std::string& entrySymbol = "bronze_main",
+                      const brass::object::MachOBuildVersion& machoVersion = {});
 
 // Object -> native program at `outputPath`: the module written beside it with
 // the platform's library extension in place of the output's, the prebuilt
