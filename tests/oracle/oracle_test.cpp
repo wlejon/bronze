@@ -72,12 +72,38 @@ RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
     return oracle::runCommand(oracle::quoted(exePath), gcStress, timeoutMs);
 }
 
+// BRONZE_ORACLE_TIER: the tier the in-process suite is pinned to, or empty
+// for `bronze run`'s default (the tiered pipeline).
+std::string pinnedTier() {
+#if defined(_MSC_VER)
+    char* env = nullptr;
+    size_t len = 0;
+    std::string tier;
+    if (_dupenv_s(&env, &len, "BRONZE_ORACLE_TIER") == 0 && env != nullptr) tier = env;
+    free(env);
+    return tier;
+#else
+    const char* env = std::getenv("BRONZE_ORACLE_TIER");
+    return env ? std::string(env) : std::string();
+#endif
+}
+
+// The pinned tier as a file-name suffix: the suites at each tier run as
+// separate ctest processes at once and must not share a reference build.
+std::string tierSuffix() {
+    const std::string tier = pinnedTier();
+    return tier.empty() ? std::string() : "_t" + tier;
+}
+
 // `bronze run <entry>`: the source compiled in-process by the JIT and run in
-// that same process, as the engine does it. `hostGlobals` is the manifest a
-// build of the same case would take.
+// that same process, as the engine does it, at the pinned tier (`--tier=`)
+// when there is one. `hostGlobals` is the manifest a build of the same case
+// would take.
 RunResult runInJit(const std::filesystem::path& entry, bool gcStress = false,
                    uint32_t timeoutMs = kRunTimeoutMs, const std::string& hostGlobals = {}) {
-    std::string cmd = oracle::quoted(TEST_BRONZE_CLI) + " run " + oracle::quoted(entry.string());
+    std::string cmd = oracle::quoted(TEST_BRONZE_CLI) + " run ";
+    if (const std::string tier = pinnedTier(); !tier.empty()) cmd += "--tier=" + tier + " ";
+    cmd += oracle::quoted(entry.string());
     if (!hostGlobals.empty()) cmd += " --host-globals " + oracle::quoted(hostGlobals);
     return oracle::runCommand(cmd, gcStress, timeoutMs);
 }
@@ -541,7 +567,7 @@ TEST_CASE("Oracle JIT differential test suite") {
                 // Its own output name: the AOT suite may be building the same
                 // case in another ctest process at the same time.
                 std::filesystem::path exe =
-                    bronze_test::tempDir() / (oracleCase.id + "_oracle_jitref.exe");
+                    bronze_test::tempDir() / (oracleCase.id + "_oracle_jitref" + tierSuffix() + ".exe");
                 std::error_code ec;
                 removeProgram(exe, ec);
                 res.buildStatus =

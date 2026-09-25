@@ -9,6 +9,7 @@
 
 #include "abi/bronze_native_type.h"  // bronze_native_buffer: a `T[]` return's out-descriptor
 #include "runtime/host_globals.h"
+#include "runtime/interpreted_frames.h"
 #include "runtime/native_handle.h"
 #include "runtime/value.h"
 #include "embed/embed_handle.h"
@@ -227,6 +228,12 @@ using EnterJsHook = bool (*)(uint64_t (*code)(uint64_t, uint64_t, uint32_t, cons
                              uint64_t env_bits, uint64_t this_bits, uint32_t argc,
                              const uint64_t* argv, uint64_t* out_result);
 BRONZE_EMBED_API void setEnterJsHook(EnterJsHook hook);
+
+// Install (or, with nullptr, remove) the process's interpreted-frame walker
+// (runtime/interpreted_frames.h): how a stack trace sees the JS frames the
+// tiered engine is interpreting, which have no native code to find. On this
+// surface for the reason setEnterJsHook is: it must reach the ONE runtime.
+BRONZE_EMBED_API void setInterpretedFrameWalker(runtime::InterpretedFrameWalker walker);
 
 // Install (or, with nullptr, remove) the calling thread's promise-rejection
 // hook: HostPromiseRejectionTracker as an embedder with an event loop wants it

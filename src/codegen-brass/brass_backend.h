@@ -73,6 +73,14 @@ public:
     std::optional<brass::object::ObjectFile> buildObjectFile(const il::Module& module,
                                                             DiagnosticSink& diags);
 
+    // The bronze-owned sections alone (brass_backend_sections.h), for a MIR
+    // module that another engine runs (the tiered pipeline): the tables,
+    // descriptors and data cells an object file carries, and no code. Its
+    // references to the module's functions stay undefined, for the loader to
+    // bind to wherever that engine keeps them. `globalCacheCount` is the
+    // number of read keys buildMirModule reported.
+    brass::object::ObjectFile buildDataImage(const il::Module& module, size_t globalCacheCount);
+
     std::unique_ptr<BrassJitProgram> compileToJit(const il::Module& module,
                                                   DiagnosticSink& diags);
 

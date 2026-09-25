@@ -29,6 +29,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
+#include "runtime/interpreted_frames.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -61,17 +62,19 @@ struct CodeRangeRegistry {
         registered_ptrs.insert(ranges);
         uintptr_t mn = min_addr.load(std::memory_order_relaxed);
         uintptr_t mx = max_addr.load(std::memory_order_relaxed);
+        // Sorted insertion: the tiered engine registers its code a function
+        // at a time, as it installs it, so a whole-table sort per call would
+        // make n installs cost n^2 log n.
+        const auto byStart = [](const RangeEntry& a, const RangeEntry& b) { return a.start < b.start; };
         for (uint32_t i = 0; i < count; ++i) {
             if (!ranges[i].code_start || ranges[i].code_size == 0) continue;
             uintptr_t s = reinterpret_cast<uintptr_t>(ranges[i].code_start);
             uintptr_t e = s + ranges[i].code_size;
             if (s < mn) mn = s;
             if (e > mx) mx = e;
-            entries.push_back({s, e, &ranges[i]});
+            const RangeEntry entry{s, e, &ranges[i]};
+            entries.insert(std::upper_bound(entries.begin(), entries.end(), entry, byStart), entry);
         }
-        std::sort(entries.begin(), entries.end(), [](const RangeEntry& a, const RangeEntry& b) {
-            return a.start < b.start;
-        });
         min_addr.store(mn, std::memory_order_release);
         max_addr.store(mx, std::memory_order_release);
         entry_count.store(entries.size(), std::memory_order_release);
@@ -121,6 +124,24 @@ struct CodeRangeRegistry {
 };
 
 static CodeRangeRegistry g_code_ranges;
+
+std::atomic<InterpretedFrameWalker> g_interpreted_walker{nullptr};
+
+// The calling thread's interpreted frames, innermost first (ascending stack
+// address), or none without a walker.
+std::vector<InterpretedFrame> interpretedFrames() {
+    std::vector<InterpretedFrame> out;
+    InterpretedFrameWalker walker = g_interpreted_walker.load(std::memory_order_acquire);
+    if (!walker) return out;
+    out.resize(64);
+    size_t n = walker(out.data(), out.size());
+    if (n > out.size()) {
+        out.resize(n);
+        n = walker(out.data(), out.size());
+    }
+    out.resize(std::min(n, out.size()));
+    return out;
+}
 
 static inline void get_stack_bounds(uintptr_t& low, uintptr_t& high) {
 #if defined(_WIN32)
@@ -217,6 +238,14 @@ uint32_t getStackTraceLimit() {
 
 }  // namespace
 
+void rtSetInterpretedFrameWalker(InterpretedFrameWalker walker) noexcept {
+    g_interpreted_walker.store(walker, std::memory_order_release);
+}
+
+InterpretedFrameWalker rtGetInterpretedFrameWalker() noexcept {
+    return g_interpreted_walker.load(std::memory_order_acquire);
+}
+
 void bronze_register_code_ranges_internal(const void* ranges, uint32_t count) {
     g_code_ranges.registerRanges(static_cast<const bronze_code_range*>(ranges), count);
 }
@@ -300,23 +329,49 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     };
     std::vector<StackFrameInfo> frames;
 
+    // Compiled frames are found by walking the native stack; interpreted ones
+    // are the interpreter's to report (interpreted_frames.h), each with the
+    // stack address of its record. The two lists merge by that address: an
+    // interpreted frame whose record lies below a native frame's stack
+    // pointer is more recent than that native frame. The walk ends at the
+    // first top-level frame of either kind, the program's outermost.
+    const size_t cap = limit + 10;
+    const std::vector<InterpretedFrame> interpreted = interpretedFrames();
+    size_t nextInterpreted = 0;
+    bool reachedTop = false;
+    const auto done = [&] { return reachedTop || frames.size() >= cap; };
+    const auto flushInterpreted = [&](uintptr_t bound) {
+        while (!done() && nextInterpreted < interpreted.size() &&
+               interpreted[nextInterpreted].stackAddress < bound) {
+            const InterpretedFrame& f = interpreted[nextInterpreted++];
+            if (!f.desc) continue;
+            frames.push_back({f.desc, f.line, f.col, f.desc->code, nullptr, f.file});
+            reachedTop = (f.desc->flags & BRONZE_FN_DESC_TOPLEVEL) != 0;
+        }
+    };
+    const auto pushCompiled = [&](const CodeSite& site) {
+        frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr, site.file});
+        reachedTop = (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) != 0;
+    };
+
 #if defined(_WIN32) && defined(_M_X64)
     CONTEXT ctx;
     RtlCaptureContext(&ctx);
 
-    while (ctx.Rip != 0 && frames.size() < limit + 10) {
+    while (ctx.Rip != 0 && !done()) {
         uintptr_t prev_rip = ctx.Rip;
         uintptr_t prev_rsp = ctx.Rsp;
+
+        // This frame's own locals lie at or above its stack pointer.
+        flushInterpreted(ctx.Rsp);
+        if (done()) break;
 
         // The first frame's Rip is the instruction after the call into the
         // runtime, and every later one a return address: the byte before it
         // is the call, and the range and pc-table lookups both see that byte.
         if (CodeSite site; find_code_site(reinterpret_cast<const void*>(ctx.Rip - 1), site)) {
-            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr,
-                              site.file});
-            if (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
-                break;
-            }
+            pushCompiled(site);
+            if (done()) break;
         }
 
         DWORD64 imageBase = 0;
@@ -361,19 +416,21 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     // runtime exports the ABI and nothing else, so it would name the nearest
     // export before the pc rather than the builtin itself.
     void* cur_rbp = __builtin_frame_address(0);
-    while (valid_ptr(cur_rbp, 16) && frames.size() < limit + 10) {
+    while (valid_ptr(cur_rbp, 16) && !done()) {
         uintptr_t* fp = static_cast<uintptr_t*>(cur_rbp);
         uintptr_t caller_rbp = fp[0];
         uintptr_t caller_rip = fp[1];
         if (caller_rip == 0) break;
         void* call_pc = reinterpret_cast<void*>(caller_rip - 1);
 
+        // The caller's locals lie above the saved frame pointer and return
+        // address; everything below them is more recent than the caller.
+        flushInterpreted(reinterpret_cast<uintptr_t>(cur_rbp) + 16);
+        if (done()) break;
+
         if (CodeSite site; find_code_site(call_pc, site)) {
-            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr,
-                              site.file});
-            if (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
-                break;
-            }
+            pushCompiled(site);
+            if (done()) break;
         } else if (void* fnBegin = _Unwind_FindEnclosingFunction(call_pc)) {
             const char* builtinName = rtGetNativeDisplayName(fnBegin);
             if (builtinName) {
@@ -387,6 +444,8 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         cur_rbp = reinterpret_cast<void*>(caller_rbp);
     }
 #endif
+    // Interpreted frames older than every native frame the walk reached.
+    flushInterpreted(UINTPTR_MAX);
 
     size_t start_idx = 0;
     if (skipFn.isObject() && skipFn.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {

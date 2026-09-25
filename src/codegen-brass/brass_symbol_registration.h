@@ -17,11 +17,15 @@ namespace bronze {
 // behalf can land outside bronze's collector. Idempotent.
 void installBronzeHostSymbols();
 
-// The same set, into an engine bronze builds itself. Each installs the
-// provider first.
-void registerBronzeFastInterpreterSymbols(brass::FastInterpreter& interp);
-void registerBronzeBaselineSymbols(brass::codegen::BaselineJitCompiler& compiler);
+// The same set, into an engine bronze builds itself. Installs the provider
+// first.
 void registerBronzeJitSymbols(brass::codegen::JitExecutionEngine& engine);
+
+// Routes the calling thread's C++ -> JS calls (runtime/fn.h rtEnterJs) to a
+// function the thread's running fast interpreter still interprets into that
+// interpreter, rather than through the function's native stub. Per thread:
+// called on each thread that runs a tiered program, as it runs it.
+void installBronzeEnterJsHook();
 
 // Readies an initialized pipeline for bronze: the provider (which reaches
 // every engine the pipeline makes from here on) and its baseline compiler,

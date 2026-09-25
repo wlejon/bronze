@@ -458,6 +458,19 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     return obj;
 }
 
+brass::object::ObjectFile BrassBackend::buildDataImage(const il::Module& module, size_t globalCacheCount) {
+    support::PhaseTimer timer(support::timingsEnabled(), 4);
+    const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
+    const std::vector<uint32_t> methodIcSites = module.methodIcSites();
+    brass::object::ObjectFile obj;
+    obj.target = target_;
+    obj.module_name = module.name;
+    codegen::SectionInputs sectionInputs{module, uniqueNames, entrySymbol_, hostGlobals_,
+                                         globalCacheCount, methodIcSites};
+    codegen::emitBronzeSections(obj, target_, sectionInputs, timer);
+    return obj;
+}
+
 bool BrassBackend::emitObject(const il::Module& module, const std::string& outputPath,
                               DiagnosticSink& diags) {
     auto obj = buildObjectFile(module, diags);

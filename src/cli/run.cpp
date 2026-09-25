@@ -23,7 +23,14 @@ static int reportUncaught(Value thrown) {
     return 1;
 }
 
+// `--tier` sets the process default, so the program's own eval() and
+// new Function() run at the tier it names too.
+static void applyTier(std::optional<ExecutionTier> tier) {
+    if (tier) eval::setDefaultTier(*tier);
+}
+
 int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool emitDebugInfo) {
+    applyTier(tier);
     embed::setupIo();
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
@@ -39,6 +46,7 @@ int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool e
 
 int runFileInJitReal(const std::string& filePath, const std::vector<std::string>& hostGlobals,
                      std::optional<ExecutionTier> tier, bool emitDebugInfo) {
+    applyTier(tier);
     embed::setupIo();
     // This thread runs the program's JIT-compiled JS: the same note the
     // standalone main and the embed entry make, so BRONZE_SAMPLE=1 profiles

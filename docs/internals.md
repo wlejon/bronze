@@ -250,15 +250,16 @@ key remap stays shared: it holds process-wide interned ids, identical from
 every thread. The runtime-side registrations of those tables were already
 per-thread, so each thread's collector forwards only its own copy. The one
 rule left is that a thread runs the entry before it calls any of the
-module's functions. The tiered JIT engine keeps separate per-tier buffers and
-compiles without the delta. `src/embed/embed.h` states the full contract;
+module's functions. An in-process program (`src/eval`, at any tier) is compiled and run on one
+thread and is compiled without the delta; a host thread that needs the
+same script compiles its own program. `src/embed/embed.h` states the full contract;
 `tests/threaded_modules` is the worked example — two compiled modules on two
 threads concurrently, and one image entered on two threads at once, each
 hammered under per-allocation collection.
 
 ## In-Memory Dynamic Execution and JIT (`src/eval`)
 
-Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem leverages `BrassBackend::compileToJit` (`src/codegen-brass/brass_jit.h`) to compile JavaScript source code or files directly into executable machine code in memory.
+Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem compiles JavaScript source code or files to brass MIR and runs them through the tiered engine (`src/codegen-brass/brass_tiered_engine.h`): interpreted first, with hot functions compiled to baseline and then optimized code by a background compiler while the program runs. The whole-program optimizing JIT (`BrassBackend::compileToJit`) remains as an explicit tier.
 
 Key capabilities:
 - **Zero-disk dynamic evaluation:** `evalScript` compiles and runs code strings in RAM, returning an `embed::CallResult` or `Value`.

@@ -32,6 +32,10 @@ uint32_t abiFingerprint() { return BRONZE_ABI_FINGERPRINT; }
 
 void setEnterJsHook(EnterJsHook hook) { bronze::rtSetEnterJsHook(hook); }
 
+void setInterpretedFrameWalker(runtime::InterpretedFrameWalker walker) {
+    runtime::rtSetInterpretedFrameWalker(walker);
+}
+
 namespace {
 // The runtime's hook takes the op as a plain integer (the runtime does not
 // see embed.h); this thread's embed-level hook is forwarded through one

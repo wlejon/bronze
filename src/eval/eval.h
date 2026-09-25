@@ -37,7 +37,7 @@ struct EvalOptions {
     // program for a newer version of itself passes; an eval() or new Function()
     // from inside a running program passes nothing and its registrations join
     // whatever bracket is current, exactly as before. The machine code is
-    // retained either way (retainJitProgram): closures hold raw code pointers
+    // retained either way (retainProgram): closures hold raw code pointers
     // into it, and the unload contract keeps the image mapped.
     embed::ModuleHandle* moduleHandleOut = nullptr;
     // false compiles in the baseline tier (BrassBackend::setOptimize): the
@@ -54,32 +54,39 @@ struct EvalOptions {
     // src>`. Never for a driver script or inline script text.
     bool publishEntry = false;
     std::vector<std::string> externalModules = {};
+    // How the program runs (codegen-brass/brass_tiered_engine.h). Unset is
+    // the process default (setDefaultTier), which is also what every eval()
+    // and new Function() the program makes runs at.
     std::optional<ExecutionTier> tier = std::nullopt;
 };
 
 struct CompiledScript {
-    std::unique_ptr<BrassJitProgram> jitProgram;
-    std::unique_ptr<BrassTieredProgram> tieredProgram;
-    ExecutionTier tier = ExecutionTier::Tier2_Optimized;
+    std::unique_ptr<BrassTieredProgram> program;
+    ExecutionTier tier = ExecutionTier::Auto;
     std::string resName;
     std::string errorMessage;
     bool success = false;
 };
 
-// Retains a JIT compiled program in memory for the process lifetime so its machine
-// code, data sections, and function pointers remain valid across executions.
-BRONZE_EMBED_API void retainJitProgram(std::unique_ptr<BrassJitProgram> program);
+// The tier a program compiles at when its options name none: Auto (the
+// tiered pipeline: interpreted first, hot functions compiled to baseline and
+// then optimized code in the background) unless the host says otherwise.
+BRONZE_EMBED_API void setDefaultTier(ExecutionTier tier);
+BRONZE_EMBED_API ExecutionTier defaultTier();
 
-// Retains a tiered program (interpreter, baseline, or multi-tier) in memory.
-BRONZE_EMBED_API void retainTieredProgram(std::unique_ptr<BrassTieredProgram> program);
+// Retains a compiled program for the process lifetime so its code, data
+// image and function pointers remain valid across executions. At exit the
+// retained programs' background compiles are stopped.
+BRONZE_EMBED_API void retainProgram(std::unique_ptr<BrassTieredProgram> program);
 
-// Clears all retained JIT compiled programs.
-BRONZE_EMBED_API void clearRetainedJitPrograms();
+// Destroys every retained program.
+BRONZE_EMBED_API void clearRetainedPrograms();
 
-// Compiles a script to JIT machine code. Safe to invoke on background worker threads.
+// Compiles a script. Safe to invoke on background worker threads; the
+// program runs on whichever thread runs it (runCompiledScript).
 BRONZE_EMBED_API std::unique_ptr<CompiledScript> compileScript(std::string_view source, const EvalOptions& options = {});
 
-// Compiles a file to JIT machine code. Safe to invoke on background worker threads.
+// Compiles a file and its module graph, as compileScript does a script.
 BRONZE_EMBED_API std::unique_ptr<CompiledScript> compileFile(const std::string& filePath, const EvalOptions& options = {});
 
 // Executes a previously compiled script on the mutator thread and returns the result.

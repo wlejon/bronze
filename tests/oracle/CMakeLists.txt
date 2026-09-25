@@ -37,13 +37,21 @@ set_tests_properties(oracle PROPERTIES LABELS oracle)
 # The same cases through `bronze run` — the in-process JIT path the engine
 # uses — held to the same pinned bytes, and to the built program's exit code
 # and uncaught-error report. Its own test so the two halves show up as two
-# results and can be selected apart (`-L jit`).
+# results and can be selected apart (`-L jit`). `oracle-jit` runs at the
+# default tier (the tiered pipeline); the same suite runs again pinned to the
+# pure interpreter and to the whole-program optimizing tier
+# (BRONZE_ORACLE_TIER), so each of the three ways a program runs in process
+# is held to every case.
 add_test(NAME oracle-jit COMMAND bronze_oracle_tests "--test-case=Oracle JIT*")
 set_tests_properties(oracle-jit PROPERTIES LABELS "oracle;jit")
+add_test(NAME oracle-jit-tier0 COMMAND bronze_oracle_tests "--test-case=Oracle JIT*")
+set_tests_properties(oracle-jit-tier0 PROPERTIES LABELS "oracle;jit;tiers" ENVIRONMENT "BRONZE_ORACLE_TIER=0")
+add_test(NAME oracle-jit-tier2 COMMAND bronze_oracle_tests "--test-case=Oracle JIT*")
+set_tests_properties(oracle-jit-tier2 PROPERTIES LABELS "oracle;jit;tiers" ENVIRONMENT "BRONZE_ORACLE_TIER=2")
 
 # The tiers_* cases through `bronze run --tier=0|1|2|auto`: the fast
 # interpreter, the baseline JIT and the optimizing tier each run the program
-# alone, then the tiered pipeline with OSR, all held to the same pinned bytes.
+# alone, then the tiered pipeline, all held to the same pinned bytes.
 add_test(NAME oracle-tiers COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
 set_tests_properties(oracle-tiers PROPERTIES LABELS "oracle;jit;tiers")
 

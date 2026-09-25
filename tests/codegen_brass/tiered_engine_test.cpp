@@ -145,6 +145,30 @@ TEST_CASE("two live auto-tiered programs keep separate same-named functions and 
     CHECK_EQ(invocations(*progB, "pp_work"), b0 + 6);
 }
 
+TEST_CASE("an auto-tiered program's hot function reaches optimized code with no caller action") {
+    TieredEngineConfig config;
+    config.tier = ExecutionTier::Auto;
+    config.entrySymbol = "main";
+    DiagnosticSink diags;
+    auto prog = BrassTieredEngine(config).compile(makeWorkModule("hot_prog", true), diags);
+    REQUIRE(!diags.hasErrors());
+    REQUIRE(prog != nullptr);
+    prog->run();
+
+    // Only calls: the program's own thresholds baseline-compile it, then
+    // queue it for the background compiler, which installs its code.
+    const auto a = brass::RuntimeValue::from_f64(6.0);
+    const auto b = brass::RuntimeValue::from_f64(7.0);
+    for (int i = 0; i < 2000; ++i) {
+        CHECK(prog->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
+    }
+    prog->dispatchTable().pipeline().background_compiler().wait_idle();
+    brass::runtime::FunctionHandle* h = prog->dispatchTable().find("pp_work");
+    REQUIRE(h != nullptr);
+    CHECK(h->tier() == brass::runtime::TierLevel::Tier2_Optimized);
+    CHECK(prog->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
+}
+
 TEST_CASE("execution tier parsing and string conversion") {
     CHECK(parseExecutionTier("0") == ExecutionTier::Tier0_Interpreter);
     CHECK(parseExecutionTier("tier0") == ExecutionTier::Tier0_Interpreter);

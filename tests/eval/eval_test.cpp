@@ -411,8 +411,8 @@ TEST_CASE("dynamic functions and eval clean up globalThis temporary bindings") {
     CHECK(r2.value.asNumber() <= 1.0);
 }
 
-TEST_CASE("clearRetainedJitPrograms and embed::deleteProperty") {
-    clearRetainedJitPrograms();
+TEST_CASE("clearRetainedPrograms and embed::deleteProperty") {
+    clearRetainedPrograms();
 
     Value obj = embed::createObject();
     embed::setProperty(obj, "testKey", embed::fromDouble(42.0));

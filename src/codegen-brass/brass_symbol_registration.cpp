@@ -21,15 +21,6 @@ namespace bronze {
 
 namespace {
 
-// Default static fallback buffers for module data sections
-static uint64_t s_default_module_env = BRONZE_ABI_UNDEFINED_BITS;
-static uint32_t s_default_key_map[4096] = {0};
-static uint64_t s_default_template_cells[1024] = {0};
-static uint64_t s_default_global_cache[1024] = {0};
-static uint8_t s_default_ic_table[4096 * BRONZE_ABI_IC_SITE_SIZE] = {0};
-static uint64_t s_default_method_ic_sites[512] = {0};
-static uint8_t s_default_key_manifest[256] = {0};
-
 template <typename T>
 T unpackArg(const std::vector<brass::RuntimeValue>& args, size_t i) {
     if (i >= args.size()) return T{};
@@ -128,29 +119,14 @@ void registerNativeSymbols(Engine& e) {
     e.register_external_symbol("brass_parallel_free_context", reinterpret_cast<void*>(&brass_parallel_free_context));
 }
 
-// The fallback module tables, for a module whose own the engine lacks.
-template <typename Engine>
-void registerDefaultDataSymbols(Engine& e) {
-    e.register_external_symbol("__bronze_module_env", &s_default_module_env);
-    e.register_external_symbol("__bronze_key_map", s_default_key_map);
-    e.register_external_symbol("__bronze_template_cells", s_default_template_cells);
-    e.register_external_symbol("__bronze_global_cache", s_default_global_cache);
-    e.register_external_symbol("__bronze_ic_table", s_default_ic_table);
-    e.register_external_symbol("__bronze_method_ic_sites", s_default_method_ic_sites);
-    e.register_external_symbol("bronze_main_key_constants", s_default_key_manifest);
-    e.register_external_symbol("main_key_constants", s_default_key_manifest);
-}
-
 class BronzeHostSymbols final : public brass::runtime::HostSymbolProvider {
 public:
     void install(brass::codegen::JitExecutionEngine& engine) override {
         registerNativeSymbols(engine);
-        registerDefaultDataSymbols(engine);
     }
 
     void install(brass::codegen::BaselineJitCompiler& compiler) override {
         registerNativeSymbols(compiler);
-        registerDefaultDataSymbols(compiler);
     }
 
     void install(brass::Interpreter& interp) override {
@@ -173,7 +149,6 @@ public:
         }
         interp.register_external_symbol("brass_gc_card_table_base", reinterpret_cast<void*>(&brass_gc_card_table_base));
         interp.register_external_symbol("brass_gc_heap_base", reinterpret_cast<void*>(&brass_gc_heap_base));
-        registerDefaultDataSymbols(interp);
     }
 
     // The block a pinned-TLS read sees before the module entry has loaded the
@@ -272,18 +247,10 @@ void installBronzeHostSymbols() {
     brass::set_host_heap(&hostHeap());
 }
 
-void registerBronzeFastInterpreterSymbols(brass::FastInterpreter& interp) {
-    installBronzeHostSymbols();
-    // Install the trampoline interceptor for interpreted Bronze functions.
+void installBronzeEnterJsHook() {
     // Through embed, not rtSetEnterJsHook: the hook must land in the process's
     // one runtime (embed.h, setEnterJsHook).
     embed::setEnterJsHook(&brassTieredEnterJsHook);
-    hostSymbols().install(interp);
-}
-
-void registerBronzeBaselineSymbols(brass::codegen::BaselineJitCompiler& compiler) {
-    installBronzeHostSymbols();
-    hostSymbols().install(compiler);
 }
 
 void registerBronzeJitSymbols(brass::codegen::JitExecutionEngine& engine) {
@@ -293,7 +260,6 @@ void registerBronzeJitSymbols(brass::codegen::JitExecutionEngine& engine) {
 
 void registerBronzeMultiTierSymbols(brass::runtime::MultiTierPipeline& pipeline) {
     installBronzeHostSymbols();
-    embed::setEnterJsHook(&brassTieredEnterJsHook);
     hostSymbols().install(pipeline.baseline_compiler());
 }
 
