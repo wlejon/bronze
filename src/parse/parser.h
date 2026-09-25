@@ -94,6 +94,10 @@ private:
     // the file qualification: two files' first generators must not name one
     // temporary.
     size_t generatorOrdinal_ = 0;
+    // Ordinal of the next for-in/of head that assigns a property reference,
+    // for the per-iteration temporary its desugaring declares
+    // (parseForAssignmentHead). File-qualified like the one above.
+    size_t forHeadOrdinal_ = 0;
     // Async state, the exact shape of the generator pair above: `await` is not
     // a reserved word — it is contextual, and only inside an async function
     // BODY — so this one flag decides whether the identifier spelled `await`
@@ -479,6 +483,13 @@ private:
     // it: the token that decides between a `for`, a `for-in` and a `for-of`
     // sits after a group of unbounded length.
     size_t skipBindingTarget(size_t at) const;
+    // A `for` head with no declaration keyword whose target is not a plain
+    // name — `for (o.a of xs)`, `for ([o.b, c] in obj)` — is an ASSIGNMENT
+    // head (14.7.5.1, lhsKind assignment). The first answers whether the
+    // tokens from the cursor are one LeftHandSideExpression followed by `in`
+    // or `of`; the second parses such a loop, `kw` being its `for`.
+    bool isAssignmentForHead() const;
+    ast::StmtPtr parseForAssignmentHead(const Token& kw, bool isAwait);
     std::vector<ast::StmtPtr> parseBlock();
     std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
     std::string parseTypeAnnotation();

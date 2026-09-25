@@ -404,6 +404,7 @@ StmtPtr Parser::parseFor() {
 
     const bool hasDecl =
         check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar);
+    if (!hasDecl && isAssignmentForHead()) return parseForAssignmentHead(kw, isAwait);
     const bool hasTarget =
         hasDecl || check(TokenKind::Identifier) || check(TokenKind::KwOf) || check(TokenKind::LBracket) || check(TokenKind::LBrace);
     if (hasTarget) {
@@ -490,6 +491,183 @@ StmtPtr Parser::parseFor() {
     expect(TokenKind::RParen, "')' after for header");
 
     stmt->body = parseBlockOrSingleStmt();
+    return stmt;
+}
+
+// A token scan, not a trial parse: a trial parse of `for (a.b; ...)` would
+// leave its diagnostics behind. At bracket depth zero a LeftHandSideExpression
+// is names, `this`/`super`, `.` links (anything right after a `.` is a
+// property name) and bracketed groups — `[...]`, `(...)`, `{...}` — so the
+// first depth-zero token outside that set decides: `in` or `of` makes this an
+// assignment head, anything else (`;`, `=`, an operator, the closing `)`) an
+// ordinary `for`. A lone name is left to the existing name path.
+bool Parser::isAssignmentForHead() const {
+    size_t depth = 0;
+    bool afterDot = false;
+    for (size_t i = 0;; ++i) {
+        const Token& t = peek(i);
+        if (t.kind == TokenKind::EndOfFile) return false;
+        if (depth > 0) {
+            if (t.kind == TokenKind::LParen || t.kind == TokenKind::LBracket ||
+                t.kind == TokenKind::LBrace) {
+                ++depth;
+            } else if (t.kind == TokenKind::RParen || t.kind == TokenKind::RBracket ||
+                       t.kind == TokenKind::RBrace) {
+                --depth;
+            }
+            continue;
+        }
+        if (afterDot) {
+            afterDot = false;
+            continue;
+        }
+        switch (t.kind) {
+            case TokenKind::KwOf:
+                // `of` at the very start is a name (`for (of of xs)`).
+                if (i == 0) continue;
+                return i > 1;
+            case TokenKind::KwIn:
+                return i > 1;
+            case TokenKind::LParen:
+            case TokenKind::LBracket:
+            case TokenKind::LBrace:
+                ++depth;
+                continue;
+            case TokenKind::Dot:
+                afterDot = true;
+                continue;
+            case TokenKind::Identifier:
+            case TokenKind::KwThis:
+            case TokenKind::KwSuper:
+                continue;
+            default:
+                return false;
+        }
+    }
+}
+
+namespace {
+
+bool patternHasMemberTarget(const BindingPattern& pattern) {
+    for (const auto& elem : pattern.elements) {
+        if (elem.target) return true;
+        if (elem.pattern && patternHasMemberTarget(*elem.pattern)) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+// `for (LHS of xs) body` with a property reference anywhere in LHS becomes
+//
+//     for (const <t> of xs) { LHS = <t>; { body } }
+//
+// which is 14.7.5.7 ForIn/OfBodyEvaluation for lhsKind assignment step for
+// step: each iteration takes the next value, THEN evaluates the target
+// reference (or runs the destructuring assignment) and puts the value, then
+// runs the body. The body keeps a block of its own so a `let o` in it cannot
+// put the head's `o` in its TDZ. Everything downstream — scoping, the module
+// rename, yield lifting, inference, lowering — then sees only forms it already
+// handles, which is why this is a rewrite and not a fourth kind of head.
+//
+// A head whose pattern binds names only keeps the pattern form it had, and a
+// head that is neither a name, a property reference nor a pattern is the early
+// error 14.7.5.1 makes of it.
+StmtPtr Parser::parseForAssignmentHead(const Token& kw, bool isAwait) {
+    ExprPtr lhs = parseUnaryPostfix();
+    if (!lhs) return nullptr;
+    const bool isIn = check(TokenKind::KwIn);
+    if (isIn && isAwait) {
+        error("'for await' can only be used with 'of' loops");
+        return nullptr;
+    }
+    advance();  // in / of
+
+    PatternPtr pattern;
+    ExprPtr memberTarget;
+    std::string assignedName;
+    if (auto* ident = dynamic_cast<Ident*>(lhs.get())) {
+        // `for ((x) of xs)`: a parenthesized name is still a name.
+        assignedName = ident->name;
+    } else if (dynamic_cast<ArrayLit*>(lhs.get()) || dynamic_cast<ObjectLit*>(lhs.get())) {
+        pattern = patternFromLiteral(std::move(lhs));
+        if (!pattern) return nullptr;
+    } else if (auto* mem = dynamic_cast<MemberAccess*>(lhs.get()); mem && !mem->optional) {
+        memberTarget = std::move(lhs);
+    } else if (auto* idx = dynamic_cast<IndexAccess*>(lhs.get()); idx && !idx->optional) {
+        memberTarget = std::move(lhs);
+    } else {
+        diags_.error(lhs->span,
+                     "the left side of a for-in or for-of loop must be a name, a property "
+                     "reference or a pattern (ECMA-262 14.7.5.1)");
+        return nullptr;
+    }
+
+    ExprPtr source = parseExpr();
+    if (!source) return nullptr;
+    if (!expect(TokenKind::RParen, isIn ? "')' after the enumerated object"
+                                        : "')' after the iterable")) {
+        return nullptr;
+    }
+    std::vector<StmtPtr> body = parseBlockOrSingleStmt();
+    if (diags_.hasErrors()) return nullptr;
+
+    std::string name;
+    if (memberTarget || (pattern && patternHasMemberTarget(*pattern))) {
+        const size_t ordinal = forHeadOrdinal_++;
+        name = "forhead." +
+               (fileId_ == 0 ? std::to_string(ordinal)
+                             : std::to_string(fileId_) + "." + std::to_string(ordinal));
+        const Span span = memberTarget ? memberTarget->span : pattern->span;
+        auto value = std::make_unique<Ident>();
+        value->span = span;
+        value->name = name;
+        ExprPtr assign;
+        if (memberTarget) {
+            auto bin = std::make_unique<Binary>();
+            bin->span = span;
+            bin->op = BinaryOp::Assign;
+            bin->lhs = std::move(memberTarget);
+            bin->rhs = std::move(value);
+            assign = std::move(bin);
+        } else {
+            auto da = std::make_unique<DestructuringAssign>();
+            da->span = span;
+            da->pattern = std::move(pattern);
+            da->value = std::move(value);
+            assign = std::move(da);
+        }
+        auto assignStmt = std::make_unique<ExprStmt>();
+        assignStmt->span = span;
+        assignStmt->expr = std::move(assign);
+        auto block = std::make_unique<BlockStmt>();
+        block->span = kw.span;
+        block->stmts = std::move(body);
+        body.clear();
+        body.push_back(std::move(assignStmt));
+        body.push_back(std::move(block));
+    }
+
+    const bool declares = !name.empty();
+    if (!declares && !assignedName.empty()) name = std::move(assignedName);
+    if (isIn) {
+        auto stmt = std::make_unique<ForInStmt>();
+        stmt->span = kw.span;
+        stmt->isConst = declares;
+        stmt->name = std::move(name);
+        stmt->pattern = std::move(pattern);
+        stmt->object = std::move(source);
+        stmt->body = std::move(body);
+        return stmt;
+    }
+    auto stmt = std::make_unique<ForOfStmt>();
+    stmt->span = kw.span;
+    stmt->isConst = declares;
+    stmt->isAwait = isAwait;
+    stmt->name = std::move(name);
+    stmt->pattern = std::move(pattern);
+    stmt->iterable = std::move(source);
+    stmt->body = std::move(body);
     return stmt;
 }
 
