@@ -9,7 +9,7 @@ Additions bump the minor meaning of the version string; removals or meaning
 changes are a new version.
 
 Implementation: `src/runtime/shape_census.{h,cpp}`; the latch suppressions it
-depends on live in `heap.cpp` (TLS seam words), `object.cpp` /
+depends on live in `thread_seams.cpp` (TLS seam words), `object.cpp` /
 `rt_prop_absent.cpp` (property-IC fills), `rt_method_call.cpp` (method-IC
 latch), `static_shape.cpp` (static publish), `class_family.cpp` (family
 stamp).

@@ -436,7 +436,6 @@ bool lower_property_instruction(
             prop_lowering.lower_prop_set(
                 b, obj_val, inst_ast.index, val, static_cast<uint32_t>(inst_ast.imm_i64), site
             );
-            b.build_write_barrier(obj_val, val);
             emit_exception_check();
             return true;
         }
@@ -454,7 +453,6 @@ bool lower_property_instruction(
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* closure_val = ensure_type(get_opd(1), Type::i64());
             prop_lowering.lower_method_def(b, obj_val, inst_ast.index, closure_val);
-            b.build_write_barrier(obj_val, closure_val);
             return true;
         }
 
@@ -463,7 +461,6 @@ bool lower_property_instruction(
             Value* key = ensure_type(get_opd(1), Type::i64());
             Value* closure_val = ensure_type(get_opd(2), Type::i64());
             b.build_call("bronze_method_def_computed", Type::void_type(), {target, key, closure_val});
-            b.build_write_barrier(target, closure_val);
             return true;
         }
 
@@ -520,7 +517,6 @@ bool lower_property_instruction(
             if (!idx_val) return false;
             Value* val = ensure_type(get_opd(2), Type::i64());
             prop_lowering.lower_elem_set(b, obj_val, idx_val, val, inst_ast.index);
-            b.build_write_barrier(obj_val, val);
             if (inst_ast.op == BronzeOp::ElemSet) {
                 emit_exception_check();
             }

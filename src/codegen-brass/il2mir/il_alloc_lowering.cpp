@@ -45,6 +45,10 @@ namespace bronze_heap_abi {
 constexpr int32_t TLS_ALLOC_CURSOR_OFF = 24; // BRONZE_TLS_ALLOC_CURSOR_OFF
 constexpr int32_t TLS_ALLOC_LIMIT_OFF  = 32; // BRONZE_TLS_ALLOC_LIMIT_OFF
 constexpr int32_t TLS_PLAIN_SHAPE_OFF  = 40; // BRONZE_TLS_PLAIN_SHAPE_OFF
+constexpr int32_t TLS_GC_CELL_HEADER_OFF = 264; // BRONZE_TLS_GC_CELL_HEADER_OFF
+
+// The collector's object header, one word before every bronze header.
+constexpr size_t GC_HDR_BYTES = 8;
 
 // Allocation sizes (bronze_abi.h)
 constexpr size_t PLAIN_OBJECT_BYTES   = 56; // BRONZE_ABI_PLAIN_OBJECT_BYTES
@@ -73,6 +77,7 @@ constexpr uint64_t VALUE_TAG_HOLE        = TAG_HOLE << VALUE_TAG_SHIFT;
 static_assert(TLS_ALLOC_CURSOR_OFF == 24, "Bronze TLS alloc_cursor offset must be 24");
 static_assert(TLS_ALLOC_LIMIT_OFF == 32, "Bronze TLS alloc_limit offset must be 32");
 static_assert(TLS_PLAIN_SHAPE_OFF == 40, "Bronze TLS plain_shape offset must be 40");
+static_assert(TLS_GC_CELL_HEADER_OFF == 264, "Bronze TLS gc_cell_header offset must be 264");
 static_assert(PLAIN_OBJECT_BYTES == 56, "Bronze plain object size must be 56 bytes");
 static_assert(ARRAY_HEADER_BYTES == 40, "Bronze array header size must be 40 bytes");
 static_assert(ARRAY_MIN_CAPACITY == 4, "Bronze array min capacity must be 4");
@@ -94,6 +99,16 @@ constexpr uint64_t make_header_word(size_t size_bytes, uint64_t flags, uint64_t 
 
 } // namespace bronze_heap_abi
 
+// Stores the collector's header for a bronze object of `bronze_bytes` (its
+// header included) at `at`: the thread's cell-layout header word with the
+// size ORed in. The bronze object follows at `at + 8`.
+static void store_gc_header(Builder& b, Value* tls_addr, Value* at, size_t bronze_bytes) {
+    using namespace bronze_heap_abi;
+    Value* cell = b.build_load(Type::i64(), tls_addr, TLS_GC_CELL_HEADER_OFF);
+    Value* word = b.build_or(cell, b.build_iconst_i64(static_cast<int64_t>(bronze_bytes)));
+    b.build_store(Type::i64(), at, 0, word);
+}
+
 
 Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
     using namespace bronze_heap_abi;
@@ -114,7 +129,8 @@ Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
     Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
     Value* plain_shape = b.build_load(Type::i64(), tls_addr, TLS_PLAIN_SHAPE_OFF);
 
-    Value* new_cursor = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(PLAIN_OBJECT_BYTES)));
+    Value* new_cursor =
+        b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + PLAIN_OBJECT_BYTES)));
     Value* can_fit = b.build_ule(new_cursor, cur_limit);
     Value* has_shape = b.build_ne(plain_shape, b.build_iconst_i64(0));
     Value* can_alloc = b.build_and(can_fit, has_shape);
@@ -123,28 +139,30 @@ Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
     // Fast path: bump pointer and initialize plain object
     b.position_at_end(bb_fast);
     b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
+    store_gc_header(b, tls_addr, cur_cursor, PLAIN_OBJECT_BYTES);
+    Value* obj_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
 
-    // HeapObjectHeader at cur_cursor (offset 0):
+    // HeapObjectHeader at obj_ptr (offset 0):
     // tag = Tag::Object, flags = HeapKind::Plain, size = 56
     constexpr uint64_t HEADER_WORD = make_header_word(PLAIN_OBJECT_BYTES, OBJ_FLAGS_PLAIN, TAG_OBJECT);
-    b.build_store(Type::i64(), cur_cursor, 0, b.build_iconst_i64(static_cast<int64_t>(HEADER_WORD)));
+    b.build_store(Type::i64(), obj_ptr, 0, b.build_iconst_i64(static_cast<int64_t>(HEADER_WORD)));
 
     // ObjectHeader:
     // Offset 8: shape = plain_shape
-    b.build_store(Type::i64(), cur_cursor, 8, plain_shape);
+    b.build_store(Type::i64(), obj_ptr, 8, plain_shape);
 
     // Offset 16: overflow = Value::fromUndefined()
     Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
-    b.build_store(Type::i64(), cur_cursor, 16, undef_val);
+    b.build_store(Type::i64(), obj_ptr, 16, undef_val);
 
     // Offsets 24, 32, 40, 48: inline_slots[0..3] = undefined
     for (int i = 0; i < 4; ++i) {
-        b.build_store(Type::i64(), cur_cursor, 24 + i * 8, undef_val);
+        b.build_store(Type::i64(), obj_ptr, 24 + i * 8, undef_val);
     }
 
     // NaN-box Tag::Object (0xFFF1ULL << 48)
     Value* ptr_mask = b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK));
-    Value* masked_ptr = b.build_and(cur_cursor, ptr_mask);
+    Value* masked_ptr = b.build_and(obj_ptr, ptr_mask);
     Value* obj_val = b.build_or(masked_ptr, b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_OBJECT)));
 
     b.build_br(bb_merge, {obj_val});
@@ -175,7 +193,9 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
 
     uint32_t cap = (param_count < ARRAY_MIN_CAPACITY) ? static_cast<uint32_t>(ARRAY_MIN_CAPACITY) : param_count;
     size_t elem_block_bytes = HDR_BYTES + static_cast<size_t>(cap) * 8;
-    size_t total_needed = ARRAY_HEADER_BYTES + elem_block_bytes;
+    // Two collector objects: the array header and its elements block, each
+    // behind its own collector header.
+    size_t total_needed = GC_HDR_BYTES + ARRAY_HEADER_BYTES + GC_HDR_BYTES + elem_block_bytes;
 
     Value* tls_addr = bronze_tls_addr(b);
     Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
@@ -189,8 +209,13 @@ Value* AllocLoweringHelper::lower_create_array_bronze(Builder& b, Value* size_va
     b.position_at_end(bb_fast);
     b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
 
-    Value* arr_ptr = cur_cursor;
-    Value* elem_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(ARRAY_HEADER_BYTES)));
+    store_gc_header(b, tls_addr, cur_cursor, ARRAY_HEADER_BYTES);
+    Value* arr_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
+    Value* elem_gc_hdr =
+        b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + ARRAY_HEADER_BYTES)));
+    store_gc_header(b, tls_addr, elem_gc_hdr, elem_block_bytes);
+    Value* elem_ptr = b.build_add(
+        cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + ARRAY_HEADER_BYTES + GC_HDR_BYTES)));
 
     // 1. ArrayHeader (at arr_ptr):
     // Word 0 (offset 0): size=40, flags=HeapKind::Array (1), tag=Tag::Object (0xFFF1)
@@ -260,15 +285,17 @@ Value* AllocLoweringHelper::lower_env_create_bronze(Builder& b, Value* parent_va
     Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
     Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
 
-    Value* new_cursor = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(total_size)));
+    Value* new_cursor =
+        b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + total_size)));
     Value* can_alloc = b.build_ule(new_cursor, cur_limit);
     b.build_br_if(can_alloc, bb_fast, bb_fallback);
 
     // Fast path
     b.position_at_end(bb_fast);
     b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
+    store_gc_header(b, tls_addr, cur_cursor, total_size);
 
-    Value* env_ptr = cur_cursor;
+    Value* env_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
 
     // Word 0 (offset 0): size=total_size, flags=HeapKind::Env (12), tag=Tag::Object (0xFFF1)
     uint64_t w0 = make_header_word(total_size, OBJ_FLAGS_ENV, TAG_OBJECT);

@@ -229,9 +229,10 @@ TEST_CASE("a frozen property accepts the value it already has, by SameValue") {
     freeze(o.get());
     REQUIRE(isDictionary(o.get()));
 
-    auto tryValue = [&](const char* key, Value v) {
+    auto tryValue = [&](const char* key, Value value) {
+        Rooted<Value> v{value};
         Rooted<Value> d = descriptor();
-        put(d, "value", v);
+        put(d, "value", v.get());
         const bool ok = define(o, key, d);
         bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return ok;

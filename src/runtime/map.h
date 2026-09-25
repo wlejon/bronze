@@ -51,28 +51,29 @@ enum : uint32_t {
 
 struct MapHeader {
     ObjectHeader object;
-    Value inlineSlots[ObjectHeader::kInlineSlots];
+    HeapValue inlineSlots[ObjectHeader::kInlineSlots];
     // The kind's symbol (see above). First, so the brand test reads one slot.
-    Value brand;
+    HeapValue brand;
     // Object-tagged block of Values, two per entry slot: key then value, in
     // INSERTION order. A removed entry's key is the Hole singleton, which is
     // internal by construction and therefore cannot collide with a key a
     // program can hold. Erasing from the middle would move every later entry
     // and break the iteration order a live iterator is holding a cursor into,
     // so a delete tombstones instead.
-    Value entries;
+    HeapValue entries;
     // RawBytes block of uint32 buckets, open-addressed with linear probing.
     // 0 means empty; anything else is an entry slot index plus one.
-    Value index;
-    Value liveCount;   // double: entries a program can see
-    Value usedCount;   // double: entry slots handed out, tombstones included
-    // double: `Heap::relocation_epoch()` when `index` was last built. An
-    // object key hashes by ADDRESS and the collector moves objects, so a
-    // relocation invalidates every object key's bucket. Rebuilding lazily on
-    // the next lookup is what keeps that from being a correctness bug rather
-    // than a cost; see the header comment of Heap::relocation_epoch for why
-    // the number counts relocations and not collections.
-    Value indexEpoch;
+    HeapValue index;
+    HeapValue liveCount;   // double: entries a program can see
+    HeapValue usedCount;   // double: entry slots handed out, tombstones included
+    // double: `Heap::relocation_epoch()` when `index` was last built, or -2
+    // when no key it hashes by address could move then (map.cpp,
+    // kStableIndex). An object key hashes by ADDRESS and the collector moves
+    // young objects, so a relocation invalidates a young key's bucket.
+    // Rebuilding lazily on the next lookup is what keeps that from being a
+    // correctness bug rather than a cost; a map whose keys are all old is
+    // never rebuilt for it.
+    HeapValue indexEpoch;
     // double: this map's OWN address when `index` was last built, as an
     // independent witness that nothing has moved. It is here because the
     // epoch, however carefully placed, is a number some future collector
@@ -82,7 +83,7 @@ struct MapHeader {
     // other (an epoch catches a map that happened to land back on its old
     // address; the anchor catches a collector that bypassed the epoch), so
     // the index is valid only when BOTH agree.
-    Value indexAnchor;
+    HeapValue indexAnchor;
 
     // A fresh, empty table on an object of `shape` — which decides its
     // [[Prototype]], and which every caller takes from the constructor's
@@ -112,9 +113,9 @@ struct MapHeader {
     // rather than stored: two facts that can disagree are one fact too many.
     uint32_t capacity() const noexcept;
 
-    Value* entryData() noexcept {
+    HeapValue* entryData() noexcept {
         if (!entries.isPointer()) return nullptr;
-        return entries.asObject<HeapObjectHeader>()->payload<Value>();
+        return entries.asObject<HeapObjectHeader>()->payload<HeapValue>();
     }
     const Value* entryData() const noexcept {
         if (!entries.isPointer()) return nullptr;

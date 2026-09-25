@@ -267,12 +267,19 @@ TEST_CASE("the relocation epoch counts objects moved, not cycles finished") {
     // point of the epoch not being one either.
     CHECK(heap.collection_count() >= 1);
 
-    // And it keeps counting per object rather than per cycle: a second live
-    // object makes the second collection cost more than the first.
+    // And it counts moves rather than cycles: the first object is old now and
+    // stays put, so a second collection moves only the new young one...
     Rooted<Value> second{Value::fromObject(ObjectHeader::create(heap, arena,
                                                                Shape::createRoot(arena)))};
+    const Value keptBefore = kept.get();
     heap.collect();
-    CHECK(heap.relocation_epoch() >= afterFirst + 2);
+    CHECK(kept.get() == keptBefore);
+    const uint64_t afterSecond = heap.relocation_epoch();
+    CHECK(afterSecond >= afterFirst + 1);
+
+    // ...and a third, with every live object old, moves nothing.
+    heap.collect();
+    CHECK(heap.relocation_epoch() == afterSecond);
 
     // A collection with nothing live to move leaves it alone, which is what
     // makes it an honest "has anything moved?" and not a proxy for "has a

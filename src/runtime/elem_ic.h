@@ -162,8 +162,8 @@ bool elemAbsentEnabled() noexcept;
 // always took, and one binary A/Bs the mechanism against its own absence.
 bool elemKeyIcEnabled() noexcept;
 
-// Clear every `key_ident` that points into the movable heap — the range
-// [lo, hi) is the reservation covering both semispaces. Registered by Heap's
+// Clear every `key_ident` that points into the collected heap — the range
+// [lo, hi) is the heap's whole reservation. Registered by Heap's
 // constructor as a post-collection hook, and running it inside the pause is
 // the entire soundness story of the ident guard: an address is reused only
 // across a collection, so after each collection no surviving ident can alias

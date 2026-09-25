@@ -27,8 +27,8 @@ namespace bronze {
 // revocation.
 struct ProxyHeader {
     HeapObjectHeader header;
-    Value target;    // an object; NULL once revoked
-    Value handler;   // an object; NULL once revoked
+    HeapValue target;    // an object; NULL once revoked
+    HeapValue handler;   // an object; NULL once revoked
     // 10.5.14: [[Call]] and [[Construct]] are present on the proxy exactly
     // when the TARGET had them at creation, so both are decided once and read
     // afterwards — including after revocation, when the target is gone but
@@ -36,8 +36,8 @@ struct ProxyHeader {
     // or a method is callable without being a constructor, and `new` on a
     // proxy over one must be the TypeError of a missing [[Construct]] rather
     // than a `construct` trap call (10.5.13 exists only when this is true).
-    Value callable;      // boolean
-    Value constructible; // boolean
+    HeapValue callable;      // boolean
+    HeapValue constructible; // boolean
 
     static constexpr uint16_t kFlags = HeapKind::Proxy;
 

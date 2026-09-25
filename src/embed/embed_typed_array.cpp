@@ -6,7 +6,7 @@
 // of a header the caller's Value already names, and keeping them
 // allocation-free is what makes the answered pointer usable at all. The
 // pointer contract is embed.h's, repeated because it is the entire risk of
-// this file: `data` points into the moving semispace heap and dies at the NEXT
+// this file: `data` points into the moving heap and dies at the NEXT
 // allocation — the caller consumes it synchronously or copies it out, never
 // stores it. fillTypedArray is a reader by that measure too: it copies INTO a
 // pointer it derives and never lets anything allocate in between.
@@ -93,13 +93,12 @@ Value createTypedArray(ElementKind kind, uint32_t length) {
     }
     // The constructor's own ladder, in the same order and with the same
     // messages: the byte size in 64 bits first (so the multiply cannot wrap
-    // into a small request), then the per-buffer cap, then whether a semispace
-    // can actually hold it. A host asking for a gigabyte must get the
-    // RangeError the program would, not a heap that dies mid-copy.
+    // into a small request), then the per-buffer cap, then the heap's largest
+    // object. A host asking for a gigabyte must get the RangeError the
+    // program would, not a failed allocation.
     const uint64_t bpe = elementKindInfo(kind).bytesPerElement;
     const uint64_t byteLength = static_cast<uint64_t>(length) * bpe;
-    const size_t semispace = runtime::rtHeap().reserved_size() / 2;
-    if (byteLength >= kMaxByteLength || byteLength + 64 >= semispace) {
+    if (byteLength >= kMaxByteLength || byteLength + 64 >= Heap::kMaxObjectBytes) {
         return runtime::rtThrowRangeError(
             "Array buffer allocation failed: " + std::to_string(byteLength) +
             " bytes does not fit in the heap");

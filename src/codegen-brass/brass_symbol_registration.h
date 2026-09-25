@@ -12,10 +12,9 @@ namespace bronze {
 // baseline compiler, fast and reference interpreters, the tier-2 installer's
 // JIT, a deoptimization's interpreter — is handed bronze's ABI helpers, the
 // math and parallel runtimes and the fallback module tables
-// (brass::runtime::HostSymbolProvider). It also makes every brass heap
-// created without a configuration forbid allocation
-// (brass::gc::HeapConfig::forbid_allocation): no allocation brass's runtime
-// makes on its own behalf can land outside bronze's collector. Idempotent.
+// (brass::runtime::HostSymbolProvider). It also creates the calling thread's
+// bronze heap, which is the brass heap every brass interpreter on the thread
+// then uses (runtime/heap.h, Heap::bind_thread). Idempotent.
 void installBronzeHostSymbols();
 
 // The same set, into an engine bronze builds itself. Installs the provider

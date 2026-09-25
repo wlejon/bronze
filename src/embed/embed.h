@@ -70,7 +70,7 @@
 // one module image entered on two threads at once.
 //
 // THE GC CONTRACT, which every function below is written against: the heap is
-// a moving semispace collector, so any allocation may relocate every heap
+// a moving generational collector, so any allocation may relocate any heap
 // value in sight. A `Value` held in a plain C++ variable is current only until
 // the next allocating call; a value that must survive one — or survive between
 // frames — lives in a `Persistent`. Functions here that allocate say so, and
@@ -320,14 +320,24 @@ BRONZE_EMBED_API void unloadModule(ModuleHandle module);
 // by the pointer contract those functions carry.
 BRONZE_EMBED_API void collectGarbage();
 
-// The collector's relocation counter: incremented by every object COPY, so it
-// moves exactly when addresses move and not merely when cycles complete. This
+// The collector's relocation counter: advanced by every collection that moves
+// an object, so it changes when addresses change and not merely when
+// collections complete. This
 // is the primitive an identity map is built on — a host table keyed on raw
 // value bits (toBits) records this number when it builds its index and
 // rebuilds when the number has moved on, and such a cache cannot go stale,
 // because bits only change when this does. The bronze Map keyed on objects
 // uses the same discipline internally (heap.h relocation_epoch).
 BRONZE_EMBED_API uint64_t relocationEpoch();
+
+// Creates the calling thread's heap if it has none. The heap is brass's
+// collector (brass::gc::Heap), and creating it binds it as the thread's
+// current brass heap, so every brass interpreter built on the thread from
+// then on registers its frames with it. Anything that touches the runtime
+// does this implicitly; the compiler backend calls it before it builds an
+// interpreter. On this surface for the reason setEnterJsHook is: it must reach
+// the ONE runtime.
+BRONZE_EMBED_API void bindThreadHeap();
 
 // ---- callee naming bridge & profile report (embed_module.cpp) --------------
 using ProfileCalleeNamer = bool (*)(uint64_t calleeBits, void* code, char* out, size_t outSize);

@@ -314,13 +314,13 @@ namespace {
 // `ObjectHeader::createWithInternalSlots` writes a plain object's: the kind,
 // the shape, an empty overflow word and `undefined` in every inline slot.
 // Every one of those words is scanned by the collector, so none may be left
-// holding what the semispace last had there.
+// holding what recycled memory last had there.
 void initObjectPrefix(ObjectHeader& object, uint16_t kind, Shape* shape) {
     if (!shape) fatal("view creation without a shape (the shape carries the prototype)");
     object.header.flags = kind;
     object.shape = shape;
     object.overflow = Value::fromUndefined();
-    Value* slots = object.slotsData();
+    HeapValue* slots = object.slotsData();
     for (uint32_t i = 0; i < ObjectHeader::kInlineSlots; ++i) slots[i] = Value::fromUndefined();
 }
 
@@ -424,13 +424,10 @@ void TypedArrayHeader::initialize(Rooted<Value>& buffer_val, uint32_t byteOffset
 }
 
 void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val) {
-    // Collect FIRST: between collections the live space interleaves dead
-    // allocations and the inline-allocation window's uninitialized bytes,
-    // and a walk that misparsed one header would stomp an arbitrary object.
-    // Right after a collection the space is exactly the live set, gapless
-    // and fully built. Dead views over this buffer need no visit — nothing
-    // can read their length again — and the collection just discarded them.
-    heap.collect();
+    // Every object the heap holds, live or not yet reclaimed: a dead view
+    // over this buffer is refreshed too, which nothing can observe. The walk
+    // only compares each view's buffer word with this buffer's address and
+    // never follows it, so a dead view naming a reclaimed buffer is harmless.
     auto* buf = buffer_val.get().asObject<ArrayBufferHeader>();
     heap.walk_objects([buf](HeapObjectHeader* hdr) {
         if (hdr->tag != static_cast<uint16_t>(Tag::Object) ||

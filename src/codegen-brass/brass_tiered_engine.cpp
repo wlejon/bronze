@@ -4,6 +4,7 @@
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
+#include "embed/embed.h"
 
 #include "support/diagnostics.h"
 
@@ -32,35 +33,6 @@ namespace {
 // compiled for, few enough that a long one spends most of its time in
 // optimized code.
 constexpr uint64_t kOsrBackedgeThreshold = 1000;
-
-// brass_enumerate_thread_roots reports the frames of the innermost running
-// Interpreter and FastInterpreter only; one of the same kind hidden beneath
-// an inner one is the host's to report. A bronze program run from inside
-// another (an eval, a host callback that runs a second program) makes
-// exactly that nesting, so every entry into a program reports, for its
-// lifetime, whichever interpreters were running when it was entered.
-// Reporting the entered interpreter itself again when it turns out to be
-// the same one is harmless: the collector visits each slot once.
-class OuterInterpreterRoots {
-public:
-    OuterInterpreterRoots() noexcept
-        : fast_(brass::FastInterpreter::current()),
-          interp_(brass::Interpreter::active_on_thread()),
-          scope_(&report, this) {}
-    OuterInterpreterRoots(const OuterInterpreterRoots&) = delete;
-    OuterInterpreterRoots& operator=(const OuterInterpreterRoots&) = delete;
-
-private:
-    static void report(void* ctx, std::vector<uintptr_t*>& roots) {
-        auto* self = static_cast<OuterInterpreterRoots*>(ctx);
-        if (self->fast_) self->fast_->collect_all_roots(roots);
-        if (self->interp_) self->interp_->collect_all_roots(roots);
-    }
-
-    brass::FastInterpreter* fast_;
-    brass::Interpreter* interp_;
-    brass::ThreadRootsScope scope_;
-};
 
 // The pipeline's configuration for a tier (ExecutionTier says what each is).
 brass::runtime::TieringConfig tieringConfigFor(ExecutionTier tier) {
@@ -162,7 +134,11 @@ brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
     // Native code opens no scope of its own; this makes brass's runtime name
     // lookups resolve in this program rather than the default one.
     brass::runtime::ProgramScope scope(*dispatchTable_);
-    OuterInterpreterRoots outerRoots;
+    // The thread that runs a program need not be the one that compiled it:
+    // its heap must exist, and be brass's current heap, before the pipeline
+    // builds the interpreter that runs it here, so that the interpreter's
+    // frames are that heap's roots.
+    embed::bindThreadHeap();
     activateStackMaps();
     if (tier_ == ExecutionTier::Tier2_Optimized) {
         if (!jitProgram_) return brass::RuntimeValue::from_u64(0);

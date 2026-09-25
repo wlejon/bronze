@@ -1573,17 +1573,19 @@ typedef struct bronze_code_range {
  *    makes a cached depth > 0 property hit sound, read inline by the
  *    proto-hit fast path.
  *
- *  - alloc_cursor / alloc_limit: the inline-allocation window.
- *    [cursor, limit) is heap memory the runtime has carved out of from-space
- *    for generated code to bump-allocate plain `new` instances from
- *    (heap.cpp owns both). The inline path only ever ADVANCES cursor when
- *    the object fits — it can never collect — and every miss (window empty,
- *    invalidated, or disabled) falls back to bronze_construct, which refills
- *    it. Both words are zeroed by every collection, because the window
- *    points into the semispace the collector is abandoning. Zero/zero is
- *    also the initial and the BRONZE_NO_INLINE_ALLOC=1 state: the unsigned
- *    subtraction limit-cursor is then 0, no size fits, and the fast path is
- *    dormant.
+ *  - alloc_cursor / alloc_limit: the inline-allocation window. They ARE the
+ *    thread heap's young bump region: the collector (brass::gc::Heap, bound
+ *    to these two words by runtime/heap.cpp) allocates from them itself and
+ *    resets them after each collection. Generated code bump-allocates plain
+ *    objects, arrays and environments from [cursor, limit), writing each
+ *    one's collector header (gc_cell_header | size) in the word before the
+ *    bronze header. The inline path only ever ADVANCES cursor when the
+ *    object fits — it can never collect — and every miss falls back to the
+ *    allocating helper, which collects when it must. Under a stress mode the
+ *    collector keeps the window empty so every allocation reaches it. Zero/
+ *    zero is the initial and the BRONZE_NO_INLINE_ALLOC=1 state: the
+ *    unsigned subtraction limit-cursor is then 0, no size fits, and the fast
+ *    path is dormant.
  *
  *  - plain_shape: the plain object root shape pointer for inline object
  *    creation.

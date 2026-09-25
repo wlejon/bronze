@@ -162,26 +162,17 @@ BronzeHostSymbols& hostSymbols() {
     return provider;
 }
 
-// Bronze's objects live only in bronze's heap. Everything code bronze
-// compiled allocates — objects, arrays, environments, closures, the async
-// machines and generator state an `.resume` closure carries — is allocated
-// by bronze's runtime helpers into bronze's heap and rooted by the function's
-// GC frame, whichever tier runs it. brass's heap would only see allocations
-// brass's own runtime makes (`brass_gc_alloc` from MIR, a brass coroutine
-// frame), which bronze's lowering never emits. The heaps brass's interpreters
-// create for themselves are therefore configured to forbid allocation: one
-// is a hard stop (brass reports it and aborts) rather than an object outside
-// bronze's collector, and their collections and safepoints do nothing. They
-// reserve the least address space a heap can.
-//
-// Collections are bronze's own, at its allocation points (Heap::collect),
-// and every one of them also visits the gcref slots brass knows on the
-// thread through brass_enumerate_thread_roots (runtime/rt_state.cpp,
-// visitBrassThreadRoots): brass's native-frame scopes, thread-root scopes
-// and interpreter frames are roots of the one heap.
-brass::gc::HeapConfig forbiddenHeapConfig() {
+// Bronze's objects live on the thread's bronze heap, which is a brass
+// gc::Heap bound as the thread's current heap (runtime/heap.h, bind_thread).
+// Every brass interpreter built on a thread after that uses it: its frames
+// are that heap's roots and its checked memory accesses know its objects.
+// installBronzeHostSymbols creates the calling thread's heap first for that
+// reason. An interpreter built on a thread that has none makes a private heap
+// of its own; nothing bronze compiles allocates through brass's runtime, so
+// such a heap holds nothing, and this configuration keeps it the smallest a
+// heap can be.
+brass::gc::HeapConfig privateHeapConfig() {
     brass::gc::HeapConfig config;
-    config.forbid_allocation = true;
     config.eden_bytes = 0;
     config.survivor_bytes = 0;
     config.mature_reserve_bytes = 0;
@@ -216,7 +207,8 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
 
 void installBronzeHostSymbols() {
     brass::runtime::set_host_symbol_provider(&hostSymbols());
-    brass::gc::Heap::set_default_config(forbiddenHeapConfig());
+    brass::gc::Heap::set_default_config(privateHeapConfig());
+    embed::bindThreadHeap();
 }
 
 void installBronzeEnterJsHook() {

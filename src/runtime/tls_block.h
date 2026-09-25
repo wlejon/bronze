@@ -31,6 +31,11 @@ inline bronze_tls_block* rtTls() noexcept {
     return &g_tls_block;
 }
 
+// Reads every BRONZE_NO_* seam into the calling thread's block
+// (thread_seams.cpp). Heap's constructor calls it, so it runs at a thread's
+// first touch of the runtime.
+void rtReadThreadSeams();
+
 void setShadowStackCapacityForTesting(size_t words);
 void resetShadowStackCapacityForTesting();
 bool isShadowStackFrame(const bronze_gc_frame* frame);

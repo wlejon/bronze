@@ -1,7 +1,7 @@
 #pragma once
 
 // External ArrayBuffer storage: a bronze buffer whose bytes live in a host
-// block rather than the semispace heap. The mechanism sits in the runtime
+// block rather than the collected heap. The mechanism sits in the runtime
 // rather than in embed because GENERATED CODE reaches it too — a native
 // answering `T[]` in transfer mode hands its block to bronze_native_buffer_wrap
 // (native_registry.cpp), which builds a buffer over those very bytes — and the

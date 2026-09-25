@@ -174,10 +174,11 @@ using HandleDestructor = runtime::HandleDestructor;
 
 // WHEN the destructor runs, which decides what it may do:
 //
-//   InSweep   Inside the collection that proved the cell dead. The destructor
-//             must not touch the bronze heap or call back into this API — the
-//             collection is mid-flight; freeing host memory is its whole job.
-//             The default, because it needs no pumping from the host.
+//   InSweep   At the end of the collection that proved the cell dead, before
+//             that collection returns to whatever allocation triggered it.
+//             The destructor must not touch the bronze heap or call back into
+//             this API; freeing host memory is its whole job. The default,
+//             because it needs no pumping from the host.
 //   Deferred  Queued at that same moment, run at the next drainFinalizers()
 //             — which drainMicrotasks() performs, so a host already pumping
 //             the checkpoint gets it free. By then the cell is long gone and

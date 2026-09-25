@@ -29,9 +29,9 @@ namespace bronze::runtime {
 
 namespace {
 
-// One FinalizationRegistry cell (26.2.1.1's [[Cells]] record). Two of its three
-// references are WEAK and are therefore raw bits nothing traces; the held value
-// is STRONG and is a Value the root source below visits.
+// One FinalizationRegistry cell (26.2.1.1's [[Cells]] record). The target and
+// the unregister token are WEAK references the tracer source below visits as
+// such; the held value is STRONG.
 struct Cell {
     uint64_t targetBits;
     uint64_t tokenBits;
@@ -39,18 +39,12 @@ struct Cell {
     bool hasToken;
 };
 
-// A dead cell whose callback has not run yet. The held value here is already a
-// forwarded, post-collection Value: the root source visits this list too, and
-// the sweep that fills it runs after the root sources have.
+// A dead cell whose callback has not run yet. The tracer source keeps its held
+// value alive until the callback has been handed it.
 struct PendingCleanup {
     uint32_t blockId;
     Value heldValue;
 };
-
-// Every live WeakRef cell, by its CURRENT header address. Raw headers rather
-// than Values, because the collector must not forward these: whether the
-// WeakRef object itself survived is precisely what the sweep asks.
-thread_local std::vector<HeapObjectHeader*> g_weakRefs;
 
 // The registries, held WEAKLY (weak_ref.h says why), and their cells. Two
 // parallel vectors indexed by the block id stored in the registry's slot:
@@ -73,22 +67,11 @@ thread_local std::deque<PendingCleanup> g_pending;
 thread_local std::vector<Value> g_kept;
 thread_local std::unordered_set<uint64_t> g_keptSeen;
 
-// The target pair, encoded and decoded. Two doubles rather than one Value for
-// the reason the header comment gives: the collector reads every internal
-// slot as a Value, and a number is the one thing it never forwards.
-Value readTarget(const ObjectHeader* obj) {
-    const auto tag = static_cast<uint16_t>(obj->internalSlot(WeakRefSlot::TargetTag).asNumber());
-    const auto payload =
-        static_cast<uint64_t>(obj->internalSlot(WeakRefSlot::TargetPayload).asNumber());
-    return Value::fromTagAndPayload(tag, payload);
-}
+// The target: the WeakRef's last internal slot, which the collector visits
+// weakly and sets to `undefined` when the target dies (GcLayout::WeakLast).
+Value readTarget(const ObjectHeader* obj) { return obj->internalSlot(WeakRefSlot::Target); }
 
-void writeTarget(ObjectHeader* obj, Value target) {
-    obj->setInternalSlot(WeakRefSlot::TargetPayload,
-                         Value::fromDouble(static_cast<double>(target.payload())));
-    obj->setInternalSlot(WeakRefSlot::TargetTag,
-                         Value::fromDouble(static_cast<double>(target.tag())));
-}
+void writeTarget(ObjectHeader* obj, Value target) { obj->setInternalSlot(WeakRefSlot::Target, target); }
 
 // The block id, or UINT32_MAX for a registry whose init never ran — one a
 // derived constructor returned without calling `super()`, whose slot still
@@ -101,69 +84,44 @@ uint32_t blockIdOf(Value registry) {
     return static_cast<uint32_t>(id);
 }
 
-// Forward one weak slot, or clear it. False when the target died, which is the
-// answer both callers branch on.
-bool updateWeakSlot(Heap& heap, uint64_t& bits) {
-    const Value v(bits);
-    if (!v.isPointer()) return true;  // already cleared, or never a heap reference
-    const auto address = static_cast<uintptr_t>(v.payload());
-    if (address == 0) return true;
-    HeapObjectHeader* live = heap.survivor_of(reinterpret_cast<HeapObjectHeader*>(address));
-    if (!live) {
-        bits = Value::fromUndefined().rawBits();
-        return false;
+// Every reference the tables hold, visited at every collection: the
+// registries, targets and tokens WEAKLY (a dead one reads `undefined`
+// afterwards), the held values and the kept-objects list strongly.
+void traceWeakTables(brass::gc::Tracer& t) {
+    const uint64_t cleared = Value::fromUndefined().rawBits();
+    for (size_t b = 0; b < g_cells.size(); ++b) {
+        if (b < g_registries.size()) {
+            if (g_registries[b].isUndefined()) continue;
+            t.visit_weak(reinterpret_cast<uint64_t*>(&g_registries[b]), cleared);
+        }
+        for (Cell& cell : g_cells[b]) {
+            t.visit_weak(&cell.targetBits, cleared);
+            if (cell.hasToken) t.visit_weak(&cell.tokenBits, cleared);
+            t.visit(reinterpret_cast<uint64_t*>(&cell.heldValue));
+        }
     }
-    bits = Value::fromTagAndPayload(v.tag(), reinterpret_cast<uintptr_t>(live)).rawBits();
-    return true;
+    for (PendingCleanup& p : g_pending) t.visit(reinterpret_cast<uint64_t*>(&p.heldValue));
+    for (Value& kept : g_kept) t.visit(reinterpret_cast<uint64_t*>(&kept));
 }
 
-// The sweep. Runs inside `collect()`, after the copy phase and before the
-// semispace swap, and allocates nothing on the bronze heap — both are
-// `add_post_collection_hook`'s contract (heap.h).
+// The sweep, after the collector has settled every weak reference above. It
+// allocates nothing on the bronze heap (`add_post_collection_hook`'s
+// contract, heap.h).
 void sweepWeakReferences() {
-    Heap& heap = rtHeap();
-
-    // WeakRef cells. A WeakRef whose OWN object died leaves the table; one that
-    // survived has its target forwarded or cleared in the surviving copy, which
-    // is the to-space object every later `deref` will read.
-    size_t keep = 0;
-    for (HeapObjectHeader* cell : g_weakRefs) {
-        HeapObjectHeader* live = heap.survivor_of(cell);
-        if (!live) continue;
-        auto* obj = reinterpret_cast<ObjectHeader*>(live);
-        uint64_t bits = readTarget(obj).rawBits();
-        updateWeakSlot(heap, bits);
-        writeTarget(obj, Value(bits));
-        g_weakRefs[keep++] = live;
-    }
-    g_weakRefs.resize(keep);
-
-    // Registry cells. A registry whose own object died is removed from
-    // g_registries, and its cells and pending cleanups are cleared.
+    // Registry cells. A registry that died takes its cells and its pending
+    // cleanups with it; a cell whose target died parks its held value.
     for (uint32_t block = 0; block < g_cells.size(); ++block) {
         if (block >= g_registries.size() || g_registries[block].isUndefined()) {
-            g_cells[block].clear();
-            continue;
-        }
-        Value& regVal = g_registries[block];
-        auto* regHdr = reinterpret_cast<HeapObjectHeader*>(regVal.payload());
-        HeapObjectHeader* live = heap.survivor_of(regHdr);
-        if (!live) {
-            regVal = Value::fromUndefined();
             g_cells[block].clear();
             g_cells[block].shrink_to_fit();
             continue;
         }
-        regVal = Value::fromTagAndPayload(regVal.tag(), reinterpret_cast<uintptr_t>(live));
-
         std::vector<Cell>& cells = g_cells[block];
         size_t live_cells = 0;
         for (size_t i = 0; i < cells.size(); ++i) {
             Cell cell = cells[i];
-            if (cell.hasToken && !updateWeakSlot(heap, cell.tokenBits)) {
-                cell.hasToken = false;
-            }
-            if (!updateWeakSlot(heap, cell.targetBits)) {
+            if (cell.hasToken && Value(cell.tokenBits).isUndefined()) cell.hasToken = false;
+            if (Value(cell.targetBits).isUndefined()) {
                 g_pending.push_back(PendingCleanup{block, cell.heldValue});
                 continue;
             }
@@ -181,8 +139,8 @@ void sweepWeakReferences() {
     }
     g_pending.resize(keep_pending);
 
-    // The kept-objects membership index is keyed on addresses every relocation
-    // moves. The vector's Values were forwarded by the root source above, so
+    // The kept-objects membership index is keyed on addresses a collection
+    // moves. The vector's Values were updated by the tracer source above, so
     // rebuilding from it is exact.
     g_keptSeen.clear();
     for (const Value& v : g_kept) g_keptSeen.insert(v.rawBits());
@@ -194,14 +152,7 @@ void sweepWeakReferences() {
 // cross-TU order fiasco.
 void ensureWeakRegistries() {
     static thread_local const bool registered = [] {
-        rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
-            for (size_t b = 0; b < g_cells.size(); ++b) {
-                if (b < g_registries.size() && g_registries[b].isUndefined()) continue;
-                for (Cell& cell : g_cells[b]) visit(cell.heldValue);
-            }
-            for (PendingCleanup& p : g_pending) visit(p.heldValue);
-            for (Value& kept : g_kept) visit(kept);
-        });
+        rtHeap().add_tracer_source(traceWeakTables);
         rtHeap().add_post_collection_hook(sweepWeakReferences);
         return true;
     }();
@@ -234,12 +185,7 @@ void rtWeakSlotsReset(Value obj, bool isRegistry) {
 
 void rtWeakRefInit(Rooted<Value>& self, Rooted<Value>& target) {
     ensureWeakRegistries();
-    auto* obj = self.get().asObject<ObjectHeader>();
-    writeTarget(obj, target.get());
-    // No allocation between the write and this push, so the address recorded
-    // is the one the collector will next see — the rule embed's handle
-    // registry states for its own table.
-    g_weakRefs.push_back(&obj->header);
+    writeTarget(self.get().asObject<ObjectHeader>(), target.get());
     // 26.1.1.1 step 4: constructing a WeakRef keeps its target alive for the
     // rest of the job, exactly as a `deref` does.
     rtAddToKeptObjects(target.get());
@@ -377,7 +323,6 @@ void rtRunFinalizationCleanupJob() {
 }
 
 size_t rtKeptObjectCount() { return g_kept.size(); }
-size_t rtWeakRefCellCount() { return g_weakRefs.size(); }
 
 size_t rtFinalizationCellCount() {
     size_t total = 0;

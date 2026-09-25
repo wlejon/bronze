@@ -240,9 +240,8 @@ TEST_CASE("a double slot past the inline four lives in the overflow block") {
 
 TEST_CASE("a collection over a mix of double and boxed slots keeps both") {
     ReprScope scope;
-    // A heap of this case's own, so the collection below is over its objects
-    // and the verifier's structural passes have a space they can parse.
-    Heap heap(4 * 1024 * 1024, 64 * 1024);
+    // A heap of this case's own, so the collection below is over its objects.
+    Heap heap;
     heap.set_gc_stress(false);
     heap.set_gc_verify(true);
     ShadowStackFrame frame;
@@ -288,7 +287,7 @@ TEST_CASE("a collection over a mix of double and boxed slots keeps both") {
 
 TEST_CASE("a double whose bits look like a pointer survives collection intact") {
     ReprScope scope;
-    Heap heap(4 * 1024 * 1024, 64 * 1024);
+    Heap heap;
     heap.set_gc_stress(false);
     heap.set_gc_verify(true);
     ShadowStackFrame frame;

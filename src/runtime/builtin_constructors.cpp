@@ -66,7 +66,7 @@ namespace {
 // called — the same rule a byte store follows. False means it threw.
 bool arrayLengthFits(uint32_t n) {
     const size_t bytes = static_cast<size_t>(n) * sizeof(Value);
-    if (bytes + 64 >= rtHeap().reserved_size() / 2) {
+    if (bytes + 64 >= Heap::kMaxObjectBytes) {
         rtThrowRangeError("Array allocation failed: " + std::to_string(n) +
                           " elements does not fit in the heap");
         return false;

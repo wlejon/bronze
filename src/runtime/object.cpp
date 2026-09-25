@@ -96,8 +96,9 @@ constexpr size_t kObjectBasePayload =
 // The inline `new` fast path allocates this exact object — header word,
 // shape, overflow, four undefined inline slots — as raw stores against the
 // bump cursor, so the total is an ABI fact. It must also be what
-// Heap::allocate would have written into header.size (the collector parses
-// to-space by that field), which the 8-alignment half of the assert pins.
+// Heap::allocate would have written into header.size (the trace bounds an
+// object's Value words by that field), which the 8-alignment half of the
+// assert pins.
 static_assert(sizeof(HeapObjectHeader) + kObjectBasePayload == BRONZE_ABI_PLAIN_OBJECT_BYTES);
 static_assert(BRONZE_ABI_PLAIN_OBJECT_BYTES % 8 == 0);
 
@@ -108,22 +109,21 @@ ObjectHeader* ObjectHeader::create(Heap& heap, NonMovingArena& arena, Shape* sha
 }
 
 ObjectHeader* ObjectHeader::createWithInternalSlots(Heap& heap, NonMovingArena& arena,
-                                                    Shape* shape, uint32_t count) {
+                                                    Shape* shape, uint32_t count, GcLayout layout) {
     (void)arena;
     if (!shape) {
         fatal("object creation without a shape (the shape carries the prototype)");
     }
     size_t payload_bytes = kObjectBasePayload + count * sizeof(Value);
-    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object);
+    HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::Object, layout);
     auto* obj = reinterpret_cast<ObjectHeader*>(raw_hdr);
     obj->shape = shape;
     obj->overflow = Value::fromUndefined();
 
     // The internal slots are initialized with the inline ones and by the same
-    // loop: the collector scans every payload word as a Value, so leaving one
-    // uninitialized would hand it a pointer made of whatever the semispace last
-    // held there.
-    Value* slots = obj->slotsData();
+    // loop: every payload word is a Value, and `undefined` is what an unset
+    // internal slot reads as.
+    HeapValue* slots = obj->slotsData();
     for (uint32_t i = 0; i < kInlineSlots + count; ++i) {
         slots[i] = Value::fromUndefined();
     }
@@ -173,13 +173,13 @@ ObjectHeader* ObjectHeader::ensureOverflow(Heap& heap, Rooted<Value>& self, uint
     block->flags = HeapKind::SlotBlock;
     obj = self.get().asObject<ObjectHeader>();
 
-    Value* slots = block->payload<Value>();
+    HeapValue* slots = block->payload<HeapValue>();
     uint32_t i = 0;
     if (obj->overflow.isPointer()) {
         // A raw copy, deliberately not a slot-by-slot `setSlot`: the bits in
         // the old block are already in the representation the shape names, and
         // growing storage changes no property's representation.
-        Value* old_slots = obj->overflow.asObject<HeapObjectHeader>()->payload<Value>();
+        const HeapValue* old_slots = obj->overflow.asObject<HeapObjectHeader>()->payload<HeapValue>();
         for (; i < cap; ++i) {
             slots[i] = old_slots[i];
         }

@@ -84,7 +84,7 @@ bool isDenseNumberArray(const Value& v) {
     auto* arr = v.asObject<ArrayHeader>();
     if (arr->length == 0) return false;
     if (!arr->elements.isObject()) return false;
-    const Value* data = arr->elementsData();
+    const HeapValue* data = arr->elementsData();
     for (uint32_t i = 0; i < arr->length; ++i) {
         const Value e = data[i];
         if (!e.isNumber() && !e.isInt32()) return false;

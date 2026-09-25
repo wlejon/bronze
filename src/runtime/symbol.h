@@ -26,7 +26,7 @@ namespace bronze {
 // collected — the same bargain every property key in bronze already makes
 // (`StringHeader::internToArena`), and symbols are created by the handful, not
 // per iteration. And a Symbol-tagged Value needs no GC rooting of its own:
-// `Heap::forward_value` skips any pointer outside the semispace, so the
+// the collector skips any pointer outside its heap, so the
 // registry below is a plain table rather than a root source.
 struct SymbolHeader {
     HeapObjectHeader header;

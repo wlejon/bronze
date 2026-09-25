@@ -9,7 +9,7 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         ArrayHeader* arr = self.asObject<ArrayHeader>();
         if ((arr->head_offset + arr->length + argc <= arr->capacity) && arr->properties.isUndefined()) {
-            Value* dst = arr->elementsData() + arr->length;
+            HeapValue* dst = arr->elementsData() + arr->length;
             for (uint32_t i = 0; i < argc; ++i) {
                 dst[i] = Value(argv[i]);
             }
@@ -172,7 +172,7 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         if (arr->head_offset >= n) {
             arr->head_offset -= n;
             arr->length += n;
-            Value* data = arr->elementsData();
+            HeapValue* data = arr->elementsData();
             for (uint32_t i = 0; i < n; ++i) data[i] = args[i];
             return Value::fromDouble(arr->length).rawBits();
         }
@@ -183,7 +183,7 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
             appendTo(self, filler);
         }
         arr = self.get().asObject<ArrayHeader>();
-        Value* data = arr->elementsData();
+        HeapValue* data = arr->elementsData();
         for (uint32_t i = oldLen; i > 0; --i) data[i - 1 + n] = data[i - 1];
         for (uint32_t i = 0; i < n; ++i) data[i] = args[i];
         return Value::fromDouble(arr->length).rawBits();
@@ -226,7 +226,7 @@ uint64_t arrayReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         if (arr->length > 1 && !requireWritableElements(self.get(), "reverse")) {
             return Value::fromUndefined().rawBits();
         }
-        Value* data = arr->elementsData();
+        HeapValue* data = arr->elementsData();
         for (uint32_t i = 0, j = arr->length; i + 1 < j; ++i, --j) {
             std::swap(data[i], data[j - 1]);
         }
@@ -280,7 +280,7 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
             return Value::fromUndefined().rawBits();
         }
         const Value fillVal = args[0];
-        Value* data = self.get().asObject<ArrayHeader>()->elementsData();
+        HeapValue* data = self.get().asObject<ArrayHeader>()->elementsData();
         for (uint32_t i = start; i < end; ++i) data[i] = fillVal;
         return self.get().rawBits();
     }
@@ -334,7 +334,7 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
                 appendTo(self, filler);
             }
             ArrayHeader* arr = self.get().asObject<ArrayHeader>();
-            Value* data = arr->elementsData();
+            HeapValue* data = arr->elementsData();
             for (uint32_t i = moveCount; i > 0; --i) {
                 data[start + insertCount + i - 1] = data[start + deleteCount + i - 1];
             }
@@ -343,7 +343,7 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
                 return Value::fromUndefined().rawBits();
             }
             ArrayHeader* arr = self.get().asObject<ArrayHeader>();
-            Value* data = arr->elementsData();
+            HeapValue* data = arr->elementsData();
             for (uint32_t i = 0; i < moveCount; ++i) {
                 data[start + insertCount + i] = data[start + deleteCount + i];
             }
@@ -358,7 +358,7 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         }
 
         if (insertCount > 0) {
-            Value* data = self.get().asObject<ArrayHeader>()->elementsData();
+            HeapValue* data = self.get().asObject<ArrayHeader>()->elementsData();
             for (uint32_t i = 0; i < insertCount; ++i) data[start + i] = args[i + 2];
         }
         return removed.get().rawBits();
@@ -441,7 +441,7 @@ uint64_t arrayCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
             return Value::fromUndefined().rawBits();
         }
 
-        Value* data = self.get().asObject<ArrayHeader>()->elementsData();
+        HeapValue* data = self.get().asObject<ArrayHeader>()->elementsData();
         if (from < to && to < from + count) {
             for (uint32_t i = count; i > 0; --i) {
                 data[to + i - 1] = data[from + i - 1];

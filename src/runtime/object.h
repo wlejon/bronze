@@ -260,7 +260,7 @@ struct ObjectHeader {
     // of Values holding slots kInlineSlots and up. Stored as a Value so the
     // generic GC payload scan forwards it like any other slot; header, not
     // payload, because every heap reference in a Value points at a header.
-    Value overflow;
+    HeapValue overflow;
 
     static constexpr uint32_t kInlineSlots = 4;
 
@@ -286,11 +286,13 @@ struct ObjectHeader {
     // property under a reserved name buys the first two and nothing else, which
     // is all the retired `@@` convention could ever do.
     //
-    // The collector needs nothing added for them: it scans an object's payload
+    // The collector needs nothing added for them: it traces an object's payload
     // as an array of Values sized by `header.size`, so a wider block is traced
-    // by the same walk that already traces the inline slots.
+    // by the same walk that already traces the inline slots. `layout` is how:
+    // GcLayout::WeakLast makes the LAST internal slot a weak reference (a
+    // WeakRef's target).
     static ObjectHeader* createWithInternalSlots(Heap& heap, NonMovingArena& arena, Shape* shape,
-                                                 uint32_t count);
+                                                 uint32_t count, GcLayout layout = GcLayout::Cell);
 
     // How many this object was created with — 0 for every ordinary object.
     // Part of the BRAND a runtime iterator checks its receiver with: an object
@@ -499,7 +501,7 @@ struct ObjectHeader {
         if (oi >= overflowCapacity()) {
             fatal("object slot index beyond overflow capacity (corrupt shape?)");
         }
-        overflow.asObject<HeapObjectHeader>()->payload<Value>()[oi] = val;
+        overflow.asObject<HeapObjectHeader>()->payload<HeapValue>()[oi] = val;
     }
 
     // Out of line, and reached only from a receiver whose shape has at least
@@ -515,8 +517,8 @@ struct ObjectHeader {
         return static_cast<uint32_t>((hdr->size - sizeof(HeapObjectHeader)) / sizeof(Value));
     }
 
-    Value* slotsData() noexcept {
-        return reinterpret_cast<Value*>(this + 1);
+    HeapValue* slotsData() noexcept {
+        return reinterpret_cast<HeapValue*>(this + 1);
     }
     const Value* slotsData() const noexcept {
         return reinterpret_cast<const Value*>(this + 1);

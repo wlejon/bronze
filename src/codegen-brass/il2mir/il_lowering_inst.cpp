@@ -275,7 +275,6 @@ bool IlLowering::lower_instruction(
             Value* idx_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.index));
             Value* val = ensure_type(get_opd(1), Type::i64(), b);
             b.build_call("bronze_env_set", Type::void_type(), {env_val, depth_val, idx_val, val});
-            b.build_write_barrier(env_val, val);
             break;
         }
 

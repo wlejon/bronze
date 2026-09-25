@@ -6,6 +6,7 @@
 #include "runtime/bigint.h"
 #include "runtime/fatal.h"
 #include "runtime/object.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/string.h"
 
 namespace bronze {
@@ -64,6 +65,16 @@ uint32_t hashKey(Value v) noexcept {
     return mix64(v.rawBits());
 }
 
+// `indexEpoch` when no key the index hashes by address can move: every such
+// key is old, and an old object never moves, so no collection invalidates the
+// index. Inserting a movable key sets the real epoch.
+constexpr double kStableIndex = -2.0;
+
+// Whether `key` is hashed by an address a collection may change.
+bool keyMayMove(const Heap& heap, Value key) noexcept {
+    return (key.isObject() || key.isSymbol()) && heap.is_movable(key.asObject());
+}
+
 // The map's current address, as a double. Heap pointers are below 2^47
 // (heap.cpp reserves in the low range and refuses anything else), so the
 // conversion is exact and the comparison is not an approximation.
@@ -98,25 +109,33 @@ void reindex(Heap& heap, Rooted<Value>& self) {
     std::memset(buckets, 0, wanted * sizeof(uint32_t));
 
     const uint32_t used = map->used();
+    bool movable = false;
     for (uint32_t slot = 0; slot < used; ++slot) {
         if (!map->liveAt(slot)) continue;
-        uint32_t b = hashKey(map->keyAt(slot)) & mask;
+        const Value key = map->keyAt(slot);
+        movable = movable || keyMayMove(heap, key);
+        uint32_t b = hashKey(key) & mask;
         while (buckets[b] != 0) b = (b + 1) & mask;
         buckets[b] = slot + 1;
     }
-    map->indexEpoch = Value::fromDouble(static_cast<double>(heap.relocation_epoch()));
+    map->indexEpoch = Value::fromDouble(movable ? static_cast<double>(heap.relocation_epoch()) : kStableIndex);
     map->indexAnchor = Value::fromDouble(selfAddress(self));
 }
 
-// The index is valid only while nothing has moved, for the reason hashKey's
-// last branch gives. Two independent tests, because either one alone is a
-// number somebody has to remember to maintain: the epoch is bumped by the
-// collector's own copy, and the anchor is this map's address, which a
-// collector cannot relocate anything without also changing.
+// The epoch half of the index's validity test (the anchor is the other).
+bool epochCurrent(const Heap& heap, const MapHeader* map) noexcept {
+    const double epoch = map->indexEpoch.asNumber();
+    return epoch == kStableIndex || epoch == static_cast<double>(heap.relocation_epoch());
+}
+
+// The index is valid only while no hashed key has moved, for the reason
+// hashKey's last branch gives. Two independent tests: the epoch is advanced by
+// every collection that moves an object (or is the stable marker while every
+// address-hashed key is old, and so never moves), and the anchor is this map's
+// own address, which catches a map copied or moved with its index.
 void ensureIndex(Heap& heap, Rooted<Value>& self) {
     auto* map = self.get().asObject<MapHeader>();
-    if (map->index.isPointer() &&
-        map->indexEpoch.asNumber() == static_cast<double>(heap.relocation_epoch()) &&
+    if (map->index.isPointer() && epochCurrent(heap, map) &&
         map->indexAnchor.asNumber() == selfAddress(self)) {
         return;
     }
@@ -138,15 +157,20 @@ void growEntries(Heap& heap, Rooted<Value>& self) {
     uint32_t newCap = kInitialCapacity;
     while (newCap < (live + 1) * 2) newCap *= 2;
 
-    HeapObjectHeader* block = heap.allocate(newCap * 2 * sizeof(Value), Tag::Object);
+    // A WeakMap's or WeakSet's table holds its pairs as ephemerons: a value
+    // lives only as long as its key does otherwise, and a pair whose key dies
+    // becomes a tombstone (GcLayout::Ephemerons).
+    const bool weak = runtime::rtIsWeakMapObject(self.get()) || runtime::rtIsWeakSetObject(self.get());
+    HeapObjectHeader* block = heap.allocate(newCap * 2 * sizeof(Value), Tag::Object,
+                                            weak ? GcLayout::Ephemerons : GcLayout::Cell);
     // See setCapacity in array.cpp: a Value run must not read as a plain
     // object, out of which the collector reads a shape.
     block->flags = HeapKind::ValueBlock;
-    Value* dst = block->payload<Value>();
+    HeapValue* dst = block->payload<HeapValue>();
     for (uint32_t i = 0; i < newCap * 2; ++i) dst[i] = Value::fromUndefined();
 
     map = self.get().asObject<MapHeader>();  // the allocation may have moved it
-    const Value* src = map->entryData();
+    const HeapValue* src = map->entryData();
     uint32_t at = 0;
     for (uint32_t slot = 0, used = map->used(); slot < used; ++slot) {
         if (src[slot * 2].isHole()) continue;
@@ -235,8 +259,7 @@ bool MapHeader::findFast(const Heap& heap, MapHeader* map, Value key, uint32_t& 
     // ensureIndex's validity test, verbatim: index present, epoch unmoved,
     // anchor unmoved. Any disagreement means a rebuild — an allocation — so
     // the rooted path must run instead.
-    if (!map->index.isPointer() ||
-        map->indexEpoch.asNumber() != static_cast<double>(heap.relocation_epoch()) ||
+    if (!map->index.isPointer() || !epochCurrent(heap, map) ||
         map->indexAnchor.asNumber() !=
             static_cast<double>(reinterpret_cast<uintptr_t>(map))) {
         return false;
@@ -298,6 +321,9 @@ void MapHeader::set(Heap& heap, Rooted<Value>& self, Rooted<Value>& key, Rooted<
     map->entryData()[slot * 2 + 1] = val.get();
     map->usedCount = Value::fromDouble(static_cast<double>(slot + 1));
     map->liveCount = Value::fromDouble(static_cast<double>(map->liveSize() + 1));
+    if (map->indexEpoch.asNumber() == kStableIndex && keyMayMove(heap, key.get())) {
+        map->indexEpoch = Value::fromDouble(static_cast<double>(heap.relocation_epoch()));
+    }
 
     uint32_t* buckets = bucketsOf(map);
     const uint32_t mask = bucketCountOf(map) - 1;
@@ -325,7 +351,7 @@ bool MapHeader::remove(Heap& heap, Rooted<Value>& self, Rooted<Value>& key) {
 
 void MapHeader::clear(Rooted<Value>& self) {
     auto* map = self.get().asObject<MapHeader>();
-    Value* data = map->entryData();
+    HeapValue* data = map->entryData();
     for (uint32_t i = 0, used = map->used(); i < used; ++i) {
         data[i * 2] = Value::fromHole();
         data[i * 2 + 1] = Value::fromUndefined();

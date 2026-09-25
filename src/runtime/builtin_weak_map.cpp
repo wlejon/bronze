@@ -2,17 +2,11 @@
 // %WeakMap.prototype% and %WeakSet.prototype%, and the four methods each
 // defines: get/set/has/delete, add/has/delete.
 //
-// The storage is builtin_map.cpp's table under two BRANDS of its own, and the
-// references it holds are STRONG. That is observably correct today, and the
-// reason is the shape of the API rather than an accident: a WeakMap is
-// non-iterable, has no `size`, and answers only about keys the asker is still
-// holding — so a key kept alive by the table is indistinguishable from one
-// kept alive by the program, except through memory exhaustion. What strong
-// references cost is exactly that: entries whose keys became garbage are never
-// reclaimed. True weakness hangs on the Heap's post-collection hook (heap.h,
-// `add_post_collection_hook`) — the one window in which a dead key's header is
-// still distinguishable from a live key's forwarded one — and lands there when
-// a workload needs it.
+// The storage is builtin_map.cpp's table under two BRANDS of its own, with
+// its entry block allocated as EPHEMERONS (map.cpp, growEntries; heap.h,
+// GcLayout::Ephemerons): the collector keeps an entry's value alive only
+// while its key is reachable from elsewhere, and turns the entry of a key
+// that died into the table's tombstone, exactly as a `delete` would.
 //
 // The JS surface follows builtin_map.cpp line for line: an instance is an
 // ordinary object with [[WeakMapData]] as internal slots, the prototype is a

@@ -197,7 +197,7 @@ against a native nobody registered.
 One runtime in the process is the whole point, and it is why a missing shared
 runtime is a diagnosed error rather than a fall back to the static archives: a
 second copy would mean a second heap, and a value handed from a loaded module
-to its host would be an address in a semispace the other collector is free to
+to its host would be an address in a heap the other collector is free to
 reuse. Two boundaries meet here and they have different rules — the C ABI is
 fingerprint-checked and safe across compilers, while the C++ embed API needs
 the host and the runtime built by the same compiler against the same C runtime
@@ -247,8 +247,8 @@ by the image's slot id in the shared `__bronze_module_slot` cell), and every
 table address generated code forms is the image address plus the calling
 thread's delta — loaded once per function from the pinned TLS register. The
 key remap stays shared: it holds process-wide interned ids, identical from
-every thread. The runtime-side registrations of those tables were already
-per-thread, so each thread's collector forwards only its own copy. The one
+every thread. The runtime-side registrations of those tables are
+per-thread, so each thread's collector updates only its own copy. The one
 rule left is that a thread runs the entry before it calls any of the
 module's functions. An in-process program (`src/eval`) in a pipeline tier
 lays its data image out the same way, so one compiled program runs on many

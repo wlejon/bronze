@@ -57,9 +57,8 @@ bool isCallableValue(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
 
-// The brand test, on the slot count the kind was created with: a WeakRef and
-// a registry are both three slots, and it is the symbol that tells them
-// apart. `MapHeader::hasBrand` asks the same three questions for its seven.
+// The brand test, on the slot count the kind was created with and the symbol
+// in the first slot. `MapHeader::hasBrand` asks the same three questions for its seven.
 bool hasBrand(Value v, Value brand, uint32_t slotCount) {
     if (!brand.isSymbol() || !v.isObject()) return false;
     HeapObjectHeader* hdr = v.asObject<HeapObjectHeader>();
@@ -245,9 +244,12 @@ void ensureWeakRefIntrinsics() {
 // The object and its brand, with the other slots in their empty state.
 Value allocate(Shape* shape, bool isRegistry) {
     const WeakRefIntrinsics& kind = isRegistry ? g_registry : g_weakRef;
+    // A WeakRef's target is its last internal slot, which the collector holds
+    // weakly (weak_ref.h).
     ObjectHeader* obj = ObjectHeader::createWithInternalSlots(
         rtHeap(), rtArena(), shape,
-        isRegistry ? uint32_t{RegistrySlot::kCount} : uint32_t{WeakRefSlot::kCount});
+        isRegistry ? uint32_t{RegistrySlot::kCount} : uint32_t{WeakRefSlot::kCount},
+        isRegistry ? GcLayout::Cell : GcLayout::WeakLast);
     obj->header.flags = HeapKind::Plain;
     obj->setInternalSlot(0, kind.brand);
     const Value val = Value::fromObject(obj);

@@ -1,16 +1,12 @@
 #include <doctest/doctest.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
-#include <stdexcept>
-
-#include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/string.h"
@@ -24,64 +20,54 @@ using namespace bronze;
 using namespace bronze::runtime;
 
 namespace {
-struct FatalGuard {
-    FatalGuard() {
-        setFatalHandler([](const char* msg) { throw std::runtime_error(msg); });
-    }
-    ~FatalGuard() { setFatalHandler(nullptr); }
-};
+
+// A hand-built run of `count` Values: a ValueBlock, not an ObjectHeader, so
+// the collector traces every word after the header.
+HeapObjectHeader* valueBlock(Heap& heap, size_t count) {
+    auto* block = heap.allocate(sizeof(Value) * count, Tag::Object);
+    block->flags = HeapKind::ValueBlock;
+    return block;
+}
+
+HeapValue* valuesOf(Value v) { return v.asObject<HeapObjectHeader>()->payload<HeapValue>(); }
+
 }  // namespace
 
-TEST_CASE("heap virtual allocation and low memory address reservation") {
-    Heap heap(1024 * 1024 * 1024, 64 * 1024);
-    CHECK(heap.base_address() != 0);
-    CHECK(heap.base_address() < (1ULL << 47));
-    CHECK(heap.reserved_size() == 1024 * 1024 * 1024);
-    CHECK(heap.committed_size() >= 64 * 1024);
+TEST_CASE("heap allocation lands in the low 47-bit address range") {
+    Heap heap;
+    CHECK(heap.reserved_size() > 0);
     CHECK(heap.used_size() == 0);
 
-    // Every hand-built Tag::Object block in this file is a flat run of Values
-    // and not an `ObjectHeader`, so it says `ValueBlock` rather than leaving
-    // `flags` at the zero that reads as `HeapKind::Plain` — which the collector
-    // now takes at its word, reading a `Shape*` out of the first payload word
-    // (heap.cpp, scan_plain_object).
-    auto* obj1 = heap.allocate(16, Tag::Object);
-    obj1->flags = HeapKind::ValueBlock;
-    CHECK(obj1 != nullptr);
+    auto* obj1 = valueBlock(heap, 2);
     CHECK(obj1->tag == static_cast<uint16_t>(Tag::Object));
-    CHECK(obj1->size >= 24);
+    CHECK(obj1->size == 24);
     CHECK(reinterpret_cast<uintptr_t>(obj1) < (1ULL << 47));
+    CHECK(heap.contains(obj1));
+    CHECK(heap.is_movable(obj1));
 
     auto* obj2 = heap.allocate(32, Tag::String);
-    CHECK(obj2 != nullptr);
     CHECK(obj2->tag == static_cast<uint16_t>(Tag::String));
     CHECK(reinterpret_cast<uintptr_t>(obj2) < (1ULL << 47));
 
     CHECK(heap.used_size() > 0);
 }
 
-TEST_CASE("bump allocator auto commits pages and triggers collection hook") {
-    Heap heap(1024 * 1024, 64 * 1024);
-    // This case measures bump-pointer commit growth; per-allocation stress
-    // collection would reclaim the (deliberately unrooted) garbage before
-    // the bump pointer ever crosses a page boundary.
+TEST_CASE("post-collection hooks run inside every collection") {
+    Heap heap;
     heap.set_gc_stress(false);
-    bool collection_triggered = false;
-    heap.set_collection_hook([&](Heap& h) {
-        (void)h;
-        collection_triggered = true;
+    int runs = 0;
+    bool sawFull = false;
+    heap.add_post_collection_hook([&] {
+        ++runs;
+        sawFull = heap.collecting_full();
     });
-
-    size_t initial_committed = heap.committed_size();
-
-    for (int i = 0; i < 2000; ++i) {
-        heap.allocate(64, Tag::Object)->flags = HeapKind::ValueBlock;
-    }
-
-    CHECK(heap.committed_size() > initial_committed);
-
+    heap.collect_minor();
+    CHECK(runs == 1);
+    CHECK_FALSE(sawFull);
     heap.collect();
-    CHECK(collection_triggered);
+    CHECK(runs == 2);
+    CHECK(sawFull);
+    CHECK(heap.collection_count() == 2);
 }
 
 TEST_CASE("shadow stack frame push pop and top frame nesting") {
@@ -146,35 +132,21 @@ TEST_CASE("rooted handle scoping and automatic registration") {
     CHECK(frame.count() == 0);
 }
 
-TEST_CASE("rooted handle slot modification and garbage collector mutation simulation") {
+TEST_CASE("rooted handle slot modification") {
     Heap heap;
     ShadowStackFrame frame;
 
-    auto* raw_obj = heap.allocate(16, Tag::Object);
-    raw_obj->flags = HeapKind::ValueBlock;
-    Value initial_val = Value::fromObject(raw_obj->payload());
-
+    Value initial_val = Value::fromObject(valueBlock(heap, 2));
     Rooted<Value> root(heap, initial_val);
     CHECK(root.get() == initial_val);
     CHECK(frame.count() == 1);
     CHECK(frame.roots()[0] == root.slot_ptr());
 
-    Value new_val = Value::fromDouble(100.5);
-    root.set(new_val);
-    CHECK(root.get() == new_val);
-    CHECK(*frame.roots()[0] == new_val);
+    root.set(Value::fromDouble(100.5));
+    CHECK(*frame.roots()[0] == Value::fromDouble(100.5));
 
     root = Value::fromBool(true);
-    CHECK(root.get() == Value::fromBool(true));
     CHECK(*frame.roots()[0] == Value::fromBool(true));
-
-    auto* new_raw_obj = heap.allocate(32, Tag::Object);
-    new_raw_obj->flags = HeapKind::ValueBlock;
-    Value relocated_val = Value::fromObject(new_raw_obj->payload());
-    *root.slot_ptr() = relocated_val;
-
-    CHECK(root.get() == relocated_val);
-    CHECK(root.get().asObject() == new_raw_obj->payload());
 }
 
 TEST_CASE("non moving arena allocation and pointer stability") {
@@ -198,154 +170,113 @@ TEST_CASE("non moving arena allocation and pointer stability") {
     TestMetadata* first = arena.create<TestMetadata>(101, 75.5, "alpha");
     CHECK(first != nullptr);
     CHECK(first->id == 101);
-    CHECK(first->weight == 75.5);
-    CHECK(std::string(first->name) == "alpha");
 
     std::vector<TestMetadata*> items;
     items.push_back(first);
-
     for (uint32_t i = 0; i < 500; ++i) {
-        TestMetadata* item = arena.create<TestMetadata>(i, static_cast<double>(i) * 1.5, "test");
-        items.push_back(item);
+        items.push_back(arena.create<TestMetadata>(i, static_cast<double>(i) * 1.5, "test"));
     }
 
     CHECK(arena.chunk_count() > 1);
-
     CHECK(items[0] == first);
-    CHECK(first->id == 101);
     CHECK(first->weight == 75.5);
     CHECK(std::string(first->name) == "alpha");
 }
 
-TEST_CASE("semispace copying collection reclaims unrooted memory and relocates rooted objects") {
-    Heap heap(1024 * 1024, 64 * 1024);
-    // The unrooted string must still be on the heap when collect() runs;
-    // stress mode would reclaim it during the later setup allocations.
+TEST_CASE("a minor collection moves rooted young objects and a full one keeps them") {
+    Heap heap;
     heap.set_gc_stress(false);
     ShadowStackFrame frame;
 
-    StringHeader* unrooted_str = StringHeader::createFromUTF8(heap, "unrooted_garbage_string_data");
-    CHECK(unrooted_str != nullptr);
+    (void)StringHeader::createFromUTF8(heap, "unrooted_garbage_string_data");
+    Rooted<Value> str(heap, Value::fromString(StringHeader::createFromUTF8(heap, "rooted_surviving_string")));
+    Rooted<Value> obj(heap, Value::fromObject(valueBlock(heap, 2)));
+    valuesOf(obj.get())[0] = str.get();
+    valuesOf(obj.get())[1] = Value::fromDouble(999.888);
 
-    Rooted<Value> rootS2(heap, Value::fromString(StringHeader::createFromUTF8(heap, "rooted_surviving_string")));
-    CHECK(rootS2.get().isString());
+    const Value before = obj.get();
+    const uint64_t epoch = heap.relocation_epoch();
+    heap.collect_minor();
+    CHECK(obj.get() != before);
+    CHECK(heap.relocation_epoch() != epoch);
 
-    auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
-    raw_obj->flags = HeapKind::ValueBlock;
-    Value* slots = raw_obj->payload<Value>();
-    slots[0] = rootS2.get();
-    slots[1] = Value::fromDouble(999.888);
-
-    // A heap reference in a Value always points at the object's HEADER.
-    Rooted<Value> rootObj(heap, Value::fromObject(raw_obj));
-    CHECK(rootObj.get().isObject());
-
-    size_t used_before = heap.used_size();
     heap.collect();
-    size_t used_after = heap.used_size();
+    CHECK_FALSE(heap.is_movable(obj.get().asObject()));
+    auto* s = str.get().asString<StringHeader>();
+    CHECK(s->charCodeAt(0) == 'r');
+    CHECK(s->length == 23);
+    CHECK(valuesOf(obj.get())[0] == str.get());
+    CHECK(valuesOf(obj.get())[1].asNumber() == 999.888);
+}
 
-    CHECK(used_after < used_before);
+TEST_CASE("an old object's store of a young value keeps it alive through a minor collection") {
+    Heap heap;
+    heap.set_gc_stress(false);
+    heap.set_gc_verify(true);  // the missing-barrier check
+    ShadowStackFrame frame;
 
-    CHECK(rootS2.get().isString());
-    auto* s2_relocated = rootS2.get().asString<StringHeader>();
-    CHECK(s2_relocated != nullptr);
-    CHECK(s2_relocated->charCodeAt(0) == 'r');
-    CHECK(s2_relocated->length == 23);
+    Rooted<Value> old(heap, Value::fromObject(valueBlock(heap, 4)));
+    for (int i = 0; i < 4; ++i) valuesOf(old.get())[i] = Value::fromUndefined();
+    heap.collect();
+    REQUIRE_FALSE(heap.is_movable(old.get().asObject()));
 
-    CHECK(rootObj.get().isObject());
-    Value* relocated_slots = rootObj.get().asObject<HeapObjectHeader>()->payload<Value>();
-    CHECK(relocated_slots[0].isString());
-    CHECK(relocated_slots[0] == rootS2.get());
-    CHECK(relocated_slots[1].isNumber());
-    CHECK(relocated_slots[1].asNumber() == 999.888);
+    // One store through the barrier, and one bulk copy.
+    valuesOf(old.get())[0] = Value::fromString(StringHeader::createFromUTF8(heap, "young_one"));
+    Value young[2];
+    young[0] = Value::fromString(StringHeader::createFromUTF8(heap, "young_two"));
+    young[1] = Value::fromDouble(7.0);
+    gcCopyValues(old.get().asObject(), valuesOf(old.get()) + 1, young, 2);
+
+    heap.collect_minor();
+    heap.collect_minor();
+    CHECK(valuesOf(old.get())[0].asString<StringHeader>()->length == 9);
+    CHECK(valuesOf(old.get())[1].asString<StringHeader>()->charCodeAt(6) == 't');
+    CHECK(valuesOf(old.get())[2].asNumber() == 7.0);
 }
 
 TEST_CASE("heap verify passes a clean heap and keeps it live across collections") {
-    Heap heap(1024 * 1024, 64 * 1024);
+    Heap heap;
     heap.set_gc_stress(false);
     heap.set_gc_verify(true);
     CHECK(heap.gc_verify());
     ShadowStackFrame frame;
-    FatalGuard guard;
 
     Rooted<Value> str(heap, Value::fromString(StringHeader::createFromUTF8(heap, "verify_me")));
-
-    auto* raw_obj = heap.allocate(sizeof(Value) * 4, Tag::Object);
-    raw_obj->flags = HeapKind::ValueBlock;
-    Value* slots = raw_obj->payload<Value>();
+    Rooted<Value> obj(heap, Value::fromObject(valueBlock(heap, 4)));
+    HeapValue* slots = valuesOf(obj.get());
     slots[0] = str.get();
     slots[1] = Value::fromDouble(2.5);
     slots[2] = Value::fromUndefined();
     slots[3] = Value::fromBool(true);
-    Rooted<Value> obj(heap, Value::fromObject(raw_obj));
 
-    // Raw-bytes payloads are exempt from the word check even when their bytes
-    // happen to look like Values — the scan never reads them either.
+    // A raw-bytes payload is never read as Values, even when its bytes look
+    // like them.
     auto* raw_bytes = heap.allocate(32, Tag::RawBytes);
-    std::memset(raw_bytes->payload(), 0xDB, 32);
-    slots = obj.get().asObject<HeapObjectHeader>()->payload<Value>();
-    slots[2] = Value::fromObject(raw_bytes);
+    std::memset(raw_bytes->payload(), 0xFF, 32);
+    valuesOf(obj.get())[2] = Value::fromObject(raw_bytes);
 
-    CHECK_NOTHROW(heap.collect());
-    CHECK_NOTHROW(heap.collect());
+    heap.collect_minor();
+    heap.collect();
+    heap.collect();
 
-    Value* relocated = obj.get().asObject<HeapObjectHeader>()->payload<Value>();
-    CHECK(relocated[0] == str.get());
-    CHECK(relocated[1].asNumber() == 2.5);
-    CHECK(relocated[3].asBool() == true);
+    const HeapValue* live = valuesOf(obj.get());
+    CHECK(live[0] == str.get());
+    CHECK(live[1].asNumber() == 2.5);
+    CHECK(live[3].asBool() == true);
+    auto* bytes = live[2].asObject<HeapObjectHeader>()->payload<uint8_t>();
+    CHECK(bytes[0] == 0xFF);
+    CHECK(bytes[31] == 0xFF);
 }
 
-TEST_CASE("heap verify names a scanned word holding a stale semispace pointer") {
-    Heap heap(1024 * 1024, 64 * 1024);
-    heap.set_gc_stress(false);
-    heap.set_gc_verify(true);
-    ShadowStackFrame frame;
-    FatalGuard guard;
-
-    // A zeroed raw-bytes block: an address inside it is inside the heap but
-    // can never be a live object header, which is exactly what recycled
-    // residue in an unzeroed scanned word looks like.
-    auto* decoy = heap.allocate(64, Tag::RawBytes);
-    std::memset(decoy->payload(), 0, 64);
-
-    auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
-    raw_obj->flags = HeapKind::ValueBlock;
-    Value* slots = raw_obj->payload<Value>();
-    slots[0] = Value::fromTagAndPayload(static_cast<uint16_t>(Tag::Object),
-                                        reinterpret_cast<uint64_t>(decoy->payload()) + 8);
-    slots[1] = Value::fromDouble(1.0);
-    Rooted<Value> obj(heap, Value::fromObject(raw_obj));
-
-    CHECK_THROWS_WITH_AS(heap.collect(), doctest::Contains("heap verify"), std::runtime_error);
-}
-
-TEST_CASE("heap verify rejects a word carrying an undefined tag") {
-    Heap heap(1024 * 1024, 64 * 1024);
-    heap.set_gc_stress(false);
-    heap.set_gc_verify(true);
-    ShadowStackFrame frame;
-    FatalGuard guard;
-
-    auto* raw_obj = heap.allocate(sizeof(Value) * 2, Tag::Object);
-    raw_obj->flags = HeapKind::ValueBlock;
-    Value* slots = raw_obj->payload<Value>();
-    slots[0] = Value::fromRawBits((0xFFFCULL << 48) | 0x1234);
-    slots[1] = Value::fromDouble(1.0);
-    Rooted<Value> obj(heap, Value::fromObject(raw_obj));
-
-    CHECK_THROWS_WITH_AS(heap.collect(),
-                         doctest::Contains("tag the value model does not define"),
-                         std::runtime_error);
-}
-
-TEST_CASE("gc stress mode triggers collection on every allocation") {
-    Heap heap(2 * 1024 * 1024, 128 * 1024);
+TEST_CASE("gc stress mode collects at every allocation") {
+    Heap heap;
     heap.set_gc_stress(true);
     CHECK(heap.gc_stress() == true);
 
     ShadowStackFrame frame;
     std::vector<std::unique_ptr<Rooted<Value>>> roots;
 
+    const uint64_t before = heap.collection_count();
     for (int i = 0; i < 30; ++i) {
         std::string text = "stress_string_" + std::to_string(i);
         StringHeader* s = StringHeader::createFromUTF8(heap, text);
@@ -353,72 +284,48 @@ TEST_CASE("gc stress mode triggers collection on every allocation") {
 
         for (int j = 0; j <= i; ++j) {
             std::string expected = "stress_string_" + std::to_string(j);
-            Value val = roots[j]->get();
-            CHECK(val.isString());
-            auto* hdr = val.asString<StringHeader>();
-            CHECK(hdr != nullptr);
+            auto* hdr = roots[j]->get().asString<StringHeader>();
             CHECK(hdr->length == expected.length());
             CHECK(hdr->charCodeAt(0) == 's');
         }
     }
+    CHECK(heap.collection_count() - before >= 30);
 }
 
-TEST_CASE("heap dynamically scales for deep hierarchy without bad_alloc") {
-    Heap heap(1024 * 1024 * 1024, 64 * 1024);
+TEST_CASE("a deep hierarchy survives promotion") {
+    Heap heap;
     heap.set_gc_stress(false);
     ShadowStackFrame frame;
 
-    // Build a 21,844 node hierarchy tree (branching=4, depth=7)
-    struct Node {
-        HeapObjectHeader* obj;
-    };
-    std::vector<Rooted<Value>*> allRoots;
-    allRoots.reserve(21844);
-
-    Rooted<Value> rootNode(heap, Value::fromNull());
     size_t nodeCount = 0;
-
     std::function<Value(int, int)> build = [&](int branching, int depth) -> Value {
-        auto* raw = heap.allocate(sizeof(Value) * 5, Tag::Object);
-        raw->flags = HeapKind::ValueBlock;
-        Value* payload = raw->payload<Value>();
+        Rooted<Value> node(heap, Value::fromObject(valueBlock(heap, 5)));
+        HeapValue* payload = valuesOf(node.get());
         payload[0] = Value::fromDouble(static_cast<double>(nodeCount++));
         payload[1] = Value::fromDouble(static_cast<double>(depth));
-        payload[2] = Value::fromNull();
-        payload[3] = Value::fromNull();
-        payload[4] = Value::fromNull();
-
+        for (int i = 2; i < 5; ++i) payload[i] = Value::fromNull();
         if (depth > 1) {
             for (int i = 0; i < branching; ++i) {
                 Value child = build(branching, depth - 1);
-                payload[2 + (i % 3)] = child;
+                valuesOf(node.get())[2 + (i % 3)] = child;
             }
         }
-        return Value::fromObject(raw);
+        return node.get();
     };
 
-    auto* sceneRaw = heap.allocate(sizeof(Value) * 5, Tag::Object);
-    sceneRaw->flags = HeapKind::ValueBlock;
-    rootNode.set(Value::fromObject(sceneRaw));
+    Rooted<Value> rootNode(heap, Value::fromObject(valueBlock(heap, 5)));
+    for (int i = 0; i < 5; ++i) valuesOf(rootNode.get())[i] = Value::fromNull();
     for (int i = 0; i < 4; ++i) {
         Value branch = build(4, 7);
-        sceneRaw->payload<Value>()[i] = branch;
+        valuesOf(rootNode.get())[i] = branch;
     }
     CHECK(nodeCount == 21844);
 
-    // Collect to verify all surviving objects copy cleanly
     heap.collect();
-    CHECK(rootNode.get().isObject());
     auto* liveHdr = rootNode.get().asObject<HeapObjectHeader>();
-    CHECK(liveHdr != nullptr);
     CHECK(liveHdr->tag == static_cast<uint16_t>(Tag::Object));
-}
-
-TEST_CASE("heap enforces thread affinity") {
-    Heap heap(1024 * 1024, 64 * 1024);
-    auto* obj = heap.allocate(16, Tag::Object);
-    CHECK(obj != nullptr);
-    heap.check_thread_affinity();
+    const Value firstChild = valuesOf(rootNode.get())[0];
+    CHECK(valuesOf(firstChild)[1].asNumber() == 7.0);
 }
 
 TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
@@ -442,7 +349,7 @@ TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
     heap.collect();
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount);
 
-    // 3. Test that a prototype kept alive by a Rooted survives GC, and its shape is preserved.
+    // 3. A prototype kept alive by a Rooted survives GC, and its shape is preserved.
     Rooted<Value> liveProto{Value(bronze_create_object())};
     Shape* liveShape = rtRootShapeForPrototype(liveProto.get());
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 1);
@@ -451,7 +358,7 @@ TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 1);
     CHECK(rtRootShapeForPrototype(liveProto.get()) == liveShape);
 
-    // 4. Test that a prototype kept alive via an object instance created with it survives GC.
+    // 4. A prototype kept alive via an object instance created with it survives GC.
     Rooted<Value> liveInstance;
     {
         Rooted<Value> protoObj{Value(bronze_create_object())};
@@ -461,17 +368,19 @@ TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 2);
 
     heap.collect();
-    // liveInstance kept its prototype alive through object scanning!
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 2);
     auto* instObj = liveInstance.get().asObject<ObjectHeader>();
     CHECK(instObj->shape != nullptr);
     CHECK(instObj->shape->prototypeValue().isObject());
 
-    // 5. Clear roots and collect again; everything should be swept.
+    // 5. Minor collections keep every prototype, however unreachable.
     liveProto.set(Value::fromUndefined());
+    heap.collect_minor();
+    CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 2);
+
+    // 6. Clear roots and collect again; everything should be swept.
     liveInstance.set(Value::fromUndefined());
     heap.collect();
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount);
     heap.set_gc_stress(wasStress);
 }
-

@@ -399,17 +399,7 @@ extern "C" {
 
 uint64_t bronze_iter_open(uint64_t srcBits) {
     recordHelperCall("bronze_iter_open");
-    Rooted<Value> rec{rtOpenIterator(Value(srcBits))};
-    if (rec.get().isObject() &&
-        rec.get().asObject<HeapObjectHeader>()->flags == IterRecordHeader::kFlags &&
-        (rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::Array ||
-         rec.get().asObject<IterRecordHeader>()->kindOf() == IterRecordHeader::MapEntries)) {
-        const bronze_tls_block* tls = bronze_tls_block_addr();
-        if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_ITER_RECORD_BYTES) {
-            rtHeap().refill_inline_lab();
-        }
-    }
-    return rec.get().rawBits();
+    return rtOpenIterator(Value(srcBits)).rawBits();
 }
 
 bool bronze_iter_step(uint64_t recBits) {

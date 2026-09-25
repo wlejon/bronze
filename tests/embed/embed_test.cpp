@@ -416,13 +416,16 @@ TEST_CASE("promise settlement after GC pressure") {
 
     const uint64_t promiseBitsBefore = p.get().rawBits();
     const uint64_t payloadBitsBefore = payload.get().rawBits();
+    auto& heap = runtime::rtHeap();
+    const bool promiseYoung = heap.is_movable(p.get().asObject());
+    const bool payloadYoung = heap.is_movable(payload.get().asString());
 
     // Force GC collection before settling.
-    runtime::rtHeap().collect();
+    heap.collect();
 
-    // Moving semispace collector relocates objects.
-    CHECK(p.get().rawBits() != promiseBitsBefore);
-    CHECK(payload.get().rawBits() != payloadBitsBefore);
+    // The collection relocates young objects and leaves old ones in place.
+    CHECK((p.get().rawBits() != promiseBitsBefore) == promiseYoung);
+    CHECK((payload.get().rawBits() != payloadBitsBefore) == payloadYoung);
     CHECK(embed::isPromise(p.get()));
 
     // Force another collection.

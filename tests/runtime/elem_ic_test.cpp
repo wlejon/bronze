@@ -215,10 +215,11 @@ TEST_CASE("the entry survives collections, because it holds nothing the collecto
     CHECK(warm(obj, str("uniform")).asNumber() == 5.0);
 
     const uint64_t before = obj.get().rawBits();
+    const bool young = rtHeap().is_movable(obj.get().asObject());
     rtHeap().collect();
-    // The receiver really did move; the shape it points at did not, and the
-    // entry is about the shape.
-    CHECK(obj.get().rawBits() != before);
+    // A young receiver really does move (an old one stays put); the shape it
+    // points at does not, and the entry is about the shape.
+    CHECK((obj.get().rawBits() != before) == young);
 
     Rooted<Value> key{str("uniform")};
     const ElemProbe probe = elemCacheProbe(obj.get(), key.get());
@@ -226,7 +227,8 @@ TEST_CASE("the entry survives collections, because it holds nothing the collecto
     CHECK(probe.value.asNumber() == 5.0);
     CHECK(elemGet(obj, str("uniform")).asNumber() == 5.0);
 
-    // Twice more, so the semispace has flipped back and forth under the entry.
+    // Twice more, so the receiver has been promoted and collected as old
+    // under the entry.
     rtHeap().collect();
     rtHeap().collect();
     CHECK(elemGet(obj, str("uniform")).asNumber() == 5.0);

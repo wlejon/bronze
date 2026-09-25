@@ -80,11 +80,9 @@ TEST_CASE("a WeakRef's target survives every collection while something else hol
 
     for (int i = 0; i < 3; ++i) rtHeap().collect();
 
-    // Not merely non-undefined: the slot FOLLOWED the object. A sweep that
-    // forwarded nothing would leave the old from-space address here, which
-    // compares unequal to the root's forwarded one — so this one line is what
-    // separates a working sweep from a stale pointer that happens to be
-    // readable.
+    // Not merely non-undefined: the slot FOLLOWED the object, which the first
+    // collection promoted — a weak slot left behind would hold the young
+    // address and compare unequal to the root's.
     CHECK(weakRefTargetSlot(wr).rawBits() == target.get().rawBits());
     CHECK(rtWeakRefDeref(wr.get()).rawBits() == target.get().rawBits());
 }
@@ -100,8 +98,8 @@ TEST_CASE("the weak slot is FORWARDED across a collection, not merely left reada
     rtHeap().collect();
 
     const uint64_t after = weakRefTargetSlot(wr).rawBits();
-    // The semispaces are disjoint, so one collection cannot leave a surviving
-    // object where it was.
+    // The target was young, and a full collection promotes every survivor,
+    // so it cannot be where it was.
     CHECK(before != after);
     CHECK(after == target.get().rawBits());
 }
@@ -133,22 +131,36 @@ TEST_CASE("KeepDuringJob: a deref'd target outlives its last reference until the
     CHECK(rtWeakRefDeref(wr.get()).isUndefined());
 }
 
-TEST_CASE("a WeakRef that itself dies leaves the sweep table") {
+TEST_CASE("a young target is cleared by a minor collection, an old one only by a full one") {
     ShadowStackFrame frame;
     quiesce();
 
-    const size_t before = rtWeakRefCellCount();
+    // Young WeakRef, young target: the minor collection decides both.
+    Rooted<Value> wr{Value::fromUndefined()};
     {
         Rooted<Value> target{Value(bronze_create_object())};
-        Rooted<Value> wr{rtNewWeakRef(target)};
-        CHECK(rtWeakRefCellCount() == before + 1);
+        wr.set(rtNewWeakRef(target));
     }
     rtClearKeptObjects();
+    rtHeap().collect_minor();
+    CHECK(weakRefTargetSlot(wr).isUndefined());
+
+    // An old target outlives a minor collection however unreachable it is,
+    // and a full one clears it — through an old WeakRef, which no minor
+    // collection scans.
+    Rooted<Value> wrOld{Value::fromUndefined()};
+    {
+        Rooted<Value> target{Value(bronze_create_object())};
+        wrOld.set(rtNewWeakRef(target));
+        rtHeap().collect();
+        REQUIRE_FALSE(rtHeap().is_movable(target.get().asObject()));
+        REQUIRE_FALSE(rtHeap().is_movable(wrOld.get().asObject()));
+    }
+    rtClearKeptObjects();
+    rtHeap().collect_minor();
+    CHECK_FALSE(weakRefTargetSlot(wrOld).isUndefined());
     rtHeap().collect();
-    // The table is the sweep's only handle on a WeakRef cell, so an entry that
-    // outlived its object would have the sweep writing into recycled memory on
-    // every later collection.
-    CHECK(rtWeakRefCellCount() == before);
+    CHECK(weakRefTargetSlot(wrOld).isUndefined());
 }
 
 TEST_CASE("an unregistered symbol can be held weakly and a registered one cannot") {

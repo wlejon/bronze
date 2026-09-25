@@ -68,6 +68,13 @@ typedef struct bronze_tls_block {
      * cells, environment cell and import table per thread. Null until the
      * thread runs its first module entry; grown by the runtime, never freed. */
     uint64_t* module_deltas;
+    /* The collector's header word for an inline allocation: brass's object
+     * header (payload bytes in the low 32 bits, layout id in the next 16)
+     * with the size left zero. The inline fast path ORs in its object's size
+     * and stores it one word before the bronze header it writes. The layout
+     * id is registered at run time, which is why it is read from here and
+     * not compiled in. */
+    uint64_t gc_cell_header;
 } bronze_tls_block;
 
 #define BRONZE_TLS_FRAME_TOP_OFF                   0
@@ -103,6 +110,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_KEY_IC_ENABLED_OFF            240
 #define BRONZE_TLS_STACK_LIMIT_OFF               248
 #define BRONZE_TLS_MODULE_DELTAS_OFF             256
+#define BRONZE_TLS_GC_CELL_HEADER_OFF            264
 
 /*
  * ---- the pinned register -----------------------------------------------

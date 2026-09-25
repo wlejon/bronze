@@ -18,27 +18,20 @@ namespace bronze::runtime {
 // has a shape, a real prototype on its chain and a brand in its first slot —
 // the arrangement builtin_map.cpp explains for a Map.
 //
-// bronze's collector is a MOVING SEMISPACE (runtime/heap.cpp), which decides
-// what the weak slot can be. The collector scans every internal slot of a
-// plain object as a Value and forwards every heap pointer it finds, so a weak
-// reference cannot BE a Value in a slot — it would be traced, and a traced
-// weak reference is a strong one under another name. So:
+// The weakness is the collector's (brass's weak references, runtime/heap.h):
 //
-//  - a WeakRef's target is held as TWO DOUBLES, its payload address and its
-//    tag, in slots the scan reads as numbers and never as a pointer (a heap
-//    address is below 2^47, so the double is exact); and
-//  - a FinalizationRegistry's cells live in a C++ table in weak_ref.cpp, whose
-//    STRONG halves (the held value) are visited by a registered root source
-//    and whose WEAK halves (the registry reference, target, unregister token)
-//    are raw bits nothing traces.
+//  - a WeakRef's target is its LAST internal slot, and the object is
+//    allocated with GcLayout::WeakLast, so the collector visits that slot
+//    weakly: it follows the target when the target survives and writes
+//    `undefined` there when it does not; and
+//  - a FinalizationRegistry's cells live in a C++ table in weak_ref.cpp that a
+//    tracer source visits at every collection: the registry reference, the
+//    target and the unregister token WEAKLY, the held value strongly.
 //
-// What makes them weak rather than merely untraced is the post-collection
-// sweep. `Heap::add_post_collection_hook` runs it inside `collect()`, after the
-// copy phase and before the semispace swap — the one moment liveness of an
-// arbitrary heap pointer is decidable, because a survivor's old header reads
-// `Tag::Forwarded` and a dead object's still reads the tag it was allocated
-// with. The sweep FORWARDS every weak slot whose target survived and CLEARS
-// every one whose target did not, which is the whole of the design.
+// A post-collection hook then sweeps the table: a cell whose target now reads
+// `undefined` parks its held value for a cleanup job, and a registry that
+// died takes its cells with it. A young target dies in the minor collection
+// that finds it unreachable; an old one only in a full collection.
 //
 // Retention semantics shipped, stated plainly because a weak reference that
 // over-retains is safe and one that under-retains is a use-after-free:
@@ -57,12 +50,12 @@ namespace bronze::runtime {
 //    from inside `collect()`. The sweep only moves a dead cell's held value
 //    onto a pending list; user code runs later, with the heap consistent.
 
-// A WeakRef's internal slots. [[WeakRefTarget]] is the pair described above.
+// A WeakRef's internal slots. [[WeakRefTarget]] must stay the last: it is the
+// word GcLayout::WeakLast holds weakly.
 namespace WeakRefSlot {
 enum : uint32_t {
     Brand = 0,
-    TargetPayload,
-    TargetTag,
+    Target,
     kCount,
 };
 }  // namespace WeakRefSlot
@@ -147,7 +140,6 @@ void rtRunFinalizationCleanupJob();
 // Test accessors, so a doctest can pin the sweep's arithmetic without going
 // through the JS surface.
 size_t rtKeptObjectCount();
-size_t rtWeakRefCellCount();
 size_t rtFinalizationCellCount();
 size_t rtFinalizationPendingCount();
 

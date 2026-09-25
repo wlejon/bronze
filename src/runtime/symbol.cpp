@@ -44,8 +44,8 @@ SymbolHeader* allocateSymbol(StringHeader* description) {
     auto* sym = static_cast<SymbolHeader*>(mem);
     // The tag is what `PropertyKey` discriminates on, so it is set here and
     // never anywhere else. `size` is filled in for the benefit of a debugger
-    // and of nothing else: the collector never sees this block, because
-    // `Heap::forward_value` ignores every pointer outside its semispace.
+    // and of nothing else: the collector never sees this block, because it
+    // ignores every pointer outside its heap.
     sym->header.tag = static_cast<uint16_t>(Tag::Symbol);
     sym->header.flags = 0;
     sym->header.size = static_cast<uint32_t>(sizeof(SymbolHeader));

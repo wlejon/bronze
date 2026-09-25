@@ -1,23 +1,25 @@
 #pragma once
 
-#include <algorithm>
+#include <brass/gc/heap.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <stdexcept>
+#include <new>
+#include <type_traits>
 #include <utility>
 #include <vector>
-
-#ifndef NDEBUG
-#include <cassert>
-#include <thread>
-#endif
 
 #include "runtime/value.h"
 
 namespace bronze {
 
+// Every bronze heap object starts with this word. The object lives on
+// brass's collector (brass::gc::Heap): its bytes, header included, are the
+// PAYLOAD of one brass object, so a Value's address — which names this header —
+// is the brass reference to it. `size` is the bronze object's total size,
+// header included, 8-byte aligned; the brass object is never smaller.
 struct HeapObjectHeader {
     uint16_t tag;
     uint16_t flags;
@@ -45,26 +47,20 @@ static_assert(sizeof(HeapObjectHeader) == 8, "HeapObjectHeader must be 8 bytes")
 // `Value` representation and the same `asObject<T>()` cast — so a wrong answer
 // here is not a wrong answer, it is reading one type's memory as another's.
 //
-// They are enumerated in ONE place because two of them were once the same
-// number. An environment record and a Map both answered 5, and `resolveEnv`'s
-// brand check — whose whole job is to reject a value that is not an environment
-// record — accepted a Map and walked its payload as scope slots. Nothing named
-// the collision because nothing named the set: a kind's value was a literal at
-// its own allocation sites and a constant on its own header, and no file saw
-// two of them at once.
+// They are enumerated in ONE place so that no two of them can share a number:
+// an environment record and a Map once both answered 5, and `resolveEnv`'s
+// brand check accepted a Map and walked its payload as scope slots.
 //
 // The numbers are NOT free to change: brass's allocation lowering writes a
 // kind into a fresh header as a literal (il_alloc_lowering.cpp — Plain, Array,
 // Env and ValueBlock), so each enumerator here carries its value explicitly
-// and a retired kind leaves a hole rather than shifting its neighbours. What
-// must never happen is two of them matching, which an enum makes a matter of
-// adding a name rather than of remembering a number.
+// and a retired kind leaves a hole rather than shifting its neighbours.
 //
 // Holes 6-9 and 15-17 belonged to Map, Set, WeakMap, WeakSet, PrivateTable,
-// WeakRef and FinalizationRegistry. Each is a PLAIN object now — a real
-// prototype chain, its state in internal slots, told apart by a brand symbol
-// in slot 0 exactly as a Date is (runtime/map.h, runtime/weak_ref.h) — so no
-// dispatch in the runtime needs a kind for one.
+// WeakRef and FinalizationRegistry. Each is a PLAIN object — a real prototype
+// chain, its state in internal slots, told apart by a brand symbol in slot 0
+// exactly as a Date is (runtime/map.h, runtime/weak_ref.h) — so no dispatch in
+// the runtime needs a kind for one.
 namespace HeapKind {
 enum : uint16_t {
     Plain = 0,  // an ordinary object; ties to BRONZE_ABI_OBJ_FLAGS_PLAIN in object.h
@@ -97,23 +93,16 @@ enum : uint16_t {
     // An object's OUT-OF-LINE PROPERTY SLOTS — the block `ObjectHeader::
     // overflow` names, holding slot `kInlineSlots` and up. Not a JS value and
     // not reachable as one: exactly one word in the program points at it, and
-    // that word is a field of the object that owns it.
-    //
-    // It nevertheless needs a kind of its own, and the reason is the
-    // collector. A `Tag::Object` header allocated with `flags = 0` is
-    // indistinguishable from a plain object, so a scan that dispatched on
-    // `flags == Plain` to read an object's SHAPE would read a slot block's
-    // first slot as a `Shape*` and chase it. That was harmless while the scan
-    // was uniform over every payload word; it stopped being harmless the
-    // moment the shape decides which words are Values (slot_repr.h).
+    // that word is a field of the object that owns it. Every word of it is a
+    // Value (a double slot holds a canonical Number, which is never a
+    // reference), so the collector traces it like a ValueBlock; it has a kind
+    // of its own so that it never reads as `HeapKind::Plain`, which is a claim
+    // that a `Shape*` sits at offset 8.
     SlotBlock = 18,
 
     // A flat run of Values that is not an object at all and has no header
     // fields of its own: an array's ELEMENTS, a Map's entry table. Every word
-    // of one is a Value and the collector traces all of them, which is what it
-    // did when these blocks carried no kind — the kind exists so that they
-    // stop reading as `HeapKind::Plain`, which is now a claim that a `Shape*`
-    // is at offset 8 and that the shape decides which words are Values.
+    // of one is a Value.
     ValueBlock = 19,
 
     // Not a kind: one past the highest number in use. It exists so that a
@@ -145,6 +134,140 @@ inline constexpr bool carriesShape(uint16_t flags) noexcept {
 }
 }  // namespace HeapKind
 
+// How the collector finds an object's references (heap_trace.cpp). Chosen
+// once, at allocation.
+enum class GcLayout : uint8_t {
+    // By the header's tag: a String or a BigInt holds none, anything else is
+    // a Cell.
+    Auto,
+    // A bronze object or block traced by its header: every Value word of it
+    // (for a kind that carries a shape, the words after the shape pointer; for
+    // an ArrayBuffer, its ordinary-object prefix only; for other RawBytes,
+    // nothing).
+    Cell,
+    // No references at all.
+    Leaf,
+    // A Cell whose LAST word is a weak reference (a WeakRef's target): the
+    // collector does not keep its target alive and writes `undefined` there
+    // when the target dies.
+    WeakLast,
+    // A ValueBlock of (key, value) pairs whose values are held only as long as
+    // their keys are otherwise alive (a WeakMap's or WeakSet's entry table):
+    // a dead key's pair becomes the table's tombstone, (Hole, undefined).
+    Ephemerons,
+};
+
+namespace gc_detail {
+
+// The heaps on this thread, for the write barrier: a store must remember the
+// slot on whichever heap holds it. The runtime's own heap is one of them;
+// a test may construct more. Registered by Heap's constructor.
+struct BarrierHeaps {
+    static constexpr uint32_t kMax = 8;
+    brass::gc::Heap* heaps[kMax];
+    uint32_t count;
+};
+extern thread_local BarrierHeaps t_barrierHeaps;
+
+}  // namespace gc_detail
+
+// The write barrier: every store of a Value into a heap object that may be
+// old goes through this (or through HeapValue, which calls it), so a minor
+// collection finds the old objects that name young ones. `slot` is the
+// address stored to, anywhere inside the object.
+inline void gcWriteBarrier(const void* slot, Value v) noexcept {
+    if (!v.isPointer()) return;
+    const gc_detail::BarrierHeaps& b = gc_detail::t_barrierHeaps;
+    for (uint32_t i = 0; i < b.count; ++i) {
+        b.heaps[i]->write_barrier_interior(reinterpret_cast<uintptr_t>(slot), v.rawBits());
+    }
+}
+
+// The barrier for a bulk copy (memcpy/memmove of many Values) into `object`,
+// whose header this must be: an old object is rescanned whole by the next
+// minor collection.
+inline void gcRememberObject(const void* object) noexcept {
+    const gc_detail::BarrierHeaps& b = gc_detail::t_barrierHeaps;
+    for (uint32_t i = 0; i < b.count; ++i) {
+        b.heaps[i]->remember(reinterpret_cast<uintptr_t>(object));
+    }
+}
+
+// A Value that lives inside a heap object: assigning to it applies the write
+// barrier. Every Value field of a heap struct, and every accessor that hands
+// out a heap object's Value array, uses this type, so an ordinary assignment
+// is a barriered store. It reads as the Value it holds, and converts to one.
+//
+// It is not a Value subclass on purpose: a `HeapValue*` does not convert to a
+// `Value*`, so no pointer into heap memory can be written through without the
+// barrier by accident. Code that hands a run of them to something that only
+// reads takes `values()`; code that writes a run in bulk uses gcCopyValues or
+// calls gcRememberObject after it.
+class HeapValue {
+public:
+    HeapValue() noexcept = default;
+    // Explicit, so a HeapValue meeting a Value (`c ? field : Value(...)`)
+    // decays to the Value rather than the other way round.
+    constexpr explicit HeapValue(Value v) noexcept : v_(v) {}
+    HeapValue(const HeapValue&) noexcept = default;
+    HeapValue& operator=(Value v) noexcept {
+        v_ = v;
+        gcWriteBarrier(this, v);
+        return *this;
+    }
+    HeapValue& operator=(const HeapValue& v) noexcept { return *this = v.v_; }
+
+    constexpr operator Value() const noexcept { return v_; }
+    constexpr Value get() const noexcept { return v_; }
+
+    constexpr uint64_t rawBits() const noexcept { return v_.rawBits(); }
+    constexpr uint16_t tag() const noexcept { return v_.tag(); }
+    constexpr uint64_t payload() const noexcept { return v_.payload(); }
+    constexpr bool isNumber() const noexcept { return v_.isNumber(); }
+    double asNumber() const noexcept { return v_.asNumber(); }
+    constexpr bool isBool() const noexcept { return v_.isBool(); }
+    constexpr bool asBool() const noexcept { return v_.asBool(); }
+    constexpr bool isNull() const noexcept { return v_.isNull(); }
+    constexpr bool isUndefined() const noexcept { return v_.isUndefined(); }
+    constexpr bool isHole() const noexcept { return v_.isHole(); }
+    constexpr bool isUninitialized() const noexcept { return v_.isUninitialized(); }
+    constexpr bool isObject() const noexcept { return v_.isObject(); }
+    constexpr bool isString() const noexcept { return v_.isString(); }
+    constexpr bool isSymbol() const noexcept { return v_.isSymbol(); }
+    constexpr bool isInt32() const noexcept { return v_.isInt32(); }
+    constexpr bool isBigInt() const noexcept { return v_.isBigInt(); }
+    constexpr bool isPointer() const noexcept { return v_.isPointer(); }
+    template <typename T = void>
+    T* asObject() const noexcept { return v_.asObject<T>(); }
+    template <typename T = void>
+    T* asString() const noexcept { return v_.asString<T>(); }
+    template <typename T = void>
+    T* asSymbol() const noexcept { return v_.asSymbol<T>(); }
+    template <typename T = void>
+    T* asBigInt() const noexcept { return v_.asBigInt<T>(); }
+
+    constexpr bool operator==(const Value& other) const noexcept { return v_ == other; }
+
+    // A run of HeapValues read as Values, for code that only reads them.
+    static const Value* values(const HeapValue* p) noexcept { return reinterpret_cast<const Value*>(p); }
+
+private:
+    Value v_;
+};
+static_assert(sizeof(HeapValue) == sizeof(Value), "a HeapValue is a Value in place");
+static_assert(std::is_standard_layout_v<HeapValue>);
+static_assert(std::is_trivially_destructible_v<HeapValue>);
+
+// Copies `count` Values into heap memory at `dst` (overlap allowed), inside the
+// object whose header is `object`, with the barrier a bulk copy needs.
+void gcCopyValues(const void* object, HeapValue* dst, const Value* src, size_t count) noexcept;
+inline void gcCopyValues(const void* object, HeapValue* dst, const HeapValue* src, size_t count) noexcept {
+    gcCopyValues(object, dst, HeapValue::values(src), count);
+}
+// Stores `v` into `count` Values at `dst`, inside the object whose header is
+// `object`.
+void gcFillValues(const void* object, HeapValue* dst, Value v, size_t count) noexcept;
+
 class VirtualMemory {
 public:
     static void* reserve(size_t bytes);
@@ -153,210 +276,132 @@ public:
     static void release(void* ptr, size_t bytes);
 };
 
+// bronze's view of its collector: one brass::gc::Heap per thread
+// (runtime/rt_state.cpp, rtHeap), generational — a copying young generation
+// over a non-moving mark-region old generation and a large-object space —
+// with bronze's object layouts, roots, weak tables and write barrier
+// registered on it. brass/docs/gc_contract.md is the collector's contract;
+// what bronze adds is here.
+//
+// A collection may happen at any allocation. A young object that survives one
+// MOVES (every Value naming it is updated through its root or its referrer);
+// an old object never moves. Nothing may rely on which of the two an object
+// is, except through `relocation_epoch` and `is_movable`.
 class Heap {
 public:
-    using CollectionHook = std::function<void(Heap&)>;
-
-    struct Semispace {
-        uint8_t* base{nullptr};
-        size_t size{0};
-        size_t committed_bytes{0};
-        uint8_t* bump_ptr{nullptr};
-    };
-
-    explicit Heap(size_t reserve_bytes = 1024 * 1024 * 1024, size_t initial_commit_bytes = 64 * 1024);
+    Heap();
     ~Heap();
 
     Heap(const Heap&) = delete;
     Heap& operator=(const Heap&) = delete;
 
-    HeapObjectHeader* allocate(size_t bytes, Tag tag);
-    void* allocate_raw(size_t bytes);
+    // A zeroed object of `bytes` payload bytes after its header, the header's
+    // tag set to `tag`, flags 0 and size the total. May collect first.
+    HeapObjectHeader* allocate(size_t bytes, Tag tag, GcLayout layout = GcLayout::Auto);
 
-    void set_collection_hook(CollectionHook hook) { collection_hook_ = std::move(hook); }
+    // A full collection: every unreachable object is reclaimed.
     void collect();
+    // A young-generation collection.
+    void collect_minor();
 
-    void check_thread_affinity() const noexcept {
-#ifndef NDEBUG
-        assert(owner_thread_id_ == std::this_thread::get_id() && "Heap accessed from non-owning thread");
-#endif
-    }
-
-    // Invoked inside collect(), after the copy phase and before the semispace
-    // swap — the one moment liveness of an arbitrary heap pointer is decidable
-    // from outside: every reachable object's old header is Tag::Forwarded (new
-    // address in its payload) and a dead object's header is untouched. A moving
-    // semispace collector never visits dead objects, so a finalizer registry —
-    // pairs of (heap pointer, callback) that must run callbacks for the dead
-    // and re-point entries at survivors — has no other window to sweep in. The
-    // hook must not allocate on this heap (the collection is mid-flight).
-    //
-    // A LIST, and it became one the day a second consumer appeared: embed's
-    // native-handle destructors were the first, the weak-reference sweep
-    // (runtime/weak_ref.cpp) the second, and neither knows the other exists.
-    // A single slot would have made the second registration silently retire
-    // the first — destructors that stop running, with nothing to say so.
-    // Hooks run in registration order.
+    // Runs inside every collection once liveness is decided and weak slots
+    // are settled — the one window in which `survivor_of` answers. The hook
+    // must not allocate on this heap. Hooks run in registration order.
     using PostCollectionHook = std::function<void()>;
-    void add_post_collection_hook(PostCollectionHook hook) {
-        post_collection_hooks_.push_back(std::move(hook));
-    }
+    void add_post_collection_hook(PostCollectionHook hook);
 
     // Where the object whose header was at `header` before this collection
-    // lives now, or null when it died. Meaningful ONLY from inside a
-    // post-collection hook: it reads the forwarding mark the copy phase left
-    // in from-space, which the swap at the end of collect() abandons.
-    //
-    // It is a Heap method rather than four lines at each weak table, because
-    // the three things it has to get right — the from-space bounds test, the
-    // tag validity test, and the fact that a heap reference names the HEADER
-    // and never the payload — are the collector's own invariants and belong
-    // beside forward_value that also relies on them.
+    // lives now, or null when it died. Meaningful ONLY inside a
+    // post-collection hook. An address this collection did not collect
+    // (outside the heap, or old during a minor collection) is returned
+    // unchanged.
     HeapObjectHeader* survivor_of(HeapObjectHeader* header) const noexcept;
 
-    // A root that outlives every frame: runtime-owned caches of heap
-    // objects (lazily created builtins, and later the global object). The
-    // slot must outlive the heap; registering the same slot twice is a
-    // caller error, not something this checks for.
-    void add_permanent_root(Value* slot) { permanent_roots_.push_back(slot); }
+    // Whether the running (or last) collection is a full one. Inside a
+    // post-collection hook: the kind of the collection that runs it.
+    bool collecting_full() const noexcept { return last_full_; }
 
-    // A root *source*: a callback invoked at collection time that yields every
-    // slot in a runtime-owned table. add_permanent_root pins one fixed address,
-    // which cannot describe a table that grows (and so reallocates) during the
-    // run — the shape registry's prototype slots are the first such table.
+    // A root that outlives every frame: runtime-owned caches of heap objects.
+    // The slot must outlive the heap.
+    void add_permanent_root(Value* slot);
+
+    // A root SOURCE: a callback invoked at every collection that visits every
+    // slot in a runtime-owned table, as a strong root.
     using RootVisitor = std::function<void(Value&)>;
     using RootSource = std::function<void(const RootVisitor&)>;
-    void add_root_source(RootSource src) { root_sources_.push_back(std::move(src)); }
+    void add_root_source(RootSource src);
 
-    void set_gc_stress(bool enable) noexcept { gc_stress_mode_ = enable; }
-    bool gc_stress() const noexcept { return gc_stress_mode_; }
+    // A root source with the collector's whole vocabulary: strong, weak and
+    // ephemeron visits (brass/gc/tracer.hpp).
+    void add_tracer_source(std::function<void(brass::gc::Tracer&)> src);
 
-    // BRONZE_GC_POISON=1: after every collection, overwrite the abandoned
-    // semispace with a poison byte before the swap. A stale reference read
-    // after its object moved usually returns the OLD bytes — from-space stays
-    // mapped, so the read looks right until the space is reused a collection
-    // later, which is why a missed root can pass on two platforms and die on a
-    // third. Poisoned, the very first stale read yields 0xDBDB... — a length
-    // that cannot allocate, a pointer that cannot dereference — on every
-    // platform, every run. Costs a live-set-sized memset per collection, which
-    // is why it is opt-in like the stress mode it is meant to sharpen.
-    void set_gc_poison(bool enable) noexcept { gc_poison_mode_ = enable; }
-    bool gc_poison() const noexcept { return gc_poison_mode_; }
+    // BRONZE_GC_STRESS=1: a collection at every allocation — a minor one each
+    // time and a full one every eighth — so a Value held across an allocation
+    // without a root is caught at the first allocation after it.
+    void set_gc_stress(bool enable) noexcept;
+    bool gc_stress() const noexcept;
 
-    // BRONZE_HEAP_VERIFY=1: after every collection's copy phase, re-walk the
-    // copied space and check that every word the collector just scanned
-    // parses cleanly as a Value — pointer-tagged words must name the header
-    // of a live object (or memory outside the heap entirely: arena-interned
-    // symbols, strings, shapes), singleton tags must carry their singleton
-    // payloads, and no word may carry a tag the value model does not define.
-    // It exists for the padding bug class: a heap struct that leaves one
-    // scanned byte unwritten inherits recycled-semispace residue, which
-    // passes every test until the residue happens to look like a pointer.
-    // Poison makes such a read blow up when it is USED; this walk names the
-    // object and slot while the residue still reads as residue — the next
-    // collection after the allocation, not a crash later. It runs on the
-    // copied space because that is the one heap region that provably holds
-    // only live, fully-initialized objects (from-space interleaves dead —
-    // possibly half-built — allocations no scan may read). Pair with
-    // BRONZE_GC_STRESS=1 to run it after effectively every allocation. Costs
-    // two passes over the live set per collection, which is why it is opt-in
-    // like the stress and poison modes it composes with.
-    void set_gc_verify(bool enable) noexcept { gc_verify_mode_ = enable; }
-    bool gc_verify() const noexcept { return gc_verify_mode_; }
+    // BRONZE_GC_POISON=1: memory a collection frees or evacuates is
+    // overwritten with 0xDB, so the first stale read yields an impossible
+    // value on every platform, every run.
+    void set_gc_poison(bool enable) noexcept;
+    bool gc_poison() const noexcept { return poison_; }
 
-    // Re-arm the inline-allocation window (the ABI block's alloc_cursor/
-    // alloc_limit): carve a fresh run of from-space for generated code's `new`
-    // fast path to bump-allocate plain instances from. Called by
-    // bronze_construct's ordinary path when the window has less than one
-    // object of headroom; every collection zeroes the window, because it
-    // points into the semispace being abandoned. Under GC stress the carve is
-    // exactly ONE plain object, so the fast path still runs — and its rooting
-    // across the constructor call is still shaken — while every second
-    // construction goes through the helper and collects. The carve itself
-    // goes through allocate_raw, so commit growth and the stress collection
-    // happen before the window is published, never after.
-    void refill_inline_lab();
+    // BRONZE_HEAP_VERIFY=1: the collector checks every object and root before
+    // and after each collection — every reference names an object, and every
+    // old object naming a young one is remembered (a missing write barrier)
+    // — and stops the process naming the object and slot.
+    void set_gc_verify(bool enable) noexcept;
+    bool gc_verify() const noexcept { return verify_; }
 
-    // Visit every object in the live space, in allocation order. Meaningful
-    // ONLY immediately after collect(): between collections the space
-    // interleaves dead allocations and the inline-allocation window's
-    // uninitialized bytes, and neither parses as a header run. Right after a
-    // collection the space is exactly the live set, gapless and fully built,
-    // and the window is zeroed — the same precondition verify_space leans on.
-    // The callback must not allocate on this heap: an allocation would move
-    // the very objects being walked. The one caller today is
-    // closeOrReopenViews (typed_array.cpp), which re-derives typed-array
-    // windows after `transfer` or `resize` changes a buffer's byteLength.
+    // Visit every object the heap holds, live or not yet reclaimed. The
+    // callback must not allocate on this heap, and must not follow a Value out
+    // of an object it has not established is live.
     void walk_objects(const std::function<void(HeapObjectHeader*)>& fn);
 
-    // How many objects this collector has RELOCATED. A hash table keyed on
-    // VALUES rather than on property names (a Map)
-    // hashes an object key by its address, so every such table records this
-    // number when it builds its index and rebuilds when the number has moved
-    // on. Nothing else can tell it that every object-key hash it holds is now
-    // wrong.
-    //
-    // It counts RELOCATIONS and not collections, and the difference is the
-    // whole point: a "collections completed" counter lives at the end of
-    // `collect()`, so a second collection entry point — a nursery sweep, a
-    // compaction, anything that moves objects without finishing a full cycle —
-    // would move objects while leaving the count alone, and every Map index in
-    // the program would silently answer "not found" for a live key. This
-    // counter is incremented by the copy itself, so the only way to move an
-    // object past it is to write a second object-copy routine.
-    uint64_t relocation_epoch() const noexcept { return relocations_; }
-
-    // How many collections have completed. Statistics; nothing about
-    // correctness may hang off it — see relocation_epoch above.
-    uint64_t collection_count() const noexcept { return collections_; }
-
-    uintptr_t base_address() const noexcept { return reinterpret_cast<uintptr_t>(from_space_.base); }
-    size_t reserved_size() const noexcept { return reserved_bytes_; }
-    size_t committed_size() const noexcept { return from_space_.committed_bytes; }
-    size_t used_size() const noexcept {
-        return from_space_.bump_ptr - from_space_.base;
+    // Advances every time a collection MOVES an object. A hash table that
+    // hashes an object key by its address records this number when it builds
+    // its index and rebuilds when it has moved on — unless every such key is
+    // old (`is_movable` false), since an old object never moves.
+    uint64_t relocation_epoch() const noexcept { return gc_->relocation_epoch(); }
+    // Whether the object at `header` may move in a later collection.
+    bool is_movable(const void* header) const noexcept {
+        return gc_->is_young(reinterpret_cast<uintptr_t>(header));
+    }
+    bool contains(const void* address) const noexcept {
+        return gc_->contains(reinterpret_cast<uintptr_t>(address));
     }
 
-    const Semispace& from_space() const noexcept { return from_space_; }
-    const Semispace& to_space() const noexcept { return to_space_; }
+    // How many collections have completed. Statistics only.
+    uint64_t collection_count() const noexcept { return gc_->collection_count(); }
+    uint64_t last_pause_ns() const noexcept { return gc_->stats().last_pause_ns; }
+
+    size_t reserved_size() const noexcept { return gc_->reservation_bytes(); }
+    size_t committed_size() const noexcept { return gc_->committed_bytes(); }
+    size_t used_size() const noexcept { return gc_->young_used_bytes() + gc_->old_used_bytes(); }
+
+    // The largest object this heap allocates; a request above it is a
+    // RangeError the caller reports rather than an allocation.
+    static constexpr size_t kMaxObjectBytes = size_t{512} << 20;
+
+    brass::gc::Heap& gc() noexcept { return *gc_; }
+    const brass::gc::Heap& gc() const noexcept { return *gc_; }
+
+    // Makes this the calling thread's heap for generated code and brass's
+    // runtime: brass's current heap (its interpreters' roots and memory checks),
+    // and — unless BRONZE_NO_INLINE_ALLOC=1 — the inline-allocation window in
+    // the thread's bronze_tls_block, which becomes this heap's young bump
+    // region. rtHeap() calls it once per thread.
+    void bind_thread();
 
 private:
-    bool ensure_commit(Semispace& space, size_t required_bytes);
-    void* allocate_in_space(Semispace& space, size_t bytes);
-    void forward_value(Value& val);
-    // The copy phase's scan of ONE plain object: its payload, minus the slots
-    // its shape says hold raw doubles, plus its out-of-line slot block — which
-    // no other pass over to-space touches, because only this object knows
-    // which of that block's words are Values. `ObjectHeader` is forward-
-    // declared here; heap.h cannot see its definition and does not need to.
-    void scan_plain_object(struct ObjectHeader* obj, size_t obj_size);
-    void verify_space(const Semispace& space) const;
+    void registerFrameRoots();
 
-    void* reserved_base_{nullptr};
-    size_t reserved_bytes_{0};
-    size_t semispace_size_{0};
-
-    Semispace from_space_;
-    Semispace to_space_;
-
-    std::vector<Value*> permanent_roots_;
-    std::vector<RootSource> root_sources_;
-    bool gc_stress_mode_{false};
-    bool gc_poison_mode_{false};
-    bool gc_verify_mode_{false};
-    // BRONZE_NO_INLINE_ALLOC=1: refill_inline_lab becomes a no-op, the window
-    // stays 0/0, and every construction takes the helper — the A/B seam for
-    // measuring the inline path in one binary.
-    bool inline_lab_enabled_{true};
-    bool in_gc_{false};
-    size_t gc_threshold_bytes_{16 * 1024 * 1024};
-    uint64_t collections_{0};
-    uint64_t relocations_{0};
-    CollectionHook collection_hook_;
-    std::vector<PostCollectionHook> post_collection_hooks_;
-#ifndef NDEBUG
-    std::thread::id owner_thread_id_{};
-#endif
+    std::unique_ptr<brass::gc::Heap> gc_;
+    bool poison_{false};
+    bool verify_{false};
+    bool bound_{false};
+    bool last_full_{false};
 };
 
 class NonMovingArena {

@@ -24,7 +24,7 @@ struct ArrayHeader {
     // identity: only the block is reallocated, and every Value already
     // pointing at this header stays valid. (Inline elements would have to
     // move the array object itself, invalidating every reference to it.)
-    Value elements;
+    HeapValue elements;
     // Undefined, or a plain object holding this array's NAMED properties —
     // every own property of the array that is neither an element nor `length`.
     //
@@ -39,7 +39,7 @@ struct ArrayHeader {
     // The object has a NULL prototype: it is storage, not a link in the array's
     // chain, and the property path reads it before the array's own members
     // (rt_prop_array.cpp owns every rule about what is in here).
-    Value properties;
+    HeapValue properties;
 
     static constexpr uint32_t kHasCustomPrototype = 1;
 
@@ -133,7 +133,7 @@ struct ArrayHeader {
     // through a root and `this` must not be reused.
     static void setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength);
 
-    Value* elementsData() noexcept {
+    HeapValue* elementsData() noexcept {
         if (!elements.isPointer()) return nullptr;
         return rawElementsData() + head_offset;
     }
@@ -141,9 +141,14 @@ struct ArrayHeader {
         if (!elements.isPointer()) return nullptr;
         return rawElementsData() + head_offset;
     }
-    Value* rawElementsData() noexcept {
+    HeapValue* rawElementsData() noexcept {
         if (!elements.isPointer()) return nullptr;
-        return elements.asObject<HeapObjectHeader>()->payload<Value>();
+        return elements.asObject<HeapObjectHeader>()->payload<HeapValue>();
+    }
+    // The elements block, the object a bulk write into elementsData() names
+    // to gcCopyValues / gcRememberObject; null when there is none.
+    HeapObjectHeader* elementsBlock() const noexcept {
+        return elements.isPointer() ? elements.asObject<HeapObjectHeader>() : nullptr;
     }
     const Value* rawElementsData() const noexcept {
         if (!elements.isPointer()) return nullptr;

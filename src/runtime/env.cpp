@@ -12,7 +12,7 @@ EnvHeader* EnvHeader::create(Heap& heap, Rooted<Value>& parent, uint32_t slot_co
     // Read the parent through the root: allocating may have moved it.
     env->parent = parent.get();
 
-    Value* slots = env->slotsData();
+    HeapValue* slots = env->slotsData();
     for (uint32_t i = 0; i < slot_count; ++i) {
         slots[i] = Value::fromUndefined();
     }

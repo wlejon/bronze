@@ -229,7 +229,7 @@ bool rtBoundFunctionState(Value fn, Value& target, Value& boundThis, Value& boun
     if (!env.isObject() || env.asObject<HeapObjectHeader>()->flags != EnvHeader::kFlags) {
         fatal("internal: a bound function whose environment is not its binding cell");
     }
-    const Value* slots = env.asObject<EnvHeader>()->slotsData();
+    const HeapValue* slots = env.asObject<EnvHeader>()->slotsData();
     target = slots[BoundSlot::Target];
     boundThis = slots[BoundSlot::BoundThis];
     boundArgs = slots[BoundSlot::BoundArgs];

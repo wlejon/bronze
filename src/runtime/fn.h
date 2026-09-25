@@ -22,18 +22,18 @@ struct FunctionHeader {
     // The closure's captured environment, or undefined. A Value, not a raw
     // pointer, so the generic GC payload scan forwards it — as a `void*` it was
     // invisible to the collector.
-    Value env_record;
+    HeapValue env_record;
     // This function's `.prototype` object, or undefined until something asks
     // for it — a function that is never a constructor and whose prototype is
     // never decorated should not pay for the object, and closures are created
     // in loops.
-    Value prototype;
+    HeapValue prototype;
     // This function's OWN properties - what `C.staticMethod =...` and a class's
     // `static` members are stored in - or undefined until one is written. An
     // ordinary object, so it costs nothing until used and inherits through the
     // shape's prototype, which is what makes a static member of a base class
     // visible on a derived one.
-    Value properties;
+    HeapValue properties;
     // Root shape for objects `new`ed from this function; its prototype is
     // the object above. Non-moving, created with it, and reset if
     // `.prototype` is reassigned.
@@ -41,8 +41,8 @@ struct FunctionHeader {
     // 10.2.9 SetFunctionName's answer: this function's own `name` property,
     // ARENA-interned so it is immortal and non-moving — the same bargain a
     // shape key makes, and the reason a raw pointer here is invisible to the
-    // collector's payload scan (which forwards only Values that point INTO the
-    // semispace) exactly as `instance_shape` above already is.
+    // collector's payload scan (which follows only Values that point INTO the
+    // heap) exactly as `instance_shape` above already is.
     //
     // NULL means the name was never recorded, which is not the same as the
     // empty string: an anonymous function expression really has `name === ""`
@@ -114,7 +114,7 @@ struct FunctionHeader {
     bool prototype_readonly{false};
     // The rest of this word, spelled out because the GC payload scan reads
     // the whole payload as Values and this word — two bools, one code byte
-    // and padding — is one of them. A heap block is recycled semispace memory, so padding
+    // and padding — is one of them. A heap block is recycled memory, so padding
     // left unwritten holds OLD VALUE RESIDUE, and residue whose top two
     // bytes spell a heap tag sends the scan chasing a garbage payload —
     // whether it corrupts then depends on which bytes an unrelated change

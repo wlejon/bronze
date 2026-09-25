@@ -11,6 +11,7 @@
 // changes them goes through the runtime, which initializes lazily.
 
 #include "runtime/tls_block.h"
+#include "runtime/heap.h"
 #include "runtime/profile.h"
 #include "runtime/fatal.h"
 
@@ -89,6 +90,13 @@ static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
 static_assert(offsetof(bronze_tls_block, key_ic_enabled) == BRONZE_TLS_KEY_IC_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, stack_limit) == BRONZE_TLS_STACK_LIMIT_OFF);
 static_assert(offsetof(bronze_tls_block, module_deltas) == BRONZE_TLS_MODULE_DELTAS_OFF);
+static_assert(offsetof(bronze_tls_block, gc_cell_header) == BRONZE_TLS_GC_CELL_HEADER_OFF);
+// The inline-allocation window is the collector's young bump region in place
+// (heap.cpp, bind_thread): brass's {top, end} pair.
+static_assert(offsetof(bronze_tls_block, alloc_limit) ==
+              offsetof(bronze_tls_block, alloc_cursor) + offsetof(brass::gc::Heap::AllocationBuffer, end));
+static_assert(offsetof(brass::gc::Heap::AllocationBuffer, top) == 0);
+static_assert(sizeof(brass::gc::Heap::AllocationBuffer) == 2 * sizeof(uint64_t));
 
 namespace bronze::runtime {
 
@@ -134,6 +142,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*key_ic_enabled=*/1,
     /*stack_limit=*/0,
     /*module_deltas=*/nullptr,
+    /*gc_cell_header=*/0,
 };
 
 namespace {

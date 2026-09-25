@@ -143,36 +143,10 @@ void Dictionary::releaseMemory() noexcept {
     live_ = 0;
 }
 
-struct TrackedDictionary {
-    ObjectHeader* owner;
-    Dictionary* dict;
-};
-
-thread_local std::vector<TrackedDictionary> g_dictionaries;
-
-void sweepDictionaries() {
-    Heap& heap = runtime::rtHeap();
-    size_t keep = 0;
-    for (size_t i = 0; i < g_dictionaries.size(); ++i) {
-        auto& item = g_dictionaries[i];
-        HeapObjectHeader* live = heap.survivor_of(&item.owner->header);
-        if (!live) {
-            item.dict->releaseMemory();
-            continue;
-        }
-        item.owner = reinterpret_cast<ObjectHeader*>(live);
-        g_dictionaries[keep++] = item;
-    }
-    g_dictionaries.resize(keep);
-}
-
-void ensureDictionarySweep() {
-    static thread_local const bool registered = [] {
-        runtime::rtHeap().add_post_collection_hook(sweepDictionaries);
-        return true;
-    }();
-    (void)registered;
-}
+// A dictionary's shape lives in the arena and outlives its object; what the
+// object's death releases is the dictionary's own C++ storage, through a
+// collector finalizer on the object.
+void releaseDictionary(void* dict) { static_cast<Dictionary*>(dict)->releaseMemory(); }
 
 // A dictionary object's shape is PRIVATE to that object: minted fresh here,
 // never a transition target, never shared. Two consequences the rest of the
@@ -225,8 +199,12 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     d.reindex();
 
     obj->shape = dictShape;
-    ensureDictionarySweep();
-    g_dictionaries.push_back({obj, dictShape->dict});
+    // An object of a heap other than the thread's (a test's own) keeps its
+    // storage for the life of the arena.
+    Heap& heap = runtime::rtHeap();
+    if (heap.contains(obj)) {
+        heap.gc().add_finalizer(reinterpret_cast<uintptr_t>(obj), &releaseDictionary, dictShape->dict);
+    }
 }
 
 bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {

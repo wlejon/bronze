@@ -37,9 +37,9 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
     block->flags = HeapKind::ValueBlock;
     auto* arr = self.get().asObject<ArrayHeader>();
 
-    Value* slots = block->payload<Value>();
+    HeapValue* slots = block->payload<HeapValue>();
     uint32_t i = 0;
-    const Value* old_slots = arr->elementsData();
+    const HeapValue* old_slots = arr->elementsData();
     if (old_slots) {
         for (; i < arr->length && i < new_capacity; ++i) {
             slots[i] = old_slots[i];
@@ -104,7 +104,7 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
     {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (newLength <= arr->length) {
-            Value* slots = arr->elementsData();
+            HeapValue* slots = arr->elementsData();
             for (uint32_t i = newLength; i < arr->length; ++i) slots[i] = Value::fromHole();
             arr->length = newLength;
             if (newLength == 0) {
@@ -118,7 +118,7 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
     }
     // `setCapacity` allocates, so the header is re-derived through the root.
     ArrayHeader* arr = self.get().asObject<ArrayHeader>();
-    Value* slots = arr->elementsData();
+    HeapValue* slots = arr->elementsData();
     for (uint32_t i = arr->length; i < newLength; ++i) slots[i] = Value::fromHole();
     arr->length = newLength;
 }
@@ -128,9 +128,9 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
     if (head_offset + index >= capacity) {
         // If there is head headroom and in-place compaction fits the write, compact to index 0
         if (head_offset > 0 && index + 1 <= capacity) {
-            Value* raw = rawElementsData();
-            const Value* cur = elementsData();
-            std::memmove(raw, cur, length * sizeof(Value));
+            HeapValue* raw = rawElementsData();
+            const HeapValue* cur = elementsData();
+            gcCopyValues(elementsBlock(), raw, cur, length);
             for (uint32_t i = length; i < capacity; ++i) {
                 raw[i] = Value::fromHole();
             }
@@ -144,7 +144,7 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
                 new_cap = static_cast<uint64_t>(index) + 1;
             }
             if (index >= 1000000000u ||
-                static_cast<size_t>(new_cap) * sizeof(Value) + 64 >= heap.reserved_size() / 2) {
+                static_cast<size_t>(new_cap) * sizeof(Value) + 64 >= Heap::kMaxObjectBytes) {
                 runtime::rtThrowRangeError(
                     "Array allocation failed: index exceeds maximum heap capacity");
                 return;

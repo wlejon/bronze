@@ -116,7 +116,7 @@ SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal) {
         // Refused BEFORE the allocation, so `std::bad_alloc` never unwinds out
         // of a helper generated code called (the rule `new Array(n)` follows).
         const size_t bytes = static_cast<size_t>(newLen) * sizeof(Value);
-        if (bytes + 64 >= rtHeap().reserved_size() / 2) {
+        if (bytes + 64 >= Heap::kMaxObjectBytes) {
             rtThrowRangeError("Array allocation failed: " + std::to_string(newLen) +
                               " elements does not fit in the heap");
             return SetRefusal::None;

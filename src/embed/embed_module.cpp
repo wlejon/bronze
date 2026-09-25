@@ -22,7 +22,6 @@
 #include "runtime/sampler.h"
 
 namespace bronze {
-extern uint64_t g_lastGcPauseNs;
 extern std::atomic<uint64_t> g_shapeTransitions;
 }
 
@@ -90,6 +89,8 @@ void collectGarbage() { runtime::rtHeap().collect(); }
 
 uint64_t relocationEpoch() { return runtime::rtHeap().relocation_epoch(); }
 
+void bindThreadHeap() { (void)runtime::rtHeap(); }
+
 void setProfileCalleeNamer(ProfileCalleeNamer namer) {
     runtime::profileSetCalleeNamer(namer);
 }
@@ -105,7 +106,7 @@ RuntimeTelemetry getRuntimeTelemetry() {
     tel.heapCommittedBytes = heap.committed_size();
     tel.heapReservedBytes = heap.reserved_size();
     tel.gcCollections = heap.collection_count();
-    tel.gcPauseNs = bronze::g_lastGcPauseNs;
+    tel.gcPauseNs = heap.last_pause_ns();
     tel.shapeTransitions = bronze::g_shapeTransitions.load(std::memory_order_relaxed);
     return tel;
 }

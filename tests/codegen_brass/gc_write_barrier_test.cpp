@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
 
-#include <brass/gc/card_table.hpp>
+#include <brass/gc/object.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/gc/stack_map.hpp>
 
@@ -11,6 +11,8 @@
 #include "il/il.h"
 #include "il/il_op.h"
 #include "runtime/gc.h"
+#include "runtime/heap.h"
+#include "runtime/string.h"
 #include "runtime/value.h"
 #include "support/diagnostics.h"
 
@@ -21,227 +23,112 @@
 using namespace bronze;
 
 namespace {
-// A heap split into an old half and a young half, installed as bronze's
-// active card table: the barrier's only generational state.
-struct SplitHeap {
-    static constexpr size_t kSize = 64 * 1024;
-    static constexpr size_t kHalf = kSize / 2;
 
-    std::vector<uint8_t> bytes = std::vector<uint8_t>(kSize);
-    uintptr_t base = reinterpret_cast<uintptr_t>(bytes.data());
-    brass::CardTable ct{base, kSize};
+// A heap of the test's own with one old block of Values and young values to
+// store into it: the barrier generated code calls (brass_gc_write_barrier)
+// must dirty the old block's card exactly when a young reference lands in it.
+struct BarrierHeap {
+    Heap heap;
+    ShadowStackFrame frame;
+    Rooted<Value> old;
 
-    SplitHeap() { set_active_card_table(&ct, base, kHalf, base + kHalf, kHalf); }
-    ~SplitHeap() { set_active_card_table(nullptr); }
-    SplitHeap(const SplitHeap&) = delete;
-    SplitHeap& operator=(const SplitHeap&) = delete;
+    BarrierHeap() : old(heap, Value::fromUndefined()) {
+        heap.set_gc_stress(false);
+        auto* block = heap.allocate(sizeof(Value) * 4, Tag::Object);
+        block->flags = HeapKind::ValueBlock;
+        old.set(Value::fromObject(block));
+        for (int i = 0; i < 4; ++i) slots()[i] = Value::fromUndefined();
+        heap.collect();  // promotes the block
+    }
 
-    // The i-th 64-byte object of each generation.
-    uintptr_t old_obj(size_t i) const { return base + 64 * (i + 1); }
-    uintptr_t young_obj(size_t i) const { return base + kHalf + 64 * (i + 1); }
-    brass::CardTable& card_table() { return ct; }
+    HeapValue* slots() { return old.get().asObject<HeapObjectHeader>()->payload<HeapValue>(); }
+    uintptr_t oldAddress() { return reinterpret_cast<uintptr_t>(old.get().asObject()); }
+    bool cardDirty() {
+        const brass::gc::Heap& gc = heap.gc();
+        return gc.card_table_base()[(oldAddress() - gc.old_base()) >> brass::gc::kCardShift] ==
+               brass::gc::kCardDirty;
+    }
+    Value youngString(const char* text) { return Value::fromString(StringHeader::createFromUTF8(heap, text)); }
 };
+
+// A store the way generated code makes one: the raw word, then the barrier
+// with the tagged object and the stored value.
+void storeWithBarrier(BarrierHeap& h, size_t index, Value v) {
+    reinterpret_cast<uint64_t*>(h.slots())[index] = v.rawBits();
+    brass_gc_write_barrier(h.old.get().rawBits(), v.rawBits());
+}
+
 }  // namespace
 
-TEST_CASE("write barrier - old stores young marks the CardTable (raw and NaN-tagged)") {
-    SplitHeap gc;
-    const uintptr_t old_obj = gc.old_obj(0);
-    const uintptr_t young_obj = gc.young_obj(0);
+TEST_CASE("write barrier - an old object storing a young reference dirties its card") {
+    BarrierHeap h;
+    REQUIRE_FALSE(h.heap.is_movable(h.old.get().asObject()));
+    h.heap.collect_minor();
+    REQUIRE_FALSE(h.cardDirty());
 
-    // 1. Raw pointers: old -> young
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
-    CHECK(!gc.card_table().is_dirty_addr(old_obj));
+    const Value young = h.youngString("young");
+    REQUIRE(h.heap.is_movable(young.asObject()));
+    storeWithBarrier(h, 0, young);
+    CHECK(h.cardDirty());
 
-    brass_gc_write_barrier(old_obj, young_obj);
-
-    CHECK(gc.card_table().is_dirty_addr(old_obj));
-    CHECK_EQ(get_write_barrier_stats().total_invocations, 1ULL);
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-    CHECK_EQ(get_write_barrier_stats().filtered_non_old_obj, 0ULL);
-    CHECK_EQ(get_write_barrier_stats().filtered_non_young_val, 0ULL);
-    CHECK_EQ(get_write_barrier_stats().filtered_non_pointer, 0ULL);
-
-    // 2. NaN-tagged pointers: Tag::Object
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
-
-    const uint64_t tagged_old = (static_cast<uint64_t>(Tag::Object) << kTagShift) | old_obj;
-    const uint64_t tagged_young = (static_cast<uint64_t>(Tag::Object) << kTagShift) | young_obj;
-
-    brass_gc_write_barrier(tagged_old, tagged_young);
-
-    CHECK(gc.card_table().is_dirty_addr(old_obj));
-    CHECK_EQ(get_write_barrier_stats().total_invocations, 1ULL);
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    // 3. Mixed: Tagged old -> Raw young
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
-
-    brass_gc_write_barrier(tagged_old, young_obj);
-
-    CHECK(gc.card_table().is_dirty_addr(old_obj));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    // 4. Mixed: Raw old -> Tagged young
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
-
-    brass_gc_write_barrier(old_obj, tagged_young);
-
-    CHECK(gc.card_table().is_dirty_addr(old_obj));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    // 5. String tag: Tag::String
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
-
-    const uint64_t str_young = (static_cast<uint64_t>(Tag::String) << kTagShift) | young_obj;
-    brass_gc_write_barrier(old_obj, str_young);
-
-    CHECK(gc.card_table().is_dirty_addr(old_obj));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    // 6. BigInt tag: Tag::BigInt
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
-
-    const uint64_t bigint_young = (static_cast<uint64_t>(Tag::BigInt) << kTagShift) | young_obj;
-    brass_gc_write_barrier(old_obj, bigint_young);
-
-    CHECK(gc.card_table().is_dirty_addr(old_obj));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
+    // The minor collection finds the young string through the card, moves it
+    // and updates the slot.
+    h.heap.set_gc_verify(true);
+    h.heap.collect_minor();
+    const Value moved = h.slots()[0];
+    CHECK(moved.isString());
+    CHECK(moved.rawBits() != young.rawBits());
+    CHECK(moved.asString<StringHeader>()->length == 5);
 }
 
-TEST_CASE("write barrier - ignores non-pointer and scalar values") {
-    SplitHeap gc;
-    const uintptr_t old_obj = gc.old_obj(0);
+TEST_CASE("write barrier - ignores numbers, booleans and other non-references") {
+    BarrierHeap h;
+    h.heap.collect_minor();
+    REQUIRE_FALSE(h.cardDirty());
 
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
-
-    // Floating-point IEEE-754 numbers (doubles)
-    brass_gc_write_barrier(old_obj, Value::fromDouble(0.0).rawBits());
-    brass_gc_write_barrier(old_obj, Value::fromDouble(-0.0).rawBits());
-    brass_gc_write_barrier(old_obj, Value::fromDouble(42.0).rawBits());
-    brass_gc_write_barrier(old_obj, Value::fromDouble(3.1415926535).rawBits());
-    brass_gc_write_barrier(old_obj, Value::fromDouble(-1e20).rawBits());
-    brass_gc_write_barrier(old_obj, Value(kCanonicalNaNBits).rawBits());
-
-    // Booleans
-    brass_gc_write_barrier(old_obj, Value::fromBool(true).rawBits());
-    brass_gc_write_barrier(old_obj, Value::fromBool(false).rawBits());
-
-    // Undefined & Null
-    brass_gc_write_barrier(old_obj, Value::fromUndefined().rawBits());
-    brass_gc_write_barrier(old_obj, Value::fromNull().rawBits());
-
-    // Int32 scalar
-    brass_gc_write_barrier(old_obj, Value::fromTagAndPayload(static_cast<uint16_t>(Tag::Int32), 12345).rawBits());
-
-    // Hole & Uninitialized
-    brass_gc_write_barrier(old_obj, Value::fromHole().rawBits());
-    brass_gc_write_barrier(old_obj, Value::fromUninitialized().rawBits());
-
-    // Zero / null pointer
-    brass_gc_write_barrier(old_obj, 0);
-
-    CHECK(!gc.card_table().is_dirty_addr(old_obj));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 0ULL);
-    CHECK_EQ(get_write_barrier_stats().filtered_non_pointer, 14ULL);
+    storeWithBarrier(h, 0, Value::fromDouble(1.5));
+    storeWithBarrier(h, 1, Value::fromBool(true));
+    storeWithBarrier(h, 2, Value::fromUndefined());
+    storeWithBarrier(h, 3, Value::fromNull());
+    CHECK_FALSE(h.cardDirty());
 }
 
-TEST_CASE("write barrier - ignores young-to-young and old-to-old writes") {
-    SplitHeap gc;
-    const uintptr_t old1 = gc.old_obj(0);
-    const uintptr_t old2 = gc.old_obj(1);
-    const uintptr_t young1 = gc.young_obj(0);
-    const uintptr_t young2 = gc.young_obj(1);
+TEST_CASE("write barrier - ignores young-to-young and old-to-old stores") {
+    BarrierHeap h;
+    h.heap.collect_minor();
 
-    // 1. Young-to-young write
-    gc.card_table().clean_all();
-    reset_write_barrier_stats();
+    // Old into old: a reference, but nothing a minor collection moves.
+    storeWithBarrier(h, 0, h.old.get());
+    CHECK_FALSE(h.cardDirty());
 
-    brass_gc_write_barrier(young1, young2);
-
-    CHECK(!gc.card_table().is_dirty_addr(young1));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 0ULL);
-    CHECK_EQ(get_write_barrier_stats().filtered_non_old_obj, 1ULL);
-
-    // 2. Young-to-old write
-    reset_write_barrier_stats();
-
-    brass_gc_write_barrier(young1, old1);
-
-    CHECK(!gc.card_table().is_dirty_addr(young1));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 0ULL);
-    CHECK_EQ(get_write_barrier_stats().filtered_non_old_obj, 1ULL);
-
-    // 3. Old-to-old write
-    reset_write_barrier_stats();
-
-    brass_gc_write_barrier(old1, old2);
-
-    CHECK(!gc.card_table().is_dirty_addr(old1));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 0ULL);
-    CHECK_EQ(get_write_barrier_stats().filtered_non_young_val, 1ULL);
+    // Young into young: the young object is scanned by the minor collection
+    // anyway.
+    auto* youngBlock = h.heap.allocate(sizeof(Value), Tag::Object);
+    youngBlock->flags = HeapKind::ValueBlock;
+    const Value young = h.youngString("y");
+    reinterpret_cast<uint64_t*>(youngBlock->payload())[0] = young.rawBits();
+    brass_gc_write_barrier(Value::fromObject(youngBlock).rawBits(), young.rawBits());
+    CHECK_FALSE(h.cardDirty());
 }
 
-TEST_CASE("write barrier - active Bronze CardTable descriptor integration") {
-    constexpr size_t HEAP_SZ = 64 * 1024;
-    std::vector<uint8_t> heap(HEAP_SZ);
-    const uintptr_t base = reinterpret_cast<uintptr_t>(heap.data());
-    brass::CardTable ct(base, HEAP_SZ);
+TEST_CASE("write barrier - HeapValue stores and bulk copies are barriered") {
+    BarrierHeap h;
+    h.heap.set_gc_verify(true);
+    h.heap.collect_minor();
+    REQUIRE_FALSE(h.cardDirty());
 
-    const uintptr_t old_base = base;
-    const size_t old_size = 32 * 1024;
-    const uintptr_t young_base = base + 32 * 1024;
-    const size_t young_size = 32 * 1024;
+    h.slots()[0] = h.youngString("assigned");
+    CHECK(h.cardDirty());
+    h.heap.collect_minor();
+    CHECK(h.slots()[0].asString<StringHeader>()->length == 8);
 
-    set_active_card_table(&ct, old_base, old_size, young_base, young_size);
-    CHECK_EQ(get_active_card_table(), &ct);
-
-    const uintptr_t old_ptr = old_base + 1024;
-    const uintptr_t young_ptr = young_base + 1024;
-
-    // Old stores young marks card table
-    reset_write_barrier_stats();
-    brass_gc_write_barrier(old_ptr, young_ptr);
-    CHECK(ct.is_dirty_addr(old_ptr));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    // Tagged pointers
-    ct.clean_all();
-    reset_write_barrier_stats();
-    const uint64_t tagged_old = (static_cast<uint64_t>(Tag::Object) << kTagShift) | old_ptr;
-    const uint64_t tagged_young = (static_cast<uint64_t>(Tag::Object) << kTagShift) | young_ptr;
-    brass_gc_write_barrier(tagged_old, tagged_young);
-    CHECK(ct.is_dirty_addr(old_ptr));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    // Young-to-young ignores
-    ct.clean_all();
-    reset_write_barrier_stats();
-    brass_gc_write_barrier(young_ptr, young_ptr + 64);
-    CHECK(!ct.is_dirty_addr(young_ptr));
-    CHECK_EQ(get_write_barrier_stats().filtered_non_old_obj, 1ULL);
-
-    // Predicate-based configuration
-    static uintptr_t s_base = 0;
-    s_base = base;
-    set_active_card_table(&ct,
-        [](uintptr_t a) { return a == s_base + 0x1000; },
-        [](uintptr_t a) { return a == s_base + 0x2000; });
-    ct.clean_all();
-    reset_write_barrier_stats();
-
-    brass_gc_write_barrier(base + 0x1000, base + 0x2000);
-    CHECK(ct.is_dirty_addr(base + 0x1000));
-    CHECK_EQ(get_write_barrier_stats().old_to_young_marked, 1ULL);
-
-    set_active_card_table(nullptr);
-    CHECK_EQ(get_active_card_table(), nullptr);
+    h.heap.collect_minor();
+    Value run[2] = {h.youngString("copied"), Value::fromDouble(2.0)};
+    gcCopyValues(h.old.get().asObject(), h.slots() + 1, run, 2);
+    CHECK(h.cardDirty());
+    h.heap.collect_minor();
+    CHECK(h.slots()[1].asString<StringHeader>()->length == 6);
+    CHECK(h.slots()[2].asNumber() == 2.0);
 }
 
 namespace {

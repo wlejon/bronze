@@ -21,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include <brass/gc/runtime_gc.hpp>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -60,28 +59,28 @@ static thread_local std::vector<Shape*> g_userPrototypeShapes;
 
 // The heap and arena are LEAKED POINTERS behind lazy accessors, not
 // thread_local objects, for two reasons. Lazy: a thread that never touches
-// the runtime must not pay a 64MB reservation at thread start. Leaked: the
-// per-thread tables above and below (weak-ref lists, root shapes, key
+// the runtime must not pay a heap reservation at thread start. Leaked: the
+// per-thread tables above and below (weak-ref tables, root shapes, key
 // headers) are destroyed at thread exit in an order nothing controls, and a
 // heap destructor running among them would be teardown-order roulette — the
-// process (or the thread, holding nothing) exits instead, exactly as the
-// process-global heap always did.
+// process (or the thread, holding nothing) exits instead.
 //
-// The registrations that used to ride static initializers (the shape-root
-// walk and the value-cache walk below) happen HERE, per thread, because a
+// The root-source registrations (the shape-root walk and the value-cache
+// walk below) happen HERE, per thread, because a
 // fresh heap needs its root sources before its first collection — and the
 // lambdas read the calling thread's thread_local tables, which is the right
 // table because a heap only ever collects on its own thread.
 static void registerThreadRootSources(Heap& heap);
-static void visitBrassThreadRoots(const Heap::RootVisitor& visit);
 
-// Generated code roots its Dynamic values, so a collection is survivable and
-// the reservation does not have to postpone one. Sized so ordinary programs DO
-// collect rather than run to exit inside one semispace.
+// The thread's heap, bound as the thread's heap for generated code and for
+// brass's runtime (Heap::bind_thread) the moment it exists, so that every
+// brass interpreter on the thread registers its frames with it and allocates
+// on it.
 Heap& rtHeap() {
     static thread_local Heap* heap = nullptr;
     if (!heap) {
-        heap = new Heap(1024 * 1024 * 1024);
+        heap = new Heap();
+        heap->bind_thread();
         registerThreadRootSources(*heap);
     }
     return *heap;
@@ -101,8 +100,10 @@ Shape* rtNewRootShape(Value proto) {
 
 Shape* rtRootShapeForPrototype(Value proto) {
     // Memoized, without permanently rooting user prototypes. User prototype
-    // root shapes live in `g_userPrototypeShapes` and are swept after collections
-    // when their prototype object dies in Cheney from-space (`Heap::survivor_of`).
+    // root shapes live in `g_userPrototypeShapes`, whose prototype slots a full
+    // collection visits WEAKLY: a prototype stays alive while an object built
+    // on its shape does (heap_trace.cpp traces it from each), and its shape
+    // leaves the table once it dies.
     for (Shape* root : g_userPrototypeShapes) {
         if (root->prototype.rawBits() == proto.rawBits()) return root;
     }
@@ -115,26 +116,24 @@ size_t rtUserPrototypeShapeCount() {
     return g_userPrototypeShapes.size();
 }
 
-static void sweepUserPrototypeShapes() {
-    Heap& heap = rtHeap();
-    size_t keep = 0;
-    for (size_t i = 0; i < g_userPrototypeShapes.size(); ++i) {
-        Shape* root = g_userPrototypeShapes[i];
-        Value proto = root->prototype;
-        if (!proto.isPointer()) {
-            g_userPrototypeShapes[keep++] = root;
-            continue;
-        }
-        auto* hdr = reinterpret_cast<HeapObjectHeader*>(proto.payload());
-        HeapObjectHeader* live = heap.survivor_of(hdr);
-        if (!live) {
-            root->prototype = Value::fromUndefined();
-            continue;
-        }
-        root->prototype = Value::fromTagAndPayload(proto.tag(), reinterpret_cast<uintptr_t>(live));
-        g_userPrototypeShapes[keep++] = root;
+// The prototype slots of the user root shapes. A minor collection holds them
+// strongly (an old object built on one is not rescanned by it, so its young
+// prototype has no other visit that would move it); a full collection holds
+// them weakly and clears a dead one's slot to undefined, and the sweep below
+// then drops that shape.
+static void visitUserPrototypeShapes(brass::gc::Tracer& t) {
+    const bool full = t.purpose() == brass::gc::Tracer::Purpose::Full;
+    const uint64_t cleared = Value::fromUndefined().rawBits();
+    for (Shape* root : g_userPrototypeShapes) {
+        auto* slot = reinterpret_cast<uint64_t*>(&root->prototype);
+        if (full) t.visit_weak(slot, cleared);
+        else t.visit(slot);
     }
-    g_userPrototypeShapes.resize(keep);
+}
+
+static void sweepUserPrototypeShapes() {
+    if (!rtHeap().collecting_full()) return;
+    std::erase_if(g_userPrototypeShapes, [](Shape* root) { return root->prototype.isUndefined(); });
 }
 
 static thread_local Shape* g_plainObjectShape = nullptr;
@@ -389,6 +388,7 @@ static void registerThreadRootSources(Heap& heap) {
     heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (Shape* root : g_rootShapes) visit(root->prototype);
     });
+    heap.add_tracer_source(visitUserPrototypeShapes);
     heap.add_post_collection_hook([]() {
         sweepUserPrototypeShapes();
     });
@@ -409,50 +409,10 @@ static void registerThreadRootSources(Heap& heap) {
         rtVisitArrayMethodRoots(visit);
         rtVisitRealmRoots(visit);
     });
-    heap.add_root_source(visitBrassThreadRoots);
-}
-
-// Every gcref slot brass knows on this thread: its native-frame scopes and
-// ThreadRootsScopes (the latter carrying the frames of interpreters a nested
-// bronze program hid, brass_tiered_engine.cpp), and the innermost running
-// Interpreter and FastInterpreter. Bronze's own code roots its values in
-// bronze GC frames and never allocates from a brass heap (brass's heaps are
-// configured to forbid allocation, brass_symbol_registration.cpp), so in a
-// bronze program this is
-// normally empty; it is here so that a gcref held only by a brass frame is
-// still a root of the one heap in the process. The collection starts from
-// the runtime, not from a generated frame, so no frame pointer is passed:
-// generated frames are walked by bronze's own frame chain instead.
-//
-// brass's contract for a slot is "a gcref, or a tagged value whose low 48
-// bits are one". A slot carrying a bronze pointer Value is visited as that
-// Value. Any other slot is its low 48 bits as a heap address under whatever
-// upper bits it carries (none for a raw gcref, brass's own tag for one of
-// its boxed values): forwarded as an object reference and written back
-// under the same upper bits.
-static void visitBrassThreadRoots(const Heap::RootVisitor& visit) {
-    static thread_local std::vector<uintptr_t*> slots;
-    slots.clear();
-    brass::brass_enumerate_thread_roots(0, 0, slots);
-    // A slot may be reported more than once (an interpreter's frames through
-    // its ThreadRootsScope and as the innermost one); visit each once.
-    std::sort(slots.begin(), slots.end());
-    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
-    constexpr uint64_t kLow48 = 0x0000FFFFFFFFFFFFULL;
-    for (uintptr_t* slot : slots) {
-        const uint64_t bits = static_cast<uint64_t>(*slot);
-        Value asBronze = Value::fromRawBits(bits);
-        if (asBronze.isPointer()) {
-            visit(asBronze);
-            *slot = static_cast<uintptr_t>(asBronze.rawBits());
-            continue;
-        }
-        const uint64_t address = bits & kLow48;
-        if (address == 0) continue;
-        Value ref = Value::fromObject(reinterpret_cast<const void*>(static_cast<uintptr_t>(address)));
-        visit(ref);
-        *slot = static_cast<uintptr_t>((bits & ~kLow48) | ref.payload());
-    }
+    // brass's own roots on this thread — its interpreters' frames, the native
+    // frames under a re-entered interpreter, suspended coroutine frames — are
+    // visited by the collector itself: every interpreter registers its frames
+    // on the thread's current heap, which is this one (Heap::bind_thread).
 }
 
 void rtRegisterHostGlobal(const std::string& name, Value value) {

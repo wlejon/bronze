@@ -1,8 +1,8 @@
-// The handle cells and the finalizer sweep they need — the one consumer of the
-// Heap's post-collection hook list besides the weak-reference sweep. Moved
-// here from embed_handle.cpp when generated code started making handles of
-// its own (native_registry.cpp); the Persistent and HandleScope registries
-// stayed there, because nothing below embed makes one.
+// The handle cells and the destructors they owe, registered as the
+// collector's finalizers. Here rather than in embed_handle.cpp because
+// generated code makes handles of its own (native_registry.cpp); the
+// Persistent and HandleScope registries live there, because nothing below
+// embed makes one.
 
 #include "runtime/native_handle.h"
 
@@ -21,18 +21,14 @@ namespace bronze::runtime {
 
 namespace {
 
-// The native-handle finalizer registry: one entry per live cell that owes a
-// destructor. The collector never visits a dead object — it copies the live
-// ones and abandons the rest — so "run the destructor when the cell dies" can
-// only be answered from outside, by sweeping this table when a collection has
-// just decided liveness for everything (heap.h, add_post_collection_hook).
+// One cell's destructor, the context of the collector finalizer that runs it
+// (brass::gc::Heap::add_finalizer): called once, at the end of the collection
+// that finds the cell dead.
 struct FinalizerEntry {
-    HeapObjectHeader* cell;  // the cell's CURRENT header address
     void* data;
     HandleDestructor dtor;
     Finalize when;
 };
-thread_local std::vector<FinalizerEntry> g_finalizers;
 
 // Deferred destructors between the collection that queued them and the drain
 // that runs them. Plain host pointers only — nothing here is a GC value, so
@@ -67,58 +63,30 @@ constexpr uint32_t kSlotDestructor = 1;
 constexpr uint32_t kSlotBrand = 2;
 constexpr uint32_t kSlotClassTag = 3;
 
-void sweepFinalizers() {
-    // Runs mid-collection: every from-space header is Tag::Forwarded (live,
-    // new address in the payload) or untouched (dead). Stable compaction so
-    // destructors run in registration order — not a promise the API makes,
-    // but determinism costs one write index.
-    size_t keep = 0;
-    for (size_t i = 0; i < g_finalizers.size(); ++i) {
-        FinalizerEntry& entry = g_finalizers[i];
-        if (entry.cell->tag == static_cast<uint16_t>(Tag::Forwarded)) {
-            entry.cell = *reinterpret_cast<HeapObjectHeader**>(entry.cell->payload());
-            g_finalizers[keep++] = entry;
-        } else if (entry.when == Finalize::InSweep) {
-            // Dead. The destructor gets the pointer the registry duplicated at
-            // creation rather than one read out of the dead payload — the
-            // forwarding protocol clobbers a payload's first word for LIVE
-            // objects, and a sweep that read payloads would have to know it is
-            // on the safe side of that. It must not touch the bronze heap: the
-            // collection is mid-flight (heap.h).
-            entry.dtor(entry.data);
-        } else {
-            // Dead, Deferred: queue for the drain. Only the host pair
-            // survives — the cell is from-space garbage the moment this sweep
-            // returns, which is precisely what licenses the destructor to do
-            // anything it likes later: there is no heap state left to
-            // resurrect or corrupt.
-            g_pendingFinalizers.push_back({entry.data, entry.dtor});
-        }
+// The collector's finalizer for a dead cell. The destructor gets the pointer
+// registered with the cell, never one read out of the dead payload.
+void runFinalizer(void* context) {
+    auto* entry = static_cast<FinalizerEntry*>(context);
+    if (entry->when == Finalize::InSweep) {
+        entry->dtor(entry->data);
+    } else {
+        // Deferred: queued for the drain. Only the host pair survives, which
+        // is what licenses the destructor to do anything it likes later.
+        g_pendingFinalizers.push_back({entry->data, entry->dtor});
     }
-    g_finalizers.resize(keep);
+    delete entry;
 }
 
-// Registration with the collector on FIRST USE rather than at static
-// initialization: the heap and its hook table are statics of another
-// translation unit (rt_state.cpp), and registering from this TU's static
-// initializers would race them — the exact cross-TU-order trap rt_state.cpp
-// exists to close.
-void ensureFinalizerHook() {
-    static thread_local const bool registered = [] {
-        // One of the hook LIST's entries (heap.h says why it stopped being a
-        // slot): the weak-reference sweep registers its own, and the two are
-        // independent — this one only ever reads handle cells.
-        rtHeap().add_post_collection_hook(sweepFinalizers);
-        return true;
-    }();
-    (void)registered;
+void registerFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor, Finalize when) {
+    rtHeap().gc().add_finalizer(reinterpret_cast<uintptr_t>(cell), &runFinalizer,
+                                new FinalizerEntry{data, dtor, when});
 }
 
 // A host pointer stored raw in an internal slot must never look like a heap
-// reference to the collector's payload scan. It cannot: forwarding only
-// touches Values whose TAG is Object/String/Symbol (top 16 bits), and a
-// user-space pointer's top 16 bits are zero, which reads as a small double.
-// The check makes the assumption loud instead of latent.
+// reference to the collector. It cannot: only the pointer tags (top 16 bits)
+// are reference tags, and a user-space pointer's top 16 bits are zero, which
+// reads as a small double. The check makes the assumption loud instead of
+// latent.
 uint64_t pointerBits(const void* p, const char* what) {
     auto bits = reinterpret_cast<uint64_t>(p);
     if (bits > kPayloadMask) {
@@ -134,7 +102,6 @@ uint64_t pointerBits(const void* p, const char* what) {
 Value rtMakeHandle(void* data, HandleDestructor dtor, Finalize when, Value prototype,
                    const void* classTag) {
     ShadowStackFrame frame;
-    ensureFinalizerHook();
     Shape* shape = nullptr;
     if (prototype.isObject()) {
         // The prototype must be a plain object, for Object.create's reason: a
@@ -164,9 +131,9 @@ Value rtMakeHandle(void* data, HandleDestructor dtor, Finalize when, Value proto
                                                          "handle destructor")));
     cell->setInternalSlot(kSlotBrand, Value::fromRawBits(kHandleBrandBits));
     cell->setInternalSlot(kSlotClassTag, Value::fromRawBits(pointerBits(classTag, "class tag")));
-    // No allocation between the create above and this push, so `cell` cannot
-    // have moved: the entry records the address the collector will next see.
-    if (dtor) g_finalizers.push_back({&cell->header, data, dtor, when});
+    // No allocation between the create above and this registration, so `cell`
+    // is the address the collector knows the object by.
+    if (dtor) registerFinalizer(&cell->header, data, dtor, when);
     return Value::fromObject(cell);
 }
 
@@ -208,8 +175,7 @@ const void* rtHandleClassTag(Value handle) {
 
 void rtRegisterHeapFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor,
                              Finalize when) {
-    ensureFinalizerHook();
-    g_finalizers.push_back({cell, data, dtor, when});
+    registerFinalizer(cell, data, dtor, when);
 }
 
 void rtDrainFinalizers() {

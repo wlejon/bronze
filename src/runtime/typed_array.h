@@ -77,12 +77,11 @@ double toUint8Clamp(double number) noexcept;
 // The largest byte length bronze will allocate for one buffer. Two separate
 // obligations meet at this number and both are real:
 //
-//  - a semispace collector COPIES the buffer on every collection, so a buffer
-//    larger than a semispace can never survive one; and
+//  - a buffer is one heap object, so it must fit `Heap::kMaxObjectBytes`; and
 //  - the view header's `{byteOffset, length}` pair shares one 8-byte word,
-//    which the collector's payload scan reads as a `Value`. Its top 16 bits
+//    which the collector's payload trace reads as a `Value`. Its top 16 bits
 //    are `length >> 16`, so a length at or above 0xFFF1_0000 elements would
-//    present a valid pointer TAG to `forward_value` and be "relocated" — the
+//    present a valid pointer TAG to the trace and be "relocated" — the
 //    view's length would be overwritten with an address. This cap is three
 //    orders of magnitude below that, which is what makes the shared word safe
 //    rather than lucky.
@@ -90,14 +89,14 @@ double toUint8Clamp(double number) noexcept;
 // A request above it is a RangeError, by name, at the constructor.
 inline constexpr uint32_t kMaxByteLength = 1u << 28;  // 256 MiB
 
-// Raw byte storage (Tag::RawBytes: the collector forwards the object and
-// copies its bytes, but never scans the BYTES as Values — the ordinary-object
-// prefix it does scan, by the shape, exactly as it scans a plain object's:
-// heap_collect.cpp's arm for this kind). flags == kFlags discriminates it from
+// Raw byte storage (Tag::RawBytes: the collector moves the object with its
+// bytes, but never traces the BYTES as Values — the ordinary-object prefix it
+// does trace, by the shape, exactly as it traces a plain object's:
+// heap_trace.cpp's arm for this kind). flags == kFlags discriminates it from
 // a plain object in the dynamic helpers.
 struct ArrayBufferHeader {
     ObjectHeader object;
-    Value inlineSlots[ObjectHeader::kInlineSlots];
+    HeapValue inlineSlots[ObjectHeader::kInlineSlots];
     uint32_t byteLength;
     uint32_t maxByteLength;
     uint32_t bufferFlags;
@@ -136,8 +135,8 @@ struct ArrayBufferHeader {
     // `shape` decides the [[Prototype]] (10.1.13 OrdinaryCreateFromConstructor
     // hands it in from NewTarget; the runtime's own allocations pass the
     // intrinsic's instance shape, rt_receivers.h), and every field of the
-    // ordinary prefix is initialized here so no scanned word is left holding
-    // semispace residue.
+    // ordinary prefix is initialized here so no traced word is left holding
+    // residue of recycled memory.
     static ArrayBufferHeader* create(Heap& heap, Shape* shape, uint32_t byte_length);
     static ArrayBufferHeader* createResizable(Heap& heap, Shape* shape, uint32_t byte_length,
                                               uint32_t max_byte_length);
@@ -179,8 +178,8 @@ struct ArrayBufferHeader {
 // method here must keep.
 struct TypedArrayHeader {
     ObjectHeader object;
-    Value inlineSlots[ObjectHeader::kInlineSlots];
-    Value buffer;
+    HeapValue inlineSlots[ObjectHeader::kInlineSlots];
+    HeapValue buffer;
     uint32_t byteOffset;
     uint32_t length;    // in ELEMENTS, not bytes — the CURRENT window, see below
     uint32_t kind;      // ElementKind
@@ -375,8 +374,8 @@ void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val);
 // whatever the allocator last wrote there.
 struct DataViewHeader {
     ObjectHeader object;
-    Value inlineSlots[ObjectHeader::kInlineSlots];
-    Value buffer;
+    HeapValue inlineSlots[ObjectHeader::kInlineSlots];
+    HeapValue buffer;
     uint32_t byteOffset;
     uint32_t byteLength;
 

@@ -29,17 +29,17 @@ namespace bronze {
 // what keeps a literal inside a loop from compiling its pattern per iteration.
 struct RegExpHeader {
     ObjectHeader object;
-    Value inlineSlots[ObjectHeader::kInlineSlots];
-    Value source;     // string: the pattern text, exactly as written
-    Value flagsText;  // string: the flags in 22.2.6.4's order
+    HeapValue inlineSlots[ObjectHeader::kInlineSlots];
+    HeapValue source;     // string: the pattern text, exactly as written
+    HeapValue flagsText;  // string: the flags in 22.2.6.4's order
     // `lastIndex` (22.2.4.1): the one own DATA property every RegExp is created
     // with, kept in the header rather than in a slot so the matcher reads and
     // writes it without a property lookup. The property paths synthesise it
     // as own, writable, non-enumerable and non-configurable. It holds whatever
     // the program last assigned — a string stays a string — and 22.2.7.2 reads
     // it back through ToLength when a match starts.
-    Value lastIndex;
-    Value programIndex;  // double: index into the compiled-pattern table
+    HeapValue lastIndex;
+    HeapValue programIndex;  // double: index into the compiled-pattern table
 
     static constexpr uint16_t kFlags = HeapKind::RegExp;
     static constexpr uint32_t kInternalSlots = 4;

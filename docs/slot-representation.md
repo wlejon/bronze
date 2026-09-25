@@ -13,7 +13,7 @@ is what generated code spends it on, and it is the second half of this document.
 
 Implementation: `src/runtime/slot_repr.{h,cpp}`, `src/runtime/shape.{h,cpp}`
 (`double_slots`, `repr`, `withSlotBoxed`), `src/runtime/object.h`
-(`ObjectHeader::setSlot`), `src/runtime/heap_collect.cpp` (`scan_plain_object`);
+(`ObjectHeader::setSlot`), `src/runtime/heap_trace.cpp` (`traceCell`);
 stage R2 codegen was previously implemented in `src/codegen-llvm/llvm_repr.{h,cpp}`
 and is now handled natively via the Brass backend (`src/codegen-brass`).
 
@@ -83,7 +83,7 @@ to stand here — that R2 would stop — was wrong about which half of the trade
 worth having. Canonicalizing is what keeps a double slot's word a legal `Value`
 for every reader that does not know about representations: `bronze_prop_get`,
 `JSON.stringify`, `Object.is`, the accessor halves, the dictionary conversion,
-`ensureOverflow`'s block copy, `Heap::verify_space`, the census. Dropping it
+`ensureOverflow`'s block copy, the collector's trace and verifier, the census. Dropping it
 would have made all of those conditional on a shape lookup in order to save one
 `fcmp uno` and one `select` per store — and it is that same identity, "a Number's
 box IS the double", that makes stage R2's raw store a store of *the bits it
@@ -92,13 +92,14 @@ mechanism, not scaffolding around it.
 
 ## What the collector does
 
-`Heap::scan_plain_object` reads the object's shape, skips the slots
-`double_slots` names, and scans the object's out-of-line slot block itself —
-the block carries `HeapKind::SlotBlock` and the generic pass skips it, because
-only the owner knows which of its words are Values.
+Nothing representation-specific. A double slot's word is a canonical boxed
+Number, which carries no pointer tag, so the trace (`traceCell`) visits every
+word after an object's shape pointer — inline slots, and the out-of-line slot
+block as a cell of its own — without consulting `double_slots`; brass's
+collector leaves a word that is not a reference alone.
 
-Two heap kinds were added for this, and they are the price of `HeapKind::Plain`
-becoming a *claim* that a `Shape*` sits at offset 8:
+The heap kinds below are what makes `HeapKind::Plain` a *claim* that a
+`Shape*` sits at offset 8, which the trace relies on to skip that word:
 
 * `HeapKind::SlotBlock` — an object's out-of-line property slots.
 * `HeapKind::ValueBlock` — an array's elements, a Map's entry table: flat runs

@@ -27,15 +27,15 @@ struct IterRecordHeader {
 
     // The array / string / typed array / Map being walked, or, for a
     // protocol iteration, the ITERATOR object the @@iterator method returned.
-    Value target;
+    HeapValue target;
     // The iterator's `next` method, read once at open time (7.4.2 GetIterator
     // step 3 reads it once, so an iterator that replaces its own `next`
     // mid-walk does not change what the loop calls).
-    Value nextFn;
-    Value current;  // what the last step produced
-    Value cursor;   // double: the index the fast kinds walk
-    Value kind;     // double, one of Kind below
-    Value done;     // bool: the iteration is finished, so closing it is a no-op
+    HeapValue nextFn;
+    HeapValue current;  // what the last step produced
+    HeapValue cursor;   // double: the index the fast kinds walk
+    HeapValue kind;     // double, one of Kind below
+    HeapValue done;     // bool: the iteration is finished, so closing it is a no-op
 
     static constexpr uint16_t kFlags = HeapKind::Iterator;
 

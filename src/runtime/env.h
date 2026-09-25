@@ -15,7 +15,7 @@ namespace bronze {
 // special case.
 struct EnvHeader {
     HeapObjectHeader header;
-    Value parent;  // undefined at the outermost environment
+    HeapValue parent;  // undefined at the outermost environment
 
     static constexpr uint16_t kFlags = HeapKind::Env;
 
@@ -26,7 +26,7 @@ struct EnvHeader {
             (header.size - sizeof(HeapObjectHeader) - sizeof(Value)) / sizeof(Value));
     }
 
-    Value* slotsData() noexcept { return reinterpret_cast<Value*>(this + 1); }
+    HeapValue* slotsData() noexcept { return reinterpret_cast<HeapValue*>(this + 1); }
     const Value* slotsData() const noexcept { return reinterpret_cast<const Value*>(this + 1); }
 
     // Walk `depth` parent links. A depth that runs off the chain is a

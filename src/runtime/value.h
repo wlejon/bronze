@@ -40,7 +40,6 @@ enum class Tag : uint16_t {
     // Above the number range like every other tag here, so `isNumber()` is
     // still the single unsigned compare it was.
     BigInt = 0xFFFB,
-    Forwarded = 0xFFFE,
 };
 
 constexpr uint64_t kCanonicalNaNBits = 0x7FF8000000000000ULL;

@@ -51,7 +51,7 @@ struct ModuleNamespaceHeader {
 
     static constexpr uint16_t kFlags = HeapKind::ModuleNamespace;
 
-    Value* entries() noexcept { return reinterpret_cast<Value*>(this + 1); }
+    HeapValue* entries() noexcept { return reinterpret_cast<HeapValue*>(this + 1); }
     const Value* entries() const noexcept { return reinterpret_cast<const Value*>(this + 1); }
 
     Value name(uint32_t i) const { return entries()[2 * i]; }

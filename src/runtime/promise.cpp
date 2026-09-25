@@ -63,7 +63,7 @@ void settleInternal(Rooted<Value>& promise, Rooted<Value>& value, bool reject) {
                           reject ? PromiseSlot::RejectReactions : PromiseSlot::FulfillReactions);
     if (list.isObject() && list.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         ArrayHeader* arr = list.asObject<ArrayHeader>();
-        const Value* elems = arr->elementsData();
+        const HeapValue* elems = arr->elementsData();
         for (uint32_t i = 0; i + 1 < arr->length; i += 2) {
             rtEnqueueReactionJob(elems[i], elems[i + 1], value.get(), reject);
         }

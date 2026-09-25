@@ -235,12 +235,6 @@ uint64_t bronze_create_object() {
     recordHelperCall("bronze_create_object");
     ObjectHeader* obj = ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape());
     obj->header.flags = HeapKind::Plain;
-    const bronze_tls_block* tls = bronze_tls_block_addr();
-    if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_PLAIN_OBJECT_BYTES) {
-        Rooted<Value> objRoot{Value::fromObject(obj)};
-        rtHeap().refill_inline_lab();
-        return objRoot.get().rawBits();
-    }
     return Value::fromObject(obj).rawBits();
 }
 
@@ -252,14 +246,6 @@ uint64_t bronze_create_array(uint32_t length) {
     uint32_t cap = (length < BRONZE_ABI_ARRAY_MIN_CAPACITY) ? BRONZE_ABI_ARRAY_MIN_CAPACITY : length;
     ArrayHeader* arr = ArrayHeader::create(rtHeap(), cap);
     arr->length = length;
-    const uint64_t needed =
-        BRONZE_ABI_ARRAY_HEADER_BYTES + BRONZE_ABI_HDR_BYTES + static_cast<uint64_t>(cap) * 8;
-    const bronze_tls_block* tls = bronze_tls_block_addr();
-    if (tls->alloc_limit - tls->alloc_cursor < needed) {
-        Rooted<Value> arrRoot{Value::fromObject(arr)};
-        rtHeap().refill_inline_lab();
-        return arrRoot.get().rawBits();
-    }
     return Value::fromObject(arr).rawBits();
 }
 
@@ -537,17 +523,6 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
                             const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
     if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
-    // Re-arm the inline-allocation window when it cannot fit even one more
-    // instance — this helper is the fast path's designated miss, so this is
-    // where the next run of hits is paid for. Behind a root for `result`,
-    // because the refill's carve may collect (under stress it always does).
-    const bronze_tls_block* tls = bronze_tls_block_addr();
-    if (tls->alloc_limit - tls->alloc_cursor < BRONZE_ABI_PLAIN_OBJECT_BYTES) {
-        Rooted<Value> resultRoot{result};
-        rtHeap().refill_inline_lab();
-        result = resultRoot.get();
-    }
-
     // JS: a constructor returning an object replaces the instance; any other
     // return value (including undefined) is ignored.
     return result.isObject() ? result.rawBits() : self.get().rawBits();
@@ -559,13 +534,6 @@ uint64_t bronze_env_create(uint64_t parentBits, uint32_t slotCount) {
     recordHelperCall("bronze_env_create");
     Rooted<Value> parent{Value(parentBits)};
     EnvHeader* env = EnvHeader::create(rtHeap(), parent, slotCount);
-    const size_t needed = sizeof(HeapObjectHeader) + sizeof(Value) + static_cast<size_t>(slotCount) * sizeof(Value);
-    const bronze_tls_block* tls = bronze_tls_block_addr();
-    if (tls->alloc_limit - tls->alloc_cursor < needed) {
-        Rooted<Value> envRoot{Value::fromObject(env)};
-        rtHeap().refill_inline_lab();
-        return envRoot.get().rawBits();
-    }
     return Value::fromObject(env).rawBits();
 }
 
@@ -758,7 +726,7 @@ uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t
         result = fn->call(self.get(), 0, nullptr);
     } else {
         auto* arr = argsVal.asObject<ArrayHeader>();
-        result = fn->call(self.get(), arr->length, arr->elementsData());
+        result = fn->call(self.get(), arr->length, const_cast<Value*>(HeapValue::values(arr->elementsData())));
     }
     // The same receiver rule as `bronze_super_call`, rooted for the same reason.
     return result.isObject() ? result.rawBits() : self.get().rawBits();

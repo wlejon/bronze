@@ -1,17 +1,18 @@
-// The memory the heap is made of and the paths that hand it out: the OS
-// reservation, the commit growth, the bump allocators for both semispaces, the
-// per-thread seam settling one Heap construction does on its way up, and the
-// non-moving arena that lives beside the movable heap. What COPIES the live set
-// out of this memory is heap_collect.cpp; what audits it afterwards is
-// heap_verify.cpp.
+// bronze's heap over brass's collector (heap.h): the brass::gc::Heap a bronze
+// Heap owns and how it is configured, bronze allocation onto it, the roots
+// every heap has (the two shadow-stack chains), the write barrier's per-thread
+// heap list, the binding of the thread's inline-allocation window to the
+// young bump region, and the non-moving arena beside the heap. What the
+// collector traces inside an object is heap_trace.cpp.
 
 #include "runtime/heap.h"
 
 #include "abi/bronze_abi.h"
 #include "runtime/elem_ic.h"
-#include "runtime/heap_internal.h"
-#include "runtime/rt_property.h"
-#include "runtime/rt_state.h"
+#include "runtime/fatal.h"
+#include "runtime/gc.h"
+#include "runtime/heap_trace.h"
+#include "runtime/tls_block.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -36,40 +37,79 @@
 
 namespace bronze {
 
-// The inline-allocation window (see the bronze_tls_block comment in
-// bronze_abi.h): generated code's `new` fast path bump-allocates plain
-// instances from [cursor, limit) and never collects — refill_inline_lab below
-// is the only producer, and Heap::collect zeroes both words because the
-// window points into the semispace a collection abandons. 0/0 is the dormant
-// state: the unsigned headroom subtraction is then 0 and every construct site
-// falls back to bronze_construct. The words themselves live in the calling
-// thread's bronze_tls_block (tls_block.cpp), which is what keeps this heap's
-// window — and every other word generated code shares with the runtime — the
-// property of the thread that owns this heap.
+namespace gc_detail {
+thread_local BarrierHeaps t_barrierHeaps{};
+}  // namespace gc_detail
 
-namespace heap_internal {
+void gcCopyValues(const void* object, HeapValue* dst, const Value* src, size_t count) noexcept {
+    if (count == 0) return;
+    std::memmove(static_cast<void*>(dst), src, count * sizeof(Value));
+    gcRememberObject(object);
+}
 
-GcLogStats g_gcLog;
+void gcFillValues(const void* object, HeapValue* dst, Value v, size_t count) noexcept {
+    if (count == 0) return;
+    auto* raw = reinterpret_cast<Value*>(dst);
+    for (size_t i = 0; i < count; ++i) raw[i] = v;
+    if (v.isPointer()) gcRememberObject(object);
+}
+
+namespace {
+
+bool envIsOne(const char* name) {
+    const char* v = std::getenv(name);
+    return v && std::strcmp(v, "1") == 0;
+}
+
+bool envIsOn(const char* name) {
+    const char* v = std::getenv(name);
+    return v && (std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0 || std::strcmp(v, "ON") == 0);
+}
+
+// Measurement, not policy: BRONZE_GC_LOG=1 prints at exit how much of a run
+// the collector was on the first thread that enabled it — collections by kind,
+// pause totals and maxima, and bytes allocated.
+struct GcLog {
+    bool enabled{false};
+    const brass::gc::Heap* heap{nullptr};
+    std::chrono::steady_clock::time_point start;
+};
+GcLog g_gcLog;
 
 void dumpGcLog() {
-    if (!g_gcLog.enabled) return;
-    auto total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now() - g_gcLog.start)
-                        .count();
+    if (!g_gcLog.enabled || !g_gcLog.heap) return;
+    const brass::gc::HeapStats& st = g_gcLog.heap->stats();
+    const auto total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now() - g_gcLog.start)
+                              .count();
     std::fprintf(stderr, "\n=== Bronze GC Log (BRONZE_GC_LOG=1) ===\n");
-    std::fprintf(stderr, "collections      : %llu\n",
-                 static_cast<unsigned long long>(g_gcLog.collections));
-    std::fprintf(stderr, "allocations      : %llu (%.2f MB)\n",
-                 static_cast<unsigned long long>(g_gcLog.alloc_count),
-                 g_gcLog.alloc_bytes / (1024.0 * 1024.0));
-    std::fprintf(stderr, "bytes copied     : %.2f MB\n",
-                 g_gcLog.copied_bytes / (1024.0 * 1024.0));
-    std::fprintf(stderr, "time in collect(): %.3f ms\n", g_gcLog.gc_nanos / 1e6);
-    std::fprintf(stderr, "process wall     : %.3f ms\n", total_ns / 1e6);
+    std::fprintf(stderr, "minor collections: %llu (%.3f ms total, %.3f ms max)\n",
+                 static_cast<unsigned long long>(st.minor_collections), st.minor_pause_ns_total / 1e6,
+                 st.minor_pause_ns_max / 1e6);
+    std::fprintf(stderr, "full collections : %llu (%.3f ms total, %.3f ms max)\n",
+                 static_cast<unsigned long long>(st.full_collections), st.full_pause_ns_total / 1e6,
+                 st.full_pause_ns_max / 1e6);
+    std::fprintf(stderr, "allocated        : %.2f MB\n",
+                 static_cast<double>(g_gcLog.heap->allocated_bytes()) / (1024.0 * 1024.0));
+    std::fprintf(stderr, "promoted         : %.2f MB\n",
+                 static_cast<double>(st.promoted_bytes) / (1024.0 * 1024.0));
+    std::fprintf(stderr, "process wall     : %.3f ms\n", static_cast<double>(total_ns) / 1e6);
     std::fflush(stderr);
 }
 
-}  // namespace heap_internal
+// Every reference a bronze heap holds is a NaN-boxed Value, so the pointer
+// tags are the reference tags and a raw word (tag 0) is never one: a host
+// pointer, a shape pointer or a small integer in a slot or an interpreter
+// register is left alone.
+brass::gc::HeapConfig bronzeHeapConfig() {
+    brass::gc::HeapConfig config;
+    config.reference_tags = {static_cast<uint16_t>(Tag::Object), static_cast<uint16_t>(Tag::String),
+                             static_cast<uint16_t>(Tag::Symbol), static_cast<uint16_t>(Tag::BigInt)};
+    config.read_environment = true;
+    return config;
+}
+
+}  // namespace
 
 constexpr uintptr_t kMaxLowAddressLimit = 1ULL << 47;
 
@@ -82,7 +122,7 @@ void* VirtualMemory::reserve(size_t bytes) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
     if (addr >= kMaxLowAddressLimit) {
         VirtualFree(ptr, 0, MEM_RELEASE);
-        throw std::runtime_error("Heap VirtualAlloc reserved address exceeds 47-bit range");
+        throw std::runtime_error("VirtualAlloc reserved address exceeds 47-bit range");
     }
     return ptr;
 #else
@@ -93,7 +133,7 @@ void* VirtualMemory::reserve(size_t bytes) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
     if (addr >= kMaxLowAddressLimit) {
         munmap(ptr, bytes);
-        throw std::runtime_error("Heap mmap reserved address exceeds 47-bit range");
+        throw std::runtime_error("mmap reserved address exceeds 47-bit range");
     }
     return ptr;
 #endif
@@ -128,408 +168,176 @@ void VirtualMemory::release(void* ptr, size_t bytes) {
 #endif
 }
 
-Heap::Heap(size_t reserve_bytes, size_t initial_commit_bytes)
-    : reserved_bytes_(reserve_bytes) {
-#ifndef NDEBUG
-    owner_thread_id_ = std::this_thread::get_id();
-#endif
-    reserved_base_ = VirtualMemory::reserve(reserved_bytes_);
-    semispace_size_ = reserved_bytes_ / 2;
-
-    from_space_.base = static_cast<uint8_t*>(reserved_base_);
-    from_space_.size = semispace_size_;
-    from_space_.committed_bytes = 0;
-    from_space_.bump_ptr = from_space_.base;
-
-    to_space_.base = static_cast<uint8_t*>(reserved_base_) + semispace_size_;
-    to_space_.size = semispace_size_;
-    to_space_.committed_bytes = 0;
-    to_space_.bump_ptr = to_space_.base;
-
-    if (initial_commit_bytes > 0) {
-        size_t commit_target = std::min(initial_commit_bytes, semispace_size_);
-        ensure_commit(from_space_, commit_target);
+Heap::Heap() : gc_(std::make_unique<brass::gc::Heap>(bronzeHeapConfig())) {
+    gc_detail::BarrierHeaps& barrier = gc_detail::t_barrierHeaps;
+    if (barrier.count >= gc_detail::BarrierHeaps::kMax) {
+        fatal("bronze: too many heaps on one thread for the write barrier's heap list");
     }
-    gc_threshold_bytes_ = std::min(semispace_size_, static_cast<size_t>(16 * 1024 * 1024));
+    barrier.heaps[barrier.count++] = gc_.get();
 
-    const char* env_stress = std::getenv("BRONZE_GC_STRESS");
-    if (env_stress && (std::strcmp(env_stress, "1") == 0 ||
-                       std::strcmp(env_stress, "true") == 0 ||
-                       std::strcmp(env_stress, "ON") == 0)) {
-        gc_stress_mode_ = true;
-    }
+    // First, so every later hook can ask which kind of collection runs it.
+    gc_->add_post_collection_hook([this](brass::gc::Heap&, brass::gc::CollectionKind kind) {
+        last_full_ = kind == brass::gc::CollectionKind::Full;
+    });
+    registerFrameRoots();
 
-    const char* env_poison = std::getenv("BRONZE_GC_POISON");
-    if (env_poison && std::strcmp(env_poison, "1") == 0) {
-        gc_poison_mode_ = true;
-    }
+    if (envIsOn("BRONZE_GC_STRESS")) set_gc_stress(true);
+    if (envIsOne("BRONZE_GC_POISON")) set_gc_poison(true);
+    if (envIsOne("BRONZE_HEAP_VERIFY")) set_gc_verify(true);
 
-    const char* env_verify = std::getenv("BRONZE_HEAP_VERIFY");
-    if (env_verify && std::strcmp(env_verify, "1") == 0) {
-        gc_verify_mode_ = true;
-    }
+    runtime::rtReadThreadSeams();
 
-    const char* env_no_inline = std::getenv("BRONZE_NO_INLINE_ALLOC");
-    if (env_no_inline && std::strcmp(env_no_inline, "1") == 0) {
-        inline_lab_enabled_ = false;
-    }
-
-    // The inline fast-path enable flags default to 1 in the TLS block; the
-    // env overrides land here because this constructor runs exactly once per
-    // thread that touches the runtime (rtHeap's first touch), before any
-    // generated code on that thread can read a flag through a helper.
-    bronze_tls_block* tls = bronze_tls_block_addr();
-    const char* env_no_call = std::getenv("BRONZE_NO_INLINE_CALL");
-    if (env_no_call && std::strcmp(env_no_call, "1") == 0) {
-        tls->inline_call_enabled = 0;
-    }
-
-    const char* env_no_array_ic = std::getenv("BRONZE_NO_ARRAY_METHOD_IC");
-    if (env_no_array_ic && std::strcmp(env_no_array_ic, "1") == 0) {
-        tls->array_method_ic_enabled = 0;
-    }
-
-    const char* env_no_overflow_set = std::getenv("BRONZE_NO_INLINE_OVERFLOW_SET");
-    if (env_no_overflow_set && std::strcmp(env_no_overflow_set, "1") == 0) {
-        tls->inline_overflow_set_enabled = 0;
-    }
-
-    const char* env_no_accessor = std::getenv("BRONZE_NO_INLINE_ACCESSOR");
-    if (env_no_accessor && std::strcmp(env_no_accessor, "1") == 0) {
-        tls->inline_accessor_enabled = 0;
-    }
-
-    const char* env_no_poly = std::getenv("BRONZE_NO_POLY_IC");
-    if (env_no_poly && std::strcmp(env_no_poly, "1") == 0) {
-        tls->poly_ic_enabled = 0;
-    }
-
-    const char* env_no_neg = std::getenv("BRONZE_NO_NEG_IC");
-    if (env_no_neg && std::strcmp(env_no_neg, "1") == 0) {
-        tls->negative_ic_enabled = 0;
-    }
-
-    const char* env_no_elem = std::getenv("BRONZE_NO_ELEM_IC");
-    if (env_no_elem && std::strcmp(env_no_elem, "1") == 0) {
-        tls->elem_ic_enabled = 0;
-    }
-
-    // BRONZE_NO_ELEM_SET_IC, read by elem_ic.cpp because its flag is not in the
-    // ABI block, but read HERE so every seam is settled at one first touch.
-    runtime::elemSetCacheReadSeam();
-
-    // BRONZE_NO_FN_STATICS_IC, read here for the same reason: the flag lives in
-    // rt_prop_function.cpp rather than in the ABI's TLS block, and every seam is
-    // settled at one first touch.
-    runtime::fnStaticsIcReadSeam();
-
-    const char* env_no_callout = std::getenv("BRONZE_NO_DIRECT_CALLOUT");
-    if (env_no_callout && std::strcmp(env_no_callout, "1") == 0) {
-        tls->direct_callout_enabled = 0;
-    }
-
-    const char* env_no_elem_absent = std::getenv("BRONZE_NO_ELEM_ABSENT");
-    if (env_no_elem_absent && std::strcmp(env_no_elem_absent, "1") == 0) {
-        tls->elem_absent_enabled = 0;
-    }
-
-    // The string-key identity latch, latch-side: with this off no fill or hit
-    // ever writes a non-zero key_ident, so the inline string arm can only
-    // miss into the helper it always took (elem_ic.h).
-    const char* env_no_elem_key = std::getenv("BRONZE_NO_ELEM_KEY_IC");
-    if (env_no_elem_key && std::strcmp(env_no_elem_key, "1") == 0) {
-        tls->elem_key_ic_enabled = 0;
-    }
-
-    // The undefined-vs-number relational arm: with this off, a compare whose
-    // operand is `undefined` keeps the bronze_rel_* helper it always took.
-    const char* env_no_undef_rel = std::getenv("BRONZE_NO_UNDEF_REL");
-    if (env_no_undef_rel && std::strcmp(env_no_undef_rel, "1") == 0) {
-        tls->undef_rel_enabled = 0;
-    }
-
-    // Array.prototype.sort's hoisted-roots merge engine: with this off the
-    // sort keeps the per-comparison Rooted churn it always had (one binary
-    // A/B; builtin_array_sort.cpp).
-    const char* env_no_sort_fast = std::getenv("BRONZE_NO_SORT_FAST");
-    if (env_no_sort_fast && std::strcmp(env_no_sort_fast, "1") == 0) {
-        tls->sort_fast_enabled = 0;
-    }
-
-    // The allocation-free Map/WeakMap lookup probe: with this off every
-    // `get`/`has` runs the full rooted prologue it always did (map.cpp,
-    // builtin_weak_map.cpp).
-    const char* env_no_map_fast = std::getenv("BRONZE_NO_MAP_FAST");
-    if (env_no_map_fast && std::strcmp(env_no_map_fast, "1") == 0) {
-        tls->map_fast_enabled = 0;
-    }
-
-    // `key_ic_enabled` (bronze_abi_tls.h) is no longer read by anything: the
-    // per-key fallback sites it gated are gone now that every generated site
-    // brings its own entry from the module's IC table. The field stays in the
-    // block so the layout — and the ABI stamp — do not move.
-
-    // %TypedArray%.prototype.set's number-elements fast loop over a plain
-    // array source: with this off every element keeps its rooted spec-shaped
-    // iteration (builtin_typed_array_methods.cpp).
-    const char* env_no_ta_set = std::getenv("BRONZE_NO_TA_SET_FAST");
-    if (env_no_ta_set && std::strcmp(env_no_ta_set, "1") == 0) {
-        tls->ta_set_fast_enabled = 0;
-    }
-
-    // The inline truthiness arms for bool/undefined/null/object operands:
-    // with this off only the pre-existing number arm stays inline and every
-    // other operand keeps the bronze_unbox_bool helper (llvm_ops.cpp).
-    const char* env_no_truthy = std::getenv("BRONZE_NO_TRUTHY_INLINE");
-    if (env_no_truthy && std::strcmp(env_no_truthy, "1") == 0) {
-        tls->truthy_inline_enabled = 0;
-    }
-
-    const char* env_no_fn_singleton = std::getenv("BRONZE_NO_FN_SINGLETON_CACHE");
-    if (env_no_fn_singleton && std::strcmp(env_no_fn_singleton, "1") == 0) {
-        tls->fn_singleton_cache_enabled = 0;
-    }
-
-    const char* env_no_iter_fast = std::getenv("BRONZE_NO_ITER_FAST");
-    if (env_no_iter_fast && std::strcmp(env_no_iter_fast, "1") == 0) {
-        tls->iter_fast_enabled = 0;
-    }
-
-    const char* env_no_inline_roots = std::getenv("BRONZE_NO_INLINE_ROOTS");
-    if (env_no_inline_roots && std::strcmp(env_no_inline_roots, "1") == 0) {
-        tls->inline_roots_enabled = 0;
-    }
-
-    const char* env_no_strict_eq = std::getenv("BRONZE_NO_STRICT_EQ_INLINE");
-    if (env_no_strict_eq && std::strcmp(env_no_strict_eq, "1") == 0) {
-        tls->strict_eq_inline_enabled = 0;
-    }
-
-    // Two ways to lower the inline elem probe, and the second is not a
-    // convenience: with the TABLE off nothing is ever installed, so an inline
-    // probe could only miss, and charging chunk 3's A/B for a probe that
-    // cannot hit would read as a regression in a mechanism that is not there.
-    const char* env_no_elem_inline = std::getenv("BRONZE_NO_ELEM_INLINE");
-    if ((env_no_elem_inline && std::strcmp(env_no_elem_inline, "1") == 0) ||
-        tls->elem_ic_enabled == 0) {
-        tls->elem_inline_enabled = 0;
-    }
-
-    const char* env_no_method_call_ic = std::getenv("BRONZE_NO_METHOD_CALL_IC");
-    if (!env_no_method_call_ic) env_no_method_call_ic = std::getenv("BRONZE_NO_CALL_IC");
-    if (env_no_method_call_ic && std::strcmp(env_no_method_call_ic, "1") == 0) {
-        tls->method_call_ic_enabled = 0;
-    }
-
-    // Narrower than the switch above: the method IC stays, but latches only
-    // the env-free direct entries it originally could — rt_state.h's
-    // rtSetEnvMethodIcEnabled says what the two gated forms are.
-    const char* env_no_env_method_ic = std::getenv("BRONZE_NO_ENV_METHOD_IC");
-    if (env_no_env_method_ic && std::strcmp(env_no_env_method_ic, "1") == 0) {
-        runtime::rtSetEnvMethodIcEnabled(false);
-    }
-
-    // Narrower still: the method IC keeps every plain-receiver form, but never
-    // latches the exotic-receiver (Array/collection) entries —
-    // rt_state.h's rtSetExoticMethodIcEnabled says why latch-side is enough.
-    const char* env_no_exotic_method_ic = std::getenv("BRONZE_NO_EXOTIC_METHOD_IC");
-    if (env_no_exotic_method_ic && std::strcmp(env_no_exotic_method_ic, "1") == 0) {
-        runtime::rtSetExoticMethodIcEnabled(false);
-    }
-
-    // And narrower again: way-0 latching keeps every form, but a displaced
-    // plain-direct entry is dropped instead of moved to way 1
-    // (rt_state.h's rtSetPolyMethodIcEnabled).
-    const char* env_no_poly_method_ic = std::getenv("BRONZE_NO_POLY_METHOD_IC");
-    if (env_no_poly_method_ic && std::strcmp(env_no_poly_method_ic, "1") == 0) {
-        runtime::rtSetPolyMethodIcEnabled(false);
-    }
-
-    // Shape-census mode (BRONZE_SHAPE_CENSUS=1, runtime/shape_census.h):
-    // every latch the runtime can reach through a TLS word goes down, so all
-    // property traffic keeps missing into the helpers that record it. The
-    // remaining latches — the property-IC fills, the absent install, the
-    // static publish, the family stamp, the method-IC latch — consult
-    // censusFillsSuppressed() (or method_call_ic_enabled below) at their own
-    // sites.
-    const char* env_census = std::getenv("BRONZE_SHAPE_CENSUS");
-    if (env_census && std::strcmp(env_census, "1") == 0) {
-        tls->elem_ic_enabled = 0;
-        tls->elem_inline_enabled = 0;
-        tls->elem_key_ic_enabled = 0;
-        tls->elem_absent_enabled = 0;
-        tls->array_method_ic_enabled = 0;
-        tls->method_call_ic_enabled = 0;
-    }
-
-    // The computed-read cache's table address, published where the seam that
-    // gates reading it is set, so a thread never has one without the other.
-    runtime::elemCachePublish();
-
-    // The ident sweep runs inside every collection pause of THIS heap: an
-    // address is reused only across a collection, so clearing every
-    // movable-heap ident before the mutator resumes is what makes the inline
-    // string arm's single-compare guard sound (elem_ic.h). The bounds are the
-    // whole reservation — both semispaces — so a stale ident can never
-    // straddle the swap.
+    // The ident sweep runs inside every collection of THIS heap: an address is
+    // reused only across a collection, so clearing every heap ident before the
+    // mutator resumes is what makes the inline string arm's single-compare
+    // guard sound (elem_ic.h). The bounds are the whole reservation.
     {
-        const uintptr_t ident_lo = reinterpret_cast<uintptr_t>(reserved_base_);
-        const uintptr_t ident_hi = ident_lo + reserved_bytes_;
+        const uintptr_t ident_lo = gc_->reservation_base();
+        const uintptr_t ident_hi = ident_lo + gc_->reservation_bytes();
         add_post_collection_hook(
             [ident_lo, ident_hi] { runtime::elemCacheSweepIdent(ident_lo, ident_hi); });
         // And a full wipe now: the thread's table may carry idents from an
         // earlier Heap (unit tests construct them directly), and a fresh
-        // reservation can land where an old one was. The runtime's own heap
-        // is a leaked per-thread singleton, so for programs this wipes an
-        // empty table exactly once.
+        // reservation can land where an old one was.
         runtime::elemCacheSweepIdent(0, UINTPTR_MAX);
     }
 
-    const char* env_log = std::getenv("BRONZE_GC_LOG");
-    if (env_log && std::strcmp(env_log, "1") == 0 && !g_gcLog.enabled) {
+    if (envIsOne("BRONZE_GC_LOG") && !g_gcLog.enabled) {
         g_gcLog.enabled = true;
+        g_gcLog.heap = gc_.get();
         g_gcLog.start = std::chrono::steady_clock::now();
         std::atexit(dumpGcLog);
     }
 }
 
 Heap::~Heap() {
-    check_thread_affinity();
-    // Retract the inline-allocation window if this heap published it: the
-    // memory under it is released on the next line, and this thread's TLS
-    // block outlives a Heap (in tests) that need not be the thread's last.
-    bronze_tls_block* tls = bronze_tls_block_addr();
-    if (tls->alloc_cursor >= reinterpret_cast<uint64_t>(reserved_base_) &&
-        tls->alloc_cursor < reinterpret_cast<uint64_t>(reserved_base_) + reserved_bytes_) {
+    if (bound_) {
+        // The window is this heap's young bump region, released below.
+        gc_->bind_allocation_buffer(nullptr);
+        bronze_tls_block* tls = runtime::rtTls();
         tls->alloc_cursor = 0;
         tls->alloc_limit = 0;
+        if (brass::gc::Heap::current() == gc_.get()) brass::gc::Heap::set_current(nullptr);
     }
-    if (reserved_base_) {
-        VirtualMemory::release(reserved_base_, reserved_bytes_);
-        reserved_base_ = nullptr;
+    if (g_gcLog.heap == gc_.get()) g_gcLog.enabled = false;
+    gc_detail::BarrierHeaps& barrier = gc_detail::t_barrierHeaps;
+    for (uint32_t i = 0; i < barrier.count; ++i) {
+        if (barrier.heaps[i] != gc_.get()) continue;
+        for (uint32_t j = i + 1; j < barrier.count; ++j) barrier.heaps[j - 1] = barrier.heaps[j];
+        --barrier.count;
+        break;
     }
 }
 
-bool Heap::ensure_commit(Semispace& space, size_t required_bytes) {
-    if (required_bytes <= space.committed_bytes) {
-        return true;
-    }
-    if (required_bytes > space.size) {
-        return false;
-    }
-
-    constexpr size_t kMinStep = 64 * 1024;
-    size_t growth = std::max(kMinStep, space.committed_bytes);
-    size_t target_commit = std::max(required_bytes, space.committed_bytes + growth);
-    target_commit = (target_commit + kMinStep - 1) & ~(kMinStep - 1);
-    target_commit = std::min(target_commit, space.size);
-    size_t commit_size = target_commit - space.committed_bytes;
-    uint8_t* commit_addr = space.base + space.committed_bytes;
-
-    if (!VirtualMemory::commit(commit_addr, commit_size)) {
-        return false;
-    }
-
-    space.committed_bytes = target_commit;
-    return true;
-}
-
-void* Heap::allocate_in_space(Semispace& space, size_t bytes) {
-    size_t aligned_bytes = (bytes + 7) & ~static_cast<size_t>(7);
-    size_t current_used = space.bump_ptr - space.base;
-    size_t needed = current_used + aligned_bytes;
-
-    if (needed > space.size) {
-        throw std::bad_alloc();
-    }
-
-    if (needed > space.committed_bytes) {
-        if (!ensure_commit(space, needed)) {
-            throw std::bad_alloc();
-        }
-    }
-
-    uint8_t* ptr = space.bump_ptr;
-    space.bump_ptr += aligned_bytes;
-    return ptr;
-}
-
-void* Heap::allocate_raw(size_t bytes) {
-    check_thread_affinity();
-    if (gc_stress_mode_ && !in_gc_) {
-        collect();
-    }
-
-    size_t aligned_bytes = (bytes + 7) & ~static_cast<size_t>(7);
-    size_t current_used = from_space_.bump_ptr - from_space_.base;
-    size_t needed = current_used + aligned_bytes;
-
-    if (!in_gc_ && needed > gc_threshold_bytes_) {
-        collect();
-        current_used = from_space_.bump_ptr - from_space_.base;
-        needed = current_used + aligned_bytes;
-    }
-
-    if (needed > from_space_.size || needed > from_space_.committed_bytes) {
-        if (!ensure_commit(from_space_, needed)) {
-            if (!in_gc_) {
-                collect();
-                current_used = from_space_.bump_ptr - from_space_.base;
-                needed = current_used + aligned_bytes;
-                if (!ensure_commit(from_space_, needed)) {
-                    throw std::bad_alloc();
-                }
-            } else {
-                throw std::bad_alloc();
+void Heap::registerFrameRoots() {
+    gc_->add_root_source([](brass::gc::Tracer& t) {
+        // The C++ side's shadow stack: Rooted<>, RootedArgs, RootedBlock.
+        for (ShadowStackFrame* frame = ShadowStackFrame::current(); frame != nullptr; frame = frame->prev()) {
+            Value** slots = frame->roots();
+            const size_t count = frame->count();
+            for (size_t i = 0; i < count; ++i) {
+                if (slots[i]) t.visit(reinterpret_cast<uint64_t*>(slots[i]));
             }
         }
-    }
-
-    uint8_t* ptr = from_space_.bump_ptr;
-    from_space_.bump_ptr += aligned_bytes;
-    if (g_gcLog.enabled) {
-        g_gcLog.alloc_bytes += aligned_bytes;
-        ++g_gcLog.alloc_count;
-    }
-    return ptr;
+        // Generated code's root frames: contiguous slot arrays in compiled
+        // functions' own stack frames, linked inline by compiled code.
+        for (bronze_gc_frame* frame = runtime::rtTls()->frame_top; frame != nullptr; frame = frame->prev) {
+            for (uint64_t i = 0; i < frame->count; ++i) t.visit(&frame->slots[i]);
+        }
+    });
 }
 
-HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag) {
-    check_thread_affinity();
-    if (gc_stress_mode_ && !in_gc_) {
-        collect();
+HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag, GcLayout layout) {
+    const size_t total = (sizeof(HeapObjectHeader) + bytes + 7) & ~static_cast<size_t>(7);
+    if (total > UINT32_MAX) throw std::bad_alloc();
+    const gc_detail::LayoutIds& ids = gc_detail::layoutIds();
+    brass::gc::LayoutId id = ids.cell;
+    switch (layout) {
+        case GcLayout::Auto:
+            id = (tag == Tag::String || tag == Tag::BigInt) ? ids.leaf : ids.cell;
+            break;
+        case GcLayout::Cell: id = ids.cell; break;
+        case GcLayout::Leaf: id = ids.leaf; break;
+        case GcLayout::WeakLast: id = ids.weakLast; break;
+        case GcLayout::Ephemerons: id = ids.ephemerons; break;
     }
-
-    size_t total_bytes = sizeof(HeapObjectHeader) + bytes;
-    void* mem = allocate_raw(total_bytes);
-    auto* header = static_cast<HeapObjectHeader*>(mem);
+    auto* header = reinterpret_cast<HeapObjectHeader*>(gc_->allocate(total, id));
     header->tag = static_cast<uint16_t>(tag);
     // A raw zero and deliberately not `HeapKind::Plain`: this word is a heap
     // kind only for a `Tag::Object`, and a String spends it on its encoding
-    // bits. The caller that knows which tag it asked for is the one that gets
-    // to name what goes in here.
+    // bits. The caller that knows which tag it asked for names what goes here.
     header->flags = 0;
-    header->size = static_cast<uint32_t>((total_bytes + 7) & ~static_cast<size_t>(7));
+    header->size = static_cast<uint32_t>(total);
     return header;
 }
 
-void Heap::refill_inline_lab() {
-    check_thread_affinity();
-    if (!inline_lab_enabled_) return;
-    // Under stress: exactly one plain object, so the inline path runs on the
-    // very next `new` — its rooting across the constructor call is what the
-    // stress mode exists to shake — and the `new` after that misses back into
-    // the helper, whose allocations collect. Without stress: a run long
-    // enough that the helper is a rounding error, small enough that a
-    // collection abandons nothing worth naming.
-    constexpr size_t kLabBytes = 256 * 1024;
-    const size_t bytes = gc_stress_mode_ ? BRONZE_ABI_PLAIN_OBJECT_BYTES : kLabBytes;
-    // allocate_raw may collect (stress does so every time), which zeroes the
-    // window — publishing AFTER it returns is what keeps the two ordered.
-    void* run = allocate_raw(bytes);
-    bronze_tls_block* tls = bronze_tls_block_addr();
-    tls->alloc_cursor = reinterpret_cast<uint64_t>(run);
-    tls->alloc_limit = tls->alloc_cursor + bytes;
+void Heap::collect() {
+    if (gc_->in_collection()) return;
+    gc_->collect(brass::gc::CollectionKind::Full);
+}
+
+void Heap::collect_minor() {
+    if (gc_->in_collection()) return;
+    gc_->collect(brass::gc::CollectionKind::Minor);
+}
+
+void Heap::add_post_collection_hook(PostCollectionHook hook) {
+    gc_->add_post_collection_hook(
+        [hook = std::move(hook)](brass::gc::Heap&, brass::gc::CollectionKind) { hook(); });
+}
+
+HeapObjectHeader* Heap::survivor_of(HeapObjectHeader* header) const noexcept {
+    return reinterpret_cast<HeapObjectHeader*>(gc_->survivor_of(reinterpret_cast<uintptr_t>(header)));
+}
+
+void Heap::add_permanent_root(Value* slot) { gc_->add_root(reinterpret_cast<uint64_t*>(slot)); }
+
+void Heap::add_root_source(RootSource src) {
+    gc_->add_root_source([src = std::move(src)](brass::gc::Tracer& t) {
+        src([&t](Value& slot) { t.visit(reinterpret_cast<uint64_t*>(&slot)); });
+    });
+}
+
+void Heap::add_tracer_source(std::function<void(brass::gc::Tracer&)> src) {
+    gc_->add_root_source(std::move(src));
+}
+
+void Heap::set_gc_stress(bool enable) noexcept {
+    gc_->set_stress(enable ? brass::gc::StressMode::Alternate : brass::gc::StressMode::None);
+}
+
+bool Heap::gc_stress() const noexcept { return gc_->stress() != brass::gc::StressMode::None; }
+
+void Heap::set_gc_poison(bool enable) noexcept {
+    poison_ = enable;
+    gc_->set_poison(enable);
+}
+
+void Heap::set_gc_verify(bool enable) noexcept {
+    verify_ = enable;
+    gc_->set_verify(enable);
+}
+
+void Heap::walk_objects(const std::function<void(HeapObjectHeader*)>& fn) {
+    const brass::gc::Heap& heap = *gc_;
+    heap.for_each_object([&](uintptr_t object) {
+        if (!gc_detail::isBronzeLayout(brass::gc::header_of(object)->layout)) return;
+        fn(reinterpret_cast<HeapObjectHeader*>(object));
+    });
+}
+
+void Heap::bind_thread() {
+    brass::gc::Heap::set_current(gc_.get());
+    bronze_tls_block* tls = runtime::rtTls();
+    // brass's object header for an inline allocation, size left zero
+    // (bronze_abi_tls.h, gc_cell_header).
+    tls->gc_cell_header = static_cast<uint64_t>(gc_detail::layoutIds().cell) << 32;
+    // BRONZE_NO_INLINE_ALLOC=1: the window stays 0/0, no size fits, and every
+    // allocation takes its helper — the A/B seam for the inline path.
+    if (!envIsOne("BRONZE_NO_INLINE_ALLOC")) {
+        gc_->bind_allocation_buffer(reinterpret_cast<brass::gc::Heap::AllocationBuffer*>(&tls->alloc_cursor));
+    }
+    bound_ = true;
 }
 
 NonMovingArena::NonMovingArena(size_t chunk_size) : chunk_size_(chunk_size) {}

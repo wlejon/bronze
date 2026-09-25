@@ -31,6 +31,18 @@ uint64_t objectProtoSetProto(uint64_t, uint64_t, uint32_t, const uint64_t*);
 using namespace bronze;
 using namespace bronze::runtime;
 
+// A root shape over `proto`, with its prototype slot a root of `heap`. The
+// runtime's own root shapes are visited by rt_state.cpp's root source; one made
+// by hand over a test-local heap needs the same visit, or a minor collection
+// moves the prototype out from under the shape.
+static Shape* protoShape(Heap& heap, NonMovingArena& arena, Value proto) {
+    Shape* root = Shape::createRoot(arena, proto);
+    heap.add_tracer_source([root](brass::gc::Tracer& t) {
+        t.visit(reinterpret_cast<uint64_t*>(&root->prototype));
+    });
+    return root;
+}
+
 TEST_CASE("ObjectHeader property access and inline cache") {
     NonMovingArena arena;
     Heap heap;
@@ -138,9 +150,9 @@ TEST_CASE("an inline cache entry above depth 1 is invalidated by a prototype add
     // leaf -> mid -> top, and only `top` has `p`.
     Rooted<ObjectHeader*> top(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
     Rooted<ObjectHeader*> mid(ObjectHeader::create(
-        heap, arena, Shape::createRoot(arena, Value::fromObject(top.get()))));
+        heap, arena, protoShape(heap, arena, Value::fromObject(top.get()))));
     Rooted<ObjectHeader*> leaf(ObjectHeader::create(
-        heap, arena, Shape::createRoot(arena, Value::fromObject(mid.get()))));
+        heap, arena, protoShape(heap, arena, Value::fromObject(mid.get()))));
 
     Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "p")));
     Rooted<Value> fromTop(Value::fromDouble(1.0));
@@ -181,7 +193,7 @@ TEST_CASE("an ordinary object's property add does not disturb proto caches") {
 
     Rooted<ObjectHeader*> proto(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
     Rooted<ObjectHeader*> inst(ObjectHeader::create(
-        heap, arena, Shape::createRoot(arena, Value::fromObject(proto.get()))));
+        heap, arena, protoShape(heap, arena, Value::fromObject(proto.get()))));
 
     Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "p")));
     Rooted<Value> val(Value::fromDouble(7.0));
@@ -467,7 +479,7 @@ TEST_CASE("an absent read is recorded, and the epoch is what retires it") {
 
     Rooted<ObjectHeader*> proto(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
     Rooted<ObjectHeader*> inst(ObjectHeader::create(
-        heap, arena, Shape::createRoot(arena, Value::fromObject(proto.get()))));
+        heap, arena, protoShape(heap, arena, Value::fromObject(proto.get()))));
 
     Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "missing")));
 
@@ -516,7 +528,7 @@ TEST_CASE("a chain the epoch does not cover is refused a negative entry") {
     {
         Rooted<Value> arrVal{Value::fromObject(ArrayHeader::create(heap, 0))};
         Rooted<ObjectHeader*> inst(
-            ObjectHeader::create(heap, arena, Shape::createRoot(arena, arrVal.get())));
+            ObjectHeader::create(heap, arena, protoShape(heap, arena, arrVal.get())));
         CHECK_FALSE(inst.get()->chainIsCacheable());
     }
 
@@ -527,7 +539,7 @@ TEST_CASE("a chain the epoch does not cover is refused a negative entry") {
     {
         Rooted<ObjectHeader*> proto(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
         Rooted<ObjectHeader*> inst(ObjectHeader::create(
-            heap, arena, Shape::createRoot(arena, Value::fromObject(proto.get()))));
+            heap, arena, protoShape(heap, arena, Value::fromObject(proto.get()))));
         CHECK(inst.get()->chainIsCacheable());
         proto.get()->shape->used_as_prototype = false;
         CHECK_FALSE(inst.get()->chainIsCacheable());

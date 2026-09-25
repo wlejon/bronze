@@ -54,11 +54,7 @@ inline bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_
 }
 
 inline bool checkAllocatable(uint32_t byteLength) {
-    // The semispace is fixed for the life of the thread's heap, and this sits
-    // on every allocating method (`slice`, `map`, `toReversed`, ...) — so it is
-    // read once rather than through the `rtHeap()` call each time.
-    static thread_local const size_t semispace = rtHeap().reserved_size() / 2;
-    if (byteLength >= kMaxByteLength || byteLength + 64 >= semispace) {
+    if (byteLength >= kMaxByteLength || byteLength + 64 >= Heap::kMaxObjectBytes) {
         rtThrowRangeError("Array buffer allocation failed: " + std::to_string(byteLength) +
                           " bytes does not fit in the heap");
         return false;
