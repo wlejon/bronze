@@ -288,6 +288,10 @@ private:
                                           std::optional<Value> selfValue,
                                           const std::vector<const ast::Expr*>& args,
                                           std::optional<Value> preLowered, il::Function& ilFn);
+    // A native's return value `res` as the program sees it: a handle, a
+    // string, a number or undefined.
+    Value convertNativeResult(const NativeSig& sig, il::Type retType, il::ValueId res,
+                              il::Function& ilFn);
     Value emitDefaultValueForType(il::Type type, il::Function& ilFn);
     Value emitNativeClassTag(const std::string& className, il::Function& ilFn);
     uint32_t nativeImportFunction(const NativeSig& sig);
@@ -515,7 +519,7 @@ private:
     bool lowerForInStmt(const ast::ForInStmt* forIn, il::Function& ilFn);
     bool lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal, const std::string& headName,
                            const ast::BindingPattern* headPattern, bool isConst, bool isLet,
-                           bool isVar, const std::vector<ast::StmtPtr>& body,
+                           const std::vector<ast::StmtPtr>& body,
                            il::Function& ilFn, bool isAwait = false);
 
     // --- lower_switch.cpp: selection and fallthrough ---

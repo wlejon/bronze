@@ -427,11 +427,22 @@ std::optional<Lowerer::Value> Lowerer::emitNativeInvoke(const NativeSig& sig, co
         emitInst(ilFn, inst);
         return res;
     };
+    // The values whose data the native is handed a pointer into. A handle's
+    // destructor frees its data and a typed array's buffer can be collected,
+    // so each is kept alive until the result has been converted (step 6),
+    // across the native, any program it re-enters, and the allocation that
+    // wraps or copies what it returned — which may point into that data.
+    std::vector<il::ValueId> owners;
     if (sig.hasSelf()) {
-        operands.push_back(emitHandleData(boxValueIfNeeded(*self, ilFn), sig.className));
+        const Value boxedSelf = boxValueIfNeeded(*self, ilFn);
+        owners.push_back(boxedSelf.id);
+        operands.push_back(emitHandleData(boxedSelf, sig.className));
     }
     for (size_t i = 0; i < sig.paramTypes.size(); ++i) {
         const auto& p = sig.paramTypes[i];
+        if (p.kind == abi::NativeType::Class || abi::nativeTypeIsTypedArray(p.kind)) {
+            owners.push_back(scalars[i].id);
+        }
         if (p.kind == abi::NativeType::Class) {
             operands.push_back(emitHandleData(scalars[i], p.className));
         } else if (abi::nativeTypeIsTypedArray(p.kind)) {
@@ -505,7 +516,21 @@ std::optional<Lowerer::Value> Lowerer::emitNativeInvoke(const NativeSig& sig, co
         emitInst(ilFn, release);
     }
 
-    // 5. The result, as the program sees it.
+    // 5. The result, as the program sees it; 6. the owners, kept to here.
+    const Value result = convertNativeResult(sig, retType, res, ilFn);
+    if (!owners.empty()) {
+        il::Instruction keep;
+        keep.op = il::Op::KeepAlive;
+        keep.type = il::Type::Void;
+        keep.result = il::kNoValue;
+        keep.operands = std::move(owners);
+        emitInst(ilFn, keep);
+    }
+    return result;
+}
+
+Lowerer::Value Lowerer::convertNativeResult(const NativeSig& sig, il::Type retType, il::ValueId res,
+                                            il::Function& ilFn) {
     if (retType == il::Type::Void) {
         return Value{emitConstUndefined(ilFn), il::Type::Dynamic};
     }

@@ -61,9 +61,8 @@ void runEntry(ModuleEntry entry) {
     runtime::samplerNoteJsThread();
     // The root frame runMain opens, for the same reason: Rooted<> handles
     // inside runtime helpers register here, and a host calling in from its own
-    // frame loop has no bronze frame on the stack. Generated code links its
-    // own contiguous slot frames onto its thread's ABI-block frame_top
-    // separately.
+    // frame loop has no bronze frame on the stack. Generated code's own Values
+    // are stack-map roots and need no frame.
     //
     // NOT the ABI check: the fingerprint the loader must compare is the
     // MODULE's stamp, and a module that arrived through dlopen carries it as a

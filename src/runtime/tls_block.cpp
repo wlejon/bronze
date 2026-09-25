@@ -13,13 +13,11 @@
 #include "runtime/tls_block.h"
 #include "runtime/heap.h"
 #include "runtime/profile.h"
-#include "runtime/fatal.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -31,7 +29,6 @@
 #include <windows.h>
 #else
 #include <pthread.h>
-#include <sys/mman.h>
 #if defined(__APPLE__)
 #include <sys/resource.h>
 #endif
@@ -39,7 +36,6 @@
 
 #include "abi/bronze_abi.h"
 
-static_assert(offsetof(bronze_tls_block, frame_top) == BRONZE_TLS_FRAME_TOP_OFF);
 static_assert(offsetof(bronze_tls_block, exception_cell) == BRONZE_TLS_EXCEPTION_CELL_OFF);
 static_assert(offsetof(bronze_tls_block, proto_epoch) == BRONZE_TLS_PROTO_EPOCH_OFF);
 static_assert(offsetof(bronze_tls_block, alloc_cursor) == BRONZE_TLS_ALLOC_CURSOR_OFF);
@@ -109,7 +105,6 @@ namespace bronze::runtime {
 // instead of a call. The initializer is still all compile-time constants, so
 // this is still constant-initialized with no guard.
 thread_local bronze_tls_block g_tls_block = {
-    /*frame_top=*/nullptr,
     /*exception_cell=*/BRONZE_ABI_NO_EXCEPTION_BITS,
     /*proto_epoch=*/1,
     /*alloc_cursor=*/0,
@@ -234,162 +229,3 @@ extern "C" void* bronze_tls_enter(void) {
     return tls;
 }
 
-namespace {
-
-struct ShadowStack {
-    static constexpr size_t kCapacityBytes = 64 * 1024 * 1024; // 64 MB virtual address reservation
-    static constexpr size_t kCapacityWords = kCapacityBytes / sizeof(uint64_t);
-
-    uint64_t* base = nullptr;
-    uint64_t* top = nullptr;
-    size_t capacity_words = kCapacityWords;
-
-    void init() {
-        if (!base) {
-            size_t bytes = kCapacityBytes;
-#if defined(_WIN32)
-            base = reinterpret_cast<uint64_t*>(
-                VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
-#else
-            void* ptr = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            base = (ptr == MAP_FAILED) ? nullptr : reinterpret_cast<uint64_t*>(ptr);
-#endif
-            top = base;
-        }
-    }
-
-    ~ShadowStack() {
-        if (base) {
-#if defined(_WIN32)
-            VirtualFree(base, 0, MEM_RELEASE);
-#else
-            munmap(base, kCapacityBytes);
-#endif
-            base = nullptr;
-            top = nullptr;
-        }
-    }
-};
-
-static thread_local ShadowStack g_shadow_stack;
-
-struct OverflowPool {
-    static constexpr size_t kSmallFrameWords = 64;
-    static constexpr size_t kMaxPoolSize = 64;
-
-    std::vector<void*> free_list;
-
-    ~OverflowPool() {
-        for (void* p : free_list) {
-            std::free(p);
-        }
-        free_list.clear();
-    }
-
-    bronze_gc_frame* allocate(uint32_t count) {
-        const size_t words = 2 + static_cast<size_t>(count);
-        if (words <= kSmallFrameWords && !free_list.empty()) {
-            void* p = free_list.back();
-            free_list.pop_back();
-            return static_cast<bronze_gc_frame*>(p);
-        }
-        const size_t alloc_words = (words <= kSmallFrameWords) ? kSmallFrameWords : words;
-        void* p = std::malloc(alloc_words * sizeof(uint64_t));
-        if (BRONZE_UNLIKELY(!p)) {
-            bronze::fatal("out of memory for shadow stack overflow frame");
-        }
-        return static_cast<bronze_gc_frame*>(p);
-    }
-
-    void recycle(bronze_gc_frame* frame) {
-        const size_t words = 2 + static_cast<size_t>(frame->count);
-        if (words <= kSmallFrameWords && free_list.size() < kMaxPoolSize) {
-            free_list.push_back(frame);
-        } else {
-            std::free(frame);
-        }
-    }
-};
-
-static thread_local OverflowPool g_overflow_pool;
-
-}  // namespace
-
-namespace bronze::runtime {
-
-void setShadowStackCapacityForTesting(size_t words) {
-    if (BRONZE_UNLIKELY(!g_shadow_stack.base)) {
-        g_shadow_stack.init();
-    }
-    g_shadow_stack.capacity_words = words;
-}
-
-void resetShadowStackCapacityForTesting() {
-    g_shadow_stack.capacity_words = ShadowStack::kCapacityWords;
-}
-
-bool isShadowStackFrame(const bronze_gc_frame* frame) {
-    if (!g_shadow_stack.base || !frame) return false;
-    const uint64_t* frame_ptr = reinterpret_cast<const uint64_t*>(frame);
-    return frame_ptr >= g_shadow_stack.base &&
-           frame_ptr < g_shadow_stack.base + ShadowStack::kCapacityWords;
-}
-
-size_t shadowStackCapacityWords() {
-    return g_shadow_stack.capacity_words;
-}
-
-}  // namespace bronze::runtime
-
-extern "C" bronze_gc_frame* bronze_gc_frame_push(uint32_t count) {
-    if (BRONZE_UNLIKELY(!g_shadow_stack.base)) {
-        g_shadow_stack.init();
-    }
-    bronze_tls_block* tls = bronze_tls_block_addr();
-
-    const size_t words = 2 + static_cast<size_t>(count);
-    const bool exceeds_capacity = !g_shadow_stack.base ||
-        (words > g_shadow_stack.capacity_words) ||
-        (g_shadow_stack.top + words > g_shadow_stack.base + g_shadow_stack.capacity_words);
-
-    if (BRONZE_UNLIKELY(exceeds_capacity)) {
-        if (!bronze_exception_pending()) {
-            bronze_stack_overflow();
-        }
-        bronze_gc_frame* overflow_frame = g_overflow_pool.allocate(count);
-        overflow_frame->prev = tls->frame_top;
-        overflow_frame->count = count;
-        for (uint32_t i = 0; i < count; ++i) {
-            overflow_frame->slots[i] = BRONZE_ABI_UNDEFINED_BITS;
-        }
-        tls->frame_top = overflow_frame;
-        return overflow_frame;
-    }
-
-    bronze_gc_frame* frame = reinterpret_cast<bronze_gc_frame*>(g_shadow_stack.top);
-    g_shadow_stack.top += words;
-
-    frame->prev = tls->frame_top;
-    frame->count = count;
-    for (uint32_t i = 0; i < count; ++i) {
-        frame->slots[i] = BRONZE_ABI_UNDEFINED_BITS;
-    }
-    tls->frame_top = frame;
-    return frame;
-}
-
-extern "C" void bronze_gc_frame_pop(void) {
-    bronze_tls_block* tls = bronze_tls_block_addr();
-    bronze_gc_frame* frame = tls->frame_top;
-    if (BRONZE_LIKELY(frame != nullptr)) {
-        tls->frame_top = frame->prev;
-        uint64_t* frame_ptr = reinterpret_cast<uint64_t*>(frame);
-        if (g_shadow_stack.base &&
-            frame_ptr >= g_shadow_stack.base &&
-            frame_ptr < g_shadow_stack.base + ShadowStack::kCapacityWords) {
-            g_shadow_stack.top = frame_ptr;
-        } else {
-            g_overflow_pool.recycle(frame);
-        }
-    }
-}

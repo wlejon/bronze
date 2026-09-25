@@ -8,8 +8,6 @@
 extern "C" {
 #endif
 
-typedef struct bronze_gc_frame bronze_gc_frame;
-
 /*
  * ---- the thread-local state block (TLS) ------------------------------------
  *
@@ -17,7 +15,6 @@ typedef struct bronze_gc_frame bronze_gc_frame;
  * dedicated machine register by the calling convention (x64: R13, aarch64: X28).
  */
 typedef struct bronze_tls_block {
-    bronze_gc_frame* frame_top;
     uint64_t exception_cell;
     uint64_t proto_epoch;
     uint64_t alloc_cursor;
@@ -77,40 +74,39 @@ typedef struct bronze_tls_block {
     uint64_t gc_cell_header;
 } bronze_tls_block;
 
-#define BRONZE_TLS_FRAME_TOP_OFF                   0
-#define BRONZE_TLS_EXCEPTION_CELL_OFF              8
-#define BRONZE_TLS_PROTO_EPOCH_OFF                16
-#define BRONZE_TLS_ALLOC_CURSOR_OFF               24
-#define BRONZE_TLS_ALLOC_LIMIT_OFF                32
-#define BRONZE_TLS_PLAIN_SHAPE_OFF                40
-#define BRONZE_TLS_INLINE_CALL_ENABLED_OFF        48
-#define BRONZE_TLS_ARRAY_METHOD_IC_ENABLED_OFF    56
-#define BRONZE_TLS_INLINE_OVERFLOW_SET_ENABLED_OFF 64
-#define BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF    72
-#define BRONZE_TLS_POLY_IC_ENABLED_OFF            80
-#define BRONZE_TLS_NEGATIVE_IC_ENABLED_OFF        88
-#define BRONZE_TLS_ELEM_IC_ENABLED_OFF            96
-#define BRONZE_TLS_DIRECT_CALLOUT_ENABLED_OFF    104
-#define BRONZE_TLS_ELEM_ABSENT_ENABLED_OFF       112
-#define BRONZE_TLS_FN_SINGLETON_CACHE_ENABLED_OFF 120
-#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF          128
-#define BRONZE_TLS_ITER_FAST_ENABLED_OFF         136
-#define BRONZE_TLS_INLINE_ROOTS_ENABLED_OFF      144
-#define BRONZE_TLS_STRICT_EQ_INLINE_ENABLED_OFF  152
-#define BRONZE_TLS_ELEM_INLINE_ENABLED_OFF       160
-#define BRONZE_TLS_ELEM_CACHE_TBL_OFF            168
-#define BRONZE_TLS_METHOD_CALL_IC_ENABLED_OFF    176
-#define BRONZE_TLS_ELEM_KEY_IC_ENABLED_OFF       184
-#define BRONZE_TLS_UNDEF_REL_ENABLED_OFF         192
-#define BRONZE_TLS_SORT_FAST_ENABLED_OFF         200
-#define BRONZE_TLS_MAP_FAST_ENABLED_OFF          208
-#define BRONZE_TLS_TA_SET_FAST_ENABLED_OFF       216
-#define BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF     224
-#define BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF        232
-#define BRONZE_TLS_KEY_IC_ENABLED_OFF            240
-#define BRONZE_TLS_STACK_LIMIT_OFF               248
-#define BRONZE_TLS_MODULE_DELTAS_OFF             256
-#define BRONZE_TLS_GC_CELL_HEADER_OFF            264
+#define BRONZE_TLS_EXCEPTION_CELL_OFF              0
+#define BRONZE_TLS_PROTO_EPOCH_OFF                 8
+#define BRONZE_TLS_ALLOC_CURSOR_OFF               16
+#define BRONZE_TLS_ALLOC_LIMIT_OFF                24
+#define BRONZE_TLS_PLAIN_SHAPE_OFF                32
+#define BRONZE_TLS_INLINE_CALL_ENABLED_OFF        40
+#define BRONZE_TLS_ARRAY_METHOD_IC_ENABLED_OFF    48
+#define BRONZE_TLS_INLINE_OVERFLOW_SET_ENABLED_OFF 56
+#define BRONZE_TLS_INLINE_ACCESSOR_ENABLED_OFF    64
+#define BRONZE_TLS_POLY_IC_ENABLED_OFF            72
+#define BRONZE_TLS_NEGATIVE_IC_ENABLED_OFF        80
+#define BRONZE_TLS_ELEM_IC_ENABLED_OFF            88
+#define BRONZE_TLS_DIRECT_CALLOUT_ENABLED_OFF     96
+#define BRONZE_TLS_ELEM_ABSENT_ENABLED_OFF       104
+#define BRONZE_TLS_FN_SINGLETON_CACHE_ENABLED_OFF 112
+#define BRONZE_TLS_ARRAY_METHOD_TBL_OFF          120
+#define BRONZE_TLS_ITER_FAST_ENABLED_OFF         128
+#define BRONZE_TLS_INLINE_ROOTS_ENABLED_OFF      136
+#define BRONZE_TLS_STRICT_EQ_INLINE_ENABLED_OFF  144
+#define BRONZE_TLS_ELEM_INLINE_ENABLED_OFF       152
+#define BRONZE_TLS_ELEM_CACHE_TBL_OFF            160
+#define BRONZE_TLS_METHOD_CALL_IC_ENABLED_OFF    168
+#define BRONZE_TLS_ELEM_KEY_IC_ENABLED_OFF       176
+#define BRONZE_TLS_UNDEF_REL_ENABLED_OFF         184
+#define BRONZE_TLS_SORT_FAST_ENABLED_OFF         192
+#define BRONZE_TLS_MAP_FAST_ENABLED_OFF          200
+#define BRONZE_TLS_TA_SET_FAST_ENABLED_OFF       208
+#define BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF     216
+#define BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF        224
+#define BRONZE_TLS_KEY_IC_ENABLED_OFF            232
+#define BRONZE_TLS_STACK_LIMIT_OFF               240
+#define BRONZE_TLS_MODULE_DELTAS_OFF             248
+#define BRONZE_TLS_GC_CELL_HEADER_OFF            256
 
 /*
  * ---- the pinned register -----------------------------------------------

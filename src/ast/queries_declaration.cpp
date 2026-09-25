@@ -23,6 +23,17 @@ namespace {
 
 void collectHoistedVars(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out);
 
+// A `for (var k in/of ...)` head declares the function's `k` (ECMA-262
+// 14.7.5.2 VarDeclaredNames), read after the loop like any other `var`.
+void appendLoopHeadNames(const std::string& name, const BindingPattern* pattern,
+                         std::vector<std::string>& out) {
+    if (pattern) {
+        for (auto& n : patternBoundNames(*pattern)) out.push_back(std::move(n));
+    } else if (!name.empty()) {
+        out.push_back(name);
+    }
+}
+
 void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
     if (const auto* v = dynamic_cast<const VarDecl*>(&stmt)) {
         if (v->isVar) appendDeclaredNames(*v, out);
@@ -51,6 +62,7 @@ void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
         return;
     }
     if (const auto* fo = dynamic_cast<const ForOfStmt*>(&stmt)) {
+        if (fo->isVar) appendLoopHeadNames(fo->name, fo->pattern.get(), out);
         collectHoistedVars(fo->body, out);
         return;
     }
@@ -64,6 +76,7 @@ void collectHoistedVarsIn(const Stmt& stmt, std::vector<std::string>& out) {
         return;
     }
     if (const auto* fi = dynamic_cast<const ForInStmt*>(&stmt)) {
+        if (fi->isVar) appendLoopHeadNames(fi->name, fi->pattern.get(), out);
         collectHoistedVars(fi->body, out);
         return;
     }

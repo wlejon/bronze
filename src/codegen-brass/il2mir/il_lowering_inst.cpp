@@ -36,9 +36,6 @@ bool IlLowering::lower_instruction(
     };
 
     auto emit_default_ret = [&]() {
-        if (current_fn_frame_ptr_ != nullptr) {
-            b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-        }
         if (fn->return_type() == Type::void_type()) {
             b.build_ret_void();
         } else if (fn->return_type() == Type::f64()) {
@@ -46,7 +43,7 @@ bool IlLowering::lower_instruction(
         } else if (fn->return_type() == Type::i32()) {
             b.build_ret(b.build_iconst_i32(0));
         } else {
-            b.build_ret(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
+            b.build_ret(ensure_type(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), fn->return_type(), b));
         }
     };
 
@@ -85,9 +82,6 @@ bool IlLowering::lower_instruction(
         if (created_unw) {
             b.position_at_end(unw_bb);
             if (is_standalone_entry()) {
-                if (current_fn_frame_ptr_ != nullptr) {
-                    b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-                }
                 b.build_call("bronze_uncaught_exception", Type::void_type(), {});
                 b.build_unreachable();
             } else {
@@ -640,9 +634,6 @@ bool IlLowering::lower_instruction(
             if (handler_id != UINT32_MAX && block_map.count(handler_id)) {
                 b.build_br(block_map.at(handler_id));
             } else if (is_standalone_entry()) {
-                if (current_fn_frame_ptr_ != nullptr) {
-                    b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-                }
                 b.build_call("bronze_uncaught_exception", Type::void_type(), {});
                 b.build_unreachable();
             } else {
@@ -679,6 +670,20 @@ bool IlLowering::lower_instruction(
                 Value* arg = get_opd(0);
                 if (arg) {
                     b.build_call(fn_name, Type::void_type(), {ensure_type(arg, Type::i64(), b)});
+                }
+            }
+            break;
+        }
+
+        case BronzeOp::KeepAlive: {
+            // The tagged value itself, not an unbox of it: the use is what
+            // keeps the value live, and so a root, at every GC point before
+            // here. A value held unboxed (an f64, a module env load) has no
+            // object to keep.
+            for (uint32_t id : inst_ast.operands) {
+                const auto it = val_map.find(id);
+                if (it != val_map.end() && it->second && it->second->type().is_tagged()) {
+                    b.build_keep_alive(it->second);
                 }
             }
             break;
@@ -727,9 +732,6 @@ bool IlLowering::lower_instruction(
             Value* ret_val = get_opd(0);
             if (ret_val && fn->return_type() != Type::void_type()) {
                 ret_val = ensure_type(ret_val, fn->return_type(), b);
-            }
-            if (current_fn_frame_ptr_ != nullptr) {
-                b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
             }
             b.build_ret(ret_val);
             break;

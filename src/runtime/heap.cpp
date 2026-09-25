@@ -1,6 +1,7 @@
 // bronze's heap over brass's collector (heap.h): the brass::gc::Heap a bronze
 // Heap owns and how it is configured, bronze allocation onto it, the roots
-// every heap has (the two shadow-stack chains), the write barrier's per-thread
+// every heap has (the C++ shadow stack; compiled frames are brass stack-map
+// roots), the write barrier's per-thread
 // heap list, the binding of the thread's inline-allocation window to the
 // young bump region, and the non-moving arena beside the heap. What the
 // collector traces inside an object is heap_trace.cpp.
@@ -138,6 +139,10 @@ brass::gc::HeapConfig bronzeHeapConfig() {
     config.reference_tags = {static_cast<uint16_t>(Tag::Object), static_cast<uint16_t>(Tag::String),
                              static_cast<uint16_t>(Tag::Symbol), static_cast<uint16_t>(Tag::BigInt)};
     config.read_environment = true;
+    // Every collection starts in the runtime (Heap::allocate, collect), not
+    // in generated code: the Values compiled frames hold are found by walking
+    // this thread's stack from there, through the frames' stack maps.
+    config.walk_stack_on_host_collection = true;
     return config;
 }
 
@@ -271,11 +276,8 @@ void Heap::registerFrameRoots() {
                 if (slots[i]) t.visit(reinterpret_cast<uint64_t*>(slots[i]));
             }
         }
-        // Generated code's root frames: contiguous slot arrays in compiled
-        // functions' own stack frames, linked inline by compiled code.
-        for (bronze_gc_frame* frame = runtime::rtTls()->frame_top; frame != nullptr; frame = frame->prev) {
-            for (uint64_t i = 0; i < frame->count; ++i) t.visit(&frame->slots[i]);
-        }
+        // Compiled frames' Values are tagged stack-map roots, which brass
+        // visits itself (bronzeHeapConfig, walk_stack_on_host_collection).
     });
 }
 

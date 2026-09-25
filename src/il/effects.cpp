@@ -101,6 +101,8 @@ bool canThrow(const Instruction& inst) {
         case Op::PrintSpread:
         case Op::PrintSpreadErr:
         case Op::ExcTake:
+        // A use of its operands and nothing else.
+        case Op::KeepAlive:
         // Raw bounds-checked loads and stores on a proven view: an invalid
         // index is NaN or a skipped store, never a throw, and neither op
         // allocates or reaches user code.
@@ -225,6 +227,8 @@ bool canCollect(const Instruction& inst) {
         // A machine-number kernel. `Math.sin` reaches libm, which allocates
         // nothing and cannot see a JS heap to move.
         case Op::MathUnary:
+        // A use of its operands that emits no code.
+        case Op::KeepAlive:
         // The two control transfers that stay inside the function. A `jump`
         // writes its arguments into the target's block parameters and a `br`
         // picks between two of them; neither allocates and neither can reach

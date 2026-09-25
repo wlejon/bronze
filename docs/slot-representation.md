@@ -201,7 +201,7 @@ question:
 |---|---|---|
 | `Number` | `bits <= NUMBER_MAX` — the bits **are** an IEEE double, NaN canonicalized | the store arms |
 | `Int32Boxed` | `Tag::Int32` — a Number by 6.1.6.1, but a tag and a payload by the bits | the store arms |
-| `NotPointer` | not a heap address, whatever else it is | the GC root frame |
+| `NotPointer` | not a heap address, whatever else it is | — |
 | `Unknown` | anything. R1's answer for everything | — |
 
 It is a pure function of the IL, computed for every function before any body is

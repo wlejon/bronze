@@ -22,12 +22,56 @@ Type lower_type(BronzeType t) {
     return Type::i64();
 }
 
+Type lower_abi_type(BronzeType t) {
+    if (t == BronzeType::Dynamic || t == BronzeType::Unknown) return Type::tagged();
+    return lower_type(t);
+}
+
+namespace {
+
+// Whether `inst` is a point where a collection can run: a call, or an
+// explicit safepoint. Between two such points no object moves, so the bits
+// of a tagged value are the same wherever in that stretch they are read.
+bool may_collect(const Instruction* inst) {
+    return inst->is_call() || inst->opcode() == Opcode::safepoint;
+}
+
+} // namespace
+
+Value* IlLowering::unbox_tagged(Value* tagged, Builder& b) {
+    // box(x) read back before anything could collect is x itself: the bits
+    // have not had a chance to move. The scan is bounded; past it the read
+    // is an ordinary unbox.
+    Instruction* def = tagged->defining_instruction();
+    if (def && def->opcode() == Opcode::bitcast_tagged_i64 && def->parent() == b.current_block()) {
+        int budget = 32;
+        for (Instruction* i = b.current_block()->tail(); i && budget-- > 0; i = i->prev()) {
+            if (i == def) return def->operand(0);
+            if (may_collect(i)) break;
+        }
+    }
+    return b.build_bitcast_i64_tagged(tagged);
+}
+
 IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag)
     : options_(options), diag_(diag), prop_lowering_(options.enable_inlined_fastpaths),
       alloc_lowering_(options.enable_tlab) {}
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
     if (!val || val->type() == target_type) return val;
+
+    // A tagged value is the rooted form of a Value's bits: boxing takes the
+    // bits as an i64, and box(unbox(x)) is x (x is the one of the two a
+    // collection keeps current).
+    if (target_type.is_tagged()) {
+        Value* bits = ensure_type(val, Type::i64(), b);
+        Instruction* def = bits->defining_instruction();
+        if (def && def->opcode() == Opcode::bitcast_i64_tagged) return def->operand(0);
+        return b.build_bitcast_tagged_i64(bits);
+    }
+    if (val->type().is_tagged()) {
+        return ensure_type(unbox_tagged(val, b), target_type, b);
+    }
 
     Type src_type = val->type();
     if (target_type == Type::i8()) {
@@ -135,33 +179,39 @@ uint32_t IlLowering::find_key_constant(const std::string& name) const {
 }
 
 Value* IlLowering::get_val_by_id(uint32_t id, Builder& b, const std::unordered_map<uint32_t, Value*>& val_map) {
-    Value* result = nullptr;
     if (module_env_regs_.count(id)) {
         Value* env_addr = module_data_addr(b, "__bronze_module_env");
-        result = b.build_load(Type::i64(), env_addr, 0);
-    } else if (current_fn_frame_ptr_ != nullptr) {
-        auto it = current_fn_slot_of_.find(id);
-        if (it != current_fn_slot_of_.end()) {
-            result = b.build_load(Type::i64(), current_fn_frame_ptr_, static_cast<int32_t>(16 + it->second * 8));
-        }
+        return b.build_load(Type::i64(), env_addr, 0);
     }
-    if (!result) {
-        auto it = val_map.find(id);
-        if (it != val_map.end()) result = it->second;
-    }
+    auto it = val_map.find(id);
+    if (it == val_map.end()) return nullptr;
+    // A dynamic value lives as a tagged SSA value, which every tier reports
+    // to the collector; each use reads its bits afresh, so a use after a
+    // collection sees where the object is now.
+    Value* result = it->second;
+    if (result && result->type().is_tagged()) return unbox_tagged(result, b);
     return result;
 }
 
 void IlLowering::set_inst_result(uint32_t result_id, Value* res_val, Builder& b, std::unordered_map<uint32_t, Value*>& val_map) {
     if (result_id == UINT32_MAX || !res_val) return;
-    val_map[result_id] = res_val;
-    if (current_fn_frame_ptr_ != nullptr) {
-        auto it = current_fn_slot_of_.find(result_id);
-        if (it != current_fn_slot_of_.end()) {
-            Value* stored_val = ensure_type(res_val, Type::i64(), b);
-            b.build_store(Type::i64(), current_fn_frame_ptr_, static_cast<int32_t>(16 + it->second * 8), stored_val);
-        }
+    if (current_fn_dynamic_ids_.count(result_id) && !res_val->type().is_void()) {
+        res_val = ensure_type(res_val, Type::tagged(), b);
     }
+    val_map[result_id] = res_val;
+}
+
+Value* IlLowering::stage_argv(Builder& b, const std::vector<Value*>& args) {
+    if (args.empty()) return b.build_iconst_i64(0);
+    if (argv_block_ == nullptr || args.size() > argv_block_words_) {
+        has_error_ = true;
+        if (diag_) diag_->error(SourceLocation("", 0, 0),"il2mir: an argv block too small for a call's arguments");
+        return b.build_iconst_i64(0);
+    }
+    for (size_t i = 0; i < args.size(); ++i) {
+        b.build_store(Type::i64(), argv_block_, static_cast<int32_t>(i * 8), ensure_type(args[i], Type::i64(), b));
+    }
+    return argv_block_;
 }
 
 static bool instructions_are_identical(const BronzeInstruction& a, const BronzeInstruction& b) {
@@ -480,12 +530,15 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         const auto& fn_ast = ast.functions[i];
         const std::string& fn_name = resolved_names[i];
 
+        // A native import (no body) takes and returns raw bits; a compiled
+        // function passes its dynamic values tagged.
+        const bool external = fn_ast.blocks.empty();
         std::vector<Type> param_types;
         for (const auto& p : fn_ast.params) {
-            param_types.push_back(lower_type(p.second));
+            param_types.push_back(external ? lower_type(p.second) : lower_abi_type(p.second));
         }
-        Type ret_type = lower_type(fn_ast.return_type);
-        if (fn_ast.blocks.empty()) {
+        Type ret_type = external ? lower_type(fn_ast.return_type) : lower_abi_type(fn_ast.return_type);
+        if (external) {
             external_signatures_[fn_name] = {ret_type, std::move(param_types)};
             continue;
         }
@@ -565,50 +618,36 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     if (!fn) return false;
 
     module_env_regs_.clear();
-    current_fn_slot_of_.clear();
+    current_fn_dynamic_ids_.clear();
     create_func_counter_.clear();
-    current_fn_frame_ptr_ = nullptr;
+    argv_block_ = nullptr;
+    argv_block_words_ = 0;
     current_module_delta_ = nullptr;
-    method_argv_slot_ = 0;
-    uint32_t total_slots = 0;
 
-    // Every dynamic value gets a slot in the function's GC frame — bronze's
-    // collector finds a live Value through these at every tier, whichever
-    // engine runs the function.
+    // Every dynamic value is a tagged SSA value (lower_abi_type): the stack
+    // maps of every tier describe it, so bronze's collector finds and
+    // updates a live Value whichever engine runs the function.
+    auto is_dynamic = [](BronzeType t) { return t == BronzeType::Dynamic || t == BronzeType::Unknown; };
     for (const auto& p : fn_ast.params) {
-        if (p.second == BronzeType::Dynamic || p.second == BronzeType::Unknown) {
-            if (!current_fn_slot_of_.count(p.first)) {
-                current_fn_slot_of_[p.first] = total_slots++;
-            }
-        }
+        if (is_dynamic(p.second)) current_fn_dynamic_ids_.insert(p.first);
     }
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& p : blk.params) {
-            if (p.second == BronzeType::Dynamic || p.second == BronzeType::Unknown) {
-                if (!current_fn_slot_of_.count(p.first)) {
-                    current_fn_slot_of_[p.first] = total_slots++;
-                }
-            }
+            if (is_dynamic(p.second)) current_fn_dynamic_ids_.insert(p.first);
         }
         for (const auto& inst : blk.instructions) {
-            if (inst.result_id != UINT32_MAX &&
-                (inst.result_type == BronzeType::Dynamic || inst.result_type == BronzeType::Unknown)) {
-                if (!current_fn_slot_of_.count(inst.result_id)) {
-                    current_fn_slot_of_[inst.result_id] = total_slots++;
-                }
+            if (inst.result_id != UINT32_MAX && is_dynamic(inst.result_type)) {
+                current_fn_dynamic_ids_.insert(inst.result_id);
             }
         }
     }
-    // The argv block a dynamic method call stages its arguments in
-    // (`bronze_call_method` takes `const uint64_t* argv`): the widest
-    // method call's worth of slots at the END of the same GC frame, so
-    // the arguments are rooted — and forwarded — exactly as the frame's
-    // other Values are while the helper's property read can collect.
-    // Nested calls cannot overlap: an argument is a value already
-    // computed by the time its call stores it, and the stores happen
-    // right before the call. Sized over every method call, including
-    // the ones that resolve to a direct edge, which merely leaves a few
-    // slots holding the `undefined` the push gave them.
+    // The argv block a call stages its arguments in when the helper takes
+    // `const uint64_t* argv` (a dynamic method call, and any call past the
+    // fixed-arity helpers): one alloca.tagged of the widest such call's
+    // arguments, so they stay rooted, and are updated, while the helper
+    // can collect. Nested calls cannot overlap: an argument is a value
+    // already computed by the time its call stores it, and the stores
+    // happen right before the call.
     uint32_t widest_method_argc = 0;
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
@@ -621,8 +660,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             }
         }
     }
-    method_argv_slot_ = total_slots;
-    total_slots += widest_method_argc;
 
     Builder b(mod);
     b.set_function(fn);
@@ -642,7 +679,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         BasicBlock* entry_bb = block_map[fn_ast.blocks[0].id];
         for (size_t i = 0; i < fn_ast.params.size(); ++i) {
             uint32_t param_id = fn_ast.params[i].first;
-            Type param_type = lower_type(fn_ast.params[i].second);
+            Type param_type = lower_abi_type(fn_ast.params[i].second);
             Value* param_val = b.add_block_param(entry_bb, param_type);
             val_map[param_id] = param_val;
         }
@@ -681,7 +718,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             } else if (fn->return_type() == Type::i32()) {
                 b.build_ret(b.build_iconst_i32(0));
             } else {
-                b.build_ret(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
+                b.build_ret(ensure_type(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)),
+                                        fn->return_type(), b));
             }
             // The IL's first block now lowers into the checked continuation;
             // its parameters stay on the real entry block, which dominates it.
@@ -706,20 +744,20 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 current_module_delta_ = load_module_delta(b);
             }
         }
-        if (total_slots > 0) {
-            current_fn_frame_ptr_ = b.build_call("bronze_gc_frame_push", Type::ptr(),
-                                                {b.build_iconst_i32(static_cast<int32_t>(total_slots))});
-            for (size_t i = 0; i < fn_ast.params.size(); ++i) {
-                uint32_t param_id = fn_ast.params[i].first;
-                if (current_fn_slot_of_.count(param_id)) {
-                    Value* pval = ensure_type(val_map[param_id], Type::i64(), b);
-                    b.build_store(Type::i64(), current_fn_frame_ptr_,
-                                  static_cast<int32_t>(16 + current_fn_slot_of_[param_id] * 8), pval);
-                }
-            }
+        if (widest_method_argc > 0) {
+            argv_block_ = b.build_alloca_tagged(widest_method_argc);
+            argv_block_words_ = widest_method_argc;
         }
 
         if (fn_name == "main") {
+            // The module's code ranges first, before anything here can
+            // allocate: their stack maps are how a collection finds the
+            // Values this module's frames hold. However a host brought the
+            // code in (linked, loaded, JIT), the entry is the one thing it
+            // must run; a second registration of a table is a no-op.
+            Value* ranges_addr = b.build_func_addr(code_ranges_symbol(options_.entry_symbol));
+            Value* range_count = b.build_load(Type::i32(), b.build_func_addr(code_range_count_symbol(options_.entry_symbol)), 0);
+            b.build_call("bronze_register_code_ranges", Type::void_type(), {ranges_addr, range_count});
             Value* env_addr = module_data_addr(b, "__bronze_module_env");
             Value* count_val = b.build_iconst_i64(1);
             b.build_call("bronze_register_value_cells", Type::void_type(), {env_addr, count_val});
@@ -767,7 +805,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         BasicBlock* bb = block_map[blk_ast.id];
         for (const auto& p : blk_ast.params) {
             uint32_t param_id = p.first;
-            Type param_type = lower_type(p.second);
+            Type param_type = lower_abi_type(p.second);
             Value* param_val = b.add_block_param(bb, param_type);
             val_map[param_id] = param_val;
         }
@@ -780,16 +818,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         BasicBlock* bb = block_map[blk_ast.id];
         b.position_at_end(bb);
         uint32_t cont_counter = 0;
-
-        if (blk_ast.id != fn_ast.blocks[0].id && current_fn_frame_ptr_ != nullptr) {
-            for (const auto& p : blk_ast.params) {
-                if (current_fn_slot_of_.count(p.first)) {
-                    Value* pval = ensure_type(val_map[p.first], Type::i64(), b);
-                    b.build_store(Type::i64(), current_fn_frame_ptr_,
-                                  static_cast<int32_t>(16 + current_fn_slot_of_[p.first] * 8), pval);
-                }
-            }
-        }
 
         for (const auto& inst_ast : blk_ast.instructions) {
             if (current_file_id_ != 0 && inst_ast.line > 0) {

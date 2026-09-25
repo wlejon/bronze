@@ -112,12 +112,18 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
     registerBronzeJitSymbols(*engine);
 
     for (const auto& fn : module.functions) {
+        // A compiled function passes its dynamic values tagged; a native
+        // import takes raw bits (il2mir::lower_abi_type).
+        const bool compiled = !fn.blocks.empty();
+        auto typeOf = [compiled](il::Type t) {
+            return compiled && t == il::Type::Dynamic ? brass::Type::tagged() : brassTypeOf(t);
+        };
         std::vector<brass::Type> paramTypes;
         paramTypes.reserve(fn.params.size());
         for (const auto& p : fn.params) {
-            paramTypes.push_back(brassTypeOf(p.type));
+            paramTypes.push_back(typeOf(p.type));
         }
-        engine->register_function_signature(fn.name, brassTypeOf(fn.returnType), std::move(paramTypes));
+        engine->register_function_signature(fn.name, typeOf(fn.returnType), std::move(paramTypes));
     }
 
     if (!engine->load_object(*obj)) {

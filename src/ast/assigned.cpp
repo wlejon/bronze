@@ -212,24 +212,27 @@ public:
     void visit(const LabeledStmt& l) override {
         if (l.body) l.body->accept(*this);
     }
-    void visit(const ForInStmt& f) override {
-        if (!f.isConst && !f.isLet && !f.isVar) {
-            if (!f.name.empty()) record(f.name);
-            if (f.pattern) {
-                for (const auto& name : patternBoundNames(*f.pattern)) record(name);
-            }
+    // A head that assigns existing bindings writes them each iteration, and
+    // so does a `var` head: its binding is the function's, read after the
+    // loop, so the loop's joins must carry it. A `let`/`const` head is a
+    // fresh binding in the body's scope and writes nothing outside it.
+    void recordLoopHead(const std::string& name, const BindingPattern* pattern, bool isConst,
+                        bool isLet, bool isVar) {
+        if (isConst || isLet) return;
+        auto write = [&](const std::string& n) { isVar ? recordDeclaration(n) : record(n); };
+        if (!name.empty()) write(name);
+        if (pattern) {
+            for (const auto& n : patternBoundNames(*pattern)) write(n);
         }
+    }
+    void visit(const ForInStmt& f) override {
+        recordLoopHead(f.name, f.pattern.get(), f.isConst, f.isLet, f.isVar);
         if (f.pattern) visitPatternExprs(*f.pattern);
         if (f.object) f.object->accept(*this);
         for (const auto& s : f.body) s->accept(*this);
     }
     void visit(const ForOfStmt& f) override {
-        if (!f.isConst && !f.isLet && !f.isVar) {
-            if (!f.name.empty()) record(f.name);
-            if (f.pattern) {
-                for (const auto& name : patternBoundNames(*f.pattern)) record(name);
-            }
-        }
+        recordLoopHead(f.name, f.pattern.get(), f.isConst, f.isLet, f.isVar);
         if (f.pattern) visitPatternExprs(*f.pattern);
         if (f.iterable) f.iterable->accept(*this);
         for (const auto& s : f.body) s->accept(*this);

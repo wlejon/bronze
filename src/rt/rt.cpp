@@ -32,8 +32,8 @@ int main() {
     bronze::runtime::rtCheckObjectAbi(bronze_object_abi_fingerprint);
     bronze_register_code_ranges(bronze_object_code_ranges, bronze_object_code_range_count);
     // Root frame for the whole program: Rooted<> handles inside runtime helpers
-    // register here. Generated code registers its own contiguous slot frames
-    // separately.
+    // register here. Generated code's Values are stack-map roots and need no
+    // frame here.
     bronze::ShadowStackFrame root_frame;
     // This thread runs the program's compiled JS — the sampling profiler's
     // target (BRONZE_SAMPLE=1; a no-op otherwise).

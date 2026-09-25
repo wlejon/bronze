@@ -434,11 +434,13 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         return;
     }
     if (const auto* fo = dynamic_cast<const ast::ForOfStmt*>(&s)) {
-        keyedLoop(s, fo->iterable.get(), fo->name, fo->pattern.get(), fo->body, depth);
+        keyedLoop(s, fo->iterable.get(), fo->name, fo->pattern.get(), fo->isLet || fo->isConst,
+                  fo->body, depth);
         return;
     }
     if (const auto* fi = dynamic_cast<const ast::ForInStmt*>(&s)) {
-        keyedLoop(s, fi->object.get(), fi->name, fi->pattern.get(), fi->body, depth);
+        keyedLoop(s, fi->object.get(), fi->name, fi->pattern.get(), fi->isLet || fi->isConst,
+                  fi->body, depth);
         return;
     }
     if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(&s)) {
@@ -476,12 +478,24 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
 // these loops was invisible to the widening pass, so a callee could be proven
 // `number` while a string reached it from the loop — an unsound proof of
 // exactly the shape a non-simple parameter list rules out.
+//
+// A `let`/`const` head is a fresh binding per iteration, scoped to the loop.
+// A `var` head, or a head naming existing bindings, ASSIGNS the enclosing
+// bindings — the function's hoisted var among them — which code after the
+// loop reads: they are widened, not shadowed.
 void FlowAnalyzer::keyedLoop(const ast::Stmt& s, const ast::Expr* source, const std::string& name,
-               const ast::BindingPattern* pattern, const std::vector<ast::StmtPtr>& body,
-               uint32_t depth) {
+               const ast::BindingPattern* pattern, bool declaresHead,
+               const std::vector<ast::StmtPtr>& body, uint32_t depth) {
     if (source) expr(*source);
     std::vector<std::string> headNames =
         pattern ? ast::patternBoundNames(*pattern) : std::vector<std::string>{name};
+    if (!declaresHead) {
+        widenAssigned(std::unordered_set<std::string>(headNames.begin(), headNames.end()));
+        LoopParts parts;
+        parts.body = &body;
+        analyzeLoop(parts, depth, s);
+        return;
+    }
     const ScopeSave saved = saveDeclarations(headNames);
     if (pattern) {
         declarePattern(*pattern);

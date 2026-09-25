@@ -12,7 +12,13 @@
 
 namespace il2mir {
 
+// The type a Bronze value of type `t` is computed in: a dynamic value's
+// bits are an i64.
 Type lower_type(BronzeType t);
+// The type a Bronze value of type `t` is held in across instructions (SSA
+// results, block and function parameters, returns): a dynamic value is
+// tagged, the MIR type every tier's stack maps report to the collector.
+Type lower_abi_type(BronzeType t);
 
 class IlLowering {
 public:
@@ -27,10 +33,12 @@ public:
 
     Value* get_val_by_id(uint32_t id, Builder& b, const std::unordered_map<uint32_t, Value*>& val_map);
     void set_inst_result(uint32_t result_id, Value* res_val, Builder& b, std::unordered_map<uint32_t, Value*>& val_map);
-    Value* current_fn_frame_ptr() const { return current_fn_frame_ptr_; }
-    // The first GC-frame slot of the current function's method-call argv
-    // block (lower_function sizes it); meaningful only with a frame.
-    uint32_t method_argv_slot() const { return method_argv_slot_; }
+    // The bits of a tagged value, read at this point.
+    Value* unbox_tagged(Value* tagged, Builder& b);
+    // Stores `args` into the function's argv block (an alloca.tagged that
+    // lower_function sizes for its widest argv call) and returns its
+    // address, or 0 for no arguments.
+    Value* stage_argv(Builder& b, const std::vector<Value*>& args);
     PropertyLoweringHelper& prop_lowering() { return prop_lowering_; }
     AllocLoweringHelper& alloc_lowering() { return alloc_lowering_; }
     const TranslatorOptions& options() const { return options_; }
@@ -76,9 +84,10 @@ private:
     std::unordered_map<size_t, std::unordered_map<std::string, std::vector<std::string>>> caller_create_func_targets_;
     std::unordered_map<std::string, size_t> create_func_counter_;
     std::unordered_set<uint32_t> module_env_regs_;
-    std::unordered_map<uint32_t, uint32_t> current_fn_slot_of_;
-    Value* current_fn_frame_ptr_ = nullptr;
-    uint32_t method_argv_slot_ = 0;
+    // The IL ids of the current function's dynamic values (held tagged).
+    std::unordered_set<uint32_t> current_fn_dynamic_ids_;
+    Value* argv_block_ = nullptr;
+    uint32_t argv_block_words_ = 0;
     // The function's per-thread module-data delta, computed at its entry;
     // null before the entry computed it.
     Value* current_module_delta_ = nullptr;

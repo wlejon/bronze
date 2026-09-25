@@ -38,7 +38,7 @@ namespace bronze::lower {
 bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                 const std::string& headName,
                                 const ast::BindingPattern* headPattern, bool isConst, bool isLet,
-                                bool isVar, const std::vector<ast::StmtPtr>& body,
+                                const std::vector<ast::StmtPtr>& body,
                                 il::Function& ilFn, bool isAwait) {
     const std::string label = takePendingLabel();
 
@@ -206,11 +206,13 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
         frameSlot, jumpStack_.size(), outerHandler});
     jumpStack_.back().cleanupDepthInBody = cleanupStack_.size();
 
-    // The head binding belongs to the body's scope when declared, so it gets an
-    // environment slot there when a closure captures it — one per iteration, which
-    // is the whole of the language's rule for it. When assigning to existing
-    // bindings, no new binding is introduced in this scope.
-    const bool isDecl = isConst || isLet || isVar;
+    // A `let`/`const` head binding belongs to the body's scope, so it gets an
+    // environment slot there when a closure captures it — one per iteration,
+    // which is the whole of the language's rule for it. A `var` head is the
+    // function's binding (hoisted with the function's other vars), so like a
+    // head naming existing bindings it introduces nothing in this scope and
+    // assigns the one binding every iteration and the code after the loop share.
+    const bool isDecl = isConst || isLet;
     const std::vector<std::string> headNames =
         isDecl ? (headPattern ? ast::patternBoundNames(*headPattern)
                               : std::vector<std::string>{headName})
@@ -218,7 +220,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     enterScope(body, ilFn, headNames);
     bool bodyOk = true;
     const PatternTarget target{
-        .declare = isDecl, .isConst = isConst, .isLet = isLet, .isVar = isVar};
+        .declare = isDecl, .isConst = isConst, .isLet = isLet, .isVar = false};
     if (headPattern) {
         bodyOk = lowerPattern(*headPattern, Value{elemVal, il::Type::Dynamic}, target, ilFn);
     } else {
@@ -290,7 +292,7 @@ bool Lowerer::lowerForOfStmt(const ast::ForOfStmt* forOf, il::Function& ilFn) {
     const Value iterVal = boxValueIfNeeded(*iterOpt, ilFn);
     pendingLabel_ = label;
     if (!lowerIteratorLoop(*forOf, iterVal, forOf->name, forOf->pattern.get(), forOf->isConst,
-                           forOf->isLet, forOf->isVar, forOf->body, ilFn, forOf->isAwait)) {
+                           forOf->isLet, forOf->body, ilFn, forOf->isAwait)) {
         return false;
     }
     exitScope();
@@ -322,7 +324,7 @@ bool Lowerer::lowerForInStmt(const ast::ForInStmt* forIn, il::Function& ilFn) {
 
     pendingLabel_ = label;
     if (!lowerIteratorLoop(*forIn, Value{keysVal, il::Type::Dynamic}, forIn->name,
-                           forIn->pattern.get(), forIn->isConst, forIn->isLet, forIn->isVar,
+                           forIn->pattern.get(), forIn->isConst, forIn->isLet,
                            forIn->body, ilFn)) {
         return false;
     }

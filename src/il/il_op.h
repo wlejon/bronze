@@ -478,6 +478,12 @@ enum class Op : uint8_t {
     PrintErr,   // print.err a, ...        (console.warn / error)
     PrintSpread, // print.spread arr
     PrintSpreadErr, // print.spread.err arr
+    // keep.alive a, ...: reads its operands and does nothing, so each stays
+    // live, and its object reachable, up to here. A native call puts one
+    // after the call and its result's conversion for every handle whose data
+    // pointer the native was given: the handle's destructor must not run
+    // while that pointer, or anything the native derived from it, is in use.
+    KeepAlive,
 };
 
 const char* opName(Op op);

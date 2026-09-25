@@ -162,6 +162,7 @@ enum class BronzeOp {
     ConstructSpread,
     PrintSpread,
     PrintSpreadErr,
+    KeepAlive,
     Unknown
 };
 

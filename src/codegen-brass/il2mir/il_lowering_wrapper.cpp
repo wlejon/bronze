@@ -15,11 +15,16 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     b.set_function(wfn);
 
     BasicBlock* bb = b.append_block("entry");
-    Value* val_env = b.add_block_param(bb, Type::i64());
-    Value* val_this = b.add_block_param(bb, Type::i64());
+    Value* raw_env = b.add_block_param(bb, Type::i64());
+    Value* raw_this = b.add_block_param(bb, Type::i64());
     Value* val_argc = b.add_block_param(bb, Type::i32());
     Value* val_argv = b.add_block_param(bb, Type::ptr());
     b.position_at_end(bb);
+    // The wrapper is entered from the runtime with raw bits; each Value is
+    // held tagged from the moment it is read, so every helper call below may
+    // collect. (argv is the caller's, rooted there.)
+    Value* val_env = ensure_type(raw_env, Type::tagged(), b);
+    Value* val_this = ensure_type(raw_this, Type::tagged(), b);
 
     bool needs_env = false;
     bool needs_this = false;
@@ -103,63 +108,53 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     for (size_t n = 0; n < named_count; ++n) {
         Value* idx = b.build_iconst_i32(static_cast<int32_t>(n));
         Value* raw = b.build_call("bronze_arg_at", Type::i64(), {val_argc, val_argv, idx});
-        loaded.push_back(raw);
-    }
-
-    Value* wrap_frame = nullptr;
-    if (needs_arguments || has_rest) {
-        uint32_t total_slots = 4 + static_cast<uint32_t>(named_count);
-        wrap_frame = b.build_call("bronze_gc_frame_push", Type::ptr(), {b.build_iconst_i32(static_cast<int32_t>(total_slots))});
-        b.build_store(Type::i64(), wrap_frame, 16 + 0 * 8, val_env);
-        b.build_store(Type::i64(), wrap_frame, 16 + 1 * 8, val_this);
-        b.build_store(Type::i64(), wrap_frame, 16 + 2 * 8, b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
-        b.build_store(Type::i64(), wrap_frame, 16 + 3 * 8, b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
-        for (size_t n = 0; n < named_count; ++n) {
-            b.build_store(Type::i64(), wrap_frame, 16 + static_cast<int32_t>((4 + n) * 8), loaded[n]);
-        }
+        loaded.push_back(ensure_type(raw, Type::tagged(), b));
     }
 
     Value* arguments_arg = nullptr;
     if (needs_arguments) {
-        Value* callee_val = is_strict ? b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)) : val_env;
+        Value* callee_val = is_strict ? b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))
+                                      : ensure_type(val_env, Type::i64(), b);
         Value* is_strict_val = b.build_iconst_i32(is_strict ? 1 : 0);
-        arguments_arg = b.build_call("bronze_arguments_object", Type::i64(), {val_argc, val_argv, callee_val, is_strict_val});
-        b.build_store(Type::i64(), wrap_frame, 16 + 2 * 8, arguments_arg);
-        val_env = b.build_load(Type::i64(), wrap_frame, 16 + 0 * 8);
-        val_this = b.build_load(Type::i64(), wrap_frame, 16 + 1 * 8);
-        for (size_t n = 0; n < named_count; ++n) {
-            loaded[n] = b.build_load(Type::i64(), wrap_frame, 16 + static_cast<int32_t>((4 + n) * 8));
-        }
+        arguments_arg = ensure_type(
+            b.build_call("bronze_arguments_object", Type::i64(), {val_argc, val_argv, callee_val, is_strict_val}),
+            Type::tagged(), b);
     }
 
     Value* rest_arg = nullptr;
     if (has_rest) {
         uint32_t first_rest = static_cast<uint32_t>(fn_ast.params.size() - 1 - first_source_param);
-        rest_arg = b.build_call("bronze_rest_args", Type::i64(), {val_argc, val_argv, b.build_iconst_i32(static_cast<int32_t>(first_rest))});
-        b.build_store(Type::i64(), wrap_frame, 16 + 3 * 8, rest_arg);
-        val_env = b.build_load(Type::i64(), wrap_frame, 16 + 0 * 8);
-        val_this = b.build_load(Type::i64(), wrap_frame, 16 + 1 * 8);
-        if (needs_arguments) {
-            arguments_arg = b.build_load(Type::i64(), wrap_frame, 16 + 2 * 8);
-        }
-        for (size_t n = 0; n < named_count; ++n) {
-            loaded[n] = b.build_load(Type::i64(), wrap_frame, 16 + static_cast<int32_t>((4 + n) * 8));
-        }
+        rest_arg = ensure_type(
+            b.build_call("bronze_rest_args", Type::i64(),
+                         {val_argc, val_argv, b.build_iconst_i32(static_cast<int32_t>(first_rest))}),
+            Type::tagged(), b);
     }
 
+    Function* target = mod.get_function(fn_name);
+    if (!target) return false;
+    const std::vector<Type>& target_params = target->param_types();
     std::vector<Value*> call_args;
-    if (needs_env) call_args.push_back(val_env);
-    if (needs_this) call_args.push_back(val_this);
-    if (needs_arguments) call_args.push_back(arguments_arg);
+    auto push_arg = [&](Value* v) {
+        const size_t i = call_args.size();
+        call_args.push_back(i < target_params.size() ? ensure_type(v, target_params[i], b) : v);
+    };
+    if (needs_env) push_arg(val_env);
+    if (needs_this) push_arg(val_this);
+    if (needs_arguments) push_arg(arguments_arg);
 
     for (size_t p = first_source_param; p < fn_ast.params.size(); ++p) {
         size_t source_idx = p - first_source_param;
         if (has_rest && p + 1 == fn_ast.params.size()) {
-            call_args.push_back(rest_arg);
+            push_arg(rest_arg);
             break;
         }
-        Value* raw_i64 = loaded[source_idx];
         BronzeType param_type = fn_ast.params[p].second;
+        if (param_type != BronzeType::F64 && param_type != BronzeType::I32 && param_type != BronzeType::Bool) {
+            push_arg(loaded[source_idx]);
+            continue;
+        }
+        // The bits, read right before the helper that converts them.
+        Value* raw_i64 = ensure_type(loaded[source_idx], Type::i64(), b);
         if (param_type == BronzeType::F64) {
             bool is_pinned = false;
             uint32_t pin_key = 0;
@@ -177,27 +172,21 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
 
                 b.position_at_end(bad_bb);
                 b.build_call("bronze_pin_violation", Type::i64(), {get_key_id(b, pin_key), raw_i64});
-                if (wrap_frame) {
-                    b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-                }
                 b.build_ret(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
 
                 b.position_at_end(ok_bb);
-                call_args.push_back(b.build_bitcast_f64_i64(raw_i64));
+                push_arg(b.build_bitcast_f64_i64(raw_i64));
             } else {
-                call_args.push_back(b.build_call("bronze_unbox_f64", Type::f64(), {raw_i64}));
+                push_arg(b.build_call("bronze_unbox_f64", Type::f64(), {raw_i64}));
             }
         } else if (param_type == BronzeType::I32) {
-            call_args.push_back(b.build_call("bronze_unbox_i32", Type::i32(), {raw_i64}));
-        } else if (param_type == BronzeType::Bool) {
-            call_args.push_back(b.build_trunc_i8(b.build_call("bronze_unbox_bool", Type::i32(), {raw_i64})));
+            push_arg(b.build_call("bronze_unbox_i32", Type::i32(), {raw_i64}));
         } else {
-            call_args.push_back(raw_i64);
+            push_arg(b.build_trunc_i8(b.build_call("bronze_unbox_bool", Type::i32(), {raw_i64})));
         }
     }
 
-    Type ret_type = lower_type(fn_ast.return_type);
-    Value* call_res = b.build_call(fn_name, ret_type, call_args);
+    Value* call_res = b.build_call(fn_name, target->return_type(), call_args);
 
     Value* ret_val = nullptr;
     if (fn_ast.return_type == BronzeType::Void) {
@@ -209,10 +198,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
     } else if (fn_ast.return_type == BronzeType::Bool) {
         ret_val = b.build_call("bronze_box_bool", Type::i64(), {ensure_type(call_res, Type::i32(), b)});
     } else {
-        ret_val = call_res;
-    }
-    if (wrap_frame) {
-        b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
+        ret_val = ensure_type(call_res, Type::i64(), b);
     }
     b.build_ret(ret_val);
     wfn->rebuild_cfg_predecessors();

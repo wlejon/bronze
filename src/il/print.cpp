@@ -153,6 +153,7 @@ const char* opName(Op op) {
         case Op::PrintErr: return "print.err";
         case Op::PrintSpread: return "print.spread";
         case Op::PrintSpreadErr: return "print.spread.err";
+        case Op::KeepAlive: return "keep.alive";
     }
     return "?";
 }
@@ -885,6 +886,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         break;
                     case Op::Print:
                     case Op::PrintErr:
+                    case Op::KeepAlive:
                         // Every argument, because console.log takes any number
                         // of them and the dump is what a reader bisects with.
                         out += opName(inst.op);

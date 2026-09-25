@@ -3,6 +3,17 @@
 
 namespace il2mir {
 
+// The object emitter's rule (brass_backend_sections.cpp): only the default
+// entry, `bronze_main`, gets the unsuffixed `bronze_object_*` names.
+std::string code_ranges_symbol(const std::string& entry_symbol) {
+    return entry_symbol == "bronze_main" ? "bronze_object_code_ranges" : entry_symbol + "_code_ranges";
+}
+
+std::string code_range_count_symbol(const std::string& entry_symbol) {
+    return entry_symbol == "bronze_main" ? "bronze_object_code_range_count"
+                                         : entry_symbol + "_code_range_count";
+}
+
 void register_all_module_external_symbols(Module* mod, const std::string& entry_symbol) {
     if (!mod) return;
     static const char* const kSymbols[] = {
@@ -24,7 +35,8 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_async_start", "bronze_async_await", "bronze_to_string", "bronze_prop_delete", "bronze_elem_delete",
         "bronze_iter_open", "bronze_iter_step",
         "bronze_tls_block_addr", "__bronze_key_map", "__bronze_template_cells", "bronze_template_object",
-        "bronze_register_value_cells", "bronze_register_fn_sources", "bronze_concat_begin", "bronze_concat_append",
+        "bronze_register_value_cells", "bronze_register_fn_sources", "bronze_register_code_ranges",
+        "bronze_concat_begin", "bronze_concat_append",
         "bronze_concat_end", "bronze_global_get_name", "bronze_global_get", "bronze_typeof",
         "bronze_construct_0", "bronze_construct_1", "bronze_construct_2", "bronze_construct_3", "bronze_construct_4",
         "bronze_construct_5", "bronze_construct_6", "bronze_construct_7", "bronze_construct_8", "bronze_construct_9",
@@ -52,7 +64,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_register_key_manifest", "bronze_box_str_key", "bronze_box_str", "bronze_unbox_str",
         "bronze_unbox_f64", "bronze_box_f64", "bronze_unbox_i32", "bronze_box_i32", "bronze_unbox_bool",
         "bronze_box_bool", "bronze_exception_get", "bronze_exception_set", "bronze_exception_take",
-        "bronze_exception_pending", "bronze_uncaught_exception", "bronze_gc_frame_push", "bronze_gc_frame_pop",
+        "bronze_exception_pending", "bronze_uncaught_exception",
         "bronze_tls_enter", "bronze_stack_overflow", "bronze_pin_violation", "bronze_pin_check_array", "bronze_pow",
         "bronze_dynamic_pow", "bronze_dynamic_bitand", "bronze_dynamic_bitor", "bronze_dynamic_bitxor",
         "bronze_dynamic_shl", "bronze_dynamic_shr", "bronze_dynamic_ushr", "bronze_dynamic_sub",
@@ -76,6 +88,8 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
                                     ? "bronze_main_key_constants"
                                     : (entry_symbol + "_key_constants");
     mod->add_external_symbol(key_sym);
+    mod->add_external_symbol(code_ranges_symbol(entry_symbol));
+    mod->add_external_symbol(code_range_count_symbol(entry_symbol));
 
     if (!entry_symbol.empty() && entry_symbol != "main" && entry_symbol != "bronze_main") {
         mod->add_external_symbol("__bronze_module_env_" + entry_symbol);

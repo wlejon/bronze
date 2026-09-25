@@ -442,6 +442,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::PrintErr: out.op = il2mir::BronzeOp::PrintErr; break;
         case il::Op::PrintSpread: out.op = il2mir::BronzeOp::PrintSpread; break;
         case il::Op::PrintSpreadErr: out.op = il2mir::BronzeOp::PrintSpreadErr; break;
+        case il::Op::KeepAlive: out.op = il2mir::BronzeOp::KeepAlive; break;
     }
 
     return out;

@@ -814,8 +814,6 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_exception_set,       BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_exception_take,      BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_exception_pending,   BRONZE_ABI_I32,  (BRONZE_ABI_NOARGS)) \
-    X(bronze_gc_frame_push,       BRONZE_ABI_FRAMEPTR, (BRONZE_ABI_U32)) \
-    X(bronze_gc_frame_pop,        BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     X(bronze_register_key_manifest, BRONZE_ABI_VOID, (BRONZE_ABI_PU8, BRONZE_ABI_MU32)) \
     X(bronze_print_f64,           BRONZE_ABI_VOID, (BRONZE_ABI_F64)) \
     X(bronze_print_i32,           BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
@@ -1475,22 +1473,6 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * static_asserts over every Object-tagged header in rt_helpers.cpp. */
 #define BRONZE_ABI_OBJ_MIN_PAYLOAD       8
 
-/*
- * A generated function's GC root frame: allocated in the
- * function's own stack frame, linked onto its thread's `frame_top` (in the
- * bronze_tls_block below) on entry and unlinked before every return, so the
- * collector can find every Dynamic value compiled code is holding. Generated
- * code links and unlinks inline — no helper call — because the call-heavy
- * path pays this per invocation.
- *
- * `slots` is `count` entries long, inline after the header.
- */
-typedef struct bronze_gc_frame {
-    struct bronze_gc_frame* prev;
-    uint64_t count;
-    uint64_t slots[1];
-} bronze_gc_frame;
-
 enum {
     BRONZE_FN_DESC_METHOD      = 1u << 0,
     BRONZE_FN_DESC_CONSTRUCTOR = 1u << 1,
@@ -1534,7 +1516,14 @@ typedef struct bronze_code_range {
     const bronze_pc_entry* pc_table;
     const char* const* files;
     uint32_t file_count;
-    uint32_t reserved;
+    /* The function's brass stack map, encoded (brass encode_stack_maps, one
+     * function whose code starts at `code_start`): the frames of this code
+     * the collector walks, and where each holds a Value. Emitted into every
+     * compiled object; a loaded image's registration hands it to brass's code
+     * registry (bronze_register_code_ranges) unless the code's maps are
+     * registered already, as a JIT's are. Null when the function has none. */
+    uint32_t stack_map_size;
+    const uint8_t* stack_map;
 } bronze_code_range;
 
 /*
@@ -1549,11 +1538,9 @@ typedef struct bronze_code_range {
  * The layout is ABI: the BRONZE_TLS_*_OFF constants below are what codegen
  * emits, the runtime static_asserts them against this struct (tls_block.cpp),
  * and any change here moves the fingerprint. Field order is by heat — the
- * frame link and the exception cell are touched per call.
+ * exception cell is touched per call.
  *
  * The fields:
- *
- *  - frame_top: head of this thread's chain of bronze_gc_frame records.
  *
  *  - exception_cell: the pending exception — the thrown value, or
  *    BRONZE_ABI_NO_EXCEPTION_BITS when nothing is pending. Generated code,
@@ -1617,7 +1604,6 @@ typedef struct bronze_code_range {
 #define BRONZE_ABI_MU64   uint64_t*
 #define BRONZE_ABI_MU32   uint32_t*
 #define BRONZE_ABI_TLSPTR bronze_tls_block*
-#define BRONZE_ABI_FRAMEPTR bronze_gc_frame*
 #define BRONZE_ABI_FNPTR  bronze_fn_code
 #define BRONZE_ABI_VPTR   void*
 #define BRONZE_ABI_CVPTR  const void*
@@ -1640,7 +1626,6 @@ BRONZE_ABI_FUNCTIONS(BRONZE_ABI_DECLARE)
 #undef BRONZE_ABI_MU64
 #undef BRONZE_ABI_MU32
 #undef BRONZE_ABI_TLSPTR
-#undef BRONZE_ABI_FRAMEPTR
 #undef BRONZE_ABI_FNPTR
 #undef BRONZE_ABI_VPTR
 #undef BRONZE_ABI_CVPTR

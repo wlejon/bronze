@@ -49,14 +49,10 @@ private:
     static thread_local ShadowStackFrame* top_frame_;
 };
 
-// The generated-code half of the shadow stack is the bronze_gc_frame linked
-// list declared in the ABI registry: compiled functions allocate a frame in
-// their own stack frame and link it onto their thread's `frame_top` (the
-// per-thread ABI block, bronze_abi.h) inline, with no
-// helper call. The collector walks that list alongside the ShadowStackFrame
-// chain above. Contiguous slots rather than a vector of slot pointers because
-// generated code cannot build a vector — and does not need to: its slot count
-// is a compile-time constant.
+// The shadow stack roots C++ frames only. Compiled code holds its Values as
+// tagged MIR values, which brass's stack maps describe at every tier; a
+// collection finds them by walking the thread's stack (heap.cpp,
+// bronzeHeapConfig).
 
 // The frame every root needs, or a named death.
 //
@@ -73,10 +69,10 @@ private:
 // runtime's builtins open none of their own and simply root into whichever
 // frame is innermost.
 //
-// Generated code is not an exception. Its inline bronze_gc_frame roots its own
-// slots and needs no help, but a runtime helper it calls roots into THIS chain,
-// so the entry frame has to be there — which it is, because compiled code is
-// only ever reached through one of the entries above.
+// Generated code is not an exception. Its own Values are stack-map roots and
+// need no help, but a runtime helper it calls roots into THIS chain, so the
+// entry frame has to be there — which it is, because compiled code is only
+// ever reached through one of the entries above.
 //
 // The death is out of line and the check is not: `requireFrameForRoot` runs on
 // every Rooted<> and every argument slot of every builtin call, and the

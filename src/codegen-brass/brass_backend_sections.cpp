@@ -3,6 +3,8 @@
 #include "abi/bronze_abi.h"
 #include "support/source.h"
 
+#include <brass/gc/stack_map.hpp>
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -278,6 +280,23 @@ void emitPcTablesAndCodeRanges(
     }
     timer.mark("pc tables");
 
+    // Each function's stack map, encoded on its own (bronze_code_range::
+    // stack_map), so a loaded image registers exactly the functions it holds.
+    std::unordered_map<std::string, std::pair<std::string, size_t>> fnToStackMap;
+    for (const auto& fnMap : obj.stack_maps.functions()) {
+        if (fnMap.records.empty()) continue;
+        brass::ModuleStackMap one;
+        one.add_function(fnMap);
+        const std::vector<uint8_t> bytes = brass::encode_stack_maps(one);
+        roSec.align_to(8);
+        const size_t mapOff = roSec.data.size();
+        roSec.emit_bytes(bytes);
+        std::string mapSym = moduleSymbolName(entrySymbol, "__bronze_stack_map_" + fnMap.function_name);
+        defineSymbol(obj, mapSym, roIdx, mapOff, bytes.size(), SymbolBinding::Local);
+        fnToStackMap[fnMap.function_name] = {std::move(mapSym), bytes.size()};
+    }
+    timer.mark("stack maps");
+
     const std::string codeRangesSymbol = (entrySymbol == "bronze_main")
                                              ? "bronze_object_code_ranges"
                                              : (entrySymbol + "_code_ranges");
@@ -303,7 +322,9 @@ void emitPcTablesAndCodeRanges(
         emitPointer(roSec, itPc != fnToPcTable.end() ? itPc->second : "");
         emitPointer(roSec, sourceFiles.empty() ? "" : filesSym);
         roSec.emit32(static_cast<uint32_t>(sourceFiles.size()));
-        roSec.emit32(0);
+        auto itMap = fnToStackMap.find(cfi.name);
+        roSec.emit32(itMap != fnToStackMap.end() ? static_cast<uint32_t>(itMap->second.second) : 0);
+        emitPointer(roSec, itMap != fnToStackMap.end() ? itMap->second.first : "");
     }
     defineSymbol(obj, codeRangesSymbol, roIdx, rangesOff,
                  obj.functions.size() * sizeof(bronze_code_range), SymbolBinding::Global);

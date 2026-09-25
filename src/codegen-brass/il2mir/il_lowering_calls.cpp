@@ -28,36 +28,15 @@ bool is_call_il_op(BronzeOp op) {
     }
 }
 
-static Value* build_call_dynamic(Builder& b, const std::vector<Value*>& dyn_args, IlLowering* lowering = nullptr) {
+static Value* build_call_dynamic(Builder& b, const std::vector<Value*>& dyn_args, IlLowering* lowering) {
     size_t argc = dyn_args.size() > 2 ? dyn_args.size() - 2 : 0;
     if (argc <= 16) {
         std::string helper = "bronze_call_dynamic_" + std::to_string(argc);
         return b.build_call(helper, Type::i64(), Span<Value* const>(dyn_args.data(), dyn_args.size()));
     }
-    Value* argv = nullptr;
-    bool pushed_frame = false;
-    if (lowering && lowering->current_fn_frame_ptr() != nullptr) {
-        const int32_t base = static_cast<int32_t>(16 + lowering->method_argv_slot() * 8);
-        for (size_t i = 0; i < argc; ++i) {
-            b.build_store(Type::i64(), lowering->current_fn_frame_ptr(),
-                          static_cast<int32_t>(base + i * 8), dyn_args[2 + i]);
-        }
-        argv = b.build_add(lowering->current_fn_frame_ptr(), b.build_iconst_i64(base));
-    } else {
-        Value* frame = b.build_call("bronze_gc_frame_push", Type::ptr(),
-                                    {b.build_iconst_i32(static_cast<int32_t>(argc))});
-        for (size_t i = 0; i < argc; ++i) {
-            b.build_store(Type::i64(), frame, static_cast<int32_t>(16 + i * 8), dyn_args[2 + i]);
-        }
-        argv = b.build_add(frame, b.build_iconst_i64(16));
-        pushed_frame = true;
-    }
+    Value* argv = lowering->stage_argv(b, std::vector<Value*>(dyn_args.begin() + 2, dyn_args.end()));
     Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-    Value* res = b.build_call("bronze_call_dynamic_n", Type::i64(), {dyn_args[0], dyn_args[1], argc_val, argv});
-    if (pushed_frame) {
-        b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-    }
-    return res;
+    return b.build_call("bronze_call_dynamic_n", Type::i64(), {dyn_args[0], dyn_args[1], argc_val, argv});
 }
 
 bool lower_call_instruction(
@@ -96,31 +75,11 @@ bool lower_call_instruction(
                 std::string helper = "bronze_construct_" + std::to_string(argc);
                 res_val = b.build_call(helper, Type::i64(), call_args);
             } else {
-                Value* argv = nullptr;
-                bool pushed_frame = false;
-                if (lowering && lowering->current_fn_frame_ptr() != nullptr) {
-                    const int32_t base = static_cast<int32_t>(16 + lowering->method_argv_slot() * 8);
-                    for (uint32_t i = 0; i < argc; ++i) {
-                        b.build_store(Type::i64(), lowering->current_fn_frame_ptr(),
-                                      static_cast<int32_t>(base + i * 8),
-                                      ensure_type(get_opd(1 + i), Type::i64()));
-                    }
-                    argv = b.build_add(lowering->current_fn_frame_ptr(), b.build_iconst_i64(base));
-                } else {
-                    Value* frame = b.build_call("bronze_gc_frame_push", Type::ptr(),
-                                                {b.build_iconst_i32(static_cast<int32_t>(argc))});
-                    for (uint32_t i = 0; i < argc; ++i) {
-                        b.build_store(Type::i64(), frame, static_cast<int32_t>(16 + i * 8),
-                                      ensure_type(get_opd(1 + i), Type::i64()));
-                    }
-                    argv = b.build_add(frame, b.build_iconst_i64(16));
-                    pushed_frame = true;
-                }
+                std::vector<Value*> args;
+                for (uint32_t i = 0; i < argc; ++i) args.push_back(get_opd(1 + i));
+                Value* argv = lowering->stage_argv(b, args);
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
                 res_val = b.build_call("bronze_construct_n", Type::i64(), {ctor, argc_val, argv});
-                if (pushed_frame) {
-                    b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-                }
             }
             if (emit_exception_check) emit_exception_check();
             break;
@@ -164,45 +123,24 @@ bool lower_call_instruction(
                 for (size_t p = 1; p < direct_fn->param_types().size(); ++p) {
                     size_t arg_idx = p - 1;
                     Value* a = arg_idx < argc ? get_opd(1 + arg_idx) : nullptr;
-                    call_args.push_back(a ? ensure_type(a, direct_fn->param_types()[p]) :
-                        (direct_fn->param_types()[p] == Type::f64() ? b.build_fconst_f64(0.0) :
-                         direct_fn->param_types()[p] == Type::i32() ? b.build_iconst_i32(0) :
-                         b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))));
+                    const Type pt = direct_fn->param_types()[p];
+                    call_args.push_back(a ? ensure_type(a, pt) :
+                        (pt == Type::f64() ? b.build_fconst_f64(0.0) :
+                         pt == Type::i32() ? b.build_iconst_i32(0) :
+                         ensure_type(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), pt)));
                 }
                 res_val = b.build_call(callee, direct_fn->return_type(), Span<Value* const>(call_args.data(), call_args.size()));
                 if (direct_fn->return_type() == Type::void_type()) {
                     res_val = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
                 }
             } else if (Value* site = (lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr)) {
-                Value* argv = nullptr;
-                bool pushed_frame = false;
-                if (argc == 0) {
-                    argv = b.build_iconst_i64(0);
-                } else if (lowering && lowering->current_fn_frame_ptr() != nullptr) {
-                    const int32_t base = static_cast<int32_t>(16 + lowering->method_argv_slot() * 8);
-                    for (size_t a = 0; a < argc; ++a) {
-                        Value* arg = ensure_type(get_opd(1 + a), Type::i64());
-                        b.build_store(Type::i64(), lowering->current_fn_frame_ptr(),
-                                      static_cast<int32_t>(base + a * 8), arg);
-                    }
-                    argv = b.build_add(lowering->current_fn_frame_ptr(), b.build_iconst_i64(base));
-                } else {
-                    Value* frame = b.build_call("bronze_gc_frame_push", Type::ptr(),
-                                                {b.build_iconst_i32(static_cast<int32_t>(argc))});
-                    for (size_t a = 0; a < argc; ++a) {
-                        Value* arg = ensure_type(get_opd(1 + a), Type::i64());
-                        b.build_store(Type::i64(), frame, static_cast<int32_t>(16 + a * 8), arg);
-                    }
-                    argv = b.build_add(frame, b.build_iconst_i64(16));
-                    pushed_frame = true;
-                }
+                std::vector<Value*> args;
+                for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
+                Value* argv = lowering->stage_argv(b, args);
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-                Value* key_id = lowering ? lowering->get_key_id(b, inst_ast.index) : b.build_iconst_i32(inst_ast.index);
+                Value* key_id = lowering->get_key_id(b, inst_ast.index);
                 res_val = b.build_call("bronze_call_method", Type::i64(),
                                        {recv, key_id, argc_val, argv, site});
-                if (pushed_frame) {
-                    b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-                }
             } else {
                 Value* null_entry = b.build_iconst_i64(0);
                 Value* key_id = lowering ? lowering->get_key_id(b, inst_ast.index) : b.build_iconst_i32(inst_ast.index);
@@ -242,31 +180,11 @@ bool lower_call_instruction(
                 std::string helper = "bronze_super_call_" + std::to_string(argc);
                 res_val = b.build_call(helper, Type::i64(), Span<Value* const>(super_args.data(), super_args.size()));
             } else {
-                Value* argv = nullptr;
-                bool pushed_frame = false;
-                if (lowering && lowering->current_fn_frame_ptr() != nullptr) {
-                    const int32_t base = static_cast<int32_t>(16 + lowering->method_argv_slot() * 8);
-                    for (size_t a = 0; a < argc; ++a) {
-                        b.build_store(Type::i64(), lowering->current_fn_frame_ptr(),
-                                      static_cast<int32_t>(base + a * 8),
-                                      ensure_type(get_opd(2 + a), Type::i64()));
-                    }
-                    argv = b.build_add(lowering->current_fn_frame_ptr(), b.build_iconst_i64(base));
-                } else {
-                    Value* frame = b.build_call("bronze_gc_frame_push", Type::ptr(),
-                                                {b.build_iconst_i32(static_cast<int32_t>(argc))});
-                    for (size_t a = 0; a < argc; ++a) {
-                        b.build_store(Type::i64(), frame, static_cast<int32_t>(16 + a * 8),
-                                      ensure_type(get_opd(2 + a), Type::i64()));
-                    }
-                    argv = b.build_add(frame, b.build_iconst_i64(16));
-                    pushed_frame = true;
-                }
+                std::vector<Value*> args;
+                for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(2 + a));
+                Value* argv = lowering->stage_argv(b, args);
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
                 res_val = b.build_call("bronze_super_call_n", Type::i64(), {base_ctor, this_val, argc_val, argv});
-                if (pushed_frame) {
-                    b.build_call("bronze_gc_frame_pop", Type::void_type(), {});
-                }
             }
             if (emit_exception_check) emit_exception_check();
             break;

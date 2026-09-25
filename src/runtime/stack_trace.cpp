@@ -26,6 +26,7 @@
 #endif
 
 #include "abi/bronze_abi.h"
+#include "runtime/code_stack_maps.h"
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/heap.h"
@@ -539,8 +540,10 @@ void bronze_install_stack(Value errorObj, Value skipFn) {
 
 extern "C" void bronze_register_code_ranges(const void* ranges, uint32_t count) {
     bronze::runtime::bronze_register_code_ranges_internal(ranges, count);
+    bronze::runtime::registerCodeStackMaps(static_cast<const bronze_code_range*>(ranges), count);
 }
 
 extern "C" void bronze_unregister_code_ranges(const void* ranges, uint32_t count) {
+    bronze::runtime::unregisterCodeStackMaps(static_cast<const bronze_code_range*>(ranges));
     bronze::runtime::bronze_unregister_code_ranges_internal(ranges, count);
 }

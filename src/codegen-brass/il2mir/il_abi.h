@@ -40,4 +40,9 @@ constexpr uint32_t kBronzeIcSiteSize = BRONZE_ABI_IC_SITE_SIZE;
 // has them for. `entry_symbol` names the module-suffixed data symbols.
 void register_all_module_external_symbols(brass::Module* mod, const std::string& entry_symbol);
 
+// The module's code-range table and its length (bronze_abi.h,
+// bronze_code_range), as the object emitter names them for `entry_symbol`.
+std::string code_ranges_symbol(const std::string& entry_symbol);
+std::string code_range_count_symbol(const std::string& entry_symbol);
+
 } // namespace il2mir

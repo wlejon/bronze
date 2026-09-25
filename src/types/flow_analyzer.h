@@ -159,8 +159,8 @@ private:
     void dispatch(const ast::Stmt& s, uint32_t depth);
 
     void keyedLoop(const ast::Stmt& s, const ast::Expr* source, const std::string& name,
-                   const ast::BindingPattern* pattern, const std::vector<ast::StmtPtr>& body,
-                   uint32_t depth);
+                   const ast::BindingPattern* pattern, bool declaresHead,
+                   const std::vector<ast::StmtPtr>& body, uint32_t depth);
     void switchStmt(const ast::SwitchStmt& sw, uint32_t depth);
     void tryStmt(const ast::TryStmt& t, uint32_t depth);
     void ifStmt(const ast::IfStmt& i, uint32_t depth);

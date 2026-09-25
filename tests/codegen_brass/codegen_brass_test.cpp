@@ -144,20 +144,3 @@ TEST_CASE("cross compilation target does not leak host AVX2/FMA features") {
     REQUIRE(obj.has_value());
     CHECK(obj->target.arch() == brass::Arch::aarch64);
 }
-
-TEST_CASE("shadow stack overflow guard sets pending RangeError and prevents segfault") {
-    bronze::ShadowStackFrame rootFrame;
-    constexpr size_t kCapacityWords = (64 * 1024 * 1024) / sizeof(uint64_t);
-    uint32_t hugeCount = static_cast<uint32_t>(kCapacityWords + 10);
-
-    bronze_gc_frame* frame = bronze_gc_frame_push(hugeCount);
-    REQUIRE(frame != nullptr);
-    frame->slots[0] = 42;
-    frame->slots[hugeCount - 1] = 42;
-
-    CHECK(bronze_exception_pending() != 0);
-    uint64_t exBits = bronze_exception_take();
-    CHECK(exBits != BRONZE_ABI_NO_EXCEPTION_BITS);
-
-    bronze_gc_frame_pop();
-}

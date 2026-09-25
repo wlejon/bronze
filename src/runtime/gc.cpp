@@ -9,11 +9,8 @@
 #include "runtime/fatal.h"
 #include "runtime/ic_log.h"
 
-// Generated code's own frame chain lives in the per-thread bronze_tls_block
-// (tls_block.cpp, `frame_top`): compiled code links and unlinks against the
-// block its prologue fetched, and every collection walks the calling thread's
-// chain (heap.cpp). What remains here is the C++ side's shadow stack — and of
-// that, only the parts that are NOT on the hot path. The frame's link, its
+// The C++ side's shadow stack (compiled code's Values are brass stack-map
+// roots, heap.cpp) — and of it, only the parts that are NOT on the hot path. The frame's link, its
 // slot pushes and pops and the "is there a frame at all" check are inline in
 // gc.h; what is left below is the growth, the out-of-order pop, and the two
 // named deaths.

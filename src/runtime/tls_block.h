@@ -36,9 +36,4 @@ inline bronze_tls_block* rtTls() noexcept {
 // first touch of the runtime.
 void rtReadThreadSeams();
 
-void setShadowStackCapacityForTesting(size_t words);
-void resetShadowStackCapacityForTesting();
-bool isShadowStackFrame(const bronze_gc_frame* frame);
-size_t shadowStackCapacityWords();
-
 }  // namespace bronze::runtime

@@ -1,4 +1,5 @@
 #include "il_alloc_lowering.h"
+#include "abi/bronze_abi.h"
 #include <brass/mir/module.hpp>
 #include <string>
 
@@ -42,10 +43,10 @@ Value* AllocLoweringHelper::lower_env_create(Builder& b, Value* parent_val, Valu
 namespace bronze_heap_abi {
 
 // Thread-local allocation buffer offsets in bronze_tls_block (bronze_abi_tls.h)
-constexpr int32_t TLS_ALLOC_CURSOR_OFF = 24; // BRONZE_TLS_ALLOC_CURSOR_OFF
-constexpr int32_t TLS_ALLOC_LIMIT_OFF  = 32; // BRONZE_TLS_ALLOC_LIMIT_OFF
-constexpr int32_t TLS_PLAIN_SHAPE_OFF  = 40; // BRONZE_TLS_PLAIN_SHAPE_OFF
-constexpr int32_t TLS_GC_CELL_HEADER_OFF = 264; // BRONZE_TLS_GC_CELL_HEADER_OFF
+constexpr int32_t TLS_ALLOC_CURSOR_OFF = BRONZE_TLS_ALLOC_CURSOR_OFF;
+constexpr int32_t TLS_ALLOC_LIMIT_OFF  = BRONZE_TLS_ALLOC_LIMIT_OFF;
+constexpr int32_t TLS_PLAIN_SHAPE_OFF  = BRONZE_TLS_PLAIN_SHAPE_OFF;
+constexpr int32_t TLS_GC_CELL_HEADER_OFF = BRONZE_TLS_GC_CELL_HEADER_OFF;
 
 // The collector's object header, one word before every bronze header.
 constexpr size_t GC_HDR_BYTES = 8;
@@ -74,10 +75,7 @@ constexpr uint64_t VALUE_TAG_UNDEFINED   = TAG_UNDEFINED << VALUE_TAG_SHIFT;
 constexpr uint64_t VALUE_TAG_HOLE        = TAG_HOLE << VALUE_TAG_SHIFT;
 
 // Compile-time static assertions verifying Bronze ABI invariants
-static_assert(TLS_ALLOC_CURSOR_OFF == 24, "Bronze TLS alloc_cursor offset must be 24");
-static_assert(TLS_ALLOC_LIMIT_OFF == 32, "Bronze TLS alloc_limit offset must be 32");
-static_assert(TLS_PLAIN_SHAPE_OFF == 40, "Bronze TLS plain_shape offset must be 40");
-static_assert(TLS_GC_CELL_HEADER_OFF == 264, "Bronze TLS gc_cell_header offset must be 264");
+static_assert(TLS_ALLOC_LIMIT_OFF == TLS_ALLOC_CURSOR_OFF + 8, "Bronze TLS alloc window is {cursor, limit}");
 static_assert(PLAIN_OBJECT_BYTES == 56, "Bronze plain object size must be 56 bytes");
 static_assert(ARRAY_HEADER_BYTES == 40, "Bronze array header size must be 40 bytes");
 static_assert(ARRAY_MIN_CAPACITY == 4, "Bronze array min capacity must be 4");
