@@ -1,0 +1,8 @@
+false true false
+1.2.3.4 true
+255.255.255.255 true
+256.1.1.1 false
+01.2.3.4 false
+1.2.3 false
+1.2.3.a false
+0.0.0.0 true

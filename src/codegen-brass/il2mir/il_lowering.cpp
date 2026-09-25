@@ -193,6 +193,69 @@ static bool functions_are_identical(const BronzeFunction& a, const BronzeFunctio
     return true;
 }
 
+// The order the blocks of one function are lowered in: reverse post-order of
+// its CFG, then any block the walk did not reach, in list order.
+//
+// Lowering looks every operand up in `val_map` as it goes, so a use has to be
+// lowered after its definition. The IL only promises SSA dominance, not that
+// the block list is laid out in dominance order: lowering an `if` without an
+// `else` inside a loop appends the loop's continue block before the join block
+// that defines what the continue block forwards (`if (d === 0) x = c; n = n *
+// 10;` with a `return` in the other arm), and a use lowered first found no
+// value and failed the MIR verifier with "operand is null". A dominator comes
+// before everything it dominates in any reverse post-order, so that order is
+// always sound. The exception handler of a block counts as its successor, since
+// that edge is as real as a branch's.
+static std::vector<const BronzeBlock*> lowering_order(const BronzeFunction& fn_ast) {
+    std::vector<const BronzeBlock*> order;
+    if (fn_ast.blocks.empty()) return order;
+    std::unordered_map<uint32_t, size_t> index_of;
+    for (size_t i = 0; i < fn_ast.blocks.size(); ++i) index_of.emplace(fn_ast.blocks[i].id, i);
+
+    auto successors = [&](const BronzeBlock& blk) {
+        std::vector<size_t> out;
+        auto add = [&](uint32_t id) {
+            if (const auto it = index_of.find(id); it != index_of.end()) out.push_back(it->second);
+        };
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == BronzeOp::Jump) add(inst.target.block_id);
+            if (inst.op == BronzeOp::Branch) {
+                add(inst.target.block_id);
+                add(inst.else_target.block_id);
+            }
+        }
+        if (blk.handler_id != UINT32_MAX) add(blk.handler_id);
+        return out;
+    };
+
+    // Iterative DFS: a large function has thousands of blocks, too many for
+    // the native stack.
+    std::vector<uint8_t> visited(fn_ast.blocks.size(), 0);
+    std::vector<size_t> post;
+    post.reserve(fn_ast.blocks.size());
+    std::vector<std::pair<size_t, std::vector<size_t>>> stack;
+    visited[0] = 1;
+    stack.emplace_back(0, successors(fn_ast.blocks[0]));
+    while (!stack.empty()) {
+        auto& [node, succ] = stack.back();
+        if (succ.empty()) {
+            post.push_back(node);
+            stack.pop_back();
+            continue;
+        }
+        const size_t next = succ.front();
+        succ.erase(succ.begin());
+        if (visited[next]) continue;
+        visited[next] = 1;
+        stack.emplace_back(next, successors(fn_ast.blocks[next]));
+    }
+    for (auto it = post.rbegin(); it != post.rend(); ++it) order.push_back(&fn_ast.blocks[*it]);
+    for (size_t i = 0; i < fn_ast.blocks.size(); ++i) {
+        if (!visited[i]) order.push_back(&fn_ast.blocks[i]);
+    }
+    return order;
+}
+
 // The symbols whose address the translator takes as data rather than code:
 // the module tables (`__bronze_*`, defined by the host's object writer or
 // registered with the JIT) and the key manifest.
@@ -710,8 +773,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         }
     }
 
-    // 4. Lower instructions block by block
-    for (const auto& blk_ast : fn_ast.blocks) {
+    // 4. Lower instructions block by block, in an order where a definition
+    // is lowered before its uses (see lowering_order).
+    for (const BronzeBlock* blk_ptr : lowering_order(fn_ast)) {
+        const BronzeBlock& blk_ast = *blk_ptr;
         BasicBlock* bb = block_map[blk_ast.id];
         b.position_at_end(bb);
         uint32_t cont_counter = 0;
