@@ -428,11 +428,16 @@ private:
 
     // --- lower_class.cpp: classes ---
     bool lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn);
-    std::optional<Value> lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn);
+    // `inferredName`: the name NamedEvaluation gives an anonymous class
+    // expression (`var K = class {}` makes `K.name === "K"`); it names the
+    // class and binds nothing.
+    std::optional<Value> lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn,
+                                        const std::string& inferredName = {});
     std::optional<Value> lowerClass(const std::string& name, const ast::Expr* superClass,
                                     const std::string& superName,
                                     const std::vector<ast::ClassMethod>& methods, Span span,
-                                    il::Function& ilFn, bool bindsOwnName = false);
+                                    il::Function& ilFn, bool bindsOwnName = false,
+                                    const std::string& inferredName = {});
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
     std::optional<Value> lowerSuperLookupStart(const ast::SuperMember& sm, il::Function& ilFn);
     void emitDerivedCtorReturn(Value val, il::Function& ilFn);

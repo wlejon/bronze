@@ -33,7 +33,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                                                   const std::string& superName,
                                                   const std::vector<ast::ClassMethod>& methods,
                                                   Span span, il::Function& ilFn,
-                                                  bool bindsOwnName) {
+                                                  bool bindsOwnName,
+                                                  const std::string& inferredName) {
     const ast::ClassMethod* ctor = nullptr;
     for (const auto& m : methods) {
         if (m.isConstructor) {
@@ -51,8 +52,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     const bool hasSuper = superClass != nullptr || !superName.empty();
     // `name` is the BINDING (renamed by the module linker in an imported
     // file); what the class's `name` property and its frames show is the
-    // source's spelling of it.
-    const std::string shownName = sourceSpelling(name);
+    // source's spelling of it. An anonymous class expression in a
+    // NamedEvaluation position shows the name it was given there (15.7.15
+    // step 2 / 8.4.5), without a binding of that name inside the class.
+    const std::string shownName = name.empty() ? inferredName : sourceSpelling(name);
 
     // The heritage link, recorded before any method is, because a class that
     // declares NO instance method of its own still inherits every one of its
@@ -428,9 +431,10 @@ bool Lowerer::lowerClassDecl(const ast::ClassDecl* cls, il::Function& ilFn) {
     return true;
 }
 
-std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn) {
+std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls, il::Function& ilFn,
+                                                      const std::string& inferredName) {
     return lowerClass(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span,
-                      ilFn, /*bindsOwnName=*/true);
+                      ilFn, /*bindsOwnName=*/true, inferredName);
 }
 
 // The object test is spelled with the ops the IL already has — `typeof` is

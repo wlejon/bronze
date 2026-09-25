@@ -17,6 +17,13 @@ namespace bronze::lower {
 std::optional<Lowerer::Value> Lowerer::lowerNamedEvaluation(const ast::Expr& expr,
                                                             const std::string& name,
                                                             il::Function& ilFn) {
+    // An anonymous class expression is named the same way (15.7.15
+    // ClassDefinitionEvaluation takes the NamedEvaluation name); a class that
+    // wrote its own name keeps it.
+    if (const auto* cls = dynamic_cast<const ast::ClassExpr*>(&expr)) {
+        if (!cls->name.empty()) return lowerExpr(expr, ilFn);
+        return lowerClassExpr(cls, ilFn, name);
+    }
     const auto* fn = dynamic_cast<const ast::FunctionExpr*>(&expr);
     // A function expression that wrote its OWN name keeps it: 15.2.5 binds that
     // name inside the body and 8.6.2 does not apply, so `const f = function g()
