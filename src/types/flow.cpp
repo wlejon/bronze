@@ -285,13 +285,36 @@ static bool isExportClause(const ast::Stmt& s) {
     return dynamic_cast<const ast::ExportNamesDecl*>(&s) != nullptr;
 }
 
+void FlowAnalyzer::seedHoistedVars(const std::vector<const ast::Stmt*>& body) {
+    for (const auto& name : ast::getHoistedVarDeclarations(body)) {
+        // A parameter of the same name IS the binding (10.2.11 step 27.e
+        // copies its value), and seedParams has already typed it. A captured
+        // name is one cell for the whole function, which `lookup` finds
+        // without a declaration.
+        if (scope_.env.count(name) != 0 || scope_.captured.count(name) != 0) continue;
+        scope_.env[name] = Type::undefined();
+    }
+}
+
+template <typename List>
+void FlowAnalyzer::hoistFunctionDecls(const List& stmts) {
+    for (const auto& s : stmts) {
+        if (!s) continue;
+        if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(&*s)) {
+            declare(fd->name, Type::function());
+        }
+    }
+}
+
 void FlowAnalyzer::stmtList(const std::vector<ast::StmtPtr>& stmts, uint32_t depth) {
+    hoistFunctionDecls(stmts);
     uint32_t index = 0;
     for (const auto& s : stmts) {
         if (s && !isExportClause(*s)) stmt(*s, index++, depth);
     }
 }
 void FlowAnalyzer::stmtList(const std::vector<const ast::Stmt*>& stmts, uint32_t depth) {
+    hoistFunctionDecls(stmts);
     uint32_t index = 0;
     for (const auto* s : stmts) {
         if (s && !isExportClause(*s)) stmt(*s, index++, depth);

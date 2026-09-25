@@ -47,7 +47,10 @@ public:
           qualifiedName_(std::move(qualifiedName)),
           record_(record) {}
 
-    void runBody(const std::vector<const ast::Stmt*>& body) { stmtList(body, 0); }
+    void runBody(const std::vector<const ast::Stmt*>& body) {
+        seedHoistedVars(body);
+        stmtList(body, 0);
+    }
 
     // A parameter's default is CODE, evaluated in this function's scope on the
     // calls that omit the argument. Skipping it would hide every call site
@@ -135,6 +138,20 @@ private:
     void fail(Span span, const std::string& what);
 
     // ---- statements (flow.cpp) ---------------------------------------------
+
+    // A name this function declares shadows the enclosing one from the
+    // function's first statement, not from the statement that declares it:
+    // `lookup` falls through to the parent scopes for a name the environment
+    // lacks, so a hoisted binding read before its declaration would otherwise
+    // take the TYPE of an unrelated outer binding of the same name. Minified
+    // code reuses one-letter names at every level: three.js r160's WebGLState
+    // calls `$(1)` above its `function $`, inside a factory holding
+    // `const $ = 33776`. A `var` holds `undefined` until assigned (10.2.11 step 27);
+    // a `function` declaration is the function from the top of its scope
+    // (8.6.2 / 10.2.11 step 36).
+    void seedHoistedVars(const std::vector<const ast::Stmt*>& body);
+    template <typename List>
+    void hoistFunctionDecls(const List& stmts);
 
     void stmtList(const std::vector<ast::StmtPtr>& stmts, uint32_t depth);
     void stmtList(const std::vector<const ast::Stmt*>& stmts, uint32_t depth);
