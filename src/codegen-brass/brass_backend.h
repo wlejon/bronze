@@ -9,6 +9,13 @@
 #include "codegen/backend.h"
 #include "codegen-brass/brass_jit.h"
 
+namespace brass {
+struct PassPipelineOptions;
+}
+namespace il2mir {
+struct TranslatorOptions;
+}
+
 namespace bronze {
 
 constexpr brass::Type brassTypeOf(il::Type t) noexcept {
@@ -33,14 +40,21 @@ public:
     void setHostGlobals(std::vector<std::string> names) { hostGlobals_ = std::move(names); }
     void setEmittedPathsOut(std::vector<std::string>* out) { emittedPathsOut_ = out; }
     void setPropagateExceptionsInEntry(bool val) { propagateExceptionsInEntry_ = val; }
-    // Off is the baseline tier: no MIR optimizer, no scheduling, no layout —
-    // the code the translator emits, selected and allocated as it stands.
-    // Same semantics either way; only how long the compile takes and how
-    // fast the result runs differ. BRONZE_NO_OPT=1 in the environment forces
-    // it off for every backend in the process, so any pipeline (the CLI, the
-    // oracle suite, a host's JIT) can be run in the baseline tier as a check.
+    // Whether the whole module is optimized as it is built. Off: no MIR
+    // optimizer, no scheduling, no layout — the code the translator emits,
+    // selected and allocated as it stands; what a tiered program is built
+    // from (its functions are optimized one at a time as they tier up,
+    // tierUpPasses). Same semantics either way; only how long the compile
+    // takes and how fast the result runs differ. BRONZE_NO_OPT=1 in the
+    // environment forces it off for every backend in the process, so an
+    // object build or the whole-program tier can be run unoptimized as a
+    // check.
     void setOptimize(bool on) { optimize_ = on; }
     bool optimize() const;
+    // The passes the optimizer runs over a program, for a tiered program
+    // to run over each function it tiers up (MultiTierPipeline::
+    // set_tier2_passes) instead of over the whole module before it starts.
+    brass::PassPipelineOptions tierUpPasses() const;
     // The machine the object is for: this one unless a build says otherwise
     // (`--target`). Only the object and the module written from it change;
     // a program needs the target's own host binary, so it stays native.
@@ -61,9 +75,8 @@ public:
     void setRegisterFnSources(bool on) { registerFnSources_ = on; }
     // Whether the module's writable tables are addressed per THREAD
     // (bronze_abi.h, `bronze_module_instance`): one contiguous instance run
-    // in the object's data, a delta per thread. Only an object file
-    // (buildObjectFile) lays the run out; a MIR module compiled by another
-    // engine, which registers each table as its own buffer, turns it off.
+    // in the object's data, or in the data image (buildDataImage) of a
+    // program the tiered pipeline runs, a delta per thread.
     void setPerThreadModuleData(bool on) { perThreadModuleData_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
@@ -88,6 +101,10 @@ public:
                     DiagnosticSink& diags) override;
 
 private:
+    // The translator's optimization switches, `optimize` or not; lowering
+    // itself reads none of them.
+    void setOptimizationOptions(il2mir::TranslatorOptions& options, bool optimize) const;
+
     std::string entrySymbol_ = "bronze_main";
     bool propagateExceptionsInEntry_ = false;
     bool optimize_ = true;

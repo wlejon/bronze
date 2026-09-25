@@ -20,17 +20,20 @@ Type & shape inference (src/types)  →  lowering to bronze IL (src/lower, src/i
    │
    ▼
 BrassTieredEngine::compile (src/codegen-brass/brass_tiered_engine.cpp)
-   ├─ IL → brass MIR (il2mir), one MIR module per program
+   ├─ IL → brass MIR (il2mir), one MIR module per program, translated
+   │  without the optimizer (it runs per function, at tier-up)
    ├─ the program's data image (BrassBackend::buildDataImage): the tables,
    │  descriptors and data cells an object file would carry, loaded into
-   │  memory and registered with the program's pipeline
+   │  memory and registered with the program's pipeline; its writable
+   │  tables are per thread (bronze_module_instance)
    └─ the program's own MultiTierPipeline (a FunctionDispatchTable per program)
    │
    ▼
 Execution on the calling thread (BrassTieredProgram::run)
    ├─ starts in brass's fast interpreter
-   ├─ hot functions are baseline-compiled on the mutator, then optimized by
-   │  the program's background compiler and installed while it runs
+   ├─ hot functions are baseline-compiled on the mutator, then optimized on
+   │  brass's process-wide compile pool and installed while it runs
+   ├─ a hot loop moves into optimized code mid-loop (OSR)
    ├─ thrown exceptions surface through rtTls()->exception_cell
    ├─ pending Promise microtasks drain (embed::drainMicrotasks())
    └─ the program is retained for the process lifetime (retainProgram)
@@ -42,16 +45,20 @@ Execution on the calling thread (BrassTieredProgram::run)
 
 | Tier | What runs |
 |------|-----------|
-| `Auto` (default) | The tiered pipeline: every function starts interpreted; one that crosses the invocation threshold is baseline-compiled, and one that stays hot is queued for the optimizing compiler, which builds it on the program's background worker and installs it over the baseline code. The worker starts on the first queued compile. |
+| `Auto` (default) | The tiered pipeline: every function starts interpreted; one that crosses the invocation threshold is baseline-compiled, and one that stays hot is queued for the optimizing compiler, which builds it and installs it over the baseline code. A loop still running in the interpreter after enough backedges asks for its OSR entry, a function of its own that takes the frame's live values and continues the loop in optimized code; once it is compiled, the next backedge moves the frame into it. |
 | `Tier0_Interpreter` | The pipeline, never compiling: every function interpreted, including the ones the runtime calls natively (through the function's stub and a native-to-interpreter bridge). |
 | `Tier1_Baseline` | The pipeline, every function baseline-compiled before the program runs; none is optimized further. |
 | `Tier2_Optimized` | The whole program optimized ahead of running (`BrassBackend::compileToJit`: ModuleCompiler → object → `JitExecutionEngine`), outside the pipeline. |
+
+The pipeline tiers translate the program without running the MIR optimizer over it, so a program starts running as soon as it is translated. The optimizer runs where the code is hot: on each function the pipeline tiers up and on each OSR entry, with the same passes the whole-program tier runs (`BrassBackend::tierUpPasses`, handed to `MultiTierPipeline::set_tier2_passes`), over a copy of the function holding the bodies of the functions it calls, for inlining. `Tier2_Optimized` and ahead-of-time builds optimize the whole program.
+
+Optimizing compiles, of every program in the process, run on brass's one compile pool (`brass::runtime::CompilePool::shared()`): a quarter of the machine's hardware threads, between one and four, started with the first compile queued (`BRASS_JIT_THREADS` overrides the size). A program being destroyed drops its queued compiles and waits out its running ones; `stopBackgroundCompiles()` does that for every retained program, and at exit the pool shuts down.
 
 A function's pointer — what a closure holds, what descriptors and source tables point at — is its lazy stub in every pipeline tier (`MultiTierPipeline::function_address`), so pointers compare equal whichever tier made them, and the stub reaches whatever code the function currently has.
 
 ### Stack traces and function source
 
-`Error.prototype.stack` walks the native stack and maps return addresses through the code ranges the runtime has registered (`runtime/stack_trace.cpp`). Pipeline code is registered as it is installed: the pipeline tells the program's image of every baseline and optimized function it installs (`MultiTierPipeline::set_code_install_observer`), with the compiler's line table, and the image registers a code range with a pc table built from it (`brass_tiered_image.cpp`). Interpreted frames have no native code; the process's interpreted-frame walker (`runtime/interpreted_frames.h`, installed through `embed::setInterpretedFrameWalker`) reports them with the stack address of their frame record, and the walk merges them among the native frames by that address. Both kinds are attributed to the function descriptors in the program's data image, so a trace reads the same at every tier.
+`Error.prototype.stack` walks the native stack and maps return addresses through the code ranges the runtime has registered (`runtime/stack_trace.cpp`). Pipeline code is registered as it is installed: the pipeline tells the program's image of every baseline and optimized function it installs (`MultiTierPipeline::set_code_install_observer`), with the compiler's line table, and the image registers a code range with a pc table built from it (`brass_tiered_image.cpp`). OSR code is reported under the name of the function its loop belongs to, and the interpreter's record of the frame it continues leaves the frame chain while it runs, so the frame appears once, as the native one. Interpreted frames have no native code; the process's interpreted-frame walker (`runtime/interpreted_frames.h`, installed through `embed::setInterpretedFrameWalker`) reports them with the stack address of their frame record, and the walk merges them among the native frames by that address. Both kinds are attributed to the function descriptors in the program's data image, so a trace reads the same at every tier.
 
 `Function.prototype.toString` reads the source slices the program's entry registers from its data image (`bronze_register_fn_sources`), keyed by the functions' stub addresses.
 
@@ -104,9 +111,15 @@ ExecutionTier defaultTier();
 void installDefaultDynamicHooks();
 ```
 
-`EvalOptions` (eval.h documents each field) carries the file name, host globals, module roots, the module registry switches, `moduleHandleOut` for a host that unloads a program's registrations later (`embed::unloadModule`), `optimize`, and `tier`.
+`EvalOptions` (eval.h documents each field) carries the file name, host globals, module roots, the module registry switches, `moduleHandleOut` for a host that unloads a program's registrations later (`embed::unloadModule`), `tier`, and `shareAcrossThreads`.
 
-A program is retained for the process lifetime once it runs (`retainProgram`): closures hold its function pointers. At exit the retained programs' background compiles are stopped before the process tears down.
+A program is retained for the process lifetime once it runs (`retainProgram`): closures hold its function pointers. At exit the retained programs' background compiles are stopped and the compile pool shut down before the process tears down.
+
+### One program on many threads
+
+A pipeline-tier program's writable module data (inline caches, global caches, template cells, the top-level environment, the native import table) is per thread: generated code addresses each table through the calling thread's delta (`bronze_module_instance`), so the thread that runs a program first uses the data image itself and every other thread starts from a copy of the image as it stood before that first run. One compiled program therefore runs on any number of threads, each run with fresh module state, all of them sharing its code, including the code tier-ups and OSR install while any of them runs it.
+
+`EvalOptions::shareAcrossThreads` turns that into compile-once: a program compiled with the same sources (the whole loaded module graph), host globals, native registrations, pins and options as one compiled before with the option set is that program, under the same result name. A thread that has already run it compiles again, because a second evaluation on one thread must start from fresh module data (`runtime::rtThreadHasModuleInstance`). A host that runs one script on many threads, as workers do, sets it. `Tier2_Optimized` programs keep their tables in the image and are never shared.
 
 ---
 

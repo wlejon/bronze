@@ -1,5 +1,6 @@
 #include "codegen-brass/brass_tiered_engine.h"
 #include "codegen-brass/brass_backend.h"
+#include "codegen-brass/brass_backend_sections.h"
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
@@ -8,7 +9,9 @@
 
 #include <brass/runtime/multi_tier_pipeline.hpp>
 #include <brass/runtime/code_installer.hpp>
+#include <brass/runtime/osr_coordinator.hpp>
 #include <brass/runtime/tiering.hpp>
+#include <brass/mir/pass_pipeline.hpp>
 #include <brass/gc/native_frames.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/interpreter/interpreter.hpp>
@@ -17,9 +20,18 @@
 
 #include <utility>
 
+// runtime/module_instance.cpp
+extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, uint64_t* end);
+
 namespace bronze {
 
 namespace {
+
+// Backedges a function's interpreted loops take before a loop still running
+// asks for its OSR entry: enough that a loop about to finish is not
+// compiled for, few enough that a long one spends most of its time in
+// optimized code.
+constexpr uint64_t kOsrBackedgeThreshold = 1000;
 
 // brass_enumerate_thread_roots reports the frames of the innermost running
 // Interpreter and FastInterpreter only; one of the same kind hidden beneath
@@ -63,12 +75,11 @@ brass::runtime::TieringConfig tieringConfigFor(ExecutionTier tier) {
             break;
         case ExecutionTier::Auto:
         case ExecutionTier::Tier2_Optimized:
-            // Optimized code is built off the mutator: a hot function keeps
-            // running in its lower tier until its code is installed. One
-            // worker per program; most programs (an eval, a callback's
-            // module) never queue anything and never start it.
+            // Optimized code is built off the mutator, on the process's one
+            // compile pool (brass CompilePool::shared()): a hot function
+            // keeps running in its lower tier until its code is installed,
+            // and a hot loop until its OSR entry is.
             config.enable_background_compile = true;
-            config.jit_threads = 1;
             break;
     }
     return config;
@@ -135,6 +146,7 @@ void* BrassTieredProgram::symbolAddress(std::string_view name) const {
 void BrassTieredProgram::stopBackgroundCompilation() {
     if (tier_ == ExecutionTier::Tier2_Optimized) return;
     dispatchTable_->pipeline().stop_background_compiles();
+    dispatchTable_->osr().stop_compiles();
 }
 
 brass::RuntimeValue BrassTieredProgram::run() {
@@ -164,7 +176,23 @@ brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
     // (embed::setEnterJsHook) are per thread, and the thread that compiled
     // a program need not be the one that runs it.
     installBronzeEnterJsHook();
+    // A function other than the entry finds this thread's instance of the
+    // module's data where the entry registered it; called first, it
+    // registers it here.
+    if (fnName != entrySymbol_) enterThreadInstance();
     return dispatchTable_->pipeline().execute(*mirModule_, fnName, args);
+}
+
+void BrassTieredProgram::enterThreadInstance() const {
+    auto* slot = static_cast<uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_module_slot")));
+    auto* begin = static_cast<uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_instance")));
+    auto* end = static_cast<uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_instance_end")));
+    if (slot && begin && end) bronze_module_instance(slot, begin, end);
+}
+
+const uint64_t* BrassTieredProgram::moduleSlotCell() const {
+    if (!perThreadData()) return nullptr;
+    return static_cast<const uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_module_slot")));
 }
 
 BrassTieredEngine::BrassTieredEngine(const TieredEngineConfig& config)
@@ -181,7 +209,9 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     BrassBackend backend;
     backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(config_.hostGlobals);
-    backend.setOptimize(config_.optimize);
+    // Tier 2 optimizes the whole program before it runs. The pipeline tiers
+    // translate it as it stands and optimize a function when it tiers up.
+    backend.setOptimize(tier == ExecutionTier::Tier2_Optimized);
     backend.setPropagateExceptionsInEntry(config_.propagateExceptionsInEntry);
     backend.setEmitDebugInfo(config_.emitDebugInfo);
 
@@ -193,10 +223,9 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         return prog;
     }
 
-    // A JIT program is compiled and run on one thread; its image is not
-    // entered on others (BrassBackend::compileToJit says why that is the
-    // right trade for in-process programs), so its tables are plain cells.
-    backend.setPerThreadModuleData(false);
+    // The module's writable tables are per thread (bronze_module_instance):
+    // one compiled program runs on any number of threads, each with its own
+    // globals and caches, as a worker running the same script does.
     std::vector<uint32_t> globalReadKeys;
     prog->mirModule_ = backend.buildMirModule(module, diags, &globalReadKeys);
     if (!prog->mirModule_) return nullptr;
@@ -204,6 +233,14 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     brass::runtime::MultiTierPipeline& pipeline = prog->dispatchTable().pipeline();
     pipeline.initialize(tieringConfigFor(tier));
     registerBronzeMultiTierSymbols(pipeline);
+    if (tier == ExecutionTier::Auto) {
+        // Tier-up and OSR code run the optimizer the whole-program tier runs,
+        // one function (or one loop's entry) at a time.
+        pipeline.set_tier2_passes(backend.tierUpPasses());
+        brass::runtime::OsrCoordinator& osr = prog->dispatchTable().osr();
+        osr.set_threshold(kOsrBackedgeThreshold);
+        osr.set_enabled(true);
+    }
 
     prog->image_ = TieredProgramImage::load(backend.buildDataImage(module, globalReadKeys.size()),
                                             *prog->mirModule_, module, entrySymbol, pipeline, diags);

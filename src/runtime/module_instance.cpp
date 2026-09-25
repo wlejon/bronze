@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "abi/bronze_abi.h"
+#include "runtime/module_instance.h"
 #include "runtime/atomic_ref.h"
 #include "runtime/fatal.h"
 #include "runtime/tls_block.h"
@@ -91,6 +92,13 @@ void ensureDeltaCapacity(size_t slot) {
 }
 
 }  // namespace
+
+bool rtThreadHasModuleInstance(const uint64_t* slotCell) {
+    if (!slotCell) return false;
+    AtomicRef<uint64_t> slotRef(*const_cast<uint64_t*>(slotCell));
+    const uint64_t slot = slotRef.load(std::memory_order_acquire);
+    return slot != 0 && slot < t_deltaCapacity && t_deltas[slot] != kNoDelta;
+}
 
 }  // namespace bronze::runtime
 

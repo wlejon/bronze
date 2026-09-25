@@ -40,12 +40,6 @@ struct EvalOptions {
     // retained either way (retainProgram): closures hold raw code pointers
     // into it, and the unload contract keeps the image mapped.
     embed::ModuleHandle* moduleHandleOut = nullptr;
-    // false compiles in the baseline tier (BrassBackend::setOptimize): the
-    // whole optimizer skipped, so a program is running a few hundred
-    // milliseconds after the source changed instead of seconds. Same
-    // semantics, slower code — the tier for a host's edit-and-reload loop,
-    // not for the build it ships.
-    bool optimize = true;
     bool emitDebugInfo = false;
     bool moduleRegistry = false;
     // With moduleRegistry: publish the entry file itself too
@@ -58,10 +52,22 @@ struct EvalOptions {
     // the process default (setDefaultTier), which is also what every eval()
     // and new Function() the program makes runs at.
     std::optional<ExecutionTier> tier = std::nullopt;
+    // Compile once for every thread that runs the same program. A tiered
+    // program's writable module data is per thread (bronze_module_instance),
+    // so one compiled program can run on any number of threads, each run
+    // starting from fresh globals and caches, and sharing the code each
+    // tier-up and OSR compile installs. With this set, a program compiled
+    // with the same sources and options as one compiled before (by any
+    // thread, with this set) is that program, unless this thread already ran
+    // it: then it is compiled again, as a second evaluation on one thread
+    // must start from fresh module data. For a host that runs one script on
+    // many threads, as workers do. Explicit Tier2_Optimized programs are
+    // never shared.
+    bool shareAcrossThreads = false;
 };
 
 struct CompiledScript {
-    std::unique_ptr<BrassTieredProgram> program;
+    std::shared_ptr<BrassTieredProgram> program;
     ExecutionTier tier = ExecutionTier::Auto;
     std::string resName;
     std::string errorMessage;
@@ -77,7 +83,14 @@ BRONZE_EMBED_API ExecutionTier defaultTier();
 // Retains a compiled program for the process lifetime so its code, data
 // image and function pointers remain valid across executions. At exit the
 // retained programs' background compiles are stopped.
-BRONZE_EMBED_API void retainProgram(std::unique_ptr<BrassTieredProgram> program);
+BRONZE_EMBED_API void retainProgram(std::shared_ptr<BrassTieredProgram> program);
+
+// Drops every retained program's queued background compiles (tier-ups and
+// OSR entries, which all run on brass's one process-wide compile pool) and
+// waits out the ones running; later tier-ups queue again. For a host
+// shutting its engine down while the process lives on. At exit the pool
+// itself is shut down as well.
+BRONZE_EMBED_API void stopBackgroundCompiles();
 
 // Destroys every retained program.
 BRONZE_EMBED_API void clearRetainedPrograms();

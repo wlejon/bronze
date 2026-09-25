@@ -34,7 +34,9 @@ enum class ExecutionTier : uint8_t {
     Tier1_Baseline = 1,    // the pipeline, every function baseline-compiled before the program runs
     Tier2_Optimized = 2,   // the whole program optimized ahead of running (ModuleCompiler -> JitExecutionEngine)
     Auto = 3               // the pipeline, tiering hot functions up to baseline and then to optimized
-                           // code, which a background compiler builds and installs while the program runs
+                           // code, which a background compiler builds and installs while the program runs;
+                           // the optimizer runs per function as it tiers up, and a hot loop moves into
+                           // optimized code mid-loop (OSR)
 };
 
 std::string_view executionTierToString(ExecutionTier tier) noexcept;
@@ -44,7 +46,6 @@ struct TieredEngineConfig {
     ExecutionTier tier = ExecutionTier::Auto;
     std::string entrySymbol = "main";
     std::vector<std::string> hostGlobals;
-    bool optimize = true;
     bool propagateExceptionsInEntry = true;
     bool emitDebugInfo = false;
 };
@@ -80,6 +81,14 @@ public:
     BrassJitProgram* jitProgram() const noexcept { return jitProgram_.get(); }
     const brass::ModuleStackMap* stackMaps() const noexcept;
 
+    // Whether a run on another thread starts from fresh module data: true
+    // for the pipeline tiers, whose writable tables are per thread; false
+    // for Tier2_Optimized, whose tables are the image's own.
+    bool perThreadData() const noexcept { return tier_ != ExecutionTier::Tier2_Optimized; }
+    // The cell naming the module's per-thread data slot (bronze_abi.h,
+    // `bronze_module_instance`); null for Tier2_Optimized.
+    const uint64_t* moduleSlotCell() const;
+
     // Drops the optimizations queued for this program and waits out the one
     // being compiled; later tier-ups queue again. For a host about to exit.
     void stopBackgroundCompilation();
@@ -88,6 +97,9 @@ private:
     friend class BrassTieredEngine;
     BrassTieredProgram(ExecutionTier tier, std::string entrySymbol);
     void activateStackMaps() const;
+    // Registers the calling thread's instance of the module's per-thread
+    // data (bronze_module_instance), as the entry does on its way in.
+    void enterThreadInstance() const;
 
     ExecutionTier tier_;
     std::string entrySymbol_;

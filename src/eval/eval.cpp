@@ -5,7 +5,11 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
+
+#include <brass/runtime/compile_pool.hpp>
 
 #include "ast/ast.h"
 #include "il/print.h"
@@ -20,6 +24,7 @@
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/host_globals.h"
+#include "runtime/module_instance.h"
 #include "runtime/module_registry.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
@@ -34,21 +39,37 @@ namespace bronze::eval {
 
 namespace {
 
-static std::vector<std::unique_ptr<BrassTieredProgram>>& retainedPrograms() {
-    static auto* list = new std::vector<std::unique_ptr<BrassTieredProgram>>();
+static std::vector<std::shared_ptr<BrassTieredProgram>>& retainedPrograms() {
+    static auto* list = new std::vector<std::shared_ptr<BrassTieredProgram>>();
     return *list;
+}
+static std::unordered_set<const BrassTieredProgram*>& retainedSet() {
+    static auto* set = new std::unordered_set<const BrassTieredProgram*>();
+    return *set;
 }
 static std::mutex g_programsMutex;
 static std::mutex g_jitCompileMutex;
+
+// The programs compiled with EvalOptions::shareAcrossThreads, by everything
+// their compile read (sharedProgramKey). Guarded by g_jitCompileMutex.
+struct SharedProgram {
+    std::shared_ptr<BrassTieredProgram> program;
+    std::string resName;
+};
+static std::unordered_map<std::string, SharedProgram>& sharedPrograms() {
+    static auto* map = new std::unordered_map<std::string, SharedProgram>();
+    return *map;
+}
 static std::atomic<uint64_t> s_evalCounter{0};
 static std::atomic<ExecutionTier> s_defaultTier{ExecutionTier::Auto};
 
 // At exit, no retained program may still be compiling in the background:
-// its worker would be running brass while the process tears brass's
-// statics down. Queued compiles are dropped and the one in flight finishes.
+// a compile worker would be running brass while the process tears brass's
+// statics down. Queued compiles are dropped, the ones in flight finish, and
+// the process's compile pool stops.
 void stopRetainedBackgroundCompiles() {
-    std::lock_guard<std::mutex> lock(g_programsMutex);
-    for (auto& program : retainedPrograms()) program->stopBackgroundCompilation();
+    stopBackgroundCompiles();
+    brass::runtime::CompilePool::shared().shutdown();
 }
 
 void transformEvalAst(ast::Module& astModule, const std::string& resName) {
@@ -105,18 +126,63 @@ void transformEvalAst(ast::Module& astModule, const std::string& resName) {
     }
 }
 
+std::string readPins(const std::string& path) {
+    if (path.empty()) return {};
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+modules::ModuleOptions moduleOptionsFor(const EvalOptions& options);
+
+// Everything a compile reads: two compiles with the same key produce the
+// same program. Each field is length-prefixed, so no two keys run together.
+std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
+                             const std::vector<std::string>& hostGlobals, const std::string& manifestJson,
+                             const std::string& pinsText, const SourceSet& sources) {
+    std::string key;
+    auto field = [&](std::string_view s) {
+        key += std::to_string(s.size());
+        key += ':';
+        key.append(s.data(), s.size());
+    };
+    field(executionTierToString(tier));
+    field(options.filename);
+    field(options.entryResolvesAs.string());
+    field(options.retainSource ? "src" : "nosrc");
+    field(options.emitDebugInfo ? "dbg" : "nodbg");
+    field(options.censusOutPath);
+    const modules::ModuleOptions modOpts = moduleOptionsFor(options);
+    field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
+    for (const auto& ext : modOpts.externalModules) field(ext);
+    field("|globals");
+    for (const auto& g : hostGlobals) field(g);
+    field("|natives");
+    field(manifestJson);
+    field(pinsText);
+    for (size_t i = 0; i < sources.size(); ++i) {
+        const SourceBuffer& buf = sources.at(static_cast<uint16_t>(i));
+        field(buf.name());
+        field(buf.text());
+    }
+    return key;
+}
+
 // The one compile path: the program lowered to IL, then handed to the
-// tiered engine at the options' tier (the process default when unset).
-std::unique_ptr<BrassTieredProgram> compileAst(
+// tiered engine at the options' tier (the process default when unset). With
+// shareAcrossThreads, a program compiled before from the same inputs is
+// reused (EvalOptions says when), and `resName` becomes its result name.
+std::shared_ptr<BrassTieredProgram> compileAst(
     std::unique_ptr<ast::Module> astModule,
     const EvalOptions& options,
-    const std::string& resName,
+    std::string& resName,
     DiagnosticSink& diags,
     SourceSet& sources) {
 
     if (!astModule) return nullptr;
     std::lock_guard<std::mutex> compileLock(g_jitCompileMutex);
-    transformEvalAst(*astModule, resName);
 
     std::vector<std::string> hostGlobals = options.hostGlobals;
     if (hostGlobals.empty()) {
@@ -143,16 +209,26 @@ std::unique_ptr<BrassTieredProgram> compileAst(
         }
     }
 
+    const std::string pinsText = readPins(options.pinsPath);
     types::PinManifest pins;
-    if (!options.pinsPath.empty()) {
-        std::ifstream in(options.pinsPath, std::ios::binary);
-        if (in) {
-            std::ostringstream ss;
-            ss << in.rdbuf();
-            std::string err;
-            pins.parse(ss.str(), options.pinsPath, err, /*allowObserved=*/true);
+    if (!pinsText.empty()) {
+        std::string err;
+        pins.parse(pinsText, options.pinsPath, err, /*allowObserved=*/true);
+    }
+
+    const ExecutionTier tier = options.tier.value_or(defaultTier());
+    const bool share = options.shareAcrossThreads && tier != ExecutionTier::Tier2_Optimized;
+    std::string shareKey;
+    if (share) {
+        shareKey = sharedProgramKey(options, tier, hostGlobals,
+                                    nativeManifest ? embed::nativeManifestJson() : std::string(), pinsText, sources);
+        auto it = sharedPrograms().find(shareKey);
+        if (it != sharedPrograms().end() && !runtime::rtThreadHasModuleInstance(it->second.program->moduleSlotCell())) {
+            resName = it->second.resName;
+            return it->second.program;
         }
     }
+    transformEvalAst(*astModule, resName);
 
     auto inferred = types::inferModule(*astModule, diags,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
@@ -178,14 +254,13 @@ std::unique_ptr<BrassTieredProgram> compileAst(
     const std::string entrySym = "__bronze_dyn_entry_" + std::to_string(evalId);
 
     TieredEngineConfig config;
-    config.tier = options.tier.value_or(defaultTier());
+    config.tier = tier;
     config.entrySymbol = entrySym;
     config.hostGlobals = hostGlobals;
-    config.optimize = options.optimize;
     config.propagateExceptionsInEntry = true;
     config.emitDebugInfo = options.emitDebugInfo;
 
-    auto program = BrassTieredEngine(config).compile(*ilModule, diags);
+    std::shared_ptr<BrassTieredProgram> program = BrassTieredEngine(config).compile(*ilModule, diags);
     if (!program) return nullptr;
     // Bind the program's import table from the registry it was compiled
     // against, before anything runs. The entry rebinds on its own first
@@ -203,6 +278,7 @@ std::unique_ptr<BrassTieredProgram> compileAst(
             return nullptr;
         }
     }
+    if (share) sharedPrograms()[shareKey] = SharedProgram{program, resName};
     return program;
 }
 
@@ -231,7 +307,7 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
 }
 
 embed::CallResult runProgramAndCollectResult(
-    std::unique_ptr<BrassTieredProgram> program,
+    std::shared_ptr<BrassTieredProgram> program,
     const std::string& resName,
     embed::ModuleHandle* moduleHandleOut) {
 
@@ -346,16 +422,28 @@ ExecutionTier defaultTier() {
     return s_defaultTier.load(std::memory_order_relaxed);
 }
 
-void retainProgram(std::unique_ptr<BrassTieredProgram> program) {
+void retainProgram(std::shared_ptr<BrassTieredProgram> program) {
     if (!program) return;
     static std::once_flag atExitOnce;
     std::call_once(atExitOnce, [] { std::atexit(&stopRetainedBackgroundCompiles); });
     std::lock_guard<std::mutex> lock(g_programsMutex);
+    // A program shared across threads is run, and retained, by each.
+    if (!retainedSet().insert(program.get()).second) return;
     retainedPrograms().push_back(std::move(program));
 }
 
-void clearRetainedPrograms() {
+void stopBackgroundCompiles() {
     std::lock_guard<std::mutex> lock(g_programsMutex);
+    for (auto& program : retainedPrograms()) program->stopBackgroundCompilation();
+}
+
+void clearRetainedPrograms() {
+    {
+        std::lock_guard<std::mutex> compileLock(g_jitCompileMutex);
+        sharedPrograms().clear();
+    }
+    std::lock_guard<std::mutex> lock(g_programsMutex);
+    retainedSet().clear();
     retainedPrograms().clear();
 }
 

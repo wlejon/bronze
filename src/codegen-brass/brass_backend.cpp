@@ -8,6 +8,7 @@
 
 #include <brass/brass.hpp>
 #include <brass/codegen/jit_exec.hpp>
+#include "codegen-brass/il2mir/il_pipeline.h"
 #include "codegen-brass/il2mir/il_translator.h"
 #include <brass/object/coff_writer.hpp>
 #include <brass/object/elf_writer.hpp>
@@ -261,18 +262,8 @@ bool BrassBackend::optimize() const {
     return optimize_ && !forcedOff;
 }
 
-std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
-    const il::Module& module, DiagnosticSink& diags,
-    std::vector<uint32_t>* globalReadKeysOut) {
-    // One level inside buildObjectFile's "mir" phase: "translate" is brass's
-    // IL lowering plus its whole MIR optimization pipeline.
-    support::PhaseTimer mtimer(support::timingsEnabled(), 6);
-    const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
-
-    const bool optimize = this->optimize();
-    il2mir::TranslatorOptions options;
+void BrassBackend::setOptimizationOptions(il2mir::TranslatorOptions& options, bool optimize) const {
     options.enable_optimizations = optimize;
-    options.run_alias_analysis = optimize;
     options.enable_inlining = optimize;
     options.inline_leaf_only = true;
     options.enable_speculative_inlining = false;
@@ -295,12 +286,6 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.enable_array_contraction = true;
     options.enable_partial_escape = true;
     options.enable_allocation_sinking = true;
-    options.enable_tlab = true;
-    // The TLS block rides in a callee-saved register (bronze_abi_tls.h): the
-    // entry loads it, the runtime's rtEnterJs trampoline loads it for every
-    // other way in, and generated code reads the exception cell, the
-    // allocation window and the stack limit through it without a call.
-    options.pin_tls_register = true;
     // No FMA contraction, on any target: ECMA-262 Number arithmetic rounds
     // after every operation, and a fused a*b+c rounds once — a different
     // double (tests/oracle/cases/tiers_20_mat4_mul differs in the 13th digit).
@@ -318,6 +303,32 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
 #endif
 #endif
     }
+}
+
+brass::PassPipelineOptions BrassBackend::tierUpPasses() const {
+    il2mir::TranslatorOptions options;
+    setOptimizationOptions(options, /*optimize=*/true);
+    return il2mir::pass_pipeline_options(options);
+}
+
+std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
+    const il::Module& module, DiagnosticSink& diags,
+    std::vector<uint32_t>* globalReadKeysOut) {
+    // One level inside buildObjectFile's "mir" phase: "translate" is brass's
+    // IL lowering plus its whole MIR optimization pipeline.
+    support::PhaseTimer mtimer(support::timingsEnabled(), 6);
+    const std::vector<std::string> uniqueNames = computeUniqueFunctionNames(module);
+
+    const bool optimize = this->optimize();
+    il2mir::TranslatorOptions options;
+    setOptimizationOptions(options, optimize);
+    options.run_alias_analysis = optimize;
+    options.enable_tlab = true;
+    // The TLS block rides in a callee-saved register (bronze_abi_tls.h): the
+    // entry loads it, the runtime's rtEnterJs trampoline loads it for every
+    // other way in, and generated code reads the exception cell, the
+    // allocation window and the stack limit through it without a call.
+    options.pin_tls_register = true;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
     options.propagate_exceptions_in_entry = propagateExceptionsInEntry_;
