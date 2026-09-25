@@ -1,0 +1,9 @@
+120 1 true 2 NaN
+zero-over-zero true f
+sqrt parse num
+negzero zero 5 neg inf
+false false true false
+120 90 120 120
+falsy falsy falsy truthy truthy truthy
+1
+212

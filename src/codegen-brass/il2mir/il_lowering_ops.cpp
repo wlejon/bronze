@@ -397,9 +397,15 @@ bool lower_ops_instruction(
         }
 
         case BronzeOp::NumTruthy: {
+            // brass's f64 `ne` is the UNORDERED compare (it is CmpNe's, where
+            // `NaN !== NaN` must be true), so on its own it calls NaN truthy.
+            // ToBoolean wants the ORDERED "not 0": also require x == x, the
+            // ordered equality that is false exactly at NaN.
             Value* op0 = lowering->ensure_type(get_opd(0), Type::f64(), b);
             Value* zero = b.build_fconst_f64(0.0);
-            res_val = b.build_ne(op0, zero);
+            Value* nonZero = b.build_ne(op0, zero);
+            Value* notNaN = b.build_eq(op0, op0);
+            res_val = b.build_and(nonZero, notNaN);
             return true;
         }
 
