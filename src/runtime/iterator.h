@@ -62,6 +62,13 @@ struct IterRecordHeader {
         // one after the open.
         MapIterator = 6,
         ArrayIterator = 7,
+        // An ASYNC iterator (7.4.3 GetIterator with kind async, through
+        // @@asyncIterator): `target` and `nextFn` as for Protocol, but `next`
+        // answers a promise, so only `for await` ever steps one. A sync
+        // iterable opened for `for await` stays a sync record of one of the
+        // kinds above, and `bronze_async_iter_next` is its
+        // CreateAsyncFromSyncIterator (27.1.6).
+        AsyncProtocol = 8,
     };
 
     static IterRecordHeader* create(Heap& heap, uint32_t kind);

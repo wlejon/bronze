@@ -30,6 +30,7 @@
 #include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/promise.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -297,6 +298,103 @@ Value rtGetIteratorFromMethod(Rooted<Value>& source, Rooted<Value>& method) {
 
 namespace bronze::runtime {
 
+namespace {
+
+// 27.1.6 CreateAsyncFromSyncIterator, without the wrapper object: `for await`
+// over a sync iterable holds the sync record, and each step does what the
+// wrapper's `next` (27.1.6.2.1) and AsyncFromSyncIteratorContinuation
+// (27.1.6.4) would. Nothing a program can reach ever sees the wrapper, so
+// building one per loop would be an allocation with no observer.
+namespace AsyncFromSyncSlot {
+enum : uint32_t { Promise, Record, kCount };
+}
+
+Value makeIterResult(Rooted<Value>& value, bool done) {
+    Rooted<Value> resObj{Value(bronze_create_object())};
+    Rooted<Value> keyValue{rtMakeString("value")};
+    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyValue, value);
+    Rooted<Value> keyDone{rtMakeString("done")};
+    Rooted<Value> doneVal{Value::fromBool(done)};
+    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyDone, doneVal);
+    return resObj.get();
+}
+
+// IfAbruptRejectPromise: the pending exception becomes the rejection.
+void rejectWithPending(Rooted<Value>& promise) {
+    Rooted<Value> reason{Value(rtTls()->exception_cell)};
+    rtClearException();
+    rtRejectPromise(promise, reason);
+}
+
+// 27.1.6.4 step 8, the fulfilled half: `{ value: v, done: false }`.
+uint64_t asyncFromSyncOnValue(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> state{Value(env)};
+    Rooted<Value> value{argc > 0 ? Value(argv[0]) : Value::fromUndefined()};
+    Rooted<Value> result{makeIterResult(value, false)};
+    Rooted<Value> promise{
+        state.get().asObject<ObjectHeader>()->internalSlot(AsyncFromSyncSlot::Promise)};
+    rtResolvePromise(promise, result);
+    return Value::fromUndefined().rawBits();
+}
+
+// 27.1.6.4 step 10-11 (ES2025's closeOnRejection): a value that REJECTS closes
+// the sync iterator — its `return` runs, and anything that throws is discarded
+// in favour of the rejection, as IteratorClose with a throw completion does —
+// and then rejects the step, which the loop throws.
+uint64_t asyncFromSyncOnRejected(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) {
+    Rooted<Value> state{Value(env)};
+    Rooted<Value> reason{argc > 0 ? Value(argv[0]) : Value::fromUndefined()};
+    Rooted<Value> record{
+        state.get().asObject<ObjectHeader>()->internalSlot(AsyncFromSyncSlot::Record)};
+    bronze_iter_close(record.get().rawBits(), /*suppress=*/true);
+    if (rtExceptionPending()) rtClearException();
+    Rooted<Value> promise{
+        state.get().asObject<ObjectHeader>()->internalSlot(AsyncFromSyncSlot::Promise)};
+    rtRejectPromise(promise, reason);
+    return Value::fromUndefined().rawBits();
+}
+
+// One step, answered as a promise for the iterator result. The sync step
+// itself is not wrapped: its throw is the iterator's own, so it rejects the
+// step without closing anything (27.1.6.2.1 step 5, IfAbruptRejectPromise).
+Value asyncFromSyncNext(Rooted<Value>& recRoot) {
+    Rooted<Value> promise{rtNewPromise()};
+    const bool more = bronze_iter_step(recRoot.get().rawBits());
+    if (rtExceptionPending()) {
+        rejectWithPending(promise);
+        return promise.get();
+    }
+    if (!more) {
+        Rooted<Value> undef{Value::fromUndefined()};
+        Rooted<Value> result{makeIterResult(undef, true)};
+        rtResolvePromise(promise, result);
+        return promise.get();
+    }
+    Rooted<Value> value{Value(bronze_iter_value(recRoot.get().rawBits()))};
+    // PromiseResolve(%Promise%, value): a thenable's `then` getter may throw,
+    // and that too closes the iterator (27.1.6.4 step 6).
+    Rooted<Value> wrapper{rtPromiseResolveValue(value)};
+    if (rtExceptionPending()) {
+        bronze_iter_close(recRoot.get().rawBits(), /*suppress=*/true);
+        rejectWithPending(promise);
+        return promise.get();
+    }
+    Rooted<Value> state{Value::fromObject(ObjectHeader::createWithInternalSlots(
+        rtHeap(), rtArena(), rtPlainObjectShape(), AsyncFromSyncSlot::kCount))};
+    state.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
+    state.get().asObject<ObjectHeader>()->setInternalSlot(AsyncFromSyncSlot::Promise,
+                                                          promise.get());
+    state.get().asObject<ObjectHeader>()->setInternalSlot(AsyncFromSyncSlot::Record,
+                                                          recRoot.get());
+    Rooted<Value> onFulfilled{rtMakeNativeClosure(asyncFromSyncOnValue, state, 1)};
+    Rooted<Value> onRejected{rtMakeNativeClosure(asyncFromSyncOnRejected, state, 1)};
+    Rooted<Value> noCapability{Value::fromUndefined()};
+    rtPerformPromiseThen(wrapper, onFulfilled, onRejected, noCapability);
+    return promise.get();
+}
+
+}  // namespace
+
 extern "C" {
 
 uint64_t bronze_iter_open(uint64_t srcBits) {
@@ -502,20 +600,12 @@ uint64_t bronze_async_iter_next(uint64_t recBits) {
     }
     Rooted<Value> recRoot{recVal};
     auto* rec = recRoot.get().asObject<IterRecordHeader>();
-    if (rec->kindOf() == IterRecordHeader::Protocol) {
+    if (rec->kindOf() == IterRecordHeader::AsyncProtocol) {
         Rooted<Value> nextFn{rec->nextFn};
         Rooted<Value> target{rec->target};
         return callMethod(nextFn, target).rawBits();
     }
-    bool hasVal = bronze_iter_step(recRoot.get().rawBits());
-    Rooted<Value> valVal{hasVal ? Value(bronze_iter_value(recRoot.get().rawBits())) : Value::fromUndefined()};
-    Rooted<Value> resObj{Value(bronze_create_object())};
-    Rooted<Value> keyDoneStr{rtMakeString("done")};
-    Rooted<Value> valDone{Value::fromBool(!hasVal)};
-    Rooted<Value> keyValStr{rtMakeString("value")};
-    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyDoneStr, valDone);
-    resObj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), keyValStr, valVal);
-    return resObj.get().rawBits();
+    return asyncFromSyncNext(recRoot).rawBits();
 }
 
 void bronze_async_iter_close(uint64_t recBits, bool suppress) {
@@ -554,13 +644,15 @@ Value rtOpenAsyncIterator(Value source) {
             rtThrowTypeError("the async iterator has no `next` method");
             return Value::fromUndefined();
         }
-        Rooted<Value> recRoot{
-            Value::fromObject(IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol))};
+        Rooted<Value> recRoot{Value::fromObject(
+            IterRecordHeader::create(rtHeap(), IterRecordHeader::AsyncProtocol))};
         auto* rec = recRoot.get().asObject<IterRecordHeader>();
         rec->target = iter.get();
         rec->nextFn = next.get();
         return recRoot.get();
     }
+    // No @@asyncIterator: the SYNC record, which bronze_async_iter_next steps
+    // as CreateAsyncFromSyncIterator's `next` would (asyncFromSyncNext).
     return rtOpenIterator(srcRoot.get());
 }
 
