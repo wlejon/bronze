@@ -1,0 +1,7 @@
+<top>@helper.js:3
+ReferenceError <top>@main.js:24
+ReferenceError helperThrows@helper.js:7,<top>@main.js:29
+Shape.area@helper.js:14,<top>@main.js:33
+<top>@main.js:34
+helperThrows,Shape,arrow,expr,assigned,gen,later,default
+local function helperThrows() {

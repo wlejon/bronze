@@ -67,6 +67,8 @@ private:
     PropertyLoweringHelper prop_lowering_;
     AllocLoweringHelper alloc_lowering_;
     uint32_t current_file_id_ = 0;
+    // The debug-context file id of each BronzeModuleAST::source_files entry.
+    std::vector<uint32_t> source_file_ids_;
     bool has_error_ = false;
     const BronzeModuleAST* current_ast_ = nullptr;
     size_t current_fn_idx_ = 0;

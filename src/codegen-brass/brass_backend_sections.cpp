@@ -227,12 +227,33 @@ std::unordered_map<std::string, std::string> emitFunctionDescriptors(
 
 void emitPcTablesAndCodeRanges(
     ObjectFile& obj, Section& roSec, int32_t roIdx,
-    const std::string& entrySymbol,
+    const std::string& entrySymbol, const std::vector<std::string>& sourceFiles,
     const std::unordered_map<std::string, std::string>& fnToDesc,
     support::PhaseTimer& timer) {
     std::unordered_map<std::string, const brass::FunctionDebugTable*> debugTableMap;
     for (const auto& dt : obj.debug_tables) {
         debugTableMap[dt.function_name()] = &dt;
+    }
+
+    // The module's file table, which every code range points at and a pc
+    // entry's `file` indexes (bronze_pc_entry): the file strings of
+    // emitFileStrings, in il::Module::sourceFiles order. A line entry's
+    // debug-context file id maps to its index here; one that names no source
+    // file is BRONZE_PC_FILE_DESC, the descriptor's file.
+    std::unordered_map<uint32_t, uint32_t> fileIdToIndex;
+    for (size_t f = 0; f < sourceFiles.size(); ++f) {
+        const uint32_t id = obj.debug_context.get_file_id(sourceFiles[f]);
+        if (id != 0) fileIdToIndex.emplace(id, static_cast<uint32_t>(f));
+    }
+    const std::string filesSym = moduleSymbolName(entrySymbol, "__bronze_file_table");
+    if (!sourceFiles.empty()) {
+        roSec.align_to(8);
+        const size_t filesOff = roSec.data.size();
+        for (size_t f = 0; f < sourceFiles.size(); ++f) {
+            emitPointer(roSec, moduleSymbolName(entrySymbol, "__bronze_file_str_" + std::to_string(f)));
+        }
+        defineSymbol(obj, filesSym, roIdx, filesOff, sourceFiles.size() * sizeof(const char*),
+                     SymbolBinding::Local);
     }
 
     std::unordered_map<std::string, std::string> fnToPcTable;
@@ -246,6 +267,8 @@ void emitPcTablesAndCodeRanges(
                 roSec.emit32(le.code_offset);
                 roSec.emit32(le.loc.line);
                 roSec.emit32(le.loc.column);
+                auto itFile = fileIdToIndex.find(le.loc.file_id);
+                roSec.emit32(itFile != fileIdToIndex.end() ? itFile->second : BRONZE_PC_FILE_DESC);
             }
             std::string pcSym = moduleSymbolName(entrySymbol, "__bronze_pc_table_" + cfi.name);
             fnToPcTable[cfi.name] = pcSym;
@@ -278,6 +301,9 @@ void emitPcTablesAndCodeRanges(
         emitPointer(roSec, itDesc != fnToDesc.end() ? itDesc->second : "");
         auto itPc = fnToPcTable.find(cfi.name);
         emitPointer(roSec, itPc != fnToPcTable.end() ? itPc->second : "");
+        emitPointer(roSec, sourceFiles.empty() ? "" : filesSym);
+        roSec.emit32(static_cast<uint32_t>(sourceFiles.size()));
+        roSec.emit32(0);
     }
     defineSymbol(obj, codeRangesSymbol, roIdx, rangesOff,
                  obj.functions.size() * sizeof(bronze_code_range), SymbolBinding::Global);
@@ -469,7 +495,7 @@ void emitBronzeSections(ObjectFile& obj, const brass::Target& target, const Sect
     const auto fnToDesc = emitFunctionDescriptors(obj, roSec, roIdx, entrySymbol, in.module, in.uniqueNames);
     timer.mark("descriptors");
 
-    emitPcTablesAndCodeRanges(obj, roSec, roIdx, entrySymbol, fnToDesc, timer);
+    emitPcTablesAndCodeRanges(obj, roSec, roIdx, entrySymbol, in.module.sourceFiles, fnToDesc, timer);
 
     emitDataSection(obj, entrySymbol, in.module, in.globalCacheCount);
     demoteInternalSymbols(obj, entrySymbol);

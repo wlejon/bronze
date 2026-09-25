@@ -1509,10 +1509,21 @@ typedef struct bronze_fn_desc {
     const void* code;
 } bronze_fn_desc;
 
+/*
+ * One source position in a compiled function's pc table. `file` indexes the
+ * range's `files` (the compiled module's source files): a function's code
+ * can come from more than one file — a program's merged top level runs every
+ * imported module's top-level statements — so the file is per position, not
+ * the descriptor's. BRONZE_PC_FILE_DESC (or an index past `file_count`)
+ * means the descriptor's own file.
+ */
+#define BRONZE_PC_FILE_DESC 0xFFFFFFFFu
+
 typedef struct bronze_pc_entry {
     uint32_t pc_offset;
     uint32_t line;
     uint32_t col;
+    uint32_t file;
 } bronze_pc_entry;
 
 typedef struct bronze_code_range {
@@ -1521,6 +1532,9 @@ typedef struct bronze_code_range {
     uint32_t pc_count;
     const bronze_fn_desc* desc;
     const bronze_pc_entry* pc_table;
+    const char* const* files;
+    uint32_t file_count;
+    uint32_t reserved;
 } bronze_code_range;
 
 /*

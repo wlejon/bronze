@@ -200,6 +200,9 @@ struct BronzeInstruction {
 
     uint32_t line = 0;
     uint32_t column = 0;
+    // The index into BronzeModuleAST::source_files that `line` is in, or
+    // UINT32_MAX for the module's own name (the instruction has no span).
+    uint32_t file = UINT32_MAX;
     uint32_t env_hops = UINT32_MAX;
 };
 
@@ -220,6 +223,11 @@ struct BronzeFunction {
 
 struct BronzeModuleAST {
     std::string name;
+    // The IL module's source files (il::Module::sourceFiles), which an
+    // instruction's `file` indexes: one function can hold code from several
+    // of them (a program's merged top level), so the debug location of each
+    // instruction names its own.
+    std::vector<std::string> source_files;
     std::vector<BronzeFunction> functions;
 };
 

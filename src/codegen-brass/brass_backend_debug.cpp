@@ -46,6 +46,21 @@ void translateDebugLocations(
         fileIds.push_back(obj.debug_context.get_or_add_file(defFile));
     }
 
+    // The file id il2mir gives an instruction that names no source file: the
+    // module's name (il_to_brass_ast's `ast.name`). A line entry carrying it,
+    // or none, is attributed to its function's file below. When that name is
+    // itself one of the source files, an entry carrying its id means that
+    // file and stays — a merged top level holds lines of several files.
+    uint32_t placeholderFileId = 0;
+    {
+        const std::string placeholder = !module.name.empty() ? module.name
+                                        : !module.sourceFiles.empty() ? module.sourceFiles[0]
+                                                                      : std::string("<anonymous>");
+        bool isSource = false;
+        for (const auto& file : module.sourceFiles) isSource = isSource || file == placeholder;
+        if (!isSource) placeholderFileId = obj.debug_context.get_file_id(placeholder);
+    }
+
     std::unordered_map<std::string, size_t> fnMap;
     for (size_t i = 0; i < module.functions.size(); ++i) {
         std::string name = (uniqueNames[i] == "main" && !entrySymbol.empty() && entrySymbol != "main")
@@ -93,7 +108,7 @@ void translateDebugLocations(
         } else {
             auto entries = dt.line_entries();
             for (auto& le : entries) {
-                if (le.loc.file_id == 0 || le.loc.file_id == 1) {
+                if (le.loc.file_id == 0 || le.loc.file_id == placeholderFileId) {
                     le.loc.file_id = fileId;
                 }
                 if (le.loc.line == 0) {

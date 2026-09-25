@@ -8,6 +8,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -272,9 +273,10 @@ void dumpSamplerReport() {
         return key;
     };
 
-    // (descriptor, line) -> row: the key is the descriptor's address, one
-    // per compiled function, and the line the pc table gave.
-    std::map<std::pair<const void*, uint32_t>, LineRow> lineRows;
+    // (descriptor, file, line) -> row: the descriptor's address, one per
+    // compiled function, and the file and line the pc table gave (a merged
+    // top level spans several files).
+    std::map<std::tuple<const void*, const void*, uint32_t>, LineRow> lineRows;
 
     std::unordered_set<uint64_t> seen;
     for (size_t i = 0; i < st->log.size();) {
@@ -300,10 +302,10 @@ void dumpSamplerReport() {
         }
         if (CodeSite site; innermostCompiledSite(pcs, n, site)) {
             const bronze_fn_desc* desc = site.range->desc;
-            auto& lr = lineRows[{desc, site.line}];
+            auto& lr = lineRows[{desc, site.file, site.line}];
             if (lr.line == 0) {
                 lr.function = (desc->name && desc->name[0]) ? desc->name : "<anonymous>";
-                lr.file = (desc->file && desc->file[0]) ? desc->file : "<anonymous>";
+                lr.file = (site.file && site.file[0]) ? site.file : "<anonymous>";
                 lr.line = site.line ? site.line : 1;
             }
             lr.self++;

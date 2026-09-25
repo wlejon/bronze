@@ -235,6 +235,7 @@ bool find_code_site(const void* pc, CodeSite& out) {
     out.range = cr;
     out.line = cr->desc->def_line;
     out.col = cr->desc->def_col;
+    out.file = cr->desc->file;
     if (cr->pc_table && cr->pc_count > 0) {
         const uintptr_t pc_off =
             reinterpret_cast<uintptr_t>(pc) - reinterpret_cast<uintptr_t>(cr->code_start);
@@ -245,6 +246,9 @@ bool find_code_site(const void* pc, CodeSite& out) {
             --it;
             out.line = it->line;
             out.col = it->col;
+            if (cr->files && it->file < cr->file_count && cr->files[it->file]) {
+                out.file = cr->files[it->file];
+            }
         }
     }
     return true;
@@ -292,6 +296,7 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         uint32_t col = 0;
         const void* code = nullptr;
         const char* builtin_name = nullptr;
+        const char* file = nullptr;  // the position's file (CodeSite::file)
     };
     std::vector<StackFrameInfo> frames;
 
@@ -307,7 +312,8 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         // runtime, and every later one a return address: the byte before it
         // is the call, and the range and pc-table lookups both see that byte.
         if (CodeSite site; find_code_site(reinterpret_cast<const void*>(ctx.Rip - 1), site)) {
-            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr});
+            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr,
+                              site.file});
             if (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
                 break;
             }
@@ -363,7 +369,8 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         void* call_pc = reinterpret_cast<void*>(caller_rip - 1);
 
         if (CodeSite site; find_code_site(call_pc, site)) {
-            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr});
+            frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr,
+                              site.file});
             if (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) {
                 break;
             }
@@ -419,7 +426,8 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         std::string lineStr;
         bool isAnon = ((desc->flags & BRONZE_FN_DESC_TOPLEVEL) || !desc->name ||
                        desc->name[0] == '\0' || strcmp(desc->name, "<anonymous>") == 0);
-        std::string fileStr = (desc->file && desc->file[0] != '\0') ? desc->file : "<anonymous>";
+        const char* file = fi.file ? fi.file : desc->file;
+        std::string fileStr = (file && file[0] != '\0') ? file : "<anonymous>";
         uint32_t line = fi.line ? fi.line : desc->def_line;
         uint32_t col = fi.col ? fi.col : desc->def_col;
         if (line == 0) line = 1;

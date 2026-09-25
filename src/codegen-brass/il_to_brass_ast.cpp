@@ -77,6 +77,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         const SourceBuffer::LineCol lc = ctx.lineTables[inst.span.file].lineCol(inst.span.begin);
         out.line = lc.line;
         out.column = lc.column;
+        out.file = inst.span.file;
     }
 
     switch (inst.op) {
@@ -459,6 +460,7 @@ il2mir::BronzeModuleAST lowerToBrassAst(
 ) {
     il2mir::BronzeModuleAST ast;
     ast.name = !module.name.empty() ? module.name : (!module.sourceFiles.empty() ? module.sourceFiles[0] : "");
+    ast.source_files = module.sourceFiles;
     ast.functions.reserve(module.functions.size());
 
     if (globalReadKeys) {

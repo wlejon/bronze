@@ -199,6 +199,35 @@ TEST_CASE("code range registry registration and lookup") {
     CHECK(find_code_range(dummyCode) == nullptr);
 }
 
+TEST_CASE("a pc entry's file is the position's own, falling back to the descriptor's") {
+    // A program's merged top level is one compiled function holding lines of
+    // several source files, so a code site reads its file off the pc entry.
+    uint8_t dummyCode[64];
+    bronze_fn_desc desc{"", "dep.js", 1, 1, BRONZE_FN_DESC_TOPLEVEL, 0, nullptr};
+    const char* const files[] = {"main.js", "dep.js"};
+    const bronze_pc_entry pcs[] = {
+        {0, 3, 1, 1},                    // dep.js:3
+        {16, 8, 1, 0},                   // main.js:8
+        {32, 9, 5, BRONZE_PC_FILE_DESC}, // the descriptor's file
+        {48, 10, 1, 7},                  // an index past file_count: the same
+    };
+    bronze_code_range r{dummyCode, 64, 4, &desc, pcs, files, 2, 0};
+    bronze_register_code_ranges(&r, 1);
+    CodeSite site;
+    REQUIRE(find_code_site(dummyCode + 4, site));
+    CHECK(std::string(site.file) == "dep.js");
+    CHECK(site.line == 3);
+    REQUIRE(find_code_site(dummyCode + 20, site));
+    CHECK(std::string(site.file) == "main.js");
+    CHECK(site.line == 8);
+    REQUIRE(find_code_site(dummyCode + 40, site));
+    CHECK(std::string(site.file) == "dep.js");
+    CHECK(site.col == 5);
+    REQUIRE(find_code_site(dummyCode + 50, site));
+    CHECK(std::string(site.file) == "dep.js");
+    bronze_unregister_code_ranges(&r, 1);
+}
+
 TEST_CASE("exotic receiver and invalid operations raise catchable TypeError rather than fatal abort") {
     ShadowStackFrame frame;
     ClearCell guard;

@@ -225,6 +225,11 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     mod->set_allow_fp_reassociation(options_.allow_fp_reassociation);
     mod->set_pinned_tls_register(options_.pin_tls_register);
     current_file_id_ = mod->debug_context().get_or_add_file(ast.name.empty() ? "<anonymous>" : ast.name);
+    source_file_ids_.clear();
+    source_file_ids_.reserve(ast.source_files.size());
+    for (const std::string& file : ast.source_files) {
+        source_file_ids_.push_back(mod->debug_context().get_or_add_file(file));
+    }
 
     // Register external runtime helper functions
     register_all_module_external_symbols(mod.get(), options_.entry_symbol);
@@ -723,7 +728,13 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
         for (const auto& inst_ast : blk_ast.instructions) {
             if (current_file_id_ != 0 && inst_ast.line > 0) {
-                b.set_current_loc(DebugLoc(current_file_id_, inst_ast.line, inst_ast.column));
+                // The instruction's own file: a merged top level holds lines
+                // of every imported module, so the module's name is only the
+                // fallback for an instruction that names none.
+                const uint32_t fileId = inst_ast.file < source_file_ids_.size()
+                                            ? source_file_ids_[inst_ast.file]
+                                            : current_file_id_;
+                b.set_current_loc(DebugLoc(fileId, inst_ast.line, inst_ast.column));
             } else {
                 b.clear_current_loc();
             }
