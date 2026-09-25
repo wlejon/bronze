@@ -58,11 +58,6 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # subdirectory is not known to its parent.
 if(MSVC)
     enable_language(ASM_MASM)
-    # A JS throw is a C++ exception that leaves the runtime's extern "C"
-    # entry points (runtime/exception.h), so the compiler must not assume
-    # those never throw: /EHs, not CMake's default /EHsc, whose `c` would let
-    # a caller of one drop the destructors (Rooted) an unwind has to run.
-    string(REPLACE "/EHsc" "/EHs" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 else()
     enable_language(ASM)
 endif()

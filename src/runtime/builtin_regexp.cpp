@@ -89,7 +89,9 @@ uint64_t regexpTest(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     Rooted<Value> self{Value(thisBits)};
     if (!requireRegExp(self.get(), "test")) return Value::fromUndefined().rawBits();
     Rooted<Value> input{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Value result = rtRegExpExec(self, input);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return Value::fromBool(!result.isNull()).rawBits();
 }
 
@@ -105,9 +107,11 @@ uint64_t regexpToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
     Rooted<Value> sourceKey{rtMakeString("source")};
     Rooted<Value> source{rtValueToString(
         Value(bronze_elem_get(self.get().rawBits(), sourceKey.get().rawBits())))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> flagsKey{rtMakeString("flags")};
     Rooted<Value> flags{
         rtValueToString(Value(bronze_elem_get(self.get().rawBits(), flagsKey.get().rawBits())))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtMakeString("/" + rtUtf8Chars(source.get().asString<StringHeader>()) + "/" +
                         rtUtf8Chars(flags.get().asString<StringHeader>()))
         .rawBits();
@@ -142,6 +146,7 @@ uint64_t regexpConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     if (!constructing && patternIsRegExp && flagsArg.get().isUndefined()) {
         Rooted<Value> ctorKey{rtMakeString("constructor")};
         const Value ctor = Value(bronze_elem_get(pattern.get().rawBits(), ctorKey.get().rawBits()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (ctor.rawBits() == g_regexp.ctor.rawBits()) return pattern.get().rawBits();
     }
 
@@ -159,9 +164,11 @@ uint64_t regexpConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uin
         }
     } else {
         source.set(pattern.get().isUndefined() ? rtMakeString("") : rtValueToString(pattern.get()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     if (!flagsArg.get().isUndefined()) {
         flagsText = rtUtf8Chars(rtValueToString(flagsArg.get()).asString<StringHeader>());
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
 
     if (constructing) {
@@ -239,6 +246,7 @@ uint64_t flagsGetter(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     for (const FlagName& f : kOrder) {
         Rooted<Value> key{rtMakeString(f.name)};
         const Value v = Value(bronze_elem_get(self.get().rawBits(), key.get().rawBits()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(v.rawBits())) out.push_back(f.letter);
     }
     return rtMakeString(out).rawBits();

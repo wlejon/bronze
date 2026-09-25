@@ -18,7 +18,8 @@ bool lower_call_instruction(
     Builder& b,
     Function* fn,
     std::unordered_map<uint32_t, Value*>& val_map,
-    Value*& res_val
+    Value*& res_val,
+    const std::function<void()>& emit_exception_check
 );
 
 } // namespace il2mir

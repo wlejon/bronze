@@ -258,6 +258,7 @@ std::shared_ptr<BrassTieredProgram> compileAst(
     config.tier = tier;
     config.entrySymbol = entrySym;
     config.hostGlobals = hostGlobals;
+    config.propagateExceptionsInEntry = true;
     config.emitDebugInfo = options.emitDebugInfo;
 
     std::shared_ptr<BrassTieredProgram> program = BrassTieredEngine(config).compile(*ilModule, diags);
@@ -314,6 +315,10 @@ embed::CallResult runProgramAndCollectResult(
     auto* programPtr = program.get();
     retainProgram(std::move(program));
 
+    if (runtime::rtExceptionPending()) {
+        runtime::rtClearException();
+    }
+
     // The bracket a host asked for: opened immediately before the entry, so
     // the spans the entry registers carry the handle, and closed after the
     // microtask checkpoint, so a later program's registrations do not. The
@@ -327,20 +332,20 @@ embed::CallResult runProgramAndCollectResult(
     // is held across the drain, which runs the whole rest of such a module
     // and so collects: a raw copy of the bits would name the promise's
     // pre-collection address by the time isPromise reads its shape.
-    // A top-level throw is caught here and handed back after the checkpoint:
-    // jobs the top level queued before it threw still run.
-    Value entryOut = Value::fromUndefined();
-    bool threw = false;
+    uint64_t entryBits = 0;
     {
         bronze::ShadowStackFrame stackFrame;
-        threw = runtime::rtTryCatch(
-            [&] { entryOut = Value(programPtr->run().as_u64()); }, entryOut);
+        entryBits = programPtr->run().as_u64();
     }
-    embed::Persistent entryVal{entryOut};
+    embed::Persistent entryVal{Value(entryBits)};
     embed::drainMicrotasks();
     embed::endModuleLoad(handle);
 
-    if (threw) return embed::CallResult{entryVal.get(), /*thrown=*/true};
+    if (runtime::rtExceptionPending()) {
+        Value thrown(runtime::rtTls()->exception_cell);
+        runtime::rtClearException();
+        return embed::CallResult{thrown, /*thrown=*/true};
+    }
 
     if (entryVal.get().isObject() && embed::isPromise(entryVal.get())) {
         return embed::CallResult{entryVal.get(), /*thrown=*/false};
@@ -378,7 +383,10 @@ Value evalFunctionSource(const std::string& prefix, const std::string& params, s
     const std::string fnCode = "globalThis." + fnName + " = " + prefix + params + "\n) {\n" + std::string(body) + "\n};";
 
     embed::CallResult cr = evalScript(fnCode, EvalOptions{.filename = "<Function>"});
-    if (cr.thrown) runtime::rtThrow(cr.value);
+    if (cr.thrown) {
+        runtime::rtTls()->exception_cell = cr.value.rawBits();
+        return Value::fromUndefined();
+    }
 
     embed::GlobalValue g = embed::globalValue(fnName);
     if (!g.found) {
@@ -478,8 +486,9 @@ embed::CallResult runCompiledScript(std::unique_ptr<CompiledScript> script, cons
 
     if (!script->success) {
         std::string err = !script->errorMessage.empty() ? script->errorMessage : "compilation failed";
-        Value syntaxErr;
-        runtime::rtTryCatch([&] { runtime::rtThrowSyntaxError(err); }, syntaxErr);
+        runtime::rtThrowSyntaxError(err);
+        Value syntaxErr(runtime::rtTls()->exception_cell);
+        runtime::rtClearException();
         return embed::CallResult{syntaxErr, /*thrown=*/true};
     }
 
@@ -501,7 +510,10 @@ embed::CallResult evalFile(const std::string& filePath, const EvalOptions& optio
 
 Value evalScriptDirect(std::string_view source, const EvalOptions& options) {
     embed::CallResult cr = evalScript(source, options);
-    if (cr.thrown) runtime::rtThrow(cr.value);
+    if (cr.thrown) {
+        runtime::rtTls()->exception_cell = cr.value.rawBits();
+        return Value::fromUndefined();
+    }
     return cr.value;
 }
 

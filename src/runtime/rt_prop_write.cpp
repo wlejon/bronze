@@ -240,7 +240,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             // user `valueOf` — so the view is reached through a root afterwards
             // rather than through the header taken above, and its length is
             // re-read: a collection during the conversion moves the object, and
-            // the conversion itself can throw a TypeError.
+            // the conversion itself can leave a TypeError pending.
             Rooted<Value> viewRoot{objVal};
             rtTypedArraySetElement(viewRoot, ki.elemIndex, Value(valBits));
             return;
@@ -420,6 +420,7 @@ void bronze_super_elem_set(uint64_t protoBits, uint64_t keyBits, uint64_t thisBi
     Rooted<Value> val{Value(valBits)};
 
     keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return;
 
     const SetRefusal refusal = rtOrdinarySetWithReceiver(protoRoot, keyRoot, val, receiver);
     std::string keyStr = keyRoot.get().isString()
@@ -499,6 +500,7 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
     // 7.1.19, whose step 1 can run a user `toString`: the receiver and the
     // method are rooted across it, and the header below is re-derived after.
     keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return;
     objVal = objRoot0.get();
     Value keyVal = keyRoot.get();
     Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
@@ -581,6 +583,7 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
     Rooted<Value> keyRoot{Value(keyBits)};
     // 7.1.19 again, with both halves of the accessor rooted across it.
     keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return;
     objVal = objRoot0.get();
     Value keyVal = keyRoot.get();
     Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
@@ -625,6 +628,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         Rooted<Value> valRoot{Value(valBits)};
         Rooted<Value> keyRoot{Value(idxBits)};
         keyRoot.set(rtToPropertyKey(keyRoot));
+        if (rtExceptionPending()) return;
         bronze_elem_set(objRoot.get().rawBits(), keyRoot.get().rawBits(),
                         valRoot.get().rawBits(), strict);
         return;

@@ -213,12 +213,14 @@ uint64_t functionApply(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     // the rooted source — both reads can run a getter, and the block's
     // construction allocates.
     const uint32_t count = rtArrayLikeLength(list);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (!rtCheckAppliedArgumentCount(count, "Function.prototype.apply")) {
         return Value::fromUndefined().rawBits();
     }
     RootedBlock block(count);
     for (uint32_t i = 0; i < count; ++i) {
         block.set(i, rtArrayLikeElement(list, i));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return bronze_dynamic_call(fn.get().rawBits(), thisArg.get().rawBits(), count, block.data());
 }

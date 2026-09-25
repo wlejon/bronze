@@ -531,9 +531,9 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                     Rooted<Value> recv{receiver ? *receiver : live.get()};
                     const bool ok = runtime::rtProxySet(parent, key.get(), val.get(),
                                                         /*strict=*/false, recv.get());
-                    // A trap that throws never returns here; a false is the
-                    // trap's refusal, for the caller to report.
-                    if (!ok && refused) {
+                    // A false with an exception already pending is the trap's
+                    // own throw, not a refusal for the caller to report over it.
+                    if (!ok && refused && !runtime::rtExceptionPending()) {
                         *refused = SetRefusal::TrapRefused;
                     }
                     return live.get().asObject<ObjectHeader>();

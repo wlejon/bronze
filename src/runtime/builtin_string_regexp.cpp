@@ -122,6 +122,10 @@ bool argumentIsRegExpLike(Rooted<Value>& arg, bool& threw) {
     }
     Rooted<Value> key{Value::fromSymbol(rtSymbolMatch())};
     const Value matcher = Value(bronze_elem_get(arg.get().rawBits(), key.get().rawBits()));
+    if (rtExceptionPending()) {
+        threw = true;
+        return false;
+    }
     // Step 2: `undefined` falls through to the [[RegExpMatcher]] question,
     // which for a non-RegExp object is `false`. Anything else is ToBoolean —
     // so an explicit `[Symbol.match] = false` opts an object OUT.
@@ -151,6 +155,7 @@ bool requireGlobalPattern(Rooted<Value>& arg, const char* method) {
     }
     Rooted<Value> key{rtMakeString("flags")};
     const Value flags = Value(bronze_elem_get(arg.get().rawBits(), key.get().rawBits()));
+    if (rtExceptionPending()) return false;
     // Step 2.b.ii RequireObjectCoercible: `flags` being absent is its own
     // failure and not an absent `g`, so it says so.
     if (flags.isUndefined() || flags.isNull()) {
@@ -160,6 +165,7 @@ bool requireGlobalPattern(Rooted<Value>& arg, const char* method) {
         return false;
     }
     Rooted<Value> text{rtValueToString(flags)};
+    if (rtExceptionPending()) return false;
     if (rtUtf8Chars(text.get().asString<StringHeader>()).find('g') != std::string::npos) {
         return true;
     }
@@ -182,6 +188,7 @@ uint64_t stringSearch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     if (rtPatternMethod(arg, PatternSymbol::Search, searcher)) {
         return rtCallPatternMethod(searcher, arg, self, self, /*argCount=*/1).rawBits();
     }
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     if (!rtIsRegExp(args[0])) {
         // Step 3 creates a RegExp from the argument, so a string argument is
@@ -196,6 +203,7 @@ uint64_t stringSearch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         Rooted<Value> source{args[0].isUndefined() ? rtMakeString("")
                                                    : rtValueToString(args[0])};
         Rooted<Value> made{rtRegExpFromParts(source, "")};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return rtRegExpSearch(made, self).rawBits();
     }
     Rooted<Value> re{args[0]};
@@ -217,8 +225,10 @@ uint64_t stringMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     if (rtPatternMethod(arg, PatternSymbol::Match, matcher)) {
         return rtCallPatternMethod(matcher, arg, self, self, /*argCount=*/1).rawBits();
     }
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     Rooted<Value> re{patternArgument(args[0], "")};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpMatch(re, self).rawBits();
 }
 
@@ -237,6 +247,7 @@ uint64_t stringMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     if (rtPatternMethod(arg, PatternSymbol::MatchAll, matcher)) {
         return rtCallPatternMethod(matcher, arg, self, self, /*argCount=*/1).rawBits();
     }
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     // Steps 4-5: a non-RegExp argument becomes a `g` pattern, and the operation
     // is then 22.2.6.9 on it — which clones, so the iterator's cursor is its
@@ -247,6 +258,7 @@ uint64_t stringMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     }
     Rooted<Value> source{args[0].isUndefined() ? rtMakeString("") : rtValueToString(args[0])};
     Rooted<Value> made{rtRegExpFromParts(source, "g")};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpMatchAll(made, self).rawBits();
 }
 
@@ -263,7 +275,9 @@ uint64_t replaceLiteral(Rooted<Value>& self, Rooted<Value>& searchValue,
     const bool replacerIsFunction = isCallable(replaceValue.get());
     Rooted<Value> replacement{replacerIsFunction ? replaceValue.get()
                                                  : rtValueToString(replaceValue.get())};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const Units needle = unitsOf(rtValueToString(searchValue.get()));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     Units out;
     size_t at = 0;
@@ -324,6 +338,7 @@ uint64_t stringReplacePattern(uint64_t, uint64_t thisBits, uint32_t argc, const 
     if (rtPatternMethod(arg, PatternSymbol::Replace, replacer)) {
         return rtCallPatternMethod(replacer, arg, self, replaceValue, /*argCount=*/2).rawBits();
     }
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     if (rtIsRegExp(args[0])) {
         Rooted<Value> re{args[0]};
@@ -366,6 +381,7 @@ bool rtPatternMethod(Rooted<Value>& arg, PatternSymbol which, Rooted<Value>& out
     // receiver is re-read, because interning one allocates its description.
     Rooted<Value> key{Value::fromSymbol(patternSymbolKey(which))};
     const Value found = Value(bronze_elem_get(arg.get().rawBits(), key.get().rawBits()));
+    if (rtExceptionPending()) return false;
     // GetMethod step 3: both absent spellings mean "no method", and only then
     // does the caller run its own algorithm.
     if (found.isUndefined() || found.isNull()) return false;

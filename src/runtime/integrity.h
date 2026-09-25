@@ -68,7 +68,7 @@ inline bool rtIsExtensible(Value obj) {
 // namespace with the constant false (10.4.6.3), a non-object with false
 // (20.1.2.16 step 1), and a kind that keeps no level with true — the same
 // arithmetic `Object.isExtensible` does. Rooted, because the trap is user code.
-// A throw from the trap propagates.
+// A pending exception comes back as false; the caller tests the cell.
 bool rtIsExtensibleOf(Rooted<Value>& obj);
 
 inline IntegrityLevel rtIntegrityLevel(Value obj) {

@@ -191,7 +191,7 @@ uint32_t Lowerer::getKeyConstantIndex(const std::string& key) {
 il::BlockId Lowerer::createBlock(il::Function& ilFn) {
     il::BlockId id = static_cast<il::BlockId>(ilFn.blocks.size());
     // Every block made inside a `try` names that try's handler, and the backend
-    // points the block's unwind edges at it. It is stamped here, at creation, rather
+    // derives its cell tests from that. It is stamped here, at creation, rather
     // than set by each construct: a handler that had to be assigned by hand
     // would be forgotten by exactly the construct that most needs it.
     ilFn.blocks.push_back(il::Block{.id = id, .handler = currentHandler_});

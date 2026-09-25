@@ -266,6 +266,7 @@ uint64_t mathSumPrecise(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
         return rtThrowTypeError("Math.sumPrecise requires an iterable object").rawBits();
     }
     Rooted<Value> rec{Value(bronze_iter_open(items.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     bool anyNaN = false;
     bool allMinusZero = true;
@@ -308,6 +309,11 @@ uint64_t mathSumPrecise(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
             }
         }
     }
+    if (rtExceptionPending()) {
+        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+        return Value::fromUndefined().rawBits();
+    }
+
     if (anyNaN || (countPosInf > 0 && countNegInf > 0)) {
         return Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits();
     }

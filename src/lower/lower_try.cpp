@@ -3,9 +3,8 @@
 // Three ideas, in the order they depend on each other.
 //
 // The handler is a property of the BLOCK: `createBlock` stamps
-// `currentHandler_` onto everything made inside a `try`, the backend makes the
-// block's calls invokes that unwind to it, and nothing here emits a test. So a
-// `try` body needs a
+// `currentHandler_` onto everything made inside a `try`, the backend derives
+// its cell tests from that, and nothing here emits one. So a `try` body needs a
 // block of its own — lowering cannot simply carry on in the block the statement
 // was reached in, or the first `throw` in the body would take the ENCLOSING
 // handler's edge.
@@ -181,9 +180,9 @@ bool Lowerer::lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn) {
         if (!currentBlockIsTerminated(ilFn)) emitInst(ilFn, jumpTo(bJoin));
     }
 
-    // The exception path. `exc.take` holds the thrown value while the finally
-    // body runs, which is what lets a `return` inside it discard the exception
-    // simply by terminating the block before the re-raise.
+    // The exception path. `exc.take` clears the cell, so the finally body runs
+    // with nothing pending — which is what lets a `return` inside it discard
+    // the exception simply by terminating the block before the re-raise.
     restoreVarStates(stateBefore);
     setCurrentBlock(bHandler);
     il::ValueId pending = ilFn.valueCount++;

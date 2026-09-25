@@ -53,6 +53,7 @@ Value proxyMethodOf(Value proxy, Value symbolKey) {
     Rooted<Value> objRoot{proxy};
     Rooted<Value> keyRoot{symbolKey};
     Rooted<Value> method{rtProxyGet(objRoot.get(), keyRoot.get(), objRoot.get())};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (method.get().isNull() || method.get().isUndefined()) return Value::fromUndefined();
     return method.get();
 }

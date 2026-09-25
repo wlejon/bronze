@@ -161,10 +161,11 @@ TEST_CASE("ToPrimitive tries the two methods in the order its hint names") {
     // both callers are on `il::canThrow`'s list.
     SUBCASE("neither answering a primitive is the TypeError step 4 names") {
         Rooted<Value> obj{probeObject()};
-        Value thrown;
-        CHECK(rtTryCatch([&] { (void)rtToPrimitive(obj, ToPrimitiveHint::Default); }, thrown));
+        Rooted<Value> prim{rtToPrimitive(obj, ToPrimitiveHint::Default)};
         CHECK(joined() == "valueOf,toString");
-        CHECK(rtIsErrorInstance(thrown));
+        CHECK(rtExceptionPending());
+        rtClearException();
+        CHECK_FALSE(rtExceptionPending());
     }
 
     // Step 1: a primitive is returned untouched, and nothing is called.
@@ -256,6 +257,7 @@ TEST_CASE("ToNumber asks for hint number and ToPropertyKey for hint string") {
         Rooted<Value> obj{probeObject()};
         CHECK(rtToNumber(obj.get()) == 7.0);
         CHECK(joined() == "valueOf");
+        CHECK_FALSE(rtExceptionPending());
     }
 
     SUBCASE("ToPropertyKey runs toString first") {
@@ -275,6 +277,7 @@ TEST_CASE("ToNumber asks for hint number and ToPropertyKey for hint string") {
         Value key = rtToPropertyKey(obj);
         CHECK(key.isSymbol());
         CHECK(key.rawBits() == sym.get().rawBits());
+        CHECK_FALSE(rtExceptionPending());
     }
 
     // A primitive costs no conversion at all, which is the half of ToNumber's
@@ -289,16 +292,19 @@ TEST_CASE("ToNumber asks for hint number and ToPropertyKey for hint string") {
 }
 
 // 6.1.5.1: ToNumber of a Symbol is a TypeError, THROWN rather than fatal, so a
-// program can catch it.
-TEST_CASE("ToNumber of a symbol throws a catchable TypeError") {
+// program can catch it. The value handed back is NaN and is never read — the
+// caller stores it and then tests the pending cell.
+TEST_CASE("ToNumber of a symbol leaves a catchable TypeError pending") {
     ShadowStackFrame frame;
     reset();
 
     Rooted<Value> desc{rtMakeString("id")};
     Rooted<Value> sym{rtMakeSymbol(desc.get())};
-    Value thrown;
-    REQUIRE(rtTryCatch([&] { (void)rtToNumber(sym.get()); }, thrown));
-    CHECK(rtIsErrorInstance(thrown));
+    const double n = rtToNumber(sym.get());
+    CHECK(n != n);  // NaN
+    REQUIRE(rtExceptionPending());
+    rtClearException();
+    CHECK_FALSE(rtExceptionPending());
 
     reset();
 }

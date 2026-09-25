@@ -228,8 +228,8 @@ void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::string& key)
 // spellings, and step 2 sends a data write to the RECEIVER rather than to the
 // holder — which is the whole content of the operation, so it is answered once
 // (rt_reflect.cpp) rather than restated per spelling. The key must already
-// have been through ToPropertyKey, and `target` must not be a proxy; a throw
-// from a setter or a conversion propagates.
+// have been through ToPropertyKey, and `target` must not be a proxy; a
+// pending exception comes back as `None` and stays pending.
 SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
                                      Rooted<Value>& val, Rooted<Value>& receiver);
 

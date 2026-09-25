@@ -60,10 +60,13 @@ Units thisUnits(Value self, const char* method) {
     Value str;
     if (!rtThisStringValue(self, str)) {
         // 22.1.3's RequireObjectCoercible plus ToString: a String.prototype
-        // method reached with a `this` that is neither is a catchable
-        // TypeError.
+        // method reached with a `this` that is neither is a TypeError, and
+        // since a catchable one. The empty unit sequence is what the caller
+        // then computes over, and its result is discarded — the cell is already
+        // set, so its caller's test fires before the value is read.
         rtThrowTypeError(std::string("String.prototype.") + method +
                          " called on a value that is not a string");
+        return Units{};
     }
     return unitsOf(str.asString<StringHeader>());
 }
@@ -80,7 +83,7 @@ Units argUnits(Value v) {
 // 4294967295 (no limit in practice) and 2^32 is 0 (an empty result).
 uint32_t toUint32(Value v) {
     const double n = rtToNumber(v);
-    if (!std::isfinite(n) || n == 0.0) return 0;
+    if (rtExceptionPending() || !std::isfinite(n) || n == 0.0) return 0;
     const double truncated = std::trunc(n);
     const double wrapped = std::fmod(truncated, 4294967296.0);
     return static_cast<uint32_t>(static_cast<int64_t>(wrapped < 0 ? wrapped + 4294967296.0 : wrapped));
@@ -180,6 +183,7 @@ uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     // it, out of a rooted slot the collector updates.
     Rooted<Value> str{self};
     double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const StringHeader* s = str.get().asString<StringHeader>();
     if (idx < 0 || idx >= static_cast<double>(s->getLength())) {
         return Value::fromDouble(std::numeric_limits<double>::quiet_NaN()).rawBits();
@@ -210,6 +214,7 @@ uint64_t stringCodePointAt(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     // which may run user code and move the string.
     Rooted<Value> str{self};
     double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const StringHeader* s = str.get().asString<StringHeader>();
     const uint32_t size = s->getLength();
     if (idx < 0 || idx >= static_cast<double>(size)) return Value::fromUndefined().rawBits();
@@ -241,6 +246,7 @@ uint64_t stringLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     double pos = std::numeric_limits<double>::infinity();
     if (args.count() > 1) {
         double numPos = rtToNumber(args[1]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!std::isnan(numPos)) pos = toInteger(numPos);
     }
     if (needle.size() > self.size()) return Value::fromDouble(-1.0).rawBits();
@@ -341,11 +347,13 @@ uint64_t stringSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     double startArg = 0.0;
     if (args.count() > 0) {
         startArg = toInteger(rtToNumber(args[0]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     bool hasEnd = args.count() > 1 && !args[1].isUndefined();
     double endArg = 0.0;
     if (hasEnd) {
         endArg = toInteger(rtToNumber(args[1]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     const StringHeader* s = strRoot.get().asString<StringHeader>();
     const uint32_t len = s->getLength();
@@ -365,11 +373,13 @@ uint64_t stringSubstring(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     double startArg = 0.0;
     if (args.count() > 0) {
         startArg = toInteger(rtToNumber(args[0]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     bool hasEnd = args.count() > 1 && !args[1].isUndefined();
     double endArg = 0.0;
     if (hasEnd) {
         endArg = toInteger(rtToNumber(args[1]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     const StringHeader* s = strRoot.get().asString<StringHeader>();
     const uint32_t len = s->getLength();
@@ -390,11 +400,13 @@ uint64_t stringSubstr(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     double startArg = 0.0;
     if (args.count() > 0) {
         startArg = toInteger(rtToNumber(args[0]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     bool hasLen = args.count() > 1 && !args[1].isUndefined();
     double lenArg = 0.0;
     if (hasLen) {
         lenArg = toInteger(rtToNumber(args[1]));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     const StringHeader* s = strRoot.get().asString<StringHeader>();
     const size_t size = s->getLength();
@@ -423,9 +435,11 @@ uint64_t stringConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         return rtThrowTypeError("String.prototype.concat called on null or undefined").rawBits();
     }
     Value thisStr = rtValueToString(self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Units out = unitsOf(thisStr.asString<StringHeader>());
     for (uint32_t i = 0; i < args.count(); ++i) {
         Units piece = argUnits(args[i]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         out.insert(out.end(), piece.begin(), piece.end());
     }
     return stringFromUnits(out).rawBits();
@@ -511,6 +525,7 @@ uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     Units self = thisUnits(Value(thisBits),
                            Locale ? (Upper ? "toLocaleUpperCase" : "toLocaleLowerCase")
                                   : (Upper ? "toUpperCase" : "toLowerCase"));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Units out = Upper ? unicode::toUpperFull(self) : unicode::toLowerFull(self);
     return stringFromUnits(out).rawBits();
 }
@@ -518,6 +533,7 @@ uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "split");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (args[0].isObject()) {
         // 22.1.3.23 step 2: a separator carrying its own `[Symbol.split]`
         // decides the whole algorithm, and the literal-string walk below never
@@ -533,6 +549,7 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
             Rooted<Value> limit{args[1]};
             return rtCallPatternMethod(splitter, separator, str, limit, /*argCount=*/2).rawBits();
         }
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         // A RegExp separator is a different algorithm entirely (22.2.6.14
         // SplitMatcher, which also yields the separator's captures), so it is
         // handed to the module that owns the matcher.
@@ -546,6 +563,7 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     // limit-zero exit (step 6) comes ahead of the undefined-separator exit
     // (step 7). `undefined` is 2^32-1, everything else is ToUint32.
     const uint32_t limit = args[1].isUndefined() ? 0xFFFFFFFFu : toUint32(args[1]);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     ArrayHeader* raw = ArrayHeader::create(rtHeap(), 4);
     raw->length = 0;
@@ -570,6 +588,7 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         return out.get().rawBits();
     }
     Units sep = argUnits(args[0]);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (sep.empty()) {
         // Step 9: the first `min(len, lim)` code units, each its own element.
         // An empty subject yields nothing here, which is why `"".split("")` is
@@ -622,6 +641,7 @@ uint64_t stringValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
 // 22.1.3.11 isWellFormed
 uint64_t stringIsWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Units self = thisUnits(Value(thisBits), "isWellFormed");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const size_t len = self.size();
     for (size_t i = 0; i < len; ++i) {
         const uint16_t c = self[i];
@@ -642,6 +662,7 @@ uint64_t stringIsWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_
 uint64_t stringToWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Value selfVal(thisBits);
     Units self = thisUnits(selfVal, "toWellFormed");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const size_t len = self.size();
     bool hasLone = false;
     for (size_t i = 0; i < len; ++i) {
@@ -692,10 +713,12 @@ uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     // be user code, and an unrooted receiver read afterwards is a moved one.
     Rooted<Value> selfVal{Value(thisBits)};
     thisUnits(selfVal.get(), "normalize");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     std::string form = "NFC";
     if (args.count() > 0 && !args[0].isUndefined()) {
         Rooted<Value> formVal{rtValueToString(args[0])};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         form = rtUtf8Chars(formVal.get().asString<StringHeader>());
     }
     if (form != "NFC" && form != "NFD" && form != "NFKC" && form != "NFKD") {
@@ -715,7 +738,9 @@ extern "C" uint64_t bronze_string_char_code_at(uint64_t env, uint64_t thisBits, 
 uint64_t stringLocaleCompare(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "localeCompare");
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Units that = args.count() > 0 ? argUnits(args[0]) : argUnits(Value::fromUndefined());
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     size_t minLen = std::min(self.size(), that.size());
     for (size_t i = 0; i < minLen; ++i) {

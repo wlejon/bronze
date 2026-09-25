@@ -1,6 +1,5 @@
 #include "cli/link.h"
 
-#include <algorithm>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -205,30 +204,17 @@ std::string runtimeNotFoundMessage() {
 
 // The export surface of the shared runtime, as the object sees it: the ABI
 // registry, expanded here the same way cmake/bronze_abi_exports.cmake expands
-// it into the .def / version script / exported-symbols list, plus the brass
-// raise entry points and the personality routine the target's unwind
-// information names. One header, two consumers, no drift.
-#define BRONZE_LINK_STR2(x) #x
-#define BRONZE_LINK_STR(x) BRONZE_LINK_STR2(x)
-const char* personalityFor(const brass::Target& target) {
-    return target.is_windows() ? BRONZE_LINK_STR(BRONZE_ABI_PERSONALITY_WINDOWS)
-                               : BRONZE_LINK_STR(BRONZE_ABI_PERSONALITY_SYSV);
-}
-#undef BRONZE_LINK_STR
-#undef BRONZE_LINK_STR2
-
-bool isRuntimeExport(const std::string& name, const brass::Target& target) {
+// it into the .def / version script / exported-symbols list. One registry,
+// two consumers, no drift.
+const std::unordered_set<std::string>& runtimeExports() {
     static const std::unordered_set<std::string> s_names = [] {
         std::unordered_set<std::string> names;
 #define BRONZE_LINK_EXPORT_NAME(name, ret, args) names.insert(#name);
         BRONZE_ABI_FUNCTIONS(BRONZE_LINK_EXPORT_NAME)
 #undef BRONZE_LINK_EXPORT_NAME
-#define BRONZE_LINK_BRASS_NAME(name) names.insert(#name);
-        BRONZE_ABI_BRASS_SYMBOLS(BRONZE_LINK_BRASS_NAME)
-#undef BRONZE_LINK_BRASS_NAME
         return names;
     }();
-    return s_names.count(name) != 0 || name == personalityFor(target);
+    return s_names;
 }
 
 // The C math functions the backend may name (brass's il_lowering_ops and the
@@ -458,24 +444,15 @@ bool linkSharedModule(const brass::object::ObjectFile& obj, const std::string& o
     std::vector<std::string> mathImports;
     std::string unknown;
     for (const std::string& name : referencedUndefined(obj)) {
-        if (isRuntimeExport(name, obj.target)) runtimeImports.push_back(name);
+        if (runtimeExports().count(name)) runtimeImports.push_back(name);
         else if (mathExports().count(name)) mathImports.push_back(name);
         else unknown += (unknown.empty() ? "" : ", ") + name;
-    }
-    // The linker writes the unwind information, and with it the reference to
-    // the personality routine, after this scan; offering the symbol costs
-    // nothing when no function has landing pads, since only a referenced
-    // import is bound.
-    const std::string personality = personalityFor(obj.target);
-    if (std::find(runtimeImports.begin(), runtimeImports.end(), personality) == runtimeImports.end()) {
-        runtimeImports.push_back(personality);
     }
     if (!unknown.empty()) {
         diags.error(Span{}, "the object references " + unknown +
                                 ", which the shared bronze runtime does not export (every "
-                                "symbol generated code may name is an X(...) or Y(...) line in "
-                                "src/abi/bronze_abi.h, or its personality routine) and the "
-                                "C math library does not "
+                                "symbol generated code may name is an X(...) line in "
+                                "src/abi/bronze_abi.h) and the C math library does not "
                                 "provide. The backend and the ABI header this bronze was "
                                 "built from disagree.");
         return false;

@@ -13,7 +13,6 @@
 
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
-#include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
@@ -71,7 +70,7 @@ void runEntry(ModuleEntry entry) {
     // guessing the stamp's name from the entry's, which is the loader's fact,
     // not this function's.
     bronze::ShadowStackFrame root_frame;
-    runtime::rtRunModuleEntry(entry);
+    entry();
     // A module whose top level queued a job has not finished running until the
     // job has — runMain's checkpoint, per module.
     runtime::rtDrainMicrotasks();

@@ -168,10 +168,10 @@ regex::Units unitsOfString(const StringHeader* str) {
     return regex::Units(units.begin(), units.end());
 }
 
-// Compiles, or answers the index of an identical earlier compilation. Throws
-// when it cannot: 22.2.3.1 step 4 makes a pattern that does not parse a
-// SyntaxError, and a pattern bronze refuses names itself in the same message
-// (`src/regex` writes both).
+// Compiles, or answers the index of an identical earlier compilation. Returns
+// false with the exception cell set: 22.2.3.1 step 4 makes a pattern that does
+// not parse a SyntaxError, and a pattern bronze refuses names itself in the
+// same message (`src/regex` writes both).
 bool programFor(const std::string& sourceUtf8, const regex::Units& source,
                 const std::string& flagsText, regex::Flags& flags, uint64_t& out) {
     std::string error;
@@ -401,7 +401,7 @@ Value buildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
 // 22.2.7.2 steps 1-2: ToLength (7.1.20) of whatever the program assigned to
 // `lastIndex`. The slot holds the assigned VALUE — a string stays a string —
 // so this may run user code (an object's `valueOf`), and the RegExp is read
-// through its root afterwards, and its throw propagates. `ok` is always true.
+// through its root afterwards. `ok` is false with the exception pending.
 size_t lastIndexOf(Rooted<Value>& re, bool& ok) {
     ok = true;
     const Value stored = re.get().asObject<RegExpHeader>()->lastIndex;
@@ -410,6 +410,10 @@ size_t lastIndexOf(Rooted<Value>& re, bool& ok) {
         raw = stored.asNumber();
     } else {
         raw = rtToNumber(stored);
+        if (rtExceptionPending()) {
+            ok = false;
+            return 0;
+        }
     }
     if (std::isnan(raw) || raw <= 0.0) return 0;
     if (raw >= 9007199254740991.0) return static_cast<size_t>(-1);
@@ -545,6 +549,7 @@ uint64_t rtRegExpExecBody(uint64_t, uint64_t thisBits, uint32_t argc, const uint
             .rawBits();
     }
     Rooted<Value> input{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpExec(self, input).rawBits();
 }
 

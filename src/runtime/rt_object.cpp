@@ -300,6 +300,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
         }
         Rooted<Value> key{rtMakeString("prototype")};
         Rooted<Value> protoParent{rtProxyGet(base.get(), key.get(), base.get())};
+        if (rtExceptionPending()) return;
         if (!protoParent.get().isObject() && !protoParent.get().isNull()) {
             rtThrowTypeError("Class extends value does not have valid prototype property");
             return;
@@ -334,6 +335,7 @@ void bronze_class_extends(uint64_t derivedBits, uint64_t baseBits) {
     // the two `Rooted` constructors below capture pre-collection addresses,
     // which showed up as a class whose methods were all `undefined`.
     rtCheckNativeBaseExtends(base);
+    if (rtExceptionPending()) return;
     rtEnsureFunctionPrototype(base);
     rtEnsureFunctionProperties(base);
     // 15.7.14 step 6 makes the base constructor the derived one's
@@ -491,6 +493,7 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
         FunctionHeader* live = fnRoot.get().asObject<FunctionHeader>();
         Value result = live->call(self.get(), argc,
                                   const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return result.isObject() ? result.rawBits() : self.get().rawBits();
     }
 
@@ -518,6 +521,7 @@ uint64_t bronze_construct(uint64_t fnBits, uint32_t argc, const uint64_t* argvBi
     fn = fnRoot.get().asObject<FunctionHeader>();
     Value result = fn->call(self.get(), argc,
                             const_cast<Value*>(reinterpret_cast<const Value*>(argvBits)));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     // JS: a constructor returning an object replaces the instance; any other
     // return value (including undefined) is ignored.
@@ -566,7 +570,9 @@ static_assert(Value::fromUninitialized().rawBits() == BRONZE_ABI_UNINITIALIZED_B
 //
 // `keyIndex` is the module's interned name, so the message can say which
 // binding without the backend carrying a string — the same arrangement
-// `bronze_reference_error` uses.
+// `bronze_reference_error` uses. Returns `undefined` on the raising path for
+// the reason every raise helper does: the result lands in a caller's GC root
+// slot before the pending cell is tested.
 uint64_t bronze_env_get_tdz(uint64_t envBits, uint32_t depth, uint32_t index,
                             uint32_t keyIndex) {
     recordHelperCall("bronze_env_get_tdz");

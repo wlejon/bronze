@@ -15,8 +15,10 @@ void flattenIntoArray(Rooted<Value>& out, Rooted<Value>& source, uint32_t source
     for (uint32_t k = 0; k < sourceLen; ++k) {
         if (!rtArrayLikeHasElement(source, k)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(source, k)};
+        if (rtExceptionPending()) return;
         if (!mapperFn.get().isUndefined()) {
             elem.set(callBack(mapperFn, thisArg, elem, k, originalThis));
+            if (rtExceptionPending()) return;
         }
         bool shouldFlatten = false;
         if (depth > 0.0 && rtIsConcatSpreadable(elem)) {
@@ -26,6 +28,7 @@ void flattenIntoArray(Rooted<Value>& out, Rooted<Value>& source, uint32_t source
             const uint32_t elemLen = isArray(elem.get()) ? lengthOf(elem.get()) : rtArrayLikeLength(elem);
             Rooted<Value> noMapper{Value::fromUndefined()};
             flattenIntoArray(out, elem, elemLen, depth - 1.0, noMapper, thisArg, originalThis);
+            if (rtExceptionPending()) return;
         } else {
             appendTo(out, elem);
         }
@@ -43,6 +46,7 @@ uint64_t arraySlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     uint32_t end = args.count() > 1 && !args[1].isUndefined()
                        ? relativeIndex(toInteger(rtToNumber(args[1])), len)
                        : len;
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const uint32_t count = end > start ? end - start : 0;
     Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
     if (isArray(self.get())) {
@@ -62,7 +66,9 @@ uint64_t arraySlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
                 continue;
             }
             Rooted<Value> elem{rtArrayLikeGetElement(self, srcIdx)};
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             rtCreateDataPropertyOrThrow(out, i, elem);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         rtArrayLikeSetLength(out, count);
     }
@@ -82,22 +88,28 @@ uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
             for (uint32_t i = 0; i < itemLen; ++i) {
                 if (rtArrayLikeHasElement(item, i)) {
                     Rooted<Value> elem{rtArrayLikeGetElement(item, i)};
+                    if (rtExceptionPending()) return;
                     rtCreateDataPropertyOrThrow(out, n, elem);
+                    if (rtExceptionPending()) return;
                 }
                 ++n;
             }
         } else {
             rtCreateDataPropertyOrThrow(out, n, item);
+            if (rtExceptionPending()) return;
             ++n;
         }
     };
 
     appendItem(self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t a = 0; a < args.count(); ++a) {
         Rooted<Value> item{args[a]};
         appendItem(item);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     rtArrayLikeSetLength(out, n);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return out.get().rawBits();
 }
 
@@ -111,6 +123,7 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     std::string sep = ",";
     if (args.count() > 0 && !args[0].isUndefined()) {
         Rooted<Value> sepStr{rtValueToString(args[0])};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         sep = rtUtf8Chars(sepStr.get().asString<StringHeader>());
     }
 
@@ -119,18 +132,22 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
         if (i > 0) result += sep;
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (elem.get().isNull() || elem.get().isUndefined()) continue;
         if (isArray(elem.get())) {
             Rooted<Value> joinKey{rtMakeString("join")};
             Rooted<Value> joinMethod{Value(bronze_elem_get(elem.get().rawBits(), joinKey.get().rawBits()))};
             if (isCallable(joinMethod.get())) {
                 uint64_t res = bronze_dynamic_call(joinMethod.get().rawBits(), elem.get().rawBits(), 0, nullptr);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 Rooted<Value> resStr{rtValueToString(Value(res))};
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 result += rtUtf8Chars(resStr.get().asString<StringHeader>());
                 continue;
             }
         }
         Rooted<Value> s{rtValueToString(elem.get())};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         result += rtUtf8Chars(s.get().asString<StringHeader>());
     }
     return rtMakeString(result).rawBits();
@@ -150,6 +167,7 @@ uint64_t arrayFlat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> thisArg{Value::fromUndefined()};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
     flattenIntoArray(out, self, len, depth, noMapper, thisArg, self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return out.get().rawBits();
 }
 
@@ -164,6 +182,7 @@ uint64_t arrayFlatMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
     flattenIntoArray(out, self, len, 1.0, fn, thisArg, self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return out.get().rawBits();
 }
 
@@ -180,10 +199,12 @@ uint64_t arrayToSorted(uint64_t env, uint64_t thisBits, uint32_t argc, const uin
     Rooted<Value> out{newArray()};
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         appendTo(out, elem);
     }
     uint64_t sortArg = compareFn.get().rawBits();
     rtArraySortBuiltin(env, out.get().rawBits(), 1, &sortArg);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return out.get().rawBits();
 }
 
@@ -194,6 +215,7 @@ uint64_t arrayToReversed(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*)
     Rooted<Value> out{newArray()};
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtArrayLikeGetElement(self, len - 1 - i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         appendTo(out, elem);
     }
     return out.get().rawBits();
@@ -220,6 +242,7 @@ uint64_t arrayToSpliced(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     Rooted<Value> out{newArray()};
     for (uint32_t i = 0; i < start; ++i) {
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         appendTo(out, elem);
     }
     for (uint32_t i = 0; i < insertCount; ++i) {
@@ -228,6 +251,7 @@ uint64_t arrayToSpliced(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     }
     for (uint32_t i = start + deleteCount; i < len; ++i) {
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         appendTo(out, elem);
     }
     return out.get().rawBits();
@@ -239,6 +263,7 @@ uint64_t arrayWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
     double rel = toInteger(rtToNumber(args[0]));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     double k = rel >= 0 ? rel : static_cast<double>(len) + rel;
     if (k < 0 || k >= static_cast<double>(len)) {
         return rtThrowRangeError("Invalid index").rawBits();
@@ -251,6 +276,7 @@ uint64_t arrayWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
             appendTo(out, val);
         } else {
             Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             appendTo(out, elem);
         }
     }
@@ -275,6 +301,7 @@ uint64_t rtArrayToStringBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
         // every receiver kind — a function, a proxy — where a direct shape read
         // would trust a header this call has not checked.
         joinMethod = Value(bronze_elem_get(self.get().rawBits(), joinKey.get().rawBits()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     if (isCallable(joinMethod)) {
         return bronze_dynamic_call(joinMethod.rawBits(), self.get().rawBits(), 0, nullptr);

@@ -1,42 +1,60 @@
 #pragma once
 
-// PER-SLOT REPRESENTATION. docs/slot-representation.md is the long form.
+// PER-SLOT REPRESENTATION (stage R1).
 //
-// A property slot holds a `bronze::Value`, NaN-boxed, unless its shape says
-// otherwise: a shape may say, per slot, that the slot's eight bytes ARE a
-// double, and the runtime keeps that claim true against every store.
+// Every property slot used to hold one thing: a `bronze::Value`, NaN-boxed.
+// That is a uniform storage model and it is what makes double-heavy code pay a
+// tag at every property boundary — three.js's Vector3, Matrix4 and Quaternion
+// spend their whole lives moving doubles through slots that are typed only at
+// run time. This header is the first half of removing that: a shape may now
+// say, per slot, that the slot's eight bytes ARE a double, and the runtime
+// keeps that claim true against every store.
 //
 // WHAT THE CLAIM MEANS. `SlotRepr::Double` on a slot says: reading those eight
-// bytes as an IEEE double is correct, with no tag test and no branch. It is NOT
-// a promise about what the program wrote most recently — the runtime is free to
-// take the claim back, and does, the moment a store contradicts it.
+// bytes as an IEEE double is correct, with no tag test and no branch. That is
+// exactly the promise stage R2's codegen will spend. It is NOT a promise about
+// what the program wrote most recently — the runtime is free to take the claim
+// back, and does, the moment a store contradicts it.
 //
-// HOW IT IS TAKEN BACK: GENERALIZATION. The invalidation mechanism is SHAPE
-// IDENTITY. A double slot that receives a non-number moves its object to a
-// shape whose node for that slot is boxed (`Shape::withSlotBoxed`). Shape nodes
-// are immutable once created, so every OTHER object still at the old shape is
-// untouched and still holds a double there; inline caches keyed on the old
-// shape simply stop matching for the object that moved. It is the same
-// discipline an attribute change uses, applied to one more fact about a slot.
+// HOW IT IS TAKEN BACK: GENERALIZATION. bronze has no deopt, so there is no
+// "throw the compiled code away" to fall back on. The invalidation mechanism is
+// the one the object model already had — SHAPE IDENTITY. A double slot that
+// receives a non-number moves its object to a shape whose node for that slot is
+// boxed (`Shape::withSlotBoxed`). Shape nodes are immutable once created, so
+// every OTHER object still at the old shape is untouched and still holds a
+// double there; compiled guards keyed on the old shape simply stop matching for
+// the object that moved. It is the same discipline an attribute change already
+// used, applied to one more fact about a slot.
 //
-// WHY A DOUBLE SLOT IS BIT-COMPATIBLE WITH A BOX. bronze NaN-boxes directly: a
+// WHY THE R1 STORE IS BIT-COMPATIBLE WITH A BOX. bronze NaN-boxes directly: a
 // Number's Value bits ARE the double's bits (value.h), with NaN canonicalized.
 // So a double slot written through this module holds a word that also parses as
-// a number-tagged Value, and every reader that does not know about
+// a number-tagged Value, and every reader that has not yet learned about
 // representations — the collector's generic payload scan, an inline cache's
-// slot load — gives the right answer. The one thing it costs is the
-// non-canonical NaN a raw double slot could otherwise carry, which nothing
-// wants.
+// slot load, a static-slot site's constant-offset load — keeps giving the right
+// answer while R2 is still unwritten. That compatibility is deliberate and
+// temporary: it is what lets the storage model land with the codegen unchanged.
+// The one thing it costs is the non-canonical NaN a raw double slot could
+// otherwise carry, which nothing wants.
 //
-// HOW EVERY STORE IS HELD TO IT. Every write goes through
+// HOW EVERY STORE IS HELD TO IT. The runtime's every write goes through
 // `ObjectHeader::setSlot`, which either canonicalizes a number into the slot or
 // generalizes the slot away — one choke point, so a store path added later
-// inherits the discipline instead of escaping it. Generated code's `prop.set`
-// is a call to `bronze_prop_set`, which reaches `setSlot` like every other
-// path. A set-site inline cache entry naming a double slot carries
-// BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG (`ICEntry::isDoubleSlot`): the test an inline
-// store arm in generated code would make before taking the entry. The runtime's
-// store path does not read it, since it reaches `setSlot` in every case.
+// inherits the discipline instead of escaping it. Generated code's three bare
+// stores cannot route through a function, so each of them makes the same test
+// inline before it writes, and misses to the helper when it fails:
+//
+//   - the set-site inline cache: a set entry naming a double slot carries
+//     BRONZE_ABI_IC_DEPTH_DOUBLE_FLAG, and the arm takes it only for a Number
+//     (llvm_prop_set.cpp). Both the own-property arm and the transition arm a
+//     constructor's `this.x = x` runs on.
+//   - the static-slot site, identity form and family form alike: the shape word
+//     the guard already loaded carries `double_slots`, so the store tests its
+//     own compile-time slot against it (llvm_static_slot.cpp).
+//
+// The miss is taken once per field, not once per store: the helper generalizes
+// the slot, and the entry refilled against the new shape has no flag left to
+// test. Reads are untouched, by the bit-compatibility above.
 //
 // WHERE A DOUBLE SLOT COMES FROM. Only from an ELIGIBLE key whose first store
 // is a number. Eligibility is the compiler's `--pins` manifest, handed over at
@@ -48,7 +66,8 @@
 // key that alternates costs a shape split each time it turns over.
 //
 // THE SEAM. `BRONZE_NO_SLOT_REPR=1` makes `slotReprEnabled()` false, no shape
-// node is ever created double, and every `double_slots` word stays zero.
+// node is ever created double, every `double_slots` word stays zero, and the
+// storage model is exactly what it was before this file existed.
 
 #include <cstdint>
 
@@ -130,8 +149,9 @@ uint32_t slotReprEligibleCount() noexcept;
 //   BRONZE_SLOT_REPR_CENSUS=1  per-(shape, slot) REPRESENTATION STABILITY: for
 //                              every slot of every shape the run touched, how
 //                              many stores were numbers and how many were not.
-//                              A boxed slot whose stores are 100% numbers is a
-//                              slot a wider pins manifest could claim. It needs the shape census's
+//                              That is the planning input for R2 — a boxed slot
+//                              whose stores are 100% numbers is a slot the next
+//                              stage can claim. It needs the shape census's
 //                              latch suppression to see inline-cache hit
 //                              traffic, so it turns that on too, and a census
 //                              run is counts and never times.

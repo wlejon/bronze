@@ -13,8 +13,9 @@
 
 namespace bronze::cli {
 
-// The report a built program makes when its top level throws
-// (rtRunModuleEntry): an Error with its stack, anything else inspected. `bronze run` of the same program prints the same lines.
+// The report a built program makes at its end with an exception pending
+// (bronze_uncaught_exception): an Error with its stack, anything else
+// inspected. `bronze run` of the same program prints the same lines.
 static int reportUncaught(Value thrown) {
     const std::string text = runtime::rtUncaughtReport(thrown);
     std::fflush(stdout);

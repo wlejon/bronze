@@ -91,6 +91,7 @@ uint64_t sharedArrayBufferCtor(uint64_t, uint64_t thisBits, uint32_t argc, const
         Rooted<Value> mblKey{rtMakeString("maxByteLength")};
         Rooted<Value> mblVal{
             Value(bronze_elem_get(opts.get().rawBits(), mblKey.get().rawBits()))};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!mblVal.get().isUndefined()) {
             if (!toIndex(mblVal.get(), "maxByteLength", 1, maxByteLength)) {
                 return Value::fromUndefined().rawBits();
@@ -187,6 +188,7 @@ Value sharedSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
     }
     Rooted<Value> ctorKey{rtMakeString("constructor")};
     Rooted<Value> ctor{Value(bronze_elem_get(self.get().rawBits(), ctorKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (ctor.get().isUndefined()) ctor.set(g_shared.ctor);
     if (!ctor.get().isObject()) {
         return rtThrowTypeError("the constructor of this SharedArrayBuffer is not an object");
@@ -194,6 +196,7 @@ Value sharedSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
     Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
     Rooted<Value> species{
         Value(bronze_elem_get(ctor.get().rawBits(), speciesKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (species.get().isUndefined() || species.get().isNull()) species.set(g_shared.ctor);
     if (!rtIsConstructorValue(species.get())) {
         return rtThrowTypeError("[Symbol.species] of this SharedArrayBuffer is not a constructor");
@@ -201,6 +204,7 @@ Value sharedSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
     RootedBlock block(1);
     block.set(0, Value::fromDouble(static_cast<double>(newLen)));
     Rooted<Value> made{Value(bronze_construct(species.get().rawBits(), 1, block.data()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (!isSharedBuffer(made.get())) {
         return rtThrowTypeError("the species constructor did not return a SharedArrayBuffer");
     }
@@ -235,6 +239,7 @@ uint64_t sharedArrayBufferSlice(uint64_t, uint64_t thisBits, uint32_t argc, cons
     }
     const uint32_t newLen = final > first ? final - first : 0;
     Rooted<Value> newBufVal{sharedSpeciesNew(self, newLen)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
     auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
     if (newLen > 0) std::memcpy(newBuf->data(), oldBuf->data() + first, newLen);
@@ -318,7 +323,8 @@ uint64_t rawOfNumber(double integer, uint32_t width) {
 
 // 25.4.3.1 ValidateIntegerTypedArray + 25.4.3.2 ValidateAtomicAccess, in that
 // order, with the receiver ROOTED because ToIndex on the index can run user
-// code. Throws on a failed validation, and answers true otherwise.
+// code. Answers false with an exception pending; `index` is only meaningful
+// when it answers true.
 bool validateAccess(const char* method, Rooted<Value>& view, Value indexVal, AtomicKind& kind,
                     uint32_t& index) {
     if (!isTypedArray(view.get())) {
@@ -357,6 +363,7 @@ bool operandRaw(Value value, const AtomicKind& kind, uint64_t& raw, Rooted<Value
         return true;
     }
     const double num = rtToNumber(val.get());
+    if (rtExceptionPending()) return false;
     const double integer = toInteger(num);
     raw = rawOfNumber(integer, kind.width);
     converted.set(Value::fromDouble(integer));
@@ -471,6 +478,7 @@ uint64_t atomicsCompareExchange(uint64_t, uint64_t, uint32_t argc, const uint64_
 uint64_t atomicsIsLockFree(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     const double size = toInteger(rtToNumber(args[0]));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const bool lockFree = size == 1.0 || size == 2.0 || size == 4.0 || size == 8.0;
     return Value::fromBool(lockFree).rawBits();
 }

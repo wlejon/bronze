@@ -22,9 +22,9 @@ enum class Tag : uint16_t {
     // A `let`, `const` or `class` binding that has been created and not yet
     // initialized — ECMA-262 9.1.1.1.6's "uninitialized binding", the state a
     // read of which is a ReferenceError. A tag of its OWN rather than a reuse
-    // of Hole: Hole is the empty cache cell and the array hole, and one
-    // internal singleton meaning two things is one place where "is this slot
-    // empty?" and "is this binding in its dead zone?" can be confused.
+    // of Hole: Hole is the empty pending-exception cell, and one internal
+    // singleton meaning two things is one place where "is an exception
+    // pending?" and "is this binding in its dead zone?" can be confused.
     //
     // Like Hole it is internal by construction: it lives only in an
     // environment slot, and the only instruction that can read such a slot

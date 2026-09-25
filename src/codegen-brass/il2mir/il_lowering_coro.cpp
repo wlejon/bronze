@@ -31,7 +31,8 @@ bool lower_coro_instruction(
     Builder& b,
     Function* /*fn*/,
     std::unordered_map<uint32_t, Value*>& val_map,
-    Value*& res_val
+    Value*& res_val,
+    const std::function<void()>& emit_exception_check
 ) {
     auto get_opd = [&](size_t idx) -> Value* {
         if (idx < inst_ast.operands.size()) {
@@ -63,6 +64,7 @@ bool lower_coro_instruction(
             } else {
                 res_val = b.build_call("bronze_async_start", Type::i64(), {mach});
             }
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
@@ -76,12 +78,14 @@ bool lower_coro_instruction(
                 b.build_call("bronze_async_await", Type::void_type(), {mach, val});
                 res_val = nullptr;
             }
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
         case BronzeOp::IterOpen: {
             Value* gen = get_opd(0);
             res_val = b.build_call("bronze_iter_open", Type::i64(), {gen});
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
@@ -92,6 +96,7 @@ bool lower_coro_instruction(
             } else {
                 res_val = b.build_call("bronze_iter_step", Type::i64(), {iter});
             }
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
@@ -105,12 +110,14 @@ bool lower_coro_instruction(
             Value* iter = get_opd(0);
             Value* suppress = b.build_iconst_i32(inst_ast.imm_i64 != 0 ? 1 : 0);
             b.build_call("bronze_iter_close", Type::void_type(), {iter, suppress});
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
         case BronzeOp::IterRest: {
             Value* iter = get_opd(0);
             res_val = b.build_call("bronze_iter_rest", Type::i64(), {iter});
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
@@ -119,18 +126,21 @@ bool lower_coro_instruction(
             Value* mode = get_opd(1);
             Value* sent = get_opd(2);
             res_val = b.build_call("bronze_iter_delegate", Type::i64(), {iter, mode, sent});
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
         case BronzeOp::AsyncIterOpen: {
             Value* iter = get_opd(0);
             res_val = b.build_call("bronze_async_iter_open", Type::i64(), {iter});
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
         case BronzeOp::AsyncIterNext: {
             Value* iter = get_opd(0);
             res_val = b.build_call("bronze_async_iter_next", Type::i64(), {iter});
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 
@@ -138,6 +148,7 @@ bool lower_coro_instruction(
             Value* iter = get_opd(0);
             Value* suppress = b.build_iconst_i32(inst_ast.imm_i64 != 0 ? 1 : 0);
             b.build_call("bronze_async_iter_close", Type::void_type(), {iter, suppress});
+            if (emit_exception_check) emit_exception_check();
             return true;
         }
 

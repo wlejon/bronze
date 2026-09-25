@@ -125,6 +125,16 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_FALSE_BITS     0xFFF4000000000000ull
 #define BRONZE_ABI_TRUE_BITS      0xFFF4000000000001ull
 
+/* The Hole singleton, which is what the TLS block's `exception_cell` holds when no
+ * exception is pending. The Hole is internal by construction — the value model
+ * forbids it from ever being a user-visible value — so it can mean "empty"
+ * without colliding with anything throwable, and its payload is 0, so "is
+ * something pending?" is one
+ * 64-bit compare against this constant rather than a mask and a shift. A
+ * separate boolean flag was rejected for the reason two words always are:
+ * they can disagree. */
+#define BRONZE_ABI_NO_EXCEPTION_BITS 0xFFF7000000000000ull
+
 /* A function object whose `name` was never recorded, as the key index
  * `bronze_create_function` and `bronze_function_singleton` take.
  *
@@ -225,7 +235,8 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     /* The same block, fetched by a module's entry function into the pinned\
      * register (bronze_abi_tls.h), and the first fetch on a thread arms\
      * `stack_limit`. `bronze_stack_overflow` is what a prologue calls when\
-     * its stack pointer is below that limit: it raises the RangeError. */ \
+     * its stack pointer is below that limit: it raises the RangeError, and\
+     * the function returns as if it had thrown. */ \
     X(bronze_tls_enter,           BRONZE_ABI_VPTR, (BRONZE_ABI_NOARGS)) \
     X(bronze_stack_overflow,      BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     X(bronze_truthy,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
@@ -306,7 +317,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     /* The SLOW HALF of a cached provided-global read. Generated code reads a
      * provided global through a per-module cache cell — one u64 per distinct
      * name the module mentions, in the module's own .data, holding
-     * BRONZE_ABI_HOLE_BITS until filled — and reaches this
+     * BRONZE_ABI_NO_EXCEPTION_BITS (the hole) until filled — and reaches this
      * only when the cell is the hole: (key id, the module's cell array, its
      * cell count, this name's slot). The helper registers the array as a root
      * span the first time it sees it (so the collector forwards the cached
@@ -322,10 +333,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     /* A `--pins` claim CONTRADICTED by a value the program actually produced
      * (src/types/pins.h). The u32 is a registered key index holding the
      * manifest line as the manifest spells it, and the u64 is the offending
-     * value, which the message names by type. It raises a TypeError and never
-     * returns; generated code follows the call with `unreachable`. Emitted
-     * only on the COLD arm of a barrier, so a program that keeps its promises
-     * never reaches it. */ \
+     * value, which the message names by type. It raises a TypeError and
+     * returns `undefined` for the reason every other raise helper does: the
+     * value lands in a caller's GC root slot before the pending cell is
+     * tested. Emitted only on the COLD arm of a barrier, so a program that
+     * keeps its promises never reaches it. */ \
     X(bronze_pin_violation,       BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     /* The same barrier for the one pin whose shape has no inline test: a
      * `numeric-elements` FIELD must hold a plain, dense JS Array, which is an
@@ -607,13 +619,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * wrap pops the slot and answers the Value: a fresh JS-owned typed array
      * holding a copy when `release` is null, a view over the native's own
      * bytes owing `release(ctx)` at collection when it is not, the empty
-     * array for a null `data`. The native is called through an invoke; when
-     * it throws, the thunk's landing pad calls `bronze_native_buffer_abandon`,
-     * which pops the slot and calls the release of a block the native had
-     * transferred, and raises the value again. ALLOCATES. */ \
-    X(bronze_native_buffer_slot,    BRONZE_ABI_VPTR, (BRONZE_ABI_NOARGS)) \
-    X(bronze_native_buffer_wrap,    BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
-    X(bronze_native_buffer_abandon, BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+     * array for a null `data`. With an exception already pending (the native
+     * threw through the embed API) wrap releases a transferred block and
+     * answers undefined, so the unwind after the call sees no leak. ALLOCATES. */ \
+    X(bronze_native_buffer_slot,   BRONZE_ABI_VPTR, (BRONZE_ABI_NOARGS)) \
+    X(bronze_native_buffer_wrap,   BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     /* A `str` argument as the NUL-terminated UTF-8 a C native takes: the
      * value (ToString for a non-string; undefined, a missing argument, is
      * "") copied into a per-thread scratch stack, whose top `count` entries
@@ -712,6 +722,7 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
      * path and no inline form. */ \
     X(bronze_census_register,     BRONZE_ABI_VOID, (BRONZE_ABI_CSTR, BRONZE_ABI_PU32, BRONZE_ABI_U32, BRONZE_ABI_PU32)) \
     X(bronze_census_record,       BRONZE_ABI_VOID, (BRONZE_ABI_U32, BRONZE_ABI_U32, BRONZE_ABI_U64)) \
+    X(bronze_uncaught_exception,  BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     /* The six Math members generated code can dispatch directly: exported so a
      * call site can compare a callee's FunctionHeader::code against the symbol
      * — the code pointer is the one identity a GC that moves the function
@@ -799,6 +810,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_construct_15,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_construct_16,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_construct_n,         BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
+    X(bronze_exception_get,       BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
+    X(bronze_exception_set,       BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
+    X(bronze_exception_take,      BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
+    X(bronze_exception_pending,   BRONZE_ABI_I32,  (BRONZE_ABI_NOARGS)) \
     X(bronze_register_key_manifest, BRONZE_ABI_VOID, (BRONZE_ABI_PU8, BRONZE_ABI_MU32)) \
     X(bronze_print_f64,           BRONZE_ABI_VOID, (BRONZE_ABI_F64)) \
     X(bronze_print_i32,           BRONZE_ABI_VOID, (BRONZE_ABI_I32)) \
@@ -830,24 +845,6 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * length is a compile-time fact, so the bounds check and the table-pointer
  * load both disappear and the cell is a constant address.
  */
-
-/*
- * The brass runtime symbols outside the registry a compiled module names,
- * which the shared runtime exports beside it (cmake/bronze_abi_exports.cmake
- * reads these lines; src/cli/link.cpp offers them as imports):
- *
- * - The raise entry points a MIR `throw` / `rethrow` outside any `try` calls.
- * - The personality routine the module's unwind information points at, so a
- *   throw lands at its landing pads: named from .xdata on Windows and from
- *   the .eh_frame CIE on ELF and Mach-O. The runtime defines the one for its
- *   platform.
- */
-#define BRONZE_ABI_BRASS_SYMBOLS(Y) \
-    Y(brass_throw) \
-    Y(brass_rethrow)
-
-#define BRONZE_ABI_PERSONALITY_WINDOWS brass_seh_personality
-#define BRONZE_ABI_PERSONALITY_SYSV    brass_sysv_personality
 
 /*
  * ---- the inline property cache contract ---------------------------------
@@ -1535,20 +1532,29 @@ typedef struct bronze_code_range {
  * function through bronze_tls_block_addr() and read or written at fixed byte
  * offsets from that base. One block rather than one thread_local per word
  * because Windows cannot import a thread_local across a DLL boundary, so
- * per-thread data costs a call — and one call covering every word is the
- * cheapest that call gets.
+ * per-thread data costs a call — and one call covering all eleven words is
+ * the cheapest that call gets.
  *
  * The layout is ABI: the BRONZE_TLS_*_OFF constants below are what codegen
  * emits, the runtime static_asserts them against this struct (tls_block.cpp),
- * and any change here moves the fingerprint. Field order is by heat.
- *
- * No exception state lives here. A throw is a native raise (brass's
- * zero-cost EH): generated code calls inside a `try` as `invoke` with a
- * landing pad, and a runtime helper throws a C++
- * brass::runtime::BrassException, which the same unwinder carries through
- * compiled frames (runtime/exception.h).
+ * and any change here moves the fingerprint. Field order is by heat — the
+ * exception cell is touched per call.
  *
  * The fields:
+ *
+ *  - exception_cell: the pending exception — the thrown value, or
+ *    BRONZE_ABI_NO_EXCEPTION_BITS when nothing is pending. Generated code,
+ *    after every instruction that can throw, loads it, compares it against
+ *    that constant and branches — no helper call, for the same reason the GC
+ *    frame is linked inline: this is on the call-heavy path. Two rules the
+ *    runtime side must keep, because nothing enforces them: a helper that
+ *    sets the cell RETURNS BRONZE_ABI_UNDEFINED_BITS (its caller stores the
+ *    result into a GC root slot before it tests the cell, and the collector
+ *    reads every slot of a linked frame); and the cell is a permanent GC
+ *    root — a thrown object is live for exactly as long as it is pending,
+ *    across an arbitrary number of frames, and nothing else roots it. There
+ *    is no unwind ABI beyond this: propagation is an ordinary `ret`, so the
+ *    frame pop before it is the one the non-throwing path already emits.
  *
  *  - proto_epoch: the prototype-mutation epoch (runtime/object.h): what
  *    makes a cached depth > 0 property hit sound, read inline by the

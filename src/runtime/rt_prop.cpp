@@ -560,6 +560,7 @@ uint64_t bronze_super_elem_get(uint64_t protoBits, uint64_t keyBits, uint64_t th
     Rooted<Value> receiver{Value(thisBits)};
 
     keyRoot.set(rtToPropertyKey(keyRoot));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     if (protoVal.isObject() && protoVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
         return rtProxyGet(protoRoot.get(), keyRoot.get(), receiver.get()).rawBits();
@@ -617,6 +618,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
         Rooted<Value> objRoot{objVal};
         Rooted<Value> keyRoot{Value(idxBits)};
         keyRoot.set(rtToPropertyKey(keyRoot));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return bronze_elem_get(objRoot.get().rawBits(), keyRoot.get().rawBits());
     }
 

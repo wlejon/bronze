@@ -163,6 +163,7 @@ TEST_CASE("construct unwraps to the target with the bound arguments prepended") 
     Rooted<Value> extraRoot{extra[0]};
     Value instance{bronze_construct(bound.get().rawBits(), 1,
                                     reinterpret_cast<const uint64_t*>(extra))};
+    CHECK_FALSE(rtExceptionPending());
     // The body ran with (13, 21) — bound first — and the instance is an
     // ordinary object built from the TARGET's prototype path, not something
     // the trampoline's [[Call]] half produced.

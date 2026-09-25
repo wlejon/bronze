@@ -171,18 +171,25 @@ bool serializeArray(State& state, Rooted<Value>& value, uint32_t length, Units& 
     state.indent.insert(state.indent.end(), state.gap.begin(), state.gap.end());
 
     std::vector<Units> partial;
+    bool failed = false;
     for (uint32_t i = 0; i < length; ++i) {
         Units key;
         appendAscii(key, std::to_string(i));
         Units element;
-        if (!serializeProperty(state, key, value, element)) appendAscii(element, "null");
+        if (!serializeProperty(state, key, value, element)) {
+            if (rtExceptionPending()) {
+                failed = true;
+                break;
+            }
+            appendAscii(element, "null");
+        }
         partial.push_back(std::move(element));
     }
-    joinPartial(partial, state.indent, stepback, state.gap, u'[', u']', out);
+    if (!failed) joinPartial(partial, state.indent, stepback, state.gap, u'[', u']', out);
 
     state.stack.pop_back();
     state.indent = stepback;
-    return true;
+    return !failed;
 }
 
 // 25.5.2.4 SerializeJSONObject. A member whose serialization is `undefined` is
@@ -197,21 +204,30 @@ bool serializeObject(State& state, Rooted<Value>& value, Units& out) {
     state.indent.insert(state.indent.end(), state.gap.begin(), state.gap.end());
 
     std::vector<Units> keys;
+    bool failed = false;
     if (state.hasPropertyList) {
         keys = state.propertyList;
     } else {
         Rooted<Value> keyArray{Value(bronze_object_keys(value.get().rawBits()))};
-        const uint32_t count = keyArray.get().asObject<ArrayHeader>()->length;
-        for (uint32_t i = 0; i < count; ++i) {
-            Value k = keyArray.get().asObject<ArrayHeader>()->getElem(i);
-            keys.push_back(rtStringUnits(k.asString<StringHeader>()));
+        if (rtExceptionPending()) {
+            failed = true;
+        } else {
+            const uint32_t count = keyArray.get().asObject<ArrayHeader>()->length;
+            for (uint32_t i = 0; i < count; ++i) {
+                Value k = keyArray.get().asObject<ArrayHeader>()->getElem(i);
+                keys.push_back(rtStringUnits(k.asString<StringHeader>()));
+            }
         }
     }
 
     std::vector<Units> partial;
-    for (size_t i = 0; i < keys.size(); ++i) {
+    for (size_t i = 0; !failed && i < keys.size(); ++i) {
         Units serialized;
         if (!serializeProperty(state, keys[i], value, serialized)) {
+            if (rtExceptionPending()) {
+                failed = true;
+                break;
+            }
             continue;  // undefined: the member is not written at all
         }
         Units member;
@@ -224,11 +240,11 @@ bool serializeObject(State& state, Rooted<Value>& value, Units& out) {
         member.insert(member.end(), serialized.begin(), serialized.end());
         partial.push_back(std::move(member));
     }
-    joinPartial(partial, state.indent, stepback, state.gap, u'{', u'}', out);
+    if (!failed) joinPartial(partial, state.indent, stepback, state.gap, u'{', u'}', out);
 
     state.stack.pop_back();
     state.indent = stepback;
-    return true;
+    return !failed;
 }
 
 // A Proxy. 25.5.2.3 step 4 asks IsArray (7.2.2), which walks the proxy's
@@ -253,9 +269,11 @@ bool serializeProxy(State& state, Rooted<Value>& value, Units& out) {
     Rooted<Value> lengthKey{rtMakeString("length")};
     Rooted<Value> lengthValue{
         Value(bronze_elem_get(value.get().rawBits(), lengthKey.get().rawBits()))};
+    if (rtExceptionPending()) return false;
     // 7.1.20 ToLength, capped where the loop's index is: a trap answering
     // more than that is asking for a string no heap could hold anyway.
     const double n = rtToNumber(lengthValue.get());
+    if (rtExceptionPending()) return false;
     uint32_t length = 0;
     if (n > 0) length = n >= 4294967295.0 ? 4294967295u : static_cast<uint32_t>(n);
     return serializeArray(state, value, length, out);
@@ -268,6 +286,7 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
     Rooted<Value> keyString{rtStringFromUnits(key)};
     Rooted<Value> value{
         Value(bronze_elem_get(holder.get().rawBits(), keyString.get().rawBits()))};
+    if (rtExceptionPending()) return false;
 
     // Step 2: `toJSON` is consulted on any object, which is how a class
     // chooses its own wire form. It is read with the ordinary property
@@ -276,10 +295,12 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
         Rooted<Value> name{rtMakeString("toJSON")};
         Rooted<Value> toJson{
             Value(bronze_elem_get(value.get().rawBits(), name.get().rawBits()))};
+        if (rtExceptionPending()) return false;
         if (isCallable(toJson.get())) {
             uint64_t args[1] = {keyString.get().rawBits()};
             value.set(Value(
                 bronze_dynamic_call(toJson.get().rawBits(), value.get().rawBits(), 1, args)));
+            if (rtExceptionPending()) return false;
         }
     }
 
@@ -289,6 +310,7 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
         uint64_t args[2] = {keyString.get().rawBits(), value.get().rawBits()};
         value.set(Value(bronze_dynamic_call(state.replacer->rawBits(), holder.get().rawBits(), 2,
                                             args)));
+        if (rtExceptionPending()) return false;
     }
 
     // Step 4: a primitive WRAPPER is unwrapped before the type dispatch below —

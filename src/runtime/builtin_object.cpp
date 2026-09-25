@@ -88,6 +88,7 @@ bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key) {
     if (Value data; rtStringWrapperData(self.get(), data)) {
         if (!key.isSymbol()) {
             const std::string keyStr = rtObjectKeyTextOf(key);
+            if (rtExceptionPending()) return false;
             if (rtStringDataHasOwnKey(data, keyStr)) return true;
         }
         // A PRIMITIVE string has no shape to walk, so its characters really
@@ -210,6 +211,7 @@ ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member) {
 
 std::string rtObjectKeyTextOf(Value keyVal) {
     Rooted<Value> str{rtValueToString(keyVal)};
+    if (rtExceptionPending()) return std::string();
     return rtUtf8Chars(str.get().asString<StringHeader>());
 }
 
@@ -244,6 +246,7 @@ std::string rtObjectKeyTextOf(Value keyVal) {
 bool functionHasOwnKey(Rooted<Value>& fnVal, Value key) {
     if (!key.isSymbol()) {
         const std::string text = rtObjectKeyTextOf(key);
+        if (rtExceptionPending()) return false;
         if (text == "prototype") return true;
         if ((text == "length" || text == "name") &&
             fnVal.get().asObject<FunctionHeader>()->name != nullptr) {
@@ -281,6 +284,7 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
             Rooted<Value> self{args[0]};
             bool enumerable = false;
             const bool own = rtOwnPropertyOf(self, args[1], enumerable);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             return Value::fromBool(own).rawBits();
         }
         case ObjectOwnKeys::Function: {
@@ -290,6 +294,7 @@ uint64_t objectHasOwn(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         case ObjectOwnKeys::StringChars: {
             if (!args[1].isSymbol()) {
                 const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 // args[0] re-read through RootedArgs: `rtObjectKeyTextOf` allocates.
                 Value data = args[0];
                 if (!data.isString()) rtStringWrapperData(args[0], data);
@@ -380,6 +385,7 @@ uint64_t rtObjectGetOwnPropertyNames(uint64_t, uint64_t, uint32_t argc, const ui
             // runs once; its symbols are `getOwnPropertySymbols`' half.
             Rooted<Value> proxy{args[0]};
             Rooted<Value> keys{rtProxyOwnKeys(proxy.get())};
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             Rooted<Value> out{Value(bronze_create_array(0))};
             uint32_t at = 0;
             const uint32_t count = keys.get().asObject<ArrayHeader>()->length;

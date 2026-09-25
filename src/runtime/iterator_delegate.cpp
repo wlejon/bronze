@@ -64,6 +64,7 @@ Value cursorResult(Rooted<Value>& value, bool done) {
 Value getMethod(Rooted<Value>& obj, const char* name) {
     Rooted<Value> key{rtMakeString(name)};
     Rooted<Value> found{Value(bronze_elem_get(obj.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (found.get().isUndefined() || found.get().isNull()) return Value::fromUndefined();
     if (!isCallable(found.get())) {
         rtThrowTypeError(std::string("the delegated iterator's `") + name +
@@ -88,6 +89,7 @@ Value requireResultObject(Value result) {
 Value callWithReceived(Rooted<Value>& method, Rooted<Value>& receiver, Rooted<Value>& sent) {
     Value args[1] = {sent.get()};
     Value result = method.get().asObject<FunctionHeader>()->call(receiver.get(), 1, args);
+    if (rtExceptionPending()) return Value::fromUndefined();
     return requireResultObject(result);
 }
 
@@ -107,6 +109,7 @@ Value delegateNext(Rooted<Value>& recRoot, Rooted<Value>& sent) {
     IterRecordHeader* rec = recordOf(recRoot.get());
     if (rec->kindOf() != IterRecordHeader::Protocol) {
         const bool more = bronze_iter_step(recRoot.get().rawBits());
+        if (rtExceptionPending()) return Value::fromUndefined();
         Rooted<Value> produced{more ? Value(bronze_iter_value(recRoot.get().rawBits()))
                                     : Value::fromUndefined()};
         return cursorResult(produced, !more);
@@ -128,11 +131,13 @@ Value delegateThrow(Rooted<Value>& recRoot, Rooted<Value>& sent) {
     const bool protocol = rec->kindOf() >= IterRecordHeader::Protocol;
     Rooted<Value> iterObj{protocol ? rec->target : Value::fromUndefined()};
     Rooted<Value> thrower{protocol ? getMethod(iterObj, "throw") : Value::fromUndefined()};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (!isCallable(thrower.get())) {
         bronze_iter_close(recRoot.get().rawBits(), /*suppress=*/false);
         // 7.4.9 propagates an error the `return` method raised, and it replaces
         // the TypeError below rather than being replaced by it: step 5 of
         // IteratorClose returns that completion before 5.b.iii.5 is reached.
+        if (rtExceptionPending()) return Value::fromUndefined();
         return rtThrowTypeError(
             "the delegated iterator has no `throw` method, so the exception cannot be forwarded "
             "into it");
@@ -152,6 +157,7 @@ Value delegateReturn(Rooted<Value>& recRoot, Rooted<Value>& sent) {
     const bool protocol = rec->kindOf() >= IterRecordHeader::Protocol;
     Rooted<Value> iterObj{protocol ? rec->target : Value::fromUndefined()};
     Rooted<Value> returner{protocol ? getMethod(iterObj, "return") : Value::fromUndefined()};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (!isCallable(returner.get())) return Value::fromUndefined();
     return callWithReceived(returner, iterObj, sent);
 }

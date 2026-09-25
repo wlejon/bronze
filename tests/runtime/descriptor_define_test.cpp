@@ -66,29 +66,10 @@ Value object() { return Value(bronze_create_object()); }
 // one that OMITS a field — the whole subject below.
 Rooted<Value> descriptor() { return Rooted<Value>{object()}; }
 
-// Whether the last `define` threw rather than answering; taken by takeThrew.
-bool g_threw = false;
-
-// False for a refusal AND for a throw; takeThrew tells them apart.
 bool define(Rooted<Value>& obj, const char* key, Rooted<Value>& desc) {
     Rooted<Value> k{text(key)};
     const uint64_t argv[3] = {obj.get().rawBits(), k.get().rawBits(), desc.get().rawBits()};
-    bool ok = false;
-    Value thrown;
-    g_threw = rtTryCatch([&] { ok = rtObjectDefineOwnProperty(3, argv, /*throwOnRefusal=*/false); }, thrown);
-    return ok;
-}
-
-bool takeThrew() {
-    const bool threw = g_threw;
-    g_threw = false;
-    return threw;
-}
-
-// Whether calling `Object.defineProperty(argv...)` throws.
-bool definePropertyThrows(const uint64_t (&argv)[3]) {
-    Value thrown;
-    return rtTryCatch([&] { rtObjectDefineProperty(0, 0, 3, argv); }, thrown);
+    return rtObjectDefineOwnProperty(3, argv, /*throwOnRefusal=*/false);
 }
 
 // The four attributes and the value, read from whichever storage the object is
@@ -131,7 +112,7 @@ Value freeze(Value v) {
 }
 
 struct ClearCell {
-    ~ClearCell() { g_threw = false; }
+    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
 };
 
 // A callable for the one test that needs its getter to be real. Interned by
@@ -206,7 +187,8 @@ TEST_CASE("a generic descriptor does not turn an accessor into a data property")
     // A plain object is not callable, so the decode must reject it — which is
     // the check 6.2.6.5 step 7.c makes and is worth one assertion of its own.
     CHECK_FALSE(define(o, "p", acc));
-    CHECK(takeThrew());
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     // With a real function for the getter the accessor is defined, and then a
     // generic redefinition keeps it.
@@ -252,7 +234,7 @@ TEST_CASE("a frozen property accepts the value it already has, by SameValue") {
         Rooted<Value> d = descriptor();
         put(d, "value", v.get());
         const bool ok = define(o, key, d);
-        takeThrew();
+        bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
         return ok;
     };
 
@@ -306,7 +288,7 @@ TEST_CASE("the shape road compares a frozen value by SameValue too") {
     Rooted<Value> differs = descriptor();
     put(differs, "value", text("abd"));
     CHECK_FALSE(define(o, "p", differs));
-    takeThrew();
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     // A refused define is not a demotion: the object is still on its shape and
     // still holds what it held.
@@ -331,12 +313,14 @@ TEST_CASE("a refusal is a value, and only Object.defineProperty raises it") {
     Rooted<Value> d = descriptor();
     put(d, "value", Value::fromDouble(2.0));
     CHECK_FALSE(define(o, "p", d));
-    CHECK_FALSE(takeThrew());
+    CHECK_FALSE(rtExceptionPending());
 
     // The same refusal through the throwing entry point.
     Rooted<Value> k{text("p")};
     const uint64_t argv[3] = {o.get().rawBits(), k.get().rawBits(), d.get().rawBits()};
-    CHECK(definePropertyThrows(argv));
+    rtObjectDefineProperty(0, 0, 3, argv);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     CHECK(own(o.get(), "p").value.asNumber() == 1.0);
 }
@@ -351,27 +335,35 @@ TEST_CASE("redefining array length or elements or regexp lastIndex raises catcha
     put(d1, "writable", Value::fromBool(false));
     Rooted<Value> kLen{text("length")};
     const uint64_t argv1[3] = {arr.get().rawBits(), kLen.get().rawBits(), d1.get().rawBits()};
-    CHECK(definePropertyThrows(argv1));
+    rtObjectDefineProperty(0, 0, 3, argv1);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     // Accessor at array index
     Rooted<Value> d2 = descriptor();
     put(d2, "get", Value::fromNull());
     Rooted<Value> kIdx{text("0")};
     const uint64_t argv2[3] = {arr.get().rawBits(), kIdx.get().rawBits(), d2.get().rawBits()};
-    CHECK(definePropertyThrows(argv2));
+    rtObjectDefineProperty(0, 0, 3, argv2);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     // Array element with mismatched attribute (enumerable: false)
     Rooted<Value> d3 = descriptor();
     put(d3, "enumerable", Value::fromBool(false));
     const uint64_t argv3[3] = {arr.get().rawBits(), kIdx.get().rawBits(), d3.get().rawBits()};
-    CHECK(definePropertyThrows(argv3));
+    rtObjectDefineProperty(0, 0, 3, argv3);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     // RegExp lastIndex writable: false
     Rooted<Value> reSrc{text("abc")};
     Rooted<Value> re{rtRegExpFromParts(reSrc, "g")};
     Rooted<Value> kLast{text("lastIndex")};
     const uint64_t argv4[3] = {re.get().rawBits(), kLast.get().rawBits(), d1.get().rawBits()};
-    CHECK(definePropertyThrows(argv4));
+    rtObjectDefineProperty(0, 0, 3, argv4);
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
 inline Value g_lastSetterArg = Value::fromUndefined();

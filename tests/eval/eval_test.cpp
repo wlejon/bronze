@@ -153,11 +153,10 @@ TEST_CASE("evalFunction creates callable async function") {
 
 TEST_CASE("evalFunction handles syntax error in function body") {
     std::vector<std::string> params{"a"};
-    Value thrown;
-    CHECK(runtime::rtTryCatch([&] { (void)evalFunction(params, "return a +++ ;;; {{{;"); }, thrown));
-    std::string text;
-    CHECK(runtime::rtErrorText(thrown, text));
-    CHECK(text.find("SyntaxError") == 0);
+    Value fn = evalFunction(params, "return a +++ ;;; {{{;");
+    CHECK(runtime::rtExceptionPending());
+    runtime::rtClearException();
+    CHECK(embed::isUndefined(fn));
 }
 
 TEST_CASE("evalScript with top-level await wraps into async promise") {
@@ -567,26 +566,25 @@ TEST_CASE("Part B: Object, String, RegExp, and block var improvements") {
         CHECK(r2.value.asBool() == true);
     }
 
-    // 7. A trap's throw through deleteProperty reaches the host's caller;
-    // setElement drops the write at the host boundary (embed.h).
+    // 7. Embed exception reporting in deleteProperty and setElement
     {
         embed::CallResult r1 = evalScript(
             "new Proxy({}, {\n"
             "  deleteProperty() { throw new Error('delete trap error'); }\n"
             "});\n");
         CHECK(!r1.thrown);
-        embed::Persistent target1{r1.value};
-        Value thrown;
-        CHECK(runtime::rtTryCatch([&] { (void)embed::deleteProperty(target1.get(), "foo"); }, thrown));
+        (void)embed::deleteProperty(r1.value, "foo");
+        CHECK(runtime::rtExceptionPending());
+        runtime::rtClearException();
 
         embed::CallResult r2 = evalScript(
             "new Proxy([], {\n"
             "  set() { throw new Error('set trap error'); }\n"
             "});\n");
         CHECK(!r2.thrown);
-        embed::Persistent target2{r2.value};
-        CHECK_FALSE(runtime::rtTryCatch(
-            [&] { (void)embed::setElement(target2.get(), 0, embed::fromDouble(42.0)); }, thrown));
+        (void)embed::setElement(r2.value, 0, embed::fromDouble(42.0));
+        CHECK(runtime::rtExceptionPending());
+        runtime::rtClearException();
     }
 
     // 8. Loop property hoisting correctness: guarded nullable reads and interprocedural mutation

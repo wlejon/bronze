@@ -117,7 +117,7 @@ void emitGlobalReadThunks(brass::Module& mod, const std::string& entrySymbol,
         b.position_at_end(entry);
         brass::Value* cells = moduleDataAddr(b, entrySymbol, globalCacheSym, perThread);
         brass::Value* cached = b.build_load(brass::Type::i64(), cells, static_cast<int32_t>(slot * sizeof(uint64_t)));
-        brass::Value* hole = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS));
+        brass::Value* hole = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NO_EXCEPTION_BITS));
         brass::Value* isHole = b.build_eq(cached, hole);
         b.build_br_if(isHole, miss, hit);
 
@@ -147,7 +147,6 @@ void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
     mod.add_external_symbol("bronze_native_unbound");
     mod.add_external_symbol("bronze_native_buffer_slot");
     mod.add_external_symbol("bronze_native_buffer_wrap");
-    mod.add_external_symbol("bronze_native_buffer_abandon");
 
     for (size_t i = 0; i < imports.size(); ++i) {
         const il::Function& decl = module.functions[imports[i].functionIndex];
@@ -186,51 +185,18 @@ void emitNativeImportThunks(brass::Module& mod, const il::Module& module,
         if (isClassSlot) {
             b.build_ret(b.build_load(brass::Type::i64(), table, slotOffset));
         } else if (imports[i].bufferReturnKind != UINT32_MAX) {
-            // The native is called from a helper function the thunk invokes, so
-            // a throw out of it lands at the thunk's pad, which pops the slot
-            // (releasing a block the native had already given away) and raises
-            // the value again. MIR has no indirect invoke; the helper is never
-            // inlined at an invoke, since its indirect call could raise past
-            // the pad.
-            std::vector<brass::Type> innerTypes = paramTypes;
-            innerTypes.push_back(brass::Type::ptr());
-            const std::string innerName = decl.name + "__native_call";
-            brass::Function* inner = mod.create_function(
-                innerName, brass::Type::void_type(),
-                brass::Span<const brass::Type>(innerTypes.data(), innerTypes.size()));
-            {
-                brass::Builder ib(mod);
-                ib.set_function(inner);
-                brass::BasicBlock* innerEntry = ib.append_block("entry");
-                std::vector<brass::Value*> innerArgs;
-                innerArgs.reserve(innerTypes.size());
-                for (const auto& t : innerTypes) innerArgs.push_back(ib.add_block_param(innerEntry, t));
-                ib.position_at_end(innerEntry);
-                brass::Value* innerTable = moduleDataAddr(ib, entrySymbol, importsSymbol, perThread);
-                brass::Value* callee = ib.build_load(brass::Type::ptr(), innerTable, slotOffset);
-                ib.build_call_indirect(callee, brass::Type::void_type(),
-                                       brass::Span<brass::Value* const>(innerArgs.data(), innerArgs.size()));
-                ib.build_ret_void();
-                inner->rebuild_cfg_predecessors();
-            }
-
             brass::Value* slot = b.build_call("bronze_native_buffer_slot", brass::Type::ptr());
-            std::vector<brass::Value*> withSlot = args;
+            std::vector<brass::Value*> withSlot;
+            withSlot.reserve(args.size() + 1);
+            withSlot = args;
             withSlot.push_back(slot);
-            brass::BasicBlock* done = b.append_block("done");
-            brass::BasicBlock* pad = b.append_block("pad");
-            b.position_at_end(entry);
-            b.build_invoke(innerName, brass::Type::void_type(),
-                           brass::Span<brass::Value* const>(withSlot.data(), withSlot.size()), done, pad);
 
-            b.position_at_end(done);
+            brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
+            b.build_call_indirect(callee, brass::Type::void_type(),
+                                  brass::Span<brass::Value* const>(withSlot.data(), withSlot.size()));
+
             brass::Value* kind = b.build_iconst_i32(static_cast<int32_t>(imports[i].bufferReturnKind));
             b.build_ret(b.build_call("bronze_native_buffer_wrap", brass::Type::i64(), {kind}));
-
-            b.position_at_end(pad);
-            brass::Value* thrown = b.build_landing_pad(brass::Type::i64());
-            b.build_call("bronze_native_buffer_abandon", brass::Type::void_type());
-            b.build_throw(thrown);
         } else {
             brass::Value* callee = b.build_load(brass::Type::ptr(), table, slotOffset);
             brass::Value* result = b.build_call_indirect(
@@ -355,11 +321,12 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.enable_tlab = true;
     // The TLS block rides in a callee-saved register (bronze_abi_tls.h): the
     // entry loads it, the runtime's rtEnterJs trampoline loads it for every
-    // other way in, and generated code reads the allocation window and the
-    // stack limit through it without a call.
+    // other way in, and generated code reads the exception cell, the
+    // allocation window and the stack limit through it without a call.
     options.pin_tls_register = true;
     options.key_constants = module.keyConstants;
     options.entry_symbol = entrySymbol_;
+    options.propagate_exceptions_in_entry = propagateExceptionsInEntry_;
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
     options.template_site_count = module.templateSiteCount;
@@ -479,9 +446,6 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     compiler.set_sched_options(schedOpts);
     compiler.set_enable_trace_layout(optimize);
     compiler.set_enable_mir_opts(optimize);
-    // Each function's map travels in its code range (brass_backend_sections.cpp);
-    // the module-wide `__brass_stack_maps` blob would be a second copy.
-    compiler.set_emit_stack_map_symbol(false);
     brass::object::ObjectFile obj = compiler.compile(*mirMod);
     timer.mark("brass compile");
 

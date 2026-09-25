@@ -222,8 +222,8 @@ struct Instruction {
     BlockTarget elseTarget;          // Branch else-target
 };
 
-// Whether this instruction can throw, so that control may leave the block at
-// it for the block's handler. Defined in effects.cpp, beside `isTerminator`,
+// Whether this instruction can leave an exception pending, and so needs the
+// backend's cell test after it. Defined in print.cpp, beside `isTerminator`,
 // because both are one-line facts about the op table.
 bool canThrow(const Instruction& inst);
 
@@ -278,16 +278,15 @@ struct Block {
     // `kNoCopyRegion`; the two together are the block's copy identity.
     CopyClass copyClass = CopyClass::Shared;
     uint32_t copyRegion = kNoCopyRegion;
-    // Where control goes if something inside this block throws: the innermost
-    // enclosing handler, or `kNoBlock` for "leave the function". It sits on
-    // the block rather than on each call: the backend makes each call in the
-    // block an invoke whose unwind edge is this handler, and the block is
-    // never split in the IL, so no join here grows a parameter.
+    // Where control goes if an exception becomes pending inside this block: the
+    // innermost enclosing handler, or `kNoBlock` for "leave the function". It
+    // sits on the block rather than on each call so that lowering emits no test
+    // at all — the backend derives them from `canThrow`, and the block is never
+    // split in the IL, so no join here grows a parameter.
     //
-    // A handler block therefore takes NO IL parameters: it is entered from an
+    // A handler block therefore takes NO parameters: it is entered from an
     // arbitrary point in the protected region, and nothing here knows what a
     // binding held there, which is what an environment record makes possible.
-    // The thrown value reaches it through `exc.take`.
     BlockId handler = kNoBlock;
 };
 
@@ -329,11 +328,11 @@ struct Function {
     // (`__bronze_native_<i>`, see Module::nativeImports). Skipped by the
     // verifier's body checks and printed as an `extern` line.
     bool isExternal = false;
-    // The module's entry point: the function the backend names `main`, which
-    // a host enters from C++ (runtime/exception.h, rtRunModuleEntry, is where
-    // an uncaught throw out of it is reported). A flag rather than a name
-    // comparison in the backend, because "which function is `main`" is a fact
-    // lowering knows and codegen should not have to spell.
+    // The module's entry point. Everything else about a function is the same,
+    // and one thing is not: it has no caller to propagate an exception to, so
+    // its unwind path reports the value and exits instead of returning. A flag
+    // rather than a name comparison in the backend, because "which function is
+    // `main`" is a fact lowering knows and codegen should not have to spell.
     bool isEntryPoint = false;
     bool needsEnv = false;
     bool needsThis = false;

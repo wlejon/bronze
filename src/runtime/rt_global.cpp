@@ -295,6 +295,24 @@ extern "C" uint64_t bronze_construct_n(uint64_t callee, uint32_t argc, const uin
     return bronze_construct(callee, argv ? argc : 0, argv);
 }
 
+extern "C" uint64_t bronze_exception_get() {
+    return bronze::runtime::rtTls()->exception_cell;
+}
+
+extern "C" void bronze_exception_set(uint64_t bits) {
+    bronze::runtime::rtTls()->exception_cell = bits;
+}
+
+extern "C" uint64_t bronze_exception_take() {
+    uint64_t bits = bronze::runtime::rtTls()->exception_cell;
+    bronze::runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    return bits;
+}
+
+extern "C" int32_t bronze_exception_pending() {
+    return bronze::runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS;
+}
+
 extern "C" void bronze_register_key_manifest(const uint8_t* data, uint32_t* key_map) {
     if (!data) return;
     uint32_t count = 0;

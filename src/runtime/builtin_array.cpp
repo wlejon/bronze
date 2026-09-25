@@ -63,6 +63,7 @@ Value rtArraySpeciesCreate(Rooted<Value>& originalArray, uint32_t length) {
         Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
         Rooted<Value> speciesRoot{
             Value(bronze_elem_get(ctorRoot.get().rawBits(), speciesKey.get().rawBits()))};
+        if (rtExceptionPending()) return Value(bronze_create_array(0));
         // Step 6: @@species NULL means "no subclass result", which is the
         // documented opt-out and is NOT the same as absent.
         if (speciesRoot.get().isNull()) return Value(bronze_create_array(length));

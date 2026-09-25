@@ -492,13 +492,15 @@ uint64_t bronze_call_method(uint64_t thisBits, uint32_t keyIndex, uint32_t argc,
         // not mint a census row per call, so it is bracketed as nested.
         censusTok = censusRecordAccess(CensusKind::MethodGet, thisBits, keyIndex, 0, icEntry,
                                        BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
+        censusEnterNested();
     }
-    uint64_t fnBits = 0;
-    {
-        CensusNestedScope nested(g_shapeCensusEnabled);
-        fnBits = bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
+    uint64_t fnBits =
+        bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        censusLeaveNested();
+        censusRecordResult(censusTok, fnBits);
     }
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) censusRecordResult(censusTok, fnBits);
+    if (rtExceptionPending()) return BRONZE_ABI_UNDEFINED_BITS;
 
     recordCallSite("bronze_call_method", fnBits);
 
@@ -517,13 +519,15 @@ uint64_t bronze_call_method_spread(uint64_t thisBits, uint32_t keyIndex, uint64_
     if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
         censusTok = censusRecordAccess(CensusKind::MethodGet, thisBits, keyIndex, 0, icEntry,
                                        BRONZE_CENSUS_RET_ADDR(), /*hasValue=*/false, 0);
+        censusEnterNested();
     }
-    uint64_t fnBits = 0;
-    {
-        CensusNestedScope nested(g_shapeCensusEnabled);
-        fnBits = bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
+    uint64_t fnBits =
+        bronze_prop_get(thisBits, keyIndex, reinterpret_cast<uint64_t*>(&scratch));
+    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) {
+        censusLeaveNested();
+        censusRecordResult(censusTok, fnBits);
     }
-    if (BRONZE_UNLIKELY(g_shapeCensusEnabled)) censusRecordResult(censusTok, fnBits);
+    if (rtExceptionPending()) return BRONZE_ABI_UNDEFINED_BITS;
 
     recordCallSite("bronze_call_method_spread", fnBits);
 

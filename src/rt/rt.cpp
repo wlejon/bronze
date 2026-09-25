@@ -8,7 +8,6 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/abi_guard.h"
-#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
@@ -39,8 +38,7 @@ int main() {
     // This thread runs the program's compiled JS — the sampling profiler's
     // target (BRONZE_SAMPLE=1; a no-op otherwise).
     bronze::runtime::samplerNoteJsThread();
-    // A top-level throw is reported on stderr and exits 1 inside.
-    bronze::runtime::rtRunModuleEntry(&bronze_main);
+    bronze_main();
     // The synchronous half of the program is over; the promise jobs it queued
     // are the rest of it. bronze has no event loop — no timers, no IO — so ONE
     // drain to quiescence here is the whole of HTML's "perform a microtask

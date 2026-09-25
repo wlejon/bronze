@@ -184,18 +184,19 @@ uint64_t buildWeakCollection(Rooted<Value>& receiver, Rooted<Value>& arg, bool i
     if (arg.get().isUndefined() || arg.get().isNull()) return self.get().rawBits();
 
     Rooted<Value> rec{Value(bronze_iter_open(arg.get().rawBits()))};
-    rtCloseIteratorOnThrow(rec, [&] {
-        while (bronze_iter_step(rec.get().rawBits())) {
-            Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-            if (isWeakSet) {
-                if (!rtCanBeHeldWeakly(item.get())) {
-                    rtThrowTypeError("Invalid value used in weak set");
-                }
-                MapHeader::set(rtHeap(), self, item, item);
-                continue;
+    if (rtExceptionPending()) return self.get().rawBits();
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        if (isWeakSet) {
+            if (!rtCanBeHeldWeakly(item.get())) {
+                rtThrowTypeError("Invalid value used in weak set");
+                break;
             }
+            MapHeader::set(rtHeap(), self, item, item);
+        } else {
             if (!item.get().isObject()) {
                 rtThrowTypeError("Iterator value is not an entry object");
+                break;
             }
             Rooted<Value> k{
                 Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(0.0).rawBits()))};
@@ -203,10 +204,13 @@ uint64_t buildWeakCollection(Rooted<Value>& receiver, Rooted<Value>& arg, bool i
                 Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(1.0).rawBits()))};
             if (!rtCanBeHeldWeakly(k.get())) {
                 rtThrowTypeError("Invalid value used as weak map key");
+                break;
             }
             MapHeader::set(rtHeap(), self, k, v);
         }
-    });
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
     return self.get().rawBits();
 }
 

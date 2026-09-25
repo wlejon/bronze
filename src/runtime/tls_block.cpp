@@ -36,6 +36,7 @@
 
 #include "abi/bronze_abi.h"
 
+static_assert(offsetof(bronze_tls_block, exception_cell) == BRONZE_TLS_EXCEPTION_CELL_OFF);
 static_assert(offsetof(bronze_tls_block, proto_epoch) == BRONZE_TLS_PROTO_EPOCH_OFF);
 static_assert(offsetof(bronze_tls_block, alloc_cursor) == BRONZE_TLS_ALLOC_CURSOR_OFF);
 static_assert(offsetof(bronze_tls_block, alloc_limit) == BRONZE_TLS_ALLOC_LIMIT_OFF);
@@ -82,6 +83,7 @@ static_assert(offsetof(bronze_tls_block, truthy_inline_enabled) ==
               BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
               BRONZE_TLS_ELEM_SET_CACHE_TBL_OFF);
+static_assert(offsetof(bronze_tls_block, key_ic_enabled) == BRONZE_TLS_KEY_IC_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, stack_limit) == BRONZE_TLS_STACK_LIMIT_OFF);
 static_assert(offsetof(bronze_tls_block, module_deltas) == BRONZE_TLS_MODULE_DELTAS_OFF);
 static_assert(offsetof(bronze_tls_block, gc_cell_header) == BRONZE_TLS_GC_CELL_HEADER_OFF);
@@ -103,6 +105,7 @@ namespace bronze::runtime {
 // instead of a call. The initializer is still all compile-time constants, so
 // this is still constant-initialized with no guard.
 thread_local bronze_tls_block g_tls_block = {
+    /*exception_cell=*/BRONZE_ABI_NO_EXCEPTION_BITS,
     /*proto_epoch=*/1,
     /*alloc_cursor=*/0,
     /*alloc_limit=*/0,
@@ -131,6 +134,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*ta_set_fast_enabled=*/1,
     /*truthy_inline_enabled=*/1,
     /*elem_set_cache_tbl=*/nullptr,
+    /*key_ic_enabled=*/1,
     /*stack_limit=*/0,
     /*module_deltas=*/nullptr,
     /*gc_cell_header=*/0,

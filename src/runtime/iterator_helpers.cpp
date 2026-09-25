@@ -72,50 +72,56 @@ Value genericGet(Rooted<Value>& obj, const char* key) {
 
 Value iterResult(Rooted<Value>& value, bool done) { return rtCreateIterResult(value, done); }
 
-void getIteratorDirect(Rooted<Value>& obj, const char* member, Rooted<Value>& nextOut) {
+bool getIteratorDirect(Rooted<Value>& obj, const char* member, Rooted<Value>& nextOut) {
     if (!obj.get().isObject()) {
         rtThrowTypeError("Iterator.prototype." + std::string(member) +
                          " called on a value that is not an object");
+        return false;
     }
     nextOut.set(genericGet(obj, "next"));
+    return !rtExceptionPending();
 }
 
 Step stepIterator(Rooted<Value>& iter, Rooted<Value>& next, Rooted<Value>& out) {
     if (!isCallable(next.get())) {
         rtThrowTypeError("the iterator has no `next` method");
+        return Step::Threw;
     }
     Rooted<Value> result{next.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr)};
+    if (rtExceptionPending()) return Step::Threw;
     // 7.4.4 IteratorNext step 3: a result that is not an object is a TypeError,
     // and NOT an exhausted iterator — a `next` returning `undefined` is a bug in
     // the iterator and reading `done` off `undefined` would hide it.
     if (!result.get().isObject()) {
         rtThrowTypeError("the iterator result is not an object");
+        return Step::Threw;
     }
     Rooted<Value> done{genericGet(result, "done")};
+    if (rtExceptionPending()) return Step::Threw;
     if (bronze_truthy(done.get().rawBits())) return Step::Done;
     out.set(genericGet(result, "value"));
+    if (rtExceptionPending()) return Step::Threw;
     return Step::Produced;
 }
 
-namespace {
-
-void closeIteratorNow(Rooted<Value>& iter) {
+void closeIterator(Rooted<Value>& iter, bool suppress) {
+    if (!iter.get().isObject()) return;
     Rooted<Value> ret{genericGet(iter, "return")};
+    if (rtExceptionPending()) {
+        if (suppress) rtClearException();
+        return;
+    }
     // 7.4.11 step 4: an iterator with no `return` closes by doing nothing.
     if (!isCallable(ret.get())) return;
     ret.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr);
+    if (suppress && rtExceptionPending()) rtClearException();
 }
 
-}  // namespace
-
-void closeIterator(Rooted<Value>& iter, bool suppress) {
-    if (!iter.get().isObject()) return;
-    if (!suppress) {
-        closeIteratorNow(iter);
-        return;
-    }
-    Value ignored;
-    rtTryCatch([&] { closeIteratorNow(iter); }, ignored);
+void closeAfterThrow(Rooted<Value>& iter) {
+    Rooted<Value> pending{Value(bronze_tls_block_addr()->exception_cell)};
+    rtClearException();
+    closeIterator(iter, /*suppress=*/true);
+    rtThrow(pending.get());
 }
 
 void closeAndThrowTypeError(Rooted<Value>& iter, const std::string& message) {
@@ -128,7 +134,7 @@ void closeAndThrowRangeError(Rooted<Value>& iter, const std::string& message) {
     rtThrowRangeError(message);
 }
 
-void getIteratorFlattenable(Rooted<Value>& value, bool allowStringPrimitive, const char* member,
+bool getIteratorFlattenable(Rooted<Value>& value, bool allowStringPrimitive, const char* member,
                             Rooted<Value>& iterOut, Rooted<Value>& nextOut) {
     if (!value.get().isObject()) {
         // Step 1: a primitive is refused, with the single exception
@@ -138,10 +144,12 @@ void getIteratorFlattenable(Rooted<Value>& value, bool allowStringPrimitive, con
             rtThrowTypeError(std::string(member) + " requires an object" +
                              (allowStringPrimitive ? " or a string" : "") + ", not " +
                              rtIterableKindName(value.get()));
+            return false;
         }
     }
     Rooted<Value> key{rtIteratorKey()};
     Rooted<Value> method{Value(bronze_elem_get(value.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return false;
     if (method.get().isUndefined() || method.get().isNull()) {
         // Step 3.b: no @@iterator means the value IS the iterator. This is the
         // arm that accepts `{next(){...}}`, and the reason the operation is
@@ -151,23 +159,26 @@ void getIteratorFlattenable(Rooted<Value>& value, bool allowStringPrimitive, con
         if (!isCallable(method.get())) {
             rtThrowTypeError(std::string(member) + ": the value's Symbol.iterator is not a "
                                                    "function");
+            return false;
         }
         iterOut.set(method.get().asObject<FunctionHeader>()->call(value.get(), 0, nullptr));
+        if (rtExceptionPending()) return false;
     }
     if (!iterOut.get().isObject()) {
         rtThrowTypeError(std::string(member) + ": the iterator is not an object");
+        return false;
     }
-    getIteratorDirect(iterOut, member, nextOut);
+    return getIteratorDirect(iterOut, member, nextOut);
 }
 
 }  // namespace iterator_helpers
 
 namespace {
 
+using iterator_helpers::closeAfterThrow;
 using iterator_helpers::closeAndThrowRangeError;
 using iterator_helpers::closeAndThrowTypeError;
 using iterator_helpers::closeIterator;
-using iterator_helpers::closeOnThrow;
 using iterator_helpers::getIteratorDirect;
 using iterator_helpers::getIteratorFlattenable;
 using iterator_helpers::isCallable;
@@ -231,18 +242,21 @@ Value makeHelper(Rooted<Value>& receiver, Rooted<Value>& next, Rooted<Value>& fn
 // counter is read and written through the helper's root, so a callback that
 // itself allocates cannot leave it stale.
 //
-// A throw from the callback closes the underlying iterator before it
-// continues — IfAbruptCloseIterator, which every callback in 27.1.4.1 is
-// wrapped in.
-void callWithCounter(Rooted<Value>& helper, Rooted<Value>& iter, Rooted<Value>& value,
+// Returns false with the underlying iterator ALREADY CLOSED and the callback's
+// exception re-thrown — IfAbruptCloseIterator, which every callback in 27.1.4.1
+// is wrapped in.
+bool callWithCounter(Rooted<Value>& helper, Rooted<Value>& iter, Rooted<Value>& value,
                      Rooted<Value>& out) {
     Rooted<Value> fn{readSlot(helper, IteratorHelperSlot::Fn)};
     const double counter = readSlot(helper, IteratorHelperSlot::Counter).asNumber();
     writeSlot(helper, IteratorHelperSlot::Counter, Value::fromDouble(counter + 1.0));
-    closeOnThrow(iter, [&] {
-        Value block[2] = {value.get(), Value::fromDouble(counter)};
-        out.set(fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, block));
-    });
+    Value block[2] = {value.get(), Value::fromDouble(counter)};
+    out.set(fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, block));
+    if (rtExceptionPending()) {
+        closeAfterThrow(iter);
+        return false;
+    }
+    return true;
 }
 
 // One element of a `map`, `filter` or `flatMap`, or one step of a `take` /
@@ -258,7 +272,7 @@ Step advanceHelper(Rooted<Value>& helper, Rooted<Value>& out) {
             const Step step = stepIterator(iter, next, out);
             if (step != Step::Produced) return step;
             Rooted<Value> mapped;
-            callWithCounter(helper, iter, out, mapped);
+            if (!callWithCounter(helper, iter, out, mapped)) return Step::Threw;
             out.set(mapped.get());
             return Step::Produced;
         }
@@ -267,7 +281,7 @@ Step advanceHelper(Rooted<Value>& helper, Rooted<Value>& out) {
                 const Step step = stepIterator(iter, next, out);
                 if (step != Step::Produced) return step;
                 Rooted<Value> keep;
-                callWithCounter(helper, iter, out, keep);
+                if (!callWithCounter(helper, iter, out, keep)) return Step::Threw;
                 if (bronze_truthy(keep.get().rawBits())) return Step::Produced;
             }
         }
@@ -278,6 +292,7 @@ Step advanceHelper(Rooted<Value>& helper, Rooted<Value>& out) {
                 // underlying iterator rather than merely abandoning it, which is
                 // what lets `gen().take(1)` run the generator's `finally`.
                 closeIterator(iter, /*suppress=*/false);
+                if (rtExceptionPending()) return Step::Threw;
                 return Step::Done;
             }
             // Infinity - 1 is Infinity, which is exactly what `take(Infinity)`
@@ -303,19 +318,22 @@ Step advanceHelper(Rooted<Value>& helper, Rooted<Value>& out) {
                 Rooted<Value> inner{readSlot(helper, IteratorHelperSlot::Inner)};
                 if (inner.get().isObject()) {
                     Rooted<Value> innerNext{readSlot(helper, IteratorHelperSlot::InnerNext)};
-                    // 27.1.4.1.7 step 6.d.iv.2: an inner iterator's throw
-                    // closes the OUTER one. The inner is already finished by
-                    // definition of having thrown.
-                    Step step = Step::Done;
-                    closeOnThrow(iter, [&] { step = stepIterator(inner, innerNext, out); });
+                    const Step step = stepIterator(inner, innerNext, out);
                     if (step == Step::Produced) return Step::Produced;
+                    if (step == Step::Threw) {
+                        // 27.1.4.1.7 step 6.d.iv.2: an inner iterator's throw
+                        // closes the OUTER one. The inner is already finished by
+                        // definition of having thrown.
+                        closeAfterThrow(iter);
+                        return Step::Threw;
+                    }
                     writeSlot(helper, IteratorHelperSlot::Inner, Value::fromUndefined());
                     writeSlot(helper, IteratorHelperSlot::InnerNext, Value::fromUndefined());
                 }
                 const Step step = stepIterator(iter, next, out);
                 if (step != Step::Produced) return step;
                 Rooted<Value> mapped;
-                callWithCounter(helper, iter, out, mapped);
+                if (!callWithCounter(helper, iter, out, mapped)) return Step::Threw;
                 Rooted<Value> innerIter;
                 Rooted<Value> innerNext;
                 // reject-primitives: a STRING the mapper returned is a
@@ -323,10 +341,11 @@ Step advanceHelper(Rooted<Value>& helper, Rooted<Value>& out) {
                 // the one place the language makes that choice explicitly, and
                 // it is the choice that turns `names.flatMap(n => n)` into an
                 // error instead of a stream of letters.
-                closeOnThrow(iter, [&] {
-                    getIteratorFlattenable(mapped, /*allowStringPrimitive=*/false,
-                                           "Iterator.prototype.flatMap", innerIter, innerNext);
-                });
+                if (!getIteratorFlattenable(mapped, /*allowStringPrimitive=*/false,
+                                            "Iterator.prototype.flatMap", innerIter, innerNext)) {
+                    closeAfterThrow(iter);
+                    return Step::Threw;
+                }
                 writeSlot(helper, IteratorHelperSlot::Inner, innerIter.get());
                 writeSlot(helper, IteratorHelperSlot::InnerNext, innerNext.get());
             }
@@ -352,18 +371,14 @@ uint64_t helperNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     if (state == StateDone) return iterResult(produced, true).rawBits();
 
     writeSlot(self, IteratorHelperSlot::State, Value::fromDouble(StateRunning));
-    // Done AND thrown both complete the helper for good: 27.1.4.1's generator
-    // bodies have no step after either, so a second `next` must answer
-    // `{value: undefined, done: true}` and never touch the underlying iterator
-    // again.
-    Step step = Step::Done;
-    Value caught;
-    if (rtTryCatch([&] { step = advanceHelper(self, produced); }, caught)) {
-        writeSlot(self, IteratorHelperSlot::State, Value::fromDouble(StateDone));
-        rtThrow(caught);
-    }
+    const Step step = advanceHelper(self, produced);
     if (step != Step::Produced) {
+        // Done AND thrown both complete the helper for good: 27.1.4.1's
+        // generator bodies have no step after either, so a second `next` must
+        // answer `{value: undefined, done: true}` and never touch the underlying
+        // iterator again.
         writeSlot(self, IteratorHelperSlot::State, Value::fromDouble(StateDone));
+        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         Rooted<Value> none;
         return iterResult(none, true).rawBits();
     }
@@ -393,6 +408,7 @@ uint64_t helperReturn(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> inner{readSlot(self, IteratorHelperSlot::Inner)};
     if (inner.get().isObject()) closeIterator(inner, /*suppress=*/false);
     closeIterator(iter, /*suppress=*/false);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return iterResult(none, true).rawBits();
 }
 
@@ -428,6 +444,7 @@ uint64_t wrapReturn(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> iter{readSlot(self, IteratorHelperSlot::Iterated)};
     Rooted<Value> key{rtMakeString("return")};
     Rooted<Value> ret{Value(bronze_elem_get(iter.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     // 27.1.3.2.1.2 step 5: a wrapped iterator with no `return` answers a done
     // result rather than failing — the wrapper must not invent a method.
     if (!isCallable(ret.get())) {
@@ -464,7 +481,9 @@ uint64_t makeCallbackHelper(uint64_t thisBits, uint32_t argc, const uint64_t* ar
         return Value::fromUndefined().rawBits();
     }
     Rooted<Value> next;
-    getIteratorDirect(self, helperName(kind), next);
+    if (!getIteratorDirect(self, helperName(kind), next)) {
+        return Value::fromUndefined().rawBits();
+    }
     return makeHelper(self, next, fn, kind).rawBits();
 }
 
@@ -492,10 +511,13 @@ uint64_t makeCountHelper(uint64_t thisBits, uint32_t argc, const uint64_t* argv,
                                 " called on a value that is not an object")
             .rawBits();
     }
-    // Step 4's IfAbruptCloseIterator: a `valueOf` that throws still closes the
-    // iterator this helper would have read.
-    double raw = 0.0;
-    closeOnThrow(self, [&] { raw = rtToNumber(args[0]); });
+    const double raw = rtToNumber(args[0]);
+    if (rtExceptionPending()) {
+        // Step 4's IfAbruptCloseIterator: a `valueOf` that threw still closes
+        // the iterator this helper would have read.
+        closeAfterThrow(self);
+        return Value::fromUndefined().rawBits();
+    }
     if (std::isnan(raw)) {
         closeAndThrowRangeError(self, "Iterator.prototype." + std::string(helperName(kind)) +
                                           " requires a number, not NaN");
@@ -509,7 +531,9 @@ uint64_t makeCountHelper(uint64_t thisBits, uint32_t argc, const uint64_t* argv,
         return Value::fromUndefined().rawBits();
     }
     Rooted<Value> next;
-    getIteratorDirect(self, helperName(kind), next);
+    if (!getIteratorDirect(self, helperName(kind), next)) {
+        return Value::fromUndefined().rawBits();
+    }
     Rooted<Value> limit{Value::fromDouble(count)};
     return makeHelper(self, next, limit, kind).rawBits();
 }
@@ -532,7 +556,10 @@ uint64_t iteratorFrom(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     Rooted<Value> source{args[0]};
     Rooted<Value> iter;
     Rooted<Value> next;
-    getIteratorFlattenable(source, /*allowStringPrimitive=*/true, "Iterator.from", iter, next);
+    if (!getIteratorFlattenable(source, /*allowStringPrimitive=*/true, "Iterator.from", iter,
+                                next)) {
+        return Value::fromUndefined().rawBits();
+    }
     // Step 3: an iterator that ALREADY inherits %Iterator.prototype% is returned
     // unchanged. That is what makes `Iterator.from` idempotent and keeps it from
     // wrapping a generator — which already has the helpers — in a second object
@@ -633,6 +660,7 @@ uint64_t setterIgnoringPrototype(uint64_t thisBits, uint32_t argc, const uint64_
     }
     bool enumerable = false;
     const bool own = rtOwnPropertyOf(self, key.get(), enumerable);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (own) {
         // Step 5: an ordinary Set on a receiver that already owns the key,
         // which lands on that own property and never reaches this accessor

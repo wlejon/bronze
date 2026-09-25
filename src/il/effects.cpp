@@ -1,16 +1,17 @@
 // What an instruction DOES, as opposed to what it is called.
 //
 // Three predicates the backend reads before it emits anything: whether an
-// instruction ends a block, whether it can throw, and whether it can move a
-// heap object. None of them is a question about text; `il.h` declares them
-// next to the printer's names. They mark where control can leave a run of
-// instructions sideways and the point a receiver proof has to give up its
-// derived pointer, which is a different subject from the spelling of an op.
+// instruction ends a block, whether it can leave an exception pending, and
+// whether it can move a heap object. None of them is a question about text, and
+// they sat in `print.cpp` only because `il.h` declares them next to the
+// printer's names. They are the exception test after a call and the point a
+// receiver proof has to give up its derived pointer, which is a different
+// subject from the spelling of an op.
 //
 // Both `canThrow` and `canCollect` are written the SAFE WAY ROUND: the
 // enumerated cases are the ones that provably cannot, and everything else can.
-// An op added tomorrow is treated as a throw point or a collection point
-// rather than a missed unwind or a dangling pointer.
+// An op added tomorrow gets a redundant branch rather than a missed unwind or a
+// dangling pointer.
 
 #include "il/print.h"
 
@@ -20,11 +21,11 @@ bool isTerminator(Op op) {
     return op == Op::Ret || op == Op::Jump || op == Op::Branch || op == Op::Throw;
 }
 
-// Can this instruction throw? The passes that move or merge code (the
-// guarded-region pass, lower_util's run splitting) must not carry an
-// instruction across one that answers yes, so the list is written the safe
-// way round: the cases below are the ones that provably cannot, and
-// everything else does.
+// Can this instruction leave an exception pending? The backend emits one cell
+// test after every instruction that answers yes, so the list is written the
+// safe way round: the cases below are the ones that provably cannot, and
+// everything else does. An op added tomorrow gets a redundant branch rather
+// than a missed unwind.
 //
 // It is a property of the INSTRUCTION and not of the op because `add` is two
 // operations: f64 arithmetic, which cannot throw, and `bronze_dynamic_add`,

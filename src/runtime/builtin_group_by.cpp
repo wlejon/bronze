@@ -52,8 +52,9 @@ struct GroupSink {
 };
 
 // 7.3.35, with the coercion and the container both supplied by the caller.
-// A throw from the callback or the coercion closes the iterator and
-// propagates; it answers true when it returns.
+// Answers false when it left an exception pending, in which case the container
+// is whatever the walk had reached — the caller returns undefined and the
+// pending cell is what its caller tests.
 bool groupByWalk(Rooted<Value>& items, Rooted<Value>& callback, GroupSink& sink,
                  bool propertyKeys) {
     // Step 1 RequireObjectCoercible and step 2 IsCallable, in that order: a
@@ -69,51 +70,58 @@ bool groupByWalk(Rooted<Value>& items, Rooted<Value>& callback, GroupSink& sink,
     }
 
     Rooted<Value> rec{Value(bronze_iter_open(items.get().rawBits()))};
+    if (rtExceptionPending()) return false;
 
-    // Step 6.e.i / 6.f.i: a throw from the callback or the coercion closes
-    // the iterator, with anything the close throws suppressed so the ORIGINAL
-    // failure is the one the program catches.
-    rtCloseIteratorOnThrow(rec, [&] {
-        double index = 0;
-        while (bronze_iter_step(rec.get().rawBits())) {
-            Rooted<Value> value{Value(bronze_iter_value(rec.get().rawBits()))};
+    double index = 0;
+    while (bronze_iter_step(rec.get().rawBits())) {
+        if (rtExceptionPending()) break;
+        Rooted<Value> value{Value(bronze_iter_value(rec.get().rawBits()))};
+        if (rtExceptionPending()) break;
 
-            // Step 6.e: the callback sees (value, index). It is user code, so
-            // everything live here is already in a root and the result goes
-            // into one before the coercion below allocates.
-            Value block[2] = {value.get(), Value::fromDouble(index)};
-            Rooted<Value> key{
-                Value(bronze_dynamic_call(callback.get().rawBits(),
-                                          Value::fromUndefined().rawBits(), 2,
-                                          reinterpret_cast<const uint64_t*>(block)))};
+        // Step 6.e: the callback sees (value, index). It is user code, so
+        // everything live here is already in a root and the result goes into
+        // one before the coercion below allocates.
+        Value block[2] = {value.get(), Value::fromDouble(index)};
+        Rooted<Value> key{Value(bronze_dynamic_call(callback.get().rawBits(),
+                                                    Value::fromUndefined().rawBits(), 2,
+                                                    reinterpret_cast<const uint64_t*>(block)))};
+        if (rtExceptionPending()) break;
 
-            if (propertyKeys) {
-                // Step 6.f: ToPropertyKey, which is where `-0` and `0` become
-                // the same group — both spell the string "0" — and where an
-                // object key runs its own `toString`.
-                key.set(rtToPropertyKey(key));
-                // `rtToPropertyKey` hands a non-object back UNTOUCHED, because
-                // the element fast paths want a number to stay a number. A
-                // property NAME is a string or a symbol and nothing else, so
-                // the rest of 7.1.19 step 3 is done here — which is also where
-                // `-0` and `0` become the one group "0", since ToString of
-                // either is "0".
-                if (!key.get().isString() && !key.get().isSymbol()) {
-                    key.set(rtValueToString(key.get()));
-                }
-            } else {
-                // 7.3.35 step 6.g's CanonicalizeKeyedCollectionKey (24.5.1):
-                // the ONE normalization a keyed collection performs, so a
-                // group keyed by `-0` is found by `map.get(0)`. NaN needs no
-                // step here — SameValueZero already matches it against itself.
-                if (key.get().isNumber() && key.get().asNumber() == 0.0) {
-                    key.set(Value::fromDouble(0.0));
-                }
+        if (propertyKeys) {
+            // Step 6.f: ToPropertyKey, which is where `-0` and `0` become the
+            // same group — both spell the string "0" — and where an object key
+            // runs its own `toString`.
+            key.set(rtToPropertyKey(key));
+            if (rtExceptionPending()) break;
+            // `rtToPropertyKey` hands a non-object back UNTOUCHED, because the
+            // element fast paths want a number to stay a number. A property
+            // NAME is a string or a symbol and nothing else, so the rest of
+            // 7.1.19 step 3 is done here — which is also where `-0` and `0`
+            // become the one group "0", since ToString of either is "0".
+            if (!key.get().isString() && !key.get().isSymbol()) {
+                key.set(rtValueToString(key.get()));
+                if (rtExceptionPending()) break;
             }
-            sink.add(key, value);
-            index += 1;
+        } else {
+            // 7.3.35 step 6.g's CanonicalizeKeyedCollectionKey (24.5.1): the
+            // ONE normalization a keyed collection performs, so a group keyed
+            // by `-0` is found by `map.get(0)`. NaN needs no step here —
+            // SameValueZero already matches it against itself.
+            if (key.get().isNumber() && key.get().asNumber() == 0.0) {
+                key.set(Value::fromDouble(0.0));
+            }
         }
-    });
+        sink.add(key, value);
+        if (rtExceptionPending()) break;
+        index += 1;
+    }
+    if (rtExceptionPending()) {
+        // Step 6.e.i / 6.f.i: a throw from the callback or the coercion closes
+        // the iterator, with the pending exception suppressed so the ORIGINAL
+        // failure is the one the program catches.
+        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+        return false;
+    }
     return true;
 }
 

@@ -186,19 +186,28 @@ bool decodeDescriptor(Rooted<Value>& desc, DecodedDescriptor& d, Rooted<Value>& 
     // decode has not reached yet, so reading `value` before `enumerable` is a
     // different program than reading it after.
     //
-    // Every one of the six is spelled `? HasProperty(...)` / `? Get(...)`. A
-    // field getter that throws — or a Proxy descriptor's `has` trap — is an
-    // ABRUPT COMPLETION: 6.2.6.5 returns it, so the remaining fields are never
-    // read (their getters must not run) and 10.1.6.3 never runs at all. The
-    // throw leaves `readField` and this function with it, which is exactly
-    // that.
+    // Every one of the six is spelled `? HasProperty(...)` / `? Get(...)`, and
+    // the `?` is the reason for the test between each pair. A field getter that
+    // throws — or a Proxy descriptor's `has` trap — is an ABRUPT COMPLETION:
+    // 6.2.6.5 returns it, so the remaining fields are never read (their getters
+    // must not run) and 10.1.6.3 never runs at all. `readField` has no way to
+    // spell an abrupt completion — it answers `undefined`, which is also what a
+    // present field holding `undefined` looks like — so the completion is the
+    // pending exception, and continuing past it defined a property out of a
+    // descriptor the program never finished handing over.
     Rooted<Value> enumerableV{readField(desc, DescField::Enumerable, ordinary, d.hasEnumerable)};
+    if (rtExceptionPending()) return false;
     Rooted<Value> configurableV{
         readField(desc, DescField::Configurable, ordinary, d.hasConfigurable)};
+    if (rtExceptionPending()) return false;
     value.set(readField(desc, DescField::Value, ordinary, d.hasValue));
+    if (rtExceptionPending()) return false;
     Rooted<Value> writableV{readField(desc, DescField::Writable, ordinary, d.hasWritable)};
+    if (rtExceptionPending()) return false;
     getter.set(readField(desc, DescField::Get, ordinary, d.hasGet));
+    if (rtExceptionPending()) return false;
     setter.set(readField(desc, DescField::Set, ordinary, d.hasSet));
+    if (rtExceptionPending()) return false;
 
     // 6.2.6.5 steps 7.c and 8.c: a `get` or `set` that is PRESENT and is
     // neither callable nor `undefined` does not describe an accessor, so the
@@ -324,6 +333,7 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             const bool isWrapper = args[0].isObject();
             if (!args[1].isSymbol()) {
                 const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 Value data = args[0];
                 if (!data.isString()) rtStringWrapperData(args[0], data);
                 StringOwnProperty own;
@@ -386,6 +396,7 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             // write path refuses all three.
             if (!args[1].isSymbol()) {
                 const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 const bool isProto = key == "prototype";
                 const bool isPair = (key == "length" || key == "name") &&
                                     args[0].asObject<FunctionHeader>()->name != nullptr;
@@ -436,6 +447,7 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             // A hole is not an own property at all.
             if (!args[1].isSymbol()) {
                 const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 Rooted<Value> self{args[0]};
                 uint32_t index = 0;
                 const bool isLength = key == "length";
@@ -477,6 +489,7 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             // any other key is the ordinary walk below over the view's shape.
             if (!args[1].isSymbol()) {
                 const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 uint32_t index = 0;
                 if (rtIsIntegerLikeKey(key, index)) {
                     if (index >= args[0].asObject<TypedArrayHeader>()->length) {
@@ -501,6 +514,7 @@ uint64_t rtObjectGetOwnPropertyDescriptor(uint64_t, uint64_t, uint32_t argc,
             // any other key is the ordinary walk below over the shape.
             if (!args[1].isSymbol()) {
                 const std::string key = rtObjectKeyTextOf(args[1]);
+                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 if (key == "lastIndex") {
                     Rooted<Value> value{rtRegExpLastIndexValue(args[0])};
                     const bool writable = rtIntegrityLevel(args[0]) != IntegrityLevel::Frozen;
@@ -568,11 +582,13 @@ uint64_t rtObjectGetOwnPropertyDescriptors(uint64_t, uint64_t, uint32_t argc,
     // OwnPropertyKeys), which is where this differs from `Object.keys`.
     const uint64_t ownCall[1] = {self.get().rawBits()};
     Rooted<Value> names{Value(rtObjectGetOwnPropertyNames(0, 0, 1, ownCall))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const uint32_t count = names.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{names.get().asObject<ArrayHeader>()->getElem(i)};
         const uint64_t call[2] = {self.get().rawBits(), key.get().rawBits()};
         Rooted<Value> desc{Value(rtObjectGetOwnPropertyDescriptor(0, 0, 2, call))};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         putField(out, key, desc);
     }
     return out.get().rawBits();

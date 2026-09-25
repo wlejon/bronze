@@ -1,5 +1,6 @@
-// The raise helpers and the `Error` family (exception.h says how a throw
-// travels).
+// The pending-exception cell, the raise helpers, and the `Error` family. The
+// cell is an ABI global because generated code tests it inline; everything else
+// here is C++ the runtime calls on its own behalf.
 
 #include "runtime/exception.h"
 #include "runtime/stack_trace.h"
@@ -26,6 +27,11 @@
 namespace bronze::runtime {
 
 namespace {
+
+static_assert(Value::fromHole().rawBits() == BRONZE_ABI_NO_EXCEPTION_BITS,
+              "BRONZE_ABI_NO_EXCEPTION_BITS in bronze_abi.h has drifted from the Hole singleton");
+static_assert(sizeof(Value) == sizeof(uint64_t) && alignof(Value) == alignof(uint64_t),
+              "the exception cell is rooted by reinterpreting its address as a Value*");
 
 struct ErrorClass {
     const char* name;
@@ -112,10 +118,12 @@ void installErrorCause(Rooted<Value>& self, Rooted<Value>& options) {
     Rooted<Value> key{rtMakeString("cause")};
     // `in`'s operand order: the KEY first, the object second.
     if (!bronze_has_property(key.get().rawBits(), options.get().rawBits())) return;
+    if (rtExceptionPending()) return;
     // The read can run a getter, so the result is rooted before `setProp`
     // allocates a slot for it — and the key is re-derived from its own root
     // rather than held as raw bits across that call.
     Rooted<Value> cause{Value(bronze_elem_get(options.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return;
     self.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, cause,
                                                  /*ic=*/nullptr, /*enumerable=*/false);
 }
@@ -126,8 +134,16 @@ void installErrorCause(Rooted<Value>& self, Rooted<Value>& options) {
 // which showed up as the roots being silently dropped when the heap's own
 // constructor ran afterwards, and then as a crash under BRONZE_GC_STRESS=1
 // with the error prototypes collected out from under the classes.
-void ensureErrorRoots() {
+void ensureExceptionRoots() {
     static thread_local const bool registered = [] {
+        // A thrown object is live for exactly as long as it is pending, which
+        // spans an arbitrary number of frames and every collection inside
+        // them. Nothing else roots it — the value has left the throwing
+        // frame's root slots by the time any handler sees it.
+        // The cell lives in this thread's bronze_tls_block, so the root goes
+        // to this thread's heap and covers exactly this thread's pending
+        // exception — another thread's cell is another block on another heap.
+        rtHeap().add_permanent_root(reinterpret_cast<Value*>(&rtTls()->exception_cell));
         rtHeap().add_root_source([](const Heap::RootVisitor& visit) {
             for (ErrorClass& c : g_errorClasses) {
                 visit(c.constructor);
@@ -160,6 +176,7 @@ uint64_t errorCtorImpl(ErrorKind kind, uint64_t thisBits, uint32_t argc, const u
     // `new Error(undefined, {cause: x})` still carries the cause.
     if (!args[0].isUndefined()) {
         Rooted<Value> message{rtValueToString(args[0])};
+        if (rtExceptionPending()) return self.get().rawBits();
         setMessage(self, message);
     }
     bronze_install_stack(self.get());
@@ -203,6 +220,7 @@ uint64_t errorCtorAggregateError(uint64_t, uint64_t thisBits, uint32_t argc,
     RootedArgs args{argc, argv};
     if (!args[1].isUndefined()) {
         Rooted<Value> message{rtValueToString(args[1])};
+        if (rtExceptionPending()) return self.get().rawBits();
         setMessage(self, message);
     }
     bronze_install_stack(self.get());
@@ -211,16 +229,20 @@ uint64_t errorCtorAggregateError(uint64_t, uint64_t thisBits, uint32_t argc,
     Rooted<Value> options{args[2]};
     installErrorCause(self, options);
     // Step 4: CreateListFromIterable over `errors`. A non-iterable argument
-    // is the TypeError rtOpenIterator raises.
+    // is the TypeError rtOpenIterator raises, left pending for the caller.
     Rooted<Value> source{args[0]};
     Rooted<Value> list{Value(bronze_create_array(0))};
     Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
-    rtCloseIteratorOnThrow(rec, [&] {
-        while (bronze_iter_step(rec.get().rawBits())) {
-            Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-            bronze_array_append(list.get().rawBits(), item.get().rawBits());
-        }
-    });
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        bronze_array_append(list.get().rawBits(), item.get().rawBits());
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) {
+        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+        return Value::fromUndefined().rawBits();
+    }
     Rooted<Value> errorsKey{rtMakeString("errors")};
     self.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), errorsKey, list,
                                                  /*ic=*/nullptr, /*enumerable=*/false);
@@ -248,9 +270,11 @@ uint64_t errorProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint64_
     // Each Get can run a getter, so each result is rooted before the next one
     // allocates, and ToString of it is a second collection point again.
     name.set(name.get().isUndefined() ? rtMakeString("Error") : rtValueToString(name.get()));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> msgKey{rtMakeString("message")};
     Rooted<Value> msg{self.get().asObject<ObjectHeader>()->getProp(rtHeap(), msgKey)};
     msg.set(msg.get().isUndefined() ? rtMakeString("") : rtValueToString(msg.get()));
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     const std::string nameText = rtUtf8Chars(name.get().asString<StringHeader>());
     const std::string msgText = rtUtf8Chars(msg.get().asString<StringHeader>());
@@ -272,7 +296,7 @@ uint64_t errorCaptureStackTrace(uint64_t, uint64_t, uint32_t argc, const uint64_
 
 void ensureErrorClasses() {
     if (g_errorClasses[0].constructor.isObject()) return;
-    ensureErrorRoots();
+    ensureExceptionRoots();
 
     for (ErrorClass& cls : g_errorClasses) {
         // 20.5.1 gives `Error` and each NativeError length 1; 20.5.7.1
@@ -401,15 +425,20 @@ bool lookupDataProperty(ObjectHeader* obj, StringHeader* key, Value& out) {
 
 }  // namespace
 
-// The value travels unrooted inside the exception: nothing between the throw
-// and the catch that takes it allocates (unwinding runs destructors, and no
-// runtime destructor allocates), so nothing can move it on the way.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4646)  // exception.h: noreturn with a non-void type
-#endif
-Value rtThrow(Value thrown) {
-    throw brass::runtime::BrassException(brass::HostValue::from_raw(thrown.rawBits()));
+Value rtThrow(Value thrown) noexcept {
+    // `throw "x"` never touches the Error classes, so this is the one place
+    // every raise passes through and therefore where the cell's root has to
+    // be established.
+    ensureExceptionRoots();
+    // A second throw while one is pending would be a runtime that lost track
+    // of its own unwind, not a program error: every path that sets the cell
+    // returns immediately, and every consumer clears it before running code
+    // that could set it again.
+    if (rtExceptionPending()) {
+        fatal("internal: a second exception raised while one is already pending");
+    }
+    rtTls()->exception_cell = thrown.rawBits();
+    return Value::fromUndefined();
 }
 
 Value rtThrowError(ErrorKind kind, const std::string& message) {
@@ -419,27 +448,24 @@ Value rtThrowError(ErrorKind kind, const std::string& message) {
     Rooted<Value> self{newErrorInstance(cls)};
     setMessage(self, msg);
     bronze_install_stack(self.get());
-    rtThrow(self.get());
+    return rtThrow(self.get());
 }
 
 Value rtThrowTypeError(const std::string& message) {
-    rtThrowError(ErrorKind::TypeError, message);
+    return rtThrowError(ErrorKind::TypeError, message);
 }
 
 Value rtThrowRangeError(const std::string& message) {
-    rtThrowError(ErrorKind::RangeError, message);
+    return rtThrowError(ErrorKind::RangeError, message);
 }
 
 Value rtThrowSyntaxError(const std::string& message) {
-    rtThrowError(ErrorKind::SyntaxError, message);
+    return rtThrowError(ErrorKind::SyntaxError, message);
 }
 
 Value rtThrowReferenceError(const std::string& message) {
-    rtThrowError(ErrorKind::ReferenceError, message);
+    return rtThrowError(ErrorKind::ReferenceError, message);
 }
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
 
 Value rtErrorConstructor(const std::string& name) {
     ensureErrorClasses();
@@ -538,6 +564,10 @@ uint64_t bronze_resolve_name(uint32_t keyIndex, bool soft) {
         return fromGlobalObject.rawBits();
     }
     if (soft) return Value::fromUndefined().rawBits();
+    // Returns `undefined` on the raising path for the reason every other raise
+    // helper does: the value lands in a caller's GC root slot before the
+    // pending cell is tested, so anything the collector cannot parse would put
+    // a bad word in a live root.
     return rtThrowReferenceError(name + " is not defined").rawBits();
 }
 
@@ -554,10 +584,10 @@ uint64_t bronze_immutable_assign(void) {
 }
 
 // A function prologue found the stack pointer below the thread's
-// `stack_limit` (bronze_abi_tls.h). Raises the RangeError; the reserve below
+// `stack_limit` (bronze_abi_tls.h). The caller returns `undefined` straight
+// after, so this only has to leave the RangeError pending; the reserve below
 // the limit is what the Error's construction — message, stack trace, the
-// property store — and the unwinder's search run on. The message is the one
-// every engine gives.
+// property store — runs on. The message is the one every engine gives.
 void bronze_stack_overflow(void) {
     rtThrowRangeError("Maximum call stack size exceeded");
 }
@@ -606,22 +636,19 @@ void bronze_pin_check_array(uint32_t keyIndex, uint64_t bits) {
     bronze_pin_violation(keyIndex, bits);
 }
 
-}  // extern "C"
-
-// A program whose top level threw. Reported on STDERR, which is what node
-// does and what keeps an uncaught-throw oracle case pinnable: stdout holds
-// exactly what the program printed before it died.
-void rtRunModuleEntry(void (*entry)()) {
-    Value caught;
-    const bool threw = rtTryCatch([&] { rtCallModuleEntry(entry); }, caught);
-    if (!threw) return;
-    Rooted<Value> thrown{caught};
-    const std::string text = rtUncaughtReport(thrown.get());
+// The end of a program with an exception still pending. Reported on STDERR,
+// which is what node does and what keeps an uncaught-throw oracle case
+// pinnable: stdout holds exactly what the program printed before it died.
+void bronze_uncaught_exception() {
+    Value thrown(rtTls()->exception_cell);
+    const std::string text = rtUncaughtReport(thrown);
     std::fflush(stdout);
     std::fprintf(stderr, "%s\n", text.c_str());
     std::fflush(stderr);
     disableCrashDialogs();
     std::exit(1);
 }
+
+}  // extern "C"
 
 }  // namespace bronze::runtime

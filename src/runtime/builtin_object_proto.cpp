@@ -415,6 +415,7 @@ uint64_t objectProtoIsPrototypeOf(uint64_t, uint64_t thisBits, uint32_t argc,
             // its `getPrototypeOf` trap (10.5.1), and the walk goes on from
             // whatever it said.
             nextVal = rtProxyGetPrototypeOf(walker.get());
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             if (!nextVal.isObject()) return Value::fromBool(false).rawBits();
         } else if (!HeapKind::carriesShape(kind)) {
             // A function, an array or an exotic subclass instance names its
@@ -498,7 +499,8 @@ const char* builtinTag(Value self) {
             // Steps 4 and 6 are the two tests that see through a proxy: 7.2.2
             // IsArray to its target, and IsCallable, which 10.5.14 fixed at
             // creation. Every other arm asks for a slot a proxy has not got.
-            // A revoked proxy is IsArray's TypeError, thrown from here.
+            // A revoked proxy is IsArray's TypeError, left pending; the tag
+            // answered beside it is discarded by the caller's test.
             if (rtIsArray(self)) return "Array";
             return rtIsCallableValue(self) ? "Function" : "Object";
         default:
@@ -565,6 +567,7 @@ uint64_t rtObjectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint
     // read landed in a recycled block.
     Rooted<Value> receiver{self};
     std::string tag = builtinTag(receiver.get());
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();  // a revoked proxy
 
     // Steps 15-17. An ordinary property GET, so a user-installed
     // `[Symbol.toStringTag]` — own or inherited — is found by the ordinary
@@ -582,6 +585,7 @@ uint64_t rtObjectProtoToString(uint64_t, uint64_t thisBits, uint32_t, const uint
     Rooted<Value> key{Value::fromSymbol(rtSymbolToStringTag())};
     Rooted<Value> found{
         Value(bronze_elem_get(receiver.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (found.get().isString()) tag = rtUtf8Chars(found.get().asString<StringHeader>());
 
     return rtMakeString("[object " + tag + "]").rawBits();
@@ -602,6 +606,7 @@ uint64_t objectProtoToLocaleString(uint64_t, uint64_t thisBits, uint32_t, const 
     Rooted<Value> self{Value(thisBits)};
     Rooted<Value> key{rtMakeString("toString")};
     Rooted<Value> method{Value(bronze_elem_get(self.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (!method.get().isObject() ||
         method.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError("Object.prototype.toLocaleString called on a receiver whose "

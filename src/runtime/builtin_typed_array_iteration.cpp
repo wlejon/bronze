@@ -214,6 +214,7 @@ static uint64_t taFindImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uin
         uint32_t i = Reverse ? len - 1 - n : n;
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> found{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(found.get().rawBits())) {
             return WantIndex ? Value::fromDouble(i).rawBits() : elem.get().rawBits();
         }
@@ -249,6 +250,7 @@ uint64_t taForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         callBack(fn, thisArg, elem, i, self);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return Value::fromUndefined().rawBits();
 }
@@ -266,13 +268,16 @@ uint64_t taMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     // subclass instance, and the store below converts with the RESULT view's
     // content type (23.2.4.1 step 3 guarantees it is the source's).
     Rooted<Value> out{rtTypedArraySpeciesCreate(self, len)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> mapped{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         // ToBigInt for a BigInt result view (a Number mapped into one is
         // 7.1.13's TypeError), ToNumber for the other ten kinds — the funnel
         // decides, and re-derives the view after the conversion.
         rtTypedArraySetElement(out, i, mapped.get());
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return out.get().rawBits();
 }
@@ -297,6 +302,7 @@ uint64_t taFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
             big ? bitsOf(self.get(), i) : std::bit_cast<uint64_t>(elemOf(self.get(), i));
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> res{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(res.get().rawBits())) {
             kept.push_back(raw);
         }
@@ -306,6 +312,7 @@ uint64_t taFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
     // goes in as the eight bytes it is, and a staged double through the
     // result kind's own narrowing.
     Rooted<Value> out{rtTypedArraySpeciesCreate(self, static_cast<uint32_t>(kept.size()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     auto* dst = out.get().asObject<TypedArrayHeader>();
     for (uint32_t i = 0; i < kept.size(); ++i) {
         if (big) {
@@ -329,6 +336,7 @@ uint64_t taEvery(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> res{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!bronze_truthy(res.get().rawBits())) {
             return Value::fromBool(false).rawBits();
         }
@@ -348,6 +356,7 @@ uint64_t taSome(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{rtTypedArrayElement(self.get(), i)};
         Rooted<Value> res{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(res.get().rawBits())) {
             return Value::fromBool(true).rawBits();
         }
@@ -383,6 +392,7 @@ static uint64_t taReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, const u
                           self.get()};
         acc.set(Value(bronze_dynamic_call(fn.get().rawBits(), BRONZE_ABI_UNDEFINED_BITS, 4,
                                           reinterpret_cast<const uint64_t*>(block))));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return acc.get().rawBits();
 }

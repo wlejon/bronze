@@ -123,6 +123,7 @@ uint64_t arrayIsArray(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     // revoked one — and which answers by identity for `Array.prototype`, an
     // Array exotic object (23.1.3) that bronze keeps as a plain one.
     const bool isArray = rtIsArray(args[0]);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return Value::fromBool(isArray).rawBits();
 }
 
@@ -132,11 +133,14 @@ uint64_t arrayOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     const bool constructed = buildsThroughThis(ctor.get());
     const uint32_t len = args.count();
     Rooted<Value> out{constructed ? constructThrough(ctor, &len) : newEmptyArray()};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> elem{args[i]};
         emitAt(out, i, elem, constructed);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     setResultLength(out, len, constructed);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return out.get().rawBits();
 }
 
@@ -168,6 +172,7 @@ uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
         src.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         Rooted<Value> key{rtIteratorKey()};
         proxyMethod.set(rtProxyGet(src.get(), key.get(), src.get()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!proxyMethod.get().isNull() && !proxyMethod.get().isUndefined()) {
             if (!rtIsCallableValue(proxyMethod.get())) {
                 return rtThrowTypeError("Array.from: Symbol.iterator is not a function").rawBits();
@@ -181,35 +186,48 @@ uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
         // is not known until the iterator is exhausted — which is the one place
         // the two halves of this member differ in what they hand the base.
         Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> rec{proxyMethod.get().isUndefined()
                               ? Value(bronze_iter_open(src.get().rawBits()))
                               : rtGetIteratorFromMethod(src, proxyMethod)};
+        if (rtExceptionPending()) return out.get().rawBits();
         uint32_t i = 0;
-        // The mapper is user code, and so is the define on a constructed
-        // result: step 6.e.viii closes the iterator when either throws.
-        rtCloseIteratorOnThrow(rec, [&] {
-            while (bronze_iter_step(rec.get().rawBits())) {
-                Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-                if (!mapFn.get().isUndefined()) {
-                    item.set(callMapper(mapFn, thisArg, item, i));
+        while (bronze_iter_step(rec.get().rawBits())) {
+            Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+            if (!mapFn.get().isUndefined()) {
+                item.set(callMapper(mapFn, thisArg, item, i));
+                // The mapper is user code. Step 6.e.viii closes the iterator
+                // when it throws, and carrying on would be the runtime
+                // continuing past an exception.
+                if (rtExceptionPending()) {
+                    bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+                    return out.get().rawBits();
                 }
-                emitAt(out, i, item, constructed);
-                ++i;
             }
-        });
+            emitAt(out, i, item, constructed);
+            if (rtExceptionPending()) {
+                bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+                return out.get().rawBits();
+            }
+            ++i;
+        }
         setResultLength(out, i, constructed);
         return out.get().rawBits();
     }
 
     const uint32_t len = rtArrayLikeLength(src);
     Rooted<Value> out{constructed ? constructThrough(ctor, &len) : newEmptyArray()};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> item{
             Value(bronze_elem_get(src.get().rawBits(), Value::fromDouble(i).rawBits()))};
+        if (rtExceptionPending()) return out.get().rawBits();
         if (!mapFn.get().isUndefined()) {
             item.set(callMapper(mapFn, thisArg, item, i));
+            if (rtExceptionPending()) return out.get().rawBits();
         }
         emitAt(out, i, item, constructed);
+        if (rtExceptionPending()) return out.get().rawBits();
     }
     setResultLength(out, len, constructed);
     return out.get().rawBits();
@@ -281,6 +299,7 @@ uint64_t stringFromCodePoint(uint64_t, uint64_t, uint32_t argc, const uint64_t* 
         // ToNumber is user code (a `valueOf`), so nothing raw is held across
         // it; `units` is a C++ vector of plain integers and holds no heap.
         const double n = rtToNumber(args[i]);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!std::isfinite(n) || std::trunc(n) != n || n < 0.0 || n > 0x10FFFF) {
             char buf[32];
             const size_t len = formatJsNumber(n, buf);
@@ -324,6 +343,7 @@ uint64_t stringRaw(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> rawKey{rtMakeString("raw")};
     Rooted<Value> literals{
         Value(bronze_elem_get(cooked.get().rawBits(), rawKey.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     // Step 3 is ToObject(raw): only undefined/null throw. A primitive string
     // wraps to a String object whose `length` is its code-unit count and whose
     // indices are its characters — both of which the generic element path
@@ -338,18 +358,22 @@ uint64_t stringRaw(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     const uint32_t literalCount = literals.get().isString()
                                       ? literals.get().asString<StringHeader>()->length
                                       : rtArrayLikeLength(literals);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     // Step 5: an empty `raw` is the empty string, before any substitution is
     // even converted.
     Rooted<Value> out{rtMakeString("")};
     for (uint32_t i = 0; i < literalCount; ++i) {
         Rooted<Value> segment{rtArrayLikeElement(literals, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         segment.set(rtValueToString(segment.get()));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         out.set(Value(bronze_string_concat(out.get().rawBits(), segment.get().rawBits())));
         // Step 8.d: the LAST literal ends the string — a substitution after it
         // is never read, and `String.raw({raw:['a']}, 1)` is "a".
         if (i + 1 == literalCount) break;
         if (i + 1 >= args.count()) continue;
         Rooted<Value> sub{rtValueToString(args[i + 1])};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         out.set(Value(bronze_string_concat(out.get().rawBits(), sub.get().rawBits())));
     }
     return out.get().rawBits();
@@ -562,6 +586,7 @@ uint32_t rtArrayLikeLength(Rooted<Value>& src) {
     Rooted<Value> key{rtMakeString("length")};
     const double len =
         rtToNumber(Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits())));
+    if (rtExceptionPending()) return 0;
     if (!(len >= 1.0)) return 0;
     return len > 4294967295.0 ? 4294967295u : static_cast<uint32_t>(len);
 }

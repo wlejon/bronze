@@ -39,7 +39,7 @@ struct DecodedDescriptor {
 
 // ECMA-262 6.2.6.5 ToPropertyDescriptor on its own: the six reads and the
 // three checks, with the payloads left in the roots the caller handed in.
-// Throws on every failure, and answers true otherwise. Separate from the apply
+// False with an exception pending on every failure. Separate from the apply
 // because 20.1.2.3.1 runs ALL of a batch's decodes before ANY apply, so the
 // decoded batch has to be parked between the two halves.
 bool decodeDescriptor(Rooted<Value>& desc, DecodedDescriptor& d, Rooted<Value>& value,

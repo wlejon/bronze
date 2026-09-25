@@ -166,12 +166,15 @@ uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const
         // HasOwnProperty(Target, "length"), Get(Target, "length") if it has
         // one, and Get(Target, "name") — each a trap a handler observes.
         Rooted<Value> proto{rtProxyGetPrototypeOf(target.get())};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> lengthKey{rtMakeString("length")};
         OwnPropertyDetail ignored;
         const bool hasLength = rtProxyGetOwnProperty(target.get(), lengthKey.get(), ignored);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         uint32_t length = 0;
         if (hasLength) {
             const Value targetLen = rtProxyGet(target.get(), lengthKey.get());
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             // Step 5.b: a Number's ToIntegerOrInfinity, less the bound count,
             // floored at zero; anything else leaves L at zero.
             if (targetLen.isNumber() && targetLen.asNumber() > 0) {
@@ -184,6 +187,7 @@ uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const
         }
         Rooted<Value> nameKey{rtMakeString("name")};
         Rooted<Value> targetName{rtProxyGet(target.get(), nameKey.get())};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         // Step 7: a name that is not a string is the empty string.
         if (!targetName.get().isString()) targetName.set(rtMakeString(""));
         StringHeader* interned =

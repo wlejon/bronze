@@ -203,12 +203,14 @@ uint64_t proxyChainForInKeys(Value receiver) {
             level.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags;
         if (isProxy) {
             Rooted<Value> keys{rtProxyOwnKeys(level.get())};
+            if (rtExceptionPending()) return out.get().rawBits();
             levelObjects.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, level);
             levelKeyLists.get().asObject<ArrayHeader>()->setElem(rtHeap(), levelCount, keys);
             levelEnumerability.emplace_back();
             levelIsProxy.push_back(true);
             ++levelCount;
             Value proto = rtProxyGetPrototypeOf(level.get());
+            if (rtExceptionPending()) return out.get().rawBits();
             level.set(proto);
             continue;
         }
@@ -262,6 +264,7 @@ uint64_t proxyChainForInKeys(Value receiver) {
             if (levelIsProxy[li]) {
                 OwnPropertyDetail found;
                 const bool present = rtProxyGetOwnProperty(object.get(), key.get(), found);
+                if (rtExceptionPending()) return out.get().rawBits();
                 enumerable = present && found.enumerable;
             } else {
                 enumerable = levelEnumerability[li][ki];

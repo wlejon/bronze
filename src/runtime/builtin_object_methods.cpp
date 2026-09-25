@@ -42,6 +42,7 @@ uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const ui
         // 10.5.11 [[OwnPropertyKeys]] with 20.1.2.11's symbol filter: the
         // `ownKeys` trap once, its symbols in the trap's order.
         Rooted<Value> keys{rtProxyOwnKeys(self.get())};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> out{Value(bronze_create_array(0))};
         uint32_t at = 0;
         const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
@@ -94,11 +95,13 @@ static uint64_t enumerableOwn(Value source, bool wantEntries) {
         return rtProxyEnumerableOwn(src.get(), wantEntries).rawBits();
     }
     Rooted<Value> keys{Value(bronze_object_keys(src.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> out{Value(bronze_create_array(0))};
     const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
         Rooted<Value> val{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+        if (rtExceptionPending()) return out.get().rawBits();
         Rooted<Value> item;
         if (wantEntries) {
             Rooted<Value> pair{Value(bronze_create_array(2))};
@@ -144,9 +147,11 @@ static Value toObjectForAssign(Value v) {
 uint64_t objectAssign(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> target{toObjectForAssign(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 1; i < args.count(); ++i) {
         Rooted<Value> src{args[i]};
         bronze_object_spread(target.get().rawBits(), src.get().rawBits());
+        if (rtExceptionPending()) break;
     }
     return target.get().rawBits();
 }
@@ -155,20 +160,21 @@ uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
     RootedArgs args(argc, argv);
     Rooted<Value> out{Value(bronze_create_object())};
     Rooted<Value> rec{Value(bronze_iter_open(args[0].rawBits()))};
-    rtCloseIteratorOnThrow(rec, [&] {
-        while (bronze_iter_step(rec.get().rawBits())) {
-            Rooted<Value> pair{Value(bronze_iter_value(rec.get().rawBits()))};
-            if (!pair.get().isObject()) {
-                rtThrowTypeError("Iterator value is not an entry object");
-            }
-            Rooted<Value> k{Value(bronze_elem_get(pair.get().rawBits(),
-                                                  Value::fromDouble(0.0).rawBits()))};
-            Rooted<Value> v{Value(bronze_elem_get(pair.get().rawBits(),
-                                                  Value::fromDouble(1.0).rawBits()))};
-            bronze_elem_set(out.get().rawBits(), k.get().rawBits(), v.get().rawBits(),
-                            /*strict=*/false);
+    if (rtExceptionPending()) return out.get().rawBits();
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> pair{Value(bronze_iter_value(rec.get().rawBits()))};
+        if (!pair.get().isObject()) {
+            rtThrowTypeError("Iterator value is not an entry object");
+            break;
         }
-    });
+        Rooted<Value> k{Value(bronze_elem_get(pair.get().rawBits(),
+                                              Value::fromDouble(0.0).rawBits()))};
+        Rooted<Value> v{Value(bronze_elem_get(pair.get().rawBits(),
+                                              Value::fromDouble(1.0).rawBits()))};
+        bronze_elem_set(out.get().rawBits(), k.get().rawBits(), v.get().rawBits(), /*strict=*/false);
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
     return out.get().rawBits();
 }
 

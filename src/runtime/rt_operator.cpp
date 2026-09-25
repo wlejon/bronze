@@ -427,11 +427,14 @@ LessThan isLessThan(Rooted<Value>& x, Rooted<Value>& y, bool leftFirst) {
     Rooted<Value> py{Value::fromUndefined()};
     if (leftFirst) {
         px.set(rtToPrimitive(x, ToPrimitiveHint::Number));
+        if (rtExceptionPending()) return LessThan::Undefined;
         py.set(rtToPrimitive(y, ToPrimitiveHint::Number));
     } else {
         py.set(rtToPrimitive(y, ToPrimitiveHint::Number));
+        if (rtExceptionPending()) return LessThan::Undefined;
         px.set(rtToPrimitive(x, ToPrimitiveHint::Number));
     }
+    if (rtExceptionPending()) return LessThan::Undefined;
     // Step 3: both Strings, compared by code unit with NOTHING converted. It
     // comes before ToNumeric, which is why `"2" < "10"` is true where
     // `2 < 10` is false — the digits are never read as digits.
@@ -474,6 +477,7 @@ LessThan isLessThan(Rooted<Value>& x, Rooted<Value>& y, bool leftFirst) {
     if (px.get().isBigInt() || py.get().isBigInt()) {
         const bool leftIsBig = px.get().isBigInt();
         const double other = rtToNumber(leftIsBig ? py.get() : px.get());
+        if (rtExceptionPending()) return LessThan::Undefined;
         const int order = leftIsBig ? rtCompareBigIntWithNumber(px.get(), other)
                                     : -rtCompareBigIntWithNumber(py.get(), other);
         if (order == BigNum::kUnordered || order == -BigNum::kUnordered) {
@@ -486,7 +490,9 @@ LessThan isLessThan(Rooted<Value>& x, Rooted<Value>& y, bool leftFirst) {
     // string that does not parse as a number. Both operands are primitive by
     // now, so neither conversion can allocate; a Symbol is the one that raises.
     const double nx = rtToNumber(px.get());
+    if (rtExceptionPending()) return LessThan::Undefined;
     const double ny = rtToNumber(py.get());
+    if (rtExceptionPending()) return LessThan::Undefined;
     if (std::isnan(nx) || std::isnan(ny)) return LessThan::Undefined;
     return nx < ny ? LessThan::True : LessThan::False;
 }
@@ -595,10 +601,12 @@ bool looseEq(Rooted<Value>& aRoot, Rooted<Value>& bRoot) {
         // whole observable difference between a wrapper and what it wraps.
         if (b.isObject()) {
             bRoot.set(rtToPrimitive(bRoot, ToPrimitiveHint::Default));
+            if (rtExceptionPending()) return false;
             continue;
         }
         if (a.isObject()) {
             aRoot.set(rtToPrimitive(aRoot, ToPrimitiveHint::Default));
+            if (rtExceptionPending()) return false;
             continue;
         }
         // Step 13: two primitives of types no step above paired up.
@@ -648,6 +656,7 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
             // non-object answer a TypeError rather than a false.
             Rooted<Value> key{rtMakeString("prototype")};
             protoRoot.set(rtProxyGet(ctorRoot.get(), key.get(), ctorRoot.get()));
+            if (rtExceptionPending()) return false;
             if (!protoRoot.get().isObject()) {
                 rtThrowTypeError("Function has non-object prototype in instanceof check");
                 return false;
@@ -703,6 +712,7 @@ bool rtOrdinaryHasInstance(Value ctor, Value obj) {
             next = shape ? shape->prototypeValue() : Value::fromUndefined();
         } else if (kind == HeapKind::Proxy) {
             next = rtProxyGetPrototypeOf(cur.get());
+            if (rtExceptionPending()) return false;
         } else {
             return false;
         }
@@ -765,6 +775,7 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
 
     Rooted<Value> hasInstKey{Value::fromSymbol(rtSymbolHasInstance())};
     Value handler(bronze_elem_get(ctorRoot.get().rawBits(), hasInstKey.get().rawBits()));
+    if (rtExceptionPending()) return false;
 
     if (!handler.isNull() && !handler.isUndefined()) {
         if (!isCallable(handler)) {
@@ -773,6 +784,7 @@ bool bronze_instanceof(uint64_t objBits, uint64_t ctorBits) {
         }
         uint64_t arg = objRoot.get().rawBits();
         uint64_t res = bronze_dynamic_call(handler.rawBits(), ctorRoot.get().rawBits(), 1, &arg);
+        if (rtExceptionPending()) return false;
         return bronze_truthy(res);
     }
 

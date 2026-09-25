@@ -57,8 +57,8 @@ void setAt(Rooted<Value>& arr, uint32_t i, Value v) {
     arr.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, val);
 }
 
-// 23.1.3.30.2 CompareArrayElements. -1 / 0 / +1; a comparator's throw
-// propagates through the sort, before any write-back has begun.
+// 23.1.3.30.2 CompareArrayElements. -1 / 0 / +1; a pending exception is the
+// fourth answer, and every caller tests the cell before using the number.
 int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn,
                     const DirectCallee& direct) {
     const bool xu = x.get().isUndefined();
@@ -83,6 +83,7 @@ int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn
                 : Value(bronze_dynamic_call(comparefn.get().rawBits(),
                                             BRONZE_ABI_UNDEFINED_BITS, 2,
                                             reinterpret_cast<const uint64_t*>(block)))};
+        if (rtExceptionPending()) return 0;
         // Step 4.b-4.d: ToNumber, with NaN read as "equal" rather than as an
         // ordering — which is what keeps a garbage comparator from making the
         // sort loop forever.
@@ -94,7 +95,9 @@ int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn
     // Steps 5-9: ToString on BOTH (through ToPrimitive, so an object element
     // runs its own toString and can throw), then a code-unit comparison.
     Rooted<Value> xs{rtToStringValue(x)};
+    if (rtExceptionPending()) return 0;
     Rooted<Value> ys{rtToStringValue(y)};
+    if (rtExceptionPending()) return 0;
     const StringHeader* a = xs.get().asString<StringHeader>();
     const StringHeader* b = ys.get().asString<StringHeader>();
     if (a->lessThan(*b)) return -1;
@@ -120,6 +123,7 @@ void mergeRuns(Rooted<Value>& src, Rooted<Value>& dst, uint32_t lo, uint32_t mid
             Rooted<Value> a{getAt(src, i)};
             Rooted<Value> b{getAt(src, j)};
             takeLeft = compareElements(a, b, comparefn, direct) <= 0;
+            if (rtExceptionPending()) return;
         }
         setAt(dst, k, getAt(src, takeLeft ? i++ : j++));
     }
@@ -165,6 +169,7 @@ int compareElementsFast(SortSlots& s, Rooted<Value>& comparefn, const DirectCall
                        : Value(bronze_dynamic_call(comparefn.get().rawBits(),
                                                    BRONZE_ABI_UNDEFINED_BITS, 2,
                                                    reinterpret_cast<const uint64_t*>(block)));
+        if (rtExceptionPending()) return 0;
         const Value ans = s.answer.get();
         // A number answer — the whole population for a well-typed comparator —
         // is its own ToNumber; anything else keeps the spec'd conversion,
@@ -175,7 +180,9 @@ int compareElementsFast(SortSlots& s, Rooted<Value>& comparefn, const DirectCall
         return 0;
     }
     Rooted<Value> xs{rtToStringValue(s.a)};
+    if (rtExceptionPending()) return 0;
     Rooted<Value> ys{rtToStringValue(s.b)};
+    if (rtExceptionPending()) return 0;
     const StringHeader* a = xs.get().asString<StringHeader>();
     const StringHeader* b = ys.get().asString<StringHeader>();
     if (a->lessThan(*b)) return -1;
@@ -199,6 +206,7 @@ void mergeRunsFast(SortSlots& s, Rooted<Value>& src, Rooted<Value>& dst, uint32_
             s.a = sh->getElem(i);
             s.b = sh->getElem(j);
             takeLeft = compareElementsFast(s, comparefn, direct) <= 0;
+            if (rtExceptionPending()) return;
         }
         // Both headers re-derived here, AFTER the comparator window; the
         // destination write is in place (k < itemCount == dst's length), so
@@ -225,6 +233,7 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
 
     const bool isArr = isArray(self.get());
     const uint32_t len = isArr ? self.get().asObject<ArrayHeader>()->length : rtArrayLikeLength(self);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     const bool fastEngine = rtTls()->sort_fast_enabled != 0;
 
@@ -249,7 +258,9 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     } else {
         for (uint32_t i = 0; i < len; ++i) {
             if (!rtArrayLikeHasElement(self, i)) continue;
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             Rooted<Value> val{rtArrayLikeGetElement(self, i)};
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             const uint32_t at = list.get().asObject<ArrayHeader>()->length;
             setAt(list, at, val.get());
         }
@@ -306,6 +317,7 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
             // A comparator that threw ends the SORT, not just the merge — and
             // the receiver has not been written, so the array the catch sees
             // is the array the program had.
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         Rooted<Value>* t = src;
         src = dst;
@@ -348,9 +360,11 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
         for (uint32_t i = 0; i < itemCount; ++i) {
             Rooted<Value> val{getAt(sorted, i)};
             rtArrayLikeSetElement(self, i, val);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         for (uint32_t i = itemCount; i < len; ++i) {
             rtArrayLikeDeleteElement(self, i);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
     }
     return self.get().rawBits();  // sorts IN PLACE and answers the same array

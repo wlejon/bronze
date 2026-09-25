@@ -24,11 +24,13 @@ constexpr uint64_t kPrintTag = 0xFFFE000000000001ULL;
 constexpr uint64_t kPrintErrTag = 0xFFFE000000000002ULL;
 
 // The thread-local block, as pinned-register code reads it.
+constexpr int32_t kBronzeTlsExceptionCellOff = BRONZE_TLS_EXCEPTION_CELL_OFF;
 constexpr int32_t kBronzeTlsStackLimitOff = BRONZE_TLS_STACK_LIMIT_OFF;
 // The thread's module-delta array, indexed by a module's slot cell: what
 // `TranslatorOptions::per_thread_module_data` adds to every module-data
 // address.
 constexpr int32_t kBronzeTlsModuleDeltasOff = BRONZE_TLS_MODULE_DELTAS_OFF;
+constexpr uint64_t kBronzeNoExceptionBits = BRONZE_ABI_NO_EXCEPTION_BITS;
 // One inline-cache SITE in the module's `__bronze_ic_table`. The table is
 // indexed by site, and a helper takes the address of a site's way 0.
 constexpr uint32_t kBronzeIcSiteSize = BRONZE_ABI_IC_SITE_SIZE;

@@ -91,18 +91,14 @@ uint64_t promiseConstructorBody(uint64_t, uint64_t thisBits, uint32_t argc,
     Rooted<Value> resolveFn{rtMakeResolvingFunction(promise, /*isReject=*/false)};
     Rooted<Value> rejectFn{rtMakeResolvingFunction(promise, /*isReject=*/true)};
 
-    // Step 10: the executor's throw is the promise's rejection — through the
-    // reject function's latch, so an executor that resolved and THEN threw
-    // keeps its first answer.
-    Value caught;
-    if (rtTryCatch(
-            [&] {
-                uint64_t block[2] = {resolveFn.get().rawBits(), rejectFn.get().rawBits()};
-                bronze_dynamic_call(executor.get().rawBits(), Value::fromUndefined().rawBits(), 2,
-                                    block);
-            },
-            caught)) {
-        Rooted<Value> thrown{caught};
+    uint64_t block[2] = {resolveFn.get().rawBits(), rejectFn.get().rawBits()};
+    bronze_dynamic_call(executor.get().rawBits(), Value::fromUndefined().rawBits(), 2, block);
+    if (rtExceptionPending()) {
+        // Step 10: the executor's throw is the promise's rejection — through
+        // the reject function's latch, so an executor that resolved and THEN
+        // threw keeps its first answer.
+        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
+        rtClearException();
         rtRejectPromise(promise, thrown);
     }
     return promise.get().rawBits();
@@ -125,7 +121,9 @@ uint64_t promiseThen(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     // over it — so `sub.then(...)` answers a `sub` and
     // `static get [Symbol.species]() { return Promise }` opts back out.
     Rooted<Value> species{rtPromiseSpeciesConstructor(self)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> cap{rtNewPromiseCapability(species)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> onF{args[0]};
     Rooted<Value> onR{args[1]};
     rtPerformPromiseThen(self, onF, onR, cap);
@@ -164,8 +162,9 @@ uint64_t finallyStep(uint64_t env, uint32_t argc, const uint64_t* argv, bool ret
         Value(bronze_dynamic_call(onFinally.get().rawBits(),
                                   Value::fromUndefined().rawBits(), 0, nullptr))};
     // onFinally's throw replaces the completion (27.2.5.3.1 has no step
-    // catching it): it propagates, and the reaction job running this thunk
-    // rejects its capability with it.
+    // catching it): left pending, the reaction job running this thunk rejects
+    // its capability with it.
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> inner{rtPromiseResolveValue(result)};
     Rooted<Value> restore{
         rtMakeNativeClosure(rethrow ? reasonThrower : valueThunk, completion, 0)};
@@ -212,7 +211,9 @@ uint64_t promiseFinally(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
         onR.set(args[0]);
     }
     Rooted<Value> species{rtPromiseSpeciesConstructor(self)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> cap{rtNewPromiseCapability(species)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     rtPerformPromiseThen(self, onF, onR, cap);
     return rtCapabilityPromise(cap.get()).rawBits();
 }
@@ -349,19 +350,9 @@ uint64_t capReject(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv) 
     return Value::fromUndefined().rawBits();
 }
 
-// The loop half of IfAbruptRejectPromise around an open iterator: a throw
-// while walking it closes it (a no-op when the throw was the iterator's own
-// step, which leaves the record done) and rejects the capability. True when
-// the walk completed.
-template <typename Body>
-bool rejectAndCloseOnThrow(Rooted<Value>& cap, Rooted<Value>& rec, Body&& body) {
-    Value caught;
-    if (!rtTryCatch(std::forward<Body>(body), caught)) return true;
-    Rooted<Value> reason{caught};
-    bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
-    rtSettleCapability(cap, reason, /*reject=*/true);
-    return false;
-}
+// Take the pending exception and reject the capability with it — the
+// IfAbruptRejectPromise every combinator wraps its iteration in.
+void rejectWithPending(Rooted<Value>& cap) { rtRejectCapabilityWithPending(cap); }
 
 // `ctor` is the combinator's `this` (27.2.4.1 step 1: "Let C be the this
 // value"), so `MyPromise.all([...])` answers a MyPromise and every element is
@@ -371,6 +362,7 @@ uint64_t runCombinator(Rooted<Value>& ctor, uint32_t argc, const uint64_t* argv,
     RootedArgs args{argc, argv};
     Rooted<Value> source{args[0]};
     Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> values{Value(bronze_create_array(0))};
     Rooted<Value> shared{makeEnvObject(SharedSlot::kCount)};
     {
@@ -384,47 +376,52 @@ uint64_t runCombinator(Rooted<Value>& ctor, uint32_t argc, const uint64_t* argv,
         env->setInternalSlot(SharedSlot::Kind, Value::fromDouble(kind));
     }
 
-    Rooted<Value> rec{Value::fromUndefined()};
-    if (!rtRejectCapabilityOnThrow(
-            cap, [&] { rec.set(Value(bronze_iter_open(source.get().rawBits()))); })) {
+    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
+    if (rtExceptionPending()) {
+        rejectWithPending(cap);
         return rtCapabilityPromise(cap.get()).rawBits();
     }
-    const bool walked = rejectAndCloseOnThrow(cap, rec, [&] {
-        double index = 0;
-        while (bronze_iter_step(rec.get().rawBits())) {
-            Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-            Rooted<Value> undef{Value::fromUndefined()};
-            bronze_array_append(values.get().rawBits(), undef.get().rawBits());
-            Rooted<Value> p{rtPromiseResolveWith(ctor, item)};
-            Rooted<Value> element{makeEnvObject(ElementSlot::kCount)};
-            element.get().asObject<ObjectHeader>()->setInternalSlot(ElementSlot::Shared,
-                                                                    shared.get());
-            element.get().asObject<ObjectHeader>()->setInternalSlot(ElementSlot::Index,
-                                                                    Value::fromDouble(index));
-            Rooted<Value> onF{Value::fromUndefined()};
-            Rooted<Value> onR{Value::fromUndefined()};
-            switch (kind) {
-                case kAll:
-                    onF.set(rtMakeNativeClosure(allOnFulfilled, element, 1));
-                    onR.set(rtMakeNativeClosure(capReject, cap, 1));
-                    break;
-                case kAllSettled:
-                    onF.set(rtMakeNativeClosure(settledOnFulfilled, element, 1));
-                    onR.set(rtMakeNativeClosure(settledOnRejected, element, 1));
-                    break;
-                default:  // kAny
-                    onF.set(rtMakeNativeClosure(capResolve, cap, 1));
-                    onR.set(rtMakeNativeClosure(anyOnRejected, element, 1));
-                    break;
-            }
-            Rooted<Value> noCap{Value::fromUndefined()};
-            rtPerformPromiseThen(p, onF, onR, noCap);
-            shared.get().asObject<ObjectHeader>()->setInternalSlot(
-                SharedSlot::Remaining, Value::fromDouble(sharedRemaining(shared.get()) + 1));
-            index += 1;
+    double index = 0;
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        Rooted<Value> undef{Value::fromUndefined()};
+        bronze_array_append(values.get().rawBits(), undef.get().rawBits());
+        Rooted<Value> p{rtPromiseResolveWith(ctor, item)};
+        if (rtExceptionPending()) break;
+        Rooted<Value> element{makeEnvObject(ElementSlot::kCount)};
+        element.get().asObject<ObjectHeader>()->setInternalSlot(ElementSlot::Shared,
+                                                                shared.get());
+        element.get().asObject<ObjectHeader>()->setInternalSlot(ElementSlot::Index,
+                                                                Value::fromDouble(index));
+        Rooted<Value> onF{Value::fromUndefined()};
+        Rooted<Value> onR{Value::fromUndefined()};
+        switch (kind) {
+            case kAll:
+                onF.set(rtMakeNativeClosure(allOnFulfilled, element, 1));
+                onR.set(rtMakeNativeClosure(capReject, cap, 1));
+                break;
+            case kAllSettled:
+                onF.set(rtMakeNativeClosure(settledOnFulfilled, element, 1));
+                onR.set(rtMakeNativeClosure(settledOnRejected, element, 1));
+                break;
+            default:  // kAny
+                onF.set(rtMakeNativeClosure(capResolve, cap, 1));
+                onR.set(rtMakeNativeClosure(anyOnRejected, element, 1));
+                break;
         }
-    });
-    if (walked) combinatorDecrement(shared);
+        Rooted<Value> noCap{Value::fromUndefined()};
+        rtPerformPromiseThen(p, onF, onR, noCap);
+        shared.get().asObject<ObjectHeader>()->setInternalSlot(
+            SharedSlot::Remaining, Value::fromDouble(sharedRemaining(shared.get()) + 1));
+        index += 1;
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) {
+        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+        rejectWithPending(cap);
+        return rtCapabilityPromise(cap.get()).rawBits();
+    }
+    combinatorDecrement(shared);
     return rtCapabilityPromise(cap.get()).rawBits();
 }
 
@@ -444,6 +441,7 @@ uint64_t staticReject(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     Rooted<Value> ctor{Value(thisBits)};
     Rooted<Value> reason{args[0]};
     Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     // No pass-through here, unlike `resolve`: 27.2.4.6 always mints a new
     // rejected promise, even for a promise argument.
     rtSettleCapability(cap, reason, /*reject=*/true);
@@ -470,23 +468,28 @@ uint64_t staticRace(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     Rooted<Value> ctor{Value(thisBits)};
     Rooted<Value> source{args[0]};
     Rooted<Value> cap{rtNewPromiseCapability(ctor)};
-    Rooted<Value> rec{Value::fromUndefined()};
-    if (!rtRejectCapabilityOnThrow(
-            cap, [&] { rec.set(Value(bronze_iter_open(source.get().rawBits()))); })) {
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
+    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
+    if (rtExceptionPending()) {
+        rejectWithPending(cap);
         return rtCapabilityPromise(cap.get()).rawBits();
     }
-    rejectAndCloseOnThrow(cap, rec, [&] {
-        while (bronze_iter_step(rec.get().rawBits())) {
-            Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-            Rooted<Value> p{rtPromiseResolveWith(ctor, item)};
-            // The pass-through form: absent handlers with the capability, so
-            // every element's settle tries to settle the capability directly
-            // and the latch keeps the first (27.2.4.5.1 hands each element
-            // the SAME resolving pair).
-            Rooted<Value> noHandler{Value::fromUndefined()};
-            rtPerformPromiseThen(p, noHandler, noHandler, cap);
-        }
-    });
+    while (bronze_iter_step(rec.get().rawBits())) {
+        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+        Rooted<Value> p{rtPromiseResolveWith(ctor, item)};
+        if (rtExceptionPending()) break;
+        // The pass-through form: absent handlers with the capability, so
+        // every element's settle tries to settle the capability directly and
+        // the latch keeps the first (27.2.4.5.1 hands each element the SAME
+        // resolving pair).
+        Rooted<Value> noHandler{Value::fromUndefined()};
+        rtPerformPromiseThen(p, noHandler, noHandler, cap);
+        if (rtExceptionPending()) break;
+    }
+    if (rtExceptionPending()) {
+        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+        rejectWithPending(cap);
+    }
     return rtCapabilityPromise(cap.get()).rawBits();
 }
 
@@ -519,6 +522,7 @@ uint64_t staticWithResolvers(uint64_t, uint64_t thisBits, uint32_t, const uint64
             .rawBits();
     }
     Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> promise{rtCapabilityPromise(cap.get())};
     Rooted<Value> resolveFn{
         cap.get().asObject<ObjectHeader>()->internalSlot(CapabilitySlot::Resolve)};
@@ -558,6 +562,7 @@ uint64_t staticTry(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
             .rawBits();
     }
     Rooted<Value> cap{rtNewPromiseCapability(ctor)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> fn{args[0]};
     Rooted<Value> receiver{Value::fromUndefined()};
     // The trailing arguments, read from the rooted block: the collector keeps
@@ -565,11 +570,11 @@ uint64_t staticTry(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     const uint32_t rest = argc > 0 ? argc - 1 : 0;
     const uint64_t* restArgv = rest > 0 ? reinterpret_cast<const uint64_t*>(args.data() + 1)
                                         : nullptr;
-    Rooted<Value> result{Value::fromUndefined()};
-    if (rtRejectCapabilityOnThrow(cap, [&] {
-            result.set(Value(bronze_dynamic_call(fn.get().rawBits(), receiver.get().rawBits(),
-                                                 rest, restArgv)));
-        })) {
+    Rooted<Value> result{
+        Value(bronze_dynamic_call(fn.get().rawBits(), receiver.get().rawBits(), rest, restArgv))};
+    if (rtExceptionPending()) {
+        rejectWithPending(cap);
+    } else {
         rtSettleCapability(cap, result, /*reject=*/false);
     }
     return rtCapabilityPromise(cap.get()).rawBits();
@@ -643,6 +648,12 @@ void ensurePromiseIntrinsics() {
 }
 
 }  // namespace
+
+void rtRejectCapabilityWithPending(Rooted<Value>& cap) {
+    Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
+    rtClearException();
+    rtSettleCapability(cap, thrown, /*reject=*/true);
+}
 
 Value rtPromisePrototype() {
     ensurePromiseIntrinsics();

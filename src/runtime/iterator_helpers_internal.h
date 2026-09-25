@@ -2,9 +2,8 @@
 
 #include <cstdint>
 #include <string>
-#include <utility>
 
-#include "runtime/exception.h"
+
 #include "runtime/gc.h"
 #include "runtime/value.h"
 
@@ -31,9 +30,9 @@ bool isCallable(Value v);
 
 // 7.4.1 GetIteratorDirect(obj): the `next` method, read ONCE, off the receiver
 // itself — there is no @@iterator call here, because the receiver already IS
-// the iterator. A TypeError when the receiver is not an object, which is step
-// 2 of every helper.
-void getIteratorDirect(Rooted<Value>& obj, const char* member, Rooted<Value>& nextOut);
+// the iterator. False with a TypeError pending when the receiver is not an
+// object, which is step 2 of every helper.
+bool getIteratorDirect(Rooted<Value>& obj, const char* member, Rooted<Value>& nextOut);
 
 // 7.4.2 GetIteratorFlattenable, which is what `Iterator.from` and `flatMap`
 // accept as "something iterable enough". A value with an @@iterator is opened
@@ -45,33 +44,26 @@ void getIteratorDirect(Rooted<Value>& obj, const char* member, Rooted<Value>& ne
 // `Iterator.from` iterates a string primitive, `flatMap` refuses every
 // primitive by TypeError (a string yielded by the mapper is a mistake far more
 // often than an intention to iterate its characters).
-void getIteratorFlattenable(Rooted<Value>& value, bool allowStringPrimitive, const char* member,
+bool getIteratorFlattenable(Rooted<Value>& value, bool allowStringPrimitive, const char* member,
                             Rooted<Value>& iterOut, Rooted<Value>& nextOut);
 
 // One step of the protocol, as 7.4.8 IteratorStepValue folds it: call `next`,
 // check the result is an object, read `done`, and read `value` only when it is
-// not. A throw from any of it propagates, leaving the iterator unclosed — the
-// iterator's own failure is not a reason to call its `return`.
-enum class Step { Produced, Done };
+// not. The three outcomes are distinct because a helper does something
+// different in each.
+enum class Step { Produced, Done, Threw };
 Step stepIterator(Rooted<Value>& iter, Rooted<Value>& next, Rooted<Value>& out);
 
 // 7.4.11 IteratorClose. `suppress` discards an error the `return` method
 // raises, which is step 6's rule for a close that is already carrying a throw.
 void closeIterator(Rooted<Value>& iter, bool suppress);
 
-// IfAbruptCloseIterator (7.4.12) around `body`: a throw out of it closes the
-// iterator and the ORIGINAL exception is re-thrown. Every callback a helper
-// runs is wrapped in this — a mapper that throws must still leave the
-// underlying iterator closed, and its own error must be the one the program
-// catches rather than whatever `return` did afterwards.
-template <typename Body>
-void closeOnThrow(Rooted<Value>& iter, Body&& body) {
-    Value caught;
-    if (!rtTryCatch(std::forward<Body>(body), caught)) return;
-    Rooted<Value> thrown{caught};
-    closeIterator(iter, /*suppress=*/true);
-    rtThrow(thrown.get());
-}
+// IfAbruptCloseIterator (7.4.12) as one operation: the pending exception is
+// taken, the iterator closed, and the ORIGINAL exception re-thrown. Every
+// callback a helper runs is wrapped in this — a mapper that throws must still
+// leave the underlying iterator closed, and its own error must be the one the
+// program catches rather than whatever `return` did afterwards.
+void closeAfterThrow(Rooted<Value>& iter);
 
 // Close the iterator and throw `message` as a TypeError or a RangeError. The
 // argument-validation failures of 27.1.4.1 are spelled this way — `IteratorClose(O,

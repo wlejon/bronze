@@ -34,7 +34,7 @@ Execution on the calling thread (BrassTieredProgram::run)
    ├─ hot functions are baseline-compiled on the mutator, then optimized on
    │  brass's process-wide compile pool and installed while it runs
    ├─ a hot loop moves into optimized code mid-loop (OSR)
-   ├─ an uncaught throw leaves run() as a C++ BrassException (runtime/exception.h)
+   ├─ thrown exceptions surface through rtTls()->exception_cell
    ├─ pending Promise microtasks drain (embed::drainMicrotasks())
    └─ the program is retained for the process lifetime (retainProgram)
 ```

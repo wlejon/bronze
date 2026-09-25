@@ -93,6 +93,7 @@ double timeValueOfArgument(Rooted<Value>& arg) {
         return arg.get().asObject<ObjectHeader>()->internalSlot(DateSlot::TimeValue).asNumber();
     }
     Rooted<Value> prim{rtToPrimitive(arg, ToPrimitiveHint::Default)};
+    if (rtExceptionPending()) return std::nan("");
     if (prim.get().isString()) {
         // 21.4.2.1 step 4.b: the same parse as Date.parse, so `new Date(s)`
         // and `new Date(Date.parse(s))` are the same Date.
@@ -113,9 +114,11 @@ double timeValueOfFields(RootedArgs& args, bool local) {
     // than the year 1900 an unconverted +0 would have produced. Only the fields
     // after it are conditional.
     parts[0] = rtToNumber(args[0]);
+    if (rtExceptionPending()) return std::nan("");
     const uint32_t supplied = args.count() < 7 ? args.count() : 7;
     for (uint32_t i = 1; i < supplied; ++i) {
         parts[i] = rtToNumber(args[i]);
+        if (rtExceptionPending()) return std::nan("");
     }
     const double year = dt::makeFullYear(parts[0]);
     const double when = dt::makeDate(dt::makeDay(year, parts[1], parts[2]),
@@ -139,8 +142,10 @@ uint64_t dateConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     } else if (argc == 1) {
         Rooted<Value> arg{args[0]};
         tv = dt::timeClip(timeValueOfArgument(arg));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     } else {
         tv = timeValueOfFields(args, /*local=*/true);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return rtMakeDateObject(tv).rawBits();
 }
@@ -156,6 +161,7 @@ uint64_t dateNow(uint64_t, uint64_t, uint32_t, const uint64_t*) {
 uint64_t dateUTC(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     const double tv = timeValueOfFields(args, /*local=*/false);
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return Value::fromDouble(tv).rawBits();
 }
 
@@ -164,6 +170,7 @@ uint64_t dateParse(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> arg{args[0]};
     Rooted<Value> str{rtToStringValue(arg)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return Value::fromDouble(dt::parse(rtUtf8Chars(str.get().asString<StringHeader>()))).rawBits();
 }
 
@@ -209,11 +216,13 @@ uint64_t dateToJSON(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
             .rawBits();
     }
     Rooted<Value> prim{rtToPrimitive(self, ToPrimitiveHint::Number)};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (prim.get().isNumber() && !std::isfinite(prim.get().asNumber())) {
         return Value::fromNull().rawBits();
     }
     Rooted<Value> key{rtMakeString("toISOString")};
     Rooted<Value> method{Value(bronze_elem_get(self.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (!method.get().isObject() ||
         method.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
         return rtThrowTypeError("Date.prototype.toJSON: toISOString is not a function").rawBits();
@@ -270,6 +279,7 @@ uint64_t dateSetYear(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         return Value::fromUndefined().rawBits();
     }
     double y = args.count() > 0 ? rtToNumber(args[0]) : std::numeric_limits<double>::quiet_NaN();
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     double zoned = std::isnan(t) ? 0.0 : dt::localTime(t);
     y = dt::makeFullYear(y);
     const double day = dt::makeDay(y, dt::monthFromTime(zoned), dt::dateFromTime(zoned));

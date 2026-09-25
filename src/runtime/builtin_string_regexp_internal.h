@@ -205,6 +205,7 @@ inline bool appendReplacement(Units& out, const Units& input, const MatchPieces&
         return true;
     }
     Value produced = callReplacer(replacement, pieces, input);
+    if (rtExceptionPending()) return false;
     Rooted<Value> text{rtValueToString(produced)};
     const Units piece = unitsOf(text.get());
     out.insert(out.end(), piece.begin(), piece.end());

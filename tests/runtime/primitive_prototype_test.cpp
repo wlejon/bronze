@@ -32,6 +32,10 @@ using namespace bronze::runtime;
 
 namespace {
 
+struct ClearCell {
+    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
+};
+
 // A member of an object by name, with no allocation once the key exists.
 Value member(Rooted<Value>& obj, const char* name) {
     Rooted<Value> key{runtime::rtMakeString(name)};
@@ -274,9 +278,10 @@ TEST_CASE("Date.prototype.getYear and setYear compute standard Annex B year offs
 
 TEST_CASE("rtCheckUnimplementedMember throws TypeError instead of aborting") {
     ShadowStackFrame frame;
+    ClearCell clear;
     const char* const names[] = {"fakeMember"};
-    Value thrown;
-    CHECK(rtTryCatch([&] { runtime::rtCheckUnimplementedMember("TestObject", names, 1, "fakeMember"); },
-                     thrown));
-    CHECK(rtIsErrorInstance(thrown));
+    CHECK_FALSE(rtExceptionPending());
+    runtime::rtCheckUnimplementedMember("TestObject", names, 1, "fakeMember");
+    CHECK(rtExceptionPending());
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }

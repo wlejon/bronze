@@ -636,11 +636,9 @@ BRONZE_EMBED_API void setDynamicImportHook(DynamicImportHook hook);
 // the span stays current across anything the callback does; `thisValue` is a
 // plain copy, current at entry — re-root it before allocating.
 //
-// To throw into JS, call one of the throw helpers below. Their exception is
-// the only one that may leave a callback: generated code unwinds it to the
-// program's `catch`. No other C++ exception may escape a callback: JS
-// `catch` cannot see it, and nothing between the callback and the host's
-// own entry point is prepared for it.
+// To throw into JS, call one of the throw helpers below and return its result;
+// do NOT let a C++ exception escape — the caller may be generated code, whose
+// frames carry no unwind metadata (fatal.h says why that boundary is hard).
 using NativeFn = std::function<Value(Value thisValue, std::span<const Value> args)>;
 
 // Wrap `fn` into a bronze function object callable from compiled JS. The
@@ -659,22 +657,14 @@ BRONZE_EMBED_API Value makeFunction(NativeFn fn, uint32_t arity = 0);
 // the pair together. ALLOCATES.
 BRONZE_EMBED_API Value makeFunction(NativeFn fn, uint32_t arity, std::string_view name);
 
-// Raise into the compiled program, exactly as the builtins in
-// src/runtime/builtin_*.cpp do: each throws the runtime's one exception type
-// (brass::runtime::BrassException carrying the thrown value) and never
-// returns. The Value return type lets a callback spell `return throwX(...)`.
-// The raise unwinds the callback's own C++ frames, so hold resources in RAII.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4646)  // noreturn with a non-void type, on purpose
-#endif
-[[noreturn]] BRONZE_EMBED_API Value throwValue(Value thrown);
-[[noreturn]] BRONZE_EMBED_API Value throwError(const std::string& message);
-[[noreturn]] BRONZE_EMBED_API Value throwTypeError(const std::string& message);
-[[noreturn]] BRONZE_EMBED_API Value throwRangeError(const std::string& message);
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
+// Raise into the compiled program through the runtime's pending-exception
+// cell, exactly as the builtins in src/runtime/builtin_*.cpp do. Each returns
+// `undefined`, which the callback returns in turn — the caller's exception
+// check does the rest.
+BRONZE_EMBED_API Value throwValue(Value thrown);
+BRONZE_EMBED_API Value throwError(const std::string& message);
+BRONZE_EMBED_API Value throwTypeError(const std::string& message);
+BRONZE_EMBED_API Value throwRangeError(const std::string& message);
 
 // ---- object building (embed_object.cpp) ------------------------------------
 
@@ -712,8 +702,8 @@ BRONZE_EMBED_API bool deleteProperty(Value obj, std::string_view key);
 // answer to a question the runtime already answers.
 //
 // A throw from that path (a frozen array, a detached buffer) is handled the
-// way getProperty handles a throwing getter: the throw is caught at the host
-// boundary and the write is dropped. ALLOCATES; same return contract
+// way getProperty handles a throwing getter: the pending cell is cleared at
+// the host boundary and the write is dropped. ALLOCATES; same return contract
 // as setProperty.
 BRONZE_EMBED_API Value setElement(Value obj, uint32_t index, Value v);
 
@@ -731,8 +721,8 @@ BRONZE_EMBED_API Value freeze(Value obj);
 
 // `obj[key]` through the same generic element-get path a computed read in
 // compiled code takes — prototype chain, accessors and all. A getter that
-// throws is handled the way `call` handles a throw: it is caught at the host
-// boundary and the read answers undefined (a host
+// throws is handled the way `call` handles a throw: the pending cell is
+// cleared at the host boundary and the read answers undefined (a host
 // accessor has no JS frame to propagate into). MAY ALLOCATE and MAY RUN USER
 // CODE (a getter), so every other Value the host holds must be re-read from a
 // Persistent afterwards.
@@ -862,7 +852,7 @@ inline constexpr ElementKind BigUint64 = static_cast<ElementKind>(11);
 // indistinguishable to the compiled code that receives it.
 //
 // A length whose byte size exceeds what bronze will allocate for one buffer is
-// the RangeError the constructor raises, thrown as throwRangeError throws.
+// the RangeError the constructor raises, reported through the pending cell.
 // ALLOCATES.
 BRONZE_EMBED_API Value createTypedArray(ElementKind kind, uint32_t length);
 
@@ -939,7 +929,7 @@ BRONZE_EMBED_API void releaseExternalStore(void* store);
 // A view over an EXISTING buffer — `new Float32Array(buffer, byteOffset, n)`
 // spelled from the host, and the way a host hands compiled code a window onto
 // an external buffer it just created. `byteOffset` and `length` are validated
-// against the buffer (the constructor's RangeError, thrown as throwRangeError throws,
+// against the buffer (the constructor's RangeError through the pending cell
 // on a miss); `buffer` must be an ArrayBuffer value. ALLOCATES.
 BRONZE_EMBED_API Value createTypedArrayView(ElementKind kind, Value buffer,
                                             uint32_t byteOffset, uint32_t length);
@@ -977,9 +967,9 @@ struct CallResult {
 // Call a JS function value with `thisValue` and `args`, through the same
 // dynamic-call machinery compiled call sites use (bronze_dynamic_call). A
 // non-callable `fn` is the TypeError that machinery already raises, reported
-// as a thrown result. Any throw is caught here: the host boundary is where
-// propagation ends, the way `main`'s uncaught report ends it for a
-// standalone program. ALLOCATES (roots the arguments).
+// as a thrown result. The pending-exception cell is checked and CLEARED here:
+// the host boundary is where propagation ends, the way `main`'s uncaught
+// handler ends it for a standalone program. ALLOCATES (roots the arguments).
 BRONZE_EMBED_API CallResult call(Value fn, Value thisValue, std::span<const Value> args);
 
 // `new fn(...args)` through the same machinery a compiled `new` uses
@@ -995,12 +985,6 @@ BRONZE_EMBED_API CallResult construct(Value fn, std::span<const Value> args);
 // Returns the parsed Value, or thrown=true with an Error instance on syntax error.
 // ALLOCATES.
 BRONZE_EMBED_API CallResult parseJson(std::string_view jsonUtf8);
-
-// Runs `body` and reports a JS throw out of it as a thrown result, as `call`
-// reports one: for host code that runs embed operations (a throw helper, or
-// an entry point that propagates) outside any call from JS, where nothing
-// above it would catch. `body`'s returned Value is the result otherwise.
-BRONZE_EMBED_API CallResult catchThrow(const std::function<Value()>& body);
 
 // ---- value conversions (embed.cpp) -----------------------------------------
 

@@ -137,6 +137,10 @@ else()
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(bronze_runtime_shared PRIVATE -Wno-restrict)
     endif()
+    # The Error.stack walk follows the frame-pointer chain through this image
+    # (src/runtime/CMakeLists.txt has the reasoning): the static runtime's
+    # switch does not travel with the sources, so it is named again here.
+    target_compile_options(bronze_runtime_shared PRIVATE -fno-omit-frame-pointer)
     if(APPLE)
         target_link_options(bronze_runtime_shared PRIVATE
             "LINKER:-exported_symbols_list,${_bronze_abi_exp}")

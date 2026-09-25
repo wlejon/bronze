@@ -98,6 +98,7 @@ void internalizeChildren(Rooted<Value>& value, Rooted<Value>& reviver) {
         for (uint32_t i = 0; i < length; ++i) {
             Rooted<Value> key{rtMakeString(std::to_string(i))};
             Rooted<Value> replaced{internalize(value, key, reviver)};
+            if (rtExceptionPending()) return;
             if (replaced.get().isUndefined()) {
                 bronze_elem_delete(value.get().rawBits(), key.get().rawBits(), /*strict=*/false);
             } else {
@@ -108,10 +109,12 @@ void internalizeChildren(Rooted<Value>& value, Rooted<Value>& reviver) {
         return;
     }
     Rooted<Value> keyArray{Value(bronze_object_keys(value.get().rawBits()))};
+    if (rtExceptionPending()) return;
     const uint32_t count = keyArray.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{keyArray.get().asObject<ArrayHeader>()->getElem(i)};
         Rooted<Value> replaced{internalize(value, key, reviver)};
+        if (rtExceptionPending()) return;
         if (replaced.get().isUndefined()) {
             bronze_elem_delete(value.get().rawBits(), key.get().rawBits(), /*strict=*/false);
         } else {
@@ -122,10 +125,12 @@ void internalizeChildren(Rooted<Value>& value, Rooted<Value>& reviver) {
 
 Value internalize(Rooted<Value>& holder, Rooted<Value>& key, Rooted<Value>& reviver) {
     Rooted<Value> value{Value(bronze_elem_get(holder.get().rawBits(), key.get().rawBits()))};
+    if (rtExceptionPending()) return Value::fromUndefined();
     if (value.get().isObject()) {
         const uint16_t flags = value.get().asObject<HeapObjectHeader>()->flags;
         if (flags == HeapKind::Array || flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
             internalizeChildren(value, reviver);
+            if (rtExceptionPending()) return Value::fromUndefined();
         }
     }
     uint64_t args[2] = {key.get().rawBits(), value.get().rawBits()};
@@ -171,6 +176,7 @@ uint64_t jsonRawJSON(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         return rtThrowError(ErrorKind::SyntaxError, "JSON.rawJSON: undefined is not valid JSON").rawBits();
     }
     Rooted<Value> text{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const std::vector<uint16_t> units = rtStringUnits(text.get().asString<StringHeader>());
     json::Units source(units.begin(), units.end());
 

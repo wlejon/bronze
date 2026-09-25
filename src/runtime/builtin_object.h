@@ -55,8 +55,7 @@ enum class ObjectOwnKeys {
 ObjectOwnKeys rtObjectOwnKeysOf(Value v, const char* member);
 
 // The receiver of an `Object` member that needs a property TABLE — one it can
-// describe, redefine, or copy into. Any other receiver is the TypeError it
-// throws; it answers true when it returns.
+// describe, redefine, or copy into. False means a TypeError is pending.
 bool rtObjectRequirePropertyTable(Value v, const char* member);
 [[noreturn]] void refuseObjectKind(Value v, const char* member);
 
@@ -91,7 +90,8 @@ uint64_t rtObjectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const 
 // that boolean where `Object.defineProperty` raises a TypeError for it —
 // `throwOnRefusal` is which of the two this call is. The errors of the DECODE
 // (a target that is not an object, a descriptor that is not one, a `get` that
-// is not callable) are thrown either way.
+// is not callable) are raised either way and come back as `false` with an
+// exception pending.
 bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal);
 
 // The four descriptor members themselves, in the shape the namespace table
@@ -109,8 +109,8 @@ uint64_t objectCreate(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 // [[SetPrototypeOf]] answering its BOOLEAN (10.1.2.1 for an ordinary object,
 // 10.5.2 for a proxy): what `Reflect.setPrototypeOf` reports and what
 // `Object.setPrototypeOf` turns into 20.1.2.21 step 4's TypeError. `proto`
-// must already be an object or null (both members check it first). A proxy
-// trap's throw propagates.
+// must already be an object or null (both members check it first). A pending
+// exception — a proxy trap — comes back as false with the cell set.
 bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& obj, Rooted<Value>& proto);
 uint64_t objectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t objectKeys(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv);

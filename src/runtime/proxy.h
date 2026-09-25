@@ -119,8 +119,8 @@ Value rtProxyOwnKeys(Value proxyVal);
 // would have produced.
 Value rtProxyTargetOwnKeys(Rooted<Value>& targetRoot);
 
-// [[GetOwnProperty]] (10.5.5). False means absent; a trap's throw propagates.
-// The attributes come back in `out`, which
+// [[GetOwnProperty]] (10.5.5). False means absent (or that the trap threw — the
+// caller must test the pending cell). The attributes come back in `out`, which
 // is what lets a proxy stand where an ordinary object stands in the invariant
 // checks below: a proxy over a proxy asks its own trap and reports the
 // descriptor the trap built, rather than reporting only that something is
@@ -177,7 +177,7 @@ bool rtProxyTestIntegrityLevel(Value proxyVal, bool frozen);
 
 // 7.2.2 IsArray over the whole value model: an Array exotic object, or a
 // proxy — however deep — whose ultimate target is one. A revoked proxy on the
-// way is step 3.b's TypeError, thrown. It lives
+// way is step 3.b's TypeError, left pending with `false` answered. It lives
 // beside the proxy because the proxy is the only reason the question is not
 // a kind test; `Array.isArray` and `Object.prototype.toString` ask it.
 bool rtIsArray(Value v);
@@ -217,8 +217,8 @@ bool rtProxyRefuseIfRevoked(Value proxyVal, const char* operation);
 //
 // Every one of them is a THROW POINT and (through the target's own
 // [[GetOwnProperty]], which may itself be a trap) a GC POINT, which is why each
-// takes roots. Each throws its TypeError on a violation and otherwise
-// returns, exactly as a trap call does.
+// takes roots. Each leaves a pending TypeError and answers nothing; the caller
+// tests the pending cell exactly as it does after a trap call.
 //
 // The whole family is on the TRAPPED path only. A handler with no trap for an
 // operation forwards to the target, and a forward cannot contradict the target

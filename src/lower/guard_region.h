@@ -122,8 +122,8 @@ namespace bronze::lower {
 // So a checked `unbox.f64 %v` makes `%v` a candidate. Behind the guard the
 // unbox is not rewritten to a raw one — it is DELETED, and its result becomes
 // the single raw unbox the guard emitted. Thirty-two guards then answer a
-// hundred and twenty-eight coercions, each of which was a call that could
-// throw and a safepoint, and the fast copy holds thirty-two bitcasts instead.
+// hundred and twenty-eight coercions, each of which was an exception check and
+// a safepoint, and the fast copy holds thirty-two bitcasts instead.
 //
 // ---------------------------------------------------------------------------
 // GUARD COALESCING
@@ -408,8 +408,8 @@ bool regionRunGuardsDisabled();
 bool isPromotableArith(const il::Instruction& inst, const std::vector<il::Type>& types);
 
 // A CHECKED `unbox.f64 %v` with `%v` dynamic by `types`: ToNumber (7.1.4) over
-// a value nothing proved, which can call a `valueOf`, can throw, and is a
-// safepoint. `%v` is the candidate; the
+// a value nothing proved, which can call a `valueOf`, can throw, and is
+// followed by an exception check and a safepoint. `%v` is the candidate; the
 // result is already an `f64`. Shared because SELECTION counts these as the work
 // a guard licenses and the REWRITE deletes them.
 bool isCheckedUnboxOf(const il::Instruction& inst, const std::vector<il::Type>& types);

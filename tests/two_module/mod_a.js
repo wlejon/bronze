@@ -23,9 +23,9 @@ let secret = "a0";
 function readSecret() { return secret; }
 function writeSecret(v) { secret = v; }
 
-// The `try` that catches B's throw is compiled into THIS object: the throw
-// unwinds out of B's code into a landing pad of A's, which is what proves the
-// unwind information of two separately compiled objects works together.
+// The `try` that catches B's throw is compiled into THIS object. The pending
+// exception cell is the one thing here that stays process-wide, and this is
+// what proves it still is.
 function callGuarded(f) {
   try { return "ok(" + f() + ")"; }
   catch (e) { return "caught(" + e.name + ": " + e.message + ")"; }

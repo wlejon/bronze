@@ -16,7 +16,9 @@ uint64_t arrayForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         callBack(fn, thisArg, elem, i, self);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return Value::fromUndefined().rawBits();
 }
@@ -35,8 +37,11 @@ uint64_t arrayMap(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
             continue;
         }
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> mapped{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         rtCreateDataPropertyOrThrow(out, i, mapped);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return out.get().rawBits();
 }
@@ -54,9 +59,12 @@ uint64_t arrayFilter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> kept{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(kept.get().rawBits())) {
             rtCreateDataPropertyOrThrow(out, to++, elem);
+            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
     }
     return out.get().rawBits();
@@ -73,7 +81,9 @@ uint64_t arraySome(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> hit{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(hit.get().rawBits())) {
             return Value::fromBool(true).rawBits();
         }
@@ -92,7 +102,9 @@ uint64_t arrayEvery(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     for (uint32_t i = 0; i < len; ++i) {
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> held{callBack(fn, thisArg, elem, i, self)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!bronze_truthy(held.get().rawBits())) {
             return Value::fromBool(false).rawBits();
         }
@@ -120,6 +132,7 @@ static uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, cons
         }
         uint32_t firstIdx = Reverse ? len - 1 - next : next;
         acc.set(rtArrayLikeGetElement(self, firstIdx));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         next += 1;
     }
 
@@ -127,10 +140,12 @@ static uint64_t arrayReduceImpl(uint64_t, uint64_t thisBits, uint32_t argc, cons
         uint32_t i = Reverse ? len - 1 - n : n;
         if (!rtArrayLikeHasElement(self, i)) continue;
         Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Value block[4] = {acc.get(), elem.get(), Value::fromDouble(static_cast<double>(i)),
                           self.get()};
         acc.set(Value(bronze_dynamic_call(fn.get().rawBits(), BRONZE_ABI_UNDEFINED_BITS, 4,
                                           reinterpret_cast<const uint64_t*>(block))));
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return acc.get().rawBits();
 }

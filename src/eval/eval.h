@@ -113,13 +113,14 @@ BRONZE_EMBED_API embed::CallResult evalScript(std::string_view source, const Eva
 BRONZE_EMBED_API embed::CallResult evalFile(const std::string& filePath, const EvalOptions& options = {});
 
 // Evaluates a script in memory and returns the Value directly.
-// If the script throws, rethrows the thrown value into the caller (runtime/exception.h).
+// If an exception was thrown, leaves the exception pending in rtTls()->exception_cell
+// and returns Value::fromUndefined().
 BRONZE_EMBED_API Value evalScriptDirect(std::string_view source, const EvalOptions& options = {});
 
 // Compiles and returns a dynamic function object of the requested kind (Ordinary, Generator,
 // Async, AsyncGenerator).
 // Takes arguments matching the Function constructor (parameters followed by body).
-// If compilation fails, throws a SyntaxError.
+// If compilation fails, raises a SyntaxError into the runtime and returns Value::fromUndefined().
 BRONZE_EMBED_API Value evalFunction(runtime::DynamicFunctionKind kind, std::span<const Value> args);
 
 // Helper overload taking params and body as strings.

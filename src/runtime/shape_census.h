@@ -84,20 +84,6 @@ void censusEnterNested();
 void censusLeaveNested();
 bool censusInNested();
 
-// The bracket as a scope, so a getter that throws out of the inner get still
-// leaves it. `active` false makes it a no-op (census off).
-struct CensusNestedScope {
-    bool active;
-    explicit CensusNestedScope(bool on) : active(on) {
-        if (active) censusEnterNested();
-    }
-    ~CensusNestedScope() {
-        if (active) censusLeaveNested();
-    }
-    CensusNestedScope(const CensusNestedScope&) = delete;
-    CensusNestedScope& operator=(const CensusNestedScope&) = delete;
-};
-
 // Definition below rather than in the class of one-liner .cpps: the latch
 // sites that consult this are hot paths in NORMAL mode too, and the whole
 // check must stay a load and a test.

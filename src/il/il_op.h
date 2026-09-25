@@ -137,15 +137,15 @@ enum class Op : uint8_t {
     // `src/lower/guard_region.h` is its only producer and says why.
     IsDenseArray,  // a: bool = is.dense_array b, <immI32: max index>
     Ret,        // ret [a]
-    // `throw v`: goes to this block's handler with v, or raises v out of the
-    // function when the block has none. A terminator, because it is a way OUT
-    // of the block like a jump — the edge it takes is just written on the
-    // block rather than on the instruction.
+    // `throw v`: stores v into the pending-exception cell and goes to this
+    // block's handler. A terminator, because it is a way OUT of the block like
+    // a jump — the edge it takes is just written on the block rather than on
+    // the instruction.
     Throw,      // throw a
-    // The thrown value a handler block was entered with. The first
-    // instruction of every handler block and the only way to read it; a
-    // `finally` holds it while its body runs and then decides whether to
-    // raise it again.
+    // The pending value, taken and cleared. The first instruction of every
+    // handler block, and the only way to read the cell: clearing it here is
+    // what lets a `finally` run its body with nothing pending and then decide
+    // whether to re-raise.
     ExcTake,    // a: dynamic = exc.take
     Jump,       // jump bN(args...)
     Branch,     // br %cond, bThen(args...), bElse(args...)
@@ -307,8 +307,8 @@ enum class Op : uint8_t {
     // `pin.guard v, <key_const_index>, <immI32: PinBarrierKind>` tests one
     // boxed value against the shape a pin PROMISED and raises a TypeError
     // naming the manifest line when it does not hold. Void: what is wanted
-    // from it is the throw, which leaves the block before the store this
-    // precedes, so the store is skipped on the violating path.
+    // from it is the throw, and `canThrow` puts the exception check after it,
+    // so the store this precedes is skipped on the violating path.
     //
     // It sits at the WRITE and never at the read. A pin's whole performance
     // model is that the read spends the claim unconditionally — a per-read

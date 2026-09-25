@@ -35,30 +35,64 @@ bool IlLowering::lower_instruction(
         return nullptr;
     };
 
-    // A throw from this block: straight to the handler with the value when
-    // the block is protected, out of the function as a raise when it is not.
-    auto raise = [&](Value* thrown) {
-        if (Value* param = handler_exception(handler_id); param && block_map.count(handler_id)) {
-            b.build_br(block_map.at(handler_id), {ensure_type(thrown, param->type(), b)});
+    auto emit_default_ret = [&]() {
+        if (fn->return_type() == Type::void_type()) {
+            b.build_ret_void();
+        } else if (fn->return_type() == Type::f64()) {
+            b.build_ret(b.build_fconst_f64(0.0));
+        } else if (fn->return_type() == Type::i32()) {
+            b.build_ret(b.build_iconst_i32(0));
         } else {
-            b.build_throw(ensure_type(thrown, Type::i64(), b));
+            b.build_ret(ensure_type(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), fn->return_type(), b));
         }
     };
 
-    if (inst_ast.op == BronzeOp::ExcTake) {
-        res_val = handler_exception(block_id);
-        if (!res_val) {
-            has_error_ = true;
-            if (diag_) diag_->error(SourceLocation("", inst_ast.line, inst_ast.column),
-                                    "il2mir: exc.take outside a handler block");
-            return false;
+    auto is_standalone_entry = [&]() -> bool {
+        return (fn->name() == "main") &&
+               (options_.entry_symbol.empty() || options_.entry_symbol == "bronze_main") &&
+               !options_.propagate_exceptions_in_entry;
+    };
+
+    auto emit_exception_check = [&]() {
+        BasicBlock* cur_bb = b.current_block();
+        uint32_t cid = cont_counter ? ++(*cont_counter) : 1;
+        BasicBlock* cont_bb = b.append_block("b" + std::to_string(block_id) + "_cont" + std::to_string(cid));
+        BasicBlock* unw_bb = nullptr;
+        bool created_unw = false;
+        if (handler_id != UINT32_MAX && block_map.count(handler_id)) {
+            unw_bb = block_map.at(handler_id);
+        } else {
+            unw_bb = b.append_block("b" + std::to_string(block_id) + "_unw" + std::to_string(cid));
+            created_unw = true;
         }
-        set_inst_result(inst_ast.result_id, res_val, b, val_map);
-        return true;
-    }
+
+        b.position_at_end(cur_bb);
+        Value* is_pending = nullptr;
+        if (options_.pin_tls_register) {
+            // One load through the pinned register instead of a helper call.
+            Value* tls = b.build_pinned_tls_read();
+            Value* cell = b.build_load(Type::i64(), tls, kBronzeTlsExceptionCellOff);
+            is_pending = b.build_ne(cell, b.build_iconst_i64(static_cast<int64_t>(kBronzeNoExceptionBits)));
+        } else {
+            Value* pending = b.build_call("bronze_exception_pending", Type::i32(), {});
+            is_pending = b.build_ne(pending, b.build_iconst_i32(0));
+        }
+        b.build_br_if(is_pending, unw_bb, cont_bb);
+
+        if (created_unw) {
+            b.position_at_end(unw_bb);
+            if (is_standalone_entry()) {
+                b.build_call("bronze_uncaught_exception", Type::void_type(), {});
+                b.build_unreachable();
+            } else {
+                emit_default_ret();
+            }
+        }
+        b.position_at_end(cont_bb);
+    };
 
     if (is_coro_il_op(inst_ast.op)) {
-        if (!lower_coro_instruction(this, inst_ast, b, fn, val_map, res_val)) {
+        if (!lower_coro_instruction(this, inst_ast, b, fn, val_map, res_val, emit_exception_check)) {
             return false;
         }
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
@@ -66,7 +100,7 @@ bool IlLowering::lower_instruction(
     }
 
     if (is_ops_il_op(inst_ast.op)) {
-        if (!lower_ops_instruction(this, inst_ast, b, fn, val_map, res_val)) {
+        if (!lower_ops_instruction(this, inst_ast, b, fn, val_map, res_val, emit_exception_check)) {
             return false;
         }
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
@@ -74,7 +108,7 @@ bool IlLowering::lower_instruction(
     }
 
     if (is_property_il_op(inst_ast.op)) {
-        if (!lower_property_instruction(this, inst_ast, b, fn, val_map, res_val)) {
+        if (!lower_property_instruction(this, inst_ast, b, fn, val_map, res_val, emit_exception_check)) {
             return false;
         }
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
@@ -82,7 +116,7 @@ bool IlLowering::lower_instruction(
     }
 
     if (is_call_il_op(inst_ast.op)) {
-        if (!lower_call_instruction(this, inst_ast, b, fn, val_map, res_val)) {
+        if (!lower_call_instruction(this, inst_ast, b, fn, val_map, res_val, emit_exception_check)) {
             return false;
         }
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
@@ -123,6 +157,7 @@ bool IlLowering::lower_instruction(
                 Value* key_val = get_key_id(b, key_idx);
                 Value* soft_val = b.build_iconst_i32(inst_ast.index ? 1 : 0);
                 res_val = b.build_call("bronze_resolve_name", Type::i64(), {key_val, soft_val});
+                emit_exception_check();
             }
             break;
         }
@@ -147,6 +182,7 @@ bool IlLowering::lower_instruction(
                     get_key_id(b, key_idx),
                     b.build_iconst_i64(0)
                 });
+                emit_exception_check();
             } else {
                 res_val = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
             }
@@ -158,6 +194,7 @@ bool IlLowering::lower_instruction(
             Value* rhs = ensure_type(get_opd(1), Type::i64(), b);
             Value* rem = b.build_iconst_i32(static_cast<int32_t>(inst_ast.imm_i64));
             res_val = b.build_call("bronze_concat_begin", Type::i64(), {lhs, rhs, rem});
+            emit_exception_check();
             break;
         }
 
@@ -165,24 +202,28 @@ bool IlLowering::lower_instruction(
             Value* lhs = ensure_type(get_opd(0), Type::i64(), b);
             Value* rhs = ensure_type(get_opd(1), Type::i64(), b);
             res_val = b.build_call("bronze_concat_append", Type::i64(), {lhs, rhs});
+            emit_exception_check();
             break;
         }
 
         case BronzeOp::ConcatEnd: {
             Value* val = ensure_type(get_opd(0), Type::i64(), b);
             res_val = b.build_call("bronze_concat_end", Type::i64(), {val});
+            emit_exception_check();
             break;
         }
 
         case BronzeOp::ObjectKeys: {
             Value* obj = ensure_type(get_opd(0), Type::i64(), b);
             res_val = b.build_call("bronze_object_keys", Type::i64(), {obj});
+            emit_exception_check();
             break;
         }
 
         case BronzeOp::ForInKeys: {
             Value* obj = ensure_type(get_opd(0), Type::i64(), b);
             res_val = b.build_call("bronze_for_in_keys", Type::i64(), {obj});
+            emit_exception_check();
             break;
         }
 
@@ -218,6 +259,7 @@ bool IlLowering::lower_instruction(
             }
             Value* key_val = get_key_id(b, key_idx);
             res_val = b.build_call("bronze_env_get_tdz", Type::i64(), {env_val, depth_val, idx_val, key_val});
+            emit_exception_check();
             break;
         }
 
@@ -274,6 +316,7 @@ bool IlLowering::lower_instruction(
                     get_key_id(b, key_idx),
                     bits
                 });
+                emit_exception_check();
             } else {
                 BasicBlock* cur_bb = b.current_block();
                 uint32_t cid = cont_counter ? ++(*cont_counter) : 1;
@@ -293,13 +336,19 @@ bool IlLowering::lower_instruction(
 
 
                 b.position_at_end(bad_bb);
-                // Raises the TypeError; a protected block's call becomes an
-                // invoke to its handler (il_lowering_eh.cpp).
                 b.build_call("bronze_pin_violation", Type::i64(), {
                     get_key_id(b, key_idx),
                     bits
                 });
-                b.build_unreachable();
+
+                if (handler_id != UINT32_MAX && block_map.count(handler_id)) {
+                    b.build_br(block_map.at(handler_id));
+                } else if (is_standalone_entry()) {
+                    b.build_call("bronze_uncaught_exception", Type::void_type(), {});
+                    b.build_unreachable();
+                } else {
+                    emit_default_ret();
+                }
 
                 b.position_at_end(ok_bb);
             }
@@ -398,6 +447,7 @@ bool IlLowering::lower_instruction(
             uint32_t key_idx = inst_ast.string_literal.empty() ? inst_ast.index : find_key_constant(inst_ast.string_literal);
             Value* kidx = get_key_id(b, key_idx);
             res_val = b.build_call("bronze_dynamic_import", Type::i64(), {spec, kidx});
+            emit_exception_check();
             break;
         }
 
@@ -406,6 +456,7 @@ bool IlLowering::lower_instruction(
             uint32_t key_idx = inst_ast.string_literal.empty() ? inst_ast.index : find_key_constant(inst_ast.string_literal);
             Value* kidx = get_key_id(b, key_idx);
             res_val = b.build_call("bronze_pattern_check", Type::i64(), {src, kidx});
+            emit_exception_check();
             break;
         }
 
@@ -426,6 +477,7 @@ bool IlLowering::lower_instruction(
             Value* arr = ensure_type(get_opd(0), Type::i64(), b);
             Value* val = ensure_type(get_opd(1), Type::i64(), b);
             b.build_call("bronze_array_spread", Type::void_type(), {arr, val});
+            emit_exception_check();
             break;
         }
 
@@ -433,6 +485,7 @@ bool IlLowering::lower_instruction(
             Value* obj = ensure_type(get_opd(0), Type::i64(), b);
             Value* val = ensure_type(get_opd(1), Type::i64(), b);
             b.build_call("bronze_object_spread", Type::void_type(), {obj, val});
+            emit_exception_check();
             break;
         }
 
@@ -440,6 +493,7 @@ bool IlLowering::lower_instruction(
             Value* src = ensure_type(get_opd(0), Type::i64(), b);
             Value* excl = ensure_type(get_opd(1), Type::i64(), b);
             res_val = b.build_call("bronze_object_rest", Type::i64(), {src, excl});
+            emit_exception_check();
             break;
         }
 
@@ -457,6 +511,7 @@ bool IlLowering::lower_instruction(
                 cell_ptr = b.build_add(cell_ptr, b.build_iconst_i64(inst_ast.imm_i64 * 8));
             }
             res_val = b.build_call("bronze_template_object", Type::i64(), {cooked, raw, cell_ptr});
+            emit_exception_check();
             break;
         }
 
@@ -469,6 +524,7 @@ bool IlLowering::lower_instruction(
         case BronzeOp::ToStr: {
             Value* val = ensure_type(get_opd(0), Type::i64(), b);
             res_val = b.build_call("bronze_to_string", Type::i64(), {val});
+            emit_exception_check();
             break;
         }
 
@@ -523,6 +579,7 @@ bool IlLowering::lower_instruction(
                     res_val = b.build_bitcast_f64_i64(i_val);
                 } else {
                     res_val = b.build_call("bronze_unbox_f64", Type::f64(), {i_val});
+                    emit_exception_check();
                 }
             } else if (inst_ast.result_type == BronzeType::I32) {
                 res_val = b.build_trunc_i32(ensure_type(op0, Type::i64(), b));
@@ -565,13 +622,23 @@ bool IlLowering::lower_instruction(
                 if (arg) args.push_back(arg);
             }
             res_val = b.build_call(callee_name, callee_ret, Span<Value* const>(args.data(), args.size()));
+            emit_exception_check();
             break;
         }
 
         case BronzeOp::Throw: {
             Value* op0 = get_opd(0);
             if (!op0) return false;
-            raise(op0);
+            Value* op0_i64 = ensure_type(op0, Type::i64(), b);
+            b.build_call("bronze_exception_set", Type::void_type(), {op0_i64});
+            if (handler_id != UINT32_MAX && block_map.count(handler_id)) {
+                b.build_br(block_map.at(handler_id));
+            } else if (is_standalone_entry()) {
+                b.build_call("bronze_uncaught_exception", Type::void_type(), {});
+                b.build_unreachable();
+            } else {
+                emit_default_ret();
+            }
             break;
         }
 
@@ -624,6 +691,7 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::ImmutableAssign: {
             res_val = b.build_call("bronze_immutable_assign", Type::i64(), {});
+            emit_exception_check();
             break;
         }
 

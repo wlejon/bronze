@@ -93,7 +93,9 @@ bool getSetRecord(Rooted<Value>& other, const char* member, SetRecord& out) {
     }
     out.object.set(other.get());
     Rooted<Value> rawSize{genericGet(other, "size")};
+    if (rtExceptionPending()) return false;
     const double numSize = rtToNumber(rawSize.get());
+    if (rtExceptionPending()) return false;
     // Step 4: NaN — which is what an absent `size` becomes — is a TypeError and
     // not a zero-sized set. An Array reaches exactly here, because `length` is
     // not `size`.
@@ -107,11 +109,13 @@ bool getSetRecord(Rooted<Value>& other, const char* member, SetRecord& out) {
     }
     out.size = std::isinf(numSize) ? numSize : std::trunc(numSize);
     out.has.set(genericGet(other, "has"));
+    if (rtExceptionPending()) return false;
     if (!isCallable(out.has.get())) {
         rtThrowTypeError(where + " requires a set-like object with a `has` method");
         return false;
     }
     out.keys.set(genericGet(other, "keys"));
+    if (rtExceptionPending()) return false;
     if (!isCallable(out.keys.get())) {
         rtThrowTypeError(where + " requires a set-like object with a `keys` method");
         return false;
@@ -123,11 +127,13 @@ bool getSetRecord(Rooted<Value>& other, const char* member, SetRecord& out) {
 // then read the `next` of whatever it returned — once, as the protocol requires.
 bool openKeys(SetRecord& rec, Rooted<Value>& iterOut, Rooted<Value>& nextOut) {
     iterOut.set(rec.keys.get().asObject<FunctionHeader>()->call(rec.object.get(), 0, nullptr));
+    if (rtExceptionPending()) return false;
     if (!iterOut.get().isObject()) {
         rtThrowTypeError("the `keys` method of a set-like object did not return an object");
+        return false;
     }
     nextOut.set(genericGet(iterOut, "next"));
-    return true;
+    return !rtExceptionPending();
 }
 
 // `Call(rec.[[Has]], rec.[[SetObject]], «value»)`, as truthiness. The receiver
@@ -136,6 +142,7 @@ bool openKeys(SetRecord& rec, Rooted<Value>& iterOut, Rooted<Value>& nextOut) {
 bool otherHas(SetRecord& rec, Rooted<Value>& value, bool& out) {
     Value block[1] = {value.get()};
     Rooted<Value> result{rec.has.get().asObject<FunctionHeader>()->call(rec.object.get(), 1, block)};
+    if (rtExceptionPending()) return false;
     out = bronze_truthy(result.get().rawBits());
     return true;
 }
@@ -216,6 +223,7 @@ uint64_t setUnion(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(iter, next, value);
+        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) break;
         addTo(result, value);
     }
@@ -258,6 +266,7 @@ uint64_t setIntersection(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(iter, next, value);
+        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) break;
         if (setHas(self, value)) addTo(matched, value);
     }
@@ -312,6 +321,7 @@ uint64_t setDifference(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(iter, next, value);
+        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) break;
         Rooted<Value> key{canonicalizeKey(value.get())};
         MapHeader::remove(rtHeap(), result, key);
@@ -350,6 +360,7 @@ uint64_t setSymmetricDifference(uint64_t, uint64_t thisBits, uint32_t argc,
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(iter, next, value);
+        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) break;
         // Step 5.d.i tests THIS SET, not the result being built: a value the
         // other side yields twice must not be removed and then re-added, and
@@ -403,12 +414,14 @@ uint64_t setIsSupersetOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(iter, next, value);
+        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) return Value::fromBool(true).rawBits();
         if (setHas(self, value)) continue;
         // Step 6.e: the answer is known, so the other side's iterator is CLOSED
         // rather than abandoned — a generator standing in for `keys` gets its
         // `finally`.
         closeIterator(iter, /*suppress=*/false);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return Value::fromBool(false).rawBits();
     }
 }
@@ -438,9 +451,11 @@ uint64_t setIsDisjointFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(iter, next, value);
+        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) return Value::fromBool(true).rawBits();
         if (!setHas(self, value)) continue;
         closeIterator(iter, /*suppress=*/false);
+        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return Value::fromBool(false).rawBits();
     }
 }

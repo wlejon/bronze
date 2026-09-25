@@ -52,6 +52,7 @@ uint64_t symbolCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
         return rtThrowTypeError("Cannot convert a Symbol value to a string").rawBits();
     }
     Rooted<Value> desc{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtMakeSymbol(desc.get()).rawBits();
 }
 
@@ -64,6 +65,7 @@ uint64_t symbolForCall(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) 
         return rtThrowTypeError("Cannot convert a Symbol value to a string").rawBits();
     }
     Rooted<Value> key{rtValueToString(args[0])};
+    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtSymbolFor(key).rawBits();
 }
 

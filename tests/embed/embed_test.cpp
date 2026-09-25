@@ -18,7 +18,6 @@
 
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
-#include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
@@ -51,7 +50,7 @@ TEST_CASE("a native function is callable through the runtime's dynamic call path
     CHECK(hits == 1);
 }
 
-TEST_CASE("a host callback's throw reaches the embed boundary as a thrown result") {
+TEST_CASE("a host callback throws into JS through the exception cell") {
     embed::Persistent thrower{embed::makeFunction(
         [](embed::Value, std::span<const embed::Value>) -> embed::Value {
             return embed::throwTypeError("host says no");
@@ -62,8 +61,8 @@ TEST_CASE("a host callback's throw reaches the embed boundary as a thrown result
     // What a JS `catch` would see: a TypeError instance, a real object.
     CHECK(result.value.isObject());
 
-    // The boundary caught it: an unrelated call afterwards is clean, rather
-    // than appearing to throw its predecessor's exception.
+    // The boundary cleared the cell: an unrelated call afterwards is clean,
+    // rather than appearing to throw its predecessor's exception.
     embed::Persistent ok{embed::makeFunction(
         [](embed::Value, std::span<const embed::Value>) -> embed::Value {
             return embed::fromDouble(1.0);
@@ -120,22 +119,22 @@ TEST_CASE("a registered host global answers bronze_global_get") {
 // The cache cells a compiled module reads through: process-lifetime storage,
 // because the runtime registers the array as a root span keyed by the
 // current module epoch, and a stack array would dangle once the case returns.
-static uint64_t g_cachedReadCells[2] = {BRONZE_ABI_HOLE_BITS, BRONZE_ABI_HOLE_BITS};
+static uint64_t g_cachedReadCells[2] = {BRONZE_ABI_NO_EXCEPTION_BITS, BRONZE_ABI_NO_EXCEPTION_BITS};
 
 TEST_CASE("bronze_global_get_cached fills its cell and re-registration empties it") {
     ShadowStackFrame frame;
 
     embed::registerGlobal("cachedName", embed::fromUtf8("first"));
     const uint32_t key = bronze_register_key_string("cachedName");
-    g_cachedReadCells[0] = BRONZE_ABI_HOLE_BITS;
-    g_cachedReadCells[1] = BRONZE_ABI_HOLE_BITS;
+    g_cachedReadCells[0] = BRONZE_ABI_NO_EXCEPTION_BITS;
+    g_cachedReadCells[1] = BRONZE_ABI_NO_EXCEPTION_BITS;
 
     // The slow half of a compiled read: resolves, and fills slot 1 only.
     Value v{bronze_global_get_cached(key, g_cachedReadCells, 2, 1)};
     CHECK(v.isString());
     CHECK(embed::toUtf8(v) == "first");
     CHECK(g_cachedReadCells[1] == v.rawBits());
-    CHECK(g_cachedReadCells[0] == BRONZE_ABI_HOLE_BITS);
+    CHECK(g_cachedReadCells[0] == BRONZE_ABI_NO_EXCEPTION_BITS);
 
     // The cell is a root: the string moves at a collection and the cell
     // follows it, so the fast path (a plain load of the cell) stays valid.
@@ -148,7 +147,7 @@ TEST_CASE("bronze_global_get_cached fills its cell and re-registration empties i
     // cell — invalidation is by registration, not by name, so a module that
     // cached a builtin a host later overrides sees the override too.
     embed::registerGlobal("someOtherName", embed::fromDouble(1.0));
-    CHECK(g_cachedReadCells[1] == BRONZE_ABI_HOLE_BITS);
+    CHECK(g_cachedReadCells[1] == BRONZE_ABI_NO_EXCEPTION_BITS);
     Value again{bronze_global_get_cached(key, g_cachedReadCells, 2, 1)};
     CHECK(embed::toUtf8(again) == "first");
     CHECK(g_cachedReadCells[1] == again.rawBits());
@@ -156,14 +155,14 @@ TEST_CASE("bronze_global_get_cached fills its cell and re-registration empties i
     // Replacing the cached name itself: the next slow read answers the
     // replacement, and the cell holds it.
     embed::registerGlobal("cachedName", embed::fromDouble(2.0));
-    CHECK(g_cachedReadCells[1] == BRONZE_ABI_HOLE_BITS);
+    CHECK(g_cachedReadCells[1] == BRONZE_ABI_NO_EXCEPTION_BITS);
     Value replaced{bronze_global_get_cached(key, g_cachedReadCells, 2, 1)};
     CHECK(replaced.isNumber());
     CHECK(replaced.asNumber() == 2.0);
     CHECK(g_cachedReadCells[1] == replaced.rawBits());
 
-    g_cachedReadCells[0] = BRONZE_ABI_HOLE_BITS;
-    g_cachedReadCells[1] = BRONZE_ABI_HOLE_BITS;
+    g_cachedReadCells[0] = BRONZE_ABI_NO_EXCEPTION_BITS;
+    g_cachedReadCells[1] = BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
 TEST_CASE("a registered host global overrides a runtime builtin") {
@@ -523,12 +522,10 @@ TEST_CASE("createTypedArray refuses a length the heap cannot hold") {
     // The constructor's RangeError, through the host path: a length whose byte
     // size overflows 32 bits if it is multiplied carelessly. The refusal is
     // what must happen; a heap that dies mid-copy is what must not.
-    embed::Value thrown;
-    CHECK(runtime::rtTryCatch(
-        [] { (void)embed::createTypedArray(embed::elements::Float64, 0xFFFFFFFFu); }, thrown));
-    std::string text;
-    CHECK(runtime::rtErrorText(thrown, text));
-    CHECK(text.find("RangeError") == 0);
+    embed::Value refused = embed::createTypedArray(embed::elements::Float64, 0xFFFFFFFFu);
+    CHECK(embed::isUndefined(refused));
+    CHECK(bronze_tls_block_addr()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS);
+    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
 TEST_CASE("fillTypedArray copies host bytes in and refuses what does not fit") {

@@ -250,6 +250,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
         // code that allocates, so a raw list of key Values would hold
         // from-space strings by the second key.
         Rooted<Value> keys{rtProxyOwnKeys(proxyRoot.get())};
+        if (rtExceptionPending()) return bronze_create_array(0);
         Rooted<Value> out{Value(bronze_create_array(0))};
         uint32_t at = 0;
         const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
@@ -260,6 +261,7 @@ uint64_t bronze_object_keys(uint64_t objBits) {
             if (!key.get().isString()) continue;
             OwnPropertyDetail found;
             const bool present = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), found);
+            if (rtExceptionPending()) return out.get().rawBits();
             if (!present || !found.enumerable) continue;
             out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
         }

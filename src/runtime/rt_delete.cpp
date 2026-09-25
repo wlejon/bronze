@@ -262,6 +262,7 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
         Rooted<Value> objRoot{objVal};
         Rooted<Value> keyRoot{idxVal};
         keyRoot.set(rtToPropertyKey(keyRoot));
+        if (rtExceptionPending()) return true;
         return bronze_elem_delete(objRoot.get().rawBits(), keyRoot.get().rawBits(), strict);
     }
 

@@ -32,8 +32,9 @@ namespace bronze::lower {
 //
 // The fifth block is the one this doc's chunk adds: a handler that closes the
 // iterator when the body throws. It costs a block per loop in the IL and
-// nothing on the path that does not throw: the body's calls unwind to this
-// block instead of out of the function.
+// nothing at run time — the cell test after each call in the body is the one
+// the unwind path already emits, pointed at this block instead of at the
+// function's unwind block.
 bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
                                 const std::string& headName,
                                 const ast::BindingPattern* headPattern, bool isConst, bool isLet,
@@ -258,7 +259,7 @@ bool Lowerer::lowerIteratorLoop(const ast::Stmt& loopStmt, Value iterVal,
     emitInst(ilFn, backJmp);
 
     // The throw path (ECMA-262 7.4.9 with a throw completion). It takes the
-    // thrown value, closes the iterator with errors from `return` SUPPRESSED —
+    // pending value, closes the iterator with errors from `return` SUPPRESSED —
     // step 6 keeps the original completion — and re-raises. It reads no
     // binding, which is what lets it take no parameters even though it is
     // entered from an arbitrary point in the body.
