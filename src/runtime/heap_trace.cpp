@@ -77,6 +77,21 @@ void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
     if (v.shaped) traceShapePrototype(w, t);
 }
 
+// The Value words of a Cell in payload bytes [begin, end): what a minor
+// collection rescans for one dirty card of a large object (an array's
+// elements, a big slot block), and one slice of a large object a parallel
+// full collection splits between threads. The range holding offset 0 also
+// carries the shape's prototype, which traceShapePrototype visits only in a
+// full collection.
+void traceCellRange(uintptr_t payload, size_t payload_bytes, size_t begin, size_t end, Tracer& t) {
+    auto* w = reinterpret_cast<uint64_t*>(payload);
+    const ValueWords v = valueWordsOf(payload, payload_bytes);
+    const size_t first = std::max(v.first, begin / sizeof(Value));
+    const size_t last = std::min(v.end, (end + sizeof(Value) - 1) / sizeof(Value));
+    for (size_t i = first; i < last; ++i) t.visit(w + i);
+    if (v.shaped && begin == 0) traceShapePrototype(w, t);
+}
+
 // A WeakRef: an ordinary object whose last internal slot is its target.
 void traceWeakLast(uintptr_t payload, size_t payload_bytes, Tracer& t) {
     auto* w = reinterpret_cast<uint64_t*>(payload);
@@ -102,10 +117,12 @@ void traceEphemerons(uintptr_t payload, size_t payload_bytes, Tracer& t) {
     }
 }
 
-brass::gc::LayoutId registerCustom(brass::gc::TraceFn fn, const char* name) {
+brass::gc::LayoutId registerCustom(brass::gc::TraceFn fn, const char* name,
+                                   brass::gc::TraceRangeFn range = nullptr) {
     brass::gc::LayoutDescriptor d;
     d.kind = brass::gc::LayoutKind::Custom;
     d.trace = fn;
+    d.trace_range = range;
     d.type_tag = 0xB50E;
     d.name = name;
     return brass::gc::register_layout(d);
@@ -116,7 +133,7 @@ brass::gc::LayoutId registerCustom(brass::gc::TraceFn fn, const char* name) {
 const LayoutIds& layoutIds() {
     static const LayoutIds ids = [] {
         LayoutIds out;
-        out.cell = registerCustom(&traceCell, "bronze.cell");
+        out.cell = registerCustom(&traceCell, "bronze.cell", &traceCellRange);
         out.weakLast = registerCustom(&traceWeakLast, "bronze.weak_last");
         out.ephemerons = registerCustom(&traceEphemerons, "bronze.ephemerons");
         brass::gc::LayoutDescriptor leaf;

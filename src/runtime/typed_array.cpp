@@ -329,7 +329,7 @@ ArrayBufferHeader* allocateBuffer(Heap& heap, Shape* shape, uint32_t reserve) {
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::RawBytes);
     auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
     initObjectPrefix(buf->object, ArrayBufferHeader::kFlags, shape);
-    buf->reserved = 0;
+    buf->viewTable = 0;
     buf->externalPtrBits = 0;
     return buf;
 }
@@ -353,6 +353,7 @@ ArrayBufferHeader* ArrayBufferHeader::createResizable(Heap& heap, Shape* shape,
     buf->maxByteLength = max_byte_length;
     buf->bufferFlags = kFlagResizable;
     std::memset(buf->data(), 0, max_byte_length);
+    trackBufferViews(heap, buf);
     return buf;
 }
 
@@ -370,6 +371,7 @@ ArrayBufferHeader* ArrayBufferHeader::createShared(Heap& heap, Shape* shape, uin
     // current length" keeps the two from disagreeing about the reservation.
     buf->bufferFlags = kFlagShared | (reserve > byte_length ? kFlagResizable : 0u);
     std::memset(buf->data(), 0, reserve);
+    if (buf->isResizable()) trackBufferViews(heap, buf);
     return buf;
 }
 
@@ -421,14 +423,17 @@ void TypedArrayHeader::initialize(Rooted<Value>& buffer_val, uint32_t byteOffset
     byteOffset = byteOffset_;
     length = length_;
     constructedLength = tracking ? kAutoLength : length_;
+    registerBufferView(this);
 }
 
 void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val) {
-    // Every object the heap holds, live or not yet reclaimed: a dead view
-    // over this buffer is refreshed too, which nothing can observe. The walk
-    // only compares each view's buffer word with this buffer's address and
-    // never follows it, so a dead view naming a reclaimed buffer is harmless.
     auto* buf = buffer_val.get().asObject<ArrayBufferHeader>();
+    if (refreshTrackedViews(buf)) return;
+    // An untracked buffer: every object the heap holds, live or not yet
+    // reclaimed. A dead view over this buffer is refreshed too, which nothing
+    // can observe. The walk only compares each view's buffer word with this
+    // buffer's address and never follows it, so a dead view naming a
+    // reclaimed buffer is harmless.
     heap.walk_objects([buf](HeapObjectHeader* hdr) {
         if (hdr->tag != static_cast<uint16_t>(Tag::Object) ||
             hdr->flags != HeapKind::TypedArray) {

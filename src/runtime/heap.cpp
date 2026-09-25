@@ -39,19 +39,51 @@ namespace bronze {
 
 namespace gc_detail {
 thread_local BarrierHeaps t_barrierHeaps{};
+
+void writeBarrierAnyHeap(uintptr_t slot, uint64_t bits) noexcept {
+    const BarrierHeaps& b = t_barrierHeaps;
+    for (uint32_t i = 0; i < b.count; ++i) {
+        if (!b.heaps[i]->contains(slot)) continue;
+        b.heaps[i]->write_barrier_interior(slot, bits);
+        return;
+    }
+}
+
+void rememberAnyHeap(uintptr_t object) noexcept {
+    const BarrierHeaps& b = t_barrierHeaps;
+    for (uint32_t i = 0; i < b.count; ++i) {
+        if (!b.heaps[i]->contains(object)) continue;
+        b.heaps[i]->remember(object);
+        return;
+    }
+}
+
+// A bulk write into Values [dst, dst + count) of `object`: on a large old
+// object only the cards the run covers are rescanned, not the whole object.
+void rememberValueRun(const void* object, const HeapValue* dst, size_t count) noexcept {
+    const auto o = reinterpret_cast<uintptr_t>(object);
+    const auto begin = reinterpret_cast<uintptr_t>(dst);
+    const uintptr_t end = begin + count * sizeof(Value);
+    const BarrierHeaps& b = t_barrierHeaps;
+    for (uint32_t i = 0; i < b.count; ++i) {
+        if (!b.heaps[i]->contains(o)) continue;
+        b.heaps[i]->remember_range(o, begin, end);
+        return;
+    }
+}
 }  // namespace gc_detail
 
 void gcCopyValues(const void* object, HeapValue* dst, const Value* src, size_t count) noexcept {
     if (count == 0) return;
     std::memmove(static_cast<void*>(dst), src, count * sizeof(Value));
-    gcRememberObject(object);
+    gc_detail::rememberValueRun(object, dst, count);
 }
 
 void gcFillValues(const void* object, HeapValue* dst, Value v, size_t count) noexcept {
     if (count == 0) return;
     auto* raw = reinterpret_cast<Value*>(dst);
     for (size_t i = 0; i < count; ++i) raw[i] = v;
-    if (v.isPointer()) gcRememberObject(object);
+    if (v.isPointer()) gc_detail::rememberValueRun(object, dst, count);
 }
 
 namespace {

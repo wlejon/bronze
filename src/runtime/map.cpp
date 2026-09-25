@@ -110,14 +110,20 @@ void reindex(Heap& heap, Rooted<Value>& self) {
 
     const uint32_t used = map->used();
     bool movable = false;
+    uint32_t live = 0;
     for (uint32_t slot = 0; slot < used; ++slot) {
         if (!map->liveAt(slot)) continue;
+        ++live;
         const Value key = map->keyAt(slot);
         movable = movable || keyMayMove(heap, key);
         uint32_t b = hashKey(key) & mask;
         while (buckets[b] != 0) b = (b + 1) & mask;
         buckets[b] = slot + 1;
     }
+    // A weak table's collector turns the pair of a dead key into a tombstone
+    // without touching the count, so the count is re-derived whenever the
+    // entries are walked anyway.
+    map->liveCount = Value::fromDouble(static_cast<double>(live));
     map->indexEpoch = Value::fromDouble(movable ? static_cast<double>(heap.relocation_epoch()) : kStableIndex);
     map->indexAnchor = Value::fromDouble(selfAddress(self));
 }
@@ -148,7 +154,14 @@ void ensureIndex(Heap& heap, Rooted<Value>& self) {
 // which is the whole contract of the table.
 void growEntries(Heap& heap, Rooted<Value>& self) {
     auto* map = self.get().asObject<MapHeader>();
-    const uint32_t live = map->liveSize();
+    // Counted rather than read from `liveCount`: a weak table's collector
+    // tombstones the pairs of dead keys without decrementing it, and sizing
+    // from that count would double the table at every growth however few of
+    // its keys are still alive.
+    uint32_t live = 0;
+    for (uint32_t slot = 0, used = map->used(); slot < used; ++slot) {
+        if (map->liveAt(slot)) ++live;
+    }
     // Sized from the LIVE count, not the old capacity, so a table whose used
     // slots are mostly tombstones compacts instead of growing — which is what
     // makes `m.set(k, v); m.delete(k);` in a loop bounded. The factor of two

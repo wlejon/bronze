@@ -161,13 +161,19 @@ namespace gc_detail {
 
 // The heaps on this thread, for the write barrier: a store must remember the
 // slot on whichever heap holds it. The runtime's own heap is one of them;
-// a test may construct more. Registered by Heap's constructor.
+// a test may construct more. Registered by Heap's constructor. Heaps are
+// disjoint reservations, so at most one of them holds any address.
 struct BarrierHeaps {
     static constexpr uint32_t kMax = 8;
     brass::gc::Heap* heaps[kMax];
     uint32_t count;
 };
 extern thread_local BarrierHeaps t_barrierHeaps;
+
+// The barriers when the thread has other than exactly one heap: the one heap
+// whose reservation holds the address, if any (heap.cpp).
+void writeBarrierAnyHeap(uintptr_t slot, uint64_t bits) noexcept;
+void rememberAnyHeap(uintptr_t object) noexcept;
 
 }  // namespace gc_detail
 
@@ -178,9 +184,11 @@ extern thread_local BarrierHeaps t_barrierHeaps;
 inline void gcWriteBarrier(const void* slot, Value v) noexcept {
     if (!v.isPointer()) return;
     const gc_detail::BarrierHeaps& b = gc_detail::t_barrierHeaps;
-    for (uint32_t i = 0; i < b.count; ++i) {
-        b.heaps[i]->write_barrier_interior(reinterpret_cast<uintptr_t>(slot), v.rawBits());
+    if (b.count == 1) {
+        b.heaps[0]->write_barrier_interior(reinterpret_cast<uintptr_t>(slot), v.rawBits());
+        return;
     }
+    gc_detail::writeBarrierAnyHeap(reinterpret_cast<uintptr_t>(slot), v.rawBits());
 }
 
 // The barrier for a bulk copy (memcpy/memmove of many Values) into `object`,
@@ -188,9 +196,11 @@ inline void gcWriteBarrier(const void* slot, Value v) noexcept {
 // minor collection.
 inline void gcRememberObject(const void* object) noexcept {
     const gc_detail::BarrierHeaps& b = gc_detail::t_barrierHeaps;
-    for (uint32_t i = 0; i < b.count; ++i) {
-        b.heaps[i]->remember(reinterpret_cast<uintptr_t>(object));
+    if (b.count == 1) {
+        b.heaps[0]->remember(reinterpret_cast<uintptr_t>(object));
+        return;
     }
+    gc_detail::rememberAnyHeap(reinterpret_cast<uintptr_t>(object));
 }
 
 // A Value that lives inside a heap object: assigning to it applies the write

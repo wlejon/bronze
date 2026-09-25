@@ -64,7 +64,10 @@ struct MapHeader {
     // RawBytes block of uint32 buckets, open-addressed with linear probing.
     // 0 means empty; anything else is an entry slot index plus one.
     HeapValue index;
-    HeapValue liveCount;   // double: entries a program can see
+    // double: entries a program can see. For a WeakMap or WeakSet an upper
+    // bound — the collector tombstones a dead key's pair without touching it —
+    // re-derived exactly whenever the table is reindexed or regrown.
+    HeapValue liveCount;
     HeapValue usedCount;   // double: entry slots handed out, tombstones included
     // double: `Heap::relocation_epoch()` when `index` was last built, or -2
     // when no key it hashes by address could move then (map.cpp,
