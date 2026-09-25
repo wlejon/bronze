@@ -92,7 +92,7 @@ std::optional<il::Module> Lowerer::lower() {
             // 10.2.9: a declaration's `name` is the name it declares. The
             // `length` is `requiredArgs`, which `applyParamShape` has just set
             // to 15.1.5's ExpectedArgumentCount.
-            fn.nameKeyIndex = getKeyConstantIndex(fnDecl->name);
+            fn.nameKeyIndex = getKeyConstantIndex(sourceSpelling(fnDecl->name));
             fn.returnType = il::Type::Void;
             // The module function index: the position among the top-level
             // declarations, which is exactly how inference numbers them.
@@ -165,7 +165,7 @@ std::optional<il::Module> Lowerer::lower() {
             fn.sourceFile = fnDecl->span.file;
             fn.sourceBegin = fnDecl->span.begin;
             fn.sourceEnd = fnDecl->span.end;
-            fn.displayName = fnDecl->name.empty() ? "<anonymous>" : fnDecl->name;
+            fn.displayName = fnDecl->name.empty() ? "<anonymous>" : sourceSpelling(fnDecl->name);
             if (fnDecl->isAsync) fn.descFlags |= BRONZE_FN_DESC_ASYNC;
             fn.valueCount = static_cast<uint32_t>(fn.params.size());
             functionIndices_[fn.name] = moduleFnIndex;

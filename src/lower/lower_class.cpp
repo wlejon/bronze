@@ -49,6 +49,10 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     }
 
     const bool hasSuper = superClass != nullptr || !superName.empty();
+    // `name` is the BINDING (renamed by the module linker in an imported
+    // file); what the class's `name` property and its frames show is the
+    // source's spelling of it.
+    const std::string shownName = sourceSpelling(name);
 
     // The heritage link, recorded before any method is, because a class that
     // declares NO instance method of its own still inherits every one of its
@@ -172,12 +176,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // A derived constructor's receiver is rebindable — `super()` decides it —
     // and the prologue of the closure lowered next is what makes it so.
     pendingDerivedCtor_ = hasSuper;
-    auto ctorVal = lowerClosure(*ctor->fn, name, name, ctor->fn->params,
+    auto ctorVal = lowerClosure(*ctor->fn, name, shownName, ctor->fn->params,
                                 ctor->fn->returnType, ctorBody, span, ilFn);
     pendingDerivedCtor_ = false;
     cloneOrigins_.pop_back();
     if (!ctorVal) return std::nullopt;
-    ilModule_.functions[lastClosureFnIndex_].displayName = name.empty() ? "<anonymous>" : name;
+    ilModule_.functions[lastClosureFnIndex_].displayName = shownName.empty() ? "<anonymous>" : shownName;
     ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_CONSTRUCTOR;
 
     // `extends` REPLACES the prototype object (the prototype lives on the
@@ -217,7 +221,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
             if (!fnVal) return std::nullopt;
             if (lastClosureFnIndex_ < ilModule_.functions.size()) {
                 ilModule_.functions[lastClosureFnIndex_].displayName =
-                    (name.empty() ? "<anonymous>" : name) + ".#" + m.name;
+                    (shownName.empty() ? "<anonymous>" : shownName) + ".#" + m.name;
                 ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_METHOD;
             }
             const std::string slot = m.accessor == ast::AccessorKind::Setter
@@ -286,7 +290,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         if (!fnVal) return std::nullopt;
         if (lastClosureFnIndex_ < ilModule_.functions.size()) {
             ilModule_.functions[lastClosureFnIndex_].displayName =
-                (name.empty() ? "<anonymous>" : name) + "." + (inferredMethodName.value_or(m.name));
+                (shownName.empty() ? "<anonymous>" : shownName) + "." +
+                (inferredMethodName.value_or(m.name));
             ilModule_.functions[lastClosureFnIndex_].descFlags |= BRONZE_FN_DESC_METHOD;
         }
 

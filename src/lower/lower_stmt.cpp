@@ -204,7 +204,7 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
             // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a
             // binding takes the binding's name, which is what makes
             // `const f = () => {}` report `f.name === "f"`.
-            initVal = lowerNamedEvaluation(*varDecl->init, varDecl->name, ilFn);
+            initVal = lowerNamedEvaluation(*varDecl->init, sourceSpelling(varDecl->name), ilFn);
             if (!initVal) return false;
             declType = initVal->type;
         }

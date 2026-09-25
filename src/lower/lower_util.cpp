@@ -9,6 +9,16 @@
 
 namespace bronze::lower {
 
+std::string Lowerer::sourceSpelling(const std::string& bindingName) {
+    // `mod<digits>.<name>`: a `.` cannot occur in an identifier, so a binding
+    // name holding one is a linker rename and never a name the source wrote.
+    if (bindingName.size() < 5 || bindingName.compare(0, 3, "mod") != 0) return bindingName;
+    size_t i = 3;
+    while (i < bindingName.size() && bindingName[i] >= '0' && bindingName[i] <= '9') ++i;
+    if (i == 3 || i >= bindingName.size() || bindingName[i] != '.') return bindingName;
+    return bindingName.substr(i + 1);
+}
+
 // 10.2.2 CreateDynamicFunction's table, read the other way round: which of the
 // forms gets [[Construct]], and which gets an own `prototype`.
 //

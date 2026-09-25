@@ -596,7 +596,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         const bool rhsCoerces = compound && binaryCoercesOperand(bin->op, *bin->lhs);
         auto rhsVal = compound ? (rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn)
                                              : lowerExpr(*bin->rhs, ilFn))
-                               : lowerNamedEvaluation(*bin->rhs, ident->name, ilFn);
+                               : lowerNamedEvaluation(*bin->rhs, sourceSpelling(ident->name), ilFn);
         if (!rhsVal) return std::nullopt;
 
         Value stored = compound ? emitCompoundCombine(*curVal, *rhsVal, bin->op,

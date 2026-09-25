@@ -386,6 +386,12 @@ private:
                                       bool bindsOwnName = false);
     std::optional<Value> lowerNamedEvaluation(const ast::Expr& expr, const std::string& name,
                                               il::Function& ilFn);
+    // The name the SOURCE spelled for a binding: the module linker renames an
+    // imported file's module-scope bindings to `mod<N>.<name>`
+    // (modules::canonicalName), and a function's `name`, a class's and every
+    // Error.stack frame must still read `<name>`. Only a BINDING name goes
+    // through this, never a property key, which may contain a `.` of its own.
+    static std::string sourceSpelling(const std::string& bindingName);
 
     // --- lower_pattern.cpp: binding patterns, defaults, spread ---
     bool lowerPattern(const ast::BindingPattern& pattern, Value source,

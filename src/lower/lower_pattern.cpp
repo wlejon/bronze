@@ -52,7 +52,7 @@ std::optional<Lowerer::Value> Lowerer::emitDefaultIfUndefined(Value current,
     // is a NamedEvaluation position, so an anonymous function here takes the
     // binding's name rather than "".
     auto defOpt = bindingName.empty() ? lowerExpr(defaultExpr, ilFn)
-                                      : lowerNamedEvaluation(defaultExpr, bindingName, ilFn);
+                                      : lowerNamedEvaluation(defaultExpr, sourceSpelling(bindingName), ilFn);
     if (!defOpt) return std::nullopt;
     auto stateDefault = snapshotVarStates();
     const bool defaultReaches = !currentBlockIsTerminated(ilFn);
