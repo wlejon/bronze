@@ -35,6 +35,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -87,6 +88,27 @@ RunResult runAtTier(const std::filesystem::path& entry, const std::string& tier,
     std::string cmd = oracle::quoted(TEST_BRONZE_CLI) + " run --tier=" + tier + " " +
                       oracle::quoted(entry.string());
     return oracle::runCommand(cmd, gcStress, kRunTimeoutMs);
+}
+
+// The lines of a run's stderr that are the JIT's own diagnostics, not the
+// program's: brass reports an unresolved symbol or a bad relocation with
+// "JIT Error: ..." and a fatal runtime state with "brass: ...", and the
+// tiered engine then keeps running the function in a lower tier. The
+// output still matches, so a tier-2 compile that failed on every function
+// would pass on stdout and exit code alone. No case writes either prefix.
+std::string jitDiagnostics(const std::string& errors) {
+    std::string found;
+    size_t at = 0;
+    while (at < errors.size()) {
+        size_t end = errors.find('\n', at);
+        if (end == std::string::npos) end = errors.size();
+        const std::string_view line(errors.data() + at, end - at);
+        if (line.find("JIT Error:") != std::string_view::npos || line.rfind("brass:", 0) == 0) {
+            found.append(line).push_back('\n');
+        }
+        at = end + 1;
+    }
+    return found;
 }
 
 bool readFileBytes(const std::filesystem::path& path, std::string& content) {
@@ -452,6 +474,8 @@ void checkJitMatchesBuilt(const JitCaseResult& res) {
     if (res.runJit.ran) {
         CHECK_MESSAGE(res.expected == res.runJit.output,
                       ("JIT output differs from the pinned expectation for " + id).c_str());
+        CHECK_MESSAGE(jitDiagnostics(res.runJit.errors).empty(),
+                      ("JIT diagnostics on stderr for " + id + ":\n" + jitDiagnostics(res.runJit.errors)).c_str());
         if (res.runBuilt.ran) {
             CHECK_MESSAGE(res.runBuilt.exitCode == res.runJit.exitCode,
                           ("JIT exit code " + std::to_string(res.runJit.exitCode) +
@@ -470,6 +494,9 @@ void checkJitMatchesBuilt(const JitCaseResult& res) {
     if (res.runJitGc.ran) {
         CHECK_MESSAGE(res.expected == res.runJitGc.output,
                       ("JIT output differs from the pinned expectation for " + id + " (gc-stress)").c_str());
+        CHECK_MESSAGE(jitDiagnostics(res.runJitGc.errors).empty(),
+                      ("JIT diagnostics on stderr for " + id + " (gc-stress):\n" +
+                       jitDiagnostics(res.runJitGc.errors)).c_str());
         if (res.runBuilt.ran) {
             CHECK_MESSAGE(res.runBuilt.exitCode == res.runJitGc.exitCode,
                           ("JIT exit code differs from the built program's for " + id + " (gc-stress)").c_str());
@@ -626,6 +653,12 @@ TEST_CASE("Oracle tiers test suite") {
                 CHECK_MESSAGE(res.expected == res.gc[t].output,
                               ("output differs from the pinned expectation (gc-stress): " + where +
                                "\n" + res.gc[t].errors).c_str());
+                CHECK_MESSAGE(jitDiagnostics(res.plain[t].errors).empty(),
+                              ("JIT diagnostics on stderr: " + where + "\n" +
+                               jitDiagnostics(res.plain[t].errors)).c_str());
+                CHECK_MESSAGE(jitDiagnostics(res.gc[t].errors).empty(),
+                              ("JIT diagnostics on stderr (gc-stress): " + where + "\n" +
+                               jitDiagnostics(res.gc[t].errors)).c_str());
             }
         }
     }
@@ -812,6 +845,8 @@ void checkJitMilestone(const char* name, const std::filesystem::path& entry,
         CHECK_MESSAGE(run.exitCode == 0,
                       (what + " exited with code " + std::to_string(run.exitCode) + "\n" + run.errors).c_str());
         CHECK_MESSAGE(expected == run.output, (what + " output differs from the pinned expectation").c_str());
+        CHECK_MESSAGE(jitDiagnostics(run.errors).empty(),
+                      (what + " printed JIT diagnostics:\n" + jitDiagnostics(run.errors)).c_str());
     }
 
     RunResult stressed =
@@ -823,6 +858,8 @@ void checkJitMilestone(const char* name, const std::filesystem::path& entry,
                        stressed.errors).c_str());
         CHECK_MESSAGE(expected == stressed.output,
                       (what + " output differs from the pinned expectation (gc-stress)").c_str());
+        CHECK_MESSAGE(jitDiagnostics(stressed.errors).empty(),
+                      (what + " printed JIT diagnostics (gc-stress):\n" + jitDiagnostics(stressed.errors)).c_str());
     }
 }
 

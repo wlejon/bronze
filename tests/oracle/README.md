@@ -73,6 +73,13 @@ that runs it; and a crash fails its case instead of the suite. The gc-stress
 run is repeated for the JIT too, and there the compile happens inside the
 stressed process.
 
+Every JIT run, in `oracle-jit`, `oracle-tiers` and the three.js / pixi JIT
+milestones, must also print none of the JIT's own diagnostics on stderr: a
+line containing `JIT Error:` (an unresolved symbol or a bad relocation) or
+starting with `brass:`. The tiered engine keeps a function whose tier-2
+compile failed in a lower tier, so stdout and the exit code stay right and
+only stderr shows the failure. No case may print either prefix itself.
+
 One thing the JIT half cannot pin, and the built half cannot either: dynamic
 code compilation (`Function("...")`, `eval`, and the generator/async
 constructors' call forms). node compiles it, `bronze run` compiles it through
