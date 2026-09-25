@@ -539,10 +539,6 @@ bool rtConstructPrimitiveWrapper(Value fn, uint32_t argc, const uint64_t* argv, 
             return true;
         }
         out = rtNumberValueOfArgument(args[0]);
-        if (rtExceptionPending()) {
-            out = Value::fromUndefined();
-            return true;
-        }
         out = rtMakeNumberWrapper(out.asNumber());
         return true;
     }
@@ -552,10 +548,6 @@ bool rtConstructPrimitiveWrapper(Value fn, uint32_t argc, const uint64_t* argv, 
     // `new`-less form alone, so `new String(sym)` is the TypeError the language
     // says it is where `String(sym)` is the description.
     Rooted<Value> str{args.count() == 0 ? rtMakeString("") : rtValueToString(args[0])};
-    if (rtExceptionPending()) {
-        out = Value::fromUndefined();
-        return true;
-    }
     out = rtMakeStringWrapper(str);
     return true;
 }

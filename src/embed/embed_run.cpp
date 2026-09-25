@@ -13,6 +13,7 @@
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
 #include "runtime/abi_guard.h"
+#include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/microtask.h"
 #include "runtime/sampler.h"
@@ -40,7 +41,7 @@ void runMain() {
     // helpers register here, exactly as under the standalone main. Generated
     // code's Values are stack-map roots and need no frame here.
     bronze::ShadowStackFrame root_frame;
-    bronze_main();
+    runtime::rtRunModuleEntry(&bronze_main);
     // The same checkpoint src/rt/rt.cpp's `main` performs, and inside the same
     // root frame for the same reason. A host with a frame loop pumps the queue
     // again between frames (drainMicrotasks below); a host that only runs the

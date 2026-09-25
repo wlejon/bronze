@@ -305,16 +305,21 @@ void rtRunFinalizationCleanupJob() {
             callback.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
             continue;
         }
-        Value args[1] = {held.get()};
-        bronze_dynamic_call(callback.get().rawBits(), Value::fromUndefined().rawBits(), 1,
-                            reinterpret_cast<const uint64_t*>(args));
-        if (rtExceptionPending()) {
+        Value caught;
+        const bool threw = rtTryCatch(
+            [&] {
+                Value args[1] = {held.get()};
+                bronze_dynamic_call(callback.get().rawBits(), Value::fromUndefined().rawBits(), 1,
+                                    reinterpret_cast<const uint64_t*>(args));
+            },
+            caught);
+        if (threw) {
             // 26.2.1.2 lets the throw propagate out of the job, and a host job
             // has no caller to propagate to. Reported on stderr — so an oracle
-            // case's stdout stays byte-pinned around it — and cleared, because
+            // case's stdout stays byte-pinned around it — and dropped, because
             // the remaining callbacks are not this one's business.
-            const std::string text = rtUncaughtText(Value(bronze_tls_block_addr()->exception_cell));
-            rtClearException();
+            Rooted<Value> thrown{caught};
+            const std::string text = rtUncaughtText(thrown.get());
             std::fflush(stdout);
             std::fprintf(stderr, "%s in a FinalizationRegistry cleanup callback\n", text.c_str());
             std::fflush(stderr);

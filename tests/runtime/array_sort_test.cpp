@@ -90,7 +90,6 @@ TEST_CASE("sort is stable: equal keys keep their input order") {
     // Floor-equal pairs interleaved; the fractions record the input order.
     Rooted<Value> a{arrayOf({2.1, 1.1, 2.2, 1.2, 2.3, 1.3})};
     Rooted<Value> result{sortWith(a, rtNativeFunction(floorComparator, 2))};
-    CHECK_FALSE(rtExceptionPending());
     // 23.1.3.30 sorts IN PLACE and answers the same array.
     CHECK(result.get().rawBits() == a.get().rawBits());
 
@@ -103,7 +102,6 @@ TEST_CASE("the sorted-list buffer stays rooted across an allocating comparator")
 
     Rooted<Value> a{arrayOf({5.1, 3.1, 5.2, 1.1, 3.2, 1.2, 5.3, 1.3})};
     sortWith(a, rtNativeFunction(allocatingComparator, 2));
-    CHECK_FALSE(rtExceptionPending());
 
     const double expected[8] = {1.1, 1.2, 1.3, 3.1, 3.2, 5.1, 5.2, 5.3};
     for (uint32_t i = 0; i < 8; ++i) CHECK(elem(a, i) == expected[i]);
@@ -115,7 +113,6 @@ TEST_CASE("default comparator is ToString order, undefined last, holes after tha
     // Lexicographic, not numeric: "10" < "9".
     Rooted<Value> a{arrayOf({10.0, 9.0, 1.0})};
     sortWith(a, Value::fromUndefined());
-    CHECK_FALSE(rtExceptionPending());
     CHECK(elem(a, 0) == 1.0);
     CHECK(elem(a, 1) == 10.0);
     CHECK(elem(a, 2) == 9.0);
@@ -130,7 +127,6 @@ TEST_CASE("default comparator is ToString order, undefined last, holes after tha
         b.get().asObject<ArrayHeader>()->deleteElem(1);
     }
     sortWith(b, Value::fromUndefined());
-    CHECK_FALSE(rtExceptionPending());
     CHECK(elem(b, 0) == 1.0);
     CHECK(elem(b, 1) == 3.0);
     CHECK(b.get().asObject<ArrayHeader>()->getElem(2).isUndefined());
@@ -143,9 +139,8 @@ TEST_CASE("a throwing comparator leaves the array exactly as it was") {
     ShadowStackFrame frame;
 
     Rooted<Value> a{arrayOf({3.0, 1.0, 2.0})};
-    sortWith(a, rtNativeFunction(throwingComparator, 2));
-    CHECK(rtExceptionPending());
-    rtClearException();
+    Value thrown;
+    CHECK(rtTryCatch([&] { sortWith(a, rtNativeFunction(throwingComparator, 2)); }, thrown));
 
     // The write-back never began: reads happened, the list sort aborted, and
     // the receiver still holds its original bytes.

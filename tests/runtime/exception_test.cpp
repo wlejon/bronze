@@ -1,4 +1,4 @@
-// The pending-exception cell and the `Error` family, below the compiler.
+// How a raise travels, and the `Error` family, below the compiler.
 //
 // The oracle cases pin only what ECMA-262 fixes — which constructor, which
 // order, which value — because an oracle expectation is supposed to be
@@ -9,6 +9,7 @@
 #include <doctest/doctest.h>
 
 #include <string>
+#include <utility>
 
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
@@ -26,17 +27,12 @@ using namespace bronze::runtime;
 
 namespace {
 
-// Every test leaves the cell as it found it: it is process-global state, and
-// a test that raised without clearing would make the next one's rtThrow trip
-// the "second exception while one is pending" tripwire.
-struct ClearCell {
-    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
-};
-
-Value takePending() {
-    const Value v(bronze_tls_block_addr()->exception_cell);
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-    return v;
+// The value `body` threw; a failed CHECK when it returned instead.
+template <typename Body>
+Value thrownBy(Body&& body) {
+    Value thrown = Value::fromUndefined();
+    CHECK(rtTryCatch(std::forward<Body>(body), thrown));
+    return thrown;
 }
 
 std::string textOf(Value v) {
@@ -47,31 +43,28 @@ std::string textOf(Value v) {
 
 }  // namespace
 
-TEST_CASE("the empty cell is the Hole singleton, and generated code agrees") {
-    // Generated code compares the cell against this constant inline, so the two
-    // spellings of "nothing pending" have to be one value. A Hole is never
-    // user-visible, which is what makes it usable as the sentinel: no program
-    // can throw one.
-    CHECK(Value::fromHole().rawBits() == BRONZE_ABI_NO_EXCEPTION_BITS);
-    CHECK(bronze_tls_block_addr()->exception_cell == BRONZE_ABI_NO_EXCEPTION_BITS);
-    CHECK_FALSE(rtExceptionPending());
-}
-
-TEST_CASE("a raise sets the cell and returns undefined") {
+TEST_CASE("a raise is a C++ BrassException carrying the thrown value") {
     ShadowStackFrame frame;
-    ClearCell guard;
 
-    // Every raise helper returns `undefined` rather than anything else, because
-    // the caller stores the result into a GC root slot before it tests the
-    // cell.
-    const Value returned = rtThrowTypeError("boom");
-    CHECK(returned.isUndefined());
-    CHECK(rtExceptionPending());
-
-    const Value thrown = takePending();
-    CHECK_FALSE(rtExceptionPending());
+    // The one exception type every raise is: what compiled code's landing pads
+    // and the host boundary catch.
+    bool caught = false;
+    uint64_t bits = 0;
+    try {
+        rtThrowTypeError("boom");
+    } catch (const brass::runtime::BrassException& e) {
+        caught = true;
+        bits = e.value().raw();
+    }
+    REQUIRE(caught);
+    const Value thrown(bits);
     CHECK(rtIsErrorInstance(thrown));
     CHECK(textOf(thrown) == "TypeError: boom");
+
+    // A body that returns catches nothing and leaves `thrown` alone.
+    Value untouched = Value::fromDouble(3);
+    CHECK_FALSE(rtTryCatch([] {}, untouched));
+    CHECK(untouched.asNumber() == 3);
 }
 
 TEST_CASE("the error classes are distinct objects with a shared root") {
@@ -86,17 +79,12 @@ TEST_CASE("the error classes are distinct objects with a shared root") {
     REQUIRE(rangeError.get().isObject());
     REQUIRE(referenceError.get().isObject());
 
-    // They were once ONE object: native function objects are interned by code
-    // pointer, and all three constructors shared a body, so the last class
-    // built won every `.prototype` and `new Error("x").name` answered
-    // "RangeError". Nothing above the runtime could see it.
+    // Native function objects are interned by code pointer, so constructors
+    // that shared a body would be one object and the last class built would
+    // win every `.prototype`: each class needs a code pointer of its own.
     CHECK(error.get().rawBits() != typeError.get().rawBits());
     CHECK(error.get().rawBits() != rangeError.get().rawBits());
     CHECK(typeError.get().rawBits() != rangeError.get().rawBits());
-
-    // `ReferenceError` was NOT a class here until bronze had something to raise
-    // one for: an unresolvable name, evaluated. It needs its own code pointer
-    // for the same reason the others do.
     CHECK(referenceError.get().rawBits() != error.get().rawBits());
     CHECK(referenceError.get().rawBits() != typeError.get().rawBits());
     CHECK(referenceError.get().rawBits() != rangeError.get().rawBits());
@@ -106,18 +94,13 @@ TEST_CASE("the error classes are distinct objects with a shared root") {
 
 TEST_CASE("an error's name comes from its own prototype and its message from itself") {
     ShadowStackFrame frame;
-    ClearCell guard;
 
-    rtThrowError(ErrorKind::Error, "plain");
-    CHECK(textOf(takePending()) == "Error: plain");
-
-    rtThrowRangeError("out of range");
-    CHECK(textOf(takePending()) == "RangeError: out of range");
+    CHECK(textOf(thrownBy([] { rtThrowError(ErrorKind::Error, "plain"); })) == "Error: plain");
+    CHECK(textOf(thrownBy([] { rtThrowRangeError("out of range"); })) == "RangeError: out of range");
 
     // An empty message drops the separator, which is 20.5.3.4's rule and the
     // reason `console.log(new Error())` prints just `Error`.
-    rtThrowError(ErrorKind::TypeError, "");
-    CHECK(textOf(takePending()) == "TypeError");
+    CHECK(textOf(thrownBy([] { rtThrowError(ErrorKind::TypeError, ""); })) == "TypeError");
 }
 
 TEST_CASE("only an Error instance renders as an error") {
@@ -145,10 +128,9 @@ TEST_CASE("only an Error instance renders as an error") {
 
 TEST_CASE("an uncaught value is reported as itself, not coerced") {
     ShadowStackFrame frame;
-    ClearCell guard;
 
-    rtThrowTypeError("bad receiver");
-    CHECK(rtUncaughtText(takePending()) == "Uncaught TypeError: bad receiver");
+    CHECK(rtUncaughtText(thrownBy([] { rtThrowTypeError("bad receiver"); })) ==
+          "Uncaught TypeError: bad receiver");
 
     // `throw "negative"` and `throw 7` are different programs, so the report
     // uses console.log's rendering — which quotes a string — rather than
@@ -160,16 +142,12 @@ TEST_CASE("an uncaught value is reported as itself, not coerced") {
 }
 
 TEST_CASE("an error message survives a collection") {
-    // The classes and the pending value are rooted through a root SOURCE
-    // registered on first use. Registering it from a static initializer put
-    // it into a heap that had not been constructed yet, and the heap's own
-    // constructor then dropped it — which under BRONZE_GC_STRESS=1 collected
-    // the error prototypes out from under the classes.
+    // The error classes are rooted through a root SOURCE registered on first
+    // use, not from a static initializer, which would register it into a heap
+    // not yet constructed. Under BRONZE_GC_STRESS=1 that is what this pins.
     ShadowStackFrame frame;
-    ClearCell guard;
 
-    rtThrowTypeError("survives");
-    Rooted<Value> thrown{takePending()};
+    Rooted<Value> thrown{thrownBy([] { rtThrowTypeError("survives"); })};
     for (int i = 0; i < 32; ++i) {
         Rooted<Value> garbage{rtMakeString("junk")};
         (void)garbage;
@@ -230,44 +208,37 @@ TEST_CASE("a pc entry's file is the position's own, falling back to the descript
 
 TEST_CASE("exotic receiver and invalid operations raise catchable TypeError rather than fatal abort") {
     ShadowStackFrame frame;
-    ClearCell guard;
+
+    auto isTypeError = [](Value thrown) {
+        return rtIsErrorInstance(thrown) && textOf(thrown).find("TypeError") != std::string::npos;
+    };
 
     // 1. bronze_object_rest on non-plain receiver
-    Value restRes(bronze_object_rest(Value::fromDouble(42.0).rawBits(), Value::fromUndefined().rawBits()));
-    CHECK(rtExceptionPending());
-    Value thrown1 = takePending();
-    CHECK(rtIsErrorInstance(thrown1));
-    CHECK(textOf(thrown1).find("TypeError") != std::string::npos);
+    CHECK(isTypeError(thrownBy([] {
+        bronze_object_rest(Value::fromDouble(42.0).rawBits(), Value::fromUndefined().rawBits());
+    })));
 
     // 2. bronze_elem_set on invalid receiver (null)
-    bronze_elem_set(Value::fromNull().rawBits(), Value::fromDouble(0.0).rawBits(), Value::fromDouble(1.0).rawBits(), false);
-    CHECK(rtExceptionPending());
-    Value thrown2 = takePending();
-    CHECK(rtIsErrorInstance(thrown2));
-    CHECK(textOf(thrown2).find("TypeError") != std::string::npos);
+    CHECK(isTypeError(thrownBy([] {
+        bronze_elem_set(Value::fromNull().rawBits(), Value::fromDouble(0.0).rawBits(),
+                        Value::fromDouble(1.0).rawBits(), false);
+    })));
 
     // 3. bronze_accessor_def on exotic receiver (Array)
     const uint32_t keyIndex = bronze_register_key_string("exoticProp");
     Rooted<Value> arr{Value(bronze_create_array(0))};
-    bronze_accessor_def(arr.get().rawBits(), keyIndex, Value::fromUndefined().rawBits(), Value::fromUndefined().rawBits(), false);
-    CHECK(rtExceptionPending());
-    Value thrown3 = takePending();
-    CHECK(rtIsErrorInstance(thrown3));
-    CHECK(textOf(thrown3).find("TypeError") != std::string::npos);
+    CHECK(isTypeError(thrownBy([&] {
+        bronze_accessor_def(arr.get().rawBits(), keyIndex, Value::fromUndefined().rawBits(),
+                            Value::fromUndefined().rawBits(), false);
+    })));
 
     // 4. bronze_method_def on exotic receiver (Array)
-    bronze_method_def(arr.get().rawBits(), keyIndex, Value::fromUndefined().rawBits());
-    CHECK(rtExceptionPending());
-    Value thrown4 = takePending();
-    CHECK(rtIsErrorInstance(thrown4));
-    CHECK(textOf(thrown4).find("TypeError") != std::string::npos);
+    CHECK(isTypeError(thrownBy([&] {
+        bronze_method_def(arr.get().rawBits(), keyIndex, Value::fromUndefined().rawBits());
+    })));
 
     // 5. ObjectHeader::getProp with invalid property key
     Rooted<Value> obj{Value(bronze_create_object())};
     Rooted<Value> invalidKey{Value::fromBool(true)};
-    obj.get().asObject<ObjectHeader>()->getProp(rtHeap(), invalidKey);
-    CHECK(rtExceptionPending());
-    Value thrown5 = takePending();
-    CHECK(rtIsErrorInstance(thrown5));
-    CHECK(textOf(thrown5).find("TypeError") != std::string::npos);
+    CHECK(isTypeError(thrownBy([&] { obj.get().asObject<ObjectHeader>()->getProp(rtHeap(), invalidKey); })));
 }

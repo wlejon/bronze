@@ -42,38 +42,32 @@ namespace {
 
 // The opening of every member here: the receiver must be an object, the
 // callback must be callable (closing the receiver if it is not), and `next` is
-// then read once. False means an exception is pending and the member is over.
+// then read once. Each failure is a throw.
 //
 // `wantsCallback` is false for `toArray`, the one member with no callback at
 // all — written as a parameter rather than a second function because the other
 // five steps are identical and a copy of them is how the two would drift.
-bool openTerminal(Rooted<Value>& self, Rooted<Value>& callback, bool wantsCallback,
+void openTerminal(Rooted<Value>& self, Rooted<Value>& callback, bool wantsCallback,
                   const char* member, Rooted<Value>& nextOut) {
     if (!self.get().isObject()) {
         rtThrowTypeError("Iterator.prototype." + std::string(member) +
                          " called on a value that is not an object");
-        return false;
     }
     if (wantsCallback && !isCallable(callback.get())) {
         closeAndThrowTypeError(self, "Iterator.prototype." + std::string(member) +
                                          " requires a function argument");
-        return false;
     }
-    return getIteratorDirect(self, member, nextOut);
+    getIteratorDirect(self, member, nextOut);
 }
 
 // One callback call with (value, counter). On a throw the iterator is closed and
-// the callback's own error re-thrown (IfAbruptCloseIterator), which is why every
-// caller can simply test `rtExceptionPending` afterwards and return.
-bool callBack(Rooted<Value>& fn, Rooted<Value>& iter, Rooted<Value>& value, double counter,
+// the callback's own error re-thrown (IfAbruptCloseIterator).
+void callBack(Rooted<Value>& fn, Rooted<Value>& iter, Rooted<Value>& value, double counter,
               Rooted<Value>& out) {
-    Value block[2] = {value.get(), Value::fromDouble(counter)};
-    out.set(fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, block));
-    if (rtExceptionPending()) {
-        closeAfterThrow(iter);
-        return false;
-    }
-    return true;
+    closeOnThrow(iter, [&] {
+        Value block[2] = {value.get(), Value::fromDouble(counter)};
+        out.set(fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, block));
+    });
 }
 
 // The shared body of `some`, `every` and `find`: they differ in which truthiness
@@ -87,14 +81,11 @@ uint64_t runPredicate(uint64_t thisBits, uint32_t argc, const uint64_t* argv, Pr
     const char* member =
         which == Predicate::Some ? "some" : (which == Predicate::Every ? "every" : "find");
     Rooted<Value> next;
-    if (!openTerminal(self, fn, /*wantsCallback=*/true, member, next)) {
-        return Value::fromUndefined().rawBits();
-    }
+    openTerminal(self, fn, /*wantsCallback=*/true, member, next);
     double counter = 0.0;
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(self, next, value);
-        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) {
             // The exhausted answers: nothing satisfied `some`, everything
             // satisfied `every`, and `find` found nothing.
@@ -105,9 +96,7 @@ uint64_t runPredicate(uint64_t thisBits, uint32_t argc, const uint64_t* argv, Pr
             }
         }
         Rooted<Value> verdict;
-        if (!callBack(fn, self, value, counter, verdict)) {
-            return Value::fromUndefined().rawBits();
-        }
+        callBack(fn, self, value, counter, verdict);
         counter += 1.0;
         const bool truthy = bronze_truthy(verdict.get().rawBits());
         const bool stop = which == Predicate::Every ? !truthy : truthy;
@@ -116,7 +105,6 @@ uint64_t runPredicate(uint64_t thisBits, uint32_t argc, const uint64_t* argv, Pr
         // `return` raises here really is this member's error, because there is
         // no earlier throw for it to be suppressed in favour of.
         closeIterator(self, /*suppress=*/false);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         switch (which) {
             case Predicate::Some: return Value::fromBool(true).rawBits();
             case Predicate::Every: return Value::fromBool(false).rawBits();
@@ -133,9 +121,7 @@ uint64_t iteratorReduce(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     Rooted<Value> self{Value(thisBits)};
     Rooted<Value> reducer{args[0]};
     Rooted<Value> next;
-    if (!openTerminal(self, reducer, /*wantsCallback=*/true, "reduce", next)) {
-        return Value::fromUndefined().rawBits();
-    }
+    openTerminal(self, reducer, /*wantsCallback=*/true, "reduce", next);
     Rooted<Value> accumulator;
     double counter = 0.0;
     // Step 5: with no initial value the FIRST element is the accumulator, and an
@@ -147,7 +133,6 @@ uint64_t iteratorReduce(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     // initial value, and the two must not be confused.
     if (args.count() < 2) {
         const Step step = stepIterator(self, next, accumulator);
-        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) {
             return rtThrowTypeError(
                        "Iterator.prototype.reduce of an empty iterator with no initial value")
@@ -160,17 +145,15 @@ uint64_t iteratorReduce(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(self, next, value);
-        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) return accumulator.get().rawBits();
         // Three arguments, not two: the reducer is called with (accumulator,
         // value, index), so `callBack`'s two-argument shape does not fit.
-        Value block[3] = {accumulator.get(), value.get(), Value::fromDouble(counter)};
-        Rooted<Value> result{
-            reducer.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 3, block)};
-        if (rtExceptionPending()) {
-            closeAfterThrow(self);
-            return Value::fromUndefined().rawBits();
-        }
+        Rooted<Value> result;
+        closeOnThrow(self, [&] {
+            Value block[3] = {accumulator.get(), value.get(), Value::fromDouble(counter)};
+            result.set(
+                reducer.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 3, block));
+        });
         accumulator.set(result.get());
         counter += 1.0;
     }
@@ -183,16 +166,13 @@ uint64_t iteratorToArray(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*)
     Rooted<Value> self{Value(thisBits)};
     Rooted<Value> none;
     Rooted<Value> next;
-    if (!openTerminal(self, none, /*wantsCallback=*/false, "toArray", next)) {
-        return Value::fromUndefined().rawBits();
-    }
+    openTerminal(self, none, /*wantsCallback=*/false, "toArray", next);
     // Length ZERO and grown by the appends: `bronze_create_array(n)` SETS the
     // length, so a capacity guess would leave trailing `undefined` elements.
     Rooted<Value> out{Value(bronze_create_array(0))};
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(self, next, value);
-        if (step == Step::Threw) return Value::fromUndefined().rawBits();
         if (step == Step::Done) return out.get().rawBits();
         const uint32_t at = out.get().asObject<ArrayHeader>()->length;
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, value);
@@ -205,18 +185,14 @@ uint64_t iteratorForEach(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     Rooted<Value> self{Value(thisBits)};
     Rooted<Value> fn{args[0]};
     Rooted<Value> next;
-    if (!openTerminal(self, fn, /*wantsCallback=*/true, "forEach", next)) {
-        return Value::fromUndefined().rawBits();
-    }
+    openTerminal(self, fn, /*wantsCallback=*/true, "forEach", next);
     double counter = 0.0;
     for (;;) {
         Rooted<Value> value;
         const Step step = stepIterator(self, next, value);
         if (step != Step::Produced) return Value::fromUndefined().rawBits();
         Rooted<Value> ignored;
-        if (!callBack(fn, self, value, counter, ignored)) {
-            return Value::fromUndefined().rawBits();
-        }
+        callBack(fn, self, value, counter, ignored);
         counter += 1.0;
     }
 }

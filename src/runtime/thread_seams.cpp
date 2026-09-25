@@ -63,9 +63,6 @@ void rtReadThreadSeams() {
     // builtin_weak_map.cpp).
     if (envIsOne("BRONZE_NO_MAP_FAST")) tls->map_fast_enabled = 0;
 
-    // `key_ic_enabled` (bronze_abi_tls.h) is read by nothing; the field stays
-    // in the block so the layout does not move.
-
     // %TypedArray%.prototype.set's number-elements fast loop over a plain
     // array source: with this off every element keeps its rooted spec-shaped
     // iteration (builtin_typed_array_methods.cpp).

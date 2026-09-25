@@ -28,8 +28,8 @@ function returnOverridesReturn() {
 }
 console.log(returnOverridesReturn());
 
-// The same rule with B a throw completion: the pending exception is
-// DISCARDED, not rethrown after the finally.
+// The same rule with B a throw completion: the thrown value is DISCARDED,
+// not rethrown after the finally.
 function returnOverridesThrow() {
   try {
     throw "boom";

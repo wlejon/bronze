@@ -112,7 +112,7 @@ size_t advanceOver(const regex::Units& haystack, size_t index, bool unicode) {
 
 // The same step applied to a RegExp's own `lastIndex`: ToLength of what was
 // assigned (which may run user code), then Set(R, "lastIndex", ..., true),
-// which a frozen RegExp refuses. False with the exception pending.
+// which a frozen RegExp refuses with a throw. Answers true when it returns.
 bool advanceLastIndex(Rooted<Value>& re, const regex::Units& haystack) {
     const bool unicode = regex::patternFlags(rtRegExpPattern(re.get())).unicodeMode();
     bool ok = false;
@@ -157,7 +157,6 @@ uint64_t matchAllNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> re{readSlot(self, RegExpStringIteratorSlot::IteratingRegExp)};
     Rooted<Value> input{readSlot(self, RegExpStringIteratorSlot::IteratedString)};
     Value result = rtRegExpExec(re, input);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (result.isNull()) {
         writeSlot(self, RegExpStringIteratorSlot::Done, Value::fromBool(true));
         return iterResult(none, true).rawBits();
@@ -202,7 +201,7 @@ Value rtRegExpSearch(Rooted<Value>& re, Rooted<Value>& str) {
     const regex::Pattern& pattern = rtRegExpPattern(re.get());
     const regex::ExecStatus status = runMatch(pattern, toRegexUnits(input), 0, false, match);
     rtRegExpRestoreLastIndex(re.get(), saved.get());
-    if (status == regex::ExecStatus::Error || rtExceptionPending()) return Value::fromUndefined();
+    if (status == regex::ExecStatus::Error) return Value::fromUndefined();
     if (status != regex::ExecStatus::Match) return Value::fromDouble(-1.0);
     return Value::fromDouble(static_cast<double>(match.start()));
 }
@@ -225,7 +224,6 @@ Value rtRegExpMatch(Rooted<Value>& re, Rooted<Value>& str) {
     uint32_t count = 0;
     for (;;) {
         Value result = rtRegExpExec(re, str);
-        if (rtExceptionPending()) return Value::fromUndefined();
         if (result.isNull()) break;
         Rooted<Value> matched{result.asObject<ArrayHeader>()->getElem(0)};
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), count++, matched);
@@ -252,7 +250,6 @@ Value rtRegExpMatchAll(Rooted<Value>& re, Rooted<Value>& str) {
     const std::string flagsText =
         rtUtf8Chars(re.get().asObject<RegExpHeader>()->flagsText.asString<StringHeader>());
     Rooted<Value> matcher{rtRegExpFromParts(source, flagsText)};
-    if (rtExceptionPending()) return Value::fromUndefined();
     // Step 6: the clone STARTS WHERE THE ORIGINAL STOOD. `rtRegExpFromParts`
     // builds a fresh pattern with `lastIndex` at zero, which is a wrong answer
     // rather than a missing one — `re.lastIndex = 2; [..."aaaa".matchAll(re)]`
@@ -286,7 +283,6 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
     const bool replacerIsFunction = isCallable(replaceValue.get());
     Rooted<Value> replacement{replacerIsFunction ? replaceValue.get()
                                                  : rtValueToString(replaceValue.get())};
-    if (rtExceptionPending()) return Value::fromUndefined();
 
     const regex::Pattern& pattern = rtRegExpPattern(re.get());
     const regex::Flags& flags = regex::patternFlags(pattern);
@@ -319,7 +315,7 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
             break;
         }
         const regex::ExecStatus status = runMatch(pattern, haystack, from, flags.sticky, match);
-        if (status == regex::ExecStatus::Error || rtExceptionPending()) {
+        if (status == regex::ExecStatus::Error) {
             return Value::fromUndefined();
         }
         if (status != regex::ExecStatus::Match) {
@@ -362,7 +358,6 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     // Step 11: a limit of 0 answers an empty array whatever the separator,
     // before anything is matched.
     double limit = limitArg.isUndefined() ? 4294967295.0 : rtToNumber(limitArg);
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (std::isnan(limit) || limit < 0) limit = 0;
 
     // Length ZERO, grown by the appends below: `bronze_create_array(n)` sets
@@ -380,7 +375,7 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     if (input.empty()) {
         regex::MatchResult match;
         const regex::ExecStatus status = runMatch(pattern, haystack, 0, false, match);
-        if (status == regex::ExecStatus::Error || rtExceptionPending()) {
+        if (status == regex::ExecStatus::Error) {
             return Value::fromUndefined();
         }
         if (status == regex::ExecStatus::Match) {
@@ -400,7 +395,7 @@ Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     while (at < input.size()) {
         regex::MatchResult match;
         const regex::ExecStatus status = runMatch(pattern, haystack, at, true, match);
-        if (status == regex::ExecStatus::Error || rtExceptionPending()) {
+        if (status == regex::ExecStatus::Error) {
             return Value::fromUndefined();
         }
         if (status != regex::ExecStatus::Match) {
@@ -462,7 +457,6 @@ bool receiverFor(Rooted<Value>& self, const char* member) {
     if (rtRegExpChainPristine(self.get().asObject<RegExpHeader>())) return true;
     Rooted<Value> key{rtMakeString("exec")};
     const Value exec{bronze_elem_get(self.get().rawBits(), key.get().rawBits())};
-    if (rtExceptionPending()) return false;
     if (exec.isObject() && exec.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
         exec.asObject<FunctionHeader>()->code == rtRegExpExecBody) {
         return true;
@@ -479,7 +473,6 @@ uint64_t regexpSymbolMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     Rooted<Value> re{Value(thisBits)};
     if (!receiverFor(re, "match")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpMatch(re, str).rawBits();
 }
 
@@ -488,7 +481,6 @@ uint64_t regexpSymbolMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const 
     Rooted<Value> re{Value(thisBits)};
     if (!receiverFor(re, "matchAll")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpMatchAll(re, str).rawBits();
 }
 
@@ -497,7 +489,6 @@ uint64_t regexpSymbolReplace(uint64_t, uint64_t thisBits, uint32_t argc, const u
     Rooted<Value> re{Value(thisBits)};
     if (!receiverFor(re, "replace")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     Rooted<Value> replaceValue{args[1]};
     return rtRegExpReplace(re, str, replaceValue).rawBits();
 }
@@ -507,7 +498,6 @@ uint64_t regexpSymbolSearch(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     Rooted<Value> re{Value(thisBits)};
     if (!receiverFor(re, "search")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpSearch(re, str).rawBits();
 }
 
@@ -516,7 +506,6 @@ uint64_t regexpSymbolSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     Rooted<Value> re{Value(thisBits)};
     if (!receiverFor(re, "split")) return Value::fromUndefined().rawBits();
     Rooted<Value> str{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return rtRegExpSplit(re, str, args[1]).rawBits();
 }
 

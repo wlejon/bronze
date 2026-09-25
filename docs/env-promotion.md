@@ -87,7 +87,7 @@ That is what makes an enumeration possible at all rather than merely optimistic.
 | a load or store whose underlying object is a global or an `alloca` | not an observer | a record is allocated in the collector's heap and lives nowhere else, so those bytes are never a slot's |
 | any other load or store alias analysis cannot separate from the slot | **ends the region** | |
 | a `yield` / `await` | not reachable | a suspension is a return out of the resume function; there is no region across one |
-| a `throw` | not an observer | in this runtime a `throw` is a store into `bronze_exception_cell` and a branch to the handler edge — no call, no unwind, no `invoke`, no landing pad. It is the row above that admits it |
+| a `throw`, or a call that can throw | **an exit** | a throw unwinds to the handler's landing pad or out of the function, so it is an exit of the region like a return, and owes the write-back |
 
 **Env-blindness** is a greatest fixpoint over the module's call graph
 (`EnvReach`). A defined function is blind unless its body contains an env-scoped
@@ -97,8 +97,7 @@ in `llvm_env_reach.cpp` — where each entry is an explicit soundness claim abou
 one ABI helper, and the five `bronze_env_*` entries are deliberately absent.
 
 The fixpoint starts optimistic and lowers, which is what makes a recursive pair
-of leaf helpers blind rather than mutually suspicious. It is the same shape
-`planRepr` solves for representations.
+of leaf helpers blind rather than mutually suspicious.
 
 > There are no guards in this stage and no optimism. Every other campaign
 > mechanism that claims something about a program can be wrong under a guard
@@ -152,7 +151,7 @@ would run one — so the loop's edges into it are split into a block of their ow
 (`llvm::formDedicatedExitBlocks`, which is what LICM does for the same reason).
 This is done AFTER the region is known clean, so a refused key never costs the
 module a basic block. It is not an optional refinement: in `__wrapper_render` the
-block a pending exception returns through is reached from the loop AND from the
+block the exception path leaves through is reached from the loop AND from the
 epilogue, so the kernel this stage exists for has no dedicated exit until one is
 made.
 

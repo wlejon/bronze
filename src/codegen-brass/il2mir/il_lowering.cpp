@@ -696,9 +696,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 Value* tls = b.build_call("bronze_tls_enter", Type::i64(), {});
                 b.build_pinned_tls_write(tls);
             }
-            // Stack-limit check, before anything is pushed that an early
-            // return would have to pop: below the limit, the runtime raises
-            // the RangeError and the function returns as if it had thrown.
+            // Stack-limit check, before anything is pushed: below the limit,
+            // the runtime raises the RangeError, which leaves this frame as
+            // any throw from a call does.
             Value* tls = b.build_pinned_tls_read();
             Value* limit = b.build_load(Type::i64(), tls, kBronzeTlsStackLimitOff);
             Value* sp = b.build_read_sp();
@@ -711,16 +711,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             b.build_br_if(below, overflow_bb, body_bb);
             b.position_at_end(overflow_bb);
             b.build_call("bronze_stack_overflow", Type::void_type(), {});
-            if (fn->return_type() == Type::void_type()) {
-                b.build_ret_void();
-            } else if (fn->return_type() == Type::f64()) {
-                b.build_ret(b.build_fconst_f64(0.0));
-            } else if (fn->return_type() == Type::i32()) {
-                b.build_ret(b.build_iconst_i32(0));
-            } else {
-                b.build_ret(ensure_type(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)),
-                                        fn->return_type(), b));
-            }
+            b.build_unreachable();
             // The IL's first block now lowers into the checked continuation;
             // its parameters stay on the real entry block, which dominates it.
             block_map[fn_ast.blocks[0].id] = body_bb;
@@ -810,6 +801,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             val_map[param_id] = param_val;
         }
     }
+    add_handler_params(fn_ast, b, block_map);
 
     // 4. Lower instructions block by block, in an order where a definition
     // is lowered before its uses (see lowering_order).
@@ -818,6 +810,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         BasicBlock* bb = block_map[blk_ast.id];
         b.position_at_end(bb);
         uint32_t cont_counter = 0;
+        const size_t first_new_block = fn->blocks().size();
 
         for (const auto& inst_ast : blk_ast.instructions) {
             if (current_file_id_ != 0 && inst_ast.line > 0) {
@@ -835,7 +828,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 return false;
             }
         }
+        note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
     }
+    route_exception_edges(b, block_map);
 
     if (stack_check_entry_bb_ != nullptr) {
         // A function that calls nothing cannot recurse, and its frame is the

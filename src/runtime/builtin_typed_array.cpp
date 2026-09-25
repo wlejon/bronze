@@ -428,7 +428,6 @@ Value speciesConstructor(Rooted<Value>& exemplar, Value defaultCtor) {
     Rooted<Value> fallback{defaultCtor};
     Rooted<Value> ctorKey{rtMakeString("constructor")};
     Rooted<Value> ctor{Value(bronze_elem_get(exemplar.get().rawBits(), ctorKey.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (ctor.get().isUndefined()) return fallback.get();
     if (!ctor.get().isObject()) {
         return rtThrowTypeError("the constructor of this typed array is not an object");
@@ -436,7 +435,6 @@ Value speciesConstructor(Rooted<Value>& exemplar, Value defaultCtor) {
     Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
     Rooted<Value> species{
         Value(bronze_elem_get(ctor.get().rawBits(), speciesKey.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (species.get().isUndefined() || species.get().isNull()) return fallback.get();
     if (!rtIsConstructorValue(species.get())) {
         return rtThrowTypeError("[Symbol.species] of this typed array is not a constructor");
@@ -547,9 +545,7 @@ Value rtTypedArraySpeciesCreate(Rooted<Value>& exemplar, uint32_t length) {
         return rtNewTypedArray(kind, length);
     }
     Rooted<Value> ctor{speciesConstructor(exemplar, g_views[static_cast<size_t>(kind)].ctor)};
-    if (rtExceptionPending()) return Value::fromUndefined();
     Rooted<Value> made{rtTypedArrayCreateFromConstructor(ctor, length)};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (!sameContentType(made.get(), kind)) return Value::fromUndefined();
     return made.get();
 }
@@ -561,7 +557,6 @@ Value rtTypedArraySpeciesCreateOverBuffer(Rooted<Value>& exemplar, Rooted<Value>
         return rtNewTypedArrayOverBuffer(kind, buffer, byteOffset, length, tracking);
     }
     Rooted<Value> ctor{speciesConstructor(exemplar, g_views[static_cast<size_t>(kind)].ctor)};
-    if (rtExceptionPending()) return Value::fromUndefined();
     // 23.2.3.30 step 13-14: « buffer, beginByteOffset » for a tracking result,
     // « buffer, beginByteOffset, newLength » otherwise.
     RootedBlock block(tracking ? 2 : 3);
@@ -569,7 +564,6 @@ Value rtTypedArraySpeciesCreateOverBuffer(Rooted<Value>& exemplar, Rooted<Value>
     block.set(1, Value::fromDouble(static_cast<double>(byteOffset)));
     if (!tracking) block.set(2, Value::fromDouble(static_cast<double>(length)));
     Rooted<Value> made{Value(bronze_construct(ctor.get().rawBits(), block.count(), block.data()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     // 23.2.4.4 ValidateTypedArray on what came back.
     if (!requireTypedArray(made.get(), "subarray")) return Value::fromUndefined();
     if (!sameContentType(made.get(), kind)) return Value::fromUndefined();
@@ -648,7 +642,6 @@ void rtTypedArraySetElement(Rooted<Value>& view, uint32_t index, Value value) {
         return;
     }
     const double num = rtToNumber(val.get());
-    if (rtExceptionPending()) return;
     auto* live = view.get().asObject<TypedArrayHeader>();
     if (index < live->length) live->set(index, num);
 }

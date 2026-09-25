@@ -11,7 +11,6 @@ uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     const uint32_t len = isArray(self.get()) ? self.get().asObject<ArrayHeader>()->length
                                              : rtArrayLikeLength(self);
     uint32_t from = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const Value needle = args[0];
     if (isArray(self.get())) {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
@@ -25,7 +24,6 @@ uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         for (uint32_t i = from; i < len; ++i) {
             if (!rtArrayLikeHasElement(self, i)) continue;
             Value elem = rtArrayLikeGetElement(self, i);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             if (bronze_strict_eq(elem.rawBits(), needle.rawBits())) {
                 return Value::fromDouble(i).rawBits();
             }
@@ -45,7 +43,6 @@ uint64_t arrayLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     double fromNum = args.count() > 1 && !args[1].isUndefined()
                          ? toInteger(rtToNumber(args[1]))
                          : static_cast<double>(len - 1);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     double k = fromNum >= 0 ? std::min(fromNum, static_cast<double>(len - 1))
                             : static_cast<double>(len) + fromNum;
     if (k < 0) return Value::fromDouble(-1.0).rawBits();
@@ -64,7 +61,6 @@ uint64_t arrayLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint
             uint32_t uidx = static_cast<uint32_t>(i);
             if (!rtArrayLikeHasElement(self, uidx)) continue;
             Value elem = rtArrayLikeGetElement(self, uidx);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             if (bronze_strict_eq(elem.rawBits(), needle.rawBits())) {
                 return Value::fromDouble(static_cast<double>(i)).rawBits();
             }
@@ -80,7 +76,6 @@ uint64_t arrayIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     const uint32_t len = isArray(self.get()) ? self.get().asObject<ArrayHeader>()->length
                                              : rtArrayLikeLength(self);
     uint32_t from = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (isArray(self.get())) {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         for (uint32_t i = from; i < len; ++i) {
@@ -89,7 +84,6 @@ uint64_t arrayIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     } else {
         for (uint32_t i = from; i < len; ++i) {
             Value elem = rtArrayLikeGetElement(self, i);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             if (sameValueZero(elem, args[0])) return Value::fromBool(true).rawBits();
         }
     }
@@ -103,7 +97,6 @@ uint64_t arrayAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     const uint32_t len = isArray(self.get()) ? self.get().asObject<ArrayHeader>()->length
                                              : rtArrayLikeLength(self);
     double rel = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     double idx = rel < 0 ? static_cast<double>(len) + rel : rel;
     if (idx < 0 || idx >= static_cast<double>(len)) {
         return Value::fromUndefined().rawBits();
@@ -127,9 +120,7 @@ static uint64_t arrayFindImpl(uint64_t, uint64_t thisBits, uint32_t argc, const 
     for (uint32_t n = 0; n < len; ++n) {
         uint32_t i = Reverse ? len - 1 - n : n;
         Rooted<Value> elem{isArray(self.get()) ? elemOf(self.get(), i) : rtArrayLikeGetElement(self, i)};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> found{callBack(fn, thisArg, elem, i, self)};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (bronze_truthy(found.get().rawBits())) {
             return WantIndex ? Value::fromDouble(i).rawBits() : elem.get().rawBits();
         }

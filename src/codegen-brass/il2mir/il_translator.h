@@ -106,11 +106,10 @@ struct TranslatorOptions {
     std::vector<std::string> key_constants;
     std::unordered_map<std::string, FunctionMeta> function_meta;
     std::string entry_symbol;
-    bool propagate_exceptions_in_entry = false;
     // Keep the runtime's thread-local block in a pinned callee-saved register
     // (Module::set_pinned_tls_register): the module entry fetches it once
-    // through `bronze_tls_enter`, and every exception check, allocation fast
-    // path and stack-limit check reads through the register instead of
+    // through `bronze_tls_enter`, and every allocation fast path and
+    // stack-limit check reads through the register instead of
     // calling `bronze_tls_block_addr`. Requires the runtime to enter compiled
     // code only through its trampoline (which sets the register).
     bool pin_tls_register = false;

@@ -101,10 +101,10 @@ double rtBigIntToNumber(Value v) noexcept;
 //
 // The read direction ALLOCATES (a BigInt is a heap value). The write direction
 // runs 7.1.13 ToBigInt, which means it can run USER CODE for an object argument
-// and can leave a TypeError pending for a Number — which is the one place a
-// typed-array store throws instead of truncating. The wrap itself is
-// BigInt::asUintN over 64 bits, so an out-of-range value wraps exactly as
-// `setInt32` does. False means an exception is pending.
+// and throws a TypeError for a Number — which is the one place a typed-array
+// store throws instead of truncating. The wrap itself is BigInt::asUintN over
+// 64 bits, so an out-of-range value wraps exactly as `setInt32` does. Answers
+// true when it returns.
 Value rtBigIntFromRawBits64(uint64_t bits, bool isSigned);
 bool rtBigIntToRawBits64(Value v, uint64_t& out);
 
@@ -119,7 +119,7 @@ std::string rtBigIntDecimalOfRawBits64(uint64_t bits, bool isSigned);
 // the TypeError the clause's table names and never a conversion: `BigInt(1)`
 // converts because 21.2.1.1 routes a Number through NumberToBigInt BEFORE
 // reaching here, which is a different operation with a different answer for
-// `1.5`. False leaves an exception pending.
+// `1.5`. Answers true when it returns; every failure throws.
 bool rtToBigInt(Value v, BigNum& out);
 
 // The `BigInt` global (builtin_bigint.cpp): the constructor object for the

@@ -84,11 +84,11 @@ uint64_t fromAsyncOnMapped(uint64_t env, uint64_t, uint32_t argc, const uint64_t
 uint64_t fromAsyncOnRejectedClosing(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv);
 uint64_t fromAsyncOnRejected(uint64_t env, uint64_t, uint32_t argc, const uint64_t* argv);
 
-// IfAbruptCloseAsyncIterator / IfAbruptCloseIterator: the pending exception is
-// the completion the program sees, so the iterator's `return` runs with its own
-// errors discarded. An async `return` answers a promise the spec would await;
-// nothing observable of this operation depends on when it settles, so it is
-// not waited for.
+// IfAbruptCloseAsyncIterator / IfAbruptCloseIterator: the throw the caller
+// holds is the completion the program sees, so the iterator's `return` runs
+// with its own errors discarded. An async `return` answers a promise the spec
+// would await; nothing observable of this operation depends on when it
+// settles, so it is not waited for.
 void fromAsyncCloseSource(Rooted<Value>& state) {
     const uint32_t mode = fromAsyncMode(state);
     if (mode == 1) {
@@ -97,21 +97,36 @@ void fromAsyncCloseSource(Rooted<Value>& state) {
         return;
     }
     if (mode != 0) return;
-    Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
-    rtClearException();
-    Rooted<Value> iter{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
-    Rooted<Value> key{rtMakeString("return")};
-    Rooted<Value> ret{Value(bronze_elem_get(iter.get().rawBits(), key.get().rawBits()))};
-    if (!rtExceptionPending() && isCallable(ret.get())) {
-        ret.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr);
-    }
-    rtClearException();
-    rtThrow(thrown.get());
+    Value ignored;
+    rtTryCatch(
+        [&] {
+            Rooted<Value> iter{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
+            Rooted<Value> key{rtMakeString("return")};
+            Rooted<Value> ret{Value(bronze_elem_get(iter.get().rawBits(), key.get().rawBits()))};
+            if (isCallable(ret.get())) {
+                ret.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr);
+            }
+        },
+        ignored);
 }
 
-void fromAsyncReject(Rooted<Value>& state) {
+void fromAsyncReject(Rooted<Value>& state, Rooted<Value>& reason) {
     Rooted<Value> cap{fromAsyncSlot(state, FromAsyncSlot::Capability)};
-    rtRejectCapabilityWithPending(cap);
+    rtSettleCapability(cap, reason, /*reject=*/true);
+}
+
+// Runs one synchronous stretch of the operation. A throw out of it rejects the
+// operation's promise — after closing the source, where `close` says the
+// spec's IfAbruptClose applies — and answers false; a normal completion
+// answers true.
+template <typename Body>
+bool fromAsyncStep(Rooted<Value>& state, bool close, Body&& body) {
+    Value thrown;
+    if (!rtTryCatch(std::forward<Body>(body), thrown)) return true;
+    Rooted<Value> reason{thrown};
+    if (close) fromAsyncCloseSource(state);
+    fromAsyncReject(state, reason);
+    return false;
 }
 
 // `Await(v)`: PromiseResolve(%Promise%, v), then the two continuations. The
@@ -120,11 +135,8 @@ void fromAsyncReject(Rooted<Value>& state) {
 // `next()` itself, whose rejection is the iterator's own.
 void fromAsyncAwait(Rooted<Value>& state, Rooted<Value>& v, NativeFunctionCode onFulfilled,
                     bool closeOnReject) {
-    Rooted<Value> promise{rtPromiseResolveValue(v)};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return;
-    }
+    Rooted<Value> promise{Value::fromUndefined()};
+    if (!fromAsyncStep(state, false, [&] { promise.set(rtPromiseResolveValue(v)); })) return;
     Rooted<Value> onF{rtMakeNativeClosure(onFulfilled, state, 1)};
     Rooted<Value> onR{rtMakeNativeClosure(
         closeOnReject ? fromAsyncOnRejectedClosing : fromAsyncOnRejected, state, 1)};
@@ -136,11 +148,7 @@ void fromAsyncFinish(Rooted<Value>& state) {
     Rooted<Value> out{fromAsyncSlot(state, FromAsyncSlot::Out)};
     const bool constructed = fromAsyncSlot(state, FromAsyncSlot::Constructed).asNumber() != 0;
     const auto k = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Index).asNumber());
-    setResultLength(out, k, constructed);
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return;
-    }
+    if (!fromAsyncStep(state, false, [&] { setResultLength(out, k, constructed); })) return;
     Rooted<Value> cap{fromAsyncSlot(state, FromAsyncSlot::Capability)};
     rtSettleCapability(cap, out, /*reject=*/false);
 }
@@ -152,9 +160,10 @@ void fromAsyncResume(Rooted<Value>& state) {
     if (mode == 0) {
         Rooted<Value> iter{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
         Rooted<Value> next{fromAsyncSlot(state, FromAsyncSlot::NextFn)};
-        Rooted<Value> result{next.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr)};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
+        Rooted<Value> result{Value::fromUndefined()};
+        if (!fromAsyncStep(state, false, [&] {
+                result.set(next.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr));
+            })) {
             return;
         }
         fromAsyncAwait(state, result, fromAsyncOnNextResult, /*closeOnReject=*/false);
@@ -162,9 +171,8 @@ void fromAsyncResume(Rooted<Value>& state) {
     }
     if (mode == 1) {
         Rooted<Value> rec{fromAsyncSlot(state, FromAsyncSlot::Iterator)};
-        const bool more = bronze_iter_step(rec.get().rawBits());
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
+        bool more = false;
+        if (!fromAsyncStep(state, false, [&] { more = bronze_iter_step(rec.get().rawBits()); })) {
             return;
         }
         if (!more) {
@@ -182,10 +190,11 @@ void fromAsyncResume(Rooted<Value>& state) {
         return;
     }
     Rooted<Value> source{fromAsyncSlot(state, FromAsyncSlot::Source)};
-    Rooted<Value> value{
-        Value(bronze_elem_get(source.get().rawBits(), Value::fromDouble(k).rawBits()))};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
+    Rooted<Value> value{Value::fromUndefined()};
+    if (!fromAsyncStep(state, false, [&] {
+            value.set(
+                Value(bronze_elem_get(source.get().rawBits(), Value::fromDouble(k).rawBits())));
+        })) {
         return;
     }
     fromAsyncAwait(state, value, fromAsyncOnValue, /*closeOnReject=*/false);
@@ -197,25 +206,23 @@ uint64_t fromAsyncOnNextResult(uint64_t env, uint64_t, uint32_t argc, const uint
     RootedArgs args(argc, argv);
     Rooted<Value> state{Value(env)};
     Rooted<Value> result{args[0]};
-    if (!result.get().isObject()) {
-        rtThrowTypeError("Array.fromAsync: the async iterator's next() result is not an object");
-        fromAsyncReject(state);
+    Rooted<Value> value{Value::fromUndefined()};
+    bool done = false;
+    if (!fromAsyncStep(state, false, [&] {
+            if (!result.get().isObject()) {
+                rtThrowTypeError(
+                    "Array.fromAsync: the async iterator's next() result is not an object");
+            }
+            Rooted<Value> doneKey{rtMakeString("done")};
+            done = bronze_truthy(bronze_elem_get(result.get().rawBits(), doneKey.get().rawBits()));
+            if (done) return;
+            Rooted<Value> valueKey{rtMakeString("value")};
+            value.set(Value(bronze_elem_get(result.get().rawBits(), valueKey.get().rawBits())));
+        })) {
         return Value::fromUndefined().rawBits();
     }
-    Rooted<Value> doneKey{rtMakeString("done")};
-    Rooted<Value> done{Value(bronze_elem_get(result.get().rawBits(), doneKey.get().rawBits()))};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return Value::fromUndefined().rawBits();
-    }
-    if (bronze_truthy(done.get().rawBits())) {
+    if (done) {
         fromAsyncFinish(state);
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> valueKey{rtMakeString("value")};
-    Rooted<Value> value{Value(bronze_elem_get(result.get().rawBits(), valueKey.get().rawBits()))};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
         return Value::fromUndefined().rawBits();
     }
     const uint64_t one[1] = {value.get().rawBits()};
@@ -234,12 +241,11 @@ uint64_t fromAsyncOnValue(uint64_t env, uint64_t, uint32_t argc, const uint64_t*
     }
     Rooted<Value> thisArg{fromAsyncSlot(state, FromAsyncSlot::ThisArg)};
     const auto k = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Index).asNumber());
-    Rooted<Value> mapped{callMapper(mapFn, thisArg, value, k)};
-    if (rtExceptionPending()) {
-        // 5.k.i.5.b.ii / 6.e.iii.b.ii: the mapper threw, so the source is
-        // closed before the rejection.
-        fromAsyncCloseSource(state);
-        fromAsyncReject(state);
+    // 5.k.i.5.b.ii / 6.e.iii.b.ii: a mapper that throws closes the source
+    // before the rejection.
+    Rooted<Value> mapped{Value::fromUndefined()};
+    if (!fromAsyncStep(state, true,
+                       [&] { mapped.set(callMapper(mapFn, thisArg, value, k)); })) {
         return Value::fromUndefined().rawBits();
     }
     fromAsyncAwait(state, mapped, fromAsyncOnMapped, /*closeOnReject=*/true);
@@ -254,10 +260,7 @@ uint64_t fromAsyncOnMapped(uint64_t env, uint64_t, uint32_t argc, const uint64_t
     Rooted<Value> out{fromAsyncSlot(state, FromAsyncSlot::Out)};
     const bool constructed = fromAsyncSlot(state, FromAsyncSlot::Constructed).asNumber() != 0;
     const auto k = static_cast<uint32_t>(fromAsyncSlot(state, FromAsyncSlot::Index).asNumber());
-    emitAt(out, k, value, constructed);
-    if (rtExceptionPending()) {
-        fromAsyncCloseSource(state);
-        fromAsyncReject(state);
+    if (!fromAsyncStep(state, true, [&] { emitAt(out, k, value, constructed); })) {
         return Value::fromUndefined().rawBits();
     }
     setFromAsyncSlot(state, FromAsyncSlot::Index, Value::fromDouble(k + 1));
@@ -269,9 +272,8 @@ uint64_t fromAsyncOnRejectedClosing(uint64_t env, uint64_t, uint32_t argc, const
     RootedArgs args(argc, argv);
     Rooted<Value> state{Value(env)};
     Rooted<Value> reason{args[0]};
-    rtThrow(reason.get());
     fromAsyncCloseSource(state);
-    fromAsyncReject(state);
+    fromAsyncReject(state, reason);
     return Value::fromUndefined().rawBits();
 }
 
@@ -307,92 +309,63 @@ uint64_t rtArrayFromAsyncBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
     setFromAsyncSlot(state, FromAsyncSlot::MapFn, mapFn.get());
     setFromAsyncSlot(state, FromAsyncSlot::ThisArg, thisArg.get());
 
-    // 3.a-b: a mapper that is present and not callable.
-    if (!mapFn.get().isUndefined() && !isCallable(mapFn.get())) {
-        rtThrowTypeError("Array.fromAsync: the second argument is not a function");
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    // 3.c-d: GetMethod(asyncItems, @@asyncIterator), then @@iterator. GetMethod
-    // of null or undefined is the TypeError that makes `fromAsync(null)` a
-    // rejection.
-    if (src.get().isNull() || src.get().isUndefined()) {
-        rtThrowTypeError("Array.fromAsync requires an array-like or iterable object, not " +
-                         rtIterableKindName(src.get()));
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    Rooted<Value> asyncMethod{Value::fromUndefined()};
-    if (src.get().isObject()) {
-        Rooted<Value> key{rtAsyncIteratorKey()};
-        asyncMethod.set(Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits())));
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
+    // Every throw from here to the first await is a rejection. The source is
+    // not closed on any of them: none follows a successful open.
+    const bool started = fromAsyncStep(state, false, [&] {
+        // 3.a-b: a mapper that is present and not callable.
+        if (!mapFn.get().isUndefined() && !isCallable(mapFn.get())) {
+            rtThrowTypeError("Array.fromAsync: the second argument is not a function");
         }
-    }
-    const bool constructed = buildsThroughThis(ctor.get());
-    setFromAsyncSlot(state, FromAsyncSlot::Constructed, Value::fromDouble(constructed ? 1 : 0));
+        // 3.c-d: GetMethod(asyncItems, @@asyncIterator), then @@iterator.
+        // GetMethod of null or undefined is the TypeError that makes
+        // `fromAsync(null)` a rejection.
+        if (src.get().isNull() || src.get().isUndefined()) {
+            rtThrowTypeError("Array.fromAsync requires an array-like or iterable object, not " +
+                             rtIterableKindName(src.get()));
+        }
+        Rooted<Value> asyncMethod{Value::fromUndefined()};
+        if (src.get().isObject()) {
+            Rooted<Value> key{rtAsyncIteratorKey()};
+            asyncMethod.set(Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits())));
+        }
+        const bool constructed = buildsThroughThis(ctor.get());
+        setFromAsyncSlot(state, FromAsyncSlot::Constructed,
+                         Value::fromDouble(constructed ? 1 : 0));
 
-    if (isCallable(asyncMethod.get())) {
-        // 3.e-h: the async iterator, and Construct(C) with no length.
-        Rooted<Value> iter{asyncMethod.get().asObject<FunctionHeader>()->call(src.get(), 0, nullptr)};
-        if (!rtExceptionPending() && !iter.get().isObject()) {
-            rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
+        if (isCallable(asyncMethod.get())) {
+            // 3.e-h: the async iterator, and Construct(C) with no length.
+            Rooted<Value> iter{
+                asyncMethod.get().asObject<FunctionHeader>()->call(src.get(), 0, nullptr)};
+            if (!iter.get().isObject()) {
+                rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
+            }
+            Rooted<Value> nextKey{rtMakeString("next")};
+            Rooted<Value> next{
+                Value(bronze_elem_get(iter.get().rawBits(), nextKey.get().rawBits()))};
+            Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
+            setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(0));
+            setFromAsyncSlot(state, FromAsyncSlot::Iterator, iter.get());
+            setFromAsyncSlot(state, FromAsyncSlot::NextFn, next.get());
+            setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
+            return;
         }
-        Rooted<Value> nextKey{rtMakeString("next")};
-        Rooted<Value> next{rtExceptionPending()
-                               ? Value::fromUndefined()
-                               : Value(bronze_elem_get(iter.get().rawBits(), nextKey.get().rawBits()))};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
+        if (rtHasIteratorMethod(src)) {
+            Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
+            Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
+            setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(1));
+            setFromAsyncSlot(state, FromAsyncSlot::Iterator, rec.get());
+            setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
+            return;
         }
-        Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-        setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(0));
-        setFromAsyncSlot(state, FromAsyncSlot::Iterator, iter.get());
-        setFromAsyncSlot(state, FromAsyncSlot::NextFn, next.get());
+        // 3.i-k: the array-like, and Construct(C, « len »).
+        const uint32_t len = rtArrayLikeLength(src);
+        Rooted<Value> out{constructed ? constructThrough(ctor, &len) : newEmptyArray()};
+        setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(2));
+        setFromAsyncSlot(state, FromAsyncSlot::Source, src.get());
+        setFromAsyncSlot(state, FromAsyncSlot::Length, Value::fromDouble(len));
         setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
-        fromAsyncResume(state);
-        return promise.get().rawBits();
-    }
-    if (rtHasIteratorMethod(src)) {
-        Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-        Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
-        if (rtExceptionPending()) {
-            fromAsyncReject(state);
-            return promise.get().rawBits();
-        }
-        setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(1));
-        setFromAsyncSlot(state, FromAsyncSlot::Iterator, rec.get());
-        setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
-        fromAsyncResume(state);
-        return promise.get().rawBits();
-    }
-    // 3.i-k: the array-like, and Construct(C, « len »).
-    const uint32_t len = rtArrayLikeLength(src);
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    Rooted<Value> out{constructed ? constructThrough(ctor, &len) : newEmptyArray()};
-    if (rtExceptionPending()) {
-        fromAsyncReject(state);
-        return promise.get().rawBits();
-    }
-    setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(2));
-    setFromAsyncSlot(state, FromAsyncSlot::Source, src.get());
-    setFromAsyncSlot(state, FromAsyncSlot::Length, Value::fromDouble(len));
-    setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
-    fromAsyncResume(state);
+    });
+    if (started) fromAsyncResume(state);
     return promise.get().rawBits();
 }
 

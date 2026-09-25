@@ -43,6 +43,18 @@ std::string textOf(Value v) {
     return rtUtf8Chars(v.asString<StringHeader>());
 }
 
+// The `Name: message` of the error `body` throws; "" when it returns.
+template <typename Body>
+std::string thrownText(Body&& body) {
+    Value thrown;
+    std::string text;
+    if (rtTryCatch([&] { (void)body(); }, thrown)) {
+        CHECK(thrown.isObject());
+        CHECK(rtErrorText(thrown, text));
+    }
+    return text;
+}
+
 // A named member read the way a program reads it: through the property path,
 // which finds 22.2.6's accessors on the real `RegExp.prototype`.
 Value memberOf(Rooted<Value>& re, const char* name) {
@@ -194,14 +206,9 @@ TEST_CASE("a sticky pattern matches only at lastIndex") {
 
 TEST_CASE("a pattern that does not compile is a catchable SyntaxError") {
     ShadowStackFrame frame;
-    Rooted<Value> bad{makeRegExp("(unclosed", "")};
-    CHECK(bad.get().isUndefined());
-    REQUIRE(rtExceptionPending());
-    std::string text;
-    CHECK(rtErrorText(Value(bronze_tls_block_addr()->exception_cell), text));
+    const std::string text = thrownText([] { return makeRegExp("(unclosed", ""); });
     CHECK(text.find("SyntaxError") == 0);
     CHECK(text.find("Invalid regular expression") != std::string::npos);
-    rtClearException();
 }
 
 TEST_CASE("console.log prints a regular expression as its source form") {
@@ -301,21 +308,12 @@ TEST_CASE("a fresh RegExp's chain is pristine and an own key ends that") {
 
 TEST_CASE("RegExp.prototype.exec throws catchable RangeError on step budget exhaustion") {
     ShadowStackFrame frame;
-    rtClearException();
 
     Rooted<Value> re{makeRegExp("(a+)+$", "")};
     Rooted<Value> input{rtMakeString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")};
-    Rooted<Value> result{rtRegExpExec(re, input)};
-
-    CHECK(rtExceptionPending());
-    Value exVal = Value(rtTls()->exception_cell);
-    CHECK(exVal.isObject());
-    std::string errText;
-    CHECK(rtErrorText(exVal, errText));
+    const std::string errText = thrownText([&] { return rtRegExpExec(re, input); });
     CHECK(errText.find("RangeError") != std::string::npos);
     CHECK(errText.find("backtracking") != std::string::npos);
-
-    rtClearException();
 }
 
 TEST_CASE("RegExp compilation cache is bounded and LRU evicts cleanly") {
@@ -336,14 +334,12 @@ TEST_CASE("RegExp compilation cache is bounded and LRU evicts cleanly") {
     // Executing it should transparently re-compile and match accurately without crashing.
     Rooted<Value> testInput0{rtMakeString("pattern_0")};
     Rooted<Value> match0{rtRegExpExec(regexes[0], testInput0)};
-    CHECK_FALSE(rtExceptionPending());
     REQUIRE(match0.get().isObject());
     CHECK(match0.get().asObject<ArrayHeader>()->length == 1);
 
     // Similarly test an evicted non-matching input
     Rooted<Value> testInputMiss{rtMakeString("no_match")};
     Rooted<Value> miss0{rtRegExpExec(regexes[0], testInputMiss)};
-    CHECK_FALSE(rtExceptionPending());
     CHECK(miss0.get().isNull());
 
     // Cache size still stays <= 512
@@ -352,51 +348,24 @@ TEST_CASE("RegExp compilation cache is bounded and LRU evicts cleanly") {
 
 TEST_CASE("RegExp symbols throw catchable RangeError on ReDoS / execution limit exceeded") {
     ShadowStackFrame frame;
-    rtClearException();
 
     Rooted<Value> re{makeRegExp("(a+)+$", "")};
     Rooted<Value> input{rtMakeString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")};
 
     // search
-    Rooted<Value> searchRes{rtRegExpSearch(re, input)};
-    CHECK(rtExceptionPending());
-    Value exVal = Value(rtTls()->exception_cell);
-    CHECK(exVal.isObject());
-    std::string errText;
-    CHECK(rtErrorText(exVal, errText));
-    CHECK(errText.find("RangeError") != std::string::npos);
-    rtClearException();
+    CHECK(thrownText([&] { return rtRegExpSearch(re, input); }).find("RangeError") != std::string::npos);
 
     // replace
     Rooted<Value> replacement{rtMakeString("x")};
-    Rooted<Value> replaceRes{rtRegExpReplace(re, input, replacement)};
-    CHECK(rtExceptionPending());
-    exVal = Value(rtTls()->exception_cell);
-    CHECK(exVal.isObject());
-    errText.clear();
-    CHECK(rtErrorText(exVal, errText));
-    CHECK(errText.find("RangeError") != std::string::npos);
-    rtClearException();
+    CHECK(thrownText([&] { return rtRegExpReplace(re, input, replacement); }).find("RangeError") !=
+          std::string::npos);
 
     // split
-    Rooted<Value> splitRes{rtRegExpSplit(re, input, Value::fromUndefined())};
-    CHECK(rtExceptionPending());
-    exVal = Value(rtTls()->exception_cell);
-    CHECK(exVal.isObject());
-    errText.clear();
-    CHECK(rtErrorText(exVal, errText));
-    CHECK(errText.find("RangeError") != std::string::npos);
-    rtClearException();
+    CHECK(thrownText([&] { return rtRegExpSplit(re, input, Value::fromUndefined()); }).find("RangeError") !=
+          std::string::npos);
 
     // match (with global flag)
     Rooted<Value> reGlobal{makeRegExp("(a+)+$", "g")};
-    Rooted<Value> matchRes{rtRegExpMatch(reGlobal, input)};
-    CHECK(rtExceptionPending());
-    exVal = Value(rtTls()->exception_cell);
-    CHECK(exVal.isObject());
-    errText.clear();
-    CHECK(rtErrorText(exVal, errText));
-    CHECK(errText.find("RangeError") != std::string::npos);
-    rtClearException();
+    CHECK(thrownText([&] { return rtRegExpMatch(reGlobal, input); }).find("RangeError") != std::string::npos);
 }
 

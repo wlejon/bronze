@@ -126,13 +126,11 @@ bool pristineBuiltinIterator(Value v, IteratorProto kind, bronze_fn_code nextCod
 void openProtocolFromMethod(Rooted<Value>& recRoot, Rooted<Value>& srcRoot,
                             Rooted<Value>& method) {
     Rooted<Value> iter{callMethod(method, srcRoot)};
-    if (rtExceptionPending()) return;
     if (!iter.get().isObject()) {
         rtThrowTypeError("the result of Symbol.iterator is not an object");
         return;
     }
     Rooted<Value> next{namedProp(iter.get(), keyNext())};
-    if (rtExceptionPending()) return;
     if (!isCallable(next.get())) {
         rtThrowTypeError("the iterator has no `next` method");
         return;
@@ -145,7 +143,6 @@ void openProtocolFromMethod(Rooted<Value>& recRoot, Rooted<Value>& srcRoot,
 
 void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
     Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
-    if (rtExceptionPending()) return;
     if (!isCallable(method.get())) {
         rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
         return;
@@ -234,16 +231,12 @@ Value rtOpenIterator(Value source) {
                     break;
                 }
                 Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
-                if (!rtExceptionPending() && rtIsIntrinsicTypedArrayIterator(method.get())) {
+                if (rtIsIntrinsicTypedArrayIterator(method.get())) {
                     kind = IterRecordHeader::TypedArray;
                     break;
                 }
-                if (rtExceptionPending() || !isCallable(method.get())) {
-                    if (!rtExceptionPending()) {
-                        rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
-                    }
-                    return Value::fromObject(
-                        IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol));
+                if (!isCallable(method.get())) {
+                    rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
                 }
                 return rtGetIteratorFromMethod(srcRoot, method);
             }
@@ -251,18 +244,12 @@ Value rtOpenIterator(Value source) {
                 if (rtIsMapOrSet(source)) {
                     const bool isSet = rtIsSetKind(source);
                     Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
-                    if (!rtExceptionPending() &&
-                        rtIsIntrinsicCollectionIterator(method.get(), isSet)) {
+                    if (rtIsIntrinsicCollectionIterator(method.get(), isSet)) {
                         kind = isSet ? IterRecordHeader::SetValues : IterRecordHeader::MapEntries;
                         break;
                     }
-                    if (rtExceptionPending() || !isCallable(method.get())) {
-                        if (!rtExceptionPending()) {
-                            rtThrowTypeError(rtIterableKindName(srcRoot.get()) +
-                                             " is not iterable");
-                        }
-                        return Value::fromObject(
-                            IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol));
+                    if (!isCallable(method.get())) {
+                        rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
                     }
                     return rtGetIteratorFromMethod(srcRoot, method);
                 }
@@ -319,10 +306,9 @@ Value makeIterResult(Rooted<Value>& value, bool done) {
     return resObj.get();
 }
 
-// IfAbruptRejectPromise: the pending exception becomes the rejection.
-void rejectWithPending(Rooted<Value>& promise) {
-    Rooted<Value> reason{Value(rtTls()->exception_cell)};
-    rtClearException();
+// IfAbruptRejectPromise: the caught throw becomes the rejection.
+void rejectWithThrown(Rooted<Value>& promise, Value thrown) {
+    Rooted<Value> reason{thrown};
     rtRejectPromise(promise, reason);
 }
 
@@ -347,7 +333,6 @@ uint64_t asyncFromSyncOnRejected(uint64_t env, uint64_t, uint32_t argc, const ui
     Rooted<Value> record{
         state.get().asObject<ObjectHeader>()->internalSlot(AsyncFromSyncSlot::Record)};
     bronze_iter_close(record.get().rawBits(), /*suppress=*/true);
-    if (rtExceptionPending()) rtClearException();
     Rooted<Value> promise{
         state.get().asObject<ObjectHeader>()->internalSlot(AsyncFromSyncSlot::Promise)};
     rtRejectPromise(promise, reason);
@@ -359,9 +344,10 @@ uint64_t asyncFromSyncOnRejected(uint64_t env, uint64_t, uint32_t argc, const ui
 // step without closing anything (27.1.6.2.1 step 5, IfAbruptRejectPromise).
 Value asyncFromSyncNext(Rooted<Value>& recRoot) {
     Rooted<Value> promise{rtNewPromise()};
-    const bool more = bronze_iter_step(recRoot.get().rawBits());
-    if (rtExceptionPending()) {
-        rejectWithPending(promise);
+    bool more = false;
+    Value thrown;
+    if (rtTryCatch([&] { more = bronze_iter_step(recRoot.get().rawBits()); }, thrown)) {
+        rejectWithThrown(promise, thrown);
         return promise.get();
     }
     if (!more) {
@@ -373,10 +359,11 @@ Value asyncFromSyncNext(Rooted<Value>& recRoot) {
     Rooted<Value> value{Value(bronze_iter_value(recRoot.get().rawBits()))};
     // PromiseResolve(%Promise%, value): a thenable's `then` getter may throw,
     // and that too closes the iterator (27.1.6.4 step 6).
-    Rooted<Value> wrapper{rtPromiseResolveValue(value)};
-    if (rtExceptionPending()) {
+    Rooted<Value> wrapper{Value::fromUndefined()};
+    if (rtTryCatch([&] { wrapper.set(rtPromiseResolveValue(value)); }, thrown)) {
+        Rooted<Value> reason{thrown};
         bronze_iter_close(recRoot.get().rawBits(), /*suppress=*/true);
-        rejectWithPending(promise);
+        rejectWithThrown(promise, reason.get());
         return promise.get();
     }
     Rooted<Value> state{Value::fromObject(ObjectHeader::createWithInternalSlots(
@@ -488,29 +475,34 @@ bool bronze_iter_step(uint64_t recBits) {
 
     Rooted<Value> nextFn{rec->nextFn};
     Rooted<Value> iterObj{rec->target};
-    Rooted<Value> result{callMethod(nextFn, iterObj)};
-    if (rtExceptionPending()) {
-        recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
-        return false;
+    Rooted<Value> result{Value::fromUndefined()};
+    Rooted<Value> produced{Value::fromUndefined()};
+    bool finished = false;
+    // A throw out of `next`, or out of reading the result, leaves the record
+    // done: the loop must not then close an iterator that just failed
+    // (7.4.9 is not reached from IteratorStep's own abrupt completion).
+    Value thrown;
+    const bool threw = rtTryCatch(
+        [&] {
+            result.set(callMethod(nextFn, iterObj));
+            if (!result.get().isObject()) {
+                rtThrowTypeError("the iterator result is not an object");
+            }
+            finished = bronze_truthy(namedProp(result.get(), keyDone()).rawBits());
+            if (!finished) produced.set(namedProp(result.get(), keyValue()));
+        },
+        thrown);
+    rec = recRoot.get().asObject<IterRecordHeader>();
+    if (threw) {
+        rec->done = Value::fromBool(true);
+        rtThrow(thrown);
     }
-    if (!result.get().isObject()) {
-        rtThrowTypeError("the iterator result is not an object");
-        recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
-        return false;
-    }
-    const bool finished = bronze_truthy(namedProp(result.get(), keyDone()).rawBits());
-    if (finished || rtExceptionPending()) {
-        rec = recRoot.get().asObject<IterRecordHeader>();
+    if (finished) {
         rec->done = Value::fromBool(true);
         rec->current = Value::fromUndefined();
         return false;
     }
-    Rooted<Value> produced{namedProp(result.get(), keyValue())};
-    if (rtExceptionPending()) {
-        recRoot.get().asObject<IterRecordHeader>()->done = Value::fromBool(true);
-        return false;
-    }
-    recRoot.get().asObject<IterRecordHeader>()->current = produced.get();
+    rec->current = produced.get();
     return true;
 }
 
@@ -536,29 +528,24 @@ void bronze_iter_close(uint64_t recBits, bool suppress) {
     if (rec->kindOf() < IterRecordHeader::Protocol || rec->done.asBool()) return;
     rec->done = Value::fromBool(true);
 
-    const bool inFlight = rtExceptionPending();
-    Rooted<Value> inFlightValue{inFlight ? Value(rtTls()->exception_cell)
-                                         : Value::fromUndefined()};
-    if (inFlight) rtClearException();
-
     Rooted<Value> iterObj{rec->target};
-    Rooted<Value> ret{namedProp(iterObj.get(), keyReturn())};
-    Rooted<Value> result{Value::fromUndefined()};
-    if (isCallable(ret.get())) {
-        result.set(callMethod(ret, iterObj));
-    } else if (!inFlight) {
-        return;
-    }
-    if (inFlight) {
-        rtClearException();
-        rtThrow(inFlightValue.get());
-        return;
-    }
+    // 7.4.9 with a throw completion: the caller holds the original throw and
+    // re-raises it, so whatever `return` does — its lookup, its call, its
+    // result — is discarded.
     if (suppress) {
-        if (rtExceptionPending()) rtClearException();
+        Value ignored;
+        rtTryCatch(
+            [&] {
+                Rooted<Value> ret{namedProp(iterObj.get(), keyReturn())};
+                if (isCallable(ret.get())) callMethod(ret, iterObj);
+            },
+            ignored);
         return;
     }
-    if (!rtExceptionPending() && !result.get().isObject()) {
+    Rooted<Value> ret{namedProp(iterObj.get(), keyReturn())};
+    if (!isCallable(ret.get())) return;
+    Rooted<Value> result{callMethod(ret, iterObj)};
+    if (!result.get().isObject()) {
         rtThrowTypeError("iterator return() result is not an object");
     }
 }
@@ -571,7 +558,6 @@ uint64_t bronze_iter_rest(uint64_t recBits) {
         Rooted<Value> elem{Value(bronze_iter_value(recRoot.get().rawBits()))};
         const uint32_t at = out.get().asObject<ArrayHeader>()->length;
         out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at, elem);
-        if (rtExceptionPending()) break;
     }
     return out.get().rawBits();
 }
@@ -620,16 +606,13 @@ Value asyncIteratorMethodOf(Value v) {
 Value rtOpenAsyncIterator(Value source) {
     Rooted<Value> srcRoot{source};
     Rooted<Value> asyncMethod{asyncIteratorMethodOf(srcRoot.get())};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (isCallable(asyncMethod.get())) {
         Rooted<Value> iter{callMethod(asyncMethod, srcRoot)};
-        if (rtExceptionPending()) return Value::fromUndefined();
         if (!iter.get().isObject()) {
             rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
             return Value::fromUndefined();
         }
         Rooted<Value> next{namedProp(iter.get(), keyNext())};
-        if (rtExceptionPending()) return Value::fromUndefined();
         if (!isCallable(next.get())) {
             rtThrowTypeError("the async iterator has no `next` method");
             return Value::fromUndefined();

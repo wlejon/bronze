@@ -176,7 +176,6 @@ bool rtModuleNamespaceOwnProperty(Value nsVal, Value keyVal, Value& outValue) {
     if (keyVal.isSymbol()) return false;
     Rooted<Value> self{nsVal};
     Rooted<Value> key{rtValueToString(keyVal)};
-    if (rtExceptionPending()) return false;
     ModuleNamespaceHeader* ns = asNamespace(self.get());
     if (ns->indexOf(key.get().asString<StringHeader>()) < 0) return false;
     // Step 4 reads the value through [[Get]], which is what makes the

@@ -81,9 +81,8 @@ struct IterRecordHeader {
 
 namespace bronze::runtime {
 
-// GetIterator (ECMA-262 7.4.2), as a record. Raises the TypeError 7.4.2 step
-// 4 defines for a value with no @@iterator method, so the caller must test
-// the pending cell.
+// GetIterator (ECMA-262 7.4.2), as a record. Throws the TypeError 7.4.2 step
+// 4 defines for a value with no @@iterator method.
 Value rtOpenIterator(Value source);
 
 // 7.4.3 GetIteratorFromMethod, for a caller that has already fetched the

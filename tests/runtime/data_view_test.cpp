@@ -42,11 +42,30 @@ using namespace bronze::runtime;
 
 namespace {
 
-// Leaves the pending-exception cell clean whatever a CHECK did, so one failing
-// expectation cannot make every later test in the binary look like it threw.
+// The `Name: message` of the last throw the two call helpers below caught, or
+// "" when the last call returned. Text rather than the value, so nothing has
+// to keep it rooted.
+std::string g_thrownText;
+
+// Forgets a caught throw whatever a CHECK did, so one failing expectation
+// cannot make every later test in the binary look like it threw.
 struct ClearCell {
-    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
+    ~ClearCell() { g_thrownText.clear(); }
 };
+
+// Runs a call the way a program's `try` would: a throw out of it is recorded
+// in g_thrownText and the call answers undefined.
+template <typename Body>
+Value catching(Body&& body) {
+    g_thrownText.clear();
+    Value result = Value::fromUndefined();
+    Value thrown;
+    if (rtTryCatch([&] { result = body(); }, thrown)) {
+        g_thrownText = "?";
+        rtErrorText(thrown, g_thrownText);
+    }
+    return result;
+}
 
 Value newBuffer(uint32_t byteLength) { return rtNewArrayBuffer(byteLength); }
 
@@ -95,8 +114,9 @@ Value newDataView(std::vector<Value> args) {
     RootedBlock block(static_cast<uint32_t>(args.size()));
     fillBlock(block, args);
     Rooted<Value> ctor{rtDataViewConstructor("DataView")};
-    return Value(
-        bronze_construct(ctor.get().rawBits(), static_cast<uint32_t>(args.size()), block.data()));
+    return catching([&] {
+        return Value(bronze_construct(ctor.get().rawBits(), static_cast<uint32_t>(args.size()), block.data()));
+    });
 }
 
 // `view.name(...)`, reached by the property path rather than by a C++ pointer,
@@ -107,19 +127,19 @@ Value callAccessor(Rooted<Value>& view, const char* name, std::vector<Value> arg
     Rooted<Value> fn{readMember(view.get(), name)};
     REQUIRE(fn.get().isObject());
     refreshThroughRoots(args, block);
-    return fn.get().asObject<FunctionHeader>()->call(view.get(), static_cast<uint32_t>(args.size()),
-                                                     args.data());
+    return catching([&] {
+        return fn.get().asObject<FunctionHeader>()->call(view.get(), static_cast<uint32_t>(args.size()),
+                                                         args.data());
+    });
 }
 
 Value num(double d) { return Value::fromDouble(d); }
 
-// The `Name: message` of whatever is pending, or "" when nothing is.
+// The `Name: message` of the last call's throw, or "" when it returned; taken,
+// so the next question starts clean.
 std::string pendingText() {
-    if (!rtExceptionPending()) return "";
-    std::string out;
-    Value thrown(bronze_tls_block_addr()->exception_cell);
-    rtErrorText(thrown, out);
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    std::string out = std::move(g_thrownText);
+    g_thrownText.clear();
     return out;
 }
 
@@ -276,7 +296,7 @@ TEST_CASE("the constructor's ladder: TypeError for the kind, RangeError for the 
         newDataView({ta.get()});
         CHECK(pendingClass() == "TypeError");
         Rooted<Value> ok{newDataView({ta.get().asObject<TypedArrayHeader>()->buffer})};
-        CHECK_FALSE(rtExceptionPending());
+        CHECK(pendingText().empty());
         CHECK(ok.get().asObject<DataViewHeader>()->byteLength == 8);
     }
 
@@ -296,15 +316,15 @@ TEST_CASE("the constructor's ladder: TypeError for the kind, RangeError for the 
     // negative offset at all.
     {
         Rooted<Value> a{newDataView({buf.get(), num(1.9)})};
-        CHECK_FALSE(rtExceptionPending());
+        CHECK(pendingText().empty());
         CHECK(a.get().asObject<DataViewHeader>()->byteOffset == 1);
         CHECK(a.get().asObject<DataViewHeader>()->byteLength == 7);
         Rooted<Value> b{newDataView({buf.get(), num(-0.0)})};
-        CHECK_FALSE(rtExceptionPending());
+        CHECK(pendingText().empty());
         CHECK(b.get().asObject<DataViewHeader>()->byteOffset == 0);
         // An offset AT the end is legal and makes an empty window.
         Rooted<Value> c{newDataView({buf.get(), num(8)})};
-        CHECK_FALSE(rtExceptionPending());
+        CHECK(pendingText().empty());
         CHECK(c.get().asObject<DataViewHeader>()->byteLength == 0);
     }
 }
@@ -319,7 +339,7 @@ TEST_CASE("an access past the window is a RangeError, and a wrong receiver a Typ
     // The bound is the WINDOW's byteLength and not the buffer's, and it depends
     // on the width the accessor names.
     CHECK(callAccessor(view, "getUint16", {num(0)}).asNumber() == 0);
-    CHECK_FALSE(rtExceptionPending());
+    CHECK(pendingText().empty());
     callAccessor(view, "getUint16", {num(1)});
     CHECK(pendingClass() == "RangeError");
     callAccessor(view, "getUint32", {num(0)});
@@ -333,9 +353,11 @@ TEST_CASE("an access past the window is a RangeError, and a wrong receiver a Typ
     {
         Rooted<Value> fn{readMember(view.get(), "getUint8")};
         Value args[1] = {num(0)};
-        fn.get().asObject<FunctionHeader>()->call(buf.get(), 1, args);
+        catching([&] { return fn.get().asObject<FunctionHeader>()->call(buf.get(), 1, args); });
         CHECK(pendingClass() == "TypeError");
-        fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 1, args);
+        catching([&] {
+            return fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 1, args);
+        });
         CHECK(pendingClass() == "TypeError");
     }
 }
@@ -411,8 +433,7 @@ TEST_CASE("the 64-bit accessors round-trip a value no double holds") {
     // Step 4 is ToBigInt, and 7.1.13 has no Number row: there is no implicit
     // widening of 1 to 1n, and the refusal is a catchable TypeError.
     callAccessor(view, "setBigInt64", {num(0), num(1)});
-    CHECK(rtExceptionPending());
-    rtClearException();
+    CHECK(pendingClass() == "TypeError");
 }
 
 TEST_CASE("the twenty accessors are twenty function objects on one prototype") {

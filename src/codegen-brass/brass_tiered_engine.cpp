@@ -10,6 +10,7 @@
 
 #include <brass/runtime/multi_tier_pipeline.hpp>
 #include <brass/runtime/code_installer.hpp>
+#include <brass/runtime/exception.hpp>
 #include <brass/runtime/osr_coordinator.hpp>
 #include <brass/runtime/tiering.hpp>
 #include <brass/mir/pass_pipeline.hpp>
@@ -129,8 +130,24 @@ brass::RuntimeValue BrassTieredProgram::run() {
     return invoke(entrySymbol_, {});
 }
 
+// A throw leaving the program continues as the one exception the runtime
+// knows (runtime/exception.h): a C++ BrassException carrying the value's bits.
+// An interpreted frame's uncaught throw arrives as brass's interpreter
+// exception and is raised again as that, past the catch block for the reason
+// exception.h gives.
 brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
                                               const std::vector<brass::RuntimeValue>& args) {
+    uint64_t thrown = 0;
+    try {
+        return invokeUntranslated(fnName, args);
+    } catch (const brass::InterpreterThrownException& e) {
+        thrown = e.value().raw_bits();
+    }
+    throw brass::runtime::BrassException(brass::HostValue::from_raw(thrown));
+}
+
+brass::RuntimeValue BrassTieredProgram::invokeUntranslated(std::string_view fnName,
+                                                          const std::vector<brass::RuntimeValue>& args) {
     // Native code opens no scope of its own; this makes brass's runtime name
     // lookups resolve in this program rather than the default one.
     brass::runtime::ProgramScope scope(*dispatchTable_);
@@ -144,7 +161,11 @@ brass::RuntimeValue BrassTieredProgram::invoke(std::string_view fnName,
         if (!jitProgram_) return brass::RuntimeValue::from_u64(0);
         if (fnName == entrySymbol_) {
             auto* entry = reinterpret_cast<uint64_t (*)()>(jitProgram_->entryPoint());
-            return brass::RuntimeValue::from_u64(entry ? entry() : 0);
+            if (!entry) return brass::RuntimeValue::from_u64(0);
+            // A native raise out of the entry leaves here as a C++ exception
+            // (brass native_frames.hpp).
+            brass::GeneratedCodeEntryScope entryScope;
+            return brass::RuntimeValue::from_u64(entry());
         }
         return jitProgram_->engine()->invoke(fnName, args);
     }
@@ -188,7 +209,6 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // Tier 2 optimizes the whole program before it runs. The pipeline tiers
     // translate it as it stands and optimize a function when it tiers up.
     backend.setOptimize(tier == ExecutionTier::Tier2_Optimized);
-    backend.setPropagateExceptionsInEntry(config_.propagateExceptionsInEntry);
     backend.setEmitDebugInfo(config_.emitDebugInfo);
 
     std::unique_ptr<BrassTieredProgram> prog(new BrassTieredProgram(tier, entrySymbol));

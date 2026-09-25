@@ -121,12 +121,47 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
             "line and now ends early.")
     endif()
 
+    # The brass runtime symbols compiled modules name outside the registry:
+    # the raise entry points on every platform, and the personality routine
+    # each platform's unwind information names (the runtime defines only its
+    # own).
+    bronze_abi_cut_block("${_after_fns}" "#define BRONZE_ABI_BRASS_SYMBOLS(Y)" _brass_text _unused)
+    string(REGEX MATCHALL "Y[(][A-Za-z_][A-Za-z0-9_]*[)]" _brass_entries "${_brass_text}")
+    set(_brass "")
+    foreach(_entry IN LISTS _brass_entries)
+        string(REGEX MATCH "Y[(]([A-Za-z_][A-Za-z0-9_]*)" _matched "${_entry}")
+        list(APPEND _brass "${CMAKE_MATCH_1}")
+    endforeach()
+    if(_brass STREQUAL "")
+        message(FATAL_ERROR
+            "bronze_abi_export_files: found no Y(...) lines in BRONZE_ABI_BRASS_SYMBOLS in "
+            "${header}.")
+    endif()
+    foreach(_flavor WINDOWS SYSV)
+        string(REGEX MATCH "#define BRONZE_ABI_PERSONALITY_${_flavor}[ \t]+([A-Za-z_][A-Za-z0-9_]*)"
+               _matched "${_after_fns}")
+        if(NOT _matched)
+            message(FATAL_ERROR
+                "bronze_abi_export_files: BRONZE_ABI_PERSONALITY_${_flavor} is not defined in "
+                "${header}. Compiled modules with landing pads name that routine, so the "
+                "runtime must export it.")
+        endif()
+        set(_personality_${_flavor} "${CMAKE_MATCH_1}")
+    endforeach()
+
     # ---- Windows: the module-definition file -------------------------------
     set(_def_text "; Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _def_text "; DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _def_text "EXPORTS\n")
     foreach(_name IN LISTS _fns)
         string(APPEND _def_text "    ${_name}\n")
+    endforeach()
+    # brass's own names are exported PRIVATE: in the DLL's export table, where
+    # a linked module's import binds them, and out of the import library. A
+    # host that links brass statically (a compiler in-process) carries its own
+    # definitions of them, and an import-library copy would be a second one.
+    foreach(_name IN LISTS _brass _personality_WINDOWS)
+        string(APPEND _def_text "    ${_name} PRIVATE\n")
     endforeach()
 
     # ---- ELF: the version script -------------------------------------------
@@ -144,6 +179,9 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     foreach(_name IN LISTS _fns)
         string(APPEND _ver_text "    ${_name};\n")
     endforeach()
+    foreach(_name IN LISTS _brass _personality_SYSV)
+        string(APPEND _ver_text "    ${_name};\n")
+    endforeach()
     string(APPEND _ver_text "    _ZN6bronze5embed*;\n")
     string(APPEND _ver_text "    _ZNK6bronze5embed*;\n")
     string(APPEND _ver_text "    _ZN6bronze4eval*;\n")
@@ -158,6 +196,9 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set(_exp_text "# Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _exp_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
     foreach(_name IN LISTS _fns)
+        string(APPEND _exp_text "_${_name}\n")
+    endforeach()
+    foreach(_name IN LISTS _brass _personality_SYSV)
         string(APPEND _exp_text "_${_name}\n")
     endforeach()
     string(APPEND _exp_text "__ZN6bronze5embed*\n")

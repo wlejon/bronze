@@ -81,7 +81,6 @@ uint64_t bigIntConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64_t
     // converts through it — and that call can collect, which is why the
     // primitive is taken through a root before anything below reads it.
     Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     BigNum value;
     if (prim.get().isNumber() || prim.get().isInt32()) {
@@ -114,7 +113,6 @@ uint64_t bigIntConstructorBody(uint64_t, uint64_t, uint32_t argc, const uint64_t
 bool rtToBigInt(Value v, BigNum& out) {
     Rooted<Value> input{v};
     Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
-    if (rtExceptionPending()) return false;
     if (prim.get().isNumber() || prim.get().isInt32()) {
         // 7.1.13's Number row is a TypeError with no conversion at all. That is
         // what makes `view.setBigInt64(0, 1)` and `BigInt.asIntN(8, 255)` throw
@@ -131,7 +129,6 @@ namespace {
 // for a negative or fractional count rather than a truncation.
 bool toBits(Value v, uint64_t& out) {
     const double n = rtToNumber(v);
-    if (rtExceptionPending()) return false;
     const double integer = std::isnan(n) ? 0.0 : std::trunc(n);
     if (integer < 0.0 || integer > 9007199254740991.0) {
         rtThrowRangeError("Invalid value: not a valid number of bits");
@@ -188,7 +185,6 @@ uint64_t bigIntProtoToString(uint64_t, uint64_t thisBits, uint32_t argc, const u
     int radix = 10;
     if (!args[0].isUndefined()) {
         const double r = rtToNumber(args[0]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!(r >= 2.0 && r <= 36.0)) {
             return rtThrowRangeError("toString() radix must be between 2 and 36").rawBits();
         }

@@ -97,10 +97,15 @@ void runResolutionSteps(Rooted<Value>& promise, Rooted<Value>& value) {
     // becomes the rejection. Through the generic path, because the value may
     // be any receiver kind — an array's `then` is a real question.
     Rooted<Value> thenKey{rtMakeString("then")};
-    Rooted<Value> thenFn{Value(bronze_elem_get(value.get().rawBits(), thenKey.get().rawBits()))};
-    if (rtExceptionPending()) {
-        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
-        rtClearException();
+    Rooted<Value> thenFn{Value::fromUndefined()};
+    Value caught;
+    if (rtTryCatch(
+            [&] {
+                thenFn.set(
+                    Value(bronze_elem_get(value.get().rawBits(), thenKey.get().rawBits())));
+            },
+            caught)) {
+        Rooted<Value> thrown{caught};
         settleInternal(promise, thrown, /*reject=*/true);
         return;
     }
@@ -334,18 +339,18 @@ void rtRunReactionJob(Rooted<Value>& handler, Rooted<Value>& capability,
     Rooted<Value> result{argument.get()};
     bool resultRejected = rejected;
     if (isCallable(handler.get())) {
-        uint64_t argBits[1] = {argument.get().rawBits()};
-        result.set(Value(bronze_dynamic_call(handler.get().rawBits(),
-                                             Value::fromUndefined().rawBits(), 1, argBits)));
-        if (rtExceptionPending()) {
-            // The handler's throw is the capability's rejection (step 1.e-g),
-            // never an escape from the drain.
-            result.set(Value(bronze_tls_block_addr()->exception_cell));
-            rtClearException();
-            resultRejected = true;
-        } else {
-            resultRejected = false;
-        }
+        // The handler's throw is the capability's rejection (step 1.e-g),
+        // never an escape from the drain.
+        Value caught;
+        resultRejected = rtTryCatch(
+            [&] {
+                uint64_t argBits[1] = {argument.get().rawBits()};
+                result.set(Value(bronze_dynamic_call(handler.get().rawBits(),
+                                                     Value::fromUndefined().rawBits(), 1,
+                                                     argBits)));
+            },
+            caught);
+        if (resultRejected) result.set(caught);
     }
     // No capability means the handler was the whole reaction — the async
     // driver's subscriptions, which settle the machine's own promise from
@@ -417,7 +422,6 @@ Value rtNewPromiseCapability(Rooted<Value>& ctor) {
     Rooted<Value> executorArg{executor.get()};
     Rooted<Value> built{Value(bronze_construct(
         ctor.get().rawBits(), 1, reinterpret_cast<const uint64_t*>(executorArg.slot_ptr())))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     // Steps 3-4: a constructor that did not hand the executor two callable
     // functions has produced no capability, and the language names the
     // TypeError. bronze adds one condition of its own: the object must be a
@@ -453,13 +457,11 @@ Value rtPromiseResolveWith(Rooted<Value>& ctor, Rooted<Value>& x) {
     if (rtIsPromiseObject(x.get())) {
         Rooted<Value> ctorKey{rtMakeString("constructor")};
         Rooted<Value> xCtor{Value(bronze_elem_get(x.get().rawBits(), ctorKey.get().rawBits()))};
-        if (rtExceptionPending()) return Value::fromUndefined();
         if (xCtor.get().isObject() && xCtor.get().rawBits() == ctor.get().rawBits()) {
             return x.get();
         }
     }
     Rooted<Value> cap{rtNewPromiseCapability(ctor)};
-    if (rtExceptionPending()) return Value::fromUndefined();
     rtSettleCapability(cap, x, /*reject=*/false);
     return rtCapabilityPromise(cap.get());
 }
@@ -475,7 +477,6 @@ Value rtPromiseSpeciesConstructor(Rooted<Value>& promise) {
     Rooted<Value> ctorKey{rtMakeString("constructor")};
     Rooted<Value> ctor{
         Value(bronze_elem_get(promise.get().rawBits(), ctorKey.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     // Step 3: an absent constructor is the intrinsic.
     if (ctor.get().isUndefined() || ctor.get().isNull()) return Value::fromUndefined();
     if (!ctor.get().isObject()) {
@@ -485,7 +486,6 @@ Value rtPromiseSpeciesConstructor(Rooted<Value>& promise) {
     Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
     Rooted<Value> species{
         Value(bronze_elem_get(ctor.get().rawBits(), speciesKey.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (species.get().isUndefined() || species.get().isNull()) return Value::fromUndefined();
     if (rtIsPromiseConstructor(species.get())) return Value::fromUndefined();
     if (!isCallable(species.get())) {
@@ -538,11 +538,15 @@ void rtRunThenableJob(Rooted<Value>& promise, Rooted<Value>& thenable, Rooted<Va
     Rooted<Value> resolveFn{rtMakeNativeClosure(pairResolve, pair, 1)};
     Rooted<Value> rejectFn{rtMakeNativeClosure(pairReject, pair, 1)};
 
-    uint64_t argBits[2] = {resolveFn.get().rawBits(), rejectFn.get().rawBits()};
-    bronze_dynamic_call(thenFn.get().rawBits(), thenable.get().rawBits(), 2, argBits);
-    if (rtExceptionPending()) {
-        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
-        rtClearException();
+    Value caught;
+    if (rtTryCatch(
+            [&] {
+                uint64_t argBits[2] = {resolveFn.get().rawBits(), rejectFn.get().rawBits()};
+                bronze_dynamic_call(thenFn.get().rawBits(), thenable.get().rawBits(), 2,
+                                    argBits);
+            },
+            caught)) {
+        Rooted<Value> thrown{caught};
         if (takePairLatch(pair.get())) {
             settleInternal(promise, thrown, /*reject=*/true);
         }

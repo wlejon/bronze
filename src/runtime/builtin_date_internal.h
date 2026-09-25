@@ -41,11 +41,10 @@ bool rtIsDateObject(Value v);
 // A fresh Date object holding `t`. ALLOCATES.
 Value rtMakeDateObject(double t);
 
-// 21.4.4.1 thisTimeValue with its TypeError already raised on failure: false
-// means a receiver without [[DateValue]], and the caller returns `undefined`
-// into its slot while the exception cell carries the error. `method` names the
-// member in the message, because "called on an incompatible receiver" without
-// one sends a reader nowhere.
+// 21.4.4.1 thisTimeValue: a receiver without [[DateValue]] is the TypeError
+// it throws, and it answers true otherwise. `method` names the member in the
+// message, because "called on an incompatible receiver" without one sends a
+// reader nowhere.
 bool rtDateThisTimeValue(Value self, const char* method, double& out);
 
 // Write [[DateValue]]. The receiver must already have passed the brand check.

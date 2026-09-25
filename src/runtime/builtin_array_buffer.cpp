@@ -92,7 +92,6 @@ uint64_t arrayBufferCtor(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
         Rooted<Value> mblKey{rtMakeString("maxByteLength")};
         Rooted<Value> mblVal{
             Value(bronze_elem_get(opts.get().rawBits(), mblKey.get().rawBits()))};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!mblVal.get().isUndefined()) {
             uint32_t maxByteLength = 0;
             if (!toIndex(mblVal.get(), "maxByteLength", 1, maxByteLength)) {
@@ -255,7 +254,6 @@ Value bufferSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
 
     Rooted<Value> ctorKey{rtMakeString("constructor")};
     Rooted<Value> ctor{Value(bronze_elem_get(self.get().rawBits(), ctorKey.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (ctor.get().isUndefined()) ctor.set(g_buffer.ctor);
     if (!ctor.get().isObject()) {
         return rtThrowTypeError("the constructor of this ArrayBuffer is not an object");
@@ -263,7 +261,6 @@ Value bufferSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
     Rooted<Value> speciesKey{Value::fromSymbol(rtSymbolSpecies())};
     Rooted<Value> species{
         Value(bronze_elem_get(ctor.get().rawBits(), speciesKey.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (species.get().isUndefined() || species.get().isNull()) species.set(g_buffer.ctor);
     if (!rtIsConstructorValue(species.get())) {
         return rtThrowTypeError("[Symbol.species] of this ArrayBuffer is not a constructor");
@@ -271,7 +268,6 @@ Value bufferSpeciesNew(Rooted<Value>& self, uint32_t newLen) {
     RootedBlock block(1);
     block.set(0, Value::fromDouble(static_cast<double>(newLen)));
     Rooted<Value> made{Value(bronze_construct(species.get().rawBits(), 1, block.data()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (!isPlainBuffer(made.get())) {
         return rtThrowTypeError("the species constructor did not return an ArrayBuffer");
     }
@@ -310,7 +306,6 @@ uint64_t arrayBufferSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     }
     const uint32_t newLen = final > first ? final - first : 0;
     Rooted<Value> newBufVal{bufferSpeciesNew(self, newLen)};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     auto* oldBuf = self.get().asObject<ArrayBufferHeader>();
     auto* newBuf = newBufVal.get().asObject<ArrayBufferHeader>();
     // Step 23 measures the source AGAIN: a species constructor can shrink it.

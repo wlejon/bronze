@@ -410,8 +410,8 @@ std::optional<Lowerer::Value> Lowerer::emitNativeInvoke(const NativeSig& sig, co
 
     // 3. The pointers, immediately before the call: the receiver's data, then
     // each handle's data and each typed array's (bytes, length), in order.
-    // Each helper raises a TypeError and answers null for a wrong value; the
-    // exception check after it takes the unwind path before the native runs.
+    // Each helper throws a TypeError for a wrong value, which unwinds out
+    // before the native runs.
     std::vector<il::ValueId> operands;
     const uint32_t handleDataIdx = registerExternalFunction(
         "bronze_native_handle_data", il::Type::Dynamic, {il::Type::Dynamic, il::Type::Dynamic});

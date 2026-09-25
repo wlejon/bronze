@@ -18,6 +18,7 @@
 #endif
 #include <windows.h>
 #else
+#include <brass/gc/native_unwind.hpp>
 #include <pthread.h>
 #include <unwind.h>
 #if defined(__APPLE__)
@@ -401,32 +402,28 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
             break;
         }
     }
-#elif !defined(_WIN32)
-    // The frame-pointer chain. Compiled code keeps rbp/x29 in every non-leaf
-    // prologue, the enter_js trampoline keeps it, and the runtime — the only
-    // C++ that sits between two compiled frames — is built with
-    // -fno-omit-frame-pointer (src/runtime/CMakeLists.txt), so each link's
-    // saved return address is the pc to attribute. The pc is the address
-    // after the call, so the byte before it is what the lookups see: a call
-    // that ends a function (a throw, say) returns to the next function's
-    // first byte.
+#elif defined(BRASS_NATIVE_UNWIND)
+    // Every frame stepped by its unwind information (brass's
+    // brass_unwind_step): the CFI generated code registers as it is loaded,
+    // and each image's own, so neither the runtime nor a host needs a
+    // frame-pointer chain. Each frame's pc is the address after its call, so
+    // the byte before it is what the lookups see: a call that ends a function
+    // (a throw, say) returns to the next function's first byte.
     //
     // A builtin is named by the start of the function holding the pc, which
     // the unwinder's FDE lookup answers the way RtlLookupFunctionEntry does
     // above. dladdr cannot: it knows dynamic symbols only, and the shared
     // runtime exports the ABI and nothing else, so it would name the nearest
     // export before the pc rather than the builtin itself.
-    void* cur_rbp = __builtin_frame_address(0);
-    while (valid_ptr(cur_rbp, 16) && !done()) {
-        uintptr_t* fp = static_cast<uintptr_t*>(cur_rbp);
-        uintptr_t caller_rbp = fp[0];
-        uintptr_t caller_rip = fp[1];
-        if (caller_rip == 0) break;
-        void* call_pc = reinterpret_cast<void*>(caller_rip - 1);
+    brass::NativeUnwindFrame cur;
+    bool have = brass::brass_capture_frame(cur, 0);
+    while (have && !done()) {
+        if (!valid_ptr(reinterpret_cast<const void*>(cur.sp), 8)) break;
+        void* call_pc = reinterpret_cast<void*>(cur.ip - 1);
 
-        // The caller's locals lie above the saved frame pointer and return
-        // address; everything below them is more recent than the caller.
-        flushInterpreted(reinterpret_cast<uintptr_t>(cur_rbp) + 16);
+        // This frame's own locals lie at or above its stack pointer;
+        // everything below it is more recent than the frame.
+        flushInterpreted(cur.sp);
         if (done()) break;
 
         if (CodeSite site; find_code_site(call_pc, site)) {
@@ -438,11 +435,7 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
                 frames.push_back({nullptr, 0, 0, nullptr, builtinName});
             }
         }
-
-        if (caller_rbp <= reinterpret_cast<uintptr_t>(cur_rbp) || caller_rbp >= stack_high) {
-            break;
-        }
-        cur_rbp = reinterpret_cast<void*>(caller_rbp);
+        have = brass::brass_unwind_step(cur);
     }
 #endif
     // Interpreted frames older than every native frame the walk reached.

@@ -19,7 +19,7 @@
 //    two entries — and, under BRONZE_GC_STRESS, at every allocation inside them
 //    — is what makes those spans load-bearing rather than decorative.
 //
-//  * One exception cell. B throws; the `try` compiled into A catches.
+//  * One unwind across objects. B throws; the `try` compiled into A catches.
 //
 // Deliberately NOT `embed::runMain()`: that names `bronze_main`, and a host
 // with two modules has no function by that name. It open-codes the same

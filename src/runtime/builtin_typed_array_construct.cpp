@@ -161,7 +161,6 @@ bool fillFromArrayLike(Rooted<Value>& view, ElementKind kind, Rooted<Value>& sou
             // BigInt view's source array is the TypeError 7.1.13 names rather
             // than a truncation.
             rtTypedArraySetElement(view, i, elem.get());
-            if (rtExceptionPending()) return false;
         }
         return true;
     }
@@ -174,31 +173,22 @@ bool fillFromArrayLike(Rooted<Value>& view, ElementKind kind, Rooted<Value>& sou
     // all is a length-0 one rather than an error.
     if (!rtHasIteratorMethod(source)) {
         const uint32_t length = rtArrayLikeLength(source);
-        if (rtExceptionPending()) return false;
         if (!fillFromLength(view, kind, length)) return false;
         for (uint32_t i = 0; i < length; ++i) {
             // Both the element read and the ToNumber under it can run user
             // code, so the view is reached through its root each time rather
             // than through a pointer taken before the loop.
             Rooted<Value> elem{rtArrayLikeElement(source, i)};
-            if (rtExceptionPending()) return false;
             rtTypedArraySetElement(view, i, elem.get());
-            if (rtExceptionPending()) return false;
         }
         return true;
     }
 
     Rooted<Value> collected{Value(bronze_create_array(0))};
     Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
-    if (rtExceptionPending()) return false;
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
         bronze_array_append(collected.get().rawBits(), item.get().rawBits());
-        if (rtExceptionPending()) break;
-    }
-    if (rtExceptionPending()) {
-        bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
-        return false;
     }
     return fillFromArrayLike(view, kind, collected);
 }
@@ -269,7 +259,6 @@ Value rtTypedArrayCreateFromConstructor(Rooted<Value>& ctor, uint32_t length) {
     RootedBlock block(1);
     block.set(0, Value::fromDouble(static_cast<double>(length)));
     Rooted<Value> made{Value(bronze_construct(ctor.get().rawBits(), 1, block.data()))};
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (!requireTypedArray(made.get(), "[[Construct]]")) return Value::fromUndefined();
     if (lengthOf(made.get()) < length) {
         return rtThrowTypeError("the constructed typed array is too short (" +
@@ -300,15 +289,12 @@ uint64_t rtTypedArrayFromBody(uint64_t, uint64_t thisBits, uint32_t argc, const 
     if (isTypedArray(source.get())) {
         const uint32_t len = lengthOf(source.get());
         Rooted<Value> out{rtTypedArrayCreateFromConstructor(ctor, len)};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         for (uint32_t i = 0; i < len; ++i) {
             Rooted<Value> val{rtTypedArrayElement(source.get(), i)};
             if (hasMap) {
                 val.set(callBack(mapFn, thisArg, val, i, source));
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             }
             rtTypedArraySetElement(out, i, val.get());
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         return out.get().rawBits();
     }
@@ -316,15 +302,12 @@ uint64_t rtTypedArrayFromBody(uint64_t, uint64_t thisBits, uint32_t argc, const 
     if (isArray(source.get())) {
         const uint32_t len = source.get().asObject<ArrayHeader>()->length;
         Rooted<Value> out{rtTypedArrayCreateFromConstructor(ctor, len)};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         for (uint32_t i = 0; i < len; ++i) {
             Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
             if (hasMap) {
                 elem.set(callBack(mapFn, thisArg, elem, i, source));
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             }
             rtTypedArraySetElement(out, i, elem.get());
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         return out.get().rawBits();
     }
@@ -334,35 +317,23 @@ uint64_t rtTypedArrayFromBody(uint64_t, uint64_t thisBits, uint32_t argc, const 
     // `Uint8Array.from({ length: 2 }, fn)` is a two-element view, never an
     // "is not iterable" TypeError.
     if (!rtHasIteratorMethod(source)) {
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         const uint32_t len = rtArrayLikeLength(source);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> out{rtTypedArrayCreateFromConstructor(ctor, len)};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         for (uint32_t i = 0; i < len; ++i) {
             Rooted<Value> elem{rtArrayLikeElement(source, i)};
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             if (hasMap) {
                 elem.set(callBack(mapFn, thisArg, elem, i, source));
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             }
             rtTypedArraySetElement(out, i, elem.get());
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         return out.get().rawBits();
     }
 
     Rooted<Value> collected{Value(bronze_create_array(0))};
     Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
         bronze_array_append(collected.get().rawBits(), item.get().rawBits());
-        if (rtExceptionPending()) break;
-    }
-    if (rtExceptionPending()) {
-        bronze_iter_close(rec.get().rawBits(), true);
-        return Value::fromUndefined().rawBits();
     }
     const uint64_t block[3] = {collected.get().rawBits(), mapFn.get().rawBits(),
                                thisArg.get().rawBits()};
@@ -378,10 +349,8 @@ uint64_t rtTypedArrayOfBody(uint64_t, uint64_t thisBits, uint32_t argc, const ui
             .rawBits();
     }
     Rooted<Value> out{rtTypedArrayCreateFromConstructor(ctor, args.count())};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < args.count(); ++i) {
         rtTypedArraySetElement(out, i, args[i]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return out.get().rawBits();
 }

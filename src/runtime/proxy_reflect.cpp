@@ -8,8 +8,8 @@
 //
 // The two rules of proxy.cpp hold here unchanged: a trap is found with
 // GetMethod, and every operation is a GC point and a throw point, so every
-// value a step still needs is rooted before the call and every step tests the
-// pending cell before it uses a result.
+// value a step still needs is rooted before the call, and a throw leaves the
+// step before anything uses its result.
 //
 // The forwards go through the `Object` members — `getOwnPropertyDescriptor`,
 // `defineProperty`, `setPrototypeOf`, `preventExtensions` — rather than
@@ -53,7 +53,6 @@ namespace {
 Value trapOf(Rooted<Value>& handlerRoot, const char* name) {
     Rooted<Value> key{rtMakeString(name)};
     Value found = Value(bronze_elem_get(handlerRoot.get().rawBits(), key.get().rawBits()));
-    if (rtExceptionPending()) return Value::fromUndefined();
     if (found.isUndefined() || found.isNull()) return Value::fromUndefined();
     if (!rtIsCallableValue(found)) {
         rtThrowTypeError(std::string("'") + name + "' trap on proxy is not a function");
@@ -80,7 +79,6 @@ bool isProxy(Value v) {
 std::string keyText(Rooted<Value>& key) {
     if (key.get().isSymbol()) return rtSymbolDescriptiveString(key.get());
     Rooted<Value> str{rtValueToString(key.get())};
-    if (rtExceptionPending()) return std::string("<key>");
     return rtUtf8Chars(str.get().asString<StringHeader>());
 }
 
@@ -148,7 +146,6 @@ bool rtProxyDefineOwnProperty(Value proxyVal, Value keyVal, Value descVal, bool 
     if (!openProxy(proxyVal, "defineProperty", targetRoot, handlerRoot)) return false;
 
     Value trap = trapOf(handlerRoot, "defineProperty");
-    if (rtExceptionPending()) return false;
     if (trap.isUndefined()) {
         // Step 7: the target's own [[DefineOwnProperty]], through the member
         // that decodes and applies it for every kind — the descriptor object
@@ -163,7 +160,6 @@ bool rtProxyDefineOwnProperty(Value proxyVal, Value keyVal, Value descVal, bool 
                               descRoot.get().rawBits()};
     const uint64_t result = bronze_dynamic_call(trapRoot.get().rawBits(),
                                                 handlerRoot.get().rawBits(), 3, args);
-    if (rtExceptionPending()) return false;
     // Step 10: a false from the trap is the refusal — 20.1.2.4's TypeError or
     // 28.1.3's `false`, which is the caller's choice and not this method's.
     if (!bronze_truthy(result)) {
@@ -193,7 +189,7 @@ bool rtProxyDefineOwnProperty(Value proxyVal, Value keyVal, Value descVal, bool 
     view.getter = &getter;
     view.setter = &setter;
     rtProxyCheckDefineProperty(targetRoot, keyRoot, view);
-    return !rtExceptionPending();
+    return true;
 }
 
 bool rtProxySetPrototypeOf(Value proxyVal, Value protoVal) {
@@ -204,7 +200,6 @@ bool rtProxySetPrototypeOf(Value proxyVal, Value protoVal) {
     if (!openProxy(proxyVal, "setPrototypeOf", targetRoot, handlerRoot)) return false;
 
     Value trap = trapOf(handlerRoot, "setPrototypeOf");
-    if (rtExceptionPending()) return false;
     if (trap.isUndefined()) {
         // Step 6: the target's own [[SetPrototypeOf]], answering the boolean
         // 10.1.2 answers — which the member turns into a TypeError only for
@@ -215,18 +210,15 @@ bool rtProxySetPrototypeOf(Value proxyVal, Value protoVal) {
     const uint64_t args[2] = {targetRoot.get().rawBits(), protoRoot.get().rawBits()};
     const bool answer = bronze_truthy(bronze_dynamic_call(trapRoot.get().rawBits(),
                                                           handlerRoot.get().rawBits(), 2, args));
-    if (rtExceptionPending()) return false;
     // Step 9: a refusal contradicts nothing.
     if (!answer) return false;
     // Steps 10-13: an extensible target's prototype can still change, so the
     // trap is free; a non-extensible one's is fixed, and the trap must have
     // told the truth about it.
     const bool extensible = rtIsExtensibleOf(targetRoot);
-    if (rtExceptionPending()) return false;
     if (extensible) return true;
     const uint64_t call[1] = {targetRoot.get().rawBits()};
     const Value actual = Value(objectGetPrototypeOf(0, 0, 1, call));
-    if (rtExceptionPending()) return false;
     if (!sameValue(protoRoot.get(), actual)) {
         rtThrowTypeError(
             "'setPrototypeOf' on proxy: trap returned truish for setting a new prototype on "
@@ -242,18 +234,15 @@ bool rtProxyIsExtensible(Value proxyVal) {
     if (!openProxy(proxyVal, "isExtensible", targetRoot, handlerRoot)) return false;
 
     Value trap = trapOf(handlerRoot, "isExtensible");
-    if (rtExceptionPending()) return false;
     if (trap.isUndefined()) return rtIsExtensibleOf(targetRoot);  // step 6
     Rooted<Value> trapRoot{trap};
     const uint64_t args[1] = {targetRoot.get().rawBits()};
     const bool answer = bronze_truthy(bronze_dynamic_call(trapRoot.get().rawBits(),
                                                           handlerRoot.get().rawBits(), 1, args));
-    if (rtExceptionPending()) return false;
     // Steps 8-9: the one trap whose answer must EQUAL the target's, in both
     // directions — extensibility is not something a proxy may lie about
     // either way.
     const bool actual = rtIsExtensibleOf(targetRoot);
-    if (rtExceptionPending()) return false;
     if (answer != actual) {
         rtThrowTypeError(std::string("'isExtensible' on proxy: trap result does not reflect "
                                      "extensibility of proxy target (which is '") +
@@ -270,7 +259,6 @@ bool rtProxyPreventExtensions(Value proxyVal) {
     if (!openProxy(proxyVal, "preventExtensions", targetRoot, handlerRoot)) return false;
 
     Value trap = trapOf(handlerRoot, "preventExtensions");
-    if (rtExceptionPending()) return false;
     if (trap.isUndefined()) {
         // Step 6: the target's own [[PreventExtensions]]. A proxy target
         // answers its boolean; every other kind the member handles answers
@@ -278,19 +266,17 @@ bool rtProxyPreventExtensions(Value proxyVal) {
         if (isProxy(targetRoot.get())) return rtProxyPreventExtensions(targetRoot.get());
         const uint64_t call[1] = {targetRoot.get().rawBits()};
         rtObjectPreventExtensions(0, 0, 1, call);
-        return !rtExceptionPending();
+        return true;
     }
     Rooted<Value> trapRoot{trap};
     const uint64_t args[1] = {targetRoot.get().rawBits()};
     const bool answer = bronze_truthy(bronze_dynamic_call(trapRoot.get().rawBits(),
                                                           handlerRoot.get().rawBits(), 1, args));
-    if (rtExceptionPending()) return false;
     // Step 8: a trap may claim success only once the target really can gain
     // nothing — otherwise the proxy would report a closed object over an
     // open one.
     if (answer) {
         const bool extensible = rtIsExtensibleOf(targetRoot);
-        if (rtExceptionPending()) return false;
         if (extensible) {
             rtThrowTypeError("'preventExtensions' on proxy: trap returned truish but the proxy "
                              "target is extensible");
@@ -305,14 +291,12 @@ bool rtProxySetIntegrityLevel(Value proxyVal, IntegrityLevel level) {
     // 7.3.14 step 3 (and the whole of 20.1.2.19): [[PreventExtensions]] first,
     // and a false ends the operation as a false.
     if (!rtProxyPreventExtensions(proxyRoot.get())) return false;
-    if (rtExceptionPending()) return false;
     if (level == IntegrityLevel::Open) return true;
     // Step 5: [[OwnPropertyKeys]] once, then a DefinePropertyOrThrow per key —
     // `{ configurable: false }` to seal, and to freeze the same plus
     // `writable: false` for a DATA property, which is why the frozen loop
     // asks [[GetOwnProperty]] first (step 7.b.i) and the sealed one does not.
     Rooted<Value> keys{rtProxyOwnKeys(proxyRoot.get())};
-    if (rtExceptionPending()) return false;
     const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
@@ -320,7 +304,6 @@ bool rtProxySetIntegrityLevel(Value proxyVal, IntegrityLevel level) {
         if (level == IntegrityLevel::Frozen) {
             OwnPropertyDetail current;
             const bool exists = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), current);
-            if (rtExceptionPending()) return false;
             // 7.3.14 step 7.b.ii: a key the proxy no longer reports — its
             // `ownKeys` and `getOwnPropertyDescriptor` traps may disagree —
             // is skipped, not defined.
@@ -341,19 +324,16 @@ bool rtProxyTestIntegrityLevel(Value proxyVal, bool frozen) {
     // 7.3.15 step 3: an extensible object is neither sealed nor frozen, and
     // the keys are never asked for.
     const bool extensible = rtProxyIsExtensible(proxyRoot.get());
-    if (rtExceptionPending()) return false;
     if (extensible) return false;
     // Steps 5-7: every own key's descriptor, stopping at the first one that
     // answers the question — a configurable property, or for the frozen
     // question a writable data property.
     Rooted<Value> keys{rtProxyOwnKeys(proxyRoot.get())};
-    if (rtExceptionPending()) return false;
     const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < count; ++i) {
         Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
         OwnPropertyDetail current;
         const bool exists = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), current);
-        if (rtExceptionPending()) return false;
         if (!exists) continue;
         if (current.configurable) return false;
         if (frozen && !current.accessor && current.writable) return false;
@@ -379,7 +359,6 @@ bool rtIsArray(Value v) {
 Value rtProxyEnumerableOwn(Value proxyVal, bool wantEntries) {
     Rooted<Value> proxyRoot{proxyVal};
     Rooted<Value> keys{rtProxyOwnKeys(proxyRoot.get())};
-    if (rtExceptionPending()) return Value::fromUndefined();
     Rooted<Value> out{Value(bronze_create_array(0))};
     const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
     for (uint32_t i = 0; i < count; ++i) {
@@ -389,12 +368,10 @@ Value rtProxyEnumerableOwn(Value proxyVal, bool wantEntries) {
         if (!key.get().isString()) continue;
         OwnPropertyDetail found;
         const bool present = rtProxyGetOwnProperty(proxyRoot.get(), key.get(), found);
-        if (rtExceptionPending()) return out.get();
         if (!present || !found.enumerable) continue;
         // Step 4.a.ii.2: the [[Get]] follows THIS key's descriptor, before the
         // next key's is asked for.
         Rooted<Value> val{rtProxyGet(proxyRoot.get(), key.get())};
-        if (rtExceptionPending()) return out.get();
         Rooted<Value> item;
         if (wantEntries) {
             Rooted<Value> pair{Value(bronze_create_array(2))};

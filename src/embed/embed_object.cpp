@@ -9,6 +9,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/tls_block.h"
 #include "embed/embed.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -151,8 +152,13 @@ Value setElement(Value obj, uint32_t index, Value v) {
     ShadowStackFrame frame;
     Rooted<Value> self{obj};
     Rooted<Value> val{v};
-    bronze_elem_set(self.get().rawBits(), Value::fromDouble(index).rawBits(),
-                    val.get().rawBits(), /*strict=*/false);
+    Value ignored;
+    runtime::rtTryCatch(
+        [&] {
+            bronze_elem_set(self.get().rawBits(), Value::fromDouble(index).rawBits(),
+                            val.get().rawBits(), /*strict=*/false);
+        },
+        ignored);
     return self.get();
 }
 

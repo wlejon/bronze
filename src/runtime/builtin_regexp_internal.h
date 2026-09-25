@@ -17,14 +17,14 @@
 namespace bronze::runtime {
 
 // 22.2.3.3 RegExpInitialize on a header `rtAllocateNativeBaseInstance` made:
-// the source and the flags, compiled, with `lastIndex` at zero. False with
-// the exception cell set when the pattern does not compile. `sourceStr` is
-// REWRITTEN in place when 22.2.6.13.1 has to escape it.
+// the source and the flags, compiled, with `lastIndex` at zero. Throws the
+// SyntaxError when the pattern does not compile, and answers true otherwise.
+// `sourceStr` is REWRITTEN in place when 22.2.6.13.1 has to escape it.
 bool rtInitializeRegExp(Rooted<Value>& re, Rooted<Value>& sourceStr, const std::string& flagsText);
 
 // 22.2.3.1 + 22.2.3.3 with the intrinsic prototype: what a literal and a
-// plain `RegExp(...)` call build. `undefined` with the exception cell set
-// when the pattern does not compile.
+// plain `RegExp(...)` call build. Throws the SyntaxError when the pattern
+// does not compile.
 Value rtMakeRegExp(Rooted<Value>& sourceStr, const std::string& flagsText);
 
 // The native bodies builtin_regexp.cpp installs and the other files own.

@@ -178,20 +178,25 @@ void resumeMachine(Rooted<Value>& machine, uint32_t mode, Rooted<Value>& sent) {
     setState(machine, MachineState::Executing);
 
     Rooted<Value> body{readSlot(machine, MachineSlot::Resume)};
-    uint64_t argBits[2] = {Value::fromDouble(static_cast<double>(mode)).rawBits(),
-                           sent.get().rawBits()};
-    Rooted<Value> result{Value(bronze_dynamic_call(
-        body.get().rawBits(), Value::fromUndefined().rawBits(), 2, argBits))};
+    Rooted<Value> result{Value::fromUndefined()};
+    Value caught;
+    const bool threw = rtTryCatch(
+        [&] {
+            uint64_t argBits[2] = {Value::fromDouble(static_cast<double>(mode)).rawBits(),
+                                   sent.get().rawBits()};
+            result.set(Value(bronze_dynamic_call(body.get().rawBits(),
+                                                 Value::fromUndefined().rawBits(), 2, argBits)));
+        },
+        caught);
 
-    if (rtExceptionPending()) {
+    if (threw) {
         // 27.7.5.2 step 3.f: an abrupt completion of the body rejects the
-        // promise. Taken out of the cell and CLEARED here, because the throw
-        // has reached its destination — there is no JS frame above an async
-        // body's resumption to propagate into. (At `start` that frame exists,
-        // and the answer is the same: `async function f() { throw x }` returns
-        // a rejected promise rather than throwing at the call site.)
-        Rooted<Value> thrown{Value(bronze_tls_block_addr()->exception_cell)};
-        rtClearException();
+        // promise. Caught here, because the throw has reached its destination
+        // — there is no JS frame above an async body's resumption to
+        // propagate into. (At `start` that frame exists, and the answer is
+        // the same: `async function f() { throw x }` returns a rejected
+        // promise rather than throwing at the call site.)
+        Rooted<Value> thrown{caught};
         setState(machine, MachineState::Completed);
         settleFromCompletion(machine, thrown, /*rejected=*/true);
         return;

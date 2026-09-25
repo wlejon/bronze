@@ -42,11 +42,9 @@ uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     for (uint32_t i = 0; i < args.count(); ++i) {
         Rooted<Value> val{args[i]};
         rtArrayLikeSetElement(self, len + i, val);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     const uint32_t newLen = len + args.count();
     rtArrayLikeSetLength(self, newLen);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return Value::fromDouble(newLen).rawBits();
 }
 
@@ -90,11 +88,8 @@ uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     }
     const uint32_t idx = len - 1;
     Rooted<Value> element{rtArrayLikeGetElement(self, idx)};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     rtArrayLikeDeleteElement(self, idx);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     rtArrayLikeSetLength(self, idx);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return element.get().rawBits();
 }
 
@@ -139,23 +134,18 @@ uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         return Value::fromUndefined().rawBits();
     }
     Rooted<Value> first{rtArrayLikeGetElement(self, 0)};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t k = 1; k < len; ++k) {
         uint32_t from = k;
         uint32_t to = k - 1;
         if (rtArrayLikeHasElement(self, from)) {
             Rooted<Value> val{rtArrayLikeGetElement(self, from)};
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             rtArrayLikeSetElement(self, to, val);
         } else {
             rtArrayLikeDeleteElement(self, to);
         }
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     rtArrayLikeDeleteElement(self, len - 1);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     rtArrayLikeSetLength(self, len - 1);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return first.get().rawBits();
 }
 
@@ -199,22 +189,18 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
             uint32_t to = from + n;
             if (rtArrayLikeHasElement(self, from)) {
                 Rooted<Value> val{rtArrayLikeGetElement(self, from)};
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 rtArrayLikeSetElement(self, to, val);
             } else {
                 rtArrayLikeDeleteElement(self, to);
             }
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         for (uint32_t j = 0; j < n; ++j) {
             Rooted<Value> val{args[j]};
             rtArrayLikeSetElement(self, j, val);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
     }
     const uint32_t newLen = len + n;
     rtArrayLikeSetLength(self, newLen);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return Value::fromDouble(newLen).rawBits();
 }
 
@@ -237,29 +223,21 @@ uint64_t arrayReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     for (uint32_t lower = 0; lower < middle; ++lower) {
         uint32_t upper = len - lower - 1;
         bool lowerExists = rtArrayLikeHasElement(self, lower);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> lowerVal{lowerExists ? rtArrayLikeGetElement(self, lower) : Value::fromUndefined()};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
         bool upperExists = rtArrayLikeHasElement(self, upper);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         Rooted<Value> upperVal{upperExists ? rtArrayLikeGetElement(self, upper) : Value::fromUndefined()};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
         if (lowerExists && upperExists) {
             rtArrayLikeSetElement(self, lower, upperVal);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             rtArrayLikeSetElement(self, upper, lowerVal);
         } else if (!lowerExists && upperExists) {
             rtArrayLikeSetElement(self, lower, upperVal);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             rtArrayLikeDeleteElement(self, upper);
         } else if (lowerExists && !upperExists) {
             rtArrayLikeDeleteElement(self, lower);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             rtArrayLikeSetElement(self, upper, lowerVal);
         }
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return self.get().rawBits();
 }
@@ -274,7 +252,6 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     uint32_t end = args.count() > 2 && !args[2].isUndefined()
                        ? relativeIndex(toInteger(rtToNumber(args[2])), len)
                        : len;
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (isArray(self.get())) {
         if (start < end && !requireWritableElements(self.get(), "fill")) {
             return Value::fromUndefined().rawBits();
@@ -287,7 +264,6 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> fillVal{args[0]};
     for (uint32_t i = start; i < end; ++i) {
         rtArrayLikeSetElement(self, i, fillVal);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return self.get().rawBits();
 }
@@ -370,13 +346,10 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         uint32_t from = start + i;
         if (rtArrayLikeHasElement(self, from)) {
             Rooted<Value> fromVal{rtArrayLikeGetElement(self, from)};
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             rtCreateDataPropertyOrThrow(removed, i, fromVal);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
     }
     rtArrayLikeSetLength(removed, deleteCount);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     if (insertCount < deleteCount) {
         for (uint32_t k = start; k < len - deleteCount; ++k) {
@@ -384,16 +357,13 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
             uint32_t to = k + insertCount;
             if (rtArrayLikeHasElement(self, from)) {
                 Rooted<Value> fromVal{rtArrayLikeGetElement(self, from)};
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 rtArrayLikeSetElement(self, to, fromVal);
             } else {
                 rtArrayLikeDeleteElement(self, to);
             }
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
         for (uint32_t k = len; k > len - deleteCount + insertCount; --k) {
             rtArrayLikeDeleteElement(self, k - 1);
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
     } else if (insertCount > deleteCount) {
         for (uint32_t k = len - deleteCount; k > start; --k) {
@@ -401,21 +371,17 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
             uint32_t to = k + insertCount - 1;
             if (rtArrayLikeHasElement(self, from)) {
                 Rooted<Value> fromVal{rtArrayLikeGetElement(self, from)};
-                if (rtExceptionPending()) return Value::fromUndefined().rawBits();
                 rtArrayLikeSetElement(self, to, fromVal);
             } else {
                 rtArrayLikeDeleteElement(self, to);
             }
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
     }
     for (uint32_t i = 0; i < insertCount; ++i) {
         Rooted<Value> item{args[i + 2]};
         rtArrayLikeSetElement(self, start + i, item);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     rtArrayLikeSetLength(self, len - deleteCount + insertCount);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return removed.get().rawBits();
 }
 
@@ -431,7 +397,6 @@ uint64_t arrayCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     uint32_t final = args.count() > 2 && !args[2].isUndefined()
                          ? relativeIndex(toInteger(rtToNumber(args[2])), len)
                          : len;
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     uint32_t count = final > from ? std::min(final - from, len - to) : 0;
     if (count == 0) return self.get().rawBits();
@@ -463,12 +428,10 @@ uint64_t arrayCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     while (count > 0) {
         if (rtArrayLikeHasElement(self, from)) {
             Rooted<Value> fromVal{rtArrayLikeGetElement(self, from)};
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
             rtArrayLikeSetElement(self, to, fromVal);
         } else {
             rtArrayLikeDeleteElement(self, to);
         }
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         from += direction;
         to += direction;
         --count;

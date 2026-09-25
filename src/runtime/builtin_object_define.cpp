@@ -370,7 +370,6 @@ static bool applyArrayDescriptor(Rooted<Value>& self, PropertyKey name,
         }
         if (d.hasValue) {
             const SetRefusal refusal = rtArraySetLength(self, value.get());
-            if (rtExceptionPending()) return false;
             if (refusal != SetRefusal::None) {
                 return refuseDefine(throwOnRefusal, "Cannot redefine property: length");
             }
@@ -486,7 +485,6 @@ static bool applyTypedArrayDescriptor(Rooted<Value>& self, PropertyKey name,
     }
     if (d.hasValue) {
         rtTypedArraySetElement(self, index, value.get());
-        if (rtExceptionPending()) return false;
     }
     return true;
 }
@@ -603,7 +601,6 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         return false;
     }
     Rooted<Value> keys{Value(bronze_object_keys(descriptors.get().rawBits()))};
-    if (rtExceptionPending()) return false;
     const uint32_t count = keys.get().asObject<ArrayHeader>()->length;
 
     // 20.1.2.3.1 is TWO loops, and the split is observable: step 4 decodes
@@ -621,7 +618,6 @@ bool rtObjectDefineFromDescriptors(Rooted<Value>& target, Rooted<Value>& descrip
         Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(i)};
         Rooted<Value> desc{
             Value(bronze_elem_get(descriptors.get().rawBits(), key.get().rawBits()))};
-        if (rtExceptionPending()) return false;
         Rooted<Value> value{Value::fromUndefined()};
         Rooted<Value> getter{Value::fromUndefined()};
         Rooted<Value> setter{Value::fromUndefined()};

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
+#include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/value.h"
@@ -125,8 +127,8 @@ enum : uint32_t { Promise, Resolve, Reject, kCount };
 
 // 27.2.1.5 NewPromiseCapability(C). `ctor` undefined or %Promise% takes the
 // intrinsic path; anything else is constructed with a capturing executor and
-// checked. Returns `undefined` with an exception pending on every failure
-// path. ALLOCATES, and may run USER CODE (the constructor).
+// checked. Throws on every failure path. ALLOCATES, and may run USER CODE
+// (the constructor).
 Value rtNewPromiseCapability(Rooted<Value>& ctor);
 Value rtNewPromiseCapabilityForIntrinsic();
 
@@ -138,10 +140,16 @@ Value rtCapabilityPromise(Value capability);
 // no-capability reaction (the async driver's) and settles nothing.
 void rtSettleCapability(Rooted<Value>& capability, Rooted<Value>& value, bool reject);
 
-// IfAbruptRejectPromise: take the pending exception and reject the capability
-// with it. Every combinator wraps its iteration in this, and a native async
-// body (`Array.fromAsync`) ends each of its synchronous stretches with it.
-void rtRejectCapabilityWithPending(Rooted<Value>& capability);
+// IfAbruptRejectPromise: runs `body`, and a throw out of it rejects the
+// capability instead of propagating. True when `body` completed normally.
+template <typename Body>
+bool rtRejectCapabilityOnThrow(Rooted<Value>& capability, Body&& body) {
+    Value thrown;
+    if (!rtTryCatch(std::forward<Body>(body), thrown)) return true;
+    Rooted<Value> reason{thrown};
+    rtSettleCapability(capability, reason, /*reject=*/true);
+    return false;
+}
 
 // 27.2.4.7.1 PromiseResolve(C, x) — the general form of `rtPromiseResolveValue`
 // above, which is its C = %Promise% arm. `ctor` undefined or %Promise% takes

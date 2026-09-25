@@ -156,26 +156,31 @@ void rtDrainMicrotasks() {
         const uint32_t kind = g_queue.front().kind;
         g_queue.pop_front();
 
-        switch (kind) {
-            case Job::ReactionFulfill:
-                rtRunReactionJob(v0, v1, v2, /*rejected=*/false);
-                break;
-            case Job::ReactionReject:
-                rtRunReactionJob(v0, v1, v2, /*rejected=*/true);
-                break;
-            case Job::Thenable:
-                rtRunThenableJob(v0, v1, v2);
-                break;
-            default:
-                fatal("internal: an unknown microtask kind in the queue");
-        }
         // Every job body settles a promise with what its callback threw
-        // rather than letting it escape (that IS 27.2.2.1 step 1.e-1.g). An
-        // exception still pending here is a runtime that lost its unwind,
-        // not a program error — same rule as rtThrow's double-raise check.
-        if (rtExceptionPending()) {
-            const std::string text = rtUncaughtText(Value(rtTls()->exception_cell));
-            rtClearException();
+        // rather than letting it escape (that IS 27.2.2.1 step 1.e-1.g). A
+        // throw that still reaches here has no caller to propagate to: it is
+        // reported and the drain goes on.
+        Value caught;
+        const bool threw = rtTryCatch(
+            [&] {
+                switch (kind) {
+                    case Job::ReactionFulfill:
+                        rtRunReactionJob(v0, v1, v2, /*rejected=*/false);
+                        break;
+                    case Job::ReactionReject:
+                        rtRunReactionJob(v0, v1, v2, /*rejected=*/true);
+                        break;
+                    case Job::Thenable:
+                        rtRunThenableJob(v0, v1, v2);
+                        break;
+                    default:
+                        fatal("internal: an unknown microtask kind in the queue");
+                }
+            },
+            caught);
+        if (threw) {
+            Rooted<Value> thrown{caught};
+            const std::string text = rtUncaughtText(thrown.get());
             std::fflush(stdout);
             std::fprintf(stderr, "%s in a microtask job\n", text.c_str());
             std::fflush(stderr);
