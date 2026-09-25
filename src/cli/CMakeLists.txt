@@ -31,7 +31,8 @@ if(BRONZE_BUILD_TESTS)
                                    ../../tests/cli/pin_census_test.cpp
                                    ../../tests/cli/numeric_arith_boundary_test.cpp
                                    ../../tests/cli/lowering_determinism_test.cpp
-                                   ../../tests/cli/large_arg_call_test.cpp)
+                                   ../../tests/cli/large_arg_call_test.cpp
+                                   ../../tests/cli/large_module_compile_test.cpp)
     # bronze::codegen_brass is named ahead of bronze::embed on purpose: it
     # calls embed::setEnterJsHook and links no runtime of its own (see its
     # CMakeLists), so a single-pass linker (GNU ld) must meet it BEFORE the
