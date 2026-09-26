@@ -1,5 +1,6 @@
 # How fast real programs reach optimized code under `bronze run` (cpu_work,
-# a top-level allocation loop, three.js, pixi), against pinned budgets:
+# a top-level allocation loop, three.js, pixi, a loop whose OSR code is
+# invalidated under it), against pinned budgets:
 # tier_ratchet.cpp says what is measured and holds the baseline. A
 # performance target, not correctness: labelled "perf", as brass labels its
 # ratchets, so `-LE perf` leaves it out.

@@ -57,11 +57,14 @@ struct Workload {
 //   alloc_batches      15        11        0         11     0.1     0.1       0        3
 //   threejs           221         9        0         63    23.7    10.7       0        -
 //   pixi              955        35        0        170    11.9     1.2       3        -
+//   osr_leave          10         6        0         50     0.0     0.0      23        -
 //
 // Before the OSR entry's plan and copy moved to the compiling worker,
 // cpu_work stalled 30 ms (one 10.8 ms piece); before a never-run property
 // site stopped being armed, alloc_batches deopted twice and its first batch
-// took 9-10 ms.
+// took 9-10 ms. Before a frame left invalidated OSR code at its next
+// backedge (brass OsrEntryPlan::leave_check), osr_leave deopted
+// 19,957 times, nearly all in one frame's loop.
 struct Bound {
     const char* workload;
     const char* metric;
@@ -79,7 +82,7 @@ const Bound kBounds[] = {
     {"threejs", "max_stall_ms", 30},       {"pixi", "hot_tier2_ms", 2500},
     {"pixi", "hot_latency_ms", 150},       {"pixi", "hot_untiered", 0},
     {"pixi", "stall_ms", 40},              {"pixi", "max_stall_ms", 10},
-    {"pixi", "deopts", 10},
+    {"pixi", "deopts", 10},                {"osr_leave", "deopts", 60},
 };
 
 using Metrics = std::map<std::string, double>;
@@ -173,6 +176,7 @@ int main(int argc, char** argv) {
         {"alloc_batches", here / "alloc_batches.js", {}},
         {"threejs", oracle_dir / "threejs" / "main.js", {}},
         {"pixi", oracle_dir / "pixi" / "main.js", (oracle_dir / "pixi" / "host.globals").string()},
+        {"osr_leave", here / "osr_carried_deopt.js", {}},
     };
     const char* shown[] = {"hot_tier2_ms", "hot_latency_ms", "hot_untiered", "compile_ms",
                            "stall_ms",     "max_stall_ms",   "deopts",       "first_batch_ms"};
