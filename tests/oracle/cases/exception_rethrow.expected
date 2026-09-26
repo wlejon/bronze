@@ -1,0 +1,10 @@
+true original 3
+true
+true
+43
+inner caught inner, outer still outer
+got outer
+handled 7
+rethrown str
+catch,finally,RangeError:r
+999000

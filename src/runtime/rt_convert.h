@@ -27,9 +27,9 @@ std::string rtInspectErrorWithStack(Value v);
 // A heap string from UTF-8 bytes, and JS ToString (7.1.17) / ToNumber (7.1.4)
 // entire — step 1 of each, ToPrimitive, included.
 //
-// So both RUN USER CODE for an OBJECT argument, and both can leave a TypeError
-// pending: a caller must root what it holds across them and be reached from an
-// IL op `il::canThrow` marks. For a PRIMITIVE neither allocates and only a
+// So both RUN USER CODE for an OBJECT argument, and both can throw a
+// TypeError: a caller must root what it holds across them and be reached from
+// an IL op `il::canThrow` marks. For a PRIMITIVE neither allocates and only a
 // Symbol raises, which is what keeps them usable from the builtins that hold a
 // raw element pointer across a numeric argument conversion.
 Value rtMakeString(std::string_view utf8);
@@ -105,8 +105,8 @@ Value rtPrimitiveToString(Value v);
 // accumulator (rt_concat.cpp) run the SAME algorithm rather than two copies of
 // it that could drift on a hint, an order, or a BigInt.
 //
-// `rtAddToPrimitives` is step 1's two ToPrimitive calls, left then right, and
-// answers false with an exception pending if either threw. `rtAddNonStringTail`
+// `rtAddToPrimitives` is step 1's two ToPrimitive calls, left then right; a
+// throw from either propagates, and it answers true. `rtAddNonStringTail`
 // is step 3 once the String branch has been declined: the Symbol refusal, the
 // BigInt algorithm and the numeric sum.
 bool rtAddToPrimitives(Rooted<Value>& a, Rooted<Value>& b);

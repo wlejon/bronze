@@ -38,8 +38,7 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     Builder& b,
     Value* obj,
     uint32_t key_index,
-    Value* ic_entry,
-    const std::function<void()>& emit_exception_check
+    Value* ic_entry
 ) {
     // The bronze object model as the inline hit reads it (bronze_abi.h):
     // a NaN-boxed Value whose tag is BRONZE_ABI_TAG_OBJECT, whose header
@@ -108,7 +107,6 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     Value* map_addr = b.build_func_addr(key_map_sym_);
     Value* sym_val = b.build_load(Type::i32(), map_addr, static_cast<int32_t>(key_index * sizeof(uint32_t)));
     Value* slow_val = b.build_call("bronze_prop_get", Type::i64(), {obj, sym_val, ic_entry});
-    emit_exception_check();
     b.build_br(bb_merge, {slow_val});
 
     b.position_at_end(bb_merge);
@@ -376,8 +374,7 @@ bool lower_property_instruction(
     Builder& b,
     Function* /*fn*/,
     std::unordered_map<uint32_t, Value*>& val_map,
-    Value*& res_val,
-    const std::function<void()>& emit_exception_check
+    Value*& res_val
 ) {
     auto get_opd = [&](size_t idx) -> Value* {
         if (idx < inst_ast.operands.size()) {
@@ -420,12 +417,10 @@ bool lower_property_instruction(
             // `mono` sites alone already deliver.
             if (site && inst_ast.is_mono && prop_lowering.enable_inlined_fastpaths() &&
                 inst_ast.index != PropertyLoweringHelper::kNoKey) {
-                res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site,
-                                                            emit_exception_check);
+                res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site);
                 return true;
             }
             res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site);
-            emit_exception_check();
             return true;
         }
 
@@ -436,7 +431,6 @@ bool lower_property_instruction(
             prop_lowering.lower_prop_set(
                 b, obj_val, inst_ast.index, val, static_cast<uint32_t>(inst_ast.imm_i64), site
             );
-            emit_exception_check();
             return true;
         }
 
@@ -445,7 +439,6 @@ bool lower_property_instruction(
             Value* key_id = get_key_id(inst_ast.index);
             Value* strict = b.build_iconst_i32(inst_ast.imm_i64 != 0 ? 1 : 0);
             res_val = b.build_and(b.build_call("bronze_prop_delete", Type::i32(), {target, key_id, strict}), b.build_iconst_i32(1));
-            emit_exception_check();
             return true;
         }
 
@@ -470,7 +463,6 @@ bool lower_property_instruction(
             Value* key_id = get_key_id(inst_ast.index);
             Value* mask = b.build_iconst_i32(static_cast<int32_t>(inst_ast.imm_i64));
             b.build_call("bronze_define_own_attr", Type::void_type(), {target, key_id, value, mask});
-            emit_exception_check();
             return true;
         }
 
@@ -481,7 +473,6 @@ bool lower_property_instruction(
             Value* setter = ensure_type(get_opd(2), Type::i64());
             Value* enum_val = b.build_iconst_i32(inst_ast.imm_bool ? 1 : 0);
             b.build_call("bronze_accessor_def", Type::void_type(), {target, key_id, getter, setter, enum_val});
-            emit_exception_check();
             return true;
         }
 
@@ -492,7 +483,6 @@ bool lower_property_instruction(
             Value* setter = ensure_type(get_opd(3), Type::i64());
             Value* enum_val = b.build_iconst_i32(inst_ast.imm_bool ? 1 : 0);
             b.build_call("bronze_accessor_def_computed", Type::void_type(), {target, key, getter, setter, enum_val});
-            emit_exception_check();
             return true;
         }
 
@@ -502,9 +492,7 @@ bool lower_property_instruction(
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
             res_val = prop_lowering.lower_elem_get(b, obj_val, idx_val);
-            if (inst_ast.op == BronzeOp::ElemGet) {
-                emit_exception_check();
-            } else if (inst_ast.op == BronzeOp::ElemGetTyped && inst_ast.result_type == BronzeType::F64) {
+            if (inst_ast.op == BronzeOp::ElemGetTyped && inst_ast.result_type == BronzeType::F64) {
                 res_val = ensure_type(res_val, Type::f64());
             }
             return true;
@@ -517,9 +505,6 @@ bool lower_property_instruction(
             if (!idx_val) return false;
             Value* val = ensure_type(get_opd(2), Type::i64());
             prop_lowering.lower_elem_set(b, obj_val, idx_val, val, inst_ast.index);
-            if (inst_ast.op == BronzeOp::ElemSet) {
-                emit_exception_check();
-            }
             return true;
         }
 
@@ -528,7 +513,6 @@ bool lower_property_instruction(
             Value* index = ensure_type(get_opd(1), Type::i64());
             Value* strict = b.build_iconst_i32(inst_ast.imm_i64 != 0 ? 1 : 0);
             res_val = b.build_and(b.build_call("bronze_elem_delete", Type::i32(), {target, index, strict}), b.build_iconst_i32(1));
-            emit_exception_check();
             return true;
         }
 

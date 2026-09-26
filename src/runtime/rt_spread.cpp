@@ -169,7 +169,6 @@ namespace {
 // empty result.
 void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
     Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
-    if (rtExceptionPending()) return;
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> elem{Value(bronze_iter_value(rec.get().rawBits()))};
         appendTo(out, elem);
@@ -211,7 +210,7 @@ bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
     Rooted<Value> key{rtMakeString(keyText)};
     bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
                     kSpreadWriteThrows);
-    return !rtExceptionPending();
+    return true;
 }
 
 // Every own property a string contributes as a spread SOURCE, in 10.4.3.3's
@@ -271,10 +270,6 @@ extern "C" {
 // set of quietly `undefined` bindings. And checking up front is what lets
 // every read below it name the CONSTRUCT that asked — without it,
 // `const [a] = 5` would report a for-of error.
-//
-// The value is returned unchanged on the raising path too. Generated code
-// stores this result into a GC root slot before it tests the pending cell, and
-// the slot has to hold something the collector can parse.
 uint64_t bronze_pattern_check(uint64_t vBits, uint32_t kind) {
     recordHelperCall("bronze_pattern_check");
     Value v(vBits);
@@ -439,7 +434,6 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             // raised would be the runtime continuing past an exception — which
             // `rtThrow` answers by killing the process, not by overwriting the
             // pending one. Every other arm of this walk already stopped here.
-            if (rtExceptionPending()) return;
         }
         // Then its NAMED own enumerable properties, which 7.3.25 copies like
         // any other and 6.1.7.1 orders after the indices. `[...a]` drops them
@@ -454,10 +448,8 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             Rooted<Value> key{rtKeyAsValue(named)};
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
                             kSpreadWriteThrows);
-            if (rtExceptionPending()) return;
         }
         return;
     }
@@ -479,10 +471,8 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             // exception.
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
                             kSpreadWriteThrows);
-            if (rtExceptionPending()) return;
         }
         return;
     }
@@ -498,7 +488,6 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         // trap, the [[Get]] and the write below all allocate, and a raw list
         // would be holding from-space strings by the second key.
         Rooted<Value> keys{rtProxyOwnKeys(src.get())};
-        if (rtExceptionPending()) return;
         const uint32_t keyCount = keys.get().asObject<ArrayHeader>()->length;
         for (uint32_t ki = 0; ki < keyCount; ++ki) {
             Rooted<Value> key{keys.get().asObject<ArrayHeader>()->getElem(ki)};
@@ -509,17 +498,14 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             }
             OwnPropertyDetail found;
             const bool present = rtProxyGetOwnProperty(src.get(), key.get(), found);
-            if (rtExceptionPending()) return;
             // 7.3.25 step 5.b.ii: absent, or present and non-enumerable, and
             // the key contributes nothing — the trap's own answer, which is
             // the only reason a handler can hide a key from a spread.
             if (!present || !found.enumerable) continue;
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
                             kSpreadWriteThrows);
-            if (rtExceptionPending()) return;
         }
         return;
     }
@@ -539,7 +525,6 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 return;
             }
             copyProperty(target, propsRoot, name);
-            if (rtExceptionPending()) return;
         }
         return;
     }
@@ -566,10 +551,8 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            if (rtExceptionPending()) return;
             bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
                             kSpreadWriteThrows);
-            if (rtExceptionPending()) return;
         }
     }
     // Own enumerable keys of BOTH kinds: 7.3.25 CopyDataProperties takes
@@ -594,7 +577,6 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
         // `copyProperty` reads with Get, so a source property that is an
         // accessor runs user code. Copying the next one after that threw would
         // be the runtime continuing past an exception.
-        if (rtExceptionPending()) return;
     }
 }
 
@@ -645,7 +627,6 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
             // whatever primitive is left — two helpers because the first runs
             // user code and the second only allocates.
             Rooted<Value> prim{rtToPropertyKey(k)};
-            if (rtExceptionPending()) return out.get().rawBits();
             const Value asKey = prim.get().isSymbol() ? prim.get() : rtElemKeyAsString(prim.get());
             excluded.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, asKey);
         }
@@ -663,7 +644,6 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
         }
         if (skip) continue;
         copyProperty(out, src, name);
-        if (rtExceptionPending()) return out.get().rawBits();
     }
     return out.get().rawBits();
 }

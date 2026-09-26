@@ -56,14 +56,13 @@ public:
     // helper: the receiver's shape word against the site's way 0 and its
     // slot word below the inline-slot count (bronze_abi.h,
     // BRONZE_ABI_IC_SLOTWORD_OFFSET), one slot load on a hit and
-    // `bronze_prop_get` — with `emit_exception_check` run on that arm — on a
-    // miss. `key_index` is the module's key constant. Requires a real site.
+    // `bronze_prop_get` on a miss. `key_index` is the module's key constant.
+    // Requires a real site.
     Value* lower_prop_get_mono(
         Builder& b,
         Value* obj,
         uint32_t key_index,
-        Value* ic_entry,
-        const std::function<void()>& emit_exception_check
+        Value* ic_entry
     );
 
     // `bronze_prop_set`; `imm` nonzero is a strict-mode write.

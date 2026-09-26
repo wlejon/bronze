@@ -39,7 +39,6 @@ public:
     void setEntrySymbol(std::string symbol) { entrySymbol_ = std::move(symbol); }
     void setHostGlobals(std::vector<std::string> names) { hostGlobals_ = std::move(names); }
     void setEmittedPathsOut(std::vector<std::string>* out) { emittedPathsOut_ = out; }
-    void setPropagateExceptionsInEntry(bool val) { propagateExceptionsInEntry_ = val; }
     // Whether the whole module is optimized as it is built. Off: no MIR
     // optimizer, no scheduling, no layout — the code the translator emits,
     // selected and allocated as it stands; what a tiered program is built
@@ -103,7 +102,6 @@ private:
     void setOptimizationOptions(il2mir::TranslatorOptions& options, bool optimize) const;
 
     std::string entrySymbol_ = "bronze_main";
-    bool propagateExceptionsInEntry_ = false;
     bool optimize_ = true;
     bool emitDebugInfo_ = false;
     bool registerFnSources_ = true;

@@ -5,6 +5,7 @@
 #include "abi/bronze_abi.h"
 
 #include <brass/codegen/jit_exec.hpp>
+#include <brass/gc/native_frames.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/target/target.hpp>
 
@@ -84,24 +85,27 @@ void BrassJitProgram::run() {
     }
     if (entryPoint_) {
         auto fn = reinterpret_cast<void (*)()>(entryPoint_);
+        // A native raise out of the entry leaves here as a C++ exception
+        // (brass native_frames.hpp).
+        brass::GeneratedCodeEntryScope scope;
         fn();
     }
 }
 
 std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& module,
                                                             DiagnosticSink& diags) {
-    struct PropagateGuard {
+    struct FlagGuard {
         bool& flag;
         bool prev;
-        PropagateGuard(bool& f, bool val) : flag(f), prev(f) { flag = val; }
-        ~PropagateGuard() { flag = prev; }
-    } guard(propagateExceptionsInEntry_, true);
+        FlagGuard(bool& f, bool val) : flag(f), prev(f) { flag = val; }
+        ~FlagGuard() { flag = prev; }
+    };
     // A JIT program is compiled and run on one thread (eval, new Function,
     // a host's evalScript), and there are many of them: per-thread instances
     // would buy it nothing and keep each one's pristine snapshot alive for
     // the life of the process (runtime/module_instance.cpp). Only an image
     // loaded once and entered on N threads needs them.
-    PropagateGuard perThreadGuard(perThreadModuleData_, false);
+    FlagGuard perThreadGuard(perThreadModuleData_, false);
 
     auto obj = buildObjectFile(module, diags);
     if (!obj) {

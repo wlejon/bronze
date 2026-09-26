@@ -110,7 +110,6 @@ uint64_t buildCollection(Rooted<Value>& receiver, Rooted<Value>& arg, bool isSet
         StringHeader::createLatin1InArena(rtArena(), "add", 3);
     Rooted<Value> adderKey{Value::fromString(isSet ? addKey : setKey)};
     Rooted<Value> adder{self.get().asObject<ObjectHeader>()->getProp(rtHeap(), adderKey)};
-    if (rtExceptionPending()) return self.get().rawBits();
     if (!rtIsCallableValue(adder.get())) {
         return rtThrowTypeError(std::string("'") + (isSet ? "add" : "set") +
                                 "' of the new collection is not a function")
@@ -121,27 +120,25 @@ uint64_t buildCollection(Rooted<Value>& receiver, Rooted<Value>& arg, bool isSet
                             (isSet ? rtSetAddBody : rtMapSetBody);
 
     Rooted<Value> rec{Value(bronze_iter_open(arg.get().rawBits()))};
-    if (rtExceptionPending()) return self.get().rawBits();
-    while (bronze_iter_step(rec.get().rawBits())) {
-        Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
-        if (isSet) {
-            if (direct) {
-                MapHeader::set(rtHeap(), self, item, item);
-            } else {
-                uint64_t block[1] = {item.get().rawBits()};
-                bronze_dynamic_call(adder.get().rawBits(), self.get().rawBits(), 1, block);
+    rtCloseIteratorOnThrow(rec, [&] {
+        while (bronze_iter_step(rec.get().rawBits())) {
+            Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
+            if (isSet) {
+                if (direct) {
+                    MapHeader::set(rtHeap(), self, item, item);
+                } else {
+                    uint64_t block[1] = {item.get().rawBits()};
+                    bronze_dynamic_call(adder.get().rawBits(), self.get().rawBits(), 1, block);
+                }
+                continue;
             }
-        } else {
             if (!item.get().isObject()) {
                 rtThrowTypeError("Iterator value is not an entry object");
-                break;
             }
             Rooted<Value> k{
                 Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(0.0).rawBits()))};
-            if (rtExceptionPending()) break;
             Rooted<Value> v{
                 Value(bronze_elem_get(item.get().rawBits(), Value::fromDouble(1.0).rawBits()))};
-            if (rtExceptionPending()) break;
             if (direct) {
                 MapHeader::set(rtHeap(), self, k, v);
             } else {
@@ -149,9 +146,7 @@ uint64_t buildCollection(Rooted<Value>& receiver, Rooted<Value>& arg, bool isSet
                 bronze_dynamic_call(adder.get().rawBits(), self.get().rawBits(), 2, block);
             }
         }
-        if (rtExceptionPending()) break;
-    }
-    if (rtExceptionPending()) bronze_iter_close(rec.get().rawBits(), /*suppress=*/true);
+    });
     return self.get().rawBits();
 }
 

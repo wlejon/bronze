@@ -235,7 +235,6 @@ TEST_CASE("a rejected await raises at the suspension point and rejects the promi
     // Nothing subscribed to the machine's promise, so the drain that just ran
     // reported it and cleared the registry.
     CHECK(rtParkedRejectionCount() == 0);
-    CHECK_FALSE(rtExceptionPending());
 }
 
 TEST_CASE("a pending promise's reactions survive a collection") {
@@ -296,7 +295,6 @@ TEST_CASE("resolving a promise with itself rejects rather than throwing") {
     rtResolvePromise(promise, self);
     CHECK(rtPromiseStateOf(promise.get()) == PromiseState::Rejected);
     CHECK(rtIsErrorInstance(rtPromiseResultOf(promise.get())));
-    CHECK_FALSE(rtExceptionPending());
     // 27.2.1.3.2 step 7 is a rejection, so it is parked like any other.
     CHECK(rtParkedRejectionCount() == 1);
 }

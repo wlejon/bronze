@@ -64,7 +64,6 @@ uint64_t proxyArrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
                                  ->length;
         Rooted<Value> key{rtMakeString(std::to_string(len))};
         rtProxySet(proxyRoot.get(), key.get(), args[i], /*strict=*/true);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     const uint32_t newLen =
         proxyRoot.get().asObject<ProxyHeader>()->target.asObject<ArrayHeader>()->length;
@@ -73,7 +72,6 @@ uint64_t proxyArrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     Rooted<Value> lenKey{rtMakeString("length")};
     Rooted<Value> lenVal{Value::fromDouble(newLen)};
     rtProxySet(proxyRoot.get(), lenKey.get(), lenVal.get(), /*strict=*/true);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return Value::fromDouble(newLen).rawBits();
 }
 
@@ -96,12 +94,10 @@ uint64_t proxyArraySort(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
         scratch.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, elem);
     }
     rtArraySortBuiltin(0, scratch.get().rawBits(), argc, argv);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     for (uint32_t i = 0; i < len; ++i) {
         Rooted<Value> key{rtMakeString(std::to_string(i))};
         Rooted<Value> elem{scratch.get().asObject<ArrayHeader>()->getElem(i)};
         rtProxySet(proxyRoot.get(), key.get(), elem.get(), /*strict=*/true);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     return proxyRoot.get().rawBits();
 }

@@ -121,9 +121,6 @@ uint64_t collectionForEach(uint64_t thisBits, uint32_t argc, const uint64_t* arg
         if (!map->liveAt(at)) continue;
         Value block[3] = {isSet ? map->keyAt(at) : map->valueAt(at), map->keyAt(at), self.get()};
         cb.get().asObject<FunctionHeader>()->call(thisArg.get(), 3, block);
-        // A callback that threw stops the walk, for the reason every callback
-        // loop in builtin_array.cpp does.
-        if (rtExceptionPending()) break;
     }
     return Value::fromUndefined().rawBits();
 }

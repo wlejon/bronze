@@ -65,6 +65,13 @@ Value newWeakMap() { return rtNewWeakMap(); }
 
 Value newWeakSet() { return rtNewWeakSet(); }
 
+// Whether `body` throws.
+template <typename Body>
+bool throws(Body&& body) {
+    Value thrown;
+    return rtTryCatch([&] { (void)body(); }, thrown);
+}
+
 }  // namespace
 
 TEST_CASE("WeakMap set/get/has/delete over object keys") {
@@ -99,38 +106,29 @@ TEST_CASE("CanBeHeldWeakly: writes throw, reads answer quietly") {
     Rooted<Value> val{Value::fromDouble(2.0)};
 
     // 24.3.3.5 step 4: a primitive key is the TypeError the clause names.
-    invoke2(wm, "set", primitive, val);
-    CHECK(rtExceptionPending());
-    rtClearException();
+    CHECK(throws([&] { return invoke2(wm, "set", primitive, val); }));
 
     // 24.3.3.4 step 4 and friends return before touching the table: `has`,
     // `get` and `delete` answer for a primitive rather than throwing.
     CHECK_FALSE(invoke1(wm, "has", primitive).asBool());
     CHECK(invoke1(wm, "get", primitive).isUndefined());
     CHECK_FALSE(invoke1(wm, "delete", primitive).asBool());
-    CHECK_FALSE(rtExceptionPending());
 
     // An UNREGISTERED symbol can be held weakly (4.2.1); a registered one can
     // always be re-minted from its string and cannot.
     Rooted<Value> fresh{rtMakeSymbol(Value::fromUndefined())};
     invoke2(wm, "set", fresh, val);
-    CHECK_FALSE(rtExceptionPending());
     CHECK(invoke1(wm, "has", fresh).asBool());
 
     Rooted<Value> regKey{rtMakeString("registered")};
     Rooted<Value> registered{rtSymbolFor(regKey)};
-    invoke2(wm, "set", registered, val);
-    CHECK(rtExceptionPending());
-    rtClearException();
+    CHECK(throws([&] { return invoke2(wm, "set", registered, val); }));
 
     // A WeakSet's write is the same split under its own message.
     Rooted<Value> ws{newWeakSet()};
-    invoke1(ws, "add", primitive);
-    CHECK(rtExceptionPending());
-    rtClearException();
+    CHECK(throws([&] { return invoke1(ws, "add", primitive); }));
     Rooted<Value> obj{Value(bronze_create_object())};
     invoke1(ws, "add", obj);
-    CHECK_FALSE(rtExceptionPending());
     CHECK(invoke1(ws, "has", obj).asBool());
 }
 
@@ -147,16 +145,12 @@ TEST_CASE("a detached weak-collection method brand-checks its receiver") {
     // (24.3.3.2 step 3's TypeError).
     Rooted<Value> plainMap{rtNewMap()};
     Value args[1] = {key.get()};
-    get.get().asObject<FunctionHeader>()->call(plainMap.get(), 1, args);
-    CHECK(rtExceptionPending());
-    rtClearException();
+    CHECK(throws([&] { return get.get().asObject<FunctionHeader>()->call(plainMap.get(), 1, args); }));
 
     // And so is a plain object, and nothing at all.
     Rooted<Value> plain{Value(bronze_create_object())};
     Value args2[1] = {key.get()};
-    get.get().asObject<FunctionHeader>()->call(plain.get(), 1, args2);
-    CHECK(rtExceptionPending());
-    rtClearException();
+    CHECK(throws([&] { return get.get().asObject<FunctionHeader>()->call(plain.get(), 1, args2); }));
 
     // A WeakSet is not a WeakMap either: `get` is on `WeakMap.prototype` and
     // not on `WeakSet.prototype`, so the read answers `undefined` on a WeakSet.
@@ -177,7 +171,6 @@ TEST_CASE("entries stay live across forced collections for as long as the map do
         Rooted<Value> marker{Value::fromString(
             StringHeader::createFromUTF8(rtHeap(), "weakmap_survivor"))};
         invoke2(wm, "set", key, marker);
-        CHECK_FALSE(rtExceptionPending());
 
         for (int i = 0; i < 3; ++i) rtHeap().collect();
 

@@ -301,7 +301,6 @@ uint64_t objectSetPrototypeOf(uint64_t, uint64_t, uint32_t argc, const uint64_t*
     Rooted<Value> self{args[0]};
     Rooted<Value> proto{args[1]};
     const bool ok = rtObjectSetPrototypeOfOrdinary(self, proto);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     if (!ok) return refuseInextensiblePrototype();
     return self.get().rawBits();
 }

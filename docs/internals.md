@@ -175,9 +175,10 @@ destructor. A typed-array return is sequenced by the import thunk
 emitted object: `bronze_native_buffer_slot()` pushes a zeroed per-thread
 descriptor, the native is called with its address as the trailing argument,
 and `bronze_native_buffer_wrap(kind)` pops it and answers the view (copy or
-transfer by `release`); a native that threw through the embed API after
-filling a transfer descriptor still has its `release` run, since wrap sees
-the pending exception, releases, and answers undefined for the unwind.
+transfer by `release`). A native that throws unwinds its thunk past the wrap,
+so each descriptor records its thunk's frame, and the next slot or wrap on the
+thread drops the descriptors whose thunk is gone, running the `release` of one
+the native had filled before it threw.
 
 No native symbol is ever resolved by a linker. Each direct call goes through
 a slot of the module's import table, `<entry>_native_imports`: `u32 count;

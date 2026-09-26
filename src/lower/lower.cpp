@@ -225,10 +225,10 @@ std::optional<il::Module> Lowerer::lower() {
         mainFn.sourceFile = topLevelStmts.front()->span.file;
         mainFn.sourceBegin = topLevelStmts.front()->span.begin;
         mainFn.sourceEnd = topLevelStmts.back()->span.end;
-        // Nothing above `main` can catch, so its unwind path reports and exits
-        // rather than returning. No handler BLOCK, and so no IL at all in a
-        // program that never throws — which is what keeps every pinned dump of
-        // one byte-identical.
+        // A throw nothing in `main` catches leaves it for the host that
+        // entered it (rtRunModuleEntry reports it). No handler BLOCK, and so
+        // no IL at all in a program that never throws — which is what keeps
+        // every pinned dump of one byte-identical.
         mainFn.isEntryPoint = true;
         mainFn.returnType = il::Type::Void;
         mainFn.valueCount = 0;

@@ -187,7 +187,7 @@ void slotReprCensusNote(const Shape* shape, PropertyKey key, bool hasValue, Valu
 void slotReprReport() {
     const SlotReprCounters& c = slotReprCounters();
     std::fprintf(stderr,
-                 "\n=== slot representation (stage R1) ===\n"
+                 "\n=== slot representation ===\n"
                  "  seam            : %s%s\n"
                  "  eligible names  : %u\n"
                  "  shape nodes     : %llu double, %llu boxed\n"
@@ -213,8 +213,8 @@ void slotReprReport() {
     }
 
     // Per-(shape, slot) stability, worst first: a slot whose stores are all
-    // numbers and whose representation is still BOXED is exactly what stage R2
-    // is looking for, and a DOUBLE slot with any non-number store is a policy
+    // numbers and whose representation is still BOXED is a candidate for a
+    // wider pins manifest, and a DOUBLE slot with any non-number store is a policy
     // mistake this run caught.
     struct Row {
         std::string shape;
@@ -261,7 +261,7 @@ void slotReprReport() {
     if (rows.size() > 40) std::fprintf(stderr, "  ... %zu more\n", rows.size() - 40);
     std::fprintf(stderr,
                  "  boxed slots whose every store was a number: %llu (%llu accesses) — "
-                 "stage R2's candidate set\n\n",
+                 "candidates for a wider manifest\n\n",
                  static_cast<unsigned long long>(stableBoxed),
                  static_cast<unsigned long long>(stableBoxedTraffic));
 }

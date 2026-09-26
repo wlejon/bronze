@@ -91,22 +91,16 @@ CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
     runtime::RootedBlock block(static_cast<uint32_t>(args.size()));
     for (uint32_t i = 0; i < args.size(); ++i) block.set(i, args[i]);
 
-    Rooted<Value> result{Value(bronze_dynamic_call(fnRoot.get().rawBits(),
-                                                   thisRoot.get().rawBits(), block.count(),
-                                                   block.data()))};
-
-    // The cell, not the return value, says whether the call threw — a helper
-    // that raises returns undefined by the runtime's own convention
-    // (exception.h). Cleared here because the host boundary is where
-    // propagation ends: there is no enclosing JS frame left to unwind to, and
-    // a pending cell left set would make the NEXT call into compiled code
-    // appear to throw its predecessor's exception.
-    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(runtime::rtTls()->exception_cell), /*thrown=*/true};
-        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-        return out;
-    }
-    return CallResult{result.get(), /*thrown=*/false};
+    // The host boundary is where propagation ends: the throw is caught here
+    // and handed back as a value, so the host never sees a C++ exception.
+    Value out = Value::fromUndefined();
+    const bool threw = runtime::rtTryCatch(
+        [&] {
+            out = Value(bronze_dynamic_call(fnRoot.get().rawBits(), thisRoot.get().rawBits(),
+                                            block.count(), block.data()));
+        },
+        out);
+    return CallResult{out, threw};
 }
 
 CallResult construct(Value fn, std::span<const Value> args) {
@@ -118,15 +112,13 @@ CallResult construct(Value fn, std::span<const Value> args) {
     runtime::RootedBlock block(static_cast<uint32_t>(args.size()));
     for (uint32_t i = 0; i < args.size(); ++i) block.set(i, args[i]);
 
-    Rooted<Value> result{
-        Value(bronze_construct(fnRoot.get().rawBits(), block.count(), block.data()))};
-
-    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(runtime::rtTls()->exception_cell), /*thrown=*/true};
-        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-        return out;
-    }
-    return CallResult{result.get(), /*thrown=*/false};
+    Value out = Value::fromUndefined();
+    const bool threw = runtime::rtTryCatch(
+        [&] {
+            out = Value(bronze_construct(fnRoot.get().rawBits(), block.count(), block.data()));
+        },
+        out);
+    return CallResult{out, threw};
 }
 
 // ---- property reads --------------------------------------------------------
@@ -134,17 +126,15 @@ CallResult construct(Value fn, std::span<const Value> args) {
 namespace {
 
 // The shared tail of both readers: the generic element-get (the path a
-// computed `obj[key]` in compiled code takes), with the pending cell handled
-// exactly as `call` handles it — the host boundary is where propagation ends,
-// so a throwing getter answers undefined here rather than poisoning the next
-// entry into compiled code.
+// computed `obj[key]` in compiled code takes), with a throw caught exactly as
+// `call` catches it — the host boundary is where propagation ends, so a
+// throwing getter answers undefined here.
 Value elemGetAtHostBoundary(uint64_t objBits, uint64_t keyBits) {
-    Rooted<Value> result{Value(bronze_elem_get(objBits, keyBits))};
-    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    Value out = Value::fromUndefined();
+    if (runtime::rtTryCatch([&] { out = Value(bronze_elem_get(objBits, keyBits)); }, out)) {
         return Value::fromUndefined();
     }
-    return result.get();
+    return out;
 }
 
 }  // namespace
@@ -167,28 +157,29 @@ Value getElement(Value obj, uint32_t index) {
 
 // ---- throw helpers ---------------------------------------------------------
 
-Value throwValue(Value thrown) {
-    if (runtime::rtExceptionPending()) runtime::rtClearException();
-    return runtime::rtThrow(thrown);
-}
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4646)  // embed.h: noreturn with a non-void type
+#endif
+Value throwValue(Value thrown) { runtime::rtThrow(thrown); }
 
 Value throwError(const std::string& message) {
-    if (runtime::rtExceptionPending()) runtime::rtClearException();
     ShadowStackFrame frame;
-    return runtime::rtThrowError(runtime::ErrorKind::Error, message);
+    runtime::rtThrowError(runtime::ErrorKind::Error, message);
 }
 
 Value throwTypeError(const std::string& message) {
-    if (runtime::rtExceptionPending()) runtime::rtClearException();
     ShadowStackFrame frame;
-    return runtime::rtThrowTypeError(message);
+    runtime::rtThrowTypeError(message);
 }
 
 Value throwRangeError(const std::string& message) {
-    if (runtime::rtExceptionPending()) runtime::rtClearException();
     ShadowStackFrame frame;
-    return runtime::rtThrowRangeError(message);
+    runtime::rtThrowRangeError(message);
 }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // ---- value conversions -----------------------------------------------------
 
@@ -276,13 +267,16 @@ bool isBool(Value v) { return v.isBool(); }
 
 CallResult parseJson(std::string_view jsonUtf8) {
     ShadowStackFrame frame;
-    Rooted<Value> result{runtime::rtJsonParse(jsonUtf8)};
-    if (runtime::rtTls()->exception_cell != BRONZE_ABI_NO_EXCEPTION_BITS) {
-        CallResult out{Value(runtime::rtTls()->exception_cell), /*thrown=*/true};
-        runtime::rtTls()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-        return out;
-    }
-    return CallResult{result.get(), /*thrown=*/false};
+    Value out = Value::fromUndefined();
+    const bool threw = runtime::rtTryCatch([&] { out = runtime::rtJsonParse(jsonUtf8); }, out);
+    return CallResult{out, threw};
+}
+
+CallResult catchThrow(const std::function<Value()>& body) {
+    ShadowStackFrame frame;
+    Value out = Value::fromUndefined();
+    const bool threw = runtime::rtTryCatch([&] { out = body(); }, out);
+    return CallResult{out, threw};
 }
 
 // ---- the microtask checkpoint ----------------------------------------------

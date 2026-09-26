@@ -45,8 +45,7 @@ bool lower_call_instruction(
     Builder& b,
     Function* fn,
     std::unordered_map<uint32_t, Value*>& val_map,
-    Value*& res_val,
-    const std::function<void()>& emit_exception_check
+    Value*& res_val
 ) {
     auto get_opd = [&](size_t idx) -> Value* {
         if (idx < inst_ast.operands.size()) {
@@ -81,7 +80,6 @@ bool lower_call_instruction(
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
                 res_val = b.build_call("bronze_construct_n", Type::i64(), {ctor, argc_val, argv});
             }
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -89,7 +87,6 @@ bool lower_call_instruction(
             Value* callee = ensure_type(get_opd(0), Type::i64());
             Value* args = ensure_type(get_opd(1), Type::i64());
             res_val = b.build_call("bronze_construct_spread", Type::i64(), {callee, args});
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -145,7 +142,6 @@ bool lower_call_instruction(
                 Value* null_entry = b.build_iconst_i64(0);
                 Value* key_id = lowering ? lowering->get_key_id(b, inst_ast.index) : b.build_iconst_i32(inst_ast.index);
                 Value* method = b.build_call("bronze_prop_get", Type::i64(), {recv, key_id, null_entry});
-                if (emit_exception_check) emit_exception_check();
                 recv = ensure_type(get_opd(0), Type::i64());
                 std::vector<Value*> dyn_args = {method, recv};
                 for (size_t a = 0; a < argc; ++a) {
@@ -153,7 +149,6 @@ bool lower_call_instruction(
                 }
                 res_val = build_call_dynamic(b, dyn_args, lowering);
             }
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -164,7 +159,6 @@ bool lower_call_instruction(
             Value* site = lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr;
             Value* entry = site ? site : b.build_iconst_i64(0);
             res_val = b.build_call("bronze_call_method_spread", Type::i64(), {this_val, key_id, args, entry});
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -186,7 +180,6 @@ bool lower_call_instruction(
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
                 res_val = b.build_call("bronze_super_call_n", Type::i64(), {base_ctor, this_val, argc_val, argv});
             }
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -195,7 +188,6 @@ bool lower_call_instruction(
             Value* this_val = ensure_type(get_opd(1), Type::i64());
             Value* args = ensure_type(get_opd(2), Type::i64());
             res_val = b.build_call("bronze_super_call_spread", Type::i64(), {base_ctor, this_val, args});
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -214,7 +206,6 @@ bool lower_call_instruction(
             Value* kidx = lowering ? lowering->get_key_id(b, inst_ast.index) : b.build_iconst_i32(inst_ast.index);
             Value* strict = b.build_iconst_i32(inst_ast.imm_i64 != 0 ? 1 : 0);
             b.build_call("bronze_super_set", Type::void_type(), {proto, kidx, this_val, val, strict});
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -227,7 +218,6 @@ bool lower_call_instruction(
                 dyn_args.push_back(ensure_type(get_opd(2 + a), Type::i64()));
             }
             res_val = build_call_dynamic(b, dyn_args, lowering);
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 
@@ -236,7 +226,6 @@ bool lower_call_instruction(
             Value* this_val = ensure_type(get_opd(1), Type::i64());
             Value* args = ensure_type(get_opd(2), Type::i64());
             res_val = b.build_call("bronze_dynamic_call_spread", Type::i64(), {callee, this_val, args});
-            if (emit_exception_check) emit_exception_check();
             break;
         }
 

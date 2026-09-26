@@ -8,6 +8,10 @@
 #include <string_view>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
 #include "runtime/external_store.h"
@@ -436,16 +440,13 @@ void* bronze_native_typed_array_data(uint64_t value, uint32_t kind) {
                            : v.isObject()  ? "a non-typed-array object"
                                            : "a non-object";
         rtThrowTypeError(std::string("expected a ") + wantedName + ", got " + what);
-        return nullptr;
     }
     auto* view = v.asObject<TypedArrayHeader>();
     if (view->elementKind() != wanted) {
         rtThrowTypeError(std::string("expected a ") + wantedName + ", got a " + view->kindName());
-        return nullptr;
     }
     if (view->buffer.asObject<ArrayBufferHeader>()->isDetached()) {
         rtThrowTypeError(std::string("the ") + wantedName + " argument's buffer is detached");
-        return nullptr;
     }
     return view->bytes();
 }
@@ -470,16 +471,11 @@ const void* bronze_native_str_utf8(uint64_t value) {
     if (v.isString()) {
         text = rtUtf8Chars(v.asString<StringHeader>());
     } else if (!v.isUndefined()) {
-        // ToString of a non-string ALLOCATES (and can throw — the exception
-        // check after this call takes the unwind path). The lowering runs
-        // every str conversion before it takes any typed-array pointer, so
-        // the move that may follow is harmless here.
+        // ToString of a non-string ALLOCATES (and can throw). The lowering
+        // runs every str conversion before it takes any typed-array pointer,
+        // so the move that may follow is harmless here.
         ShadowStackFrame frame;
         Rooted<Value> str{rtValueToString(v)};
-        if (rtExceptionPending()) {
-            g_strScratch.push_back(std::make_unique<std::string>());
-            return g_strScratch.back()->c_str();
-        }
         text = rtUtf8Chars(str.get().asString<StringHeader>());
     }
     g_strScratch.push_back(std::make_unique<std::string>(std::move(text)));
@@ -499,16 +495,48 @@ uint64_t bronze_native_str_from_utf8(const void* utf8) {
 // The per-thread descriptors a `T[]`-returning native fills. A stack, for
 // the reason the str scratch is one: a native may re-enter the program, which
 // may reach another buffer-returning native before the outer wrap reads its
-// slot. Every slot() is matched by exactly one wrap(): the thunk emits them
-// as a pair around the call, and an exception the native raised does not
-// skip the wrap (the thunk has no unwind check between its own instructions;
-// the check after the thunk's call is the program's). A deque, so a push
-// never moves the descriptor an outer call handed its native.
-thread_local std::deque<bronze_native_buffer> g_bufferSlots;
+// slot. The thunk pushes with slot() and pops with wrap() on return or with
+// abandon() from its landing pad when the native throws, so the slots nest
+// exactly as the thunk frames do. Each slot records its thunk's frame (the
+// return-address slot of the helper call, the same for every helper one
+// thunk call makes), which the pop checks. A deque, so a push never moves the
+// descriptor an outer call handed its native.
+struct BufferSlot {
+    bronze_native_buffer desc;
+    uintptr_t frame;
+};
+thread_local std::deque<BufferSlot> g_bufferSlots;
+
+namespace {
+
+#if defined(_MSC_VER)
+#define BRONZE_THUNK_FRAME() reinterpret_cast<uintptr_t>(_AddressOfReturnAddress())
+#else
+#define BRONZE_THUNK_FRAME() reinterpret_cast<uintptr_t>(__builtin_frame_address(0))
+#endif
+
+bronze_native_buffer popSlot(uintptr_t thunkFrame, const char* helper) {
+    if (g_bufferSlots.empty() || g_bufferSlots.back().frame != thunkFrame) {
+        fatal((std::string(helper) + " without a matching bronze_native_buffer_slot").c_str());
+    }
+    const bronze_native_buffer desc = g_bufferSlots.back().desc;
+    g_bufferSlots.pop_back();
+    return desc;
+}
+
+}  // namespace
 
 void* bronze_native_buffer_slot() {
-    g_bufferSlots.push_back(bronze_native_buffer{nullptr, 0, nullptr, nullptr});
-    return &g_bufferSlots.back();
+    g_bufferSlots.push_back(
+        BufferSlot{bronze_native_buffer{nullptr, 0, nullptr, nullptr}, BRONZE_THUNK_FRAME()});
+    return &g_bufferSlots.back().desc;
+}
+
+void bronze_native_buffer_abandon() {
+    // The native threw: a block it had already given away is released here,
+    // since no buffer will ever own it.
+    const bronze_native_buffer desc = popSlot(BRONZE_THUNK_FRAME(), "bronze_native_buffer_abandon");
+    if (desc.release) desc.release(desc.ctx);
 }
 
 namespace {
@@ -531,18 +559,12 @@ void runTransferRelease(void* user, uint8_t* bytes) {
 }  // namespace
 
 uint64_t bronze_native_buffer_wrap(uint32_t kind) {
-    if (g_bufferSlots.empty()) fatal("bronze_native_buffer_wrap without a matching slot");
-    const bronze_native_buffer desc = g_bufferSlots.back();
-    g_bufferSlots.pop_back();
+    const bronze_native_buffer desc = popSlot(BRONZE_THUNK_FRAME(), "bronze_native_buffer_wrap");
     // A filled descriptor whose wrap cannot happen still owes its release:
     // the block was given away the moment the native set `release`.
     auto releaseNow = [&] {
         if (desc.release) desc.release(desc.ctx);
     };
-    if (rtExceptionPending()) {
-        releaseNow();
-        return Value::fromUndefined().rawBits();
-    }
     const auto elementKind = static_cast<ElementKind>(kind);
     const uint64_t bpe = elementKindInfo(elementKind).bytesPerElement;
     const uint64_t byteLength = static_cast<uint64_t>(desc.length) * bpe;
@@ -569,15 +591,19 @@ uint64_t bronze_native_buffer_wrap(uint32_t kind) {
     }
     // Transfer mode: a buffer over the native's block, owing release(ctx).
     auto* tr = new TransferRelease{desc.release, desc.ctx};
-    Rooted<Value> buffer{rtCreateExternalArrayBuffer(static_cast<uint8_t*>(desc.data),
-                                                     static_cast<uint32_t>(byteLength),
-                                                     runTransferRelease, tr)};
-    if (rtExceptionPending()) {
+    Rooted<Value> buffer{Value::fromUndefined()};
+    Value refusal;
+    if (rtTryCatch([&] {
+            buffer.set(rtCreateExternalArrayBuffer(static_cast<uint8_t*>(desc.data),
+                                                   static_cast<uint32_t>(byteLength),
+                                                   runTransferRelease, tr));
+        }, refusal)) {
         // Refused before any registration owned the block (the length ladder
         // above already ran, so this is a refusal the store itself made).
+        Rooted<Value> thrown{refusal};
         delete tr;
         releaseNow();
-        return Value::fromUndefined().rawBits();
+        rtThrow(thrown.get());
     }
     return rtNewTypedArrayOverBuffer(elementKind, buffer, 0, desc.length, /*tracking=*/false)
         .rawBits();

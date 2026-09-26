@@ -69,7 +69,6 @@ namespace {
 std::string keyText(Rooted<Value>& key) {
     if (key.get().isSymbol()) return rtSymbolDescriptiveString(key.get());
     Rooted<Value> str{rtValueToString(key.get())};
-    if (rtExceptionPending()) return std::string("<key>");
     return rtUtf8Chars(str.get().asString<StringHeader>());
 }
 
@@ -81,8 +80,7 @@ void refuse(const char* trap, Rooted<Value>& key, const char* because) {
 }
 
 // The target's own property, through the runtime's single own-property switch.
-// False means absent — or that a nested proxy's trap threw, which the caller
-// separates by testing the pending cell.
+// False means absent; a nested proxy's trap's throw propagates.
 bool targetOwn(Rooted<Value>& target, Rooted<Value>& key, OwnPropertyDetail& out) {
     return rtOwnPropertyOf(target, key.get(), out);
 }
@@ -116,8 +114,7 @@ bool compatibleDescriptor(bool extensibleTarget, const OwnPropertyDetail& desc,
 
 // 6.2.6.5 ToPropertyDescriptor followed by 6.2.6.6 CompletePropertyDescriptor,
 // over the object a `getOwnPropertyDescriptor` trap returned. Every read is an
-// ordinary [[Get]] and can run user code, so the object arrives as a root and
-// the caller tests the pending cell.
+// ordinary [[Get]] and can run user code, so the object arrives as a root.
 //
 // COMPLETION is what makes the result comparable: a descriptor a trap wrote as
 // `{ value: 1 }` means writable, enumerable and configurable FALSE once
@@ -130,7 +127,7 @@ bool decodeDescriptor(Rooted<Value>& descObj, OwnPropertyDetail& out) {
         Rooted<Value> nameKey{rtMakeString(name)};
         if (!bronze_has_property(nameKey.get().rawBits(), descObj.get().rawBits())) return false;
         field.set(Value(bronze_elem_get(descObj.get().rawBits(), nameKey.get().rawBits())));
-        return !rtExceptionPending();
+        return true;
     };
 
     bool hasGet = false, hasSet = false;
@@ -141,22 +138,16 @@ bool decodeDescriptor(Rooted<Value>& descObj, OwnPropertyDetail& out) {
         hasGet = true;
         getter.set(field.get());
     }
-    if (rtExceptionPending()) return false;
     if (present("set")) {
         hasSet = true;
         setter.set(field.get());
     }
-    if (rtExceptionPending()) return false;
     if (present("value")) value.set(field.get());
-    if (rtExceptionPending()) return false;
 
     bool writable = false, enumerable = false, configurable = false;
     if (present("writable")) writable = bronze_truthy(field.get().rawBits());
-    if (rtExceptionPending()) return false;
     if (present("enumerable")) enumerable = bronze_truthy(field.get().rawBits());
-    if (rtExceptionPending()) return false;
     if (present("configurable")) configurable = bronze_truthy(field.get().rawBits());
-    if (rtExceptionPending()) return false;
 
     out.accessor = hasGet || hasSet;
     out.enumerable = enumerable;
@@ -179,7 +170,7 @@ bool decodeDescriptor(Rooted<Value>& descObj, OwnPropertyDetail& out) {
 
 void rtProxyCheckGet(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& trapResult) {
     OwnPropertyDetail current;
-    if (!targetOwn(target, key, current) || rtExceptionPending()) return;
+    if (!targetOwn(target, key, current)) return;
     if (current.configurable) return;
     if (!current.accessor) {
         // 10.5.8 step 10.a: a frozen data property reads one value forever.
@@ -201,7 +192,7 @@ void rtProxyCheckGet(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& t
 
 void rtProxyCheckSet(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& value) {
     OwnPropertyDetail current;
-    if (!targetOwn(target, key, current) || rtExceptionPending()) return;
+    if (!targetOwn(target, key, current)) return;
     if (current.configurable) return;
     if (!current.accessor) {
         // 10.5.9 step 9.a: a write of the SAME value is not a change, so it is
@@ -227,13 +218,12 @@ void rtProxyCheckHas(Rooted<Value>& target, Rooted<Value>& key, bool trapAnswer)
     // a property the target has not got, and only a DENIAL can contradict it.
     if (trapAnswer) return;
     OwnPropertyDetail current;
-    if (!targetOwn(target, key, current) || rtExceptionPending()) return;
+    if (!targetOwn(target, key, current)) return;
     if (!current.configurable) {
         refuse("has", key, "the absence of a non-configurable property of the target");
         return;
     }
     const bool extensible = rtIsExtensibleOf(target);
-    if (rtExceptionPending()) return;
     if (!extensible) {
         refuse("has", key,
                "the absence of an own property of a target that is not extensible");
@@ -245,14 +235,13 @@ void rtProxyCheckDelete(Rooted<Value>& target, Rooted<Value>& key, bool trapAnsw
     // refusal cannot contradict anything.
     if (!trapAnswer) return;
     OwnPropertyDetail current;
-    if (!targetOwn(target, key, current) || rtExceptionPending()) return;
+    if (!targetOwn(target, key, current)) return;
     if (!current.configurable) {
         refuse("deleteProperty", key,
                "the removal of a non-configurable property of the target");
         return;
     }
     const bool extensible = rtIsExtensibleOf(target);
-    if (rtExceptionPending()) return;
     if (!extensible) {
         refuse("deleteProperty", key,
                "the removal of an own property of a target that is not extensible");
@@ -264,11 +253,9 @@ void rtProxyCheckGetOwnProperty(Rooted<Value>& target, Rooted<Value>& key,
     reported = OwnPropertyDetail{};
     OwnPropertyDetail current;
     const bool exists = targetOwn(target, key, current);
-    if (rtExceptionPending()) return;
     // The target's value may be a heap value the message-building below moves;
     // it is only ever compared, never held, so nothing needs rooting.
     const bool extensible = rtIsExtensibleOf(target);
-    if (rtExceptionPending()) return;
 
     if (desc.get().isUndefined()) {
         // Steps 10-12: reporting a property absent is a lie if the target's is
@@ -286,7 +273,7 @@ void rtProxyCheckGetOwnProperty(Rooted<Value>& target, Rooted<Value>& key,
         return;
     }
 
-    if (!decodeDescriptor(desc, reported) || rtExceptionPending()) return;
+    if (!decodeDescriptor(desc, reported)) return;
 
     // Step 16: the descriptor must be one the target could actually have been
     // redescribed into.
@@ -350,14 +337,12 @@ void rtProxyCheckOwnKeys(Rooted<Value>& target, Rooted<Value>& keys) {
     }
 
     const bool extensible = rtIsExtensibleOf(target);
-    if (rtExceptionPending()) return;
     // The target's OWN keys, through the SAME answer the forward path of
     // 10.5.11 hands back when a handler has no `ownKeys` trap. Deliberately not
     // `Object.getOwnPropertyNames`: that member refuses by name for receiver
     // kinds a proxy target may well be, and a check is not allowed to be
     // stricter about the target than the forward it guards.
     Rooted<Value> targetKeys{rtProxyTargetOwnKeys(target)};
-    if (rtExceptionPending()) return;
 
     // Steps 13-15: the split, and the early exit that is the whole reason an
     // ordinary extensible target costs a proxy nothing here.
@@ -367,7 +352,6 @@ void rtProxyCheckOwnKeys(Rooted<Value>& target, Rooted<Value>& keys) {
         Rooted<Value> key{targetKeys.get().asObject<ArrayHeader>()->getElem(i)};
         OwnPropertyDetail current;
         const bool exists = targetOwn(target, key, current);
-        if (rtExceptionPending()) return;
         if (!exists || current.configurable) continue;
         anyNonConfigurable = true;
         // Step 19: a non-configurable key cannot be hidden.
@@ -405,10 +389,9 @@ void rtProxyCheckPrototype(Rooted<Value>& target, Rooted<Value>& trapResult) {
     // 10.5.1 step 7: an extensible target's prototype can still change, so the
     // trap is free.
     const bool extensible = rtIsExtensibleOf(target);
-    if (extensible || rtExceptionPending()) return;
+    if (extensible) return;
     const uint64_t call[1] = {target.get().rawBits()};
     Value actual = Value(objectGetPrototypeOf(0, 0, 1, call));
-    if (rtExceptionPending()) return;
     if (!sameValue(trapResult.get(), actual)) {
         rtThrowTypeError(
             "'getPrototypeOf' on proxy: trap returned a prototype different from the one held "
@@ -447,9 +430,7 @@ void rtProxyCheckDefineProperty(Rooted<Value>& target, Rooted<Value>& key,
                                 const DecodedDescriptorView& desc) {
     OwnPropertyDetail current;
     const bool exists = targetOwn(target, key, current);
-    if (rtExceptionPending()) return;
     const bool extensible = rtIsExtensibleOf(target);
-    if (rtExceptionPending()) return;
     // Step 14: the one field of the descriptor that can manufacture a
     // guarantee — non-configurability — is the one every rule below is about.
     const bool settingConfigFalse = desc.hasConfigurable && !desc.configurable;

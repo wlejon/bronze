@@ -66,12 +66,9 @@ static Value valueToString(Value v) {
     // are the two ways to ask for the text, and both spell it out.
     //
     // Thrown rather than fatal, and CATCHABLE: `"" + sym` lowers to a dynamic
-    // add, which `il::canThrow` marks, so generated code tests the pending cell
-    // right after it. The empty string returned here is what the caller stores
-    // into its root slot before that test, never a value a program reads.
+    // add, which `il::canThrow` marks, so a surrounding `catch` takes it.
     if (v.isSymbol()) {
         rtThrowTypeError("Cannot convert a Symbol value to a string");
-        return rtMakeString("");
     }
     // 6.1.6.2.20 BigInt::toString, which — unlike ToNumber above — is total:
     // `String(1n)`, `"" + 1n` and `` `${1n}` `` are the digits with no suffix,
@@ -170,7 +167,6 @@ Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
         Rooted<Value> toPrimKey{Value::fromSymbol(rtSymbolToPrimitive())};
         Rooted<Value> exoticToPrim{
             Value(bronze_elem_get(input.get().rawBits(), toPrimKey.get().rawBits()))};
-        if (rtExceptionPending()) return Value::fromUndefined();
         if (!exoticToPrim.get().isUndefined() && !exoticToPrim.get().isNull()) {
             if (!exoticToPrim.get().isObject() ||
                 exoticToPrim.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
@@ -184,7 +180,6 @@ Value rtToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
             const uint64_t args[1] = {hintVal.get().rawBits()};
             Rooted<Value> result{Value(bronze_dynamic_call(
                 exoticToPrim.get().rawBits(), input.get().rawBits(), 1, args))};
-            if (rtExceptionPending()) return Value::fromUndefined();
             if (result.get().isObject()) {
                 rtThrowTypeError("Cannot convert object to primitive value");
                 return Value::fromUndefined();
@@ -219,7 +214,6 @@ Value rtOrdinaryToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
         // built instead of answering "[object Array]" — a wrong answer that
         // would have looked right.
         Rooted<Value> method{Value(bronze_elem_get(input.get().rawBits(), key.get().rawBits()))};
-        if (rtExceptionPending()) return Value::fromUndefined();
         // Step 3.a is IsCallable, and a non-callable member is SKIPPED rather
         // than an error: `{ toString: 1 }` falls through to `valueOf`.
         if (!method.get().isObject() ||
@@ -228,7 +222,6 @@ Value rtOrdinaryToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
         }
         Rooted<Value> result{
             Value(bronze_dynamic_call(method.get().rawBits(), input.get().rawBits(), 0, nullptr))};
-        if (rtExceptionPending()) return Value::fromUndefined();
         if (!result.get().isObject()) return result.get();
     }
     rtThrowTypeError("Cannot convert object to primitive value");
@@ -241,7 +234,6 @@ Value rtOrdinaryToPrimitive(Rooted<Value>& input, ToPrimitiveHint hint) {
 // `valueToString`.
 Value rtToStringValue(Rooted<Value>& v) {
     Rooted<Value> prim{rtToPrimitive(v, ToPrimitiveHint::String)};
-    if (rtExceptionPending()) return rtMakeString("");
     return valueToString(prim.get());
 }
 
@@ -258,7 +250,6 @@ Value rtToStringValue(Rooted<Value>& v) {
 Value rtToPropertyKey(Rooted<Value>& key) {
     if (!key.get().isObject()) return key.get();
     Rooted<Value> prim{rtToPrimitive(key, ToPrimitiveHint::String)};
-    if (rtExceptionPending()) return rtMakeString("");
     if (prim.get().isSymbol()) return prim.get();
     return valueToString(prim.get());
 }
@@ -441,10 +432,9 @@ static double stringToNumber(const StringHeader* s) {
 // A Symbol THROWS rather than fatals: 6.1.5.1 makes ToNumber of a Symbol a
 // TypeError, and a program is entitled to catch it. That is what forced
 // `Op::Unbox` and `Op::ToInt32` off `il::canThrow`'s cannot-throw list — the
-// unbox is generated code's only numeric coercion, so without a cell test after
-// it the throw would have propagated past the `catch` that should have taken
-// it. NaN is what a raising path returns, and it is never a value a program
-// reads: the caller stores it and then tests the cell.
+// unbox is generated code's only numeric coercion, and a pass that moved it
+// out of its protected block would carry the throw past the `catch` that
+// should take it.
 double rtToNumber(Value v) {
     if (v.isNumber()) return v.asNumber();
     if (v.isInt32()) return static_cast<double>(static_cast<int32_t>(v.payload()));
@@ -476,7 +466,6 @@ double rtToNumber(Value v) {
     // replacement, where reading the slot would have quietly ignored it.
     Rooted<Value> input{v};
     Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
-    if (rtExceptionPending()) return std::numeric_limits<double>::quiet_NaN();
     return rtToNumber(prim.get());
 }
 
@@ -710,9 +699,8 @@ bool rtAddToPrimitives(Rooted<Value>& a, Rooted<Value>& b) {
     // can call user code, and a collection there moves the other operand out
     // from under any raw bits still being held.
     a.set(rtToPrimitive(a, ToPrimitiveHint::Default));
-    if (rtExceptionPending()) return false;
     b.set(rtToPrimitive(b, ToPrimitiveHint::Default));
-    return !rtExceptionPending();
+    return true;
 }
 
 uint64_t rtAddNonStringTail(Rooted<Value>& a, Rooted<Value>& b) {
@@ -723,11 +711,8 @@ uint64_t rtAddNonStringTail(Rooted<Value>& a, Rooted<Value>& b) {
     // It is raised HERE rather than left to `rtToNumber` below so that the
     // message names the operator's own step: 13.15.3 step 3 is where a Symbol
     // operand of `+` fails, before either half of the addition is attempted.
-    // `undefined` goes into the caller's root slot before it tests the pending
-    // cell, which is the contract every raising helper keeps.
     if (a.get().isSymbol() || b.get().isSymbol()) {
         rtThrowTypeError("Cannot convert a Symbol value to a number");
-        return Value::fromUndefined().rawBits();
     }
     // Step 3's ToNumeric: a BigInt on either side means the pair must be two
     // BigInts, and this is BELOW the String branch on purpose — `"" + 1n` is

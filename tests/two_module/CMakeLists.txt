@@ -42,6 +42,7 @@ if(NOT MSVC)
     set(PLATFORM_LIBS ${CMAKE_DL_LIBS} m)
 endif()
 target_link_libraries(bronze_two_module_host PRIVATE bronze::embed Threads::Threads ${PLATFORM_LIBS})
+brass_bind_eh_symbols(bronze_two_module_host)
 # bronze emits non-PIC objects (its own driver links executables -no-pie on
 # Linux, link.cpp); a distro-default PIE link of them dies in GNU ld with
 # "failed to set dynamic section sizes: bad value".

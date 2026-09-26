@@ -275,7 +275,6 @@ static uint64_t encodeUriEntry(uint32_t argc, const uint64_t* argv, bool compone
     RootedArgs args(argc, argv);
     // Step 1 is ToString, and an absent argument is `undefined`.
     Rooted<Value> input{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
     std::string encoded;
     if (!encodeUriImpl(units, component, encoded)) {
@@ -376,7 +375,6 @@ static bool decodeUriImpl(const std::vector<uint16_t>& units, bool preserveReser
 static uint64_t decodeUriEntry(uint32_t argc, const uint64_t* argv, bool preserveReserved) {
     RootedArgs args(argc, argv);
     Rooted<Value> input{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
     std::vector<uint16_t> decoded;
     if (!decodeUriImpl(units, preserveReserved, decoded)) {
@@ -430,7 +428,6 @@ uint64_t globalEscape(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     // Step 1 is ToString, and an absent argument is `undefined` — so
     // `escape()` is "undefined", the same answer the URI functions above give.
     Rooted<Value> input{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
     // The result is ASCII by construction, so a UTF-8 std::string carries it
     // exactly and `rtMakeString` needs no unit array.
@@ -457,7 +454,6 @@ uint64_t globalEscape(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 uint64_t globalUnescape(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> input{rtValueToString(args[0])};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     const std::vector<uint16_t> units = rtStringUnits(input.get().asString<StringHeader>());
     std::vector<uint16_t> out;
     out.reserve(units.size());
@@ -565,7 +561,6 @@ Value rtNumberValueOfArgument(Value v) {
     // conversion is attempted.
     Rooted<Value> input{v};
     Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
-    if (rtExceptionPending()) return Value::fromDouble(0.0);
     // 6.1.5.1: ToNumber of a Symbol is a TypeError, and one a `catch` can
     // hold — the hook the conversion is asked through does not change that.
     if (prim.get().isSymbol()) {

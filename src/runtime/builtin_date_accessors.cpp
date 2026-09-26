@@ -97,7 +97,6 @@ uint64_t dateSetTime(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         return Value::fromUndefined().rawBits();
     }
     const double t = dt::timeClip(rtToNumber(args[0]));
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     rtDateSetTimeValue(self.get(), t);
     return Value::fromDouble(t).rawBits();
 }
@@ -126,12 +125,10 @@ uint64_t dateSetTimeFields(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     // is NaN, and the whole date becomes invalid. Only the TRAILING fields are
     // conditional, and "present" means the call really passed them.
     supplied[First] = rtToNumber(args[0]);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     int given = 1;
     for (int i = 1; i < kSettable; ++i) {
         if (static_cast<uint32_t>(i) >= args.count()) break;
         supplied[First + i] = rtToNumber(args[static_cast<uint32_t>(i)]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         ++given;
     }
     if (std::isnan(t)) return Value::fromDouble(t).rawBits();
@@ -167,12 +164,10 @@ uint64_t dateSetDateFields(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     constexpr int kSettable = 3 - First;
     double supplied[3] = {0.0, 0.0, 0.0};
     supplied[First] = rtToNumber(args[0]);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     int given = 1;
     for (int i = 1; i < kSettable; ++i) {
         if (static_cast<uint32_t>(i) >= args.count()) break;
         supplied[First + i] = rtToNumber(args[static_cast<uint32_t>(i)]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         ++given;
     }
 

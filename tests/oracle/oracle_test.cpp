@@ -491,7 +491,7 @@ struct JitCaseResult {
 };
 
 // The uncaught-error report both paths print at the end: the built program
-// through bronze_uncaught_exception, `bronze run` through cli/run.cpp's
+// through rtRunModuleEntry, `bronze run` through cli/run.cpp's
 // reportUncaught, both from rtUncaughtReport. Held to be the same bytes.
 void checkJitMatchesBuilt(const JitCaseResult& res) {
     const std::string& id = res.oracleCase.id;

@@ -1,0 +1,13 @@
+start
+end
+caught: before await
+async finally
+microtask still runs
+caught: second from first
+caught: TypeError helper
+handled awaited rejection
+caught: from finally
+caught: in then 1
+caught: after await
+late job ran
+after catch: recovered

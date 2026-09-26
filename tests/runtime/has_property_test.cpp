@@ -422,12 +422,9 @@ TEST_CASE("`in` on a non-object right-hand side is a TypeError") {
     ShadowStackFrame frame;
 
     Rooted<Value> key{rtMakeString("k")};
-    CHECK_FALSE(has(key.get(), Value::fromDouble(1.0)));
-    CHECK(rtExceptionPending());
-    rtClearException();
+    Value thrown;
+    CHECK(rtTryCatch([&] { (void)has(key.get(), Value::fromDouble(1.0)); }, thrown));
 
     Rooted<Value> sym{rtMakeSymbol(Value::fromUndefined())};
-    CHECK_FALSE(has(sym.get(), Value::fromUndefined()));
-    CHECK(rtExceptionPending());
-    rtClearException();
+    CHECK(rtTryCatch([&] { (void)has(sym.get(), Value::fromUndefined()); }, thrown));
 }

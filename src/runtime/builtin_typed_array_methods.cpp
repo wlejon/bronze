@@ -101,7 +101,6 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     for (; i < srcLength; ++i) {
         Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
         const double v = rtToNumber(elem.get());
-        if (rtExceptionPending()) break;
         self.get().asObject<TypedArrayHeader>()->set(static_cast<uint32_t>(offset) + i, v);
     }
     return Value::fromUndefined().rawBits();
@@ -183,7 +182,6 @@ uint64_t taSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
 
     // Step 9: TypedArraySpeciesCreate, which can run a subclass constructor.
     Rooted<Value> out{rtTypedArraySpeciesCreate(self, count)};
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     // The copy is clamped to the source's window as it is NOW, because
     // relativeArg's ToNumber and the species constructor can both run user
     // code that shrank it; the tail of a clamped copy stays the zero-fill the
@@ -231,7 +229,6 @@ uint64_t taFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
         if (!rtBigIntToRawBits64(args[0], bits)) return Value::fromUndefined().rawBits();
     } else {
         value = rtToNumber(args[0]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
 
     const uint32_t len = lengthOf(self.get());
@@ -338,11 +335,9 @@ uint64_t taSort(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
                 Value res(bronze_dynamic_call(compareFn.get().rawBits(),
                                               BRONZE_ABI_UNDEFINED_BITS, 2,
                                               reinterpret_cast<const uint64_t*>(block)));
-                if (rtExceptionPending()) return false;
                 const double v = rtToNumber(res);
                 return !std::isnan(v) && v < 0;
             });
-            if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         }
 
         auto* view = self.get().asObject<TypedArrayHeader>();
@@ -373,11 +368,9 @@ uint64_t taSort(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
             Value block[2] = {Value::fromDouble(a), Value::fromDouble(b)};
             Value res(bronze_dynamic_call(compareFn.get().rawBits(), BRONZE_ABI_UNDEFINED_BITS, 2,
                                           reinterpret_cast<const uint64_t*>(block)));
-            if (rtExceptionPending()) return false;
             const double v = rtToNumber(res);
             return !std::isnan(v) && v < 0;
         });
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
 
     auto* view = self.get().asObject<TypedArrayHeader>();
@@ -397,7 +390,6 @@ uint64_t taJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     std::string sep = ",";
     if (args.count() > 0 && !args[0].isUndefined()) {
         Rooted<Value> sepVal{rtValueToString(args[0])};
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         sep = rtUtf8Chars(sepVal.get().asString<StringHeader>());
     }
 
@@ -454,7 +446,6 @@ uint64_t taToSorted(uint64_t env, uint64_t thisBits, uint32_t argc, const uint64
     }
     uint64_t cmp = args[0].rawBits();
     taSort(env, out.get().rawBits(), 1, &cmp);
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     return out.get().rawBits();
 }
 
@@ -476,7 +467,6 @@ uint64_t taWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
         if (!rtBigIntToRawBits64(args[1], bits)) return Value::fromUndefined().rawBits();
     } else {
         val = rtToNumber(args[1]);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     }
     if (k < 0 || k >= static_cast<double>(len)) {
         return rtThrowRangeError("Invalid index").rawBits();

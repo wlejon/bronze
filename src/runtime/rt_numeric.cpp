@@ -9,9 +9,10 @@
 // these helpers exist at all — before BigInt, a dynamic `a - b` was `ToNumber`
 // twice and an fsub, with nothing left to decide.
 //
-// The number/number case is inlined at the call site (llvm_arith.cpp), so a
-// call into this file means an operand was a string, an object, a BigInt or a
-// Symbol. Nothing a typed numeric path emits reaches here.
+// The number/number case is inlined at the call site (il2mir's
+// il_lowering_ops.cpp), so a call into this file means an operand was a string,
+// an object, a BigInt or a Symbol. Nothing a typed numeric path emits reaches
+// here.
 
 #include <cmath>
 #include <cstdint>
@@ -35,44 +36,27 @@ namespace {
 // caller below ask one question, "are these the same type?", instead of
 // re-deriving the answer per operand.
 //
-// False leaves an exception pending: a Symbol operand, or a user `valueOf`
-// that threw.
-bool toNumeric(Value v, Value& out) {
+// A Symbol operand, or a user `valueOf` that throws, throws.
+Value toNumeric(Value v) {
     // 7.1.3 step 1 on a Number is the identity, and a Number is what a
     // dynamic operand usually holds: no root, no ToPrimitive walk.
-    if (v.isNumber()) {
-        out = v;
-        return true;
-    }
+    if (v.isNumber()) return v;
     Rooted<Value> input{v};
     Rooted<Value> prim{rtToPrimitive(input, ToPrimitiveHint::Number)};
-    if (rtExceptionPending()) return false;
-    if (prim.get().isBigInt()) {
-        out = prim.get();
-        return true;
-    }
-    const double d = rtToNumber(prim.get());
-    if (rtExceptionPending()) return false;
-    out = Value::fromDouble(d);
-    return true;
+    if (prim.get().isBigInt()) return prim.get();
+    return Value::fromDouble(rtToNumber(prim.get()));
 }
 
 // Both operands through ToNumeric, in source order, with the first held across
 // the second: `toNumeric` runs user code and allocates a BigInt, so an unrooted
 // first answer would be a dangling pointer the moment the second one collects.
-//
-// False means an exception is pending and the caller must return undefined.
-bool numericOperands(uint64_t lhsBits, uint64_t rhsBits, Rooted<Value>& lhsOut,
+// A throw from either conversion propagates.
+void numericOperands(uint64_t lhsBits, uint64_t rhsBits, Rooted<Value>& lhsOut,
                      Rooted<Value>& rhsOut) {
     Rooted<Value> lhsIn{Value(lhsBits)};
     Rooted<Value> rhsIn{Value(rhsBits)};
-    Value ln = Value::fromUndefined();
-    if (!toNumeric(lhsIn.get(), ln)) return false;
-    lhsOut.set(ln);
-    Value rn = Value::fromUndefined();
-    if (!toNumeric(rhsIn.get(), rn)) return false;
-    rhsOut.set(rn);
-    return true;
+    lhsOut.set(toNumeric(lhsIn.get()));
+    rhsOut.set(toNumeric(rhsIn.get()));
 }
 
 double asDouble(Value v) {
@@ -85,7 +69,7 @@ double asDouble(Value v) {
 uint64_t arith(BigIntOp op, uint64_t lhsBits, uint64_t rhsBits) {
     Rooted<Value> l{Value::fromUndefined()};
     Rooted<Value> r{Value::fromUndefined()};
-    if (!numericOperands(lhsBits, rhsBits, l, r)) return Value::fromUndefined().rawBits();
+    numericOperands(lhsBits, rhsBits, l, r);
     if (l.get().isBigInt() || r.get().isBigInt()) {
         Value out = Value::fromUndefined();
         rtBigIntBinary(op, l.get(), r.get(), out);
@@ -115,7 +99,7 @@ uint64_t arith(BigIntOp op, uint64_t lhsBits, uint64_t rhsBits) {
 uint64_t bitwise(BigIntOp op, uint64_t lhsBits, uint64_t rhsBits) {
     Rooted<Value> l{Value::fromUndefined()};
     Rooted<Value> r{Value::fromUndefined()};
-    if (!numericOperands(lhsBits, rhsBits, l, r)) return Value::fromUndefined().rawBits();
+    numericOperands(lhsBits, rhsBits, l, r);
     if (l.get().isBigInt() || r.get().isBigInt()) {
         Value out = Value::fromUndefined();
         rtBigIntBinary(op, l.get(), r.get(), out);
@@ -163,8 +147,7 @@ uint64_t bronze_dynamic_ushr(uint64_t l, uint64_t r) { return bitwise(BigIntOp::
 // 13.5.5 unary `-`. NOT `0 - x`: IEEE-754 makes 0 - 0 positive zero, and the
 // sign of zero is observable.
 uint64_t bronze_dynamic_neg(uint64_t bits) {
-    Value n = Value::fromUndefined();
-    if (!toNumeric(Value(bits), n)) return Value::fromUndefined().rawBits();
+    const Value n = toNumeric(Value(bits));
     if (n.isBigInt()) {
         Value out = Value::fromUndefined();
         rtBigIntNegate(n, out);
@@ -177,8 +160,7 @@ uint64_t bronze_dynamic_neg(uint64_t bits) {
 // is a MIXING error the moment `x` is a BigInt: -1 is a Number, and 13.15.3
 // would refuse the pair before the operator ever ran.
 uint64_t bronze_dynamic_bitnot(uint64_t bits) {
-    Value n = Value::fromUndefined();
-    if (!toNumeric(Value(bits), n)) return Value::fromUndefined().rawBits();
+    const Value n = toNumeric(Value(bits));
     if (n.isBigInt()) {
         Value out = Value::fromUndefined();
         rtBigIntBitNot(n, out);
@@ -191,9 +173,7 @@ uint64_t bronze_dynamic_bitnot(uint64_t bits) {
 // yields the COERCED old value: `let s = "5"; s++` evaluates to the number 5,
 // not to the string.
 uint64_t bronze_to_numeric(uint64_t bits) {
-    Value out = Value::fromUndefined();
-    if (!toNumeric(Value(bits), out)) return Value::fromUndefined().rawBits();
-    return out.rawBits();
+    return toNumeric(Value(bits)).rawBits();
 }
 
 // 13.4.4.1 step 3: add or subtract ONE OF THE OPERAND'S OWN TYPE — 1 for a

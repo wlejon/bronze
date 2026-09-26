@@ -125,7 +125,6 @@ bool rtArrayIteratorStep(Rooted<Value>& self, Value& produced) {
     // proxy's `get` trap), which is what makes an array grown mid-walk
     // iterate its new tail and a trap see one `length` read per element.
     const uint32_t length = rtArrayLikeLength(target);
-    if (rtExceptionPending()) return false;
     if (at >= length) return false;
     const auto kind = static_cast<uint32_t>(readSlot(self, ArrayIteratorSlot::Kind).asNumber());
 
@@ -139,7 +138,6 @@ bool rtArrayIteratorStep(Rooted<Value>& self, Value& produced) {
     // generic read is `Get(array, ToString(index))`, trap and all.
     Rooted<Value> elem{isArray(target.get()) ? target.get().asObject<ArrayHeader>()->getElem(at)
                                              : rtArrayLikeElement(target, at)};
-    if (rtExceptionPending()) return false;
     if (kind == Values) {
         produced = elem.get();
     } else {

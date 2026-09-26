@@ -233,11 +233,11 @@ const regex::Pattern& rtRegExpPattern(Value re);
 Value rtRegExpBuildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
                               const regex::MatchResult& match);
 // `lastIndex` (22.2.4.1), the own data property the header carries. The
-// WRITE is Set(R, "lastIndex", v, true) — false with a TypeError pending on
-// a frozen RegExp. The READ for a match is ToLength of whatever was
-// assigned, which can run user code (`ok` false with the exception pending);
-// the raw value is for `[@@search]`'s save-and-restore, which must put back
-// exactly what it found.
+// WRITE is Set(R, "lastIndex", v, true) — a TypeError thrown on a frozen
+// RegExp, true otherwise. The READ for a match is ToLength of whatever was
+// assigned, which can run user code and throw (`ok` is set true when it
+// returns); the raw value is for `[@@search]`'s save-and-restore, which must
+// put back exactly what it found.
 bool rtRegExpSetLastIndex(Rooted<Value>& re, double value);
 double rtRegExpLastIndexLength(Rooted<Value>& re, bool& ok);
 Value rtRegExpLastIndexValue(Value re);
@@ -265,8 +265,8 @@ enum class PatternSymbol : uint8_t { Match, MatchAll, Replace, Search, Split };
 // `false` — with NO property read at all — for the two argument shapes that
 // need none: a non-object, and a RegExp whose chain is as built
 // (`rtRegExpChainPristine`), where the read would find exactly the algorithm
-// the caller runs directly. `false` with an exception pending when the
-// property was present and not callable, or a getter threw.
+// the caller runs directly. A TypeError is thrown when the property was
+// present and not callable, and a getter's throw propagates.
 bool rtPatternMethod(Rooted<Value>& arg, PatternSymbol which, Rooted<Value>& out);
 
 // The call that dispatch makes: `Call(method, argument, «first[, second]»)`.

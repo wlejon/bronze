@@ -70,6 +70,28 @@ private:
                            uint32_t block_id = 0,
                            uint32_t* cont_counter = nullptr);
 
+    // Exception edges (il_lowering_eh.cpp). A handler block is entered with
+    // the thrown value as its one parameter, which its `exc.take` reads.
+    // Every call a protected block makes becomes an `invoke` whose unwind
+    // edge goes to a pad (`landing_pad` then a branch to the handler); a
+    // call anywhere else is a plain call, and a throw it raises leaves the
+    // function through the unwinder, so the path that does not throw
+    // carries nothing.
+    void add_handler_params(const BronzeFunction& fn_ast, Builder& b,
+                            const std::unordered_map<uint32_t, BasicBlock*>& block_map);
+    // The MIR blocks lowered from IL block `handler_id`'s protected region
+    // since `first_new_block` (the index into fn->blocks() before the IL
+    // block was lowered), with the IL block's own MIR block.
+    void note_protected_blocks(Function* fn, BasicBlock* il_bb, size_t first_new_block, uint32_t handler_id);
+    // Rewrites the noted blocks' calls into invokes; run once per function
+    // after every block is lowered.
+    void route_exception_edges(Builder& b, const std::unordered_map<uint32_t, BasicBlock*>& block_map);
+    // The handler block's exception parameter, or null for a block that is
+    // no handler.
+    Value* handler_exception(uint32_t block_id) const;
+    std::unordered_map<uint32_t, Value*> handler_exc_;
+    std::vector<std::pair<BasicBlock*, uint32_t>> protected_blocks_;
+
     TranslatorOptions options_;
     DiagnosticReporter* diag_ = nullptr;
     PropertyLoweringHelper prop_lowering_;

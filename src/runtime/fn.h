@@ -211,15 +211,14 @@ using EnterJsHook = bool (*)(bronze_fn_code code, uint64_t env_bits, uint64_t th
 EnterJsHook rtGetEnterJsHook() noexcept;
 void rtSetEnterJsHook(EnterJsHook hook) noexcept;
 
-inline uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
-                          uint32_t argc, const uint64_t* argv) {
-    if (auto* hook = rtGetEnterJsHook()) {
-        uint64_t result = 0;
-        if (hook(code, env_bits, this_bits, argc, argv, &result)) {
-            return result;
-        }
-    }
-    return bronze_enter_js(code, env_bits, this_bits, argc, argv);
-}
+// A throw out of the callee continues as a C++ BrassException (exception.h),
+// whichever engine ran it: compiled code's native raise leaves as one, and an
+// interpreted frame's is translated here.
+uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
+                   uint32_t argc, const uint64_t* argv);
+
+// Runs a compiled module's entry from C++. The entry loads the pinned
+// register itself (il2mir); a throw out of it continues as rtEnterJs's does.
+void rtCallModuleEntry(void (*entry)());
 
 }  // namespace bronze

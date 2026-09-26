@@ -206,7 +206,6 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
         // 3's) — the language's own answer, since a trap refused.
         Rooted<Value> self{receiver};
         const bool ok = rtProxySetIntegrityLevel(self.get(), want);
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         if (!ok) {
             return rtThrowTypeError(std::string("Cannot ") + operation +
                                     " a proxy whose 'preventExtensions' trap returned falsish")
@@ -236,7 +235,7 @@ uint64_t setIntegrity(Value receiver, IntegrityLevel want, const char* operation
 
     Rooted<Value> self{receiver};
     ObjectHeader* owner = integrityTableOwner(self, target);
-    if (!owner || rtExceptionPending()) return Value::fromUndefined().rawBits();
+    if (!owner) return Value::fromUndefined().rawBits();
     Dictionary& d = *owner->shape->dict;
     // `preventExtensions` is [[PreventExtensions]] alone: 7.3.14's steps 4 and
     // 5 belong to `seal` and `freeze`, and running them here would take
@@ -435,7 +434,6 @@ uint64_t rtObjectIsExtensible(uint64_t, uint64_t, uint32_t argc, const uint64_t*
         // the target's own answer.
         Rooted<Value> self{args[0]};
         const bool extensible = rtProxyIsExtensible(self.get());
-        if (rtExceptionPending()) return Value::fromUndefined().rawBits();
         return Value::fromBool(extensible).rawBits();
     }
     if (target == Target::Refused) return Value::fromBool(true).rawBits();

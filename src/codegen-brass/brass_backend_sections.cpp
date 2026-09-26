@@ -391,7 +391,7 @@ void emitDataSection(ObjectFile& obj, const std::string& entrySymbol, const il::
     const size_t cacheBytes = cacheCells * sizeof(uint64_t);
     dataSec.data.resize(cacheOffset + cacheBytes);
     for (size_t i = 0; i < cacheCells; ++i) {
-        *reinterpret_cast<uint64_t*>(&dataSec.data[cacheOffset + i * sizeof(uint64_t)]) = BRONZE_ABI_NO_EXCEPTION_BITS;
+        *reinterpret_cast<uint64_t*>(&dataSec.data[cacheOffset + i * sizeof(uint64_t)]) = BRONZE_ABI_HOLE_BITS;
     }
     defineSymbol(obj, moduleSymbolName(entrySymbol, "__bronze_global_cache"), dataIdx, cacheOffset,
                  cacheBytes, SymbolBinding::Local);

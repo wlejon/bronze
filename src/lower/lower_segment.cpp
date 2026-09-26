@@ -9,8 +9,8 @@ namespace bronze::lower {
 // A top-level `throw` makes the current block terminated; one body DROPS the
 // statements after it (lowerStmtList says why that is the language's answer),
 // so the segmented form drops them too rather than lowering segments no call
-// would ever reach — `main`'s pending-exception check after each call is what
-// makes the calls after a throwing segment unreachable at run time.
+// would ever reach — a throw out of a segment unwinds `main` itself, which is
+// what makes the calls after a throwing segment unreachable at run time.
 bool Lowerer::lowerTopLevelSegments(const std::vector<const ast::Stmt*>& topLevelStmts,
                                     il::Function& mainFn) {
     // Sized in IL instructions — the only size lowering can see. One IL

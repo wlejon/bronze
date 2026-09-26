@@ -76,7 +76,9 @@ endfunction()
 #
 # Writes <outdir>/bronze_abi.def (Windows), bronze_abi.ver (ELF version
 # script) and bronze_abi.exp (Mach-O exported-symbols list), and sets the
-# three named variables to their paths in the caller's scope.
+# three named variables to their paths in the caller's scope, plus
+# BRONZE_ABI_BRASS_SYSV_ALIASES to the brass names the ELF and Mach-O links
+# must define as aliases.
 function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${header}")
 
@@ -121,12 +123,49 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
             "line and now ends early.")
     endif()
 
+    # The brass runtime symbols compiled modules name outside the registry:
+    # the raise entry points on every platform, and the personality routine
+    # each platform's unwind information names (the runtime defines only its
+    # own).
+    bronze_abi_cut_block("${_after_fns}" "#define BRONZE_ABI_BRASS_SYMBOLS(Y)" _brass_text _unused)
+    string(REGEX MATCHALL "Y[(][A-Za-z_][A-Za-z0-9_]*[)]" _brass_entries "${_brass_text}")
+    set(_brass "")
+    foreach(_entry IN LISTS _brass_entries)
+        string(REGEX MATCH "Y[(]([A-Za-z_][A-Za-z0-9_]*)" _matched "${_entry}")
+        list(APPEND _brass "${CMAKE_MATCH_1}")
+    endforeach()
+    if(_brass STREQUAL "")
+        message(FATAL_ERROR
+            "bronze_abi_export_files: found no Y(...) lines in BRONZE_ABI_BRASS_SYMBOLS in "
+            "${header}.")
+    endif()
+    foreach(_flavor WINDOWS SYSV)
+        string(REGEX MATCH "#define BRONZE_ABI_PERSONALITY_${_flavor}[ \t]+([A-Za-z_][A-Za-z0-9_]*)"
+               _matched "${_after_fns}")
+        if(NOT _matched)
+            message(FATAL_ERROR
+                "bronze_abi_export_files: BRONZE_ABI_PERSONALITY_${_flavor} is not defined in "
+                "${header}. Compiled modules with landing pads name that routine, so the "
+                "runtime must export it.")
+        endif()
+        set(_personality_${_flavor} "${CMAKE_MATCH_1}")
+    endforeach()
+
     # ---- Windows: the module-definition file -------------------------------
     set(_def_text "; Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _def_text "; DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _def_text "EXPORTS\n")
     foreach(_name IN LISTS _fns)
         string(APPEND _def_text "    ${_name}\n")
+    endforeach()
+    # brass defines each of these as brass_default_<rest> and no image but
+    # this one defines the canonical name (brass/runtime/exception.hpp), so
+    # the runtime exports it as an alias, and every module and host image in
+    # the process binds the same routine, a host that also links brass
+    # statically (a compiler in-process) included.
+    foreach(_name IN LISTS _brass _personality_WINDOWS)
+        string(REGEX REPLACE "^brass_" "brass_default_" _internal "${_name}")
+        string(APPEND _def_text "    ${_name}=${_internal}\n")
     endforeach()
 
     # ---- ELF: the version script -------------------------------------------
@@ -142,6 +181,9 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     string(APPEND _ver_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _ver_text "{\n  global:\n")
     foreach(_name IN LISTS _fns)
+        string(APPEND _ver_text "    ${_name};\n")
+    endforeach()
+    foreach(_name IN LISTS _brass _personality_SYSV)
         string(APPEND _ver_text "    ${_name};\n")
     endforeach()
     string(APPEND _ver_text "    _ZN6bronze5embed*;\n")
@@ -160,6 +202,9 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     foreach(_name IN LISTS _fns)
         string(APPEND _exp_text "_${_name}\n")
     endforeach()
+    foreach(_name IN LISTS _brass _personality_SYSV)
+        string(APPEND _exp_text "_${_name}\n")
+    endforeach()
     string(APPEND _exp_text "__ZN6bronze5embed*\n")
     string(APPEND _exp_text "__ZNK6bronze5embed*\n")
     string(APPEND _exp_text "__ZN6bronze4eval*\n")
@@ -175,4 +220,8 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set(${def_var} "${outdir}/bronze_abi.def" PARENT_SCOPE)
     set(${ver_var} "${outdir}/bronze_abi.ver" PARENT_SCOPE)
     set(${exp_var} "${outdir}/bronze_abi.exp" PARENT_SCOPE)
+    # The canonical brass names the ELF and Mach-O runtimes export, each an
+    # alias the link defines for brass_default_<rest> (the .def spells its
+    # aliases itself).
+    set(BRONZE_ABI_BRASS_SYSV_ALIASES ${_brass} ${_personality_SYSV} PARENT_SCOPE)
 endfunction()

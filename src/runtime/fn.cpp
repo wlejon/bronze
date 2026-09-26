@@ -4,6 +4,10 @@
 #include <iostream>
 #include <vector>
 
+#include <brass/gc/native_frames.hpp>
+#include <brass/interpreter/interpreter.hpp>
+#include <brass/runtime/exception.hpp>
+
 namespace bronze {
 
 FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Value env_record,
@@ -91,6 +95,48 @@ EnterJsHook rtGetEnterJsHook() noexcept {
 
 void rtSetEnterJsHook(EnterJsHook hook) noexcept {
     s_enter_js_hook = hook;
+}
+
+namespace {
+
+// A throw an interpreted frame made that no frame caught arrives as brass's
+// interpreter exception; the runtime knows one kind (exception.h), so it
+// continues as that. Out of line and past the catch, for exception.h's reason.
+[[noreturn]] void rethrowAsBrass(uint64_t bits) {
+    throw brass::runtime::BrassException(brass::HostValue::from_raw(bits));
+}
+
+}  // namespace
+
+uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits, uint32_t argc,
+                   const uint64_t* argv) {
+    uint64_t thrown = 0;
+    try {
+        if (auto* hook = s_enter_js_hook) {
+            uint64_t result = 0;
+            if (hook(code, env_bits, this_bits, argc, argv, &result)) return result;
+        }
+        // Marks where C++ called generated code: a native raise lands at a
+        // pad below it, never past this frame's destructors (the unwinder
+        // carries it here as a C++ exception instead).
+        brass::GeneratedCodeEntryScope entry;
+        return bronze_enter_js(code, env_bits, this_bits, argc, argv);
+    } catch (const brass::InterpreterThrownException& e) {
+        thrown = e.value().raw_bits();
+    }
+    rethrowAsBrass(thrown);
+}
+
+void rtCallModuleEntry(void (*entry)()) {
+    uint64_t thrown = 0;
+    try {
+        brass::GeneratedCodeEntryScope scope;
+        entry();
+        return;
+    } catch (const brass::InterpreterThrownException& e) {
+        thrown = e.value().raw_bits();
+    }
+    rethrowAsBrass(thrown);
 }
 
 }  // namespace bronze

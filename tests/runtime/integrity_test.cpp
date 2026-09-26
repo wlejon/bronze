@@ -17,6 +17,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -95,9 +96,12 @@ struct FatalGuard {
     ~FatalGuard() { setFatalHandler(nullptr); }
 };
 
-struct ClearCell {
-    ~ClearCell() { bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS; }
-};
+// Whether `body` throws.
+template <typename Body>
+bool throws(Body&& body) {
+    Value thrown;
+    return rtTryCatch(std::forward<Body>(body), thrown);
+}
 
 }  // namespace
 
@@ -254,10 +258,8 @@ TEST_CASE("a RegExp records its level and freeze makes lastIndex read-only") {
     freeze(re.get());
     CHECK(isFrozen(re.get()));
     // 22.2.7.2 step 15 / 22.2.7.1: Set(R, "lastIndex", v, true) on a
-    // non-writable property is the TypeError, left pending.
-    CHECK_FALSE(rtRegExpSetLastIndex(re, 1.0));
-    REQUIRE(rtExceptionPending());
-    rtClearException();
+    // non-writable property is the TypeError.
+    REQUIRE(throws([&] { (void)rtRegExpSetLastIndex(re, 1.0); }));
     bool ok = false;
     CHECK(rtRegExpLastIndexLength(re, ok) == 0.0);
     CHECK(ok);
@@ -302,18 +304,12 @@ TEST_CASE("a frozen Map records its level and keeps taking entries") {
 
 TEST_CASE("freezing a typed array with elements is the TypeError 10.4.5.3 gives") {
     ShadowStackFrame frame;
-    ClearCell guard;
 
     Rooted<Value> view{rtNewTypedArray(ElementKind::Uint8, 2)};
     CHECK(isExtensible(view.get()));
 
-    freeze(view.get());
-    CHECK(rtExceptionPending());
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-
-    seal(view.get());
-    CHECK(rtExceptionPending());
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    CHECK(throws([&] { freeze(view.get()); }));
+    CHECK(throws([&] { seal(view.get()); }));
 
     // The view is untouched, and still says so.
     CHECK(isExtensible(view.get()));
@@ -356,11 +352,7 @@ TEST_CASE("reading arguments.callee in strict mode throws TypeError") {
     Rooted<Value> key{rtMakeString("callee")};
     ObjectHeader* props = args.get().asObject<ArrayHeader>()->properties.asObject<ObjectHeader>();
 
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
-    Value res = props->getProp(rtHeap(), key, nullptr, args.slot_ptr());
-    (void)res;
-    CHECK(rtExceptionPending());
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
+    CHECK(throws([&] { (void)props->getProp(rtHeap(), key, nullptr, args.slot_ptr()); }));
 }
 
 // The conversion into dictionary mode is the one moment every attribute is
@@ -470,10 +462,7 @@ TEST_CASE("a set with a distinct receiver reports the RECEIVER's refusal") {
 
 TEST_CASE("Object.freeze on an unsupported receiver kind throws TypeError") {
     ShadowStackFrame frame;
-    ClearCell guard;
     Rooted<Value> parent{Value::fromUndefined()};
     Rooted<Value> env{Value::fromObject(EnvHeader::create(rtHeap(), parent, 0))};
-    CHECK_FALSE(rtExceptionPending());
-    freeze(env.get());
-    CHECK(rtExceptionPending());
+    CHECK(throws([&] { freeze(env.get()); }));
 }

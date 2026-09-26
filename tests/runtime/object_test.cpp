@@ -361,7 +361,6 @@ TEST_CASE("an Object member that needs a property table names the receiver it re
     CHECK(hasOwn(fn, keyLength).asBool());
 
     setFatalHandler(nullptr);
-    bronze_tls_block_addr()->exception_cell = BRONZE_ABI_NO_EXCEPTION_BITS;
 }
 
 // ---- the multi-way site and its negative entries ---------------------------
@@ -731,7 +730,17 @@ TEST_CASE("a property read fills and hits the site its caller brings") {
 
 TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properly") {
     ShadowStackFrame frame;
-    rtClearException();
+
+    // The text of the error `body` throws; "" when it returns.
+    auto thrownText = [](auto&& body) {
+        Value exVal;
+        std::string errText;
+        if (rtTryCatch(body, exVal)) {
+            CHECK(exVal.isObject());
+            CHECK(rtErrorText(exVal, errText));
+        }
+        return errText;
+    };
 
     Rooted<Value> arr{Value(bronze_create_array(0))};
 
@@ -739,7 +748,6 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
     {
         uint64_t getArgs[1] = {arr.get().rawBits()};
         Value initialProto{runtime::objectGetPrototypeOf(0, 0, 1, getArgs)};
-        CHECK_FALSE(rtExceptionPending());
         CHECK(initialProto.rawBits() == runtime::rtArrayPrototypeObject().rawBits());
     }
 
@@ -752,14 +760,12 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
     // Set prototype via Object.setPrototypeOf
     uint64_t setArgs[2] = {arr.get().rawBits(), customProto.get().rawBits()};
     uint64_t setRes = runtime::objectSetPrototypeOf(0, 0, 2, setArgs);
-    CHECK_FALSE(rtExceptionPending());
     CHECK(setRes == arr.get().rawBits());
 
     // Verify Object.getPrototypeOf returns customProto
     {
         uint64_t getArgs[1] = {arr.get().rawBits()};
         Value updatedProto{runtime::objectGetPrototypeOf(0, 0, 1, getArgs)};
-        CHECK_FALSE(rtExceptionPending());
         CHECK(updatedProto.rawBits() == customProto.get().rawBits());
     }
 
@@ -771,18 +777,15 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
     // Set prototype to null
     uint64_t setNullArgs[2] = {arr.get().rawBits(), Value::fromNull().rawBits()};
     runtime::objectSetPrototypeOf(0, 0, 2, setNullArgs);
-    CHECK_FALSE(rtExceptionPending());
     {
         uint64_t getArgs[1] = {arr.get().rawBits()};
         Value nullProto{runtime::objectGetPrototypeOf(0, 0, 1, getArgs)};
-        CHECK_FALSE(rtExceptionPending());
         CHECK(nullProto.isNull());
     }
 
     // Set prototype back via __proto__ setter
     uint64_t protoArgs[1] = {customProto.get().rawBits()};
     runtime::objectProtoSetProto(0, arr.get().rawBits(), 1, protoArgs);
-    CHECK_FALSE(rtExceptionPending());
     {
         uint64_t getArgs[1] = {arr.get().rawBits()};
         Value restoredProto{runtime::objectGetPrototypeOf(0, 0, 1, getArgs)};
@@ -792,14 +795,8 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
     // Cycle detection on array throws TypeError
     {
         uint64_t cycleArgs[2] = {arr.get().rawBits(), arr.get().rawBits()};
-        runtime::objectSetPrototypeOf(0, 0, 2, cycleArgs);
-        CHECK(rtExceptionPending());
-        Value exVal = Value(rtTls()->exception_cell);
-        CHECK(exVal.isObject());
-        std::string errText;
-        CHECK(rtErrorText(exVal, errText));
-        CHECK(errText.find("TypeError") != std::string::npos);
-        rtClearException();
+        CHECK(thrownText([&] { runtime::objectSetPrototypeOf(0, 0, 2, cycleArgs); }).find("TypeError") !=
+              std::string::npos);
     }
 
     // Setting prototype on non-extensible object throws TypeError without aborting
@@ -807,28 +804,16 @@ TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properl
     {
         uint64_t prevArgs[1] = {nonExt.get().rawBits()};
         runtime::rtObjectPreventExtensions(0, 0, 1, prevArgs);
-        CHECK_FALSE(rtExceptionPending());
     }
     {
         uint64_t nonExtSetArgs[2] = {nonExt.get().rawBits(), customProto.get().rawBits()};
-        runtime::objectSetPrototypeOf(0, 0, 2, nonExtSetArgs);
-        CHECK(rtExceptionPending());
-        Value exVal = Value(rtTls()->exception_cell);
-        CHECK(exVal.isObject());
-        std::string errText;
-        CHECK(rtErrorText(exVal, errText));
-        CHECK(errText.find("TypeError") != std::string::npos);
-        rtClearException();
+        CHECK(thrownText([&] { runtime::objectSetPrototypeOf(0, 0, 2, nonExtSetArgs); }).find("TypeError") !=
+              std::string::npos);
     }
     {
         uint64_t nonExtProtoArgs[1] = {customProto.get().rawBits()};
-        runtime::objectProtoSetProto(0, nonExt.get().rawBits(), 1, nonExtProtoArgs);
-        CHECK(rtExceptionPending());
-        Value exVal = Value(rtTls()->exception_cell);
-        CHECK(exVal.isObject());
-        std::string errText;
-        CHECK(rtErrorText(exVal, errText));
-        CHECK(errText.find("TypeError") != std::string::npos);
-        rtClearException();
+        CHECK(thrownText([&] {
+                  runtime::objectProtoSetProto(0, nonExt.get().rawBits(), 1, nonExtProtoArgs);
+              }).find("TypeError") != std::string::npos);
     }
 }

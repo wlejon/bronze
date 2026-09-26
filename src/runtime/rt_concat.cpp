@@ -84,12 +84,9 @@ static uint32_t builderCapacityFor(uint32_t seed, uint32_t remaining) {
 static uint64_t concatIntoBuilder(Rooted<Value>& a, Rooted<Value>& b, uint32_t remaining) {
     // Step 1.d converts the LEFT operand first and then the right. Neither can
     // run user code from here — ToPrimitive is behind us — but a number's
-    // digits allocate and a Symbol still refuses, so both stay rooted and the
-    // pending cell is tested after each.
+    // digits allocate and a Symbol still refuses, so both stay rooted.
     a.set(rtPrimitiveToString(a.get()));
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
     b.set(rtPrimitiveToString(b.get()));
-    if (rtExceptionPending()) return Value::fromUndefined().rawBits();
 
     Heap& heap = rtHeap();
     const StringHeader* left = a.get().asString<StringHeader>();

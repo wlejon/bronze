@@ -111,14 +111,19 @@ uint64_t resume(uint64_t thisBits, uint32_t mode, Rooted<Value>& sent, const cha
 
     Rooted<Value> body{readSlot(self, GeneratorSlot::Resume)};
     setState(self, GeneratorState::Executing);
-    Value args[2] = {Value::fromDouble(static_cast<double>(mode)), sent.get()};
-    Rooted<Value> result{
-        body.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, args)};
-    if (rtExceptionPending()) {
+    Rooted<Value> result{Value::fromUndefined()};
+    Value caught;
+    if (rtTryCatch(
+            [&] {
+                Value args[2] = {Value::fromDouble(static_cast<double>(mode)), sent.get()};
+                result.set(body.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2,
+                                                                       args));
+            },
+            caught)) {
         // An exception out of the body ends the walk (27.5.3.2 step 8 leaves
         // the generator completed however the resumption finished).
         setState(self, GeneratorState::Completed);
-        return Value::fromUndefined().rawBits();
+        rtThrow(caught);
     }
     setState(self, resultIsDone(result) ? GeneratorState::Completed
                                         : GeneratorState::SuspendedYield);

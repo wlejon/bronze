@@ -160,14 +160,13 @@ double rawBitsToNumeric(ElementKind kind, uint64_t bits) noexcept {
 // reads byte 1 — and it is a RangeError, never a TypeError, for a negative
 // value or one past 2^53-1.
 //
-// `false` leaves the error pending, which every caller here checks for.
+// The RangeError is thrown; it answers true when it returns.
 bool toIndex(Value v, const char* what, uint32_t& out) {
     if (v.isUndefined()) {
         out = 0;
         return true;
     }
     const double n = rtToNumber(v);
-    if (rtExceptionPending()) return false;
     // ToIntegerOrInfinity: NaN and both zeroes become +0, everything finite
     // truncates towards zero, and the infinities pass through to be rejected.
     double integer = std::isnan(n) ? 0.0 : std::trunc(n);
@@ -255,7 +254,6 @@ Value setViewValue(Rooted<Value>& self, Value requestIndex, Value littleEndianAr
     // the end of the view still converts its value first — and a conversion
     // that throws is what such a call reports, not the RangeError.
     const double num = rtToNumber(valueRoot.get());
-    if (rtExceptionPending()) return Value::fromUndefined();
     const bool littleEndian = bronze_truthy(endianRoot.get().rawBits());
     const uint32_t elementSize = elementKindInfo(kind).bytesPerElement;
 

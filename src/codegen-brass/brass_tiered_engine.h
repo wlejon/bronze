@@ -46,7 +46,6 @@ struct TieredEngineConfig {
     ExecutionTier tier = ExecutionTier::Auto;
     std::string entrySymbol = "main";
     std::vector<std::string> hostGlobals;
-    bool propagateExceptionsInEntry = true;
     bool emitDebugInfo = false;
 };
 
@@ -68,7 +67,10 @@ public:
     // pointer.
     void* symbolAddress(std::string_view name) const;
 
-    // Runs the entry on the calling thread and returns its result bits.
+    // Runs the entry on the calling thread and returns its result bits. A
+    // throw the program does not catch leaves as a C++
+    // brass::runtime::BrassException (runtime/exception.h), whichever tier
+    // was running the frame it came from.
     brass::RuntimeValue run();
     brass::RuntimeValue invoke(std::string_view fnName,
                                const std::vector<brass::RuntimeValue>& args = {});
@@ -97,6 +99,8 @@ private:
     friend class BrassTieredEngine;
     BrassTieredProgram(ExecutionTier tier, std::string entrySymbol);
     void activateStackMaps() const;
+    brass::RuntimeValue invokeUntranslated(std::string_view fnName,
+                                           const std::vector<brass::RuntimeValue>& args);
     // Registers the calling thread's instance of the module's per-thread
     // data (bronze_module_instance), as the entry does on its way in.
     void enterThreadInstance() const;

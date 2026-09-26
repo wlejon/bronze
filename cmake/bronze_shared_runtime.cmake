@@ -137,10 +137,19 @@ else()
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(bronze_runtime_shared PRIVATE -Wno-restrict)
     endif()
-    # The Error.stack walk follows the frame-pointer chain through this image
-    # (src/runtime/CMakeLists.txt has the reasoning): the static runtime's
-    # switch does not travel with the sources, so it is named again here.
-    target_compile_options(bronze_runtime_shared PRIVATE -fno-omit-frame-pointer)
+    # brass's throw and personality routines are defined as brass_default_*;
+    # the canonical names generated code binds are aliases only this image
+    # defines (brass/runtime/exception.hpp).
+    foreach(_name IN LISTS BRONZE_ABI_BRASS_SYSV_ALIASES)
+        string(REGEX REPLACE "^brass_" "brass_default_" _internal "${_name}")
+        if(APPLE)
+            target_link_options(bronze_runtime_shared PRIVATE
+                "LINKER:-alias,_${_internal},_${_name}")
+        else()
+            target_link_options(bronze_runtime_shared PRIVATE
+                "LINKER:--defsym=${_name}=${_internal}")
+        endif()
+    endforeach()
     if(APPLE)
         target_link_options(bronze_runtime_shared PRIVATE
             "LINKER:-exported_symbols_list,${_bronze_abi_exp}")
