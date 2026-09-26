@@ -5,8 +5,15 @@
 #include "il_speculation.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
+#include <cstdlib>
 
 namespace il2mir {
+
+namespace {
+constexpr int32_t kIcShapeOffset = BRONZE_ABI_IC_SHAPE_OFFSET;
+constexpr int32_t kIcSlotWordOffset = BRONZE_ABI_IC_SLOT_OFFSET;
+constexpr int64_t kIcOwnDataLimit = int64_t{1} << 32;
+} // namespace
 
 Value* PropertyLoweringHelper::ic_site(Builder& b, uint32_t ic_index) {
     if (ic_index >= ic_site_count_) return nullptr;
@@ -67,12 +74,47 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     // three new blocks with no critical edge, which is what keeps
     // GVN-PRE's per-hoist restart from going quadratic over a function
     // with hundreds of property reads.
+    //
+    // A way-0 miss does not go straight to the helper: the POLY block
+    // compares the receiver's shape against ways 1..N-1 (straight-line, one
+    // select chain) and loads the slot on a hit, so a site the helper filled
+    // with 2..N shapes stays inline in every tier. Only a receiver no way
+    // describes reaches `bronze_prop_get`. Under feedback the two tests are
+    // two speculation sites: way 0 (SpecKind::Property, counting poly-block
+    // entries) and the scan (SpecKind::PolyProperty, counting helper calls),
+    // so tier 2 pins a monomorphic site to way 0 as before and guards a
+    // polymorphic one on the scan, deoptimizing only when it turns
+    // megamorphic.
+    // BRONZE_NO_POLY_SCAN=1: no poly block, a way-0 miss calls the helper
+    // (the A/B seam).
+    static const bool no_poly_scan_env = [] {
+        const char* v = std::getenv("BRONZE_NO_POLY_SCAN");
+        return v && v[0] == '1';
+    }();
+    // The scan goes where a site can turn out polymorphic: every read under
+    // the tiered pipeline, and in an AOT build only the reads its profile
+    // saw miss way 0 past the cold fills. A plain AOT build's inline reads
+    // are the ones inference proved monomorphic, and the scan's blocks
+    // there cost the whole-program optimizer (tests/cli
+    // large_module_compile_test: 3000 top-level reads went from under 90 s
+    // to 213 s) for nothing.
+    bool no_poly_scan = no_poly_scan_env;
+    if (!no_poly_scan && !in_process_) {
+        const std::optional<uint32_t> way0 =
+            spec_ ? spec_->peek_profile(SpecKind::Property, key_tag(key_index)) : std::nullopt;
+        no_poly_scan = !way0 || !SpecSiteEmitter::profile_says_polymorphic(*way0);
+        // The profile's scan site for this read is then not lowered; the
+        // next read of the same key keeps its own.
+        if (no_poly_scan && spec_) spec_->skip_site(SpecKind::PolyProperty, key_tag(key_index));
+    }
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
     const uint32_t bid = fn->next_block_id();
     const std::string prefix = "ic_get_" + std::to_string(bid);
 
     BasicBlock* bb_fast = b.append_block(prefix + "_hit");
+    BasicBlock* bb_poly = no_poly_scan ? nullptr : b.append_block(prefix + "_poly");
+    BasicBlock* bb_poly_hit = no_poly_scan ? nullptr : b.append_block(prefix + "_phit");
     BasicBlock* bb_slow = b.append_block(prefix + "_miss");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
@@ -82,10 +124,50 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     Value* ptr = nullptr;
     Value* slot_word = nullptr;
     mono_hit(b, obj, ic_entry, hit, ptr, slot_word);
+    BasicBlock* bb_way0_miss = bb_poly ? bb_poly : bb_slow;
     if (spec_) {
-        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property);
+        spec_->emit_branch(b, hit, bb_fast, bb_way0_miss, SpecKind::Property, key_tag(key_index));
     } else {
-        b.build_br_if(hit, bb_fast, bb_slow);
+        b.build_br_if(hit, bb_fast, bb_way0_miss);
+        b.position_at_end(bb_way0_miss);
+    }
+
+    if (bb_poly) {
+        // Recomputed from `obj`, so what a way-0 guard carries into the poly
+        // block is the operands alone, as it was into the helper. Carrying
+        // the way-0 block's receiver words instead put them in every armed
+        // way-0 guard's state, which kept them materialized in tier-2 code
+        // (about 50 ms of nbody's 350 in bro's cpu_work.js).
+        //
+        // A site whose way 1 is empty has never held a second shape (the
+        // helper installs move-to-front), so its miss goes straight to the
+        // helper: one load and branch instead of the scan, which is what a
+        // monomorphic site's rare miss, and every Tier-0 miss, would
+        // otherwise pay (under BRASS_DEOPT_STRESS=3 the scan made
+        // tiers_22 at --tier=0 about 40% slower).
+        BasicBlock* bb_scan = b.append_block(prefix + "_scan");
+        b.position_at_end(bb_poly);
+        Value* way1_shape =
+            b.build_load(Type::i64(), ic_entry, static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE) + kIcShapeOffset);
+        b.build_br_if(b.build_ne(way1_shape, b.build_iconst_i64(0)), bb_scan, bb_slow);
+        b.position_at_end(bb_scan);
+        Value* poly_hit = nullptr;
+        Value* poly_ptr = nullptr;
+        Value* poly_slot = nullptr;
+        Value* poly_plain = nullptr;
+        Value* poly_shape = nullptr;
+        receiver_shape(b, obj, poly_plain, poly_ptr, poly_shape);
+        other_ways_hit(b, poly_plain, poly_shape, ic_entry, poly_hit, poly_slot);
+        if (spec_) {
+            spec_->emit_branch(b, poly_hit, bb_poly_hit, bb_slow, SpecKind::PolyProperty, key_tag(key_index));
+        } else {
+            b.build_br_if(poly_hit, bb_poly_hit, bb_slow);
+            b.position_at_end(bb_slow);
+        }
+        b.position_at_end(bb_poly_hit);
+        Value* poly_val = b.build_load_indexed(Type::i64(), slot_base(b, poly_ptr, poly_slot), poly_slot, 8,
+                                               kBronzeObjSlotsOffset);
+        b.build_br(bb_merge, {poly_val});
         b.position_at_end(bb_slow);
     }
     Value* map_addr = b.build_func_addr(key_map_sym_);
@@ -102,15 +184,29 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     return merge_val;
 }
 
-void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, Value* ic_entry, Value*& hit, Value*& ptr,
-                                      Value*& slot_word) {
+void PropertyLoweringHelper::other_ways_hit(Builder& b, Value* plain, Value* shape, Value* ic_entry, Value*& hit,
+                                            Value*& slot_word) {
+    Value* any = nullptr;
+    slot_word = nullptr;
+    // At most one way names a shape (an install rewrites an existing entry
+    // in place), so the words select on the shape alone and the one
+    // own-data test is of the selected word.
+    for (int32_t way = BRONZE_ABI_IC_WAYS - 1; way >= 1; --way) {
+        const int32_t base = way * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
+        Value* match = b.build_eq(shape, b.build_load(Type::i64(), ic_entry, base + kIcShapeOffset));
+        Value* word = b.build_load(Type::i64(), ic_entry, base + kIcSlotWordOffset);
+        slot_word = slot_word ? b.build_select(match, word, slot_word) : word;
+        any = any ? b.build_or(any, match) : match;
+    }
+    hit = b.build_and(b.build_and(plain, any), b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit)));
+}
+
+void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape) {
     constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
     constexpr uint64_t kObjectTagBits = 0xFFF1000000000000ULL;
     constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
     constexpr int32_t kPlainHeaderLow = 0x0000FFF1;
     constexpr int32_t kShapeOffset = 8;
-    constexpr int32_t kIcShapeOffset = 0;
-    constexpr int32_t kIcSlotWordOffset = 8;
     Value* tag = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kTagMask)));
     Value* is_obj = b.build_eq(tag, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
@@ -120,18 +216,26 @@ void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, Value* ic_entry, V
     // any receiver reaches here and the fast interpreter runs it too) uses a
     // static zeroed block of this process instead.
     alignas(16) static const uint64_t kNotAnObject[4] = {};
-    Value* not_object = feedback_driven_
+    Value* not_object = in_process_
         ? b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
         : b.build_pinned_tls_read();
     Value* base = b.build_select(is_obj, ptr, not_object);
     Value* header_low = b.build_load(Type::i32(), base, 0);
     Value* is_plain = b.build_eq(header_low, b.build_iconst_i32(kPlainHeaderLow));
-    Value* shape = b.build_load(Type::i64(), base, kShapeOffset);
+    shape = b.build_load(Type::i64(), base, kShapeOffset);
+    plain = b.build_and(is_obj, is_plain);
+}
+
+void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, Value* ic_entry, Value*& hit, Value*& ptr,
+                                      Value*& slot_word) {
+    Value* plain = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, plain, ptr, shape);
     Value* cached_shape = b.build_load(Type::i64(), ic_entry, kIcShapeOffset);
     Value* shape_match = b.build_eq(shape, cached_shape);
     slot_word = b.build_load(Type::i64(), ic_entry, kIcSlotWordOffset);
-    Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(int64_t{1} << 32));
-    hit = b.build_and(b.build_and(is_obj, is_plain), b.build_and(shape_match, own_data));
+    Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
+    hit = b.build_and(plain, b.build_and(shape_match, own_data));
 }
 
 // The base that, with slot_word * 8 + BRONZE_ABI_OBJ_SLOTS_OFFSET, addresses
@@ -164,7 +268,8 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     Value* slot_word = nullptr;
     mono_hit(b, obj, ic_entry, hit, ptr, slot_word);
     if (spec_) {
-        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property);
+        // A write's tag is its key after '=', apart from the reads of it.
+        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, "=" + std::string(key_tag(key_index)));
     } else {
         b.build_br_if(hit, bb_fast, bb_slow);
         b.position_at_end(bb_slow);

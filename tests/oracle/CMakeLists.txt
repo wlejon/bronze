@@ -26,7 +26,7 @@ endif()
 # on its own without the case list forking into a second harness. The filters
 # are case-INSENSITIVE and anchored at the start of the name: `*jit*` would
 # also select the two `-jit` milestones.
-set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*)
+set(BRONZE_ORACLE_CASE_SUITES --test-case-exclude=threejs*,pixi*,Oracle\ JIT*,Oracle\ tiers*,Oracle\ spec-profile*)
 
 # The cases are compiled and run both with and without inference, and re-run
 # under BRONZE_GC_STRESS=1 on the same built executable to verify rooting without
@@ -70,7 +70,13 @@ set_tests_properties(oracle-tiers-deopt-stress-3 PROPERTIES LABELS "oracle;jit;t
 # il_speculation.cpp), under every-third stress.
 add_test(NAME oracle-tiers-arm-all-stress-3 COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
 set_tests_properties(oracle-tiers-arm-all-stress-3 PROPERTIES LABELS "oracle;jit;tiers;deopt-stress"
-                     ENVIRONMENT "BRASS_DEOPT_STRESS=3;BRONZE_SPEC_ARM_KINDS=7")
+                     ENVIRONMENT "BRASS_DEOPT_STRESS=3;BRONZE_SPEC_ARM_KINDS=15")
+
+# The speculation tiers_* cases run tiered with BRONZE_SPEC_PROFILE_OUT, then built with
+# `--spec-profile` on the profile the run wrote (il2mir/il_spec_profile.h):
+# the AOT program laid out by the JIT's feedback prints the pinned bytes.
+add_test(NAME oracle-spec-profile COMMAND bronze_oracle_tests "--test-case=Oracle spec-profile*")
+set_tests_properties(oracle-spec-profile PROPERTIES LABELS "oracle;jit;tiers;spec-profile")
 
 # Unmodified three.js r160 (tests/oracle/threejs/README.md). Its own label
 # because it costs more than the whole rest of the suite: `-L threejs` runs

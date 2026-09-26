@@ -15,6 +15,7 @@ struct PassPipelineOptions;
 namespace il2mir {
 struct TranslatorOptions;
 class SpecFeedback;
+class SpecProfile;
 }
 
 namespace bronze {
@@ -67,6 +68,9 @@ public:
     // buildMirModule's speculation feedback (il2mir/il_speculation.h): for a
     // module run in-process by brass's tiered pipeline, never an object file.
     void setSpecFeedback(std::shared_ptr<il2mir::SpecFeedback> fb) { specFeedback_ = std::move(fb); }
+    // An AOT build's speculation profile (il2mir/il_spec_profile.h), from a
+    // tiered run of the same program.
+    void setSpecProfile(std::shared_ptr<const il2mir::SpecProfile> p) { specProfile_ = std::move(p); }
     // Whether the module init registers function source slices
     // (`__bronze_source_text_N` / `__bronze_source_entries_N`). Only an
     // object file (buildObjectFile) defines those tables; a MIR module
@@ -115,6 +119,7 @@ private:
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;
     std::shared_ptr<il2mir::SpecFeedback> specFeedback_;
+    std::shared_ptr<const il2mir::SpecProfile> specProfile_;
 };
 
 }  // namespace bronze

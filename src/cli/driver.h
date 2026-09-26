@@ -130,7 +130,11 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // of compiling a second copy. Off by default: a standalone program
              // is one unit and the namespaces would be built for nothing.
              bool publishModules = false,
-             bool emitDebugInfo = false);
+             bool emitDebugInfo = false,
+             // `--spec-profile`: a speculation profile a tiered run of the
+             // same program wrote (BRONZE_SPEC_PROFILE_OUT), which lays the
+             // build's fast paths out as the JIT's (il2mir/il_spec_profile.h).
+             const std::string& specProfilePath = {});
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

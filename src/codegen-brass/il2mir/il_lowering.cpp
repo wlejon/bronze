@@ -59,9 +59,15 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     : options_(options), diag_(diag), prop_lowering_(options.enable_inlined_fastpaths),
       alloc_lowering_(options.enable_tlab) {
     spec_.set_feedback(options.spec_feedback.get());
+    // An AOT lowering with a profile lays its sites out as the tiered
+    // lowering does (every keyed site inline), minus what only an in-process
+    // module can hold (a host address in the code).
+    if (!options.spec_feedback && options.spec_profile) spec_.set_profile(options.spec_profile.get());
     prop_lowering_.set_spec(&spec_);
     prop_lowering_.set_inline_sets(!options.enable_census);
-    prop_lowering_.set_feedback_driven(options.spec_feedback != nullptr);
+    prop_lowering_.set_feedback_driven(options.spec_feedback != nullptr || spec_.has_profile());
+    prop_lowering_.set_in_process(options.spec_feedback != nullptr);
+    prop_lowering_.set_key_names(&options_.key_constants);
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
@@ -683,7 +689,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     // Guards only where a deopt's fresh Tier-0 frame can resume
     // (il_speculation.h): not a coroutine body. The argv block is an alloca,
     // which a resume re-creates in the new frame with its contents.
-    spec_.begin_function(!fn_ast.is_coroutine_body());
+    // The entry's symbol differs between a JIT run and an AOT build; a
+    // profile names it kSpecEntryName (il_spec_profile.h).
+    const bool is_entry = fn_name == "main" || fn_name == options_.entry_symbol;
+    spec_.begin_function(!fn_ast.is_coroutine_body(), is_entry ? std::string(kSpecEntryName) : fn_name);
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
     std::unordered_map<uint32_t, Value*> val_map;

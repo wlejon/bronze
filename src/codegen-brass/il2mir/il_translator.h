@@ -20,6 +20,7 @@ struct RangeAnalysisStats;
 namespace il2mir {
 
 class SpecFeedback;
+class SpecProfile;
 
 struct FunctionMeta {
     bool needs_env = false;
@@ -150,6 +151,11 @@ struct TranslatorOptions {
     // paths count their misses there and carry the guards tier 2 arms. Null
     // (AOT objects, whole-program tier 2) lowers them as plain branches.
     std::shared_ptr<SpecFeedback> spec_feedback;
+    // An AOT lowering's speculation profile (il_spec_profile.h), written by
+    // a tiered run of the same program: every keyed property site inline,
+    // each site's slow path laid out as its counts say, and every slow path
+    // kept as a branch. Ignored with spec_feedback.
+    std::shared_ptr<const SpecProfile> spec_profile;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

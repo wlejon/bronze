@@ -368,6 +368,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // bronze_module_instance), laid out by brass_backend_sections.cpp.
     options.per_thread_module_data = perThreadModuleData_;
     options.spec_feedback = specFeedback_;
+    options.spec_profile = specProfile_;
     // The inline-cache table: lowering numbered every property and method
     // site, the verifier bounded each number, and `__bronze_ic_table`
     // (brass_backend_sections.cpp) is laid out to exactly this count, so brass

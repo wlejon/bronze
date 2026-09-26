@@ -4,6 +4,7 @@
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
+#include "codegen-brass/il2mir/il_spec_profile.h"
 #include "codegen-brass/il2mir/il_speculation.h"
 #include "embed/embed.h"
 
@@ -236,6 +237,9 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         // The lowered code holds the counters' addresses: the program owns
         // them for as long as any of its code can run.
         prog->specFeedback_ = spec;
+        // BRONZE_SPEC_PROFILE_OUT=<path>: the counts are written there at
+        // exit, for an AOT build (il2mir/il_spec_profile.h).
+        il2mir::register_spec_profile_dump(spec);
     }
     std::vector<uint32_t> globalReadKeys;
     prog->mirModule_ = backend.buildMirModule(module, diags, &globalReadKeys);

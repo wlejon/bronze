@@ -1,0 +1,11 @@
+read 1 400
+read 2 5200
+read 4 28000
+read 8 126400
+read 2 5200
+read 1 400
+odd ab NaN ab
+length 1200
+write 4498500 2994,2995,2996,2997,2998,2999
+method 8000
+osr 1200000

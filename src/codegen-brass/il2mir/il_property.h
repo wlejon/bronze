@@ -5,6 +5,7 @@
 #include <functional>
 #include <string_view>
 #include <string>
+#include <vector>
 #include <cstdint>
 #include "il_ast.h"
 
@@ -88,6 +89,17 @@ public:
     // spec_feedback): every keyed site then gets the inline path.
     void set_feedback_driven(bool on) noexcept { feedback_driven_ = on; }
     [[nodiscard]] bool feedback_driven() const noexcept { return feedback_driven_; }
+    // Whether the module runs in this process (the tiered pipeline), so its
+    // code may hold this process's addresses; an AOT lowering driven by a
+    // profile is feedback-driven but not in-process.
+    void set_in_process(bool on) noexcept { in_process_ = on; }
+    [[nodiscard]] bool in_process() const noexcept { return in_process_; }
+    // The module's key constants, which name a property site in a profile.
+    void set_key_names(const std::vector<std::string>* names) noexcept { key_names_ = names; }
+    [[nodiscard]] std::string_view key_tag(uint32_t key_index) const noexcept {
+        return key_names_ && key_index < key_names_->size() ? std::string_view((*key_names_)[key_index])
+                                                            : std::string_view();
+    }
 
     Value* lower_elem_get(
         Builder& b,
@@ -109,12 +121,20 @@ private:
     // The shared test of the two mono paths: `hit`, the receiver's payload
     // and the site's slot word.
     void mono_hit(Builder& b, Value* obj, Value* ic_entry, Value*& hit, Value*& ptr, Value*& slot_word);
+    // The read's poly test: the receiver's shape against the site's ways
+    // 1..N-1, with the matching way's slot word.
+    void other_ways_hit(Builder& b, Value* plain, Value* shape, Value* ic_entry, Value*& hit, Value*& slot_word);
+    // A plain object's payload and shape word, and whether it is one; a
+    // non-object reads a mapped block whose words refuse every way.
+    void receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape);
     // The base a slot is read at: base + slot_word * 8 +
     // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
     Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
     SpecSiteEmitter* spec_ = nullptr;
     bool inline_sets_ = true;
     bool feedback_driven_ = false;
+    bool in_process_ = false;
+    const std::vector<std::string>* key_names_ = nullptr;
     bool enable_inlined_fastpaths_ = true;
     std::string key_map_sym_ = "__bronze_key_map";
     std::string ic_table_sym_ = "__bronze_ic_table";

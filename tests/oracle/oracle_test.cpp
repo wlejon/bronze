@@ -690,6 +690,84 @@ TEST_CASE("Oracle tiers test suite") {
     }
 }
 
+// The tiers_* cases built ahead of time with the speculation profile their
+// own tiered run wrote (`--spec-profile`, il2mir/il_spec_profile.h): every
+// property site inline as the JIT has it, laid out by the run's counts, each
+// slow path still a branch. The built program must print the pinned bytes.
+// The speculation cases only: all 41 tiers_* cases pass too, in about 8 min.
+TEST_CASE("Oracle spec-profile suite") {
+    std::filesystem::path casesDir = findCasesDirectory();
+    REQUIRE_MESSAGE(!casesDir.empty(), "Oracle test cases directory not found");
+    std::vector<OracleCase> caseFiles;
+    for (auto& c : casesIn(casesDir)) {
+        if (c.id.rfind("tiers_39_", 0) == 0 || c.id.rfind("tiers_40_", 0) == 0 || c.id.rfind("tiers_41_", 0) == 0) {
+            caseFiles.push_back(std::move(c));
+        }
+    }
+    struct ProfileRun {
+        std::string expected;
+        bool expectedReadOk = false;
+        std::filesystem::path profile;
+        RunResult profiled, built;
+        int buildStatus = -1;
+        std::string buildErr;
+    };
+    std::vector<ProfileRun> results(caseFiles.size());
+    auto setProfileOut = [](const std::string& path) {
+#ifdef _WIN32
+        _putenv_s("BRONZE_SPEC_PROFILE_OUT", path.c_str());
+#else
+        if (path.empty()) unsetenv("BRONZE_SPEC_PROFILE_OUT");
+        else setenv("BRONZE_SPEC_PROFILE_OUT", path.c_str(), 1);
+#endif
+    };
+    // The profiling runs one at a time: the path rides in the environment
+    // every child inherits.
+    std::error_code ec;
+    for (size_t i = 0; i < caseFiles.size(); ++i) {
+        ProfileRun& res = results[i];
+        std::filesystem::path expectedPath = caseFiles[i].entry;
+        expectedPath.replace_extension(".expected");
+        res.expectedReadOk = readFileBytes(expectedPath, res.expected);
+        res.profile = bronze_test::tempDir() / (caseFiles[i].id + "_oracle.specprof");
+        std::filesystem::remove(res.profile, ec);
+        setProfileOut(res.profile.string());
+        res.profiled = runAtTier(caseFiles[i].entry, "auto", /*gcStress=*/false);
+    }
+    setProfileOut("");
+    std::atomic<size_t> next{0};
+    auto worker = [&] {
+        for (size_t i; (i = next.fetch_add(1)) < caseFiles.size();) {
+            ProfileRun& res = results[i];
+            std::filesystem::path exe = bronze_test::tempDir() / (caseFiles[i].id + "_oracle_specprof.exe");
+            std::error_code rec;
+            removeProgram(exe, rec);
+            res.buildStatus = bronze::cli::runBuild(
+                caseFiles[i].entry.string(), exe.string(), &res.buildErr, true, false, false, {}, false, nullptr,
+                {}, {}, false, true, {}, false, {}, {}, false, {}, {}, {}, {}, false, false, res.profile.string());
+            if (res.buildStatus == 0) res.built = runWithTimeout(exe.string(), /*gcStress=*/false);
+            removeProgram(exe, rec);
+        }
+    };
+    std::vector<std::thread> threads;
+    for (unsigned int t = 0; t < getWorkerJobCount(); ++t) threads.emplace_back(worker);
+    for (auto& t : threads) t.join();
+
+    for (size_t i = 0; i < caseFiles.size(); ++i) {
+        const ProfileRun& res = results[i];
+        SUBCASE(caseFiles[i].id.c_str()) {
+            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + caseFiles[i].id).c_str());
+            CHECK_MESSAGE(res.profiled.output == res.expected, "the profiling run differs from the pinned bytes");
+            REQUIRE_MESSAGE(res.buildStatus == 0, ("build with --spec-profile failed: " + res.buildErr).c_str());
+            CHECK_MESSAGE(!res.built.timedOut, "the built program timed out");
+            CHECK_MESSAGE(res.built.exitCode == 0, ("exit " + std::to_string(res.built.exitCode)).c_str());
+            CHECK_MESSAGE(res.built.output == res.expected,
+                          ("built with its profile, output differs from the pinned expectation\n" +
+                           res.built.errors).c_str());
+        }
+    }
+}
+
 TEST_CASE("Oracle blocked test suite") {
     std::filesystem::path casesDir = findCasesDirectory();
     REQUIRE_MESSAGE(!casesDir.empty(), "Oracle test cases directory not found");

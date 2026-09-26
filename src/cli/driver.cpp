@@ -20,6 +20,7 @@
 #include "cli/usage.h"
 #include "codegen/backend.h"
 #include "codegen-brass/brass_backend.h"
+#include "codegen-brass/il2mir/il_spec_profile.h"
 #include "il/il.h"
 #include "il/print.h"
 #include "lex/lexer.h"
@@ -230,7 +231,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              const std::string& pinsPath, const std::string& censusOutPath,
              bool pinsAllowObserved, const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
-             const std::string& targetName, bool publishModules, bool emitDebugInfo) {
+             const std::string& targetName, bool publishModules, bool emitDebugInfo,
+             const std::string& specProfilePath) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -299,6 +301,16 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         if (!loadPins(pinsPath, pins, manifestErr, pinsAllowObserved)) {
             if (errOut) *errOut = manifestErr;
             else std::fputs(manifestErr.c_str(), stderr);
+            return 1;
+        }
+    }
+    std::shared_ptr<const il2mir::SpecProfile> specProfile;
+    if (!specProfilePath.empty()) {
+        std::string profileErr;
+        specProfile = il2mir::SpecProfile::read_file(specProfilePath, profileErr);
+        if (!specProfile) {
+            if (errOut) *errOut = profileErr;
+            else std::fputs(profileErr.c_str(), stderr);
             return 1;
         }
     }
@@ -391,6 +403,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         objBackend.setTarget(target);
         objBackend.setMachOBuildVersion(machoVersion);
         objBackend.setEmitDebugInfo(emitDebugInfo);
+        objBackend.setSpecProfile(specProfile);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
         timer.total();
@@ -412,6 +425,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     backend.setHostGlobals(hostGlobals);
     backend.setTarget(target);
     backend.setEmitDebugInfo(emitDebugInfo);
+    backend.setSpecProfile(specProfile);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     timer.mark("codegen");
     if (!obj) {
@@ -742,6 +756,7 @@ int runDriver(int argc, char** argv) {
         std::string targetName;
         bool emitDebugInfo = false;
         bool publishModules = false;
+        std::string specProfilePath;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -841,6 +856,15 @@ int runDriver(int argc, char** argv) {
             } else if (arg.rfind("--import-map=", 0) == 0) {
                 importMapPath = arg.substr(13);
                 if (importMapPath.empty()) return fail("error: missing argument for --import-map\n");
+            } else if (arg == "--spec-profile") {
+                if (i + 1 < argc) {
+                    specProfilePath = argv[++i];
+                } else {
+                    return fail("error: missing argument for --spec-profile\n");
+                }
+            } else if (arg.rfind("--spec-profile=", 0) == 0) {
+                specProfilePath = arg.substr(15);
+                if (specProfilePath.empty()) return fail("error: missing argument for --spec-profile\n");
             } else if (arg == "-o") {
                 if (i + 1 < argc) {
                     outputPath = argv[++i];
@@ -859,7 +883,7 @@ int runDriver(int argc, char** argv) {
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
-                        targetName, publishModules, emitDebugInfo);
+                        targetName, publishModules, emitDebugInfo, specProfilePath);
     }
 
     return fail(kUsage);

@@ -22,7 +22,7 @@ Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value*
     b.position_at_end(cur);
     Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
     Value* both = b.build_and(b.build_ule(op0, max), b.build_ule(op1, max));
-    lowering->spec().emit_branch(b, both, fast, slow, SpecKind::Arith);
+    lowering->spec().emit_branch(b, both, fast, slow, SpecKind::Arith, helper);
     b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
 
     b.position_at_end(fast);

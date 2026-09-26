@@ -55,7 +55,9 @@ BuiltinTarget builtin_target(const IlLowering* lowering, const BronzeInstruction
     if (!lowering || inst.op != BronzeOp::MethodCall || inst.param_count != 1) return {};
     if (inst.ic_index == BronzeInstruction::kNoIcIndex) return {};
     const PropertyLoweringHelper& pl = const_cast<IlLowering*>(lowering)->prop_lowering();
-    if (!pl.feedback_driven() || !pl.enable_inlined_fastpaths()) return {};
+    // The hit test compares against this process's address of the builtin:
+    // only a module that runs here (not an AOT object) can hold it.
+    if (!pl.feedback_driven() || !pl.in_process() || !pl.enable_inlined_fastpaths()) return {};
     const auto& keys = lowering->options().key_constants;
     if (inst.index >= keys.size()) return {};
     const std::string& key = keys[inst.index];
@@ -104,7 +106,7 @@ Value* lower_builtin_method_call(IlLowering* lowering, const BronzeInstruction& 
         b.build_eq(code, b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(target.code))));
     Value* is_num = b.build_ule(arg, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     Value* hit = b.build_and(b.build_and(is_obj, is_fn), b.build_and(is_target, is_num));
-    lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::CallTarget);
+    lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::CallTarget, pl.key_tag(inst.index));
     b.build_br(merge, {b.build_call("bronze_call_dynamic_1", Type::i64(), {method, recv, arg})});
 
     b.position_at_end(fast);
