@@ -1,5 +1,6 @@
 #include "il_lowering.h"
 #include "il_lowering_coro.h"
+#include "il_lowering_calls.h"
 #include "il_abi.h"
 #include "il_pipeline.h"
 #include <brass/mir/coro_transform.hpp>
@@ -666,7 +667,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     uint32_t widest_method_argc = 0;
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
-            if (inst.op == BronzeOp::MethodCall && inst.param_count > widest_method_argc) {
+            if (inst.op == BronzeOp::MethodCall && inst.param_count > widest_method_argc &&
+                !method_call_is_speculated_builtin(this, inst)) {
                 widest_method_argc = inst.param_count;
             }
             if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
@@ -679,8 +681,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     Builder b(mod);
     b.set_function(fn);
     // Guards only where a deopt's fresh Tier-0 frame can resume
-    // (il_speculation.h): not a coroutine body, no argv block.
-    spec_.begin_function(!fn_ast.is_coroutine_body() && widest_method_argc == 0);
+    // (il_speculation.h): not a coroutine body. The argv block is an alloca,
+    // which a resume re-creates in the new frame with its contents.
+    spec_.begin_function(!fn_ast.is_coroutine_body());
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
     std::unordered_map<uint32_t, Value*> val_map;

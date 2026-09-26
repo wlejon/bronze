@@ -66,6 +66,11 @@ set_tests_properties(oracle-tiers-deopt-stress PROPERTIES LABELS "oracle;jit;tie
 add_test(NAME oracle-tiers-deopt-stress-3 COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
 set_tests_properties(oracle-tiers-deopt-stress-3 PROPERTIES LABELS "oracle;jit;tiers;deopt-stress"
                      ENVIRONMENT "BRASS_DEOPT_STRESS=3")
+# Every site kind armed, arith included (not armed by default,
+# il_speculation.cpp), under every-third stress.
+add_test(NAME oracle-tiers-arm-all-stress-3 COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
+set_tests_properties(oracle-tiers-arm-all-stress-3 PROPERTIES LABELS "oracle;jit;tiers;deopt-stress"
+                     ENVIRONMENT "BRASS_DEOPT_STRESS=3;BRONZE_SPEC_ARM_KINDS=7")
 
 # Unmodified three.js r160 (tests/oracle/threejs/README.md). Its own label
 # because it costs more than the whole rest of the suite: `-L threejs` runs

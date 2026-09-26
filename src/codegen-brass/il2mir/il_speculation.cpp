@@ -37,8 +37,20 @@ bool SpecFeedback::should_speculate(uint32_t site) const {
     // Written by lowered code on any thread without a lock: a stale count
     // only makes the guess older, and a wrong guess costs a deopt.
     const uint32_t misses = *static_cast<const volatile uint32_t*>(&misses_[site]);
+    // BRONZE_SPEC_ARM_KINDS=<mask>: arm only the kinds whose bit is set (1
+    // arith, 2 property, 4 call target), the per-kind A/B. Arith sites are
+    // not armed by default: measured on nbody, arming them cost about 65 ms
+    // of 420 against keeping the branch (the likely cause is that an armed
+    // guard's state keeps the boxed operands, which the optimized fast path
+    // otherwise never computes, live and computed; not yet confirmed).
+    static const uint32_t kind_mask = [] {
+        const char* v = std::getenv("BRONZE_SPEC_ARM_KINDS");
+        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0x6u;
+    }();
+    if ((kind_mask & (1u << static_cast<uint32_t>(kinds_[site]))) == 0) return false;
     switch (kinds_[site]) {
-        case SpecKind::Arith: return misses == 0;
+        case SpecKind::Arith:
+        case SpecKind::CallTarget: return misses == 0;
         case SpecKind::Property: return misses <= kPropertyColdMisses;
     }
     return false;

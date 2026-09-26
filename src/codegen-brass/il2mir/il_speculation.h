@@ -21,8 +21,9 @@
 // armed sites unreachable.
 //
 // A function carries guards only when nothing its slow paths read would be
-// wrong in the fresh Tier-0 frame a deopt resumes in: no coroutine body, no
-// argv block (a pointer into the tier-2 frame's stack).
+// wrong in the fresh Tier-0 frame a deopt resumes in: no coroutine body. An
+// argv block (an alloca) is fine: brass re-creates an alloca in a guard's
+// state in the resuming frame, with its contents.
 
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
@@ -40,6 +41,10 @@ enum class SpecKind : uint8_t {
     // An inline-cache hit: armed while its misses stay within the cold
     // fills a monomorphic site takes.
     Property,
+    // A call whose target is the builtin its key names (a `Math` member)
+    // with a Number argument, lowered to the machine op: armed only if the
+    // generic call never ran (the target never was anything else).
+    CallTarget,
 };
 
 // One program's speculation sites: per site, its kind and how many times its

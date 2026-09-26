@@ -12,6 +12,10 @@ class IlLowering;
 
 bool is_call_il_op(BronzeOp op);
 
+// Whether a method call is lowered as a speculated builtin (a `Math` member
+// whose target and argument a CallTarget site tests), which stages no argv.
+bool method_call_is_speculated_builtin(const IlLowering* lowering, const BronzeInstruction& inst);
+
 bool lower_call_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,
