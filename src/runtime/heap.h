@@ -384,6 +384,9 @@ public:
 
     // How many collections have completed. Statistics only.
     uint64_t collection_count() const noexcept { return gc_->collection_count(); }
+    // Full collections only: the ones after which every unreachable object,
+    // old ones included, is gone.
+    uint64_t full_collection_count() const noexcept { return gc_->stats().full_collections; }
     uint64_t last_pause_ns() const noexcept { return gc_->stats().last_pause_ns; }
 
     size_t reserved_size() const noexcept { return gc_->reservation_bytes(); }
@@ -442,8 +445,17 @@ public:
     size_t chunk_count() const noexcept { return chunks_.size(); }
     size_t total_allocated_bytes() const noexcept { return total_allocated_; }
 
+    // The table StringHeader::internToArena deduplicates through, so a string
+    // is copied into this arena once per distinct content rather than once
+    // per call. Opaque here, owned by the arena (made with create<>, so its
+    // destructor runs with the arena's). string.cpp.
+    void* string_table() const noexcept { return string_table_; }
+    void set_string_table(void* table) noexcept { string_table_ = table; }
+
 private:
     void allocate_new_chunk(size_t min_bytes);
+
+    void* string_table_{nullptr};
 
     size_t chunk_size_;
     size_t current_offset_{0};

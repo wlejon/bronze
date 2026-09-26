@@ -32,6 +32,7 @@ struct StringHeader {
     static StringHeader* createFromUTF8(Heap& heap, std::string_view sv);
     // Immortal, non-moving copy for consumers that must never point into
     // the movable heap (shape keys, the compiled key-constant table).
+    // Deduplicated: the same content answers the same copy.
     static StringHeader* internToArena(NonMovingArena& arena, const StringHeader* src);
     static StringHeader* createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len);
     static StringHeader* createUTF16InArena(NonMovingArena& arena, const uint16_t* str, uint32_t len);

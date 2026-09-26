@@ -352,6 +352,11 @@ struct RuntimeTelemetry {
     uint64_t gcCollections{0};
     uint64_t gcPauseNs{0};
     uint64_t shapeTransitions{0};
+    // Full collections, of all generations. A host that waits for garbage to
+    // be proven unreachable rather than forcing a collection of its own
+    // watches this advance: after it does, a WeakRef to an old object that
+    // nothing reaches reads back undefined.
+    uint64_t gcFullCollections{0};
 };
 BRONZE_EMBED_API RuntimeTelemetry getRuntimeTelemetry();
 
@@ -374,6 +379,15 @@ BRONZE_EMBED_API void drainMicrotasks();
 // before tearing the runtime down. Never necessary before drainMicrotasks(),
 // which is a no-op on an empty queue.
 BRONZE_EMBED_API bool microtasksPending();
+
+// 9.13 ClearKeptObjects on its own, for a host at a point where no
+// ECMAScript code is running that is not the microtask checkpoint: a host
+// that makes and reads WeakRefs of its own between frames (`new WeakRef` and
+// `deref` both keep their target for the rest of the job) releases them here,
+// so its own reads never hold a target through the next frame's collections.
+// drainMicrotasks already does this; it is the rest of the checkpoint a host
+// may not want.
+BRONZE_EMBED_API void clearKeptObjects();
 
 // ---- host globals ----------------------------------------------------------
 

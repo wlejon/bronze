@@ -257,15 +257,14 @@ void elemSetCacheSetEnabled(bool on) noexcept;
 // The arena copy of `live` this table will key an entry on, or null when the
 // key budget is spent.
 //
-// Why a table and not a bare copy. `StringHeader::internToArena` is a COPY,
-// not a hash-cons — it grows the arena by the string's bytes on every call —
-// and the arena is immortal. That was harmless while only PRESENT keys were
-// cached, because a present key is already a shape key and a fill is rare; it
-// is not harmless for absence, whose key need exist nowhere, so a loop asking
-// for fresh missing names would grow the arena once per iteration. This
-// deduplicates, so a repeated key costs one copy for the process, and refuses
-// past `kElemKeyBudget` distinct keys, so a rotating one costs a bounded
-// number and then simply stops being cached. Both halves of the cache use it.
+// Why a table of its own. `StringHeader::internToArena` shares one copy per
+// distinct content, but the arena is immortal, so every NEW content grows it
+// for good. That is harmless for PRESENT keys, which are already shape keys;
+// it is not harmless for absence, whose key need exist nowhere, so a loop
+// asking for fresh missing names would grow the arena once per new name. This
+// refuses past `kElemKeyBudget` distinct keys, so a rotating one costs a
+// bounded number and then simply stops being cached. Both halves of the cache
+// use it.
 StringHeader* elemCacheInternKey(StringHeader* live);
 
 // How many distinct keys the table above will ever copy into the arena.

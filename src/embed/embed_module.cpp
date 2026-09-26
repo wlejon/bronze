@@ -107,6 +107,7 @@ RuntimeTelemetry getRuntimeTelemetry() {
     tel.heapReservedBytes = heap.reserved_size();
     tel.gcCollections = heap.collection_count();
     tel.gcPauseNs = heap.last_pause_ns();
+    tel.gcFullCollections = heap.full_collection_count();
     tel.shapeTransitions = bronze::g_shapeTransitions.load(std::memory_order_relaxed);
     return tel;
 }

@@ -26,6 +26,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
 #include "runtime/string.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::embed {
 
@@ -308,5 +309,7 @@ void drainMicrotasks() {
 }
 
 bool microtasksPending() { return runtime::rtMicrotasksPending(); }
+
+void clearKeptObjects() { runtime::rtClearKeptObjects(); }
 
 }  // namespace bronze::embed

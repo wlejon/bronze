@@ -3,8 +3,39 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <unordered_set>
 
 namespace bronze {
+
+namespace {
+
+// A string's units, as bytes, for the arena's intern table. Two strings with
+// the same text in different encodings hash apart and simply are not shared.
+size_t unitBytes(const StringHeader* s) {
+    return s->isUTF16() ? static_cast<size_t>(s->length) * sizeof(uint16_t) : s->length;
+}
+
+struct ArenaStringHash {
+    size_t operator()(const StringHeader* s) const noexcept {
+        const auto* p = reinterpret_cast<const unsigned char*>(s + 1);
+        uint64_t h = 1469598103934665603ull ^ (s->isUTF16() ? 1u : 0u);
+        for (size_t i = 0, n = unitBytes(s); i < n; ++i) h = (h ^ p[i]) * 1099511628211ull;
+        return static_cast<size_t>(h);
+    }
+};
+
+struct ArenaStringEq {
+    bool operator()(const StringHeader* a, const StringHeader* b) const noexcept {
+        return a->isUTF16() == b->isUTF16() && a->length == b->length &&
+               std::memcmp(a + 1, b + 1, unitBytes(a)) == 0;
+    }
+};
+
+struct ArenaStringTable {
+    std::unordered_set<const StringHeader*, ArenaStringHash, ArenaStringEq> strings;
+};
+
+}  // namespace
 
 StringHeader* StringHeader::createLatin1(Heap& heap, const char* str, uint32_t len) {
     size_t payload_size = sizeof(uint32_t) + sizeof(uint32_t) + len + 1;
@@ -388,10 +419,23 @@ void StringHeader::appendToBuilder(Heap& heap, Rooted<Value>& dst, Rooted<Value>
     dst.set(Value::fromString(nb));
 }
 
+// One copy per distinct content for the life of the arena. It used to be a
+// copy per call, and its callers call it on hot paths — every shape transition
+// taken (Shape::addProperty copies the key before it looks for the edge), every
+// named host function made — so a program that kept building objects kept
+// growing the immortal arena: a UI re-rendering its views gained tens of
+// megabytes a minute of property names it already had. A shared copy is sound
+// because an arena string is immutable (sealed, never a builder) and every
+// consumer matches string keys by content.
 StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHeader* src) {
-    size_t data_bytes =
-        src->isUTF16() ? static_cast<size_t>(src->length) * sizeof(uint16_t) : src->length;
-    size_t total = sizeof(StringHeader) + data_bytes;
+    auto* table = static_cast<ArenaStringTable*>(arena.string_table());
+    if (table == nullptr) {
+        table = arena.create<ArenaStringTable>();
+        arena.set_string_table(table);
+    }
+    auto found = table->strings.find(src);
+    if (found != table->strings.end()) return const_cast<StringHeader*>(*found);
+    const size_t total = sizeof(StringHeader) + unitBytes(src);
     void* mem = arena.allocate(total, alignof(StringHeader));
     std::memcpy(mem, src, total);
     auto* out = static_cast<StringHeader*>(mem);
@@ -400,6 +444,7 @@ StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHea
     // still claimed to be an appendable builder would offer room that this
     // allocation does not have.
     out->sealBuilder();
+    table->strings.insert(out);
     return out;
 }
 
