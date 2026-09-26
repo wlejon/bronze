@@ -38,6 +38,11 @@ namespace bronze::runtime {
 // has been told this promise went unhandled (HTML's "outstanding rejected
 // promises weak set", kept on the promise so it is weak for free), which is
 // what makes a later handler a `rejectionhandled` rather than nothing.
+// `AsyncOwner` is not a spec slot either: for the promise an async function
+// call returned, the machine running that call (builtin_async.cpp) until it
+// completes, so an async function awaiting the promise links its frame as the
+// awaiter of the frame that will settle it (brass's async stack); undefined
+// otherwise.
 namespace PromiseSlot {
 enum : uint32_t {
     State,
@@ -47,6 +52,7 @@ enum : uint32_t {
     IsHandled,
     AlreadyResolved,
     Reported,
+    AsyncOwner,
     kCount,
 };
 }

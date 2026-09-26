@@ -70,11 +70,17 @@ bool SpecFeedback::should_speculate(uint32_t site) const {
         return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0xEu;
     }();
     if ((kind_mask & (1u << static_cast<uint32_t>(kinds_[site]))) == 0) return false;
+    // A property site's inline cache starts empty, so its first run misses:
+    // one with no misses has never run, and says nothing about the shapes
+    // it will see. Armed, its first run fails the guard, and the frame
+    // finishes in Tier 0 until the code is compiled again; a top-level loop
+    // OSR'd before the code after it ran lost its whole OSR entry that way.
+    // Left a branch, its first run takes the slow path and carries on.
     switch (kinds_[site]) {
         case SpecKind::Arith:
         case SpecKind::CallTarget: return misses == 0;
-        case SpecKind::Property: return misses <= kPropertyColdMisses;
-        case SpecKind::PolyProperty: return misses <= kPolyPropertyColdMisses;
+        case SpecKind::Property: return misses != 0 && misses <= kPropertyColdMisses;
+        case SpecKind::PolyProperty: return misses != 0 && misses <= kPolyPropertyColdMisses;
     }
     return false;
 }

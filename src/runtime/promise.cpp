@@ -203,7 +203,7 @@ bool rtIsPromiseObject(Value v) {
     auto* obj = v.asObject<ObjectHeader>();
     if (obj->internalSlotCount() != PromiseSlot::kCount) return false;
     // The slot count alone would be the brand if nothing else ever allocated
-    // exactly six internal slots. Two things could: this file's own closure
+    // exactly PromiseSlot::kCount internal slots. Two things could: this file's own closure
     // environments (two slots) and the combinators' (four and two), and a
     // future third would be silent. So the STATE slot is read as well — a
     // promise's is one of three small integers written at creation and never
@@ -238,6 +238,7 @@ Value rtNewPromiseWithShape(Shape* shape) {
     p->setInternalSlot(PromiseSlot::IsHandled, Value::fromBool(false));
     p->setInternalSlot(PromiseSlot::AlreadyResolved, Value::fromBool(false));
     p->setInternalSlot(PromiseSlot::Reported, Value::fromBool(false));
+    p->setInternalSlot(PromiseSlot::AsyncOwner, Value::fromUndefined());
     return Value::fromObject(p);
 }
 

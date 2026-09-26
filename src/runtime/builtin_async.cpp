@@ -40,6 +40,8 @@
 #include "runtime/shape.h"
 #include "runtime/value.h"
 
+#include <brass/runtime/coroutine.hpp>
+
 namespace bronze::runtime {
 
 namespace {
@@ -78,11 +80,27 @@ void complete(Rooted<Value>& machine, Rooted<Value>& value, bool rejected) {
     setState(machine, MachineState::Completed);
     writeSlot(machine, MachineSlot::Frame, Value::fromUndefined());
     Rooted<Value> promise{readSlot(machine, MachineSlot::Promise)};
+    promise.get().asObject<ObjectHeader>()->setInternalSlot(PromiseSlot::AsyncOwner, Value::fromUndefined());
     if (rejected) {
         rtRejectPromise(promise, value);
     } else {
         rtResolvePromise(promise, value);
     }
+}
+
+// The body in `frame` awaits `awaited`: when that is the promise of another
+// async call still running, this frame is the one waiting on that call's
+// frame, and brass's async stack (current_async_stack, its crash report and
+// symbolizer, and Error.stack's "at async" frames) walks from it to here.
+// Allocates nothing.
+void linkAwaiter(Rooted<Value>& awaited, Rooted<Value>& frame) {
+    if (!rtIsPromiseObject(awaited.get()) || !frame.get().isObject()) return;
+    const Value owner = awaited.get().asObject<ObjectHeader>()->internalSlot(PromiseSlot::AsyncOwner);
+    if (!owner.isObject()) return;
+    const Value callee = owner.asObject<ObjectHeader>()->internalSlot(MachineSlot::Frame);
+    if (!callee.isObject() || callee.rawBits() == frame.get().rawBits()) return;
+    brass_coro_set_awaiter(reinterpret_cast<uintptr_t>(callee.asObject<void>()),
+                           reinterpret_cast<uintptr_t>(frame.get().asObject<void>()));
 }
 
 }  // namespace
@@ -122,6 +140,7 @@ void rtAsyncFunctionResume(Rooted<Value>& machine, uint32_t mode, Rooted<Value>&
             fatal("internal: an async function body suspended other than at an await");
         }
         setState(machine, MachineState::Suspended);
+        linkAwaiter(out, frame);
         Rooted<Value> thrown{Value::fromUndefined()};
         if (rtCoroAwait(machine, out, thrown)) return;
         // PromiseResolve threw: the await throws it, at the await.
@@ -141,6 +160,7 @@ Value rtStartAsyncFunction(Rooted<Value>& frame) {
     Rooted<Value> machine{Value::fromObject(obj)};
     writeSlot(machine, MachineSlot::Frame, frame.get());
     writeSlot(machine, MachineSlot::Promise, promise.get());
+    promise.get().asObject<ObjectHeader>()->setInternalSlot(PromiseSlot::AsyncOwner, machine.get());
     setState(machine, MachineState::Suspended);
     rtCoroAdopt(frame);
     Rooted<Value> undef{Value::fromUndefined()};

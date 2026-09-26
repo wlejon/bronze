@@ -26,6 +26,8 @@
 #endif
 #endif
 
+#include <brass/runtime/coroutine.hpp>
+
 #include "abi/bronze_abi.h"
 #include "runtime/code_stack_maps.h"
 #include "runtime/exception.h"
@@ -285,6 +287,36 @@ bool find_code_site(const void* pc, CodeSite& out) {
     return true;
 }
 
+// The async functions waiting on the one running now, as node prints them:
+// "at async <name>" for each frame of brass's async stack past the running
+// one (which the walk above already showed, as its body's frame). A body is
+// named for its function (lower_generator.cpp: "<fn>.body"), less the
+// "mod<N>." a module-graph function carries.
+static void appendAsyncFrames(std::string& out, uint32_t& count, uint32_t limit) {
+    if (brass::runtime::current_coro_frame() == 0) return;
+    const std::vector<brass::runtime::CoroStackEntry> chain = brass::runtime::current_async_stack();
+    for (size_t i = 1; i < chain.size() && count < limit; ++i) {
+        std::string name(chain[i].name);
+        // A fixed-code frame (a built program's) names no body: its code
+        // does, through the program's code ranges.
+        const auto* f = reinterpret_cast<const brass::runtime::BrassCoroFrame*>(chain[i].frame);
+        if (name.empty() && (f->flags & brass::runtime::CORO_FLAG_BODY) == 0) {
+            if (const bronze_code_range* cr = find_code_range(f->fn_ptr); cr && cr->desc && cr->desc->name) {
+                name = cr->desc->name;
+            }
+        }
+        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".body") == 0) name.resize(name.size() - 5);
+        if (name.size() > 3 && name.compare(0, 3, "mod") == 0) {
+            size_t d = 3;
+            while (d < name.size() && name[d] >= '0' && name[d] <= '9') ++d;
+            if (d > 3 && d < name.size() && name[d] == '.') name.erase(0, d + 1);
+        }
+        if (name.empty() || name.compare(0, 5, "__anon") == 0) name = "<anonymous>";
+        out += "\n    at async " + name;
+        ++count;
+    }
+}
+
 std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     std::string nameStr = "Error";
     std::string msgStr = "";
@@ -513,6 +545,7 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         out += "\n" + lineStr;
         ++count;
     }
+    appendAsyncFrames(out, count, limit);
     return out;
 }
 

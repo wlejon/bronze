@@ -122,6 +122,8 @@ if(BRONZE_BUILD_TESTS)
     # manifest → `--emit-shared` → loader round trip when the shared runtime
     # is built (it gates itself).
     add_subdirectory(tests/native)
+    # Time to optimized code on real programs, a perf ratchet (label perf).
+    add_subdirectory(tests/tier_ratchet)
     # The same pair plus the shared runtime itself, which is what the module is
     # linked against and what the harness loads it into.
     if(BRONZE_BUILD_SHARED_RUNTIME)
