@@ -55,8 +55,11 @@ brass::runtime::TieringConfig tieringConfigFor(ExecutionTier tier) {
             // Optimized code is built off the mutator, on the process's one
             // compile pool (brass CompilePool::shared()): a hot function
             // keeps running in its lower tier until its code is installed,
-            // and a hot loop until its OSR entry is.
+            // and a hot loop until its OSR entry is. Baseline code too: a
+            // function past the tier-1 threshold stays interpreted until
+            // its code, and that of every function it reaches, is ready.
             config.enable_background_compile = true;
+            config.enable_background_tier1 = true;
             break;
     }
     return config;
