@@ -4,6 +4,46 @@
 
 namespace il2mir {
 
+namespace {
+
+// A dynamic `+ - * /` (`bronze_dynamic_*`): two Numbers compute inline as f64
+// and box the result, NaN canonicalized; anything else takes the helper. The
+// test is a speculation site (il_speculation.h), which tier 2 turns into a
+// guard where the helper never ran.
+Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
+                           const char* helper) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "num_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
+    Value* both = b.build_and(b.build_ule(op0, max), b.build_ule(op1, max));
+    lowering->spec().emit_branch(b, both, fast, slow, SpecKind::Arith);
+    b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
+
+    b.position_at_end(fast);
+    Value* f0 = b.build_bitcast_f64_i64(op0);
+    Value* f1 = b.build_bitcast_f64_i64(op1);
+    Value* f = op == BronzeOp::Add ? b.build_add(f0, f1)
+             : op == BronzeOp::Sub ? b.build_sub(f0, f1)
+             : op == BronzeOp::Mul ? b.build_mul(f0, f1)
+                                   : b.build_sdiv(f0, f1);
+    Value* bits = b.build_bitcast_i64_f64(f);
+    Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
+    Value* is_nan = b.build_ugt(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x7FF0000000000000ULL)));
+    Value* boxed = b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
+    b.build_br(merge, {boxed});
+
+    b.position_at_end(merge);
+    return result;
+}
+
+} // namespace
+
 bool is_ops_il_op(BronzeOp op) {
     switch (op) {
         case BronzeOp::ConstF64:
@@ -132,7 +172,7 @@ bool lower_ops_instruction(
             } else if (res_type == Type::i64()) {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
-                res_val = b.build_call("bronze_dynamic_add", Type::i64(), {op0, op1});
+                res_val = lower_dynamic_arith(lowering, b, BronzeOp::Add, op0, op1, "bronze_dynamic_add");
             } else {
                 op0 = lowering->ensure_type(op0, Type::i32(), b);
                 op1 = lowering->ensure_type(op1, Type::i32(), b);
@@ -153,7 +193,7 @@ bool lower_ops_instruction(
                 const char* fn_name = (inst_ast.op == BronzeOp::Sub) ? "bronze_dynamic_sub" :
                                       (inst_ast.op == BronzeOp::Mul) ? "bronze_dynamic_mul" :
                                                                        "bronze_dynamic_div";
-                res_val = b.build_call(fn_name, Type::i64(), {op0, op1});
+                res_val = lower_dynamic_arith(lowering, b, inst_ast.op, op0, op1, fn_name);
             } else if (res_type == Type::f64()) {
                 op0 = lowering->ensure_type(op0, Type::f64(), b);
                 op1 = lowering->ensure_type(op1, Type::f64(), b);

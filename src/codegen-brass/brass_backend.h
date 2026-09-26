@@ -14,6 +14,7 @@ struct PassPipelineOptions;
 }
 namespace il2mir {
 struct TranslatorOptions;
+class SpecFeedback;
 }
 
 namespace bronze {
@@ -63,6 +64,9 @@ public:
     void setMachOBuildVersion(const brass::object::MachOBuildVersion& v) { machoVersion_ = v; }
     void setEmitDebugInfo(bool on) { emitDebugInfo_ = on; }
     bool emitDebugInfo() const { return emitDebugInfo_; }
+    // buildMirModule's speculation feedback (il2mir/il_speculation.h): for a
+    // module run in-process by brass's tiered pipeline, never an object file.
+    void setSpecFeedback(std::shared_ptr<il2mir::SpecFeedback> fb) { specFeedback_ = std::move(fb); }
     // Whether the module init registers function source slices
     // (`__bronze_source_text_N` / `__bronze_source_entries_N`). Only an
     // object file (buildObjectFile) defines those tables; a MIR module
@@ -110,6 +114,7 @@ private:
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;
+    std::shared_ptr<il2mir::SpecFeedback> specFeedback_;
 };
 
 }  // namespace bronze

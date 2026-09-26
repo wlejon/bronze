@@ -49,6 +49,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_module_symbols.cpp
     il2mir/il_pipeline.cpp
     il2mir/il_property_lowering.cpp
+    il2mir/il_speculation.cpp
     il2mir/il_translator.cpp
 )
 add_library(bronze::codegen_brass ALIAS bronze_codegen_brass)

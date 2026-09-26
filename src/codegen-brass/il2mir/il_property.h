@@ -10,6 +10,8 @@
 
 namespace il2mir {
 
+class SpecSiteEmitter;
+
 class PropertyLoweringHelper {
 public:
     // A key operand that names no key constant.
@@ -68,6 +70,25 @@ public:
     // `bronze_prop_set`; `imm` nonzero is a strict-mode write.
     void lower_prop_set(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm, Value* ic_entry);
 
+    // A property write with the monomorphic inline store in front of
+    // `bronze_prop_set`: a plain object whose shape is the site's way 0,
+    // whose slot word names an own data slot with no flag (not an accessor,
+    // not an f64 slot), stores the value there, inline or overflow, with the
+    // write barrier for a reference. Requires a real site.
+    void lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,
+                             Value* ic_entry);
+
+    // The speculation sites' emitter (il_speculation.h); unset, plain branches.
+    void set_spec(SpecSiteEmitter* spec) noexcept { spec_ = spec; }
+    // Whether writes get lower_prop_set_mono (off while a census counts
+    // every write through the helper).
+    void set_inline_sets(bool on) noexcept { inline_sets_ = on; }
+    [[nodiscard]] bool inline_sets() const noexcept { return inline_sets_; }
+    // Whether the program counts its sites' misses (TranslatorOptions::
+    // spec_feedback): every keyed site then gets the inline path.
+    void set_feedback_driven(bool on) noexcept { feedback_driven_ = on; }
+    [[nodiscard]] bool feedback_driven() const noexcept { return feedback_driven_; }
+
     Value* lower_elem_get(
         Builder& b,
         Value* obj,
@@ -85,6 +106,15 @@ public:
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
 
 private:
+    // The shared test of the two mono paths: `hit`, the receiver's payload
+    // and the site's slot word.
+    void mono_hit(Builder& b, Value* obj, Value* ic_entry, Value*& hit, Value*& ptr, Value*& slot_word);
+    // The base a slot is read at: base + slot_word * 8 +
+    // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
+    Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
+    SpecSiteEmitter* spec_ = nullptr;
+    bool inline_sets_ = true;
+    bool feedback_driven_ = false;
     bool enable_inlined_fastpaths_ = true;
     std::string key_map_sym_ = "__bronze_key_map";
     std::string ic_table_sym_ = "__bronze_ic_table";

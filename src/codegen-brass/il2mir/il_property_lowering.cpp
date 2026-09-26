@@ -2,6 +2,7 @@
 #include "il_lowering.h"
 #include "il_abi.h"
 #include "il_property.h"
+#include "il_speculation.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 
@@ -47,9 +48,11 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     // BRONZE_ABI_OBJ_SHAPE_OFFSET, and the inline slots from
     // BRONZE_ABI_OBJ_SLOTS_OFFSET. The site's way 0 is InlineCache: the
     // shape at 0 and the (depth << 32 | slot) word at 8, which is below
-    // BRONZE_ABI_OBJ_INLINE_SLOTS exactly when the entry names an own
-    // property in an inline slot — the accessor, absent and depth bits all
-    // live in the high half, so the one unsigned compare refuses them.
+    // 2^32 exactly when the entry names an own data property — the
+    // accessor, absent, f64 and depth bits all live in the high half, so the
+    // one unsigned compare refuses them. A slot past
+    // BRONZE_ABI_OBJ_INLINE_SLOTS is in the overflow block, which a shape
+    // match proves is as large as the shape needs (slot_base).
     //
     // The guard is ONE branch, not a tag branch followed by a shape
     // branch: the header and shape loads go through a base that a select
@@ -64,16 +67,6 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     // three new blocks with no critical edge, which is what keeps
     // GVN-PRE's per-hoist restart from going quadratic over a function
     // with hundreds of property reads.
-    constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
-    constexpr uint64_t kObjectTagBits = 0xFFF1000000000000ULL;
-    constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
-    constexpr int32_t kPlainHeaderLow = 0x0000FFF1;
-    constexpr int32_t kShapeOffset = 8;
-    constexpr int32_t kSlotsOffset = 24;
-    constexpr int64_t kInlineSlots = 4;
-    constexpr int32_t kIcShapeOffset = 0;
-    constexpr int32_t kIcSlotWordOffset = 8;
-
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
     const uint32_t bid = fn->next_block_id();
@@ -85,32 +78,114 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
 
     b.position_at_end(bb_current);
-    Value* tag = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kTagMask)));
-    Value* is_obj = b.build_eq(tag, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-    Value* ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
-    Value* base = b.build_select(is_obj, ptr, b.build_pinned_tls_read());
-    Value* header_low = b.build_load(Type::i32(), base, 0);
-    Value* is_plain = b.build_eq(header_low, b.build_iconst_i32(kPlainHeaderLow));
-    Value* shape = b.build_load(Type::i64(), base, kShapeOffset);
-    Value* cached_shape = b.build_load(Type::i64(), ic_entry, kIcShapeOffset);
-    Value* shape_match = b.build_eq(shape, cached_shape);
-    Value* slot_word = b.build_load(Type::i64(), ic_entry, kIcSlotWordOffset);
-    Value* slot_inline = b.build_ult(slot_word, b.build_iconst_i64(kInlineSlots));
-    Value* hit = b.build_and(b.build_and(is_obj, is_plain), b.build_and(shape_match, slot_inline));
-    b.build_br_if(hit, bb_fast, bb_slow);
-
-    b.position_at_end(bb_fast);
-    Value* fast_val = b.build_load_indexed(Type::i64(), ptr, slot_word, 8, kSlotsOffset);
-    b.build_br(bb_merge, {fast_val});
-
-    b.position_at_end(bb_slow);
+    Value* hit = nullptr;
+    Value* ptr = nullptr;
+    Value* slot_word = nullptr;
+    mono_hit(b, obj, ic_entry, hit, ptr, slot_word);
+    if (spec_) {
+        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property);
+    } else {
+        b.build_br_if(hit, bb_fast, bb_slow);
+        b.position_at_end(bb_slow);
+    }
     Value* map_addr = b.build_func_addr(key_map_sym_);
     Value* sym_val = b.build_load(Type::i32(), map_addr, static_cast<int32_t>(key_index * sizeof(uint32_t)));
     Value* slow_val = b.build_call("bronze_prop_get", Type::i64(), {obj, sym_val, ic_entry});
     b.build_br(bb_merge, {slow_val});
 
+    b.position_at_end(bb_fast);
+    Value* fast_val = b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8,
+                                           kBronzeObjSlotsOffset);
+    b.build_br(bb_merge, {fast_val});
+
     b.position_at_end(bb_merge);
     return merge_val;
+}
+
+void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, Value* ic_entry, Value*& hit, Value*& ptr,
+                                      Value*& slot_word) {
+    constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
+    constexpr uint64_t kObjectTagBits = 0xFFF1000000000000ULL;
+    constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
+    constexpr int32_t kPlainHeaderLow = 0x0000FFF1;
+    constexpr int32_t kShapeOffset = 8;
+    constexpr int32_t kIcShapeOffset = 0;
+    constexpr int32_t kIcSlotWordOffset = 8;
+    Value* tag = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kTagMask)));
+    Value* is_obj = b.build_eq(tag, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    ptr = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+    // A non-object reads through a mapped block whose words refuse the hit.
+    // Compiled code has the TLS block in its pinned register; a module that
+    // runs in this process under the tiered pipeline (feedback-driven, where
+    // any receiver reaches here and the fast interpreter runs it too) uses a
+    // static zeroed block of this process instead.
+    alignas(16) static const uint64_t kNotAnObject[4] = {};
+    Value* not_object = feedback_driven_
+        ? b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
+        : b.build_pinned_tls_read();
+    Value* base = b.build_select(is_obj, ptr, not_object);
+    Value* header_low = b.build_load(Type::i32(), base, 0);
+    Value* is_plain = b.build_eq(header_low, b.build_iconst_i32(kPlainHeaderLow));
+    Value* shape = b.build_load(Type::i64(), base, kShapeOffset);
+    Value* cached_shape = b.build_load(Type::i64(), ic_entry, kIcShapeOffset);
+    Value* shape_match = b.build_eq(shape, cached_shape);
+    slot_word = b.build_load(Type::i64(), ic_entry, kIcSlotWordOffset);
+    Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(int64_t{1} << 32));
+    hit = b.build_and(b.build_and(is_obj, is_plain), b.build_and(shape_match, own_data));
+}
+
+// The base that, with slot_word * 8 + BRONZE_ABI_OBJ_SLOTS_OFFSET, addresses
+// slot `slot_word` of the plain object at `ptr`: the object for an inline
+// slot, else its overflow block shifted back by the inline slots and the
+// block's header.
+Value* PropertyLoweringHelper::slot_base(Builder& b, Value* ptr, Value* slot_word) {
+    constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
+    Value* is_inline = b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots));
+    Value* overflow = b.build_and(b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset),
+                                  b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
+    constexpr int64_t kShift = kBronzeObjSlotsOffset + kBronzeObjInlineSlots * 8 - kBronzeHdrBytes;
+    Value* shifted = b.build_sub(overflow, b.build_iconst_i64(kShift));
+    return b.build_select(is_inline, ptr, shifted);
+}
+
+void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val,
+                                                 uint32_t imm, Value* ic_entry) {
+    BasicBlock* bb_current = b.current_block();
+    Function* fn = bb_current->parent();
+    const std::string prefix = "ic_set_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_fast = b.append_block(prefix + "_hit");
+    BasicBlock* bb_barrier = b.append_block(prefix + "_barrier");
+    BasicBlock* bb_slow = b.append_block(prefix + "_miss");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+
+    b.position_at_end(bb_current);
+    Value* hit = nullptr;
+    Value* ptr = nullptr;
+    Value* slot_word = nullptr;
+    mono_hit(b, obj, ic_entry, hit, ptr, slot_word);
+    if (spec_) {
+        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property);
+    } else {
+        b.build_br_if(hit, bb_fast, bb_slow);
+        b.position_at_end(bb_slow);
+    }
+    lower_prop_set(b, obj, key_index, val, imm, ic_entry);
+    b.build_br(bb_merge);
+
+    // The store, then the barrier for a value that is not a Number (every
+    // reference is tagged above BRONZE_ABI_NUMBER_MAX_BITS), given the slot's
+    // own address as every C++ slot store gives it (HeapValue).
+    b.position_at_end(bb_fast);
+    Value* base = slot_base(b, ptr, slot_word);
+    Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
+                                   b.build_iconst_i64(kBronzeObjSlotsOffset));
+    b.build_store(Type::i64(), slot_addr, 0, val);
+    Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));    b.build_br_if(is_ref, bb_barrier, bb_merge);
+    b.position_at_end(bb_barrier);
+    b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+    b.build_br(bb_merge);
+
+    b.position_at_end(bb_merge);
 }
 
 void PropertyLoweringHelper::lower_prop_set(
@@ -414,8 +489,12 @@ bool lower_property_instruction(
             // guard is correct for any receiver — but each one is a merge
             // GVN-PRE re-walks the function for, and on three.js putting it
             // at every read doubled the optimized compile for a gain the
-            // `mono` sites alone already deliver.
-            if (site && inst_ast.is_mono && prop_lowering.enable_inlined_fastpaths() &&
+            // `mono` sites alone already deliver. A program that runs under
+            // the tiered pipeline with speculation feedback inlines every
+            // site: its misses, not inference, decide what tier 2 keeps, and
+            // only hot functions are optimized at all.
+            const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
+            if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
                 inst_ast.index != PropertyLoweringHelper::kNoKey) {
                 res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site);
                 return true;
@@ -428,9 +507,15 @@ bool lower_property_instruction(
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* val = ensure_type(get_opd(1), Type::i64());
             Value* site = prop_lowering.ic_site(b, inst_ast.ic_index);
-            prop_lowering.lower_prop_set(
-                b, obj_val, inst_ast.index, val, static_cast<uint32_t>(inst_ast.imm_i64), site
-            );
+            const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
+            // The same sites the read inlines (see PropGet).
+            const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
+            if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
+                prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey) {
+                prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site);
+                return true;
+            }
+            prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict, site);
             return true;
         }
 

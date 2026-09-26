@@ -55,6 +55,18 @@ set_tests_properties(oracle-jit-tier2 PROPERTIES LABELS "oracle;jit;tiers" ENVIR
 add_test(NAME oracle-tiers COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
 set_tests_properties(oracle-tiers PROPERTIES LABELS "oracle;jit;tiers")
 
+# The same cases with brass forcing guards to fail (BRASS_DEOPT_STRESS, brass
+# docs/speculation_and_deopt.md): every speculation site's guard
+# (codegen-brass/il2mir/il_speculation.h), then every third evaluation, takes
+# its exit in whatever tier runs it, and each must still print the pinned
+# bytes.
+add_test(NAME oracle-tiers-deopt-stress COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
+set_tests_properties(oracle-tiers-deopt-stress PROPERTIES LABELS "oracle;jit;tiers;deopt-stress"
+                     ENVIRONMENT "BRASS_DEOPT_STRESS=1")
+add_test(NAME oracle-tiers-deopt-stress-3 COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
+set_tests_properties(oracle-tiers-deopt-stress-3 PROPERTIES LABELS "oracle;jit;tiers;deopt-stress"
+                     ENVIRONMENT "BRASS_DEOPT_STRESS=3")
+
 # Unmodified three.js r160 (tests/oracle/threejs/README.md). Its own label
 # because it costs more than the whole rest of the suite: `-L threejs` runs
 # only the milestone, `-LE threejs` is the fast loop. It carries its own

@@ -52,10 +52,26 @@ struct RunResult {
 inline std::string quoted(const std::string& arg) { return "\"" + arg + "\""; }
 
 #ifdef _WIN32
+// BRASS_DEOPT_STRESS=1 (or `all`), inherited by every run: each guard
+// evaluation takes its exit, which in the fast interpreter is a resume per
+// speculation site per iteration, so a run costs a few times its plain time.
+inline bool deoptStressEveryEvaluation() {
+    char* env = nullptr;
+    size_t len = 0;
+    bool every = false;
+    if (_dupenv_s(&env, &len, "BRASS_DEOPT_STRESS") == 0 && env != nullptr) {
+        every = std::string(env) == "1" || std::string(env) == "all";
+    }
+    free(env);
+    return every;
+}
+
 inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
                             uint32_t timeoutMs = kRunTimeoutMs) {
     RunResult result;
-    uint32_t effectiveTimeoutMs = (timeoutMs == kRunTimeoutMs && gcStress) ? (kRunTimeoutMs * 4) : timeoutMs;
+    static const bool s_deoptEvery = deoptStressEveryEvaluation();
+    uint32_t effectiveTimeoutMs =
+        (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptEvery)) ? (kRunTimeoutMs * 4) : timeoutMs;
 
     HANDLE outRead = nullptr;
     HANDLE errRead = nullptr;

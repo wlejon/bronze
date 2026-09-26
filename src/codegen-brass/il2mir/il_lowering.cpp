@@ -56,7 +56,12 @@ Value* IlLowering::unbox_tagged(Value* tagged, Builder& b) {
 
 IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag)
     : options_(options), diag_(diag), prop_lowering_(options.enable_inlined_fastpaths),
-      alloc_lowering_(options.enable_tlab) {}
+      alloc_lowering_(options.enable_tlab) {
+    spec_.set_feedback(options.spec_feedback.get());
+    prop_lowering_.set_spec(&spec_);
+    prop_lowering_.set_inline_sets(!options.enable_census);
+    prop_lowering_.set_feedback_driven(options.spec_feedback != nullptr);
+}
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
     if (!val || val->type() == target_type) return val;
@@ -673,6 +678,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     Builder b(mod);
     b.set_function(fn);
+    // Guards only where a deopt's fresh Tier-0 frame can resume
+    // (il_speculation.h): not a coroutine body, no argv block.
+    spec_.begin_function(!fn_ast.is_coroutine_body() && widest_method_argc == 0);
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
     std::unordered_map<uint32_t, Value*> val_map;
@@ -883,6 +891,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     fn->rebuild_cfg_predecessors();
     fn->sort_blocks_rpo();
     fn->rebuild_cfg_predecessors();
+    spec_.finish_function(*fn);
     return true;
 }
 

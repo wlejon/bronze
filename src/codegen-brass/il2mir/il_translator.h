@@ -19,6 +19,8 @@ struct RangeAnalysisStats;
 
 namespace il2mir {
 
+class SpecFeedback;
+
 struct FunctionMeta {
     bool needs_env = false;
     bool needs_this = false;
@@ -143,6 +145,11 @@ struct TranslatorOptions {
     // the cell names. A table's address is then `symbol + delta`. Off (the
     // default, and every standalone brass test) keeps the plain addresses.
     bool per_thread_module_data = false;
+    // The program's speculation feedback (il_speculation.h), for a module
+    // that runs in-process under brass's tiered pipeline: its inline fast
+    // paths count their misses there and carry the guards tier 2 arms. Null
+    // (AOT objects, whole-program tier 2) lowers them as plain branches.
+    std::shared_ptr<SpecFeedback> spec_feedback;
     struct SourceFileMeta {
         uint32_t text_len = 0;
         uint32_t entry_count = 0;

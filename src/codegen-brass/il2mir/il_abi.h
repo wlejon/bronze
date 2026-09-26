@@ -32,6 +32,14 @@ constexpr int32_t kBronzeTlsModuleDeltasOff = BRONZE_TLS_MODULE_DELTAS_OFF;
 // One inline-cache SITE in the module's `__bronze_ic_table`. The table is
 // indexed by site, and a helper takes the address of a site's way 0.
 constexpr uint32_t kBronzeIcSiteSize = BRONZE_ABI_IC_SITE_SIZE;
+// The plain object's slots (ObjectHeader) and a heap block's header, which the
+// inline property paths address an overflow slot through.
+constexpr int32_t kBronzeObjOverflowOffset = BRONZE_ABI_OBJ_OVERFLOW_OFFSET;
+constexpr int32_t kBronzeObjSlotsOffset = BRONZE_ABI_OBJ_SLOTS_OFFSET;
+constexpr int64_t kBronzeObjInlineSlots = BRONZE_ABI_OBJ_INLINE_SLOTS;
+constexpr int64_t kBronzeHdrBytes = BRONZE_ABI_HDR_BYTES;
+// Every Number's bits are at most this; every other value's are above it.
+constexpr uint64_t kBronzeNumberMaxBits = BRONZE_ABI_NUMBER_MAX_BITS;
 
 // Declare every runtime helper and module data symbol the lowered module
 // may reference, with the optimizer contracts (SymbolRole) of the ones it

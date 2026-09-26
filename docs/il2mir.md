@@ -99,3 +99,23 @@ Generators, async functions, async generators and a top level that awaits are br
 - **Ownership.** A new frame is one of brass's roots until `bronze_coro_start` hands it to its owner (the generator object, the async function's machine, the async generator), which `rtCoroAdopt` unroots; from then on the owner traces it. The heap is bound on the thread's first entry into generated code (`bronze_tls_enter`), before any frame can be created.
 - **Drivers.** The runtime keeps the protocol state: `builtin_generator.cpp` (27.5.3), `builtin_async.cpp` (27.7.5) and `builtin_async_generator.cpp` (27.6.3) resume through `rtCoroResume` and subscribe awaits through `rtCoroAwait`, which subscribes the awaited promise itself when it is one (one reaction job per await).
 - **Not yet:** async stack traces (the brass awaiter links are not set, so a stack captured in a resumed body ends at the body's frame), and leaving a for-await loop early does not await the iterator's `return()` result (`tests/oracle/cases/blocked/for_await_close_awaits_return.js`).
+
+---
+
+## 7. Speculation sites
+
+Under the tiered pipeline (`brass_tiered_engine.cpp`, every tier except standalone `--tier=2`), a program is lowered with a `SpecFeedback` (`il2mir/il_speculation.h`). The program owns it because the lowered code increments its counters in place. Each inline fast path whose test can fail at run time is a **site**: `br_if %hit, fast, slow`, where `slow` counts the miss and then calls the generic helper.
+
+| Site | Fast path | Slow path | Armed when |
+|------|-----------|-----------|------------|
+| dynamic `+ - * /` (`il_lowering_ops.cpp`) | both operands Numbers: f64 op, NaN-canonicalized box | `bronze_dynamic_*` | the slow path never ran |
+| `prop.get` (`lower_prop_get_mono`) | plain object whose shape is the site's way 0, own data slot, inline or overflow | `bronze_prop_get` | at most 2 misses (the cold IC fills) |
+| `prop.set` (`lower_prop_set_mono`) | the same test, then store plus write barrier for a reference | `bronze_prop_set` | at most 2 misses |
+
+With feedback, every keyed get and set site gets the inline path, not only the ones inference proved monomorphic (`is_mono`). Set sites stay out-of-line while a shape census counts every write.
+
+**Guards.** In a function that can deoptimize, each site also has a guard in front of its branch: `guard 1, "bronze.spec"` with the site's number as resume id, `slow` as the resume target, and every value live into `slow` as its state. It is always true in Tier 0 and Tier 1. When a function tiers up, `apply_tier2_speculation` (brass's tier-2 front pass, `docs/speculation_and_deopt.md` §4b in brass) reads the counts. An armed site gets `%hit` as its guard condition and its branch pinned to `fast`, so a miss in tier-2 code deoptimizes and resumes the call in Tier 0 at `slow`. Other sites lose the guard and keep the branch. Either way the copy drops its resume points. Repeated deopts invalidate the code, and brass reoptimizes up to three times with the counts the failures added.
+
+A function can deoptimize only if nothing its slow paths read would be wrong in the fresh Tier-0 frame a resume enters. That excludes coroutine bodies and functions with an argv block (any method or n-ary call), because the block is an alloca in the tier-2 frame. Those functions keep the inline paths as plain branches.
+
+Seams: `BRONZE_NO_SPECULATION=1` lowers without feedback (the pre-speculation lowering). `BRONZE_SPEC_NO_GUARDS=1` keeps sites and counts but emits no guards. `BRONZE_SPEC_NO_ARM=1` emits guards and never arms them. `BRONZE_SPEC_TRACE=1` prints armed/total per tier-2 copy. `oracle-tiers-deopt-stress` and `oracle-tiers-deopt-stress-3` run the tiers suite with `BRASS_DEOPT_STRESS` at 1 and 3, and `tiers_39_speculation_deopt` exercises each site kind going polymorphic after tier-up.

@@ -4,6 +4,7 @@
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
+#include "codegen-brass/il2mir/il_speculation.h"
 #include "embed/embed.h"
 
 #include "support/diagnostics.h"
@@ -20,6 +21,8 @@
 #include <brass/mir/function.hpp>
 #include <brass/vm/fast_interpreter.hpp>
 
+#include <cstdlib>
+#include <string_view>
 #include <utility>
 
 // runtime/module_instance.cpp
@@ -222,6 +225,18 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // The module's writable tables are per thread (bronze_module_instance):
     // one compiled program runs on any number of threads, each with its own
     // globals and caches, as a worker running the same script does.
+    // Speculation (il2mir/il_speculation.h): the inline fast paths count
+    // their misses here, and tier 2 arms the guards of the ones that stayed
+    // cold. BRONZE_NO_SPECULATION=1 lowers them as plain branches (the A/B
+    // seam; the fast paths themselves stay).
+    std::shared_ptr<il2mir::SpecFeedback> spec;
+    if (const char* off = std::getenv("BRONZE_NO_SPECULATION"); !off || std::string_view(off) != "1") {
+        spec = std::make_shared<il2mir::SpecFeedback>();
+        backend.setSpecFeedback(spec);
+        // The lowered code holds the counters' addresses: the program owns
+        // them for as long as any of its code can run.
+        prog->specFeedback_ = spec;
+    }
     std::vector<uint32_t> globalReadKeys;
     prog->mirModule_ = backend.buildMirModule(module, diags, &globalReadKeys);
     if (!prog->mirModule_) return nullptr;
@@ -233,6 +248,10 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         // Tier-up and OSR code run the optimizer the whole-program tier runs,
         // one function (or one loop's entry) at a time.
         pipeline.set_tier2_passes(backend.tierUpPasses());
+        if (spec) {
+            pipeline.set_tier2_front_pass(
+                [spec](brass::Module& copy) { il2mir::apply_tier2_speculation(copy, *spec); });
+        }
         brass::runtime::OsrCoordinator& osr = prog->dispatchTable().osr();
         osr.set_threshold(kOsrBackedgeThreshold);
         osr.set_enabled(true);

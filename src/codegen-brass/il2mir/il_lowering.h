@@ -5,6 +5,7 @@
 #include "il_translator.h"
 #include "il_property.h"
 #include "il_alloc_lowering.h"
+#include "il_speculation.h"
 #include <brass/mir/builder.hpp>
 #include <brass/core/diagnostics.hpp>
 #include <memory>
@@ -42,6 +43,7 @@ public:
     Value* stage_argv(Builder& b, const std::vector<Value*>& args);
     PropertyLoweringHelper& prop_lowering() { return prop_lowering_; }
     AllocLoweringHelper& alloc_lowering() { return alloc_lowering_; }
+    SpecSiteEmitter& spec() { return spec_; }
     const TranslatorOptions& options() const { return options_; }
     const BronzeModuleAST* current_ast() const { return current_ast_; }
     DiagnosticReporter* diag() const { return diag_; }
@@ -106,6 +108,7 @@ private:
     DiagnosticReporter* diag_ = nullptr;
     PropertyLoweringHelper prop_lowering_;
     AllocLoweringHelper alloc_lowering_;
+    SpecSiteEmitter spec_;
     uint32_t current_file_id_ = 0;
     // The debug-context file id of each BronzeModuleAST::source_files entry.
     std::vector<uint32_t> source_file_ids_;
