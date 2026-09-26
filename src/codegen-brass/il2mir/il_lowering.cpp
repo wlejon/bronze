@@ -686,13 +686,16 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     Builder b(mod);
     b.set_function(fn);
-    // Guards only where a deopt's fresh Tier-0 frame can resume
-    // (il_speculation.h): not a coroutine body. The argv block is an alloca,
-    // which a resume re-creates in the new frame with its contents.
+    // Every function carries guards (il_speculation.h), a coroutine body
+    // too: brass's coroutine lowering keeps its suspend states out of the
+    // guards' resume ids and adds the frame, and anything it reloads, to
+    // each guard's state, so a deopt finishes the resume in Tier 0 over the
+    // same frame. The argv block is an alloca, which a resume re-creates in
+    // the new frame with its contents.
     // The entry's symbol differs between a JIT run and an AOT build; a
     // profile names it kSpecEntryName (il_spec_profile.h).
     const bool is_entry = fn_name == "main" || fn_name == options_.entry_symbol;
-    spec_.begin_function(!fn_ast.is_coroutine_body(), is_entry ? std::string(kSpecEntryName) : fn_name);
+    spec_.begin_function(true, is_entry ? std::string(kSpecEntryName) : fn_name);
 
     std::unordered_map<uint32_t, BasicBlock*> block_map;
     std::unordered_map<uint32_t, Value*> val_map;

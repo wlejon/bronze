@@ -20,10 +20,14 @@
 // (the lower tier holds the resume blocks), which leaves the slow blocks of
 // armed sites unreachable.
 //
-// A function carries guards only when nothing its slow paths read would be
-// wrong in the fresh Tier-0 frame a deopt resumes in: no coroutine body. An
-// argv block (an alloca) is fine: brass re-creates an alloca in a guard's
-// state in the resuming frame, with its contents.
+// Every function carries guards: nothing its slow paths read is wrong in the
+// fresh Tier-0 frame a deopt resumes in. An argv block (an alloca) is fine:
+// brass re-creates an alloca in a guard's state in the resuming frame, with
+// its contents. So is a coroutine body: brass's coroutine lowering files
+// suspend resume blocks under ids with the top bit set, apart from the
+// guards' site numbers, and completes each guard's state with the frame and
+// the values it reloads, so a deopt finishes that resume in Tier 0 over the
+// same heap frame and the next resume dispatches as usual.
 
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>

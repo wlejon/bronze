@@ -1,0 +1,7 @@
+resumed after timer 1
+after second await 2
+caught: rejected at the top level 3 false undefined
+hot loop 6001
+caught: rejected after a timer 2004 false
+caught: final rejection false
+end 2005

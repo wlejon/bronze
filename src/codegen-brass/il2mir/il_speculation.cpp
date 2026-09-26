@@ -60,11 +60,16 @@ bool SpecFeedback::should_speculate(uint32_t site) const {
     const uint32_t misses = *static_cast<const volatile uint32_t*>(&misses_[site]);
     // BRONZE_SPEC_ARM_KINDS=<mask>: arm only the kinds whose bit is set (1
     // arith, 2 property, 4 call target, 8 poly property), the per-kind A/B.
-    // Arith sites are not armed by default: measured on nbody, arming them
-    // cost about 65 ms
-    // of 420 against keeping the branch (the likely cause is that an armed
-    // guard's state keeps the boxed operands, which the optimized fast path
-    // otherwise never computes, live and computed; not yet confirmed).
+    // Arith sites are not armed by default. Arming them once cost nbody time
+    // because brass's register allocator kept every guard state value live to
+    // the guard's exit block at the end of the function (176 spill slots in
+    // nbody's advance armed against 118 unarmed); brass now ends that
+    // liveness at the guard's branch (45 against 88), and armed arith is
+    // about 12 ms faster on nbody. What still keeps it off: a site whose
+    // slow path never ran is armed whether or not it ran at all, so an OSR
+    // copy of a top-level script arms the arithmetic after its loop, which
+    // then deopts on its first string `+` (cpu_work's strings phase, 47 ms
+    // to 70). Arming it needs a "ran" signal the fast path does not give.
     static const uint32_t kind_mask = [] {
         const char* v = std::getenv("BRONZE_SPEC_ARM_KINDS");
         return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0xEu;

@@ -52,26 +52,32 @@ struct RunResult {
 inline std::string quoted(const std::string& arg) { return "\"" + arg + "\""; }
 
 #ifdef _WIN32
-// BRASS_DEOPT_STRESS=1 (or `all`), inherited by every run: each guard
-// evaluation takes its exit, which in the fast interpreter is a resume per
-// speculation site per iteration, so a run costs a few times its plain time.
-inline bool deoptStressEveryEvaluation() {
+// BRASS_DEOPT_STRESS set to anything but off (`1`/`all`, a period `<N>`, a
+// `site:` selection), inherited by every run: the guards it picks take
+// their exits, so each forced failure runs a site's slow path (the generic
+// helper, an inline-cache refill) where the fast path would have run. Every
+// third evaluation already doubles a tier-0 run (tiers_19 and tiers_22: about
+// 9 s plain, 17 s at period 3 and 30-34 s at period 1 on an idle machine),
+// which a loaded machine pushes past the plain limit, so every stressed
+// run gets the stress limit, not only period 1.
+inline bool deoptStressActive() {
     char* env = nullptr;
     size_t len = 0;
-    bool every = false;
+    bool active = false;
     if (_dupenv_s(&env, &len, "BRASS_DEOPT_STRESS") == 0 && env != nullptr) {
-        every = std::string(env) == "1" || std::string(env) == "all";
+        const std::string v(env);
+        active = !v.empty() && v != "0" && v != "off";
     }
     free(env);
-    return every;
+    return active;
 }
 
 inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
                             uint32_t timeoutMs = kRunTimeoutMs) {
     RunResult result;
-    static const bool s_deoptEvery = deoptStressEveryEvaluation();
+    static const bool s_deoptStress = deoptStressActive();
     uint32_t effectiveTimeoutMs =
-        (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptEvery)) ? (kRunTimeoutMs * 4) : timeoutMs;
+        (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptStress)) ? (kRunTimeoutMs * 4) : timeoutMs;
 
     HANDLE outRead = nullptr;
     HANDLE errRead = nullptr;
