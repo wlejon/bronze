@@ -117,6 +117,10 @@ public:
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
 
+    // A plain object's payload and shape word, and whether it is one; a
+    // non-object reads a mapped block whose words refuse every way.
+    void receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape);
+
 private:
     // The shared test of the two mono paths: `hit`, the receiver's payload
     // and the site's slot word.
@@ -124,9 +128,6 @@ private:
     // The read's poly test: the receiver's shape against the site's ways
     // 1..N-1, with the matching way's slot word.
     void other_ways_hit(Builder& b, Value* plain, Value* shape, Value* ic_entry, Value*& hit, Value*& slot_word);
-    // A plain object's payload and shape word, and whether it is one; a
-    // non-object reads a mapped block whose words refuse every way.
-    void receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape);
     // The base a slot is read at: base + slot_word * 8 +
     // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
     Value* slot_base(Builder& b, Value* ptr, Value* slot_word);

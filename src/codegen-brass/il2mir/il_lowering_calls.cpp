@@ -126,6 +126,71 @@ Value* lower_builtin_method_call(IlLowering* lowering, const BronzeInstruction& 
     return result;
 }
 
+// `recv.key(...)` whose callee lowering named (lower/direct_method_table.h).
+// The name is the nearest declaration at or above the class inference gave
+// the receiver, which is a GUESS: a subclass override, a monkey-patch or a
+// receiver of another class entirely resolves `key` to another function. So
+// the direct call runs only when the site's method IC answers the guessed
+// function for this receiver — a plain object whose shape a DIRECT entry
+// (way 0 or way 1) latched, with that entry's code pointer the callee's
+// wrapper. Everything else, the first call that latches the entry included,
+// takes the generic call, which dispatches on the receiver in hand.
+Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* recv,
+                                const std::vector<Value*>& args, Value* site, const std::string& callee,
+                                Function* direct_fn) {
+    constexpr int32_t kWord = 8;
+    constexpr int64_t kDirectFormLimit = int64_t{1} << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "direct_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    pl.receiver_shape(b, recv, plain, ptr, shape);
+    Value* target = b.build_func_addr("__wrapper_" + callee);
+    Value* way0 = b.build_and(
+        b.build_and(b.build_eq(shape, b.build_load(Type::i64(), site, 0)),
+                    b.build_ult(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord),
+                                b.build_iconst_i64(kDirectFormLimit))),
+        b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord), target));
+    Value* way1 = b.build_and(
+        b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord)),
+        b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord), target));
+    Value* hit = b.build_and(plain, b.build_or(way0, way1));
+    lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
+    Value* argv = lowering->stage_argv(b, args);
+    Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(args.size()));
+    Value* key_id = lowering->get_key_id(b, inst.index);
+    b.build_br(merge, {b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site})});
+
+    b.position_at_end(fast);
+    const auto& params = direct_fn->param_types();
+    std::vector<Value*> call_args = {lowering->ensure_type(recv, params[0], b)};
+    for (size_t p = 1; p < params.size(); ++p) {
+        const Type pt = params[p];
+        Value* a = p - 1 < args.size() ? args[p - 1] : nullptr;
+        call_args.push_back(a ? lowering->ensure_type(a, pt, b)
+                              : (pt == Type::f64() ? b.build_fconst_f64(0.0)
+                                 : pt == Type::i32() ? b.build_iconst_i32(0)
+                                 : lowering->ensure_type(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), pt, b)));
+    }
+    Value* direct = b.build_call(callee, direct_fn->return_type(), Span<Value* const>(call_args.data(), call_args.size()));
+    Value* boxed = direct_fn->return_type() == Type::void_type()
+        ? b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))
+        : lowering->ensure_type(direct, Type::i64(), b);
+    b.build_br(merge, {boxed});
+
+    b.position_at_end(merge);
+    return result;
+}
+
 } // namespace
 
 bool method_call_is_speculated_builtin(const IlLowering* lowering, const BronzeInstruction& inst) {
@@ -215,24 +280,13 @@ bool lower_call_instruction(
                     if (res_val) break;
                 }
             }
-            if (can_direct) {
-                std::vector<Value*> call_args = {ensure_type(recv, direct_fn->param_types()[0])};
-                for (size_t p = 1; p < direct_fn->param_types().size(); ++p) {
-                    size_t arg_idx = p - 1;
-                    Value* a = arg_idx < argc ? get_opd(1 + arg_idx) : nullptr;
-                    const Type pt = direct_fn->param_types()[p];
-                    call_args.push_back(a ? ensure_type(a, pt) :
-                        (pt == Type::f64() ? b.build_fconst_f64(0.0) :
-                         pt == Type::i32() ? b.build_iconst_i32(0) :
-                         ensure_type(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), pt)));
-                }
-                res_val = b.build_call(callee, direct_fn->return_type(), Span<Value* const>(call_args.data(), call_args.size()));
-                if (direct_fn->return_type() == Type::void_type()) {
-                    res_val = b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
-                }
-            } else if (Value* site = (lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr)) {
+            if (Value* site = (lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr)) {
                 std::vector<Value*> args;
                 for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
+                if (can_direct) {
+                    res_val = lower_direct_method_call(lowering, inst_ast, b, recv, args, site, callee, direct_fn);
+                    break;
+                }
                 Value* argv = lowering->stage_argv(b, args);
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
                 Value* key_id = lowering->get_key_id(b, inst_ast.index);

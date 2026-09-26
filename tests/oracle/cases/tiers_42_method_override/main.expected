@@ -1,0 +1,6 @@
+cold override true 2 1 1
+base warm 1536300000 200000
+mixed 100000 100001
+same module 100000 -100000
+hoist 0 15
+hoist warm 10

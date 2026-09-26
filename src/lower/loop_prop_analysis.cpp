@@ -356,11 +356,11 @@ std::vector<FunctionEffects> computeModuleEffects(
                 } else if (inst.op == il::Op::ElemSet || inst.op == il::Op::ElemSetTyped) {
                     effects[f].mutatesLength = true;
                 } else if (inst.op == il::Op::MethodCall) {
+                    // A method call's `directTarget` is a guess the backend
+                    // guards (direct_method_table.h): an override can run in
+                    // its place, so the named function's effects bound nothing.
                     if (!inst.operands.empty() && isMathObject(inst.operands[0], fn, defs, module)) {
                         // Pure Math method
-                    } else if (inst.directTarget != il::Instruction::kNoDirectTarget &&
-                               inst.directTarget < module.functions.size()) {
-                        effects[f].directCallees.push_back(inst.directTarget);
                     } else {
                         const std::string& name = (inst.keyIndex < module.keyConstants.size())
                                                       ? module.keyConstants[inst.keyIndex]
@@ -491,24 +491,6 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
             const il::ValueId target = inst.operands[0];
             if (isMathObject(target, fn, defs, module)) {
                 return false;
-            }
-            if (inst.directTarget != il::Instruction::kNoDirectTarget &&
-                inst.directTarget < funcEffects.size()) {
-                const auto& eff = funcEffects[inst.directTarget];
-                if (!eff.hasUnresolvedCalls) {
-                    if (keyIndex == lengthKeyIndex && eff.mutatesLength) {
-                        if (target == recv) return true;
-                        if (!isNonEscapingLocalObject(recv, fn, defs)) return true;
-                    }
-                    if (keyIndex < eff.writtenKeys.size() && eff.writtenKeys[keyIndex]) {
-                        for (il::ValueId op : inst.operands) {
-                            if (op == recv) return true;
-                        }
-                        if (!isNonEscapingLocalObject(recv, fn, defs)) return true;
-                        return false;
-                    }
-                    return false;
-                }
             }
             const uint32_t methodKey = inst.keyIndex;
             const std::string& methodName =
