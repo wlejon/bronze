@@ -1,13 +1,13 @@
 // %GeneratorPrototype% (ECMA-262 27.5.1) and the generator object's three
 // methods. What is here is [[GeneratorState]] and nothing else: the WALK lives
-// in compiled code — one resume function per generator, closed over the frame —
-// and this file decides only whether it may be entered and what a resumption
-// that never reaches it answers.
+// in compiled code — the generator's body, running on a brass coroutine frame
+// (runtime/coro.h) — and this file decides only whether it may be entered and
+// what a resumption that never reaches it answers.
 //
 // The split is the spec's own. 27.5.3.2 and 27.5.3.3 are almost entirely a
 // state machine over [[GeneratorState]] with one step that says "resume the
-// execution context"; that one step is the call below and everything around it
-// is here. Keeping it here rather than in the generated dispatch also puts the
+// execution context"; that one step is the resume below and everything around
+// it is here. Keeping it here rather than in the compiled body also puts the
 // two rules that a program can observe from OUTSIDE the body in one place:
 //
 //   - 27.5.3.2 step 2: resuming a generator that is already executing is a
@@ -26,7 +26,9 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/coro.h"
 #include "runtime/exception.h"
+#include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/generator.h"
 #include "runtime/heap.h"
@@ -62,14 +64,11 @@ void setState(Rooted<Value>& gen, uint32_t state) {
 // `value` then `done`, which is the order `Object.keys` of one reports.
 Value iterResult(Rooted<Value>& value, bool done) { return rtCreateIterResult(value, done); }
 
-// The `done` of the result the resume function built. It is an ordinary object
-// this compilation's own code created two lines ago, so the read is a plain
-// property get with no protocol around it.
-bool resultIsDone(Rooted<Value>& result) {
-    if (!result.get().isObject()) return true;
-    Rooted<Value> key{rtMakeString("done")};
-    return bronze_truthy(
-        result.get().asObject<ObjectHeader>()->getProp(rtHeap(), key).rawBits());
+// A completed generator never enters its body again, so it lets go of the
+// frame and everything the frame held.
+void complete(Rooted<Value>& gen) {
+    setState(gen, GeneratorState::Completed);
+    writeSlot(gen, GeneratorSlot::Frame, Value::fromUndefined());
 }
 
 // 27.5.3.1 GeneratorValidate, plus the resumption itself. One function for all
@@ -104,30 +103,32 @@ uint64_t resume(uint64_t thisBits, uint32_t mode, Rooted<Value>& sent, const cha
     if (state == GeneratorState::SuspendedStart && mode != GeneratorResumeMode::Next) {
         // 27.5.3.3 on a generator that has not started: the body never runs at
         // all, so there is no `finally` to reach and nothing to resume.
-        setState(self, GeneratorState::Completed);
+        complete(self);
         if (mode == GeneratorResumeMode::Throw) return rtThrow(sent.get()).rawBits();
         return iterResult(sent, true).rawBits();
     }
 
-    Rooted<Value> body{readSlot(self, GeneratorSlot::Resume)};
+    Rooted<Value> frame{readSlot(self, GeneratorSlot::Frame)};
     setState(self, GeneratorState::Executing);
-    Rooted<Value> result{Value::fromUndefined()};
+    Rooted<Value> out{Value::fromUndefined()};
+    CoroStep step;
     Value caught;
-    if (rtTryCatch(
-            [&] {
-                Value args[2] = {Value::fromDouble(static_cast<double>(mode)), sent.get()};
-                result.set(body.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2,
-                                                                       args));
-            },
-            caught)) {
+    if (rtTryCatch([&] { step = rtCoroResume(frame, mode, sent, out); }, caught)) {
         // An exception out of the body ends the walk (27.5.3.2 step 8 leaves
         // the generator completed however the resumption finished).
-        setState(self, GeneratorState::Completed);
-        rtThrow(caught);
+        Rooted<Value> thrown{caught};
+        complete(self);
+        rtThrow(thrown.get());
     }
-    setState(self, resultIsDone(result) ? GeneratorState::Completed
-                                        : GeneratorState::SuspendedYield);
-    return result.get().rawBits();
+    if (step.done) {
+        complete(self);
+        return iterResult(out, true).rawBits();
+    }
+    setState(self, GeneratorState::SuspendedYield);
+    // A `yield*` hands out the inner iterator's result object as it is
+    // (27.5.3.8 GeneratorYield of the inner result).
+    if (step.kind == BRONZE_ABI_SUSPEND_DELEGATE) return out.get().rawBits();
+    return iterResult(out, false).rawBits();
 }
 
 uint64_t generatorNext(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
@@ -165,28 +166,29 @@ void rtInstallGeneratorPrototype(Rooted<Value>& proto) {
     }
 }
 
-}  // namespace bronze::runtime
-
-extern "C" {
-
 // A GENERATOR OBJECT (ECMA-262 27.5.1): %GeneratorPrototype% for a prototype,
 // [[GeneratorState]] at suspendedStart, and [[GeneratorContext]] holding the
-// closure that IS the body. The two internal slots are real fields rather than
-// properties under a reserved name, which is what keeps a generator object's
-// own-key list empty — `next` is inherited, and the state is not a property at
-// all.
-uint64_t bronze_create_generator_object(uint64_t resumeBits) {
-    using namespace bronze;
-    using namespace bronze::runtime;
-    Rooted<Value> body{Value(resumeBits)};
+// body's frame. The two internal slots are real fields rather than properties
+// under a reserved name, which is what keeps a generator object's own-key list
+// empty — `next` is inherited, and the state is not a property at all.
+//
+// 15.5.3 binds the arguments when the generator function is CALLED, so the
+// body runs here up to its START suspension; a throw from the argument
+// binding leaves the call, and the generator object is never handed out.
+Value rtCreateGeneratorObject(Rooted<Value>& frame) {
     Rooted<Value> gen{rtNewIteratorObject(IteratorProto::Generator)};
-    // Written after the allocation above, through the roots: `rtNewIteratorObject`
-    // can collect, and a by-value copy of `body` taken before it would point
-    // into dead from-space.
     gen.get().asObject<ObjectHeader>()->setInternalSlot(
-        GeneratorSlot::State, Value::fromDouble(GeneratorState::SuspendedStart));
-    gen.get().asObject<ObjectHeader>()->setInternalSlot(GeneratorSlot::Resume, body.get());
-    return gen.get().rawBits();
+        GeneratorSlot::State, Value::fromDouble(GeneratorState::Executing));
+    gen.get().asObject<ObjectHeader>()->setInternalSlot(GeneratorSlot::Frame, frame.get());
+    rtCoroAdopt(frame);
+    Rooted<Value> undef{Value::fromUndefined()};
+    Rooted<Value> out{Value::fromUndefined()};
+    const CoroStep step = rtCoroResume(frame, GeneratorResumeMode::Next, undef, out);
+    if (step.done || step.kind != BRONZE_ABI_SUSPEND_START) {
+        fatal("internal: a generator body did not stop at its start");
+    }
+    setState(gen, GeneratorState::SuspendedStart);
+    return gen.get();
 }
 
-}  // extern "C"
+}  // namespace bronze::runtime

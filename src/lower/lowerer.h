@@ -41,7 +41,7 @@ public:
     using VarStateMap = lower::VarStateMap;
     using ExprJoin = lower::ExprJoin;
     using StaticSlotSite = lower::StaticSlotSite;
-    using GeneratorContext = lower::GeneratorContext;
+    using CoroContext = lower::CoroContext;
     using ProvenParamPlan = lower::ProvenParamPlan;
     using LoopParam = lower::LoopParam;
     using PatternTarget = lower::PatternTarget;
@@ -195,40 +195,26 @@ private:
     const SourceSet* sources_ = nullptr;
     InferStatsCollector* stats_ = nullptr;
 
-    // --- lower_generator.cpp: generator state machine ---
-    std::optional<GeneratorContext> generator_;
-    static const char* generatorStateSlotName();
-    static const char* generatorEnvSlotName();
-    static const char* generatorIterSlotName();
-    static const char* asyncMachineSlotName();
-    static std::string loopIterSlotName(uint32_t depth);
-    static std::string finallyPendingSlotName(uint32_t depth);
-    static const char* generatorReturnSlotName();
-    Value emitConstF64(double value, il::Function& ilFn);
-    Value emitIterResult(Value value, bool done, il::Function& ilFn);
-    Value emitAsyncAwaitResult(il::Function& ilFn);
-    Value emitFrameSlotGet(uint32_t slot, il::Function& ilFn);
-    void emitFrameSlotSet(uint32_t slot, Value val, il::Function& ilFn);
-    void emitGeneratorResult(Value value, bool done, il::Function& ilFn);
-    void emitGeneratorFinish(Value value, il::Function& ilFn);
-    void emitGeneratorDispatch(il::Function& ilFn);
-    bool lowerGeneratorReturn(const ast::ReturnStmt* retStmt, il::Function& ilFn);
+    // --- lower_generator.cpp: coroutine bodies ---
+    std::optional<CoroContext> coro_;
+    Value emitCoroSuspend(uint32_t kind, Value value, il::Function& ilFn);
+    Value emitCoroMode(il::Function& ilFn);
+    il::ValueId emitModeIs(Value mode, uint32_t want, il::Function& ilFn);
+    static il::Instruction branchOn(il::ValueId cond, il::BlockId ifTrue, il::BlockId ifFalse);
+    bool emitResumeDispatch(Value sent, il::Function& ilFn);
+    bool emitCoroutineReturn(Value value, il::Function& ilFn);
+    bool lowerCoroutineReturn(const ast::ReturnStmt* retStmt, il::Function& ilFn);
     std::optional<Value> lowerYield(const ast::YieldExpr& yield, il::Function& ilFn);
     std::optional<Value> lowerYieldStar(const ast::YieldExpr& yield, il::Function& ilFn);
-    bool lowerResumeBody(const std::vector<const ast::Stmt*>& stmts, il::Function& resumeFn,
-                         bool isAsync = false, bool isAsyncGenerator = false);
-    bool lowerGeneratorTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
-    bool lowerAsyncGeneratorTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
+    void splitCoroutineBody(il::Function& ilFn, int32_t kind);
 
-    // --- lower_async.cpp: async driver ---
+    // --- lower_async.cpp: await ---
     std::optional<Value> lowerAwait(const ast::YieldExpr& await, il::Function& ilFn);
     std::optional<Value> lowerAwaitValue(Value awaited, Span span, il::Function& ilFn);
-    bool lowerAsyncTail(const std::vector<const ast::Stmt*>& stmts, il::Function& ilFn);
 
     // --- lower.cpp: module skeleton and function bodies ---
     void enterFunctionEnv(const std::vector<ast::Param>& params,
-                          const std::vector<const ast::Stmt*>& body, il::Function& ilFn,
-                          bool isGenerator = false, bool isAsync = false);
+                          const std::vector<const ast::Stmt*>& body, il::Function& ilFn);
     void planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts);
     void openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
                        il::Function& mainFn);
@@ -242,7 +228,7 @@ private:
     bool lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn);
     bool lowerBodyWithPlan(const std::vector<ast::Param>& params,
                            const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
-                           bool isGenerator, bool isAsync);
+                           bool isGenerator);
 
     // --- lower_unresolved.cpp: unresolved name references ---
     bool resolvesName(const std::string& name) const;

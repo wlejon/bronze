@@ -7,9 +7,9 @@ namespace il2mir {
 
 bool is_coro_il_op(BronzeOp op) {
     switch (op) {
-        case BronzeOp::CreateAsyncMachine:
-        case BronzeOp::AsyncStart:
-        case BronzeOp::AsyncAwait:
+        case BronzeOp::CoroStart:
+        case BronzeOp::CoroSuspend:
+        case BronzeOp::CoroMode:
         case BronzeOp::IterOpen:
         case BronzeOp::IterStep:
         case BronzeOp::IterValue:
@@ -45,37 +45,53 @@ bool lower_coro_instruction(
     };
 
     switch (inst_ast.op) {
-        case BronzeOp::CreateAsyncMachine: {
-            // Operand 0 is the machine's resume closure.
-            Value* resume_bits = get_opd(0);
-            if (!resume_bits) resume_bits = b.build_iconst_i64(0);
-            if (lowering) resume_bits = lowering->ensure_type(resume_bits, Type::i64(), b);
-            res_val = b.build_call("bronze_async_machine", Type::i64(), {resume_bits});
+        case BronzeOp::CoroStart: {
+            // A fresh frame of the body over the call's own arguments, handed
+            // to the runtime, which runs it to its first suspension and
+            // answers the generator object or the promise.
+            // A dynamic argument goes in as its tagged value, not the bits
+            // get_opd unboxes: the frame's allocation may collect, and the
+            // stores into the frame come after it, so the argument has to
+            // be a root across the create for the collector to update it.
+            std::vector<Value*> args;
+            for (size_t i = 0; i < inst_ast.operands.size(); ++i) {
+                auto it = val_map.find(inst_ast.operands[i]);
+                if (it != val_map.end() && it->second && it->second->type().is_tagged()) {
+                    args.push_back(it->second);
+                } else {
+                    args.push_back(get_opd(i));
+                }
+            }
+            const std::string callee = lowering->resolve_callee(inst_ast.callee_name);
+            Value* frame = b.build_coro_create(callee, Span<Value* const>(args.data(), args.size()));
+            Value* kind = b.build_iconst_i32(static_cast<int32_t>(inst_ast.imm_i64));
+            res_val = b.build_call("bronze_coro_start", Type::i64(), {kind, frame});
             return true;
         }
 
-        case BronzeOp::AsyncStart: {
-            Value* mach = get_opd(0);
-            if (inst_ast.operands.size() > 1) {
-                Value* arg = get_opd(1);
-                if (!arg) arg = b.build_iconst_i64(0);
-                res_val = b.build_call("bronze_async_start", Type::i64(), {mach, arg});
-            } else {
-                res_val = b.build_call("bronze_async_start", Type::i64(), {mach});
+        case BronzeOp::CoroSuspend: {
+            const auto kind = static_cast<uint32_t>(inst_ast.imm_i64);
+            // The suspend returns the value from the body, whose return type
+            // is tagged.
+            auto it = val_map.find(inst_ast.operands.empty() ? UINT32_MAX : inst_ast.operands[0]);
+            Value* out = (it != val_map.end() && it->second && it->second->type().is_tagged())
+                             ? it->second
+                             : lowering->ensure_type(get_opd(0), Type::tagged(), b);
+            Value* cell = b.build_coro_suspend(out, lowering->next_coro_state_id(kind), Type::i64());
+            if (lowering->options().pin_tls_register) {
+                // Resumed from C++ (brass's resume), which does not carry
+                // the pinned register.
+                Value* tls = b.build_call("bronze_tls_block_addr", Type::i64(), {});
+                b.build_pinned_tls_write(tls);
             }
+            // The resumer passes the address of a rooted cell holding the
+            // sent value (bronze_abi.h, COROUTINE BODIES).
+            res_val = b.build_load(Type::i64(), cell, 0);
             return true;
         }
 
-        case BronzeOp::AsyncAwait: {
-            Value* mach = get_opd(0);
-            Value* val = get_opd(1);
-            if (!val) val = b.build_iconst_i64(0);
-            if (inst_ast.result_id != UINT32_MAX) {
-                res_val = b.build_call("bronze_async_await", Type::i64(), {mach, val});
-            } else {
-                b.build_call("bronze_async_await", Type::void_type(), {mach, val});
-                res_val = nullptr;
-            }
+        case BronzeOp::CoroMode: {
+            res_val = b.build_coro_resume_mode(lowering->coro_frame());
             return true;
         }
 

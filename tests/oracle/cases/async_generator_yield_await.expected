@@ -5,11 +5,11 @@ caught inside gen: thrown-error
 gr 1: ret-1 false
 step 1: 101 false
 received sent1: 50
+awaited b: 200
 gt 2: recovered false
 gr 2: early-return true
-awaited b: 200
-gt 3: done-throw true
 gr 3: undefined true
 step 2: 250 false
 received sent2: 10
+gt 3: done-throw true
 step 3: 300 true

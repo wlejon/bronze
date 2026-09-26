@@ -73,11 +73,10 @@ bool canThrow(const Instruction& inst) {
         // out of memory` in bronze, and inventing one would let a program
         // continue past a heap that could not grow).
         case Op::CreateObject:
-        case Op::CreateGeneratorObject:
-        // The machine is allocation only; starting it and subscribing an
-        // await are NOT here — the first runs the body and the second reads
-        // `.then` off whatever was awaited, and either can reach user code.
-        case Op::CreateAsyncMachine:
+        // Reads the frame header's resume word. `coro.start` and
+        // `coro.suspend` are NOT here: the first runs the body and the second
+        // hands control to whoever resumes it next, and both reach user code.
+        case Op::CoroMode:
         case Op::ModuleNamespace:
         case Op::CreateArray:
         case Op::CreateFunction:

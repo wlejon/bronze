@@ -89,24 +89,16 @@ private:
     // only inside a generator BODY — so this one flag decides whether the
     // identifier spelled `yield` is an operator here or an ordinary name.
     bool inGeneratorBody_ = false;
-    // Ordinal of the next generator, for the temporaries `ast::liftYields`
-    // declares in its body. Same reasoning as `objectMethodOrdinal_`, including
-    // the file qualification: two files' first generators must not name one
-    // temporary.
-    size_t generatorOrdinal_ = 0;
     // Ordinal of the next for-in/of head that assigns a property reference,
     // for the per-iteration temporary its desugaring declares
-    // (parseForAssignmentHead). File-qualified like the one above.
+    // (parseForAssignmentHead). File-qualified: two files' first such heads
+    // must not name one temporary.
     size_t forHeadOrdinal_ = 0;
-    // Async state, the exact shape of the generator pair above: `await` is not
-    // a reserved word — it is contextual, and only inside an async function
+    // Async state, the shape of the generator flag above: `await` is not a
+    // reserved word — it is contextual, and only inside an async function
     // BODY — so this one flag decides whether the identifier spelled `await`
-    // is an operator here or an ordinary name. The ordinal numbers the
-    // temporaries the await lift declares, kept apart from the generators'
-    // (`async.N.` vs `gen.N.`) so a reader of a lifted body can tell which
-    // machine a temporary belongs to.
+    // is an operator here or an ordinary name.
     bool inAsyncBody_ = false;
-    size_t asyncOrdinal_ = 0;
     size_t functionDepth_ = 0;
     // Whether the code under the cursor is STRICT (ECMA-262 11.2.2).
     // Strictness is a property of a Script or a function body, decided by that
@@ -398,12 +390,8 @@ private:
     // `async x => …` / `async (a, b) => …`, cursor on `async`.
     ast::ExprPtr parseAsyncArrow();
     // The parameter list and body shared by every async form: parses the
-    // body with `await` an operator, then lifts every await to a statement
-    // boundary exactly as parseGeneratorTail lifts yields. Cursor on `(`.
+    // body with `await` an operator. Cursor on `(`.
     bool parseAsyncFnTail(ast::FunctionExpr& fn);
-    // The statement-boundary lift alone, for the async arrow whose body was
-    // parsed by the arrow production rather than by the tail above.
-    bool liftAsyncBody(std::vector<ast::StmtPtr>& body);
     // `await <UnaryExpression>` with the cursor on `await`, inside an async
     // body only. Null on a diagnosed error.
     ast::ExprPtr parseAwaitExpr();

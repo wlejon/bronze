@@ -381,18 +381,6 @@ bool IlLowering::lower_instruction(
             break;
         }
 
-        case BronzeOp::CreateGeneratorObject: {
-            Value* body = ensure_type(get_opd(0), Type::i64(), b);
-            res_val = b.build_call("bronze_create_generator_object", Type::i64(), {body});
-            break;
-        }
-
-        case BronzeOp::CreateAsyncGeneratorObject: {
-            Value* body = ensure_type(get_opd(0), Type::i64(), b);
-            res_val = b.build_call("bronze_create_async_generator_object", Type::i64(), {body});
-            break;
-        }
-
         case BronzeOp::DynamicImport: {
             Value* spec = ensure_type(get_opd(0), Type::i64(), b);
             uint32_t key_idx = inst_ast.string_literal.empty() ? inst_ast.index : find_key_constant(inst_ast.string_literal);

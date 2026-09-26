@@ -128,12 +128,16 @@ void emitSourceTextsAndEntries(ObjectFile& obj, Section& roSec, int32_t roIdx,
                                const std::string& entrySymbol, const il::Module& module,
                                const std::vector<std::string>& uniqueNames) {
     for (uint16_t file = 0; file < module.sourceTexts.size(); ++file) {
+        // A coroutine body shares its stub's source span, and the stub is the
+        // function object `toString` is asked about; the body has no wrapper.
+        auto hasEntry = [&](size_t i) {
+            const auto& fn = module.functions[i];
+            return fn.sourceFile == file && fn.sourceEnd > fn.sourceBegin &&
+                   uniqueNames[i] != "main" && !fn.isCoroutineBody();
+        };
         uint32_t entryCount = 0;
         for (size_t i = 0; i < module.functions.size(); ++i) {
-            const auto& fn = module.functions[i];
-            if (fn.sourceFile == file && fn.sourceEnd > fn.sourceBegin && uniqueNames[i] != "main") {
-                entryCount++;
-            }
+            if (hasEntry(i)) entryCount++;
         }
         if (entryCount == 0) continue;
 
@@ -145,7 +149,7 @@ void emitSourceTextsAndEntries(ObjectFile& obj, Section& roSec, int32_t roIdx,
         const size_t entriesOffset = roSec.data.size();
         for (size_t i = 0; i < module.functions.size(); ++i) {
             const auto& fn = module.functions[i];
-            if (fn.sourceFile != file || fn.sourceEnd <= fn.sourceBegin || uniqueNames[i] == "main") continue;
+            if (!hasEntry(i)) continue;
             emitPointer(roSec, "__wrapper_" + uniqueNames[i]);
             const uint64_t span = (static_cast<uint64_t>(fn.sourceBegin) << 32) |
                                   static_cast<uint64_t>(fn.sourceEnd - fn.sourceBegin);
@@ -177,15 +181,22 @@ std::unordered_map<std::string, std::string> emitFunctionDescriptors(
         const auto& fn = module.functions[i];
         if (fn.blocks.empty()) continue;
 
+        // A coroutine body is named in a stack trace as the function it is
+        // the body of.
+        std::string_view logicalName = fn.name;
+        if (fn.isCoroutineBody() && logicalName.size() > 5 &&
+            logicalName.substr(logicalName.size() - 5) == ".body") {
+            logicalName.remove_suffix(5);
+        }
         std::string_view nameStr;
         if (!fn.displayName.empty()) {
             nameStr = fn.displayName;
-        } else if (uniqueNames[i] == "main" || fn.name == "main") {
+        } else if (uniqueNames[i] == "main" || logicalName == "main") {
             nameStr = "";
-        } else if (fn.name.rfind("__anon_fn", 0) == 0) {
+        } else if (logicalName.rfind("__anon_fn", 0) == 0) {
             nameStr = "<anonymous>";
         } else {
-            nameStr = fn.name;
+            nameStr = logicalName;
         }
 
         const std::string nameSymName = moduleSymbolName(entrySymbol, "__bronze_fn_name_" + uniqueNames[i]);
@@ -211,9 +222,12 @@ std::unordered_map<std::string, std::string> emitFunctionDescriptors(
         roSec.emit32(col);
         roSec.emit32(fn.descFlags);
         roSec.emit32(0);
+        // A coroutine body is entered only by brass's resume, never through a
+        // call wrapper, so its descriptor names the body itself.
         emitPointer(roSec, (uniqueNames[i] == "main")
                                ? (entrySymbol.empty() ? "main" : entrySymbol)
-                               : ("__wrapper_" + uniqueNames[i]));
+                               : fn.isCoroutineBody() ? uniqueNames[i]
+                                                      : ("__wrapper_" + uniqueNames[i]));
 
         const std::string descSym = moduleSymbolName(entrySymbol, "__bronze_fn_desc_" + uniqueNames[i]);
         defineSymbol(obj, descSym, roIdx, descOffset, 40, SymbolBinding::Global);

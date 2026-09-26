@@ -487,6 +487,26 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 }
             }
 
+            // A suspension and the mode it resumed with exist only in a
+            // coroutine body: the backend reads both off the frame that only a
+            // body has.
+            if ((inst.op == Op::CoroSuspend || inst.op == Op::CoroMode) && !fn.isCoroutineBody()) {
+                diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                        " outside a coroutine body");
+                return false;
+            }
+            if (inst.op == Op::CoroSuspend &&
+                (inst.operands.size() != 1 || definedTypes[inst.operands[0]] != Type::Dynamic ||
+                 inst.type != Type::Dynamic)) {
+                diags.error(Span{}, "Function " + fn.name +
+                                        ": coro.suspend takes one dynamic operand and answers dynamic");
+                return false;
+            }
+            if (inst.op == Op::CoroMode && inst.type != Type::I32) {
+                diags.error(Span{}, "Function " + fn.name + ": coro.mode answers i32");
+                return false;
+            }
+
             if (inst.op == Op::Throw) {
                 if (inst.operands.size() != 1) {
                     diags.error(Span{}, "Function " + fn.name +
@@ -616,11 +636,26 @@ bool verify(const Module& module, DiagnosticSink& diags) {
             for (const auto& inst : block.instructions) {
                 const bool refersToFunction = inst.op == Op::Call ||
                                               inst.op == Op::CreateFunction ||
-                                              inst.op == Op::FunctionRef;
+                                              inst.op == Op::FunctionRef ||
+                                              inst.op == Op::CoroStart;
                 if (!refersToFunction) continue;
                 if (inst.calleeIndex >= module.functions.size()) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
                                             " names an out-of-range function index");
+                    return false;
+                }
+                // A coroutine body is entered only through the frame
+                // `coro.start` makes, whose arguments are the body's
+                // parameters one for one; nothing else may name it.
+                const bool bodyTarget = module.functions[inst.calleeIndex].isCoroutineBody();
+                if (bodyTarget != (inst.op == Op::CoroStart) ||
+                    (bodyTarget && (inst.operands.size() !=
+                                        module.functions[inst.calleeIndex].params.size() ||
+                                    inst.immI32 != module.functions[inst.calleeIndex].coroKind))) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                            " @" + module.functions[inst.calleeIndex].name +
+                                            (bodyTarget ? " does not match the coroutine body"
+                                                        : " names a function that is no coroutine body"));
                     return false;
                 }
                 if (inst.op != Op::Call) continue;

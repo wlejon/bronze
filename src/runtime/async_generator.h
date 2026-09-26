@@ -6,10 +6,12 @@
 
 namespace bronze::runtime {
 
+// The async generator object's internal slots: Frame is its body's brass
+// coroutine frame (runtime/coro.h).
 namespace AsyncGeneratorSlot {
 enum : uint32_t {
     State = 0,
-    Resume = 1,
+    Frame = 1,
     Queue = 2,
     CurrentPromise = 3,
     kCount = 4,
@@ -25,6 +27,5 @@ enum class AsyncGeneratorState : uint32_t {
 };
 
 void rtInstallAsyncGeneratorPrototype(Rooted<Value>& proto);
-void rtAsyncGeneratorResumeFromAwait(Rooted<Value>& gen, uint32_t mode, Rooted<Value>& sent);
 
 }  // namespace bronze::runtime

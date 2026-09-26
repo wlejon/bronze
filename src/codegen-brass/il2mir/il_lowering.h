@@ -1,5 +1,6 @@
 #pragma once
 
+#include "abi/bronze_abi.h"
 #include "il_ast.h"
 #include "il_translator.h"
 #include "il_property.h"
@@ -59,8 +60,17 @@ public:
     // This thread's delta for the module being lowered: the value the
     // function computed once at entry, or a fresh load where it has none.
     Value* module_delta(Builder& b);
+    // In a coroutine body: its frame (the leading parameter), and the brass
+    // state id of its next suspension, which carries the BRONZE_ABI_SUSPEND_*
+    // kind in its low two bits (bronze_abi.h).
+    Value* coro_frame() const { return coro_frame_val_; }
+    uint32_t next_coro_state_id(uint32_t kind) {
+        return (++coro_suspend_count_ << 2) | (kind & BRONZE_ABI_SUSPEND_KIND_MASK);
+    }
 
 private:
+    Value* coro_frame_val_ = nullptr;
+    uint32_t coro_suspend_count_ = 0;
     bool lower_function(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name);
     bool emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name, uint32_t declared_param_count, bool is_closure = false);
     bool lower_instruction(const BronzeInstruction& inst_ast, Builder& b, Function* fn,

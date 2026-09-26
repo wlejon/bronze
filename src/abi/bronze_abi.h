@@ -207,6 +207,33 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_DESC_HAS_CONFIGURABLE 0x20u
 #define BRONZE_ABI_DESC_CONFIGURABLE     0x40u
 
+/* COROUTINE BODIES. A generator, an async function and an async generator
+ * each compile to a body that runs on a brass coroutine frame, and to a stub
+ * that `bronze_coro_start`s it with one of these kinds.
+ *
+ * A body suspends with one of the SUSPEND kinds, which the backend puts in
+ * the low two bits of the suspension's brass state id so that the resumer
+ * reads it off the frame header: START ends a generator's argument binding
+ * (15.5.3 runs it at the call, the body at the first `next`), YIELD hands a
+ * value out, AWAIT one to await, and DELEGATE hands out an inner iterator's
+ * result object as it is (a `yield*`, 27.5.3.8).
+ *
+ * A resumption continues the body in one of brass's CoroResumeMode modes. The
+ * resumer passes the ADDRESS of a rooted cell holding the sent value, and the
+ * body reads the value through it: the cell is updated when a collection
+ * moves what it names, and the frame's own resume word would not be. */
+#define BRONZE_ABI_CORO_GENERATOR       0u
+#define BRONZE_ABI_CORO_ASYNC           1u
+#define BRONZE_ABI_CORO_ASYNC_GENERATOR 2u
+#define BRONZE_ABI_SUSPEND_START        0u
+#define BRONZE_ABI_SUSPEND_YIELD        1u
+#define BRONZE_ABI_SUSPEND_AWAIT        2u
+#define BRONZE_ABI_SUSPEND_DELEGATE     3u
+#define BRONZE_ABI_SUSPEND_KIND_MASK    3u
+#define BRONZE_ABI_RESUME_NEXT          0u
+#define BRONZE_ABI_RESUME_THROW         1u
+#define BRONZE_ABI_RESUME_RETURN        2u
+
 /*
  * X(name, RET, PARAMS)
  *   RET    — one BRONZE_ABI_* type token (BRONZE_ABI_VOID for none)
@@ -254,11 +281,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
     X(bronze_unbox_bool,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_unbox_str,           BRONZE_ABI_CSTR, (BRONZE_ABI_U64)) \
     X(bronze_create_object,       BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
-    X(bronze_create_generator_object, BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
-    X(bronze_create_async_generator_object, BRONZE_ABI_U64, (BRONZE_ABI_U64)) \
-    X(bronze_async_machine,       BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
-    X(bronze_async_start,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
-    X(bronze_async_await,         BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* `coro.start`: a coroutine body's fresh brass frame (a raw address)\
+     * and its BRONZE_ABI_CORO_* kind; answers the generator object or the\
+     * async function's promise. */ \
+    X(bronze_coro_start,          BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_async_iter_open,     BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_async_iter_next,     BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_async_iter_close,    BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
@@ -849,6 +875,17 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_BRASS_SYMBOLS(Y) \
     Y(brass_throw) \
     Y(brass_rethrow)
+
+/*
+ * The brass runtime functions a compiled module names under their own names,
+ * which the shared runtime exports as they are (brass defines them; nothing
+ * overrides them):
+ *
+ * - brass_coro_create: a generator or async function's stub creating its
+ *   body's coroutine frame, in code compiled outside a tiered program.
+ */
+#define BRONZE_ABI_BRASS_EXPORTS(Z) \
+    Z(brass_coro_create)
 
 #define BRONZE_ABI_PERSONALITY_WINDOWS brass_seh_personality
 #define BRONZE_ABI_PERSONALITY_SYSV    brass_sysv_personality

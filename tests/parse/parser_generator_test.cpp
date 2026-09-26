@@ -1,14 +1,13 @@
-// Generators: the `yield` nodes the parser builds, the rewrite it runs over a
-// generator body before handing it on, and the constructs still outside what
-// bronze implements. Named for `src/parse/parser_generator.cpp` and
-// `src/ast/yield_lift.cpp`, which is where every assertion here is decided.
+// Generators: the `yield` nodes the parser builds. Named for
+// `src/parse/parser_generator.cpp`, which is where every assertion here is
+// decided.
 //
-// Whether the state machine also RUNS correctly is tests/oracle/cases/generator_*,
+// Whether a generator also RUNS correctly is tests/oracle/cases/generator_*,
 // because a tree assertion passes just as happily when the parser is
 // consistently wrong. What belongs here is the SHAPE the rest of the compiler
-// is handed: a `yield` reaches lowering as a `yield`, every one of them sits at
-// a statement boundary, and each construct bronze cannot lift out of has its
-// OWN message, so someone who hits one can learn from it what bronze supports.
+// is handed: a `yield` reaches lowering as a `yield`, exactly where it was
+// written. A suspension is a brass coroutine suspend, which keeps every live
+// intermediate in the frame, so no position of a `yield` needs rewriting.
 
 // The doctest main is parser_test.cpp's; every file here links into one
 // binary under the `parse` label, so the module's test command does not
@@ -43,13 +42,9 @@ TEST_CASE("a generator body keeps its control flow, and its yields") {
     CHECK(inLoop.find("(for") != std::string::npos);
     CHECK(inLoop.find("(yield") != std::string::npos);
 
-    // The two loops that walk a container are ordinary statements too. Both
-    // were once refused, because the iteration record such a loop is stepping
-    // is the one live thing in a body that the source never named and so
-    // `yield_lift` cannot lift under a name. Lowering keeps it in a frame slot
-    // of its own instead (Lowerer::loopIterSlotName), which leaves the parser
-    // with nothing to say about it: the loop and its yields come through as
-    // written.
+    // The two loops that walk a container are ordinary statements too: the
+    // iteration record they step is a value like any other, live across the
+    // suspension in the coroutine frame.
     const auto inForOf = parseAndDump("class C { *g() { for (const v of xs) { yield v; } } }");
     CHECK(inForOf.substr(0, 7) != "ERRORS:");
     CHECK(inForOf.find("(for-of") != std::string::npos);
@@ -60,8 +55,7 @@ TEST_CASE("a generator body keeps its control flow, and its yields") {
     CHECK(inForIn.find("(for-in") != std::string::npos);
     CHECK(inForIn.find("(yield") != std::string::npos);
 
-    // Both suspension forms in one such body, which is what the refusal used
-    // to have to name the form of.
+    // Both suspension forms in one such body.
     const auto bothInForOf =
         parseAndDump("class C { *g() { for (const v of xs) { yield v; yield* other(); } } }");
     CHECK(bothInForOf.substr(0, 7) != "ERRORS:");
@@ -121,62 +115,37 @@ TEST_CASE("a generator body keeps its control flow, and its yields") {
     CHECK(parseAndDump("function g() { return 1; }").find("(function g") != std::string::npos);
 }
 
-TEST_CASE("every yield is lifted to a statement boundary before lowering sees it") {
-    // `src/ast/yield_lift.cpp` normalizes a generator body so that no `yield`
-    // is left inside a larger expression. This is not a syntax rule — the
-    // grammar allows all of it — it is what makes a resume edge into the middle
-    // of the body possible at all: an intermediate with no name cannot be
-    // carried across a suspension, and after the rewrite every intermediate has
-    // one. The temporaries are named `gen.<n>.t<k>`, per generator in the file.
+TEST_CASE("a yield stays inside the expression it was written in") {
+    // The grammar allows a `yield` wherever an AssignmentExpression goes, and
+    // the tree keeps it there: no temporaries, no hoisted pre-statements, no
+    // `if` synthesized around a short-circuit arm. The suspension is a brass
+    // coroutine suspend, so every intermediate live across it is in the frame.
+    const char* positions[] = {
+        "class C { *g() { const x = yield 1; } }",
+        "class C { *g() { const x = (yield 1) + (yield 2); } }",
+        "class C { *g() { f(yield 1); } }",
+        "class C { *g() { const x = a && (yield 1); } }",
+        "class C { *g() { const x = a ? (yield 1) : 2; } }",
+        "class C { *g() { while (yield 1) { f(); } } }",
+        "class C { *g() { do { f(); } while (yield 1); } }",
+        "class C { *g() { for (let i = 0; i < 2; i += yield 1) {} } }",
+        "class C { *g() { switch (a) { case yield 1: break; } } }",
+        "class C { *g() { const x = o?.[yield 1]; } }",
+        "class C { *g() { const x = delete (yield 1); } }",
+        "class C { *g() { try { f(); } finally { yield 1; } } }",
+        "class C { *g() { try { f(); } finally { yield* other(); } } }",
+    };
+    for (const char* src : positions) {
+        CAPTURE(src);
+        const auto dump = parseAndDump(src);
+        CHECK(dump.substr(0, 7) != "ERRORS:");
+        CHECK(dump.find("(yield") != std::string::npos);
+        CHECK(dump.find("gen.") == std::string::npos);
+    }
 
-    // The value of a `yield` is what the generator was RESUMED with, so it must
-    // survive as a binding rather than as an expression value.
-    const auto valueUsed = parseAndDump("class C { *g() { const x = yield 1; } }");
-    CHECK(valueUsed.substr(0, 7) != "ERRORS:");
-    CHECK(valueUsed.find("(let gen.0.t0") != std::string::npos);
-    CHECK(valueUsed.find("(const x") != std::string::npos);
-
-    // Both operands of a binary expression: the left one has to be pinned too,
-    // because the `yield` on the right runs after it and before the addition.
-    const auto binary = parseAndDump("class C { *g() { const x = (yield 1) + (yield 2); } }");
-    CHECK(binary.substr(0, 7) != "ERRORS:");
-    CHECK(binary.find("(let gen.0.t0") != std::string::npos);
-    CHECK(binary.find("(let gen.0.t1") != std::string::npos);
-
-    // A `yield` in an argument: the call happens after the suspension, so the
-    // argument list is evaluated into temporaries first.
-    const auto argument = parseAndDump("class C { *g() { f(yield 1); } }");
-    CHECK(argument.substr(0, 7) != "ERRORS:");
-    CHECK(argument.find("(let gen.0.t") != std::string::npos);
-
-    // 13.13.1: the right operand of `&&` runs only if the left is truthy, so a
-    // `yield` there becomes an `if`, not an unconditional pre-statement.
-    const auto shortCircuit = parseAndDump("class C { *g() { const x = a && (yield 1); } }");
-    CHECK(shortCircuit.substr(0, 7) != "ERRORS:");
-    CHECK(shortCircuit.find("(if") != std::string::npos);
-    CHECK(shortCircuit.find("(yield") != std::string::npos);
-
-    // Same rule for the two arms of a conditional.
-    const auto ternary = parseAndDump("class C { *g() { const x = a ? (yield 1) : 2; } }");
-    CHECK(ternary.substr(0, 7) != "ERRORS:");
-    CHECK(ternary.find("(if") != std::string::npos);
-
-    // 14.7.4.9 re-tests the condition on every iteration, so a `yield` in a
-    // `while` head becomes `while (true)` with the test inside the body.
-    const auto whileHead = parseAndDump("class C { *g() { while (yield 1) { f(); } } }");
-    CHECK(whileHead.substr(0, 7) != "ERRORS:");
-    CHECK(whileHead.find("(break") != std::string::npos);
-
-    // A generator with no `yield` at all is untouched: no temporaries appear.
-    const auto plain = parseAndDump("class C { *g() { const x = a + b; return x; } }");
-    CHECK(plain.substr(0, 7) != "ERRORS:");
-    CHECK(plain.find("gen.0.t") == std::string::npos);
-
-    // The prefix counts generators, so two in one file cannot collide.
-    const auto two = parseAndDump(
-        "class C { *g() { const x = yield 1; } *h() { const y = yield 2; } }");
-    CHECK(two.find("gen.0.t0") != std::string::npos);
-    CHECK(two.find("gen.1.t0") != std::string::npos);
+    const auto objectLiteral = parseAndDump("const o = { *g() { yield 1; } };");
+    CHECK(objectLiteral.substr(0, 7) != "ERRORS:");
+    CHECK(objectLiteral.find("(generator-expr") != std::string::npos);
 }
 
 TEST_CASE("`yield*` reaches the AST as a delegating yield") {
@@ -208,52 +177,10 @@ TEST_CASE("`yield*` reaches the AST as a delegating yield") {
     const auto broken = parseAndDump("class C { *g() { yield\n* other(); } }");
     CHECK(broken.substr(0, 7) == "ERRORS:");
 
-    // The lifter treats it as the suspension it is: in expression position it
-    // is pinned into a temporary like any other, so the delegation stands alone
-    // at a statement boundary.
-    const auto lifted = parseAndDump("class C { *g() { const x = 1 + (yield* a); } }");
-    CHECK(lifted.substr(0, 7) != "ERRORS:");
-    CHECK(lifted.find("(let gen.0.t0") != std::string::npos);
-    CHECK(lifted.find("(yield*") != std::string::npos);
-}
-
-TEST_CASE("a generator outside what bronze implements is refused by name") {
-    // Each construct gets its OWN message: someone who hits one has to be able
-    // to learn from it what bronze does support.
-
-    // Both suspension forms reach every refused position, and the message names
-    // the one that was written — a reader who hit the restriction on `yield*`
-    // must not be sent looking for the one on `yield`.
-    const auto delegatingInFinally =
-        parseAndDump("class C { *g() { try { f(); } finally { yield* other(); } } }");
-    CHECK(delegatingInFinally.substr(0, 7) != "ERRORS:");
-    const auto bothForms =
-        parseAndDump("class C { *g() { try { f(); } finally { yield 1; yield* other(); } } }");
-    CHECK(bothForms.substr(0, 7) != "ERRORS:");
-
-    const auto objectLiteral = parseAndDump("const o = { *g() { yield 1; } };");
-    CHECK(objectLiteral.substr(0, 7) != "ERRORS:");
-    CHECK(objectLiteral.find("(generator-expr") != std::string::npos);
-
-    // Yield in finally is supported.
-    const auto inFinally = parseAndDump("class C { *g() { try { f(); } finally { yield 1; } } }");
-    CHECK(inFinally.substr(0, 7) != "ERRORS:");
-
-    const auto caseTest = parseAndDump("class C { *g() { switch (a) { case yield 1: break; } } }");
-    CHECK(caseTest.find("in the test of a `case` clause") != std::string::npos);
-
-    const auto doWhile = parseAndDump("class C { *g() { do { f(); } while (yield 1); } }");
-    CHECK(doWhile.find("unsupported construct: a `yield`") != std::string::npos);
-
-    const auto update = parseAndDump("class C { *g() { for (let i = 0; i < 2; i += yield 1) {} } }");
-    CHECK(update.find("unsupported construct: a `yield`") != std::string::npos);
-
-    // Optional chain with yield is supported via pre-hoisting.
-    const auto optional = parseAndDump("class C { *g() { const x = o?.[yield 1]; } }");
-    CHECK(optional.substr(0, 7) != "ERRORS:");
-
-    const auto increment = parseAndDump("class C { *g() { const x = delete (yield 1); } }");
-    CHECK(increment.find("unsupported construct: a `yield`") != std::string::npos);
+    // In expression position it stays where it was written.
+    const auto inExpr = parseAndDump("class C { *g() { const x = 1 + (yield* a); } }");
+    CHECK(inExpr.substr(0, 7) != "ERRORS:");
+    CHECK(inExpr.find("(yield*") != std::string::npos);
 }
 
 TEST_CASE("`yield` is contextual, and does not cross a function boundary") {
@@ -263,7 +190,7 @@ TEST_CASE("`yield` is contextual, and does not cross a function boundary") {
     CHECK(ordinaryName.substr(0, 7) != "ERRORS:");
     const auto nestedFn = parseAndDump("class C { *g() { yield [1].map(function (v) { return v; }); } }");
     CHECK(nestedFn.substr(0, 7) != "ERRORS:");
-    // The nested function is an ordinary one, and the lifter does not reach
-    // into it: `return v;` is not a generator `return`.
+    // The nested function is an ordinary one: `return v;` is not a generator
+    // `return`.
     CHECK(nestedFn.find("(function-expr") != std::string::npos);
 }

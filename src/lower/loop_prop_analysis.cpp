@@ -39,7 +39,8 @@ bool isImpureForLoopPropHoist(const il::Instruction& inst) {
         case il::Op::DynamicImport:
         // Control flow effects / Suspension
         case il::Op::Throw:
-        case il::Op::AsyncAwait:
+        case il::Op::CoroStart:
+        case il::Op::CoroSuspend:
         case il::Op::AsyncIterOpen:
         case il::Op::AsyncIterNext:
         case il::Op::AsyncIterClose:
@@ -282,9 +283,7 @@ bool isProvablyNonNullish(il::ValueId val, const il::Function& fn,
         case il::Op::CreateObject:
         case il::Op::CreateArray:
         case il::Op::CreateFunction:
-        case il::Op::CreateGeneratorObject:
-        case il::Op::CreateAsyncGeneratorObject:
-        case il::Op::CreateAsyncMachine:
+        case il::Op::CoroStart:
         case il::Op::ModuleNamespace:
         case il::Op::ObjectKeys:
         case il::Op::ForInKeys:
@@ -578,7 +577,8 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
         case il::Op::SuperCallSpread:
         case il::Op::DynamicImport:
         case il::Op::Throw:
-        case il::Op::AsyncAwait:
+        case il::Op::CoroStart:
+        case il::Op::CoroSuspend:
         case il::Op::AsyncIterOpen:
         case il::Op::AsyncIterNext:
         case il::Op::AsyncIterClose:

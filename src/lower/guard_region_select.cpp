@@ -819,12 +819,11 @@ il::Function withPreheader(const il::Function& fn) {
 bool selectEntryRegion(const il::Function& prepped, const std::vector<std::string>& keys,
                        GuardRegionStats& stats, RegionPlan& plan) {
     if (prepped.blocks.size() < 2) return false;
-    // Refused by NAME and not by shape: a resume machine's entry dispatches on
-    // an index held in the frame, so every one of its blocks is reachable from
-    // `b0` and the region definition is satisfied. What is wrong with copying
-    // it is that its live values cross suspensions in the frame rather than in
-    // SSA, so the promotion has nothing to carry.
-    if (prepped.isResumeBody) {
+    // Refused by NAME: a coroutine body's every value that crosses a
+    // suspension is spilled to its frame and reloaded, so a promoted double
+    // is boxed and unboxed around each suspension anyway, and a whole-body
+    // copy doubles every resume point for nothing.
+    if (prepped.isCoroutineBody()) {
         ++stats.refusedMachine;
         return false;
     }

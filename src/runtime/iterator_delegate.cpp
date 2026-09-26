@@ -163,11 +163,12 @@ extern "C" {
 uint64_t bronze_iter_delegate(uint64_t recBits, uint64_t modeBits, uint64_t sentBits) {
     Rooted<Value> recRoot{Value(recBits)};
     Rooted<Value> sent{Value(sentBits)};
-    // The resumption kind arrives as a NUMBER rather than a machine integer,
-    // because the generated code that supplies it took it from the resume
-    // function's `__mode` parameter, which the uniform calling convention
-    // delivers as a boxed value like every other argument.
-    const auto mode = static_cast<uint32_t>(Value(modeBits).asNumber());
+    // The resumption kind arrives as a boxed NUMBER (a BRONZE_ABI_RESUME_*),
+    // the one argument type every helper of this family takes: the body
+    // boxes the i32 `coro.mode` read, so it is Int32-tagged.
+    const Value modeValue(modeBits);
+    const auto mode = modeValue.isInt32() ? static_cast<uint32_t>(modeValue.payload() & 0xFFFFFFFFu)
+                                          : static_cast<uint32_t>(modeValue.asNumber());
     switch (mode) {
         case GeneratorResumeMode::Next: return delegateNext(recRoot, sent).rawBits();
         case GeneratorResumeMode::Throw: return delegateThrow(recRoot, sent).rawBits();

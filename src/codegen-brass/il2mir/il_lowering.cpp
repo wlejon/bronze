@@ -2,6 +2,7 @@
 #include "il_lowering_coro.h"
 #include "il_abi.h"
 #include "il_pipeline.h"
+#include <brass/mir/coro_transform.hpp>
 #include <brass/mir/verifier.hpp>
 #include <cstdio>
 #include <cstring>
@@ -534,6 +535,9 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         // function passes its dynamic values tagged.
         const bool external = fn_ast.blocks.empty();
         std::vector<Type> param_types;
+        // A coroutine body declares its frame as a leading parameter, which
+        // is how it reads the resume mode off the frame header.
+        if (fn_ast.is_coroutine_body()) param_types.push_back(Type::gcref());
         for (const auto& p : fn_ast.params) {
             param_types.push_back(external ? lower_type(p.second) : lower_abi_type(p.second));
         }
@@ -545,7 +549,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         Function* fn = mod->create_function(fn_name, ret_type, Span<const Type>(param_types.data(), param_types.size()));
         fn->set_allow_fp_reassociation(options_.allow_fp_reassociation);
 
-        if (fn_name != "main") {
+        if (fn_name != "main" && !fn_ast.is_coroutine_body()) {
             std::vector<Type> wrapper_param_types = {Type::i64(), Type::i64(), Type::i32(), Type::ptr()};
             Function* wfn = mod->create_function(
                 "__wrapper_" + fn_name,
@@ -565,7 +569,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         if (!lower_function(fn_ast, *mod, fn_name)) {
             return nullptr;
         }
-        if (fn_name != "main") {
+        if (fn_name != "main" && !fn_ast.is_coroutine_body()) {
             uint32_t arity = static_cast<uint32_t>(fn_ast.params.size());
             auto it_ar = callee_param_counts.find(fn_ast.name);
             if (it_ar != callee_param_counts.end()) {
@@ -590,7 +594,13 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         return nullptr;
     }
 
-    // 4. Optionally optimize module
+    // 4. Split every coroutine body at its suspends before anything
+    // optimizes it: until then a suspend is an ordinary instruction to the
+    // passes, which would move a frame read or an unboxed reference across
+    // it, where a resume re-enters the body and a collection may have run.
+    brass::lower_coroutines(*mod);
+
+    // 5. Optionally optimize module
     if (options_.enable_optimizations) {
         PassPipelineHooks hooks;
         hooks.after_pass = [&](std::string_view name) {
@@ -675,8 +685,11 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     }
 
     // 2. Set up entry block parameters from function arguments
+    coro_frame_val_ = nullptr;
+    coro_suspend_count_ = 0;
     if (!fn_ast.blocks.empty() && block_map.count(fn_ast.blocks[0].id)) {
         BasicBlock* entry_bb = block_map[fn_ast.blocks[0].id];
+        if (fn_ast.is_coroutine_body()) coro_frame_val_ = b.add_block_param(entry_bb, Type::gcref());
         for (size_t i = 0; i < fn_ast.params.size(); ++i) {
             uint32_t param_id = fn_ast.params[i].first;
             Type param_type = lower_abi_type(fn_ast.params[i].second);
@@ -685,15 +698,31 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         }
 
         b.position_at_end(entry_bb);
+        // In the entry block itself, ahead of the stack check's split: a
+        // coroutine body's allocas must be there to be re-created on every
+        // resume (brass's coroutine lowering refuses any other).
+        if (widest_method_argc > 0) {
+            argv_block_ = b.build_alloca_tagged(widest_method_argc);
+            argv_block_words_ = widest_method_argc;
+        }
         if (options_.pin_tls_register) {
             // The module entry is the one function the runtime calls without
             // its trampoline (bro and the CLI call the exported symbol
             // directly), so it fetches the block itself. Every other
             // function arrives with the register set by its caller: a
             // compiled caller never touches it, a runtime caller went
-            // through `bronze_enter_js`.
+            // through `bronze_enter_js`. A coroutine body is the other
+            // exception: brass's resume runs it from C++, so it fetches the
+            // block here and again after every suspension — the plain
+            // address, since only the module entry arms the stack limit
+            // (bronze_tls_enter re-arms it below the current frame, which a
+            // body entered once per nesting level would ratchet off the
+            // bottom of the stack).
             if (fn_name == "main") {
                 Value* tls = b.build_call("bronze_tls_enter", Type::i64(), {});
+                b.build_pinned_tls_write(tls);
+            } else if (fn_ast.is_coroutine_body()) {
+                Value* tls = b.build_call("bronze_tls_block_addr", Type::i64(), {});
                 b.build_pinned_tls_write(tls);
             }
             // Stack-limit check, before anything is pushed: below the limit,
@@ -735,11 +764,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 current_module_delta_ = load_module_delta(b);
             }
         }
-        if (widest_method_argc > 0) {
-            argv_block_ = b.build_alloca_tagged(widest_method_argc);
-            argv_block_words_ = widest_method_argc;
-        }
-
         if (fn_name == "main") {
             // The module's code ranges first, before anything here can
             // allocate: their stack maps are how a collection finds the

@@ -254,41 +254,4 @@ YieldForms yieldFormsIn(const std::vector<const Stmt*>& stmts);
 // refuses async generators), so no phrase has to cover that.
 const char* yieldFormName(YieldForms forms);
 
-// Every binding a GENERATOR's frame must hold: each name declared anywhere under
-// `stmts`, at any block depth, nested functions excluded.
-//
-// The third reason a binding cannot live in SSA, and a sibling of the other two:
-// `getCapturedNames` says a closure can reach it, `getTryAssignedNames` says a
-// handler is entered from a point no join can enumerate, and this one says a
-// SUSPENSION is such a point. Lowering re-enters a generator by jumping from the
-// resume function's entry block to the block after a `yield`, and that edge
-// defines no SSA value at all, so everything the resumed code reads has to come
-// out of the frame's environment record.
-//
-// Deliberately NOT a liveness analysis. "Which names cross a yield" is a
-// question about a control-flow graph that does not exist when this is asked,
-// and the honest over-approximation — the whole frame — costs a heap slot per
-// local in a generator and can never lose a value. A narrower answer that got
-// one binding wrong would not be a wrong answer, it would be a read of an SSA
-// value the entry edge never defined: a wrong PROGRAM.
-std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<StmtPtr>& stmts);
-std::unordered_set<std::string> getGeneratorFrameNames(const std::vector<const Stmt*>& stmts);
-
-// How many `for-of`/`for-in` ITERATION RECORDS a machine body can have in
-// flight at once — the deepest nest of such loops whose body holds a
-// suspension, nested functions excluded.
-//
-// The record is the one thing a loop of that kind carries that is not a
-// binding: `getGeneratorFrameNames` above cannot name it, because the source
-// never did. It still has to be in the frame for the same reason every binding
-// is, so the frame reserves this many anonymous slots and lowering hands out
-// the one at its current nesting depth. A DEPTH rather than a count because
-// two sibling loops are never stepping at once and can share a slot; only
-// nesting makes two records live together.
-uint32_t maxSuspendingIterationDepth(const std::vector<StmtPtr>& stmts);
-uint32_t maxSuspendingIterationDepth(const std::vector<const Stmt*>& stmts);
-
-uint32_t maxSuspendingFinallyDepth(const std::vector<StmtPtr>& stmts);
-uint32_t maxSuspendingFinallyDepth(const std::vector<const Stmt*>& stmts);
-
 }  // namespace bronze::ast

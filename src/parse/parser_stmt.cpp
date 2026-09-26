@@ -90,9 +90,6 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
         error("unconsumed input after last declaration");
         return nullptr;
     }
-    if (ast::containsYield(mod->body)) {
-        if (!liftAsyncBody(mod->body)) return nullptr;
-    }
     return mod;
 }
 

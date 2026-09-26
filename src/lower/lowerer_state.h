@@ -71,7 +71,6 @@ struct CleanupFrame {
     CleanupKind kind = CleanupKind::Finally;
     const ast::TryStmt* stmt = nullptr;
     il::ValueId iterRecord = il::kNoValue;
-    uint32_t iterFrameSlot = UINT32_MAX;
     size_t jumpDepth = 0;
     il::BlockId outerHandler = il::kNoBlock;
 };
@@ -160,7 +159,6 @@ struct EnvScopeInfo {
     std::unordered_set<std::string> deeplyAssigned;
     bool rebindsKnown = false;
     il::ValueId envValue = il::kNoValue;
-    uint32_t childSlot = UINT32_MAX;
 };
 
 // "No function is known for this slot" — see EnvScopeInfo::slotFnIndex.
@@ -185,26 +183,15 @@ struct StaticSlotSite {
     uint32_t familySpan = 0;
 };
 
-struct GeneratorContext {
-    size_t frameScope = SIZE_MAX;
-    il::ValueId frameEnv = il::kNoValue;
-    il::ValueId modeParam = il::kNoValue;
-    il::ValueId sentParam = il::kNoValue;
-    uint32_t stateSlot = 0;
-    uint32_t iterSlot = UINT32_MAX;
-    bool isAsync = false;
-    bool isAsyncGenerator = false;
-    uint32_t machineSlot = UINT32_MAX;
-    std::vector<uint32_t> loopIterSlots;
-    uint32_t activeIterLoops = 0;
-    uint32_t returnSlot = UINT32_MAX;
-    std::vector<uint32_t> finallyPendingSlots;
-    uint32_t activeFinallyDepth = 0;
-
-    static constexpr double kModeNext = 0.0;
-    static constexpr double kModeReturn = 1.0;
-    static constexpr double kModeThrow = 2.0;
-    std::vector<il::BlockId> resumeBlocks;
+// The body being lowered is a COROUTINE (a generator, an async function, an
+// async generator, or a top level that awaits): its suspensions are
+// `coro.suspend` instructions, and everything live across one stays in SSA —
+// brass's coroutine lowering spills it into the frame.
+struct CoroContext {
+    int32_t kind = BRONZE_ABI_CORO_GENERATOR;
+    bool isAsync() const { return kind != BRONZE_ABI_CORO_GENERATOR; }
+    bool isGenerator() const { return kind != BRONZE_ABI_CORO_ASYNC; }
+    bool isAsyncGenerator() const { return kind == BRONZE_ABI_CORO_ASYNC_GENERATOR; }
 };
 
 // What `planClosureParamNumbers` proved for ONE function body, keyed by the

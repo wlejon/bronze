@@ -63,6 +63,7 @@ bronze_add_module(runtime
         promise.cpp
         builtin_promise.cpp
         builtin_async.cpp
+        coro.cpp
         builtin_array.cpp
         builtin_array_mutators.cpp
         builtin_array_search.cpp

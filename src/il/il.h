@@ -345,25 +345,22 @@ struct Function {
     bool needsArguments = false;
     bool isStrict = false;
     bool isGenerator = false;
-    // The BODY of a generator or async function, lowered as a resume machine:
-    // `<name>.resume(__env, __mode, __sent)`, whose entry block dispatches on a
-    // resume index held in the frame (src/lower/lower_generator.cpp).
-    //
-    // It is a fact lowering knows and nothing downstream can read off the
-    // shape: the dispatch is an ordinary compare-and-branch chain, its targets
-    // are ordinary blocks, and a function that happens to start with a switch
-    // over a number is indistinguishable from it. The guarded-region pass is
-    // what asks — a whole-function duplication of a resume machine copies a
-    // state machine whose live values cross suspensions in the FRAME rather
-    // than in SSA, so the promotion has nothing to carry and the copy is pure
-    // growth.
-    bool isResumeBody = false;
+    // The BODY of a generator, async function or async generator: a coroutine
+    // (src/lower/lower_generator.cpp). The function of that name is a stub
+    // whose `coro.start` creates a brass coroutine frame of this body with the
+    // stub's own parameters as arguments, and the body suspends at
+    // `coro.suspend`. So it is never called: the backend gives it the frame as
+    // a leading parameter and no call wrapper, and brass's coroutine lowering
+    // keeps its values across suspensions.
+    static constexpr int8_t kNotCoroutine = -1;
+    int8_t coroKind = kNotCoroutine;  // BRONZE_ABI_CORO_* for a body
+    bool isCoroutineBody() const { return coroKind != kNotCoroutine; }
     // The BRONZE_ABI_FN_FLAG_* byte the created function object carries: what
     // its syntax decided about [[Construct]] and about the `prototype`
     // property (src/abi/bronze_abi.h says why neither is derivable here).
-    // `isGenerator` above is a different question — it selects the frame plus
-    // resume machine this body is lowered INTO — and the two are set from the
-    // same AST node without either being read off the other.
+    // `isGenerator` above is a different question — it says the body starts
+    // parked and `yield`s — and the two are set from the same AST node without
+    // either being read off the other.
     uint32_t fnFlags = BRONZE_ABI_FN_FLAGS_ORDINARY;
     // `...rest`: the LAST source parameter, and the one no caller supplies a
     // value for. It arrives as an array built from whatever arguments were left

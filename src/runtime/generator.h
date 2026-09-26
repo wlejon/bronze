@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/value.h"
 
@@ -13,11 +14,11 @@ namespace bronze::runtime {
 // `Object.keys` — and what makes a generator object's own-key list empty, since
 // `next` is inherited from %GeneratorPrototype%.
 //
-// [[GeneratorContext]] is a CLOSURE here rather than a saved execution context:
-// bronze compiles a generator body into a resume function over a frame record,
-// so "the context to resume" is exactly that function value.
+// [[GeneratorContext]] is the body's brass coroutine FRAME (runtime/coro.h),
+// held as an object reference so the collector traces it through the
+// generator object.
 namespace GeneratorSlot {
-enum : uint32_t { State, Resume, kCount };
+enum : uint32_t { State, Frame, kCount };
 }
 
 // [[GeneratorState]] (27.5.1.1). `executing` is the one that exists only while
@@ -28,16 +29,23 @@ namespace GeneratorState {
 enum : uint32_t { SuspendedStart, SuspendedYield, Executing, Completed };
 }
 
-// Which of the three methods is resuming, as the resume function's first
-// argument. Pinned against src/lower/lower_generator.cpp, which compiles the
-// dispatch that reads it.
+// Which of the three methods is resuming: brass's CoroResumeMode, which the
+// compiled body reads after each suspension (bronze_abi.h).
 namespace GeneratorResumeMode {
-enum : uint32_t { Next, Return, Throw };
+enum : uint32_t {
+    Next = BRONZE_ABI_RESUME_NEXT,
+    Throw = BRONZE_ABI_RESUME_THROW,
+    Return = BRONZE_ABI_RESUME_RETURN,
+};
 }
 
 // `next`, `return` and `throw` onto %GeneratorPrototype%. Called once, while
 // that prototype is being built (runtime/iterator.cpp), because the prototype
 // is the only place 27.5.1 puts them.
 void rtInstallGeneratorPrototype(Rooted<Value>& proto);
+
+// A generator object over `frame`, a body that has bound its arguments and
+// stopped at its START suspension (runtime/coro.cpp).
+Value rtCreateGeneratorObject(Rooted<Value>& frame);
 
 }  // namespace bronze::runtime

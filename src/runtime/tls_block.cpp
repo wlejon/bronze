@@ -13,6 +13,7 @@
 #include "runtime/tls_block.h"
 #include "runtime/heap.h"
 #include "runtime/profile.h"
+#include "runtime/rt_state.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -203,6 +204,11 @@ extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
 extern "C" void* bronze_tls_enter(void) {
     bronze_tls_block* tls = &bronze::runtime::g_tls_block;
     if (BRONZE_UNLIKELY(tls->stack_limit == 0)) {
+        // The thread's first entry into generated code. That code calls brass
+        // directly (brass_coro_create allocates a generator's frame on
+        // Heap::current()), so the thread's heap is bound before it runs, not
+        // on the runtime's first allocation.
+        bronze::runtime::rtHeap();
         uintptr_t low = 0, high = 0;
         bronze::runtime::threadStackBounds(low, high);
         if (high > low) {

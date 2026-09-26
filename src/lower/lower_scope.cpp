@@ -94,23 +94,7 @@ il::ValueId Lowerer::emitConstUndefined(il::Function& ilFn) {
     return res;
 }
 
-il::ValueId Lowerer::currentEnv(il::Function& ilFn) {
-    if (!generator_) return currentEnvValue_;
-    il::ValueId here = generator_->frameEnv;
-    for (size_t i = generator_->frameScope; i + 1 < envScopes_.size(); ++i) {
-        il::ValueId res = ilFn.valueCount++;
-        il::Instruction inst;
-        inst.op = il::Op::EnvGet;
-        inst.type = il::Type::Dynamic;
-        inst.result = res;
-        inst.operands = {here};
-        inst.envDepth = 0;
-        inst.envIndex = envScopes_[i].childSlot;
-        emitInst(ilFn, inst);
-        here = res;
-    }
-    return here;
-}
+il::ValueId Lowerer::currentEnv(il::Function&) { return currentEnvValue_; }
 
 il::ValueId Lowerer::emitEnvCreate(uint32_t slotCount, il::Function& ilFn) {
     const il::ValueId enclosing = currentEnv(ilFn);
@@ -219,7 +203,7 @@ Lowerer::Value Lowerer::emitEnvGet(uint32_t depth, uint32_t index, il::Function&
         (!lexical && (imm == SlotImmutability::Throws || imm == SlotImmutability::Silent)) ||
         isEffectivelyImmutable;
     const bool isHoistableImmutable =
-        inUserFunction_ && !generator_ && isImmutable &&
+        inUserFunction_ && isImmutable &&
         isOuterScope && entryEnvValue_ != il::kNoValue;
     const uint64_t key = (static_cast<uint64_t>(scopeIndex) << 32) | index;
     if (isHoistableImmutable) {
@@ -521,38 +505,16 @@ void Lowerer::enterScope(const std::vector<ast::StmtPtr>& stmts, il::Function& i
         return;
     }
     EnvScopeInfo info;
-    // One more slot, in a generator only, for the record of whatever scope opens
-    // inside this one. The chain of them is the only way down from the frame,
-    // and a suspension needs one — see `currentEnv`. Named, so a dump of the
-    // record says what the extra word is.
-    if (generator_) {
-        info.childSlot = static_cast<uint32_t>(slots.size());
-        slots.emplace_back(generatorEnvSlotName());
-    }
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
     info.slotIsDefiniteInit.assign(slots.size(), false);
     info.slotImmutable.assign(slots.size(), SlotImmutability::Mutable);
     // A block's own function declarations, on the same terms as a function
-    // body's (lower.cpp, `enterFunctionEnv`) — and never inside a machine body,
-    // for the reason stated there.
-    if (!generator_) planStableFunctionSlots(stmts, /*params=*/nullptr, info);
+    // body's (lower.cpp, `enterFunctionEnv`).
+    planStableFunctionSlots(stmts, /*params=*/nullptr, info);
     planScopeRebinds(stmts, /*params=*/nullptr, info);
-    const il::ValueId parentRecord = generator_ ? currentEnv(ilFn) : il::kNoValue;
-    const uint32_t parentChildSlot =
-        generator_ ? envScopes_.back().childSlot : UINT32_MAX;
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
-    if (generator_) {
-        il::Instruction link;
-        link.op = il::Op::EnvSet;
-        link.type = il::Type::Void;
-        link.result = il::kNoValue;
-        link.operands = {parentRecord, info.envValue};
-        link.envDepth = 0;
-        link.envIndex = parentChildSlot;
-        emitInst(ilFn, link);
-    }
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
     currentEnvValue_ = envScopes_.back().envValue;
@@ -577,31 +539,12 @@ void Lowerer::pushSyntheticEnv(std::vector<std::string> slots, il::Function& ilF
     // once as the class evaluates and never rebound, so the empty set is the
     // true answer and a method's read of one may be hoisted.
     info.rebindsKnown = true;
-    // The generator's downward link, for the reason `enterScope` adds one: a
-    // resume edge defines no SSA value, so the chain of child slots is the only
-    // way from the frame to the record innermost at a suspension point.
-    if (generator_) {
-        info.childSlot = static_cast<uint32_t>(slots.size());
-        slots.emplace_back(generatorEnvSlotName());
-    }
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
     info.slotIsDefiniteInit.assign(slots.size(), false);
     info.slotImmutable.assign(slots.size(), SlotImmutability::Mutable);
-    const il::ValueId parentRecord = generator_ ? currentEnv(ilFn) : il::kNoValue;
-    const uint32_t parentChildSlot = generator_ ? envScopes_.back().childSlot : UINT32_MAX;
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
-    if (generator_) {
-        il::Instruction link;
-        link.op = il::Op::EnvSet;
-        link.type = il::Type::Void;
-        link.result = il::kNoValue;
-        link.operands = {parentRecord, info.envValue};
-        link.envDepth = 0;
-        link.envIndex = parentChildSlot;
-        emitInst(ilFn, link);
-    }
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);
     currentEnvValue_ = envScopes_.back().envValue;

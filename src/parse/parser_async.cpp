@@ -7,11 +7,8 @@
 // `inAsyncBody_`, which is what makes the contextual identifier `await` an
 // operator (ECMA-262 13.3: AwaitExpression is a UnaryExpression, and 15.8.1
 // admits it in an async body and nowhere else). What comes out is a body with
-// `YieldExpr{isAwait}` nodes in it, run through `ast::liftYields` so that
-// every suspension stands at a statement boundary — the same precondition the
-// generator state machine needs, needed here for the same reason: an await is
-// a suspension, lowering re-enters the body at the statement after it, and
-// nothing held in SSA survives that edge (ast/yield_lift.h).
+// `YieldExpr{isAwait}` nodes in it, which lowering turns into suspensions of a
+// coroutine body (src/lower/lower_async.cpp).
 //
 // `async` itself is NEVER a keyword. Three rules keep it an ordinary
 // identifier everywhere the grammar means one:
@@ -25,16 +22,11 @@
 //     argument list, never a modifier position.
 //   - `let async = 1` and `async` alone are the identifier, reached because
 //     nothing below claims them.
-//
-// Async GENERATORS (`async function*`) and `for await` are refused by name:
-// the async iteration protocol (27.6) is a second driver over the same
-// machine, and an unbuilt construct is a hard error, never a silent reading.
 
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "ast/yield_lift.h"
 #include "parse/parser.h"
 
 namespace bronze {
@@ -82,20 +74,6 @@ bool Parser::looksLikeArrowFrom(size_t offset) const {
     }
 }
 
-// The statement-boundary lift for an await-holding body. `async.` and not
-// `gen.` so a reader of a lifted dump can tell which machine a temporary
-// belongs to; the file qualifier keeps two files' first async functions
-// apart, exactly as parseGeneratorTail's does.
-bool Parser::liftAsyncBody(std::vector<StmtPtr>& body) {
-    const size_t ordinal = asyncOrdinal_++;
-    const std::string prefix =
-        "async." +
-        (fileId_ == 0 ? std::to_string(ordinal)
-                      : std::to_string(fileId_) + "." + std::to_string(ordinal)) +
-        ".";
-    return liftYields(body, prefix, diags_);
-}
-
 // The parameter list and body every async form shares, with the cursor on
 // the '('. The parameter list is NOT part of the async body: 15.8.1 forbids
 // `await` in one, and the flag is raised only over the braces — the same
@@ -116,7 +94,6 @@ bool Parser::parseAsyncFnTail(ast::FunctionExpr& fn) {
     inAsyncBody_ = savedAsync;
     if (diags_.hasErrors()) return false;
 
-    if (!liftAsyncBody(fn.body)) return false;
     fn.span.end = previous().span.end;
     // After the body, because a function's own `"use strict"` is what makes
     // its parameter list subject to the rule — the same ordering every other
@@ -228,7 +205,6 @@ ExprPtr Parser::parseAsyncArrow() {
     }
     inAsyncBody_ = savedAsync;
     if (diags_.hasErrors()) return nullptr;
-    if (!liftAsyncBody(fn->body)) return nullptr;
     if (!checkStrictParams(fn->params, fn->strict)) return nullptr;
     fn->span.end = previous().span.end;
     return fn;

@@ -160,13 +160,6 @@ bool Lowerer::findStableFunctionCallee(const std::string& name, uint32_t& envHop
         return env != nullptr && std::strcmp(env, "1") == 0;
     }();
     if (disabled) return false;
-    // Never from inside a machine body. `currentEnv` there is a walk DOWN from
-    // the frame emitted at the point of use, and an argument expression holding
-    // a `yield` splits the block between that walk and the call — so the record
-    // this edge would pass is a value whose definition may not dominate its use.
-    // The plan already refuses a machine body's own record (lower.cpp,
-    // `enterFunctionEnv`); this is the other side of the same refusal.
-    if (generator_) return false;
 
     size_t scopeIndex = 0;
     uint32_t slot = 0;

@@ -91,9 +91,9 @@ enum class BronzeOp {
     Branch,
     Throw,
     ExcTake,
-    CreateAsyncMachine,
-    AsyncStart,
-    AsyncAwait,
+    CoroStart,
+    CoroSuspend,
+    CoroMode,
     IterOpen,
     IterStep,
     ModuleEnvSet,
@@ -120,8 +120,6 @@ enum class BronzeOp {
     MathImul,
     SuperSet,
     MathUnary,
-    CreateGeneratorObject,
-    CreateAsyncGeneratorObject,
     DynamicImport,
     ModuleNamespace,
     ObjectKeys,
@@ -219,6 +217,11 @@ struct BronzeFunction {
     std::vector<std::pair<uint32_t, BronzeType>> params;
     BronzeType return_type = BronzeType::Void;
     bool is_exported = false;
+    // A coroutine body's BRONZE_ABI_CORO_* kind, or -1: the function runs on
+    // a brass coroutine frame (its leading parameter) and is reached only
+    // through `coro_create`.
+    int32_t coro_kind = -1;
+    bool is_coroutine_body() const { return coro_kind >= 0; }
     std::vector<BronzeBlock> blocks;
 };
 

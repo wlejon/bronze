@@ -1,17 +1,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-// The two questions a suspension asks of a tree: is there one under here, and
-// what has to survive it. Named for `src/ast/queries_yield.cpp`.
-//
-// Both answers are consumed by lowering, where being wrong does not produce a
-// wrong VALUE — it produces a read of an SSA value the resume edge never
-// defined, which is a crash or a silently wrong program. So what is pinned here
-// is mostly the boundary (a nested function's `yield` is not this body's) and
-// the over-approximation (every declared name, at every depth, whether or not a
-// yield could actually be reached from it).
+// The question a suspension asks of a tree: is there one under here, and of
+// which forms. Named for `src/ast/queries_yield.cpp`. What is pinned is mostly
+// the boundary: a nested function's `yield` is not this body's.
 
-#include <algorithm>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -24,7 +18,7 @@ using namespace bronze;
 namespace {
 
 // Parse a module and hand back the body of its FIRST generator, which is what
-// both queries are asked about in the compiler.
+// the queries are asked about in the compiler.
 struct Parsed {
     SourceBuffer buf{"t.ts", ""};
     DiagnosticSink diags;
@@ -49,16 +43,6 @@ const std::vector<ast::StmtPtr>* firstGeneratorBody(const ast::Module& mod) {
         }
     }
     return nullptr;
-}
-
-std::vector<std::string> sortedNames(const std::unordered_set<std::string>& s) {
-    std::vector<std::string> out(s.begin(), s.end());
-    std::sort(out.begin(), out.end());
-    return out;
-}
-
-bool has(const std::unordered_set<std::string>& s, const char* name) {
-    return s.count(name) != 0;
 }
 
 }  // namespace
@@ -99,9 +83,8 @@ TEST_CASE("containsYield finds a suspension at any depth, and stops at a functio
 }
 
 TEST_CASE("yieldFormsIn separates `yield` from `yield*`") {
-    // The exhaustive walk, and the reason it cannot stop at the first hit: two
-    // consumers ask WHICH forms are here, and one of them — the lifter's
-    // refusal — has to name every form in a position, not the first one found.
+    // The exhaustive walk, and the reason it cannot stop at the first hit: a
+    // refusal has to name every form in a position, not the first one found.
     auto plain = parse("function* g() { yield 1; }");
     CHECK(ast::yieldFormsIn(*firstGeneratorBody(*plain->mod)) == ast::YieldForms::Plain);
     CHECK_FALSE(ast::hasDelegating(ast::yieldFormsIn(*firstGeneratorBody(*plain->mod))));
@@ -120,12 +103,11 @@ TEST_CASE("yieldFormsIn separates `yield` from `yield*`") {
     CHECK(ast::yieldFormsIn(*firstGeneratorBody(*none->mod)) == ast::YieldForms::None);
 
     // The same boundary the boolean has: a nested generator's delegation is not
-    // this body's, so the frame here needs no slot for one.
+    // this body's.
     auto nested = parse("function* g() { function* i() { yield* xs; } return i; }");
     CHECK(ast::yieldFormsIn(*firstGeneratorBody(*nested->mod)) == ast::YieldForms::None);
 
-    // A delegation nested INSIDE a suspension's operand is still this body's,
-    // which is what makes `yield_lift` hoist the inner one out.
+    // A delegation nested INSIDE a suspension's operand is still this body's.
     auto inOperand = parse("function* g() { yield (yield* xs); }");
     CHECK(ast::yieldFormsIn(*firstGeneratorBody(*inOperand->mod)) == ast::YieldForms::Both);
 
@@ -136,77 +118,7 @@ TEST_CASE("yieldFormsIn separates `yield` from `yield*`") {
     CHECK(std::string(ast::yieldFormName(ast::YieldForms::Both)) == "a `yield` or a `yield*`");
 }
 
-TEST_CASE("getGeneratorFrameNames collects every declared name, at every depth") {
-    auto p = parse(
-        "function* g() {"
-        "  let a = 1;"
-        "  const b = 2;"
-        "  var c = 3;"
-        "  { let d = 4; }"
-        "  if (x) { const e = 5; } else { let f = 6; }"
-        "  for (let i = 0; i < 2; i++) { let j = i; yield j; }"
-        "  while (x) { let k = 1; }"
-        "  try { let m = 1; } catch (err) { let n = 2; }"
-        "  function h() { let notMine = 1; }"
-        "}");
-    const auto names = ast::getGeneratorFrameNames(*firstGeneratorBody(*p->mod));
-
-    for (const char* n : {"a", "b", "c", "d", "e", "f", "i", "j", "k", "m", "n"}) {
-        CHECK_MESSAGE(has(names, n), (std::string("missing ") + n).c_str());
-    }
-    // The catch parameter is a binding of the body too: it is written by an
-    // edge no join enumerates, exactly like a resume edge.
-    CHECK(has(names, "err"));
-    // A nested function's name is declared HERE, so it is the frame's...
-    CHECK(has(names, "h"));
-    // ...but the names inside it are not: they belong to its own frame.
-    CHECK_FALSE(has(names, "notMine"));
-}
-
-TEST_CASE("getGeneratorFrameNames is an over-approximation, on purpose") {
-    // The query is deliberately not a liveness analysis. A binding whose life
-    // plainly ends before the only `yield` is still in the frame: whether it
-    // crosses is a question about a control-flow graph that does not exist yet,
-    // and the cost of the honest answer is a heap slot.
-    auto p = parse("function* g() { let before = 1; f(before); yield 2; }");
-    const auto names = ast::getGeneratorFrameNames(*firstGeneratorBody(*p->mod));
-    CHECK(has(names, "before"));
-
-    // And a generator with no yield at all still reports its bindings — the
-    // caller, not the query, decides whether a frame is needed.
-    auto q = parse("function* g() { let x = 1; return x; }");
-    CHECK(has(ast::getGeneratorFrameNames(*firstGeneratorBody(*q->mod)), "x"));
-}
-
-TEST_CASE("getGeneratorFrameNames sees destructuring and the lifter's temporaries") {
-    // A pattern declares every name in it, and the compiler needs all of them:
-    // one missing binding is a read of an undefined SSA value after a resume.
-    auto p = parse(
-        "function* g() {"
-        "  const { one, two: renamed, three = 3 } = o;"
-        "  const [first, ...rest] = xs;"
-        "  yield one;"
-        "}");
-    const auto names = ast::getGeneratorFrameNames(*firstGeneratorBody(*p->mod));
-    for (const char* n : {"one", "renamed", "three", "first", "rest"}) {
-        CHECK_MESSAGE(has(names, n), (std::string("missing ") + n).c_str());
-    }
-    // `two` is the property read, not a binding.
-    CHECK_FALSE(has(names, "two"));
-
-    // The temporaries `liftYields` introduces are ordinary `let` declarations
-    // by the time this runs, so they land in the frame with everything else —
-    // which is the whole point of giving them a name.
-    auto q = parse("function* g() { const x = (yield 1) + (yield 2); }");
-    const auto lifted = ast::getGeneratorFrameNames(*firstGeneratorBody(*q->mod));
-    CHECK(has(lifted, "x"));
-    const auto sorted = sortedNames(lifted);
-    CHECK(std::count_if(sorted.begin(), sorted.end(), [](const std::string& n) {
-              return n.rfind("gen.", 0) == 0;
-          }) >= 2);
-}
-
-TEST_CASE("yield and await lifting in destructuring defaults, optional chains, and compound RHS") {
+TEST_CASE("suspensions parse in destructuring defaults, optional chains, and compound RHS") {
     // Destructuring defaults with yield
     CHECK_NOTHROW(parse("function* g() { const [a = yield 1] = []; }"));
     CHECK_NOTHROW(parse("function* g() { const {x = yield 2} = o; }"));

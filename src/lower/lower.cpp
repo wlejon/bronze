@@ -285,16 +285,30 @@ std::optional<il::Module> Lowerer::lower() {
         functionVarNames_.clear();
 
         if (topLevelAsync) {
+            // A top level that awaits is an async function body (16.2.1.5.3
+            // runs it as one): `main` becomes the stub that starts it and
+            // answers its promise.
             mainFn.returnType = il::Type::Dynamic;
             mainFn.fnFlags |= BRONZE_ABI_FN_FLAG_ASYNC;
-            if (!lowerAsyncTail(topLevelStmts, mainFn)) return std::nullopt;
+            coro_ = CoroContext{.kind = BRONZE_ABI_CORO_ASYNC};
+            const bool ok = lowerStmtList(topLevelStmts, mainFn);
+            if (ok && !currentBlockIsTerminated(mainFn)) {
+                il::Instruction retInst;
+                retInst.op = il::Op::Ret;
+                retInst.type = il::Type::Dynamic;
+                retInst.operands = {emitConstUndefined(mainFn)};
+                emitInst(mainFn, retInst);
+            }
+            coro_.reset();
+            if (!ok) return std::nullopt;
+            splitCoroutineBody(mainFn, BRONZE_ABI_CORO_ASYNC);
         } else if (segmentTopLevel_) {
             if (!lowerTopLevelSegments(topLevelStmts, mainFn)) return std::nullopt;
         } else if (!lowerStmtList(topLevelStmts, mainFn)) {
             return std::nullopt;
         }
         auto& insts = mainFn.blocks[currentBlockIdx_].instructions;
-        if (insts.empty() || !il::isTerminator(insts.back().op)) {
+        if (!topLevelAsync && (insts.empty() || !il::isTerminator(insts.back().op))) {
             il::Instruction retInst;
             retInst.op = il::Op::Ret;
             retInst.type = il::Type::Void;
@@ -374,12 +388,7 @@ std::optional<il::Module> Lowerer::lower() {
 // Must run after `currentEnvValue_` names the environment this one chains
 // to: `emitEnvCreate` reads it as the parent link.
 void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
-                               const std::vector<const ast::Stmt*>& body, il::Function& ilFn,
-                               bool isGenerator, bool isAsync) {
-    // An async body IS a machine body for every rule below: an await is a
-    // suspension, so the whole frame takes the generator's treatment, plus
-    // one slot the generator does not have (the machine value).
-    const bool machineBody = isGenerator || isAsync;
+                               const std::vector<const ast::Stmt*>& body, il::Function& ilFn) {
     // Which of this function's own variables must live in an environment
     // record. The environment STACK is not cleared with it: enclosing
     // scopes' environments are how this function's free variables resolve.
@@ -395,28 +404,6 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // declaration has run needs somewhere to hold the uninitialized marker, and
     // SSA has no room for a value that is not a value.
     for (auto& name : ast::getTdzExposedNames(body)) memoryNames_.insert(std::move(name));
-    // The fourth, and the one that takes the whole frame rather than a name at a
-    // time: a generator suspends, and an edge from its resume dispatch defines
-    // no SSA value at all. `this` and `arguments` join it unconditionally,
-    // because the resume function reads both through the record exactly as an
-    // arrow does and neither is a declaration anything above would find.
-    if (machineBody) {
-        for (auto& name : ast::getGeneratorFrameNames(body)) memoryNames_.insert(std::move(name));
-        // The parameters too, which no body query can see: they are bound by
-        // the generator function and read by the resume function, so they cross
-        // every suspension there is.
-        for (const auto& p : params) {
-            if (p.pattern) {
-                for (auto& bound : ast::patternBoundNames(*p.pattern)) {
-                    memoryNames_.insert(std::move(bound));
-                }
-            } else if (!p.name.empty()) {
-                memoryNames_.insert(p.name);
-            }
-        }
-        if (ast::usesThis(params, body)) memoryNames_.insert("this");
-        if (ilFn.needsArguments) memoryNames_.insert("arguments");
-    }
     functionEnvBase_ = envScopes_.size();
     functionEnvScope_ = SIZE_MAX;
 
@@ -426,40 +413,6 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
         if (std::find(slots.begin(), slots.end(), slotName) != slots.end()) return;
         slots.push_back(slotName);
     };
-    // The machine's own, ahead of every binding so that a dump of a generator's
-    // frame reads with them first. Their names hold no source identifier, so
-    // nothing can collide with them.
-    if (machineBody) {
-        slots.emplace_back(generatorStateSlotName());
-        slots.emplace_back(generatorEnvSlotName());
-        // The third only where a `yield*` needs it. A generator with no
-        // delegation gets the two-slot frame it always had, so its IL is
-        // unchanged and a reader of one is not left asking what the empty
-        // third word is for.
-        if (isGenerator && ast::hasDelegating(ast::yieldFormsIn(body))) {
-            slots.emplace_back(generatorIterSlotName());
-        }
-        // An async body's third slot instead holds the MACHINE: the object
-        // the await sites subscribe resumption through. Written once by the
-        // factory (lowerAsyncTail), read at every await.
-        if (isAsync) slots.emplace_back(asyncMachineSlotName());
-        // And one anonymous slot per level of nested `for-of`/`for-in` whose
-        // body suspends. The iteration record such a loop is stepping is the
-        // one live thing in a machine body that no NAME reaches — the source
-        // never spelled it — so `getGeneratorFrameNames` above cannot put it
-        // here and this asks for it separately.
-        const uint32_t iterLoops = ast::maxSuspendingIterationDepth(body);
-        for (uint32_t depth = 0; depth < iterLoops; ++depth) {
-            slots.emplace_back(loopIterSlotName(depth));
-        }
-        const uint32_t finallyDepth = ast::maxSuspendingFinallyDepth(body);
-        for (uint32_t depth = 0; depth < finallyDepth; ++depth) {
-            slots.emplace_back(finallyPendingSlotName(depth));
-        }
-        if (finallyDepth > 0 || iterLoops > 0) {
-            slots.emplace_back(generatorReturnSlotName());
-        }
-    }
     // Parameters first, then the body's own let/const/function declarations,
     // then `var`s hoisted from anywhere below (they are function-scoped
     // wherever they are written, so they belong to this record and not to the
@@ -493,9 +446,6 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     if (slots.empty()) return;
 
     EnvScopeInfo info;
-    // The frame's own downward link is `gen.env`, placed at a fixed index by the
-    // block above so that the machine's two slots read first.
-    if (machineBody) info.childSlot = 1;
     for (uint32_t i = 0; i < slots.size(); ++i) info.slotOf[slots[i]] = i;
     info.slotNames = slots;
     info.slotIsLexical.assign(slots.size(), false);
@@ -504,21 +454,11 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     info.slotIsF64.assign(slots.size(), false);
     // Which of the slots hold Numbers, decided once, here, because this is
     // where the layout is fixed and every reader of the record — the body and
-    // every closure written in it — is lowered after it. A machine body is
-    // excluded: its frame holds the generator's own state words, and its
-    // bindings are re-entered from an edge this analysis does not model.
-    if (!machineBody) planEnvSlotNumberTypes(params, body, ilFn.name, info);
+    // every closure written in it — is lowered after it.
+    planEnvSlotNumberTypes(params, body, ilFn.name, info);
     // And which of them hold a function declaration nothing can rebind — the
-    // static call plan, lower_scope.cpp. A machine body is excluded for a
-    // reason of its own: a resume edge defines no SSA value, so a record there
-    // is reached by walking DOWN the child links from the frame, and the plan's
-    // claim is about counting parent links UP from the record a closure was
-    // created over. The two agree, but nothing here proves that they do, and a
-    // generator is not what this exists for.
-    if (!machineBody) planStableFunctionSlots(body, &params, info);
-    // For every body, machine or not: a closure written in a generator reads
-    // its frame's slots through the same `emitEnvGet` and asks the same
-    // question of them.
+    // static call plan, lower_scope.cpp.
+    planStableFunctionSlots(body, &params, info);
     planScopeRebinds(body, &params, info);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
@@ -539,7 +479,6 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
 // anything as far as this pass could see, got no slot, and the read reported
 // `undefined variable` for a binding written three lines above it.
 void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) {
-    const bool topLevelAsync = ast::containsYield(topLevelStmts);
     // Deliberately a LOCAL set, not `capturedNames_`. The two answer
     // different questions and the difference is not cosmetic:
     //
@@ -578,29 +517,13 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
         // segmentation — top-level code reads its own bindings through the
         // record instead of SSA — paid by modules big enough that compile
         // time, not top-level throughput, is the binding constraint.
-        if (!segmentTopLevel_ && !topLevelAsync && !moduleCaptures.contains(name)) return;
+        if (!segmentTopLevel_ && !moduleCaptures.contains(name)) return;
         if (std::find(moduleEnvSlots_.begin(), moduleEnvSlots_.end(), name) !=
             moduleEnvSlots_.end()) {
             return;
         }
         moduleEnvSlots_.push_back(name);
     };
-    if (topLevelAsync) {
-        moduleEnvSlots_.emplace_back(generatorStateSlotName());
-        moduleEnvSlots_.emplace_back(generatorEnvSlotName());
-        moduleEnvSlots_.emplace_back(asyncMachineSlotName());
-        const uint32_t iterLoops = ast::maxSuspendingIterationDepth(topLevelStmts);
-        for (uint32_t depth = 0; depth < iterLoops; ++depth) {
-            moduleEnvSlots_.emplace_back(loopIterSlotName(depth));
-        }
-        const uint32_t finallyDepth = ast::maxSuspendingFinallyDepth(topLevelStmts);
-        for (uint32_t depth = 0; depth < finallyDepth; ++depth) {
-            moduleEnvSlots_.emplace_back(finallyPendingSlotName(depth));
-        }
-        if (finallyDepth > 0 || iterLoops > 0) {
-            moduleEnvSlots_.emplace_back(generatorReturnSlotName());
-        }
-    }
     // Only the top level's OWN declarations. A top-level function
     // declaration is deliberately absent: it is a module symbol resolved
     // through `functionIndices_`, and a slot for it would shadow that symbol
@@ -612,7 +535,6 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     if (moduleEnvSlots_.empty()) return;
 
     EnvScopeInfo info;
-    if (topLevelAsync) info.childSlot = 1;
     for (uint32_t i = 0; i < moduleEnvSlots_.size(); ++i) info.slotOf[moduleEnvSlots_[i]] = i;
     info.slotNames = moduleEnvSlots_;
     // Which of them are lexical is settled HERE and not in `openModuleEnv`,
@@ -629,7 +551,7 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // And which of them no read can catch uninitialized, settled here for the
     // same reason: the module function that reads one is lowered before `main`
     // and has to know then whether the read carries a check.
-    if (!definiteInitDisabled() && !topLevelAsync) {
+    if (!definiteInitDisabled()) {
         for (const auto& name : ast::getDefinitelyAssignedLexicalNames(astModule_.body)) {
             auto slot = info.slotOf.find(name);
             if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
@@ -686,7 +608,6 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
 // parent environment.
 void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
                             il::Function& mainFn) {
-    const bool topLevelAsync = ast::containsYield(topLevelStmts);
     // The narrow set: what closures WRITTEN at top level capture. See
     // planModuleEnv for why this is not the set the record's layout came
     // from.
@@ -694,11 +615,6 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     memoryNames_ = capturedNames_;
     for (auto& name : ast::getTryAssignedNames(topLevelStmts)) memoryNames_.insert(std::move(name));
     for (auto& name : ast::getTdzExposedNames(topLevelStmts)) memoryNames_.insert(std::move(name));
-    if (topLevelAsync) {
-        for (auto& name : ast::getGeneratorFrameNames(topLevelStmts)) memoryNames_.insert(std::move(name));
-        for (auto& name : ast::getScopeDeclarations(topLevelStmts)) memoryNames_.insert(std::move(name));
-        for (auto& name : ast::getHoistedVarDeclarations(topLevelStmts)) memoryNames_.insert(std::move(name));
-    }
     if (moduleEnvScope_ == SIZE_MAX) return;
     envScopes_[moduleEnvScope_].envValue =
         emitEnvCreate(static_cast<uint32_t>(moduleEnvSlots_.size()), mainFn);
@@ -728,11 +644,9 @@ void Lowerer::openModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts,
     // precisely the closures over this record that 16.2.1.6.4 instantiates
     // before any of it runs — so the scan has to see their names to refuse a
     // statement that can call one.
-    if (!topLevelAsync) {
-        openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts),
-                            ast::getDefinitelyAssignedLexicalNames(astModule_.body),
-                            ast::getConstDeclarations(topLevelStmts), mainFn);
-    }
+    openLexicalBindings(moduleEnvScope_, ast::getLexicalDeclarations(topLevelStmts),
+                        ast::getDefinitelyAssignedLexicalNames(astModule_.body),
+                        ast::getConstDeclarations(topLevelStmts), mainFn);
 }
 
 // Does this module function need the module scope's record at entry? An

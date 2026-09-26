@@ -1,0 +1,43 @@
+{"value":1,"done":false}
+{"value":42,"done":true}
+{"done":true}
+start,finally
+outer caught boom
+{"done":true}
+start,after 1,finally
+break: start,after 1,finally
+{"value":"a","done":false}
+{"value":"cleanup","done":false}
+cleanup done
+{"value":"r","done":true}
+{"done":true}
+{"value":"from finally","done":true}
+0
+got x
+1
+caught t1
+12
+got y
+13
+{"value":"stop","done":true}
+inner finally
+outer finally
+{"value":7,"done":true}
+{"value":"i1","done":false}
+inner got A
+{"value":"i2","done":false}
+inner got B
+inner finally
+delegate returned inner result
+{"value":"o1","done":false}
+{"done":true}
+inner finally
+{"value":"early","done":true}
+inner finally
+rethrown into inner
+1 2 f
+forgave err
+f
+{"value":"bye","done":true}
+{"value":"pXqY42","done":true}
+5,104,4

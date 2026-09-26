@@ -1,17 +1,12 @@
-// Generators, at the parser's end of them: `yield` as an expression, the body
-// that may contain one, and the one rewrite the parser still does to it.
+// Generators, at the parser's end of them: `yield` as an expression and the
+// body that may contain one.
 //
 // A generator body is an ORDINARY function body here. It is parsed by the same
 // statement loop every other body takes, with one flag set — `inGeneratorBody_`,
 // which is what makes the contextual identifier `yield` an operator (ECMA-262
 // 15.5.1 admits it in an AssignmentExpression position and nowhere else). The
-// body reaches the AST intact, `yield` and all, and everything downstream learns
-// that generators exist: the state machine is built in src/lower.
-//
-// The one thing that happens here is `ast::liftYields`, which moves every
-// suspension to a statement boundary. It is a rewrite of the body's SHAPE and
-// not of its meaning, and it belongs on this side of the AST because it is the
-// precondition lowering's re-entry needs; see ast/yield_lift.h for why.
+// body reaches the AST intact, `yield` and all; src/lower makes it a coroutine
+// body.
 //
 // `yield*` is the same node with a flag. Delegation is a protocol rather than a
 // second operator (27.5.3.7), and the whole of that protocol is built in
@@ -22,7 +17,6 @@
 #include <string>
 #include <utility>
 
-#include "ast/yield_lift.h"
 #include "parse/parser.h"
 
 namespace bronze {
@@ -119,18 +113,6 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     fn.body = parseFunctionBody(fn.strict);
     inGeneratorBody_ = savedInBody;
     if (diags_.hasErrors()) return false;
-
-    // Dots, for the reason an object-literal method's IL symbol has them: a
-    // source identifier cannot contain one, so no temporary this rewrite
-    // declares can be confused with — or shadowed by — a binding the program
-    // wrote. The file qualifier keeps two files' first generators apart.
-    const size_t ordinal = generatorOrdinal_++;
-    const std::string prefix =
-        "gen." +
-        (fileId_ == 0 ? std::to_string(ordinal)
-                      : std::to_string(fileId_) + "." + std::to_string(ordinal)) +
-        ".";
-    if (!liftYields(fn.body, prefix, diags_)) return false;
 
     fn.span.end = previous().span.end;
     // After the body, because a generator's own `"use strict"` is what makes

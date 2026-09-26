@@ -249,11 +249,17 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.param_count = inst.operands.empty() ? 0 : static_cast<uint32_t>(inst.operands.size() - 1);
             break;
         case il::Op::CreateObject: out.op = il2mir::BronzeOp::CreateObject; break;
-        case il::Op::CreateGeneratorObject: out.op = il2mir::BronzeOp::CreateGeneratorObject; break;
-        case il::Op::CreateAsyncGeneratorObject: out.op = il2mir::BronzeOp::CreateAsyncGeneratorObject; break;
-        case il::Op::CreateAsyncMachine: out.op = il2mir::BronzeOp::CreateAsyncMachine; break;
-        case il::Op::AsyncStart: out.op = il2mir::BronzeOp::AsyncStart; break;
-        case il::Op::AsyncAwait: out.op = il2mir::BronzeOp::AsyncAwait; break;
+        case il::Op::CoroStart:
+            out.op = il2mir::BronzeOp::CoroStart;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.imm_i64 = inst.immI32;
+            out.param_count = static_cast<uint32_t>(inst.operands.size());
+            break;
+        case il::Op::CoroSuspend:
+            out.op = il2mir::BronzeOp::CoroSuspend;
+            out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::CoroMode: out.op = il2mir::BronzeOp::CoroMode; break;
         case il::Op::DynamicImport:
             out.op = il2mir::BronzeOp::DynamicImport;
             out.index = inst.keyIndex;
@@ -484,6 +490,7 @@ il2mir::BronzeModuleAST lowerToBrassAst(
                               ? il2mir::BronzeType::I32
                               : mapType(fn.returnType);
         bfn.is_exported = fn.isExported;
+        bfn.coro_kind = fn.coroKind;
 
         bfn.params.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {

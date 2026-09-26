@@ -20,7 +20,21 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     bool oldUserFn = inUserFunction_;
     inUserFunction_ = true;
     provenClosureParams_.emplace_back();
-    const bool ok = lowerBodyWithPlan(params, body, ilFn, isGenerator, isAsync);
+    // A generator or async function lowers as the COROUTINE BODY it is, whole
+    // and in one piece, and is then split into that body and the stub the
+    // function's callers reach (lower_generator.cpp).
+    auto outerCoro = std::move(coro_);
+    coro_.reset();
+    if (isGenerator || isAsync) {
+        coro_ = CoroContext{.kind = static_cast<int32_t>(
+                                isGenerator && isAsync ? BRONZE_ABI_CORO_ASYNC_GENERATOR
+                                : isGenerator          ? BRONZE_ABI_CORO_GENERATOR
+                                                       : BRONZE_ABI_CORO_ASYNC)};
+        ilFn.returnType = il::Type::Dynamic;
+    }
+    bool ok = lowerBodyWithPlan(params, body, ilFn, isGenerator);
+    if (ok && coro_) splitCoroutineBody(ilFn, coro_->kind);
+    coro_ = std::move(outerCoro);
     provenClosureParams_.pop_back();
     inUserFunction_ = oldUserFn;
     return ok;
@@ -28,7 +42,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
 
 bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& body, il::Function& ilFn,
-                                bool isGenerator, bool isAsync) {
+                                bool isGenerator) {
     // Bodies lower one at a time (the state resets below assume it), so a
     // plain pointer is the whole bookkeeping the typed-element binding scan
     // needs.
@@ -83,7 +97,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     std::vector<const ast::Stmt*> stmts;
     stmts.reserve(body.size());
     for (const auto& s : body) stmts.push_back(s.get());
-    enterFunctionEnv(params, stmts, ilFn, isGenerator, isAsync);
+    enterFunctionEnv(params, stmts, ilFn);
 
     // An arrow in this body reads the receiver out of the environment, so
     // the receiver has to be IN it: copy `__this` across on entry, once,
@@ -163,25 +177,6 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     }
     functionVarNames_.clear();
 
-    // A generator's body does not run here at all (15.5.3): what is left of
-    // this function is to close the resume function over the frame the
-    // prologue above has just filled in, and hand back the generator object.
-    // Its lexical bindings are opened in the resume function's start block, for
-    // the reason recorded there. An async function's tail differs in one
-    // fact — 27.7.5.1 runs the body synchronously to the first await — and
-    // that fact lives in the runtime driver its tail calls, not here.
-    if (isGenerator || isAsync) {
-        const bool ok = (isGenerator && isAsync) ? lowerAsyncGeneratorTail(stmts, ilFn)
-                        : isGenerator             ? lowerGeneratorTail(stmts, ilFn)
-                                                  : lowerAsyncTail(stmts, ilFn);
-        if (functionEnvScope_ != SIZE_MAX) {
-            envScopes_.pop_back();
-            currentEnvValue_ = savedEnvValues_.back();
-            savedEnvValues_.pop_back();
-        }
-        return ok;
-    }
-
     // After the parameters, so that a body that redeclares one is still the
     // redeclaration error it was rather than a parameter slot holding the
     // uninitialized marker; before the statements, because 14.3.1 creates the
@@ -192,6 +187,16 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
                             ast::getDefinitelyAssignedLexicalNames(stmts, &params),
                             ast::getConstDeclarations(stmts), ilFn);
         planEnvSlotNativeClasses(functionEnvScope_, stmts);
+    }
+
+    // A generator's body stops here until its first `next()`: 15.5.3 binds
+    // the arguments when the generator function is called, and runs the
+    // statements only once the generator is resumed. That first resumption
+    // can only be `next` (the runtime completes an unstarted generator
+    // itself for `return` and `throw`), so nothing reads the mode.
+    if (isGenerator) {
+        emitCoroSuspend(BRONZE_ABI_SUSPEND_START,
+                        Value{emitConstUndefined(ilFn), il::Type::Dynamic}, ilFn);
     }
 
     if (!lowerStmtList(stmts, ilFn)) return false;

@@ -213,23 +213,23 @@ enum class Op : uint8_t {
     DynamicCall,// a = call.dynamic callee, thisArg, argc, argv
     Construct,  // a = new callee, args...
     CreateObject, // a = create.object
-    // A GENERATOR OBJECT (ECMA-262 27.5.1): %GeneratorPrototype% for a
-    // prototype, and the RESUME FUNCTION its operand names for a body. Its own
-    // op and not `create.object` plus two writes, because neither of the two
-    // things that make it one is a property: the prototype lives on the shape,
-    // and the resume closure is an internal slot.
-    CreateGeneratorObject, // a = create.generator_object b
-    CreateAsyncGeneratorObject, // a = create.async_generator_object b
-    // The three edges of an ASYNC function (ECMA-262 27.7): make the machine
-    // the runtime driver holds (operand = the resume closure), start it (run
-    // the body synchronously to the first await, 27.7.5.1, and answer the
-    // promise), and subscribe one await (machine, awaited value). Their own
-    // ops rather than dynamic calls to named globals because — like
-    // `create.generator_object` — what they touch are internal slots the
-    // program can neither read nor forge.
-    CreateAsyncMachine, // a = create.async_machine b     (b = resume closure)
-    AsyncStart,         // a = async.start b              (b = machine; a = promise)
-    AsyncAwait,         // async.await machine, value     (no result; subscribes)
+    // The three ops of a COROUTINE BODY: a generator, async function or async
+    // generator (src/lower/lower_generator.cpp). The function a program calls
+    // is a stub that starts the body, which is a separate IL function
+    // (`Function::coroKind`) compiled onto a brass coroutine.
+    //
+    // `coro.start` creates the body's frame with the operands as its
+    // arguments (calleeIndex names the body, immI32 its CoroKind) and hands it
+    // to the runtime, which answers what the call returns: the generator
+    // object, or the async function's promise. It runs the body — to its
+    // first suspension — and so reaches user code.
+    CoroStart,   // a = coro.start <kind> @body(args...)
+    // A suspension of the body (immI32 a SuspendKind): the operand goes to
+    // the resumer and the result is the value the next resumption sent.
+    CoroSuspend, // a = coro.suspend <kind> b
+    // How the latest resumption asked the body to continue: next, throw or
+    // return (CoroResumeMode; bronze_abi.h). Read right after a suspension.
+    CoroMode,    // a: i32 = coro.mode
     DynamicImport,      // a = dynamic_import specifier, <url_const_index of the importer>
     // A MODULE NAMESPACE EXOTIC OBJECT (ECMA-262 10.4.6), built from the object
     // of getters the operand holds. Its own op for the reason
@@ -395,13 +395,13 @@ enum class Op : uint8_t {
     IterRest,    // a = iter.rest %record
     // One RESUMPTION forwarded to a delegated iterator: ECMA-262 27.5.3.7
     // steps 5.a, 5.b and 5.c, without the loop around them. The loop is
-    // compiled code — it has a suspension in it, and a suspension is a return
-    // from the resume function — so what is left for one instruction is the
+    // compiled code — it has a suspension in it — so what is left for one
+    // instruction is the
     // part that is not control flow: WHICH method of the inner iterator this
     // resumption calls, and what happens when it has none.
     //
-    // `b` is the record, `c` the resumption kind as a number (the runtime's
-    // GeneratorResumeMode), and `d` the value it carried. The result is the
+    // `b` is the record, `c` the resumption kind as a number (a boxed
+    // CoroResumeMode), and `d` the value it carried. The result is the
     // inner iterator's RESULT OBJECT — forwarded by identity, which is what
     // 27.5.3.8 GeneratorYield does with it — or `undefined` for the one case
     // that produces no object at all: a `return` resumption to an iterator

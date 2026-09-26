@@ -1,8 +1,8 @@
 // %AsyncGeneratorPrototype% (ECMA-262 27.6.1) and the async generator object's
 // three methods (next, return, throw), each returning a Promise.
 //
-// Maintains the [[AsyncGeneratorQueue]] and executes the generator's resume
-// function when requests are processed.
+// Maintains the [[AsyncGeneratorQueue]] and resumes the generator's body
+// (runtime/coro.h) when requests are processed.
 
 #include "runtime/async_generator.h"
 
@@ -10,6 +10,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/coro.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
@@ -70,82 +71,79 @@ Value iterResult(Rooted<Value>& value, bool done) { return rtCreateIterResult(va
 
 void asyncGeneratorResumeNext(Rooted<Value>& gen);
 
-void processResumeResult(Rooted<Value>& gen, Rooted<Value>& result);
+void processResumeResult(Rooted<Value>& gen, bool done, Rooted<Value>& valueVal);
 
-// Runs the body one resumption and hands its completion on. A throw out of
-// the body completes the generator and rejects every queued request with it;
-// with no request queued there is nothing to reject, and it propagates.
-void resumeBody(Rooted<Value>& gen, uint32_t mode, Rooted<Value>& sent) {
-    Rooted<Value> body{readSlot(gen, AsyncGeneratorSlot::Resume)};
-    Rooted<Value> result{Value::fromUndefined()};
-    Value caught;
-    const bool threw = rtTryCatch(
-        [&] {
-            Value args[2] = {Value::fromDouble(static_cast<double>(mode)), sent.get()};
-            result.set(
-                body.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, args));
-        },
-        caught);
-    if (!threw) {
-        processResumeResult(gen, result);
-        return;
-    }
-    Rooted<Value> thrown{caught};
-    Rooted<Value> queue{readSlot(gen, AsyncGeneratorSlot::Queue)};
-    if (queueLength(queue) == 0) rtThrow(thrown.get());
-    Rooted<Value> req{queuePeek(queue, 0)};
-    Rooted<Value> promise{req.get().asObject<ArrayHeader>()->getElem(2)};
-    queuePopFront(queue);
+// A completed async generator never enters its body again, so it lets go of
+// the frame and everything the frame held.
+void complete(Rooted<Value>& gen) {
     setState(gen, static_cast<uint32_t>(AsyncGeneratorState::Completed));
-    rtRejectPromise(promise, thrown);
-    while (queueLength(queue) > 0) {
-        Rooted<Value> nextReq{queuePeek(queue, 0)};
+    writeSlot(gen, AsyncGeneratorSlot::Frame, Value::fromUndefined());
+}
+
+// Runs the body one resumption and hands its completion on: to the request at
+// the head of the queue for a `yield` or the body's end, to the awaited
+// value's subscription for an `await`. A throw out of the body completes the
+// generator and rejects every queued request with it; with no request queued
+// there is nothing to reject, and it propagates.
+void resumeBody(Rooted<Value>& gen, uint32_t mode, Rooted<Value>& sent) {
+    Rooted<Value> value{sent.get()};
+    for (;;) {
+        Rooted<Value> frame{readSlot(gen, AsyncGeneratorSlot::Frame)};
+        Rooted<Value> out{Value::fromUndefined()};
+        CoroStep step;
+        Value caught;
+        const bool threw =
+            rtTryCatch([&] { step = rtCoroResume(frame, mode, value, out); }, caught);
+        if (!threw) {
+            if (!step.done && step.kind == BRONZE_ABI_SUSPEND_AWAIT) {
+                // Still executing as far as the queue is concerned: a request
+                // made meanwhile waits its turn.
+                Rooted<Value> thrown{Value::fromUndefined()};
+                if (rtCoroAwait(gen, out, thrown)) return;
+                mode = GeneratorResumeMode::Throw;
+                value.set(thrown.get());
+                continue;
+            }
+            processResumeResult(gen, step.done, out);
+            return;
+        }
+        Rooted<Value> thrown{caught};
+        Rooted<Value> queue{readSlot(gen, AsyncGeneratorSlot::Queue)};
+        complete(gen);
+        if (queueLength(queue) == 0) rtThrow(thrown.get());
+        Rooted<Value> req{queuePeek(queue, 0)};
+        Rooted<Value> promise{req.get().asObject<ArrayHeader>()->getElem(2)};
         queuePopFront(queue);
-        Rooted<Value> p{nextReq.get().asObject<ArrayHeader>()->getElem(2)};
-        rtRejectPromise(p, thrown);
+        rtRejectPromise(promise, thrown);
+        while (queueLength(queue) > 0) {
+            Rooted<Value> nextReq{queuePeek(queue, 0)};
+            queuePopFront(queue);
+            Rooted<Value> p{nextReq.get().asObject<ArrayHeader>()->getElem(2)};
+            rtRejectPromise(p, thrown);
+        }
+        return;
     }
 }
 
-void processResumeResult(Rooted<Value>& gen, Rooted<Value>& result) {
+void processResumeResult(Rooted<Value>& gen, bool done, Rooted<Value>& valueVal) {
     Rooted<Value> queue{readSlot(gen, AsyncGeneratorSlot::Queue)};
+    if (done) {
+        complete(gen);
+    } else {
+        setState(gen, static_cast<uint32_t>(AsyncGeneratorState::SuspendedYield));
+    }
     if (queueLength(queue) == 0) return;
     Rooted<Value> req{queuePeek(queue, 0)};
     Rooted<Value> promise{req.get().asObject<ArrayHeader>()->getElem(2)};
-
-    if (result.get().isObject() &&
-        result.get().asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN) {
-        Rooted<Value> isAwaitKey{rtMakeString("isAwait")};
-        Rooted<Value> isAwaitVal{
-            result.get().asObject<ObjectHeader>()->getProp(rtHeap(), isAwaitKey)};
-        if (bronze_truthy(isAwaitVal.get().rawBits())) {
-            return;
-        }
-    }
-
     queuePopFront(queue);
 
-    Rooted<Value> doneKey{rtMakeString("done")};
-    Rooted<Value> doneVal{
-        result.get().isObject()
-            ? result.get().asObject<ObjectHeader>()->getProp(rtHeap(), doneKey)
-            : Value::fromBool(true)};
-    const bool done = bronze_truthy(doneVal.get().rawBits());
-
-    Rooted<Value> valKey{rtMakeString("value")};
-    Rooted<Value> valueVal{
-        result.get().isObject()
-            ? result.get().asObject<ObjectHeader>()->getProp(rtHeap(), valKey)
-            : Value::fromUndefined()};
-
     if (done) {
-        setState(gen, static_cast<uint32_t>(AsyncGeneratorState::Completed));
         Rooted<Value> res{iterResult(valueVal, true)};
         rtResolvePromise(promise, res);
         while (queueLength(queue) > 0) {
             asyncGeneratorResumeNext(gen);
         }
     } else {
-        setState(gen, static_cast<uint32_t>(AsyncGeneratorState::SuspendedYield));
         Rooted<Value> res{iterResult(valueVal, false)};
         rtResolvePromise(promise, res);
         if (queueLength(queue) > 0) {
@@ -184,7 +182,7 @@ void asyncGeneratorResumeNext(Rooted<Value>& gen) {
     if (state == static_cast<uint32_t>(AsyncGeneratorState::SuspendedStart) &&
         mode != GeneratorResumeMode::Next) {
         queuePopFront(queue);
-        setState(gen, static_cast<uint32_t>(AsyncGeneratorState::Completed));
+        complete(gen);
         if (mode == GeneratorResumeMode::Throw) {
             rtRejectPromise(promise, sent);
         } else {
@@ -229,7 +227,7 @@ uint64_t enqueueRequest(uint64_t thisBits, uint32_t mode, Rooted<Value>& sent,
 
     if (state == static_cast<uint32_t>(AsyncGeneratorState::SuspendedStart) &&
         mode != GeneratorResumeMode::Next) {
-        setState(self, static_cast<uint32_t>(AsyncGeneratorState::Completed));
+        complete(self);
         if (mode == GeneratorResumeMode::Throw) {
             rtRejectPromise(promise, sent);
         } else {
@@ -300,24 +298,24 @@ void rtAsyncGeneratorResumeFromAwait(Rooted<Value>& gen, uint32_t mode, Rooted<V
     resumeBody(gen, mode, sent);
 }
 
-}  // namespace bronze::runtime
-
-extern "C" {
-
-uint64_t bronze_create_async_generator_object(uint64_t resumeBits) {
-    using namespace bronze;
-    using namespace bronze::runtime;
-    Rooted<Value> body{Value(resumeBits)};
+// The async generator object over `frame`. As for a generator (15.5.3), the
+// arguments are bound at the call: the body runs here to its START suspension.
+Value rtCreateAsyncGeneratorObject(Rooted<Value>& frame) {
     Rooted<Value> gen{rtNewIteratorObject(IteratorProto::AsyncGenerator)};
     Rooted<Value> queue{Value(bronze_create_array(0))};
-    gen.get().asObject<ObjectHeader>()->setInternalSlot(
-        AsyncGeneratorSlot::State,
-        Value::fromDouble(static_cast<double>(AsyncGeneratorState::SuspendedStart)));
-    gen.get().asObject<ObjectHeader>()->setInternalSlot(AsyncGeneratorSlot::Resume, body.get());
-    gen.get().asObject<ObjectHeader>()->setInternalSlot(AsyncGeneratorSlot::Queue, queue.get());
-    gen.get().asObject<ObjectHeader>()->setInternalSlot(AsyncGeneratorSlot::CurrentPromise,
-                                                        Value::fromUndefined());
-    return gen.get().rawBits();
+    setState(gen, static_cast<uint32_t>(AsyncGeneratorState::Executing));
+    writeSlot(gen, AsyncGeneratorSlot::Frame, frame.get());
+    writeSlot(gen, AsyncGeneratorSlot::Queue, queue.get());
+    writeSlot(gen, AsyncGeneratorSlot::CurrentPromise, Value::fromUndefined());
+    rtCoroAdopt(frame);
+    Rooted<Value> undef{Value::fromUndefined()};
+    Rooted<Value> out{Value::fromUndefined()};
+    const CoroStep step = rtCoroResume(frame, GeneratorResumeMode::Next, undef, out);
+    if (step.done || step.kind != BRONZE_ABI_SUSPEND_START) {
+        fatal("internal: an async generator body did not stop at its start");
+    }
+    setState(gen, static_cast<uint32_t>(AsyncGeneratorState::SuspendedStart));
+    return gen.get();
 }
 
-}  // extern "C"
+}  // namespace bronze::runtime

@@ -1,13 +1,12 @@
 // A GENERATOR and an ASYNC function whose bodies are full of promotable
 // arithmetic, and which the entry region must refuse.
 //
-// It is refused by NAME — `il::Function::isResumeBody` — and not by shape,
-// because the shape does not say it. A generator's body is lowered into a
-// resume function whose entry block dispatches on an index held in the frame,
-// so every block is reachable from `b0` and "no edge from outside enters
-// anywhere but the entry" is TRUE of it. What is wrong with duplicating it is
-// that its live values cross a suspension in the FRAME rather than in SSA: a
-// promoted double cannot survive a yield, so the copy would be pure growth.
+// It is refused by NAME — `il::Function::isCoroutineBody` — and not by shape,
+// because the shape does not say it. A generator's body is one ordinary-looking
+// function with `coro.suspend` points in it, and brass's coroutine transform
+// turns every suspend into a resume state whose live values are spilled to the
+// frame. Duplicating the body duplicates every suspend, and each copy gets its
+// own states and its own frame slots, so the copy would be pure growth.
 //
 // The case is here because a refusal is invisible from the outside — a program
 // that is still correct is what both a refusal and a wrong duplication would

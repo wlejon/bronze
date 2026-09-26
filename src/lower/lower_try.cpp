@@ -119,13 +119,8 @@ bool Lowerer::runCleanups(size_t downTo, il::Function& ilFn) {
             // path (a `break` or a `return`, not a throw) propagates like any
             // other — 7.4.9 discards one only when a throw is already in
             // flight, which is the handler's copy, not this one.
-            // A loop whose body suspends holds its record in the frame, and
-            // this path can be reached from a resume block — where the SSA
-            // value the loop opened was never defined.
-            const il::ValueId record = frame.iterFrameSlot == UINT32_MAX
-                                           ? frame.iterRecord
-                                           : emitFrameSlotGet(frame.iterFrameSlot, ilFn).id;
-            emitIterClose(record, /*suppress=*/false, ilFn, frame.kind == CleanupKind::AsyncIteratorClose);
+            emitIterClose(frame.iterRecord, /*suppress=*/false, ilFn,
+                          frame.kind == CleanupKind::AsyncIteratorClose);
             continue;
         }
         // Truncated below this entry while its body runs, so a `break` inside
@@ -162,7 +157,7 @@ bool Lowerer::lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn) {
     emitInst(ilFn, jumpTo(bProtected));
     setCurrentBlock(bProtected);
 
-    cleanupStack_.push_back(CleanupFrame{CleanupKind::Finally, tryStmt, il::kNoValue, UINT32_MAX,
+    cleanupStack_.push_back(CleanupFrame{CleanupKind::Finally, tryStmt, il::kNoValue,
                                         jumpStack_.size(), outerHandler});
     const bool protectedOk =
         tryStmt->hasCatch ? lowerTryCatch(tryStmt, ilFn) : lowerTryBlock(tryStmt, ilFn);
@@ -193,28 +188,14 @@ bool Lowerer::lowerTryStmt(const ast::TryStmt* tryStmt, il::Function& ilFn) {
     take.result = pending;
     emitInst(ilFn, take);
 
-    uint32_t finallySlot = UINT32_MAX;
-    if (generator_ && generator_->activeFinallyDepth < generator_->finallyPendingSlots.size()) {
-        finallySlot = generator_->finallyPendingSlots[generator_->activeFinallyDepth++];
-        emitFrameSlotSet(finallySlot, Value{pending, il::Type::Dynamic}, ilFn);
-    }
-
     if (!lowerFinallyBody(*tryStmt, ilFn)) return false;
 
-    if (finallySlot != UINT32_MAX) {
-        --generator_->activeFinallyDepth;
-    }
-
     if (!currentBlockIsTerminated(ilFn)) {
-        il::ValueId toThrow = pending;
-        if (finallySlot != UINT32_MAX) {
-            toThrow = emitFrameSlotGet(finallySlot, ilFn).id;
-        }
         il::Instruction rethrow;
         rethrow.op = il::Op::Throw;
         rethrow.type = il::Type::Void;
         rethrow.result = il::kNoValue;
-        rethrow.operands = {toThrow};
+        rethrow.operands = {pending};
         emitInst(ilFn, rethrow);
     }
 

@@ -374,14 +374,14 @@ TEST_CASE("a function with a loop gets the loop region and never an entry region
 }
 
 // ---------------------------------------------------------------------------
-// (e) Resume machines, refused by name.
+// (e) Coroutine bodies, refused by name.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("a generator's resume body is refused whatever its arithmetic looks like") {
+TEST_CASE("a generator's coroutine body is refused whatever its arithmetic looks like") {
     if (seamIsOn()) return;
     il::Function fn;
-    fn.name = "g.resume";
-    fn.params = {{"__env", il::Type::Dynamic}, {"__mode", il::Type::Dynamic}};
+    fn.name = "g.body";
+    fn.params = {{"__env", il::Type::Dynamic}, {"a", il::Type::Dynamic}};
     fn.returnType = il::Type::Dynamic;
     fn.needsEnv = true;
     fn.valueCount = 6;
@@ -403,8 +403,8 @@ TEST_CASE("a generator's resume body is refused whatever its arithmetic looks li
         CHECK(stats.refusedMachine == 0);
     }
 
-    SUBCASE("as a resume body it is refused, and the IL is untouched") {
-        fn.isResumeBody = true;
+    SUBCASE("as a coroutine body it is refused, and the IL is untouched") {
+        fn.coroKind = BRONZE_ABI_CORO_GENERATOR;
         const il::Module before = oneFunction(fn);
         il::Module after = oneFunction(std::move(fn));
         GuardRegionStats stats;
@@ -415,11 +415,9 @@ TEST_CASE("a generator's resume body is refused whatever its arithmetic looks li
     }
 }
 
-TEST_CASE("lowering marks every resume body, generator and async alike") {
-    // The flag is only worth anything if lowering actually sets it, and there
-    // are three places that build a resume function (a generator, an async
-    // function, an async generator). A body that reaches the pass unmarked
-    // would be duplicated, silently.
+TEST_CASE("lowering marks every coroutine body, generator and async alike") {
+    // The flag is only worth anything if lowering actually sets it. A body
+    // that reaches the pass unmarked would be duplicated, silently.
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     auto module = inferAndLower(
@@ -430,13 +428,13 @@ TEST_CASE("lowering marks every resume body, generator and async alike") {
         diags, buf);
     REQUIRE(module.has_value());
 
-    int resumeBodies = 0;
+    int coroutineBodies = 0;
     for (const auto& fn : module->functions) {
-        if (!fn.isResumeBody) continue;
-        ++resumeBodies;
+        if (!fn.isCoroutineBody()) continue;
+        ++coroutineBodies;
         CHECK(functionText(*module, fn.name).find("is.number") == std::string::npos);
     }
-    CHECK(resumeBodies == 2);
+    CHECK(coroutineBodies == 2);
 }
 
 // ---------------------------------------------------------------------------

@@ -87,11 +87,9 @@ const char* opName(Op op) {
         case Op::FunctionRef: return "func.ref";
         case Op::Construct: return "new";
         case Op::CreateObject: return "create.object";
-        case Op::CreateGeneratorObject: return "create.generator_object";
-        case Op::CreateAsyncGeneratorObject: return "create.async_generator_object";
-        case Op::CreateAsyncMachine: return "create.async_machine";
-        case Op::AsyncStart: return "async.start";
-        case Op::AsyncAwait: return "async.await";
+        case Op::CoroStart: return "coro.start";
+        case Op::CoroSuspend: return "coro.suspend";
+        case Op::CoroMode: return "coro.mode";
         case Op::DynamicImport: return "dynamic_import";
         case Op::ModuleNamespace: return "module.namespace";
         case Op::ObjectKeys: return "object.keys";
@@ -677,10 +675,33 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                     : std::string("?")) +
                                "\"";
                         break;
-                    case Op::CreateGeneratorObject:
-                    case Op::CreateAsyncGeneratorObject:
-                    case Op::CreateAsyncMachine:
-                    case Op::AsyncStart:
+                    case Op::CoroStart: {
+                        static const char* const kKinds[] = {"generator", "async",
+                                                             "async_generator"};
+                        out += "coro.start ";
+                        out += inst.immI32 >= 0 && inst.immI32 < 3 ? kKinds[inst.immI32] : "?";
+                        out += " @" + (inst.calleeIndex < module.functions.size()
+                                           ? module.functions[inst.calleeIndex].name
+                                           : std::string("?")) +
+                               "(";
+                        for (size_t i = 0; i < inst.operands.size(); ++i) {
+                            if (i) out += ", ";
+                            out += "%" + std::to_string(inst.operands[i]);
+                        }
+                        out += ")";
+                        break;
+                    }
+                    case Op::CoroSuspend: {
+                        static const char* const kKinds[] = {"start", "yield", "await",
+                                                             "delegate"};
+                        out += "coro.suspend ";
+                        out += inst.immI32 >= 0 && inst.immI32 < 4 ? kKinds[inst.immI32] : "?";
+                        out += " %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    }
+                    case Op::CoroMode:
+                        out += "coro.mode";
+                        break;
                     case Op::ForInKeys:
                     case Op::IterOpen:
                     case Op::AsyncIterOpen:
@@ -710,7 +731,6 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                (inst.immI32 == 0 ? "abrupt" : "suppress");
                         break;
                     case Op::ClassExtend:
-                    case Op::AsyncAwait:
                     case Op::ArrayAppend:
                     case Op::ArraySpread:
                     case Op::ObjectSpread:

@@ -75,12 +75,10 @@ namespace bronze::lower {
 // contain that same loop and duplicate the shape the refusal was about. A
 // function with a loop is a loop function; this is for the ones without.
 //
-// Resume machines are refused by name (`il::Function::isResumeBody`), not by
-// shape. A generator's body dispatches on a resume index at its entry, so
-// every block is reachable from `b0` and the region definition is satisfied;
-// what is wrong with duplicating it is that its live values cross suspensions
-// in the FRAME rather than in SSA, so a promoted double cannot survive a yield
-// and the copy is pure growth.
+// Coroutine bodies are refused by name (`il::Function::isCoroutineBody`): the
+// values live across a suspension are spilled to the frame and reloaded, so a
+// promoted double does not survive a yield unboxed and the copy is pure
+// growth.
 //
 // One thing an entry region owes that a loop region does not: EVERY GUARD POINT
 // MUST BE IN A BLOCK THAT DOMINATES WHAT IT REACHES. An entry region's slow copy
