@@ -79,6 +79,13 @@ option(BRONZE_BUILD_TESTS "Build bronze's test binaries and register its ctest t
 if(BRONZE_BUILD_TESTS)
     enable_testing()
     find_package(doctest CONFIG REQUIRED)
+    # doctest before 2.4.12 prints a C-string message as its address; see the
+    # header for why every bronze test message is one.
+    if(doctest_VERSION VERSION_LESS 2.4.12 AND NOT MSVC)
+        set_property(TARGET doctest::doctest APPEND PROPERTY INTERFACE_COMPILE_OPTIONS
+            "$<$<COMPILE_LANGUAGE:CXX>:-include>"
+            "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/tests/doctest_cstr_messages.h>")
+    endif()
 endif()
 
 add_subdirectory(src/abi)

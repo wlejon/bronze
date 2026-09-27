@@ -69,21 +69,26 @@ TEST_CASE("the memo answers with the object the helper interned, not another one
     ShadowStackFrame frame;
     MemoOn memo;
 
-    const Value first = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
+    // Rooted: under BRONZE_GC_STRESS the allocations below collect, and an
+    // unrooted copy of the first answer keeps the address it moved away from,
+    // which the next object allocated may then take.
+    const Rooted<Value> first{rtNativeSingleton(probeCodeA, 1, nullptr, 0)};
     const Value again = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
-    CHECK(first.rawBits() == again.rawBits());
+    CHECK(first.get().rawBits() == again.rawBits());
 
     // And it is the same object the helper answers with when asked directly —
     // the memo is a faster route to one answer, not a second answer.
     const Value viaHelper = Value(bronze_function_singleton(
         probeCodeA, 1, /*length=*/0, BRONZE_ABI_FN_NAME_NONE,
         BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE, /*slotCell=*/nullptr));
-    CHECK(viaHelper.rawBits() == first.rawBits());
+    CHECK(viaHelper.rawBits() == first.get().rawBits());
 
     // Two code pointers are two objects. A direct-mapped table whose guard was
     // the bucket rather than the code pointer would merge them, and function
-    // identity is observable.
-    CHECK(rtNativeSingleton(probeCodeB, 0, nullptr, 0).rawBits() != first.rawBits());
+    // identity is observable. (The call before the read of `first`, which it
+    // may move.)
+    const Value other = rtNativeSingleton(probeCodeB, 0, nullptr, 0);
+    CHECK(other.rawBits() != first.get().rawBits());
 }
 
 TEST_CASE("the first creation names the object and a later call cannot rename it") {

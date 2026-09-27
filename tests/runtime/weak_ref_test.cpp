@@ -137,12 +137,18 @@ TEST_CASE("a young target is cleared by a minor collection, an old one only by a
 
     // Young WeakRef, young target: the minor collection decides both.
     Rooted<Value> wr{Value::fromUndefined()};
+    bool targetYoung = false;
     {
         Rooted<Value> target{Value(bronze_create_object())};
         wr.set(rtNewWeakRef(target));
+        targetYoung = rtHeap().is_movable(target.get().asObject());
     }
     rtClearKeptObjects();
     rtHeap().collect_minor();
+    // Under BRONZE_GC_STRESS every allocation above collected, and a target
+    // that survived enough of them is already old, which only a full
+    // collection decides. Run alone (or first) the case always met one.
+    if (!targetYoung) rtHeap().collect();
     CHECK(weakRefTargetSlot(wr).isUndefined());
 
     // An old target outlives a minor collection however unreachable it is,
