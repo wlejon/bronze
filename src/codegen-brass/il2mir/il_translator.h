@@ -50,6 +50,13 @@ struct TranslatorOptions {
 #else
     bool verify_after_each_pass = true;
 #endif
+    // Run brass's verifier over the lowered module (before the passes, and
+    // again after them when the module is optimized). A check on the
+    // translator, not a step of the compile: an in-process JIT load of a large
+    // program spends about a quarter of its lowering time in it, so the
+    // tiered engine turns it off unless asked (BrassTieredEngine,
+    // BRONZE_VERIFY_MIR). An object-file build keeps it.
+    bool verify_lowered_module = true;
     bool allow_fp_reassociation = false;
     bool trace_lowering = false;
     bool enable_f64_demote = true;

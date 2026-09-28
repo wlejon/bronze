@@ -90,6 +90,15 @@ target_link_libraries(bronze_codegen_brass PUBLIC
     ${PLATFORM_LIBS}
 )
 
+# brass_tiered_engine.cpp jitVerifiesMir: verify in-process MIR in Debug and in
+# bronze's own test builds, not in a host's release build.
+if(BRONZE_BUILD_TESTS)
+    target_compile_definitions(bronze_codegen_brass PRIVATE BRONZE_VERIFY_MIR_DEFAULT=1)
+else()
+    target_compile_definitions(bronze_codegen_brass PRIVATE
+        BRONZE_VERIFY_MIR_DEFAULT=$<IF:$<CONFIG:Debug>,1,0>)
+endif()
+
 if(MSVC)
     target_compile_options(bronze_codegen_brass PRIVATE /W4 /WX /permissive- /wd4324)
     target_compile_definitions(bronze_codegen_brass PRIVATE _CRT_SECURE_NO_WARNINGS)

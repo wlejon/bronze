@@ -35,6 +35,18 @@ bool ensureSymInit() {
     return ok;
 }
 
+// Whether `path` lies under the Windows directory (a system DLL).
+bool isWindowsModule(const char* path) {
+    static char winDir[MAX_PATH] = {0};
+    static size_t winLen = 0;
+    if (winLen == 0) {
+        const UINT n = ::GetWindowsDirectoryA(winDir, MAX_PATH);
+        winLen = (n > 0 && n < MAX_PATH) ? n : 0;
+        if (winLen == 0) return true;  // unknown: keep export names
+    }
+    return path && ::_strnicmp(path, winDir, winLen) == 0;
+}
+
 void moduleBasename(uint64_t pc, char* out, size_t outSize) {
     out[0] = '?';
     out[1] = 0;
@@ -71,7 +83,25 @@ void symbolizePc(uint64_t pc, SymbolizedPc& out) {
     sym->SizeOfStruct = sizeof(SYMBOL_INFO);
     sym->MaxNameLen = 511;
     DWORD64 disp = 0;
-    if (::SymFromAddr(::GetCurrentProcess(), static_cast<DWORD64>(pc), &disp, sym)) {
+    // A module whose PDB is missing or does not match the binary (a DLL
+    // restaged while its build tree's PDB moved on) has only its exports:
+    // SymFromAddr then names every PC after the nearest exported function
+    // before it, which piles unrelated code onto a few export names. Such
+    // a PC is named by its unwind-table function instead, marked so.
+    // (Asked after SymFromAddr: deferred loading loads the module's symbols
+    // on its first lookup.)
+    // Windows' own DLLs keep their export names (they export what runs hot
+    // in them: RtlAllocateHeap and the like).
+    const bool found = ::SymFromAddr(::GetCurrentProcess(), static_cast<DWORD64>(pc), &disp, sym) != FALSE;
+    IMAGEHLP_MODULE64 modInfo{};
+    modInfo.SizeOfStruct = sizeof(modInfo);
+    bool exportsOnly = false;
+    if (found && ::SymGetModuleInfo64(::GetCurrentProcess(), static_cast<DWORD64>(pc), &modInfo) &&
+        (modInfo.SymType == SymExport || modInfo.SymType == SymNone)) {
+        exportsOnly = modInfo.PdbUnmatched || !isWindowsModule(modInfo.LoadedImageName[0] ? modInfo.LoadedImageName
+                                                                                            : modInfo.ImageName);
+    }
+    if (found && !exportsOnly) {
         std::snprintf(out.name, sizeof(out.name), "%s", sym->Name);
         // sym->Address is the function's start; two samples anywhere inside
         // one function share this key.
@@ -85,8 +115,9 @@ void symbolizePc(uint64_t pc, SymbolizedPc& out) {
         if (PRUNTIME_FUNCTION rf =
                 ::RtlLookupFunctionEntry(static_cast<DWORD64>(pc), &imageBase, nullptr)) {
             out.funcStart = imageBase + rf->BeginAddress;
-            std::snprintf(out.name, sizeof(out.name), "%s+0x%llx", out.module,
-                          static_cast<unsigned long long>(out.funcStart - imageBase));
+            std::snprintf(out.name, sizeof(out.name), "%s+0x%llx%s", out.module,
+                          static_cast<unsigned long long>(out.funcStart - imageBase),
+                          exportsOnly ? " [exports only: no matching PDB]" : "");
         }
     }
 #else

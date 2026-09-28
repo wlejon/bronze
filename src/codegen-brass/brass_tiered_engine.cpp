@@ -39,6 +39,24 @@ namespace {
 // optimized code.
 constexpr uint64_t kOsrBackedgeThreshold = 1000;
 
+// Whether an in-process compile verifies the MIR it lowers. It checks the
+// translator rather than the program, and on a 40k-line app it was a quarter
+// of the load, so a host build skips it; bronze's own builds with tests (and
+// Debug builds) keep it, which is where a translator bug is to be caught.
+// BRONZE_VERIFY_MIR=1 / =0 overrides either way.
+#ifndef BRONZE_VERIFY_MIR_DEFAULT
+#define BRONZE_VERIFY_MIR_DEFAULT 1
+#endif
+bool jitVerifiesMir() {
+    static const bool on = [] {
+        if (const char* v = std::getenv("BRONZE_VERIFY_MIR"); v && (v[0] == '0' || v[0] == '1')) {
+            return v[0] == '1';
+        }
+        return BRONZE_VERIFY_MIR_DEFAULT != 0;
+    }();
+    return on;
+}
+
 // The pipeline's configuration for a tier (ExecutionTier says what each is).
 brass::runtime::TieringConfig tieringConfigFor(ExecutionTier tier) {
     brass::runtime::TieringConfig config;
@@ -217,6 +235,7 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // translate it as it stands and optimize a function when it tiers up.
     backend.setOptimize(tier == ExecutionTier::Tier2_Optimized);
     backend.setEmitDebugInfo(config_.emitDebugInfo);
+    backend.setVerifyLowered(jitVerifiesMir());
 
     std::unique_ptr<BrassTieredProgram> prog(new BrassTieredProgram(tier, entrySymbol));
     if (tier == ExecutionTier::Tier2_Optimized) {

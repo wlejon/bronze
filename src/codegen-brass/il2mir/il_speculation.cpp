@@ -175,7 +175,10 @@ void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, Basi
 
 void SpecSiteEmitter::finish_function(Function& fn) {
     if (pending_.empty()) return;
-    const auto live_ins = block_live_ins(fn);
+    std::vector<const BasicBlock*> targets;
+    targets.reserve(pending_.size());
+    for (const Pending& p : pending_) targets.push_back(p.slow);
+    const auto live_ins = block_live_ins(fn, targets);
     for (const Pending& p : pending_) {
         auto it = live_ins.find(p.slow);
         if (it == live_ins.end()) continue;

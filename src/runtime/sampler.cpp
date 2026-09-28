@@ -13,6 +13,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include <brass/debug/jit_code_registry.hpp>
+
 #include "runtime/stack_trace.h"
 #include "runtime/symbolize.h"
 
@@ -264,11 +266,24 @@ void dumpSamplerReport() {
         SymbolizedPc sp;
         symbolizePc(pc, sp);
         uint64_t key = sp.funcStart;
+        // Code a brass JIT tier installed is in no module: its registry
+        // names the function and the tier ("layout [tier 2]"), so a tiered
+        // run's profile says which tier each hot function ran in.
+        brass::debug::JitCodeInfo jit;
+        const bool isJit = !sp.resolved && brass::debug::find_jit_code(static_cast<uintptr_t>(pc), &jit);
+        if (isJit) key = static_cast<uint64_t>(jit.start);
         pcToFunc.emplace(pc, key);
         auto& row = rows[key];
         if (row.name.empty()) {
-            row.name = sp.resolved ? sp.name : "(unresolved)";
-            row.module = sp.module;
+            if (isJit) {
+                row.name = jit.name + " [" + brass::debug::jit_tier_label(jit.tier) + "]";
+                row.module = "jit";
+            } else {
+                // Unresolved: the unwind-table name (module+offset) when
+                // there is one, so distinct functions stay distinct rows.
+                row.name = (sp.resolved || sp.name[0]) ? sp.name : "(unresolved)";
+                row.module = sp.module;
+            }
         }
         return key;
     };
@@ -278,12 +293,24 @@ void dumpSamplerReport() {
     // top level spans several files).
     std::map<std::tuple<const void*, const void*, uint32_t>, LineRow> lineRows;
 
+    // BRONZE_SAMPLE_WITHIN=<text>: only the samples whose stack holds a
+    // function whose name contains <text> — one phase's own profile (say
+    // `inferModule`) out of a whole run.
+    const char* within = std::getenv("BRONZE_SAMPLE_WITHIN");
+    if (within && !within[0]) within = nullptr;
     std::unordered_set<uint64_t> seen;
     for (size_t i = 0; i < st->log.size();) {
         const uint64_t relMs = st->log[i] >> 8;
         const uint32_t n = static_cast<uint32_t>(st->log[i] & 0xFF);
         const uint64_t* pcs = &st->log[i + 1];
         i += 1 + n;
+        if (within) {
+            bool hit = false;
+            for (uint32_t f = 0; f < n && !hit; ++f) {
+                hit = rows[funcKeyFor(pcs[f])].name.find(within) != std::string::npos;
+            }
+            if (!hit) continue;
+        }
         const bool inTail = relMs >= tailFrom;
         ++sampleCount;
         if (inTail) ++sampleCountTail;
@@ -313,6 +340,41 @@ void dumpSamplerReport() {
         }
     }
     if (sampleCount == 0) return;
+
+    // BRONZE_SAMPLE_CALLERS=<text>: for each sample whose stack holds a
+    // function whose name contains <text>, the chain of its callers (six
+    // frames up from the innermost match), counted and printed. Self time
+    // says what is hot; this says who asked for it.
+    if (const char* focus = std::getenv("BRONZE_SAMPLE_CALLERS"); focus && focus[0]) {
+        std::unordered_map<std::string, uint64_t> chains;
+        uint64_t hits = 0;
+        for (size_t i = 0; i < st->log.size();) {
+            const uint32_t n = static_cast<uint32_t>(st->log[i] & 0xFF);
+            const uint64_t* pcs = &st->log[i + 1];
+            i += 1 + n;
+            for (uint32_t f = 0; f < n; ++f) {
+                if (rows[funcKeyFor(pcs[f])].name.find(focus) == std::string::npos) continue;
+                std::string chain;
+                for (uint32_t g = f; g < n && g < f + 7; ++g) {
+                    if (g != f) chain += "  <-  ";
+                    chain += rows[funcKeyFor(pcs[g])].name.substr(0, 60);
+                }
+                ++chains[chain];
+                ++hits;
+                break;
+            }
+        }
+        std::vector<std::pair<uint64_t, const std::string*>> ranked;
+        for (const auto& [c, k] : chains) ranked.push_back({k, &c});
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::fprintf(stderr, "\n=== callers of '%s': %llu samples ===\n", focus,
+                     static_cast<unsigned long long>(hits));
+        for (size_t k = 0; k < ranked.size() && k < 25; ++k) {
+            std::fprintf(stderr, "%7llu  %s\n", static_cast<unsigned long long>(ranked[k].first),
+                         ranked[k].second->c_str());
+        }
+    }
 
     std::vector<const LineRow*> sortedLines;
     sortedLines.reserve(lineRows.size());

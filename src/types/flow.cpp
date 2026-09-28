@@ -17,27 +17,27 @@ namespace bronze::types {
 namespace {
 
 const char* statementLabel(const ast::Stmt& s) {
-    if (const auto* v = dynamic_cast<const ast::VarDecl*>(&s)) {
+    if (const auto* v = ast::exactAs<const ast::VarDecl*>(&s)) {
         return v->isConst ? "const" : v->isVar ? "var" : "let";
     }
-    if (dynamic_cast<const ast::ReturnStmt*>(&s)) return "return";
-    if (dynamic_cast<const ast::ExprStmt*>(&s)) return "expr";
-    if (dynamic_cast<const ast::IfStmt*>(&s)) return "if";
-    if (dynamic_cast<const ast::WhileStmt*>(&s)) return "while";
-    if (dynamic_cast<const ast::DoWhileStmt*>(&s)) return "do-while";
-    if (dynamic_cast<const ast::ForStmt*>(&s)) return "for";
-    if (dynamic_cast<const ast::BlockStmt*>(&s)) return "block";
-    if (dynamic_cast<const ast::BreakStmt*>(&s)) return "break";
-    if (dynamic_cast<const ast::ContinueStmt*>(&s)) return "continue";
-    if (dynamic_cast<const ast::DebuggerStmt*>(&s)) return "debugger";
-    if (dynamic_cast<const ast::SwitchStmt*>(&s)) return "switch";
-    if (dynamic_cast<const ast::ForInStmt*>(&s)) return "for-in";
-    if (dynamic_cast<const ast::ForOfStmt*>(&s)) return "for-of";
-    if (dynamic_cast<const ast::LabeledStmt*>(&s)) return "label";
-    if (dynamic_cast<const ast::TryStmt*>(&s)) return "try";
-    if (dynamic_cast<const ast::ThrowStmt*>(&s)) return "throw";
-    if (dynamic_cast<const ast::FunctionDecl*>(&s)) return "function";
-    if (dynamic_cast<const ast::ClassDecl*>(&s)) return "class";
+    if (ast::exactAs<const ast::ReturnStmt*>(&s)) return "return";
+    if (ast::exactAs<const ast::ExprStmt*>(&s)) return "expr";
+    if (ast::exactAs<const ast::IfStmt*>(&s)) return "if";
+    if (ast::exactAs<const ast::WhileStmt*>(&s)) return "while";
+    if (ast::exactAs<const ast::DoWhileStmt*>(&s)) return "do-while";
+    if (ast::exactAs<const ast::ForStmt*>(&s)) return "for";
+    if (ast::exactAs<const ast::BlockStmt*>(&s)) return "block";
+    if (ast::exactAs<const ast::BreakStmt*>(&s)) return "break";
+    if (ast::exactAs<const ast::ContinueStmt*>(&s)) return "continue";
+    if (ast::exactAs<const ast::DebuggerStmt*>(&s)) return "debugger";
+    if (ast::exactAs<const ast::SwitchStmt*>(&s)) return "switch";
+    if (ast::exactAs<const ast::ForInStmt*>(&s)) return "for-in";
+    if (ast::exactAs<const ast::ForOfStmt*>(&s)) return "for-of";
+    if (ast::exactAs<const ast::LabeledStmt*>(&s)) return "label";
+    if (ast::exactAs<const ast::TryStmt*>(&s)) return "try";
+    if (ast::exactAs<const ast::ThrowStmt*>(&s)) return "throw";
+    if (ast::exactAs<const ast::FunctionDecl*>(&s)) return "function";
+    if (ast::exactAs<const ast::ClassDecl*>(&s)) return "class";
     return nullptr;
 }
 
@@ -46,7 +46,7 @@ const char* statementLabel(const ast::Stmt& s) {
 // approximation only ever widens the return type, so it is sound.
 bool bodyFallsThrough(const std::vector<const ast::Stmt*>& body) {
     if (body.empty()) return true;
-    return dynamic_cast<const ast::ReturnStmt*>(body.back()) == nullptr;
+    return ast::exactAs<const ast::ReturnStmt*>(body.back()) == nullptr;
 }
 
 }  // namespace
@@ -127,12 +127,12 @@ bool FlowAnalyzer::resolvesToUserBinding(const std::string& name) const {
 
 bool FlowAnalyzer::isPristineMathBase(const ast::Expr& e) const {
     if (!mod_.mathPristine) return false;
-    const auto* id = dynamic_cast<const ast::Ident*>(&e);
+    const auto* id = ast::exactAs<const ast::Ident*>(&e);
     return id != nullptr && id->name == "Math" && !resolvesToUserBinding("Math");
 }
 
 bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
-    const auto* ma = dynamic_cast<const ast::MemberAccess*>(c.callee.get());
+    const auto* ma = ast::exactAs<const ast::MemberAccess*>(c.callee.get());
     if (ma == nullptr || ma->optional || !isPristineMathBase(*ma->object)) return false;
     return isMathMethodReturningNumber(ma->property);
 }
@@ -282,7 +282,7 @@ void FlowAnalyzer::fail(Span span, const std::string& what) {
 // The linker deletes these before a real build reaches inference; a test that
 // parses and infers one file directly still meets them.
 static bool isExportClause(const ast::Stmt& s) {
-    return dynamic_cast<const ast::ExportNamesDecl*>(&s) != nullptr;
+    return ast::exactAs<const ast::ExportNamesDecl*>(&s) != nullptr;
 }
 
 void FlowAnalyzer::seedHoistedVars(const std::vector<const ast::Stmt*>& body) {
@@ -300,7 +300,7 @@ template <typename List>
 void FlowAnalyzer::hoistFunctionDecls(const List& stmts) {
     for (const auto& s : stmts) {
         if (!s) continue;
-        if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(&*s)) {
+        if (const auto* fd = ast::exactAs<const ast::FunctionDecl*>(&*s)) {
             declare(fd->name, Type::function());
         }
     }
@@ -334,7 +334,7 @@ void FlowAnalyzer::stmt(const ast::Stmt& s, uint32_t index, uint32_t depth) {
 }
 
 void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
-    if (const auto* v = dynamic_cast<const ast::VarDecl*>(&s)) {
+    if (const auto* v = ast::exactAs<const ast::VarDecl*>(&s)) {
         // A `let` with no initialiser holds `undefined` at this point, not
         // "number or undefined": the flow analysis is what turns a later single
         // assignment into a precise type, which is why the lattice does not
@@ -355,30 +355,30 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         declare(v->name, v->init ? expr(*v->init) : Type::undefined());
         return;
     }
-    if (const auto* r = dynamic_cast<const ast::ReturnStmt*>(&s)) {
+    if (const auto* r = ast::exactAs<const ast::ReturnStmt*>(&s)) {
         returnAccum_ = join(returnAccum_, r->value ? expr(*r->value) : Type::undefined());
         return;
     }
-    if (const auto* e = dynamic_cast<const ast::ExprStmt*>(&s)) {
+    if (const auto* e = ast::exactAs<const ast::ExprStmt*>(&s)) {
         expr(*e->expr);
         return;
     }
-    if (const auto* b = dynamic_cast<const ast::BlockStmt*>(&s)) {
+    if (const auto* b = ast::exactAs<const ast::BlockStmt*>(&s)) {
         scopedStmtList(b->stmts, depth + 1);
         return;
     }
-    if (const auto* i = dynamic_cast<const ast::IfStmt*>(&s)) {
+    if (const auto* i = ast::exactAs<const ast::IfStmt*>(&s)) {
         ifStmt(*i, depth);
         return;
     }
-    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(&s)) {
+    if (const auto* w = ast::exactAs<const ast::WhileStmt*>(&s)) {
         LoopParts parts;
         parts.condition = w->condition.get();
         parts.body = &w->body;
         analyzeLoop(parts, depth, s);
         return;
     }
-    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(&s)) {
+    if (const auto* d = ast::exactAs<const ast::DoWhileStmt*>(&s)) {
         LoopParts parts;
         parts.condition = d->condition.get();
         parts.body = &d->body;
@@ -386,7 +386,7 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         analyzeLoop(parts, depth, s);
         return;
     }
-    if (const auto* f = dynamic_cast<const ast::ForStmt*>(&s)) {
+    if (const auto* f = ast::exactAs<const ast::ForStmt*>(&s)) {
         // `for (let i = ...)` binds `i` in the loop's own scope, which
         // spans the condition, the body and the update and ends here.
         std::vector<const ast::Stmt*> initList;
@@ -404,46 +404,46 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         restoreDeclarations(saved);
         return;
     }
-    if (dynamic_cast<const ast::BreakStmt*>(&s)) {
+    if (ast::exactAs<const ast::BreakStmt*>(&s)) {
         if (!breakStack_.empty()) breakStack_.back().push_back(scope_.env);
         return;
     }
-    if (dynamic_cast<const ast::ContinueStmt*>(&s)) {
+    if (ast::exactAs<const ast::ContinueStmt*>(&s)) {
         if (!continueStack_.empty()) continueStack_.back().push_back(scope_.env);
         return;
     }
-    if (dynamic_cast<const ast::DebuggerStmt*>(&s)) {
+    if (ast::exactAs<const ast::DebuggerStmt*>(&s)) {
         return;
     }
-    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&s)) {
+    if (const auto* sw = ast::exactAs<const ast::SwitchStmt*>(&s)) {
         switchStmt(*sw, depth);
         return;
     }
-    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(&s)) {
+    if (const auto* tr = ast::exactAs<const ast::TryStmt*>(&s)) {
         tryStmt(*tr, depth);
         return;
     }
-    if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&s)) {
+    if (const auto* th = ast::exactAs<const ast::ThrowStmt*>(&s)) {
         if (th->value) expr(*th->value);
         return;
     }
-    if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(&s)) {
+    if (const auto* lb = ast::exactAs<const ast::LabeledStmt*>(&s)) {
         // A label changes where a jump inside the statement goes, and
         // nothing about the types the statement produces.
         if (lb->body) stmt(*lb->body, 0, depth + 1);
         return;
     }
-    if (const auto* fo = dynamic_cast<const ast::ForOfStmt*>(&s)) {
+    if (const auto* fo = ast::exactAs<const ast::ForOfStmt*>(&s)) {
         keyedLoop(s, fo->iterable.get(), fo->name, fo->pattern.get(), fo->isLet || fo->isConst,
                   fo->body, depth);
         return;
     }
-    if (const auto* fi = dynamic_cast<const ast::ForInStmt*>(&s)) {
+    if (const auto* fi = ast::exactAs<const ast::ForInStmt*>(&s)) {
         keyedLoop(s, fi->object.get(), fi->name, fi->pattern.get(), fi->isLet || fi->isConst,
                   fi->body, depth);
         return;
     }
-    if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(&s)) {
+    if (const auto* cd = ast::exactAs<const ast::ClassDecl*>(&s)) {
         // A class is a constructor function value, and each of its methods is a
         // closure — the same two facts the branch below states about a nested
         // declaration.
@@ -455,7 +455,7 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         analyzeClassBody(cd->name, cd->methods);
         return;
     }
-    if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(&s)) {
+    if (const auto* fd = ast::exactAs<const ast::FunctionDecl*>(&s)) {
         // A nested declaration is a closure value, so it carries no module
         // function index and no direct call.
         declare(fd->name, Type::function());

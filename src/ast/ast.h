@@ -1,6 +1,8 @@
 #pragma once
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <typeinfo>
 #include <vector>
 
 #include "support/source.h"
@@ -910,5 +912,20 @@ public:
     virtual void visit(const ExportNamesDecl&) {}
     virtual void visit(const Module&) = 0;
 };
+
+// `dynamic_cast<const T*>(n)` for a node class T, which every concrete node
+// class is: `final`, so the cast succeeds exactly when T is the node's own
+// type. Asked as that — one type_info compare — instead of MSVC's
+// general-purpose hierarchy walk, which in a chain of thirty casts per
+// expression was a tenth of an embedded load's front end (FlowAnalyzer::
+// exprKind). `P` is the pointer type, as a dynamic_cast spells it.
+template <typename P>
+inline P exactAs(const Node* n) noexcept {
+    using T = std::remove_const_t<std::remove_pointer_t<P>>;
+    static_assert(std::is_final_v<T>, "exactAs names a final node class");
+    if (n == nullptr) return nullptr;
+    const std::type_info& ti = typeid(*n);
+    return (&ti == &typeid(T) || ti == typeid(T)) ? static_cast<P>(n) : nullptr;
+}
 
 }  // namespace bronze::ast

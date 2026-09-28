@@ -32,12 +32,26 @@
 #include "runtime/value.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
+#include "support/timings.h"
 #include "types/infer.h"
 #include "types/pins.h"
 
 namespace bronze::eval {
 
 namespace {
+
+// BRONZE_TIMINGS=1: an embedded compile prints its phase times to stderr the
+// way `bronze build --timings` does (support/timings.h), so a host's slow
+// load says which phase to attack.
+bool evalTimingsEnabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("BRONZE_TIMINGS");
+        const bool enabled = v && v[0] == '1';
+        if (enabled) support::setTimingsEnabled(true);
+        return enabled;
+    }();
+    return on;
+}
 
 static std::vector<std::shared_ptr<BrassTieredProgram>>& retainedPrograms() {
     static auto* list = new std::vector<std::shared_ptr<BrassTieredProgram>>();
@@ -229,12 +243,14 @@ std::shared_ptr<BrassTieredProgram> compileAst(
             return it->second.program;
         }
     }
+    support::PhaseTimer timer(evalTimingsEnabled(), 2);
     transformEvalAst(*astModule, resName);
 
     auto inferred = types::inferModule(*astModule, diags,
                                        hostGlobals.empty() ? nullptr : &hostGlobals,
                                        pins.empty() ? nullptr : &pins);
     if (diags.hasErrors() || !inferred) return nullptr;
+    timer.mark("infer");
 
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
@@ -246,6 +262,7 @@ std::shared_ptr<BrassTieredProgram> compileAst(
                                        options.censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr);
     if (diags.hasErrors() || !ilModule) return nullptr;
+    timer.mark("lower");
 
     if (!options.retainSource) {
         ilModule->sourceTexts.clear();
@@ -262,6 +279,7 @@ std::shared_ptr<BrassTieredProgram> compileAst(
 
     std::shared_ptr<BrassTieredProgram> program = BrassTieredEngine(config).compile(*ilModule, diags);
     if (!program) return nullptr;
+    timer.mark("codegen");
     // Bind the program's import table from the registry it was compiled
     // against, before anything runs. The entry rebinds on its own first
     // instruction and would be FATAL on a gap; doing it here first turns a
@@ -449,8 +467,10 @@ std::unique_ptr<CompiledScript> compileScript(std::string_view source, const Eva
     auto res = newScript(options);
     SourceSet sources;
     DiagnosticSink diags;
+    support::PhaseTimer timer(evalTimingsEnabled(), 2);
     auto astModule = modules::loadProgramSource(std::string(source), options.filename, sources, diags,
                                                 moduleOptionsFor(options));
+    timer.mark("load+parse");
     if (!diags.hasErrors() && astModule) {
         res->program = compileAst(std::move(astModule), options, res->resName, diags, sources);
     }

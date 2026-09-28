@@ -5,6 +5,7 @@
 #include "il_pipeline.h"
 #include <brass/mir/coro_transform.hpp>
 #include <brass/mir/verifier.hpp>
+#include "support/timings.h"
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -347,6 +348,7 @@ static void declare_data_symbols(Module& mod) {
 }
 
 std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
+    bronze::support::PhaseTimer ltimer(bronze::support::timingsEnabled(), 8);
     auto mod = std::make_unique<Module>(ast.name);
     mod->set_allow_fp_reassociation(options_.allow_fp_reassociation);
     mod->set_pinned_tls_register(options_.pin_tls_register);
@@ -571,6 +573,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
+    ltimer.mark("declare");
     // 2. Lower each function body
     for (size_t i = 0; i < ast.functions.size(); ++i) {
         if (resolved_names[i].empty()) continue;
@@ -599,18 +602,34 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
+    ltimer.mark("lower fns");
     declare_data_symbols(*mod);
+    if (bronze::support::timingsEnabled()) {
+        size_t fns = 0, blocks = 0, insts = 0;
+        for (const Function* f : mod->functions()) {
+            if (!f) continue;
+            ++fns;
+            for (const BasicBlock* bb : f->blocks()) {
+                ++blocks;
+                for (const Instruction* inst : *const_cast<BasicBlock*>(bb)) insts += inst ? 1 : 0;
+            }
+        }
+        std::fprintf(stderr, "        mir: %zu functions, %zu blocks, %zu instructions\n", fns, blocks, insts);
+    }
+    ltimer.mark("data syms");
 
     // 3. Verify module
-    if (!verify_module(*mod, diag_)) {
+    if (options_.verify_lowered_module && !verify_module(*mod, diag_)) {
         return nullptr;
     }
+    ltimer.mark("verify");
 
     // 4. Split every coroutine body at its suspends before anything
     // optimizes it: until then a suspend is an ordinary instruction to the
     // passes, which would move a frame read or an unboxed reference across
     // it, where a resume re-enters the body and a collection may have run.
     brass::lower_coroutines(*mod);
+    ltimer.mark("coroutines");
 
     // 5. Optionally optimize module
     if (options_.enable_optimizations) {
@@ -627,9 +646,10 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         if (!run_pass_pipeline(*mod, pass_pipeline_options(options_), hooks)) {
             return nullptr;
         }
-        if (!verify_module(*mod, diag_)) {
+        if (options_.verify_lowered_module && !verify_module(*mod, diag_)) {
             return nullptr;
         }
+        ltimer.mark("optimize");
     }
 
     return mod;

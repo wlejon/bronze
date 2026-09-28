@@ -367,6 +367,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // through the calling thread's delta (bronze_abi.h,
     // bronze_module_instance), laid out by brass_backend_sections.cpp.
     options.per_thread_module_data = perThreadModuleData_;
+    options.verify_lowered_module = verifyLowered_;
     options.spec_feedback = specFeedback_;
     options.spec_profile = specProfile_;
     // The inline-cache table: lowering numbered every property and method

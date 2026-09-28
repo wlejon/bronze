@@ -82,6 +82,9 @@ public:
     // in the object's data, or in the data image (buildDataImage) of a
     // program the tiered pipeline runs, a delta per thread.
     void setPerThreadModuleData(bool on) { perThreadModuleData_ = on; }
+    // Whether buildMirModule runs brass's verifier over what it lowered
+    // (il2mir::TranslatorOptions::verify_lowered_module).
+    void setVerifyLowered(bool on) { verifyLowered_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -114,6 +117,7 @@ private:
     bool emitDebugInfo_ = false;
     bool registerFnSources_ = true;
     bool perThreadModuleData_ = true;
+    bool verifyLowered_ = true;
     brass::Target target_ = brass::Target::host();
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;

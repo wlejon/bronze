@@ -19,7 +19,7 @@ namespace {
 
 bool isNonClassExpr(const ast::Expr* e) {
     if (e == nullptr) return false;
-    if (const auto* id = dynamic_cast<const ast::Ident*>(e)) {
+    if (const auto* id = ast::exactAs<const ast::Ident*>(e)) {
         static const char* kNonClassIdents[] = {
             "Math", "Object", "Array", "Number", "String", "Boolean", "Symbol",
             "Reflect", "JSON", "console", "document", "window", "performance",
@@ -34,9 +34,9 @@ bool isNonClassExpr(const ast::Expr* e) {
             if (id->name == nid) return true;
         }
     }
-    return dynamic_cast<const ast::ArrayLit*>(e) || dynamic_cast<const ast::ObjectLit*>(e) ||
-           dynamic_cast<const ast::NumberLit*>(e) || dynamic_cast<const ast::StringLit*>(e) ||
-           dynamic_cast<const ast::BoolLit*>(e) || dynamic_cast<const ast::RegExpLit*>(e);
+    return ast::exactAs<const ast::ArrayLit*>(e) || ast::exactAs<const ast::ObjectLit*>(e) ||
+           ast::exactAs<const ast::NumberLit*>(e) || ast::exactAs<const ast::StringLit*>(e) ||
+           ast::exactAs<const ast::BoolLit*>(e) || ast::exactAs<const ast::RegExpLit*>(e);
 }
 
 // How one class-layout refusal of a number field read is named in the report:
@@ -93,33 +93,33 @@ Type FlowAnalyzer::expr(const ast::Expr& e) {
 }
 
 Type FlowAnalyzer::exprKind(const ast::Expr& e) {
-    if (dynamic_cast<const ast::NumberLit*>(&e)) return Type::number();
+    if (ast::exactAs<const ast::NumberLit*>(&e)) return Type::number();
     // DYNAMIC, and deliberately not `number`: the lattice has no BigInt
     // element, and a BigInt typed as one would licence an f64 fast path to
     // read a heap pointer's bits as a double. Dynamic is the designed
     // fallback and the only answer here that cannot be wrong.
-    if (dynamic_cast<const ast::BigIntLit*>(&e)) return Type::dynamic();
-    if (dynamic_cast<const ast::StringLit*>(&e)) return Type::string();
+    if (ast::exactAs<const ast::BigIntLit*>(&e)) return Type::dynamic();
+    if (ast::exactAs<const ast::StringLit*>(&e)) return Type::string();
     // A regular expression literal is an OBJECT, and inference has no shape
     // class for one: its members are `RegExp.prototype`'s accessors and
     // methods, reached through the runtime's ordinary property path.
-    if (dynamic_cast<const ast::RegExpLit*>(&e)) return Type::dynamic();
+    if (ast::exactAs<const ast::RegExpLit*>(&e)) return Type::dynamic();
     // A template is a string whatever its substitutions produce, since
     // every one of them goes through ToString. The substitutions are
     // still analysed — they are ordinary expressions and may write
     // bindings.
-    if (const auto* t = dynamic_cast<const ast::TemplateLit*>(&e)) {
+    if (const auto* t = ast::exactAs<const ast::TemplateLit*>(&e)) {
         for (const auto& sub : t->exprs) expr(*sub);
         return Type::string();
     }
-    if (dynamic_cast<const ast::BoolLit*>(&e)) return Type::boolean();
-    if (dynamic_cast<const ast::NullLit*>(&e)) return Type::null();
-    if (dynamic_cast<const ast::UndefinedLit*>(&e)) return Type::undefined();
+    if (ast::exactAs<const ast::BoolLit*>(&e)) return Type::boolean();
+    if (ast::exactAs<const ast::NullLit*>(&e)) return Type::null();
+    if (ast::exactAs<const ast::UndefinedLit*>(&e)) return Type::undefined();
     // `this` is the caller's receiver. Inside a class body the DECLARATION
     // names the object kind that receiver is meant to be, and `Scope::thisClass`
     // carries it — see the standing invariant recorded there for why an
     // optimistic answer is safe, and what would stop making it safe.
-    if (dynamic_cast<const ast::ThisExpr*>(&e)) {
+    if (ast::exactAs<const ast::ThisExpr*>(&e)) {
         // NOT BUILT HERE. The declaration says what the receiver is MEANT to
         // be; `Vector3.prototype.add.call(x)` says what it can actually be, and
         // nothing in this file can see that call. The identity is still worth
@@ -129,14 +129,14 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return scope_.thisClass == kNoShapeClass ? Type::dynamic()
                                                  : Type::objectNotBuiltHere(scope_.thisClass);
     }
-    if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+    if (const auto* id = ast::exactAs<const ast::Ident*>(&e)) {
         const Type t = lookup(id->name);
         noteIdentRefusal(*id, t);
         return t;
     }
-    if (const auto* u = dynamic_cast<const ast::Unary*>(&e)) return unary(*u);
-    if (const auto* b = dynamic_cast<const ast::Binary*>(&e)) return binary(*b);
-    if (const auto* t = dynamic_cast<const ast::Ternary*>(&e)) {
+    if (const auto* u = ast::exactAs<const ast::Unary*>(&e)) return unary(*u);
+    if (const auto* b = ast::exactAs<const ast::Binary*>(&e)) return binary(*b);
+    if (const auto* t = ast::exactAs<const ast::Ternary*>(&e)) {
         expr(*t->condition);
         const Env entry = scope_.env;
         const Type a = expr(*t->thenExpr);
@@ -146,7 +146,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         scope_.env = joinEnv(thenEnv, scope_.env);
         return join(a, b);
     }
-    if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&e)) {
+    if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&e)) {
         const Type base = expr(*m->object);
         lastMember_ = m;
         lastMemberBase_ = base;
@@ -291,35 +291,35 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // type; that is what the inline-cache check consumes and all it needs.
         return Type::dynamic();
     }
-    if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(&e)) {
+    if (const auto* ix = ast::exactAs<const ast::IndexAccess*>(&e)) {
         expr(*ix->object);
         expr(*ix->index);
         return Type::dynamic();
     }
-    if (const auto* c = dynamic_cast<const ast::Call*>(&e)) return call(*c);
-    if (const auto* n = dynamic_cast<const ast::NewExpr*>(&e)) return newExpr(*n);
-    if (dynamic_cast<const ast::NewTargetExpr*>(&e)) return Type::dynamic();
-    if (dynamic_cast<const ast::ImportMetaExpr*>(&e)) return Type::dynamic();
-    if (const auto* tt = dynamic_cast<const ast::TaggedTemplate*>(&e)) {
+    if (const auto* c = ast::exactAs<const ast::Call*>(&e)) return call(*c);
+    if (const auto* n = ast::exactAs<const ast::NewExpr*>(&e)) return newExpr(*n);
+    if (ast::exactAs<const ast::NewTargetExpr*>(&e)) return Type::dynamic();
+    if (ast::exactAs<const ast::ImportMetaExpr*>(&e)) return Type::dynamic();
+    if (const auto* tt = ast::exactAs<const ast::TaggedTemplate*>(&e)) {
         expr(*tt->tag);
         for (const auto& el : tt->templateLit->exprs) expr(*el);
         return Type::dynamic();
     }
-    if (const auto* o = dynamic_cast<const ast::ObjectLit*>(&e)) return objectLit(*o);
-    if (const auto* a = dynamic_cast<const ast::ArrayLit*>(&e)) {
+    if (const auto* o = ast::exactAs<const ast::ObjectLit*>(&e)) return objectLit(*o);
+    if (const auto* a = ast::exactAs<const ast::ArrayLit*>(&e)) {
         for (const auto& el : a->elements) {
             if (el) expr(*el);
         }
         return Type::array();
     }
-    if (const auto* sc = dynamic_cast<const ast::SuperCall*>(&e)) {
+    if (const auto* sc = ast::exactAs<const ast::SuperCall*>(&e)) {
         // The parent constructor runs on the current receiver and its
         // result is discarded, so nothing is proven about the value.
         std::vector<Type> args;
         args.reserve(sc->args.size());
         bool spreadArgs = false;
         for (const auto& a : sc->args) {
-            if (dynamic_cast<const ast::SpreadElement*>(a.get())) spreadArgs = true;
+            if (ast::exactAs<const ast::SpreadElement*>(a.get())) spreadArgs = true;
             args.push_back(expr(*a));
         }
         // It is also a CALL SITE of the base's constructor, and in three.js it
@@ -346,25 +346,25 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         }
         return Type::dynamic();
     }
-    if (dynamic_cast<const ast::SuperMember*>(&e)) return Type::dynamic();
-    if (const auto* ce = dynamic_cast<const ast::ClassExpr*>(&e)) {
+    if (ast::exactAs<const ast::SuperMember*>(&e)) return Type::dynamic();
+    if (const auto* ce = ast::exactAs<const ast::ClassExpr*>(&e)) {
         analyzeClassBody(ce->name, ce->methods);
         return Type::function();
     }
     // The value of a `yield` is the argument of the `next(v)` that resumed the
     // generator, which comes from outside this compilation entirely. Its
     // operand is still analysed: it is ordinary code that runs here.
-    if (const auto* y = dynamic_cast<const ast::YieldExpr*>(&e)) {
+    if (const auto* y = ast::exactAs<const ast::YieldExpr*>(&e)) {
         expr(*y->argument);
         return Type::dynamic();
     }
-    if (const auto* di = dynamic_cast<const ast::DynamicImportExpr*>(&e)) {
+    if (const auto* di = ast::exactAs<const ast::DynamicImportExpr*>(&e)) {
         if (di->specifier) expr(*di->specifier);
         return Type::dynamic();
     }
     // A spread contributes its argument's effects and nothing about the
     // container's element types — there is no element type here to prove.
-    if (const auto* sp = dynamic_cast<const ast::SpreadElement*>(&e)) {
+    if (const auto* sp = ast::exactAs<const ast::SpreadElement*>(&e)) {
         expr(*sp->argument);
         return Type::dynamic();
     }
@@ -373,7 +373,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     // property types to say anything narrower. Assigning rather than ignoring
     // is the point — a name proven numeric before must not stay numeric across
     // it.
-    if (const auto* da = dynamic_cast<const ast::DestructuringAssign*>(&e)) {
+    if (const auto* da = ast::exactAs<const ast::DestructuringAssign*>(&e)) {
         const Type value = expr(*da->value);
         // The pattern's own code — computed keys, defaults, and the object and
         // key of a member target — runs after the value, and a call in it is a
@@ -385,7 +385,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         }
         return value;
     }
-    if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(&e)) {
+    if (const auto* f = ast::exactAs<const ast::FunctionExpr*>(&e)) {
         // 15.3.4: an arrow has no `this` binding of its own and resolves the
         // name in the enclosing scope, so it inherits whatever receiver is in
         // hand. A non-arrow function expression binds its own, which the
@@ -410,7 +410,7 @@ Type FlowAnalyzer::unary(const ast::Unary& u) {
     // f64 wherever a later read consumed the proof.
     if (u.op == ast::UnaryOp::PreInc || u.op == ast::UnaryOp::PreDec ||
         u.op == ast::UnaryOp::PostInc || u.op == ast::UnaryOp::PostDec) {
-        if (const auto* id = dynamic_cast<const ast::Ident*>(u.operand.get())) {
+        if (const auto* id = ast::exactAs<const ast::Ident*>(u.operand.get())) {
             assign(id->name, result);
         }
     }
@@ -420,7 +420,7 @@ Type FlowAnalyzer::unary(const ast::Unary& u) {
 Type FlowAnalyzer::binary(const ast::Binary& b) {
     if (b.op == ast::BinaryOp::Assign) {
         const Type rhs = expr(*b.rhs);
-        if (const auto* id = dynamic_cast<const ast::Ident*>(b.lhs.get())) {
+        if (const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get())) {
             assign(id->name, rhs);
         } else {
             expr(*b.lhs);
@@ -430,7 +430,7 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
     if (ast::isCompoundAssignOp(b.op)) {
         const ast::BinaryOp plain = ast::compoundAssignBase(b.op);
         const Type rhs = expr(*b.rhs);
-        const auto* id = dynamic_cast<const ast::Ident*>(b.lhs.get());
+        const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get());
         const Type current = id != nullptr ? lookup(id->name) : expr(*b.lhs);
         const Type result = compoundResult(plain, current, rhs);
         if (id != nullptr) assign(id->name, result);
@@ -460,14 +460,14 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     // callee rather than by walking its base a second time. `lastMember_` is the
     // outermost member read that evaluation finished with, so the pointer
     // compare is what confirms this call really is on it.
-    const auto* member = dynamic_cast<const ast::MemberAccess*>(c.callee.get());
+    const auto* member = ast::exactAs<const ast::MemberAccess*>(c.callee.get());
     const Type receiver = (member != nullptr && lastMember_ == member) ? lastMemberBase_
                                                                        : Type::dynamic();
     std::vector<Type> args;
     args.reserve(c.args.size());
     bool spreadArgs = false;
     for (const auto& a : c.args) {
-        if (dynamic_cast<const ast::SpreadElement*>(a.get())) spreadArgs = true;
+        if (ast::exactAs<const ast::SpreadElement*>(a.get())) spreadArgs = true;
         args.push_back(expr(*a));
     }
 
@@ -504,7 +504,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     // a promise; it must never subtract a proof.
     bool pinnedReturn = false;
     if (!c.optional && mod_.pins != nullptr) {
-        const auto* ident = dynamic_cast<const ast::Ident*>(c.callee.get());
+        const auto* ident = ast::exactAs<const ast::Ident*>(c.callee.get());
         if (ident != nullptr && mod_.pins->returnPinned(ident->name)) pinnedReturn = true;
     }
 
@@ -516,7 +516,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     // thing about the dispatch that is decided statically. So the contribution
     // goes to whatever `m` that base would find, and to the overrides below it,
     // exactly as an ordinary call on a base-typed receiver does.
-    if (const auto* sup = dynamic_cast<const ast::SuperMember*>(c.callee.get())) {
+    if (const auto* sup = ast::exactAs<const ast::SuperMember*>(c.callee.get())) {
         // A static element's `super.m(...)` reaches the base's STATIC `m`,
         // which the layouts below do not describe: they hold instance
         // methods, and typing the call by one of those would be typing it by
