@@ -659,10 +659,18 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out) {
             out = rtArrayPrototypeObject();
             return true;
         }
-        for (size_t i = 0; i < entry.staticCount; ++i) {
-            if (const StaticFn& s = entry.statics[i]; key == s.name) {
-                out = rtNativeFunction(s.code, s.arity, s.name, s.length);
-                return true;
+        // Once the program has written to this constructor's statics, the box
+        // holds them (rtInstallGlobalConstructorStatics) and is the answer:
+        // the table would hand back `Array.isArray` after `Array.isArray = f`
+        // or after `delete Array.isArray`. (A name the program defined in the
+        // box is answered ahead of this whole function by rtFunctionMember, so
+        // a polyfill for a member bronze has not built is not diagnosed.)
+        if (!fn.asObject<FunctionHeader>()->statics_materialized) {
+            for (size_t i = 0; i < entry.staticCount; ++i) {
+                if (const StaticFn& s = entry.statics[i]; key == s.name) {
+                    out = rtNativeFunction(s.code, s.arity, s.name, s.length);
+                    return true;
+                }
             }
         }
         // Diagnoses and does not return for a name on the list, which is what
@@ -696,6 +704,11 @@ bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string
     return false;
 }
 
+void rtPrepareFunctionOwnWrite(Rooted<Value>& fn) {
+    if (rtInstallGlobalConstructorStatics(fn)) bumpProtoMutationEpoch();
+    rtEnsureFunctionProperties(fn);
+}
+
 bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor) {
     if (!ctor.get().isObject() ||
         ctor.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
@@ -704,6 +717,10 @@ bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor) {
     const bronze_fn_code code = ctor.get().asObject<FunctionHeader>()->code;
     for (const CtorEntry& entry : kCtors) {
         if (entry.code != code || entry.staticCount == 0) continue;
+        // Once only: after the first time the box is the statics' home and
+        // what the program wrote there since (an assignment, a delete) must
+        // not be put back.
+        if (ctor.get().asObject<FunctionHeader>()->statics_materialized) return true;
         rtEnsureFunctionProperties(ctor);
         Rooted<Value> props{ctor.get().asObject<FunctionHeader>()->properties};
         if (!props.get().isObject()) return false;
@@ -721,6 +738,7 @@ bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor) {
         // object and a subclass has one of its own, so copying it here would
         // put %Array.prototype% on a chain `MyArr.prototype` already sits at
         // the bottom of.
+        ctor.get().asObject<FunctionHeader>()->statics_materialized = 1;
         return true;
     }
     return false;

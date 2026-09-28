@@ -189,8 +189,8 @@ console.log("isArray hot", isArrCount);
 console.log("statics", String.fromCharCode(72, 105), Array.of(1, 2, 3).length,
             Array.from("abc").join("|"));
 
-// The statics table answers FIRST on the ladder, ahead of any own property —
-// a write cannot shadow it (bronze's documented divergence; pin it).
+// A write replaces the static, and the site latched on the table's function
+// above misses and calls the new one (as node does; tiers_49 covers the rest).
 Array.isArray = function () { return "nope"; };
 console.log("static unshadowable", checkArr([1]), checkArr(0));
 

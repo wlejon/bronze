@@ -554,7 +554,7 @@ static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const Decoded
     }
     Rooted<Value> holder{self.get()};
     if (kind == HeapKind::Function) {
-        rtEnsureFunctionProperties(self);
+        rtPrepareFunctionOwnWrite(self);
         holder.set(self.get().asObject<FunctionHeader>()->properties);
     }
     return applyDecodedDescriptor(holder, name, d, value, getter, setter, throwOnRefusal);

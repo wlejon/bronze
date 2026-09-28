@@ -1,0 +1,24 @@
+warm 10 46 20 A
+assigned 0 -10 10 patched
+read true true
+desc function true false true true
+names true true true
+restored 10 46 20 A
+same true true
+delete true true true
+gone undefined undefined undefined false false
+call deleted true
+call deleted true
+names after delete false false
+defined 10 126 A
+enum max
+still 42
+back 46 9 0
+of warm 20
+of patched 10
+of restored 20
+subclass via base true
+subclass restored true
+getter got 5
+polyfill 42 function
+others 2 true {"a":1} true B xy

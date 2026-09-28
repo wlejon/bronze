@@ -162,8 +162,9 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         // A global constructor's static (`Array.isArray`, `String.raw`):
         // answered FIRST on the function-receiver ladder from a fixed C table
         // keyed by the RECEIVER'S code pointer, ahead even of the own-property
-        // box (rt_prop.cpp) — nothing a program writes can shadow one, so the
-        // answer is a pure function of (receiver code, key). The witness walks
+        // box (rt_prop.cpp) — until the program writes to that constructor's
+        // statics, the answer is a pure function of (receiver code, key); the
+        // epoch below covers the case where it has. The witness walks
         // the same table with raw code pointers (no allocation), and the hit
         // guard re-checks the live receiver's code word against the aux word —
         // the one identity a moving collector never rewrites.
@@ -175,6 +176,13 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(recvFn->code);
         auxOffset = offsetof(FunctionHeader, code);
         guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
+        // Once the program has written to this constructor's statics they
+        // live in its box, where an assignment or a delete can replace the
+        // one just read — so the entry is good only until the next such write,
+        // and every one of them bumps the prototype-mutation epoch
+        // (rtPrepareFunctionOwnWrite). The witness above still holds: the
+        // read found the table's own function in the box.
+        if (recvFn->statics_materialized) epochWord = protoMutationEpoch();
     } else {
         return false;
     }
@@ -451,9 +459,14 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
         } else if (Value(aux).isObject()) {
             return false;
         }
-        return dispatchDirect(icEntry, kind == TypedArrayHeader::kFlags
-                                           ? BRONZE_ABI_METHOD_IC_EPOCH_WORD
-                                           : -1);
+        // A constructor whose statics were written down answers from a box
+        // the program can write to, so its entry carries an epoch as the
+        // typed-array one does; one never touched answers from the C table.
+        const bool epochGuarded =
+            kind == TypedArrayHeader::kFlags ||
+            (kind == HeapKind::Function &&
+             reinterpret_cast<const FunctionHeader*>(hdr)->statics_materialized);
+        return dispatchDirect(icEntry, epochGuarded ? BRONZE_ABI_METHOD_IC_EPOCH_WORD : -1);
     }
 
     if (hdr->flags == HeapKind::Plain) {

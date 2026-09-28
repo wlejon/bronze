@@ -30,6 +30,7 @@
 #include "runtime/proxy.h"
 #include "runtime/namespace.h"
 #include "runtime/regexp.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
@@ -54,6 +55,21 @@ ObjectHeader* namedPropertyOwner(Value v) {
         return props.isObject() ? props.asObject<ObjectHeader>() : nullptr;
     }
     return nullptr;
+}
+
+// A global constructor's table statics are written into its box before a
+// delete looks there (rtPrepareFunctionOwnWrite), so `delete Array.isArray`
+// removes the one a read finds. Every other receiver is returned as is.
+// Allocates only on a constructor's first write, and the caller holds no raw
+// pointer across it.
+Value prepareDeleteReceiver(Value v) {
+    if (!v.isObject() || v.asObject<HeapObjectHeader>()->flags != HeapKind::Function ||
+        rtIntrinsicConstructorName(v) == nullptr) {
+        return v;
+    }
+    Rooted<Value> root{v};
+    rtPrepareFunctionOwnWrite(root);
+    return root.get();
 }
 
 // 10.4.5.4 [[Delete]] on a typed array, for the NUMERIC half of its keys: a
@@ -237,6 +253,7 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
         return rtProxyDelete(objVal, Value::fromString(keyHeader), strict);
     }
 
+    objVal = prepareDeleteReceiver(objVal);
     ObjectHeader* owner = namedPropertyOwner(objVal);
     if (!owner) return true;
     return reportRefusedDelete(owner->deleteProperty(rtArena(), keyHeader), strict,
@@ -292,6 +309,13 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
         return rtProxyDelete(objVal, idxVal, strict);
     }
 
+    {
+        // The key is a primitive here and may be a heap string, so it rides
+        // through the constructor's first write on a root.
+        Rooted<Value> idxRoot{idxVal};
+        objVal = prepareDeleteReceiver(objVal);
+        idxVal = idxRoot.get();
+    }
     ObjectHeader* owner = namedPropertyOwner(objVal);
     if (!owner) return true;
     // A SYMBOL key is already a property key, so ToPropertyKey is the identity

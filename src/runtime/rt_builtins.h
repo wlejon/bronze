@@ -561,8 +561,9 @@ bool rtGlobalConstructorMember(Value fn, const std::string& key, Value& out);
 // same C tables the read above answers from — no interning, no allocation —
 // so the latch can ask it with raw pointers in hand. What makes the latched
 // entry sound is the read path's ORDER: the statics table is consulted first
-// on the function-receiver ladder, ahead even of the own-property box, so
-// nothing a program writes can shadow a static this answers true for.
+// on the function-receiver ladder, ahead even of the own-property box, until
+// the program writes to that constructor's statics; from then on the latch
+// carries the prototype-mutation epoch, which every such write bumps.
 bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string& key,
                                       bronze_fn_code calleeCode) noexcept;
 
@@ -571,7 +572,18 @@ bool rtGlobalConstructorStaticMatches(bronze_fn_code ctorCode, const std::string
 // a code-pointer match it can never make — `class MyArr extends Array` must
 // reach `Array.of` (runtime/native_base.h) — and off the SAME `kCtors` entry
 // the read path answers from. False for a function that is not one of them.
+// Done once per constructor (FunctionHeader::statics_materialized); from then
+// on the box is where the statics live and the table no longer answers them.
 bool rtInstallGlobalConstructorStatics(Rooted<Value>& ctor);
+
+// Every write the PROGRAM makes to a function's own properties — an
+// assignment, a delete, a defineProperty, a freeze — goes through here before
+// it touches the box: a global constructor's table statics are written into
+// its box first, so `Array.isArray = f` replaces the one a read would find,
+// and the prototype-mutation epoch is bumped so a method-call entry latched
+// on the old one misses. For any other function it is
+// rtEnsureFunctionProperties.
+void rtPrepareFunctionOwnWrite(Rooted<Value>& fn);
 
 // The name of the intrinsic this function object IS, or null for any other
 // function. Two operations need to recognise one: `instanceof`, which cannot

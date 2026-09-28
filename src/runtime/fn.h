@@ -112,6 +112,14 @@ struct FunctionHeader {
     // neighbours. The word is still scanned as a Value, which is why the
     // padding that remains is still written (create() zeroes all of it).
     bool prototype_readonly{false};
+    // Set once a GLOBAL CONSTRUCTOR's table statics (`Array.isArray`,
+    // `String.fromCharCode`) have been written into its statics box, and from
+    // then on the box is where they live: `rtGlobalConstructorMember` stops
+    // answering them from the C table, so an assignment, a delete or a
+    // defineProperty the program made is what a read sees. The table stays the
+    // answer for every constructor the program never touched, which is all of
+    // them in the common case. Another byte of the padding below.
+    uint8_t statics_materialized{0};
     // The rest of this word, spelled out because the GC payload scan reads
     // the whole payload as Values and this word — two bools, one code byte
     // and padding — is one of them. A heap block is recycled memory, so padding
@@ -122,7 +130,7 @@ struct FunctionHeader {
     // a green pixi GC-stress run into an environment-chain corruption).
     // create() zeroes these, so the word is a small integer, never a
     // plausible pointer.
-    uint8_t padding_to_value_scan[4]{};
+    uint8_t padding_to_value_scan[3]{};
     // This function object's own [[Prototype]], or UNDEFINED for "whatever the
     // intrinsic default for its kind is" — %Function.prototype% for an
     // ordinary function, %GeneratorFunction.prototype% for a generator, and so

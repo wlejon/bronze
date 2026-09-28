@@ -243,29 +243,11 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // `Object` is recognized here rather than looked up: bronze has no global
     // object for it to live on.
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
-        const auto* baseIdent = dynamic_cast<const ast::Ident*>(mem->object.get());
-        // `Object.keys(x)` keeps its own instruction — every other member of
-        // `Object` now resolves through the namespace object like a member of
-        // `Math` does, so this is a fast path rather than the only path, and it
-        // falls through to the general call lowering for anything it does not
-        // recognize.
-        if (baseIdent && baseIdent->name == "Object" && mem->property == "keys" &&
-            call->args.size() == 1 &&
-            !dynamic_cast<const ast::SpreadElement*>(call->args[0].get()) &&
-            activeVarMap_.find("Object") == activeVarMap_.end()) {
-            auto argVal = lowerExpr(*call->args[0], ilFn);
-            if (!argVal) return std::nullopt;
-            auto argBoxed = boxValueIfNeeded(*argVal, ilFn);
-
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction inst;
-            inst.op = il::Op::ObjectKeys;
-            inst.type = il::Type::Dynamic;
-            inst.result = res;
-            inst.operands = {argBoxed.id};
-            emitInst(ilFn, inst);
-            return Value{res, il::Type::Dynamic};
-        }
+        // `Object.keys(x)` is an ordinary call on %Object%. It once had an
+        // instruction of its own that skipped reading `Object.keys`, which is
+        // exactly what made `Object.keys = f` invisible to every call site;
+        // the method-call cache reaches the same native once the site is warm.
+        //
         // `Object.defineProperties(o, { ... })` with descriptors the compiler
         // can read: a run of defines instead of seven allocations and
         // thirty-six field reads (lower_define_props.cpp). Nullopt is "not a

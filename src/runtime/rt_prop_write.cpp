@@ -299,7 +299,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             // A static member: an own property of the function object itself.
             Rooted<Value> fnRoot{objVal};
             Rooted<Value> val{valVal};
-            rtEnsureFunctionProperties(fnRoot);
+            rtPrepareFunctionOwnWrite(fnRoot);
             Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
             Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
             SetRefusal refusal = SetRefusal::None;
@@ -452,7 +452,7 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
     Rooted<Value> val{Value(valBits)};
     if (hdr->flags == HeapKind::Function) {  // a `static` member: an own property of the function
         Rooted<Value> fnRoot{objVal};
-        rtEnsureFunctionProperties(fnRoot);
+        rtPrepareFunctionOwnWrite(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
         Rooted<Value> key(Value::fromString(rtKeyHeader(keyIndex)));
         propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
@@ -506,7 +506,7 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {
         Rooted<Value> fnRoot{objVal};
-        rtEnsureFunctionProperties(fnRoot);
+        rtPrepareFunctionOwnWrite(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
         propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                         /*ic=*/nullptr, /*enumerable=*/false,
@@ -552,7 +552,7 @@ void bronze_accessor_def(uint64_t objBits, uint32_t keyIndex, uint64_t getterBit
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {  // `static get k()`: an own property of the function
         Rooted<Value> fnRoot{objVal};
-        rtEnsureFunctionProperties(fnRoot);
+        rtPrepareFunctionOwnWrite(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), propsRoot, key, getter, setter,
                                      enumerable);
@@ -588,7 +588,7 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {
         Rooted<Value> fnRoot{objVal};
-        rtEnsureFunctionProperties(fnRoot);
+        rtPrepareFunctionOwnWrite(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
         ObjectHeader::defineAccessor(rtHeap(), rtArena(), propsRoot, key, getter, setter,
                                      enumerable);
@@ -709,7 +709,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
         // one perfectly well.
         if (recv.get().isObject() &&
             recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
-            rtEnsureFunctionProperties(recv);
+            rtPrepareFunctionOwnWrite(recv);
         }
         if (recv.get().isObject() &&
             recv.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
@@ -879,7 +879,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             rtReportSetRefusal(SetRefusal::NotWritable, strict, keyText);
             return;
         }
-        rtEnsureFunctionProperties(fnRoot);
+        rtPrepareFunctionOwnWrite(fnRoot);
         Rooted<Value> propsRoot{fnRoot.get().asObject<FunctionHeader>()->properties};
         SetRefusal refusal = SetRefusal::None;
         propsRoot.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,

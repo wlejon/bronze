@@ -26,9 +26,9 @@ ta/set mixed true
 done2
 isArray hot 2000
 statics Hi 3 a|b|c
-static unshadowable true false
-subclass static true 1
-mixed ctor site 100 true
+static unshadowable nope nope
+subclass static nope 1
+mixed ctor site 100 nope
 done3
 poly 2-shape 13504500 3000 6000
 poly 3-shape 2970900 900

@@ -156,14 +156,27 @@ TEST_CASE("realized statics are the same objects the beside-the-value table answ
     // is false and a program keying on function identity sees two members
     // where the language has one.
     Rooted<Value> arrayCtor{rtArrayConstructorObject()};
+    const char* const names[] = {"of", "from", "isArray"};
+    // The table's answers, taken while it is still the one answering (another
+    // case in this process may have realized Array already, and then the box
+    // is the only answer there is and the code-pointer check below stands in).
+    Rooted<Value> besideRoots[3];
+    for (size_t i = 0; i < 3; ++i) {
+        Value beside;
+        if (rtGlobalConstructorMember(arrayCtor.get(), names[i], beside)) besideRoots[i].set(beside);
+    }
     rtRealizeNativeStatics(arrayCtor);
     Rooted<Value> props{arrayCtor.get().asObject<FunctionHeader>()->properties};
     REQUIRE(props.get().isObject());
+    CHECK(arrayCtor.get().asObject<FunctionHeader>()->statics_materialized != 0);
 
-    for (const char* name : {"of", "from", "isArray"}) {
-        Value beside;
-        REQUIRE(rtGlobalConstructorMember(arrayCtor.get(), name, beside));
-        Rooted<Value> besideRoot{beside};
+    for (size_t i = 0; i < 3; ++i) {
+        const char* name = names[i];
+        // Realized, the box is where the static lives and the table no longer
+        // answers it — so a write to the box is what a read sees.
+        Value after;
+        CHECK_FALSE(rtGlobalConstructorMember(arrayCtor.get(), name, after));
+        Rooted<Value>& besideRoot = besideRoots[i];
         Rooted<Value> key{rtMakeString(name)};
         PropertyInfo info;
         REQUIRE(props.get().asObject<ObjectHeader>()->shape != nullptr);
@@ -173,18 +186,27 @@ TEST_CASE("realized statics are the same objects the beside-the-value table answ
         // `Object.keys(Array)` stays empty after the realization.
         CHECK_FALSE(info.enumerable);
         const Value stored = props.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
-        CHECK(stored.rawBits() == besideRoot.get().rawBits());
+        if (besideRoot.get().isObject()) CHECK(stored.rawBits() == besideRoot.get().rawBits());
+        REQUIRE(stored.isObject());
+        CHECK(rtGlobalConstructorStaticMatches(arrayCtor.get().asObject<FunctionHeader>()->code, name,
+                                               stored.asObject<FunctionHeader>()->code));
     }
 
     // Idempotent: the link is made once per `extends`, but a class hierarchy
-    // makes several and each one asks.
-    rtRealizeNativeStatics(arrayCtor);
-    rtRealizeNativeStatics(arrayCtor);
+    // makes several and each one asks — and a later one must not put back a
+    // static the program has since replaced.
     Rooted<Value> ofKey{rtMakeString("of")};
-    Value beside;
-    REQUIRE(rtGlobalConstructorMember(arrayCtor.get(), "of", beside));
+    Rooted<Value> of{props.get().asObject<ObjectHeader>()->getProp(rtHeap(), ofKey)};
+    rtRealizeNativeStatics(arrayCtor);
+    rtRealizeNativeStatics(arrayCtor);
     CHECK(props.get().asObject<ObjectHeader>()->getProp(rtHeap(), ofKey).rawBits() ==
-          beside.rawBits());
+          of.get().rawBits());
+    Rooted<Value> replacement{Value::fromDouble(7)};
+    props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), ofKey, replacement);
+    rtRealizeNativeStatics(arrayCtor);
+    CHECK(props.get().asObject<ObjectHeader>()->getProp(rtHeap(), ofKey).rawBits() ==
+          replacement.get().rawBits());
+    props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), ofKey, of);
 
     // `Map.groupBy` (24.1.2.1) is an ORDINARY own property of the constructor,
     // installed into its box when the intrinsic is built and answered by no

@@ -430,6 +430,18 @@ Value rtThrowRangeError(const std::string& message) {
     rtThrowError(ErrorKind::RangeError, message);
 }
 
+Value rtThrowOutOfMemory() {
+    // Building the error allocates; when THAT allocation fails too, this is
+    // re-entered and throws a value that needs no memory.
+    static thread_local bool building = false;
+    if (building) rtThrow(Value::fromUndefined());
+    building = true;
+    struct Reset {
+        ~Reset() { building = false; }
+    } reset;
+    rtThrowError(ErrorKind::RangeError, "out of memory");
+}
+
 Value rtThrowSyntaxError(const std::string& message) {
     rtThrowError(ErrorKind::SyntaxError, message);
 }

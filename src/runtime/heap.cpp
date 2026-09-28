@@ -10,6 +10,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/elem_ic.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap_trace.h"
@@ -295,7 +296,19 @@ HeapObjectHeader* Heap::allocate(size_t bytes, Tag tag, GcLayout layout) {
         case GcLayout::WeakLast: id = ids.weakLast; break;
         case GcLayout::Ephemerons: id = ids.ephemerons; break;
     }
-    auto* header = reinterpret_cast<HeapObjectHeader*>(gc_->allocate(total, id));
+    uintptr_t object = 0;
+    bool outOfMemory = false;
+    try {
+        object = gc_->allocate(total, id);
+    } catch (const std::bad_alloc&) {
+        outOfMemory = true;
+    }
+    // The old generation's reservation is spent even after a full collection
+    // (brass's promotion reserve, gc::Heap::allocate): a catchable RangeError
+    // at the allocation site, thrown after the catch block has ended, and the
+    // heap stays usable once the program lets go of what it holds.
+    if (outOfMemory) runtime::rtThrowOutOfMemory();
+    auto* header = reinterpret_cast<HeapObjectHeader*>(object);
     header->tag = static_cast<uint16_t>(tag);
     // A raw zero and deliberately not `HeapKind::Plain`: this word is a heap
     // kind only for a `Tag::Object`, and a String spends it on its encoding

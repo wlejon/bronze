@@ -141,7 +141,22 @@ uint64_t rtFunctionMember(Value objVal, const std::string& keyStr, StringHeader*
     // would read as an empty object — a silent lie about an intrinsic
     // bronze does not have, and one a program could install a method on
     // that nothing would ever find.
-    if (Value ctorMember; rtGlobalConstructorMember(recv.get(), keyStr, ctorMember)) {
+    //
+    // Once the program has written to such a constructor's statics they live
+    // in its box (rtPrepareFunctionOwnWrite), and the table stops answering
+    // them. A name the program put in the box is then found by the box block
+    // below BEFORE the table's unimplemented-member diagnosis can refuse it —
+    // a polyfill for a member bronze has not built is the program's to add.
+    bool boxFirst = false;
+    if (recv.get().asObject<FunctionHeader>()->statics_materialized) {
+        const Value box = recv.get().asObject<FunctionHeader>()->properties;
+        PropertyInfo own;
+        boxFirst = box.isObject() && box.asObject<ObjectHeader>()->shape &&
+                   box.asObject<ObjectHeader>()->shape->lookupProperty(
+                       PropertyKey::forString(keyHeader), own);
+    }
+    if (Value ctorMember;
+        !boxFirst && rtGlobalConstructorMember(recv.get(), keyStr, ctorMember)) {
         return ctorMember.rawBits();
     }
     // `prototype` lives in its own slot; every other own property lives in

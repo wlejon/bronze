@@ -134,7 +134,7 @@ ObjectHeader* integrityTableOwner(Rooted<Value>& self, Target target) {
             return props.get().asObject<ObjectHeader>();
         }
         case Target::Function: {
-            rtEnsureFunctionProperties(self);
+            rtPrepareFunctionOwnWrite(self);
             Rooted<Value> props{self.get().asObject<FunctionHeader>()->properties};
             ObjectHeader::toDictionary(rtArena(), props);
             return props.get().asObject<ObjectHeader>();

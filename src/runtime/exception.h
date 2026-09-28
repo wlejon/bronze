@@ -90,6 +90,10 @@ enum class ErrorKind {
 [[noreturn]] Value rtThrowError(ErrorKind kind, const std::string& message);
 [[noreturn]] Value rtThrowTypeError(const std::string& message);
 [[noreturn]] Value rtThrowRangeError(const std::string& message);
+// The heap is out of memory (Heap::allocate): a RangeError "out of memory".
+// If even that error cannot be allocated, `undefined` is thrown instead, so
+// the throw itself never needs the memory that ran out.
+[[noreturn]] Value rtThrowOutOfMemory();
 // 22.2.3.1 step 4: a pattern that does not parse is a SyntaxError, and it is
 // the one such error a running program can produce — a literal's pattern was
 // compiled where it was written, so only a pattern built at run time can reach
