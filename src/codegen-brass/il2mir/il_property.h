@@ -112,7 +112,7 @@ public:
         Value* obj,
         Value* index,
         Value* val,
-        uint32_t ic_slot
+        uint32_t strict
     );
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
