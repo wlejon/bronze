@@ -42,6 +42,114 @@ Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value*
     return result;
 }
 
+// Whether the inline ToInt32 below applies to the Value (or f64) bits `bits`:
+// a Number of magnitude below 2^63, whose truncation fptosi computes exactly
+// and whose low 32 bits are then ToInt32. NaN, the infinities and every
+// non-Number (a NaN-boxed tag, above 0x7FF0... once the sign is masked off)
+// fail it.
+Value* int32_convertible(Builder& b, Value* bits) {
+    Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
+    return b.build_ult(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x43E0000000000000ULL)));
+}
+
+// ToInt32 of the double `f`, where int32_convertible holds.
+Value* inline_to_int32(Builder& b, Value* f) {
+    return b.build_trunc_i32(b.build_fptosi_i64(f));
+}
+
+// A dynamic `& | ^ << >> >>>`: two Numbers whose ToInt32 is inline compute on
+// i32 and box the Number result; anything else (a BigInt, a string, a huge or
+// non-finite Number) takes the helper.
+Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "bit_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    b.build_br_if(b.build_and(int32_convertible(b, op0), int32_convertible(b, op1)), fast, slow);
+
+    b.position_at_end(slow);
+    b.build_br(merge, {b.build_call(helper, Type::i64(), {op0, op1})});
+
+    b.position_at_end(fast);
+    Value* l = inline_to_int32(b, b.build_bitcast_f64_i64(op0));
+    Value* r = inline_to_int32(b, b.build_bitcast_f64_i64(op1));
+    Value* v = nullptr;
+    switch (op) {
+        case BronzeOp::BitAnd: v = b.build_and(l, r); break;
+        case BronzeOp::BitOr: v = b.build_or(l, r); break;
+        case BronzeOp::BitXor: v = b.build_xor(l, r); break;
+        case BronzeOp::Shl: v = b.build_shl(l, b.build_and(r, b.build_iconst_i32(31))); break;
+        case BronzeOp::Shr: v = b.build_ashr(l, b.build_and(r, b.build_iconst_i32(31))); break;
+        default: v = b.build_lshr(l, b.build_and(r, b.build_iconst_i32(31))); break;
+    }
+    // `>>>` is the one whose result is a uint32.
+    Value* f = op == BronzeOp::UShr ? b.build_sitofp_f64_i64(b.build_zext_i64(v)) : b.build_sitofp_f64_i32(v);
+    b.build_br(merge, {b.build_bitcast_i64_f64(f)});
+
+    b.position_at_end(merge);
+    return result;
+}
+
+// A dynamic `< <= > >=`: two Numbers compare inline as doubles (the ordered
+// compare, false at NaN, as IsLessThan answers); anything else takes the
+// helper, which owns ToPrimitive and the string and BigInt orders.
+Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "rel_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i32());
+
+    b.position_at_end(cur);
+    Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
+    b.build_br_if(b.build_and(b.build_ule(op0, max), b.build_ule(op1, max)), fast, slow);
+
+    b.position_at_end(slow);
+    Value* called = b.build_and(b.build_call(helper, Type::i32(), {op0, op1}), b.build_iconst_i32(1));
+    b.build_br(merge, {called});
+
+    b.position_at_end(fast);
+    Value* l = b.build_bitcast_f64_i64(op0);
+    Value* r = b.build_bitcast_f64_i64(op1);
+    Value* v = op == BronzeOp::RelLt ? b.build_slt(l, r)
+             : op == BronzeOp::RelLe ? b.build_sle(l, r)
+             : op == BronzeOp::RelGt ? b.build_sgt(l, r)
+                                     : b.build_sge(l, r);
+    b.build_br(merge, {v});
+
+    b.position_at_end(merge);
+    return result;
+}
+
+// ToInt32 of the Value or double `v` (`is_f64`): inline for a Number
+// int32_convertible accepts, else the helper.
+Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "toi32_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i32());
+
+    b.position_at_end(cur);
+    Value* bits = is_f64 ? b.build_bitcast_i64_f64(v) : v;
+    b.build_br_if(int32_convertible(b, bits), fast, slow);
+
+    b.position_at_end(slow);
+    b.build_br(merge, {b.build_call(is_f64 ? "bronze_to_int32_f64" : "bronze_to_int32", Type::i32(), {v})});
+
+    b.position_at_end(fast);
+    b.build_br(merge, {inline_to_int32(b, is_f64 ? v : b.build_bitcast_f64_i64(v))});
+
+    b.position_at_end(merge);
+    return result;
+}
+
 } // namespace
 
 bool is_ops_il_op(BronzeOp op) {
@@ -262,7 +370,7 @@ bool lower_ops_instruction(
                     inst_ast.op == BronzeOp::Shl    ? "bronze_dynamic_shl" :
                     inst_ast.op == BronzeOp::Shr    ? "bronze_dynamic_shr" :
                                                       "bronze_dynamic_ushr";
-                res_val = b.build_call(helper, Type::i64(), {op0, op1});
+                res_val = lower_dynamic_bitwise(b, inst_ast.op, op0, op1, helper);
                 return true;
             }
             Value* op0 = lowering->ensure_type(get_opd(0), Type::i32(), b);
@@ -318,10 +426,10 @@ bool lower_ops_instruction(
             if (op0->type() == Type::i32()) {
                 res_val = op0;
             } else if (op0->type() == Type::f64()) {
-                res_val = b.build_call("bronze_to_int32_f64", Type::i32(), {op0});
+                res_val = lower_to_int32(b, op0, /*is_f64=*/true);
             } else {
                 Value* d = lowering->ensure_type(op0, Type::i64(), b);
-                res_val = b.build_call("bronze_to_int32", Type::i32(), {d});
+                res_val = lower_to_int32(b, d, /*is_f64=*/false);
             }
             return true;
         }
@@ -354,8 +462,7 @@ bool lower_ops_instruction(
             const char* helper = (inst_ast.op == BronzeOp::RelLt) ? "bronze_rel_lt" :
                                  (inst_ast.op == BronzeOp::RelLe) ? "bronze_rel_le" :
                                  (inst_ast.op == BronzeOp::RelGt) ? "bronze_rel_gt" : "bronze_rel_ge";
-            res_val = b.build_call(helper, Type::i32(), {op0, op1});
-            res_val = b.build_and(res_val, b.build_iconst_i32(1));
+            res_val = lower_dynamic_relational(b, inst_ast.op, op0, op1, helper);
             return true;
         }
 

@@ -78,6 +78,12 @@ brass::runtime::TieringConfig tieringConfigFor(ExecutionTier tier) {
             // its code, and that of every function it reaches, is ready.
             config.enable_background_compile = true;
             config.enable_background_tier1 = true;
+            // A failed guard finishes its call in Tier 0 (a loop in it
+            // interpreted to the end), and a guard that failed twice has
+            // shown its site's feedback was wrong: the code is dropped
+            // then, and the recompile keeps that site a branch
+            // (SpecFeedback::mark_failed), rather than paying three more.
+            config.deopt_threshold = 2;
             break;
     }
     return config;
@@ -289,6 +295,9 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         if (spec) {
             pipeline.set_tier2_front_pass(
                 [spec](brass::Module& copy) { il2mir::apply_tier2_speculation(copy, *spec); });
+            // A guard's resume id is its site number, program-wide.
+            pipeline.set_invalidation_observer(
+                [spec](std::string_view, uint32_t resume_id) { spec->mark_failed(resume_id); });
         }
         brass::runtime::OsrCoordinator& osr = prog->dispatchTable().osr();
         osr.set_threshold(kOsrBackedgeThreshold);

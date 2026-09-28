@@ -72,6 +72,9 @@ public:
     uint32_t* counter(uint32_t site);
     // Whether tier 2 should arm site `site`'s guard.
     bool should_speculate(uint32_t site) const;
+    // Site `site`'s guard failed often enough that tier 2 dropped the code
+    // it was armed in: it is never armed again.
+    void mark_failed(uint32_t site);
     size_t size() const;
 
     // One site as a profile records it.
@@ -83,10 +86,13 @@ public:
     };
     // Every site, in lowering order, with its count now.
     std::vector<SiteRecord> snapshot() const;
+    // One site, with its count now.
+    SiteRecord site(uint32_t site) const;
 
 private:
     mutable std::mutex mutex_;
     std::deque<uint32_t> misses_;
+    std::deque<uint8_t> failed_;
     std::deque<SpecKind> kinds_;
     std::deque<std::string> fns_;
     std::deque<std::string> tags_;

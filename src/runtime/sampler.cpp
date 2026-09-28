@@ -8,6 +8,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -21,6 +22,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #include <timeapi.h>
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
@@ -65,6 +67,11 @@ struct SamplerState {
     // suspended thread could in principle hold).
     std::vector<ModuleRange> modules;
     uint64_t lastModuleRefreshMs = 0;
+    // BRONZE_SAMPLE=all: the process's other threads, re-listed each second.
+    bool allThreads = false;
+    DWORD samplerId = 0;
+    std::vector<HANDLE> others;
+    uint64_t lastThreadRefreshMs = 0;
 };
 
 SamplerState* g_state = nullptr;
@@ -91,6 +98,23 @@ void refreshModuleRanges(SamplerState& st) {
     }
     std::sort(st.modules.begin(), st.modules.end(),
               [](const ModuleRange& a, const ModuleRange& b) { return a.base < b.base; });
+}
+
+void refreshOtherThreads(SamplerState& st) {
+    for (HANDLE h : st.others) ::CloseHandle(h);
+    st.others.clear();
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    const DWORD pid = ::GetCurrentProcessId();
+    THREADENTRY32 te;
+    te.dwSize = sizeof(te);
+    for (BOOL ok = ::Thread32First(snap, &te); ok; ok = ::Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == st.targetId || te.th32ThreadID == st.samplerId) continue;
+        HANDLE h = ::OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
+                                te.th32ThreadID);
+        if (h) st.others.push_back(h);
+    }
+    ::CloseHandle(snap);
 }
 
 bool pcInKnownModule(const SamplerState& st, uint64_t pc) {
@@ -144,6 +168,7 @@ uint32_t walkStack(const SamplerState& st, const CONTEXT& inCtx, uint64_t* pcs) 
 
 DWORD WINAPI samplerLoop(LPVOID param) {
     auto& st = *static_cast<SamplerState*>(param);
+    st.samplerId = ::GetCurrentThreadId();
     ::timeBeginPeriod(1);
     refreshModuleRanges(st);
     const double periodMs = 1000.0 / st.hz;
@@ -166,30 +191,37 @@ DWORD WINAPI samplerLoop(LPVOID param) {
             st.lastModuleRefreshMs = static_cast<uint64_t>(relMs);
             refreshModuleRanges(st);
         }
-        if (st.log.size() + kMaxFrames + 1 > kMaxWords) {
+        if (st.allThreads && relMs - st.lastThreadRefreshMs > 1000.0) {
+            st.lastThreadRefreshMs = static_cast<uint64_t>(relMs);
+            refreshOtherThreads(st);
+        }
+        if (st.log.size() + (kMaxFrames + 1) * (1 + st.others.size()) > kMaxWords) {
             st.truncated = true;
             break;
         }
-        if (::SuspendThread(st.target) == static_cast<DWORD>(-1)) {
-            ::Sleep(1);
-            continue;
-        }
-        CONTEXT ctx;
-        std::memset(&ctx, 0, sizeof(ctx));
-        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-        uint32_t n = 0;
-        if (::GetThreadContext(st.target, &ctx)) {
-            n = walkStack(st, ctx, pcs);
-        }
-        ::ResumeThread(st.target);
-        if (n > 0) {
-            // Append AFTER the resume: vector growth may allocate, and an
-            // allocation while the target holds the CRT heap lock suspended
-            // would deadlock the process.
-            st.log.push_back((static_cast<uint64_t>(relMs) << 8) | n);
-            st.log.insert(st.log.end(), pcs, pcs + n);
-        }
+        auto sampleOne = [&](HANDLE thread) {
+            if (::SuspendThread(thread) == static_cast<DWORD>(-1)) return;
+            CONTEXT ctx;
+            std::memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+            uint32_t n = 0;
+            if (::GetThreadContext(thread, &ctx)) {
+                n = walkStack(st, ctx, pcs);
+            }
+            ::ResumeThread(thread);
+            if (n > 0) {
+                // Append AFTER the resume: vector growth may allocate, and an
+                // allocation while the target holds the CRT heap lock
+                // suspended would deadlock the process.
+                st.log.push_back((static_cast<uint64_t>(relMs) << 8) | n);
+                st.log.insert(st.log.end(), pcs, pcs + n);
+            }
+        };
+        sampleOne(st.target);
+        for (HANDLE h : st.others) sampleOne(h);
     }
+    for (HANDLE h : st.others) ::CloseHandle(h);
+    st.others.clear();
     ::timeEndPeriod(1);
     return 0;
 }
@@ -253,6 +285,13 @@ void dumpSamplerReport() {
         i += 1 + (st->log[i] & 0xFF);
     }
     const uint64_t tailFrom = (tailMs > 0 && lastRel > tailMs) ? lastRel - tailMs : 0;
+    // BRONZE_SAMPLE_HEAD_MS=<ms>: only the samples of the run's first <ms>,
+    // everywhere below (a run's startup apart from what follows it).
+    uint64_t headMs = 0;
+    if (const char* h = std::getenv("BRONZE_SAMPLE_HEAD_MS")) {
+        headMs = static_cast<uint64_t>(std::strtoull(h, nullptr, 10));
+    }
+    auto pastHead = [headMs](uint64_t relMs) { return headMs > 0 && relMs > headMs; };
 
     // PC -> function key, resolved once per unique PC; then per-sample
     // aggregation: leaf = self, each distinct function on the stack = total.
@@ -311,6 +350,7 @@ void dumpSamplerReport() {
             }
             if (!hit) continue;
         }
+        if (pastHead(relMs)) continue;
         const bool inTail = relMs >= tailFrom;
         ++sampleCount;
         if (inTail) ++sampleCountTail;
@@ -341,17 +381,31 @@ void dumpSamplerReport() {
     }
     if (sampleCount == 0) return;
 
-    // BRONZE_SAMPLE_CALLERS=<text>: for each sample whose stack holds a
-    // function whose name contains <text>, the chain of its callers (six
-    // frames up from the innermost match), counted and printed. Self time
-    // says what is hot; this says who asked for it.
-    if (const char* focus = std::getenv("BRONZE_SAMPLE_CALLERS"); focus && focus[0]) {
+    // BRONZE_SAMPLE_CALLERS=<text>[|<text>...]: for each sample whose stack
+    // holds a function whose name contains <text>, the chain of its callers
+    // (six frames up from the innermost match), counted and printed, one
+    // table per text. Self time says what is hot; this says who asked for it.
+    std::vector<std::string> foci;
+    if (const char* list = std::getenv("BRONZE_SAMPLE_CALLERS"); list && list[0]) {
+        std::string_view rest(list);
+        while (!rest.empty()) {
+            const size_t bar = rest.find('|');
+            const std::string_view one = rest.substr(0, bar);
+            if (!one.empty()) foci.emplace_back(one);
+            if (bar == std::string_view::npos) break;
+            rest.remove_prefix(bar + 1);
+        }
+    }
+    for (const std::string& focusText : foci) {
+        const char* focus = focusText.c_str();
         std::unordered_map<std::string, uint64_t> chains;
         uint64_t hits = 0;
         for (size_t i = 0; i < st->log.size();) {
+            const uint64_t relMs = st->log[i] >> 8;
             const uint32_t n = static_cast<uint32_t>(st->log[i] & 0xFF);
             const uint64_t* pcs = &st->log[i + 1];
             i += 1 + n;
+            if (pastHead(relMs)) continue;
             for (uint32_t f = 0; f < n; ++f) {
                 if (rows[funcKeyFor(pcs[f])].name.find(focus) == std::string::npos) continue;
                 std::string chain;
@@ -405,7 +459,13 @@ void dumpSamplerReport() {
                  tailMs ? ", tail window emitted" : "");
     std::fprintf(stderr, "%-56s %-26s %9s %9s %7s\n", "Function", "Module", "Self", "Total",
                  "Self%");
-    for (size_t i = 0; i < sorted.size() && i < 40; ++i) {
+    // BRONZE_SAMPLE_TOP=<n>: rows per table (40 by default).
+    size_t topRows = 40;
+    if (const char* t = std::getenv("BRONZE_SAMPLE_TOP"); t && t[0]) {
+        topRows = static_cast<size_t>(std::strtoul(t, nullptr, 10));
+        if (topRows == 0) topRows = 40;
+    }
+    for (size_t i = 0; i < sorted.size() && i < topRows; ++i) {
         const FuncRow& r = *sorted[i];
         std::fprintf(stderr, "%-56.56s %-26.26s %9llu %9llu %6.2f%%\n", r.name.c_str(),
                      r.module.c_str(), static_cast<unsigned long long>(r.self),
@@ -414,7 +474,7 @@ void dumpSamplerReport() {
     }
     if (!sortedLines.empty()) {
         std::fprintf(stderr, "\n%-56s %-36s %9s %7s\n", "Line", "Function", "Self", "Self%");
-        for (size_t i = 0; i < sortedLines.size() && i < 40; ++i) {
+        for (size_t i = 0; i < sortedLines.size() && i < topRows; ++i) {
             const LineRow& r = *sortedLines[i];
             // The file's basename: the directory is the same for every row.
             const char* base = r.file.c_str();
@@ -494,9 +554,10 @@ void samplerNoteJsThread() noexcept {
     if (noted) return;
     noted = true;
     const char* env = std::getenv("BRONZE_SAMPLE");
-    if (env == nullptr || std::strcmp(env, "1") != 0) return;
+    if (env == nullptr || (std::strcmp(env, "1") != 0 && std::strcmp(env, "all") != 0)) return;
 
     auto* st = new SamplerState();
+    st->allThreads = std::strcmp(env, "all") == 0;
     if (const char* hz = std::getenv("BRONZE_SAMPLE_HZ")) {
         const long v = std::strtol(hz, nullptr, 10);
         if (v >= 50 && v <= 4000) st->hz = static_cast<uint32_t>(v);

@@ -9,6 +9,8 @@
 #include <brass/runtime/code_installer.hpp>
 #include <brass/runtime/multi_tier_pipeline.hpp>
 #include <brass/runtime/tiering.hpp>
+#include <chrono>
+#include <thread>
 
 using namespace bronze;
 
@@ -159,12 +161,21 @@ TEST_CASE("an auto-tiered program's hot function reaches optimized code with no 
     // queue it for the background compiler, which installs its code.
     const auto a = brass::RuntimeValue::from_f64(6.0);
     const auto b = brass::RuntimeValue::from_f64(7.0);
-    for (int i = 0; i < 2000; ++i) {
-        CHECK(prog->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
-    }
-    prog->dispatchTable().pipeline().background_compiler().wait_idle();
-    brass::runtime::FunctionHandle* h = prog->dispatchTable().find("pp_work");
-    REQUIRE(h != nullptr);
+    // The baseline compile runs on the shared pool too, so a loaded machine
+    // can still be in Tier 0 when a round of calls ends: keep calling until
+    // the tier-2 compile has been queued and landed (bounded).
+    brass::runtime::FunctionHandle* h = nullptr;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    do {
+        for (int i = 0; i < 2000; ++i) {
+            CHECK(prog->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
+        }
+        prog->dispatchTable().pipeline().background_compiler().wait_idle();
+        h = prog->dispatchTable().find("pp_work");
+        REQUIRE(h != nullptr);
+        if (h->tier() == brass::runtime::TierLevel::Tier2_Optimized) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    } while (std::chrono::steady_clock::now() < deadline);
     CHECK(h->tier() == brass::runtime::TierLevel::Tier2_Optimized);
     CHECK(prog->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
 }

@@ -18,6 +18,10 @@
 //
 // Env:
 //   BRONZE_SAMPLE=1          enable (Windows only; elsewhere a no-op)
+//   BRONZE_SAMPLE=all        also sample every other thread of the process
+//                            (compile workers, the host's), the same log;
+//                            BRONZE_SAMPLE_WITHIN picks one kind's stacks
+//   BRONZE_SAMPLE_HEAD_MS=N  only the samples of the run's first N ms
 //   BRONZE_SAMPLE_HZ=N       sample rate, default 1000, clamped to [50, 4000]
 //   BRONZE_SAMPLE_OUT=path   JSON report path, default "bronze_sample.json"
 //   BRONZE_SAMPLE_TAIL_MS=N  also emit a table restricted to the last N ms of

@@ -30,6 +30,7 @@ constexpr uint32_t kPolyPropertyColdMisses = 2 * BRONZE_ABI_IC_WAYS;
 uint32_t SpecFeedback::add_site(SpecKind kind, std::string_view fn, std::string_view tag) {
     std::lock_guard<std::mutex> lock(mutex_);
     misses_.push_back(0);
+    failed_.push_back(0);
     kinds_.push_back(kind);
     fns_.emplace_back(fn);
     tags_.emplace_back(tag);
@@ -47,6 +48,13 @@ std::vector<SpecFeedback::SiteRecord> SpecFeedback::snapshot() const {
     return out;
 }
 
+SpecFeedback::SiteRecord SpecFeedback::site(uint32_t site) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (site >= misses_.size()) return {SpecKind::Arith, 0, {}, {}};
+    const uint32_t misses = *static_cast<const volatile uint32_t*>(&misses_[site]);
+    return {kinds_[site], misses, fns_[site], tags_[site]};
+}
+
 uint32_t* SpecFeedback::counter(uint32_t site) {
     std::lock_guard<std::mutex> lock(mutex_);
     return site < misses_.size() ? &misses_[site] : nullptr;
@@ -55,6 +63,10 @@ uint32_t* SpecFeedback::counter(uint32_t site) {
 bool SpecFeedback::should_speculate(uint32_t site) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (site >= misses_.size()) return false;
+    // A guard whose failures already cost its function's tier-2 code stays
+    // a branch: its counts before that did not predict it, and arming it
+    // again would repeat the deopts and the recompile.
+    if (failed_[site]) return false;
     // Written by lowered code on any thread without a lock: a stale count
     // only makes the guess older, and a wrong guess costs a deopt.
     const uint32_t misses = *static_cast<const volatile uint32_t*>(&misses_[site]);
@@ -88,6 +100,11 @@ bool SpecFeedback::should_speculate(uint32_t site) const {
         case SpecKind::PolyProperty: return misses != 0 && misses <= kPolyPropertyColdMisses;
     }
     return false;
+}
+
+void SpecFeedback::mark_failed(uint32_t site) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (site < failed_.size()) failed_[site] = 1;
 }
 
 size_t SpecFeedback::size() const {
@@ -194,9 +211,11 @@ void SpecSiteEmitter::finish_function(Function& fn) {
 void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {
     // BRONZE_SPEC_TRACE=1: one line per function copy with guards.
     // BRONZE_SPEC_NO_ARM=1: arm nothing (the guards-vs-branches A/B).
-    static const bool trace = [] {
+    // BRONZE_SPEC_TRACE=2: also one line per armed site (its id is the
+    // guard= a brass tier log names on a deopt).
+    static const int trace = [] {
         const char* v = std::getenv("BRONZE_SPEC_TRACE");
-        return v && v[0] == '1';
+        return v && (v[0] == '1' || v[0] == '2') ? v[0] - '0' : 0;
     }();
     static const bool no_arm = [] {
         const char* v = std::getenv("BRONZE_SPEC_NO_ARM");
@@ -228,6 +247,11 @@ void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {
                 guard->set_operand(0, br->operand(0));
                 br->set_operand(0, placeholder);
                 ++armed;
+                if (trace == 2) {
+                    const SpecFeedback::SiteRecord r = feedback.site(site);
+                    std::fprintf(stderr, "spec-site %u kind=%u misses=%u fn=%s tag=%s\n", site,
+                                 static_cast<unsigned>(r.kind), r.misses, r.fn.c_str(), r.tag.c_str());
+                }
             } else {
                 bb->remove_instruction(guard);
             }

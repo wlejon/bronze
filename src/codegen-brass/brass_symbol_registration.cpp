@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <type_traits>
 #include <vector>
 #include <string>
@@ -191,12 +192,24 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
     const brass::BytecodeFunction* bfn = interp->find_bytecode_function_by_pointer(codePtr);
     if (!mirFn && !bfn) return false;
 
-    std::vector<brass::RuntimeValue> wrapArgs = {
-        brass::RuntimeValue::from_i64(static_cast<int64_t>(env_bits)),
-        brass::RuntimeValue::from_i64(static_cast<int64_t>(this_bits)),
-        brass::RuntimeValue::from_i32(static_cast<int32_t>(argc)),
-        brass::RuntimeValue::from_ptr(reinterpret_cast<uintptr_t>(argv))
-    };
+    // One argument vector per nesting depth, reused: every JS call the
+    // interpreter takes from native code comes through here, and a fresh
+    // vector per call was a heap allocation each. A deque, so growing it
+    // leaves the outer calls' vectors where they are.
+    thread_local std::deque<std::vector<brass::RuntimeValue>> argPool;
+    thread_local size_t depth = 0;
+    if (argPool.size() <= depth) argPool.resize(depth + 1);
+    std::vector<brass::RuntimeValue>& wrapArgs = argPool[depth];
+    wrapArgs.clear();
+    wrapArgs.push_back(brass::RuntimeValue::from_i64(static_cast<int64_t>(env_bits)));
+    wrapArgs.push_back(brass::RuntimeValue::from_i64(static_cast<int64_t>(this_bits)));
+    wrapArgs.push_back(brass::RuntimeValue::from_i32(static_cast<int32_t>(argc)));
+    wrapArgs.push_back(brass::RuntimeValue::from_ptr(reinterpret_cast<uintptr_t>(argv)));
+    struct DepthScope {
+        size_t& d;
+        explicit DepthScope(size_t& x) : d(x) { ++d; }
+        ~DepthScope() { --d; }
+    } scope(depth);
     brass::RuntimeValue res = bfn ? interp->run(*bfn, wrapArgs)
                                   : interp->run(*mirFn, wrapArgs);
     *out_result = res.raw_bits();
