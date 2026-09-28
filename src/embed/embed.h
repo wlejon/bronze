@@ -126,8 +126,8 @@
 // bronze_abi.h documents, and drive it through the C ABI.
 //
 // BRONZE_EMBED_API is what makes (2) reachable across a shared runtime at all,
-// and this header is THE ONE PLACE in bronze that may carry such an
-// annotation. The C ABI's export list is generated from the registry
+// and this header (with its companions embed_profiler.h and embed_clone.h) is THE ONE PLACE in
+// bronze that may carry such an annotation. The C ABI's export list is generated from the registry
 // (cmake/bronze_abi_exports.cmake) precisely so no runtime source ever grows
 // one; the exception is here because this boundary has no registry to generate
 // from — the declarations below ARE the list.

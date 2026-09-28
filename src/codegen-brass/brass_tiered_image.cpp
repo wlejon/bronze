@@ -3,6 +3,7 @@
 #include "codegen-brass/brass_backend_sections.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "embed/embed.h"
+#include "embed/embed_profiler.h"
 #include "support/diagnostics.h"
 
 #include <brass/mir/function.hpp>
@@ -50,6 +51,16 @@ size_t walkInterpretedFrames(runtime::InterpretedFrame* out, size_t capacity) {
         return true;
     });
     return n;
+}
+
+// runtime/profiler.h's describer: a MIR name to its JS function, looked up in
+// every loaded program (a name is unique within one; the first match wins).
+const bronze_fn_desc* describeMirName(std::string_view mirName) {
+    std::lock_guard<std::mutex> lock(registryMutex());
+    for (const auto& [module, image] : registry()) {
+        if (const bronze_fn_desc* desc = image->descriptorOf(mirName)) return desc;
+    }
+    return nullptr;
 }
 
 }  // namespace
@@ -123,6 +134,7 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
         registry()[&module] = raw;
     }
     embed::setInterpretedFrameWalker(&walkInterpretedFrames);
+    embed::setMirNameDescriber(&describeMirName);
     return self;
 }
 

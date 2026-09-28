@@ -16,6 +16,7 @@
 
 #include <brass/debug/jit_code_registry.hpp>
 
+#include "runtime/stack_sampling.h"
 #include "runtime/stack_trace.h"
 #include "runtime/symbolize.h"
 
@@ -44,11 +45,6 @@ namespace {
 
 constexpr uint32_t kMaxFrames = 64;
 
-struct ModuleRange {
-    uint64_t base;
-    uint64_t end;
-};
-
 struct SamplerState {
     HANDLE target = nullptr;          // duplicated handle to the JS thread
     DWORD targetId = 0;
@@ -61,11 +57,8 @@ struct SamplerState {
     // Appended by the sampler thread only, read after join; no lock needed.
     std::vector<uint64_t> log;
     bool truncated = false;
-    // Loaded-module ranges, refreshed off the hot path. The walk consults
-    // this before RtlLookupFunctionEntry so a garbage PC can never send the
-    // lookup into ntdll's dynamic-function-table path (which takes a lock the
-    // suspended thread could in principle hold).
-    std::vector<ModuleRange> modules;
+    // Loaded-module ranges, refreshed off the hot path (stack_sampling.h).
+    sampling::ModuleRanges modules;
     uint64_t lastModuleRefreshMs = 0;
     // BRONZE_SAMPLE=all: the process's other threads, re-listed each second.
     bool allThreads = false;
@@ -82,23 +75,7 @@ uint64_t qpcNow() {
     return static_cast<uint64_t>(li.QuadPart);
 }
 
-void refreshModuleRanges(SamplerState& st) {
-    HMODULE mods[512];
-    DWORD needed = 0;
-    if (!::EnumProcessModules(::GetCurrentProcess(), mods, sizeof(mods), &needed)) return;
-    const size_t n = std::min<size_t>(needed / sizeof(HMODULE), 512);
-    st.modules.clear();
-    st.modules.reserve(n);
-    for (size_t i = 0; i < n; ++i) {
-        MODULEINFO mi;
-        if (::GetModuleInformation(::GetCurrentProcess(), mods[i], &mi, sizeof(mi))) {
-            const uint64_t base = reinterpret_cast<uint64_t>(mi.lpBaseOfDll);
-            st.modules.push_back({base, base + mi.SizeOfImage});
-        }
-    }
-    std::sort(st.modules.begin(), st.modules.end(),
-              [](const ModuleRange& a, const ModuleRange& b) { return a.base < b.base; });
-}
+void refreshModuleRanges(SamplerState& st) { st.modules.refresh(); }
 
 void refreshOtherThreads(SamplerState& st) {
     for (HANDLE h : st.others) ::CloseHandle(h);
@@ -115,55 +92,6 @@ void refreshOtherThreads(SamplerState& st) {
         if (h) st.others.push_back(h);
     }
     ::CloseHandle(snap);
-}
-
-bool pcInKnownModule(const SamplerState& st, uint64_t pc) {
-    auto it = std::upper_bound(st.modules.begin(), st.modules.end(), pc,
-                               [](uint64_t v, const ModuleRange& m) { return v < m.base; });
-    if (it == st.modules.begin()) return false;
-    --it;
-    return pc >= it->base && pc < it->end;
-}
-
-// Walks the suspended target's stack into `pcs`, returning the frame count.
-// Reads only the target's own stack memory and the modules' static unwind
-// tables; allocates nothing. A misstep in the unwind (a frame the data does
-// not describe, a torn prologue) ends the walk rather than faulting: every
-// dereference is bounds-checked against the thread's stack limits.
-uint32_t walkStack(const SamplerState& st, const CONTEXT& inCtx, uint64_t* pcs) {
-    CONTEXT ctx = inCtx;
-    uint32_t n = 0;
-    // The stack bounds, so the leaf-frame return-address read below can never
-    // touch memory outside the target's stack.
-    uint64_t stackLo = 0, stackHi = 0;
-    {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (::VirtualQuery(reinterpret_cast<void*>(static_cast<uintptr_t>(ctx.Rsp)), &mbi,
-                           sizeof(mbi)) == sizeof(mbi) &&
-            mbi.State == MEM_COMMIT) {
-            stackLo = reinterpret_cast<uint64_t>(mbi.BaseAddress);
-            stackHi = stackLo + mbi.RegionSize;
-        }
-    }
-    while (n < kMaxFrames && ctx.Rip != 0) {
-        pcs[n++] = ctx.Rip;
-        if (!pcInKnownModule(st, ctx.Rip)) break;
-        DWORD64 imageBase = 0;
-        PRUNTIME_FUNCTION rf = ::RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
-        if (rf == nullptr) {
-            // A true leaf function: the return address is at RSP.
-            if (ctx.Rsp < stackLo || ctx.Rsp + 8 > stackHi) break;
-            ctx.Rip = *reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(ctx.Rsp));
-            ctx.Rsp += 8;
-            continue;
-        }
-        void* handlerData = nullptr;
-        DWORD64 establisher = 0;
-        ::RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, rf, &ctx, &handlerData,
-                           &establisher, nullptr);
-        if (ctx.Rsp != 0 && stackLo != 0 && (ctx.Rsp < stackLo || ctx.Rsp > stackHi)) break;
-    }
-    return n;
 }
 
 DWORD WINAPI samplerLoop(LPVOID param) {
@@ -206,7 +134,7 @@ DWORD WINAPI samplerLoop(LPVOID param) {
             ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
             uint32_t n = 0;
             if (::GetThreadContext(thread, &ctx)) {
-                n = walkStack(st, ctx, pcs);
+                n = sampling::walkStack(st.modules, &ctx, pcs, nullptr, kMaxFrames);
             }
             ::ResumeThread(thread);
             if (n > 0) {

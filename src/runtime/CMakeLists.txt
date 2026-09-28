@@ -17,6 +17,9 @@ bronze_add_module(runtime
         ic_log.cpp
         symbolize.cpp
         sampler.cpp
+        stack_sampling.cpp
+        profiler.cpp
+        profiler_report.cpp
         shape_census.cpp
         slot_repr.cpp
         pin_census.cpp
