@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <fstream>
@@ -12,7 +13,10 @@
 #include <unordered_set>
 #include <vector>
 
+#include <brass/runtime/bytecode_warmer.hpp>
+#include <brass/runtime/code_installer.hpp>
 #include <brass/runtime/compile_pool.hpp>
+#include <brass/runtime/multi_tier_pipeline.hpp>
 
 #include "ast/ast.h"
 #include "il/print.h"
@@ -99,6 +103,77 @@ void stopRetainedBackgroundCompiles() {
     if (brass::runtime::process_exiting()) return;
     stopBackgroundCompiles();
     brass::runtime::CompilePool::shared().shutdown();
+}
+
+// Warm lists (code_cache.h, brass/runtime/bytecode_warmer.hpp): a program
+// compiled with the code cache records the order its functions first ran in
+// (for kWarmWindow after the first), and the list is stored beside its entry
+// when the host stops its compiles or the process exits. The next run that
+// hits the entry hands the list to the program's warmer, which builds those
+// functions' Tier-0 bytecode on threads of its own while the program starts.
+// BRASS_BYTECODE_WARM=0 turns both off (a BRONZE_* switch would be part of
+// the cache key); BRASS_BYTECODE_WARM_THREADS sets the warmer's threads.
+constexpr std::chrono::milliseconds kWarmWindow{3000};
+constexpr size_t kWarmMaxNames = 20000;
+
+struct WarmRecord {
+    std::weak_ptr<BrassTieredProgram> program;
+    const BrassTieredProgram* raw = nullptr;
+    std::string dir;
+    cache::Digest key;
+};
+static std::mutex g_warmMutex;
+static std::vector<WarmRecord>& warmRecords() {
+    static auto* list = new std::vector<WarmRecord>();
+    return *list;
+}
+
+bool warmEnabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("BRASS_BYTECODE_WARM");
+        return !(v && v[0] == '0');
+    }();
+    return on;
+}
+
+unsigned warmThreads() {
+    const char* v = std::getenv("BRASS_BYTECODE_WARM_THREADS");
+    const int n = v ? std::atoi(v) : 0;
+    return n > 0 ? static_cast<unsigned>(n) : 2u;
+}
+
+void armWarmList(const std::shared_ptr<BrassTieredProgram>& program, const std::string& dir,
+                 const cache::Digest& key, bool hit) {
+    if (!program || dir.empty() || program->tier() != ExecutionTier::Auto || !program->mirModule() ||
+        !warmEnabled()) {
+        return;
+    }
+    {
+        // A program shared across threads comes back from each compile.
+        std::lock_guard<std::mutex> lock(g_warmMutex);
+        for (const WarmRecord& r : warmRecords()) {
+            if (r.raw == program.get()) return;
+        }
+        warmRecords().push_back({program, program.get(), dir, key});
+    }
+    brass::runtime::BytecodeWarmer& warmer = program->dispatchTable().pipeline().bytecode_warmer();
+    if (hit) {
+        std::vector<std::string> names = cache::loadWarmList(dir, key);
+        if (!names.empty()) warmer.warm(*program->mirModule(), std::move(names), warmThreads());
+    }
+    warmer.start_recording(kWarmWindow, kWarmMaxNames);
+}
+
+void saveWarmLists() {
+    std::lock_guard<std::mutex> lock(g_warmMutex);
+    for (const WarmRecord& r : warmRecords()) {
+        std::shared_ptr<BrassTieredProgram> program = r.program.lock();
+        if (!program) continue;
+        brass::runtime::BytecodeWarmer& warmer = program->dispatchTable().pipeline().bytecode_warmer();
+        warmer.stop();
+        cache::storeWarmList(r.dir, r.key, warmer.first_use_log());
+    }
+    warmRecords().clear();
 }
 
 void transformEvalAst(ast::Module& astModule, const std::string& resName) {
@@ -568,6 +643,7 @@ void retainProgram(std::shared_ptr<BrassTieredProgram> program) {
 }
 
 void stopBackgroundCompiles() {
+    saveWarmLists();
     std::lock_guard<std::mutex> lock(g_programsMutex);
     for (auto& program : retainedPrograms()) program->stopBackgroundCompilation();
 }
@@ -629,6 +705,7 @@ std::unique_ptr<CompiledScript> compileEntry(std::string_view entryText, bool en
             res->resName = hit.resName;
             res->program = compileUnit(nullptr, std::move(hit.module), options, in, res->resName, diags,
                                        hit.sources, *res, nullptr);
+            armWarmList(res->program, options.codeCacheDir, *key, /*hit=*/true);
             finishScript(*res, diags, hit.sources);
             reportProgress(options, "done", 1.0);
             return res;
@@ -646,6 +723,7 @@ std::unique_ptr<CompiledScript> compileEntry(std::string_view entryText, bool en
         const CacheStore store{&options.codeCacheDir, options.codeCacheMaxBytes, key ? *key : cache::Digest{}, &deps};
         res->program = compileUnit(std::move(astModule), nullptr, options, in, res->resName, diags, sources, *res,
                                    key ? &store : nullptr);
+        if (key) armWarmList(res->program, options.codeCacheDir, *key, /*hit=*/false);
     }
     finishScript(*res, diags, sources);
     reportProgress(options, "done", 1.0);

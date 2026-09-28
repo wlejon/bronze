@@ -85,4 +85,12 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
 void store(const std::string& dir, uint64_t maxBytes, const Digest& key, const std::string& resName,
            const SourceSet& sources, const modules::DependencyLog& deps, const il::Module& module);
 
+// The entry's warm list (`<key>.bzw`, text): the functions a run of the
+// program first called, in order, which the next run builds Tier-0 bytecode
+// for ahead of its calls (brass::runtime::BytecodeWarmer). Stored only
+// beside an entry that exists, and trimmed with it; a missing or foreign
+// file loads as an empty list.
+std::vector<std::string> loadWarmList(const std::string& dir, const Digest& key);
+void storeWarmList(const std::string& dir, const Digest& key, const std::vector<std::string>& names);
+
 }  // namespace bronze::eval::cache

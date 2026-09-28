@@ -117,6 +117,7 @@ constexpr uint32_t kCacheLayout = 1;
 constexpr uint32_t kVersion = (kCacheLayout << 16) | il::kFormatVersion;
 constexpr size_t kHeaderSize = 48;
 constexpr const char* kExt = ".bzc";
+constexpr const char* kWarmExt = ".bzw";
 constexpr uint64_t kFileByDigest = 0;
 constexpr uint64_t kFileEmbedded = 1;
 
@@ -283,6 +284,12 @@ void trim(const std::string& dir, uint64_t maxBytes) {
         if (name.find(".tmp") != std::string::npos) {
             // A writer that died between write and rename.
             if (now - mtime > std::chrono::minutes(10)) std::filesystem::remove(p, e2);
+            continue;
+        }
+        if (p.extension() == kWarmExt) {
+            // A warm list outlives nothing: its entry trimmed, it goes too.
+            std::filesystem::path owner = p;
+            if (!std::filesystem::exists(owner.replace_extension(kExt), e2)) std::filesystem::remove(p, e2);
             continue;
         }
         if (p.extension() != kExt) continue;
@@ -541,6 +548,56 @@ void store(const std::string& dir, uint64_t maxBytes, const Digest& key, const s
         return;
     }
     trim(dir, maxBytes);
+}
+
+namespace {
+
+constexpr std::string_view kWarmHeader = "bzw1";
+
+std::filesystem::path warmFile(const std::string& dir, const Digest& key) {
+    return std::filesystem::path(dir) / (key.hex() + kWarmExt);
+}
+
+}  // namespace
+
+std::vector<std::string> loadWarmList(const std::string& dir, const Digest& key) {
+    std::vector<std::string> names;
+    std::ifstream in(warmFile(dir, key), std::ios::binary);
+    if (!in) return names;
+    std::string line;
+    if (!std::getline(in, line) || line != kWarmHeader) return names;
+    while (std::getline(in, line)) {
+        if (!line.empty()) names.push_back(std::move(line));
+    }
+    return names;
+}
+
+void storeWarmList(const std::string& dir, const Digest& key, const std::vector<std::string>& names) {
+    if (names.empty() || !std::filesystem::exists(entryFile(dir, key))) return;
+    std::string text(kWarmHeader);
+    text += '\n';
+    for (const std::string& n : names) {
+        if (n.find('\n') != std::string::npos) continue;
+        text += n;
+        text += '\n';
+    }
+    static std::atomic<uint64_t> counter{0};
+    const std::filesystem::path tmp =
+        std::filesystem::path(dir) / (key.hex() + ".tmpw" + std::to_string(processId()) + "_" +
+                                      std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
+    std::error_code ec;
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return;
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        out.close();
+        if (!out) {
+            std::filesystem::remove(tmp, ec);
+            return;
+        }
+    }
+    std::filesystem::rename(tmp, warmFile(dir, key), ec);
+    if (ec) std::filesystem::remove(tmp, ec);
 }
 
 }  // namespace bronze::eval::cache
