@@ -237,8 +237,10 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
             }
 
             if (proto.get().isObject()) {
-                if (ObjectHeader* protoObj = proto.get().asObject<ObjectHeader>(); protoObj->shape) {
-                    protoObj->shape->used_as_prototype = true;
+                auto* protoHdr = proto.get().asObject<HeapObjectHeader>();
+                if (HeapKind::carriesShape(protoHdr->flags)) {
+                    Shape::markObjectAsPrototype(rtArena(),
+                                                 reinterpret_cast<ObjectHeader*>(protoHdr));
                 }
             }
 

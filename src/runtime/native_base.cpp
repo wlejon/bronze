@@ -53,8 +53,9 @@ bool isFunctionObject(Value v) {
 void attachSubclassPrototype(Rooted<Value>& self, Rooted<Value>& proto) {
     if (!proto.get().isObject()) return;
     if (rtIsArrayPrototypeObject(proto.get())) return;
-    if (ObjectHeader* protoObj = proto.get().asObject<ObjectHeader>(); protoObj->shape) {
-        protoObj->shape->used_as_prototype = true;
+    if (auto* protoHdr = proto.get().asObject<HeapObjectHeader>();
+        HeapKind::carriesShape(protoHdr->flags)) {
+        Shape::markObjectAsPrototype(rtArena(), reinterpret_cast<ObjectHeader*>(protoHdr));
     }
     Shape* boxShape = rtRootShapeForPrototype(proto.get());
     ObjectHeader* box = ObjectHeader::create(rtHeap(), rtArena(), boxShape);

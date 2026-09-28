@@ -42,8 +42,12 @@ void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD] = icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD];
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD] = arityWord;
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD] = icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD];
+    icEntry[BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD] = icEntry[BRONZE_ABI_METHOD_IC_EPOCH_WORD];
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] = w0;
 }
+
+static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE,
+              "a method site's words must fit the site");
 
 // The EXOTIC-receiver latch: an Array, a typed-array view, or a
 // global-constructor function receiver, whose method is a native builtin from
@@ -122,6 +126,9 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
     const uint16_t kind = objHdr->flags;
     uint64_t auxOffset = 0;
     uint64_t guardBits = 0;
+    // Only the typed-array view's form is epoch-guarded (its method lives on a
+    // prototype a program may patch); the other two answer from C tables.
+    uint64_t epochWord = 0;
     if (kind == HeapKind::Array) {
         if (!probe.isArrayMethod()) return false;
         auxOffset = offsetof(ArrayHeader, properties);
@@ -148,6 +155,7 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         const auto* view = reinterpret_cast<const TypedArrayHeader*>(objHdr);
         if (probe.cached_shape != view->object.shape) return false;
         icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(view->object.shape);
+        epochWord = probe.cached_epoch;
         auxOffset = offsetof(TypedArrayHeader, object.shape);
         guardBits = BRONZE_ABI_METHOD_IC_CODE_GUARD_BIT;
     } else if (kind == HeapKind::Function) {
@@ -179,6 +187,7 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
     icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
     icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
     icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
+    icEntry[BRONZE_ABI_METHOD_IC_EPOCH_WORD] = epochWord;
     icEntry[0] = newWord0;
     return true;
 }
@@ -267,11 +276,12 @@ bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value call
 //               can hold different functions there (host functions,
 //               per-instance closures), so the callee is re-derived from the
 //               receiver at every hit and nothing about it is cached.
-//   depth >= 1 -> DIRECT form, env included when the callee carries one: the
-//               receiver's shape determines the holder chain, so the function
-//               object — and therefore its environment record, written once
-//               at creation — is as shape-stable as the code pointer the
-//               original mechanism already cached.
+//   depth >= 1 -> DIRECT form, env included when the callee carries one,
+//               guarded by shape AND the prototype-mutation epoch: the shape
+//               fixes the holder chain, and the epoch moves on every change to
+//               what that chain answers (a patched or shadowed method), so
+//               with both current the function object — and its environment
+//               record, written once at creation — is the one latched.
 //   non-Plain receiver -> EXOTIC form, latchExoticMethodIc above; and, for a
 //               FUNCTION it declines, the SLOT form keyed on the receiver's
 //               statics BOX rather than on the receiver, which has no shape
@@ -319,45 +329,43 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
 
     const uint64_t shapeWord = reinterpret_cast<uint64_t>(obj->shape);
 
-    // The shape re-check against the PROBE guards a read that ran an accessor
-    // or otherwise moved the world: a fill that describes some earlier shape
-    // of this receiver must not be latched against its current one.
-    if (rtEnvMethodIcEnabled() && probe.isRealShape() && !probe.isAccessor() &&
-        !probe.isAbsent() && probe.cached_shape == obj->shape) {
-        if (probe.realDepth() == 0) {
-            displaceMethodWay0(icEntry, shapeWord);
-            icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
-            icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] =
-                (static_cast<uint64_t>(probe.cached_slot) + 1)
-                << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
-            icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
-            icEntry[0] = shapeWord;
-            return;
-        }
-        if (fn->needsEnv() && !fn->env_record.isUndefined() &&
-            fn->env_record.rawBits() != fnVal.rawBits()) {
-            displaceMethodWay0(icEntry, shapeWord);
-            icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
-            icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
-            icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = fn->env_record.rawBits();
-            icEntry[0] = shapeWord;
-            return;
-        }
-        // An env-free callee on the chain falls through to the original rule
-        // below, which it satisfies — the split exists only for the comment.
+    // Only a probe that names THIS receiver's shape as a data slot says where
+    // the callee lives, and without that nothing about it may be cached: a
+    // callee reached through an accessor, off a dictionary, or through a link
+    // the fill refused could be a different function on the next call with no
+    // shape or epoch moving. The shape re-check also guards a read that moved
+    // the world: a fill describing an earlier shape of this receiver must not
+    // be latched against its current one.
+    if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent() ||
+        probe.cached_shape != obj->shape) {
+        return;
     }
-
-    // The original rule: an env-free callee (or one whose env is itself — the
-    // self-reference bronze_create_function writes for a capture-free
-    // function, which its code never reads) may be called with undefined.
-    if (!fn->needsEnv() || fn->env_record.isUndefined() ||
-        fn->env_record.rawBits() == fnVal.rawBits()) {
+    if (probe.realDepth() == 0) {
+        if (!rtEnvMethodIcEnabled()) return;
         displaceMethodWay0(icEntry, shapeWord);
-        icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
-        icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
+        icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
+        icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] =
+            (static_cast<uint64_t>(probe.cached_slot) + 1) << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
         icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
+        icEntry[BRONZE_ABI_METHOD_IC_EPOCH_WORD] = 0;
         icEntry[0] = shapeWord;
+        return;
     }
+    // On the chain: the DIRECT form, valid while the epoch the probe was filled
+    // at is current. An env-free callee (or one whose env is itself — the
+    // self-reference bronze_create_function writes for a capture-free
+    // function, which its code never reads) is called with undefined; one
+    // carrying an env caches it, which BRONZE_NO_ENV_METHOD_IC turns off.
+    const bool envFree = !fn->needsEnv() || fn->env_record.isUndefined() ||
+                         fn->env_record.rawBits() == fnVal.rawBits();
+    if (!envFree && !rtEnvMethodIcEnabled()) return;
+    displaceMethodWay0(icEntry, shapeWord);
+    icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
+    icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
+    icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] =
+        envFree ? BRONZE_ABI_UNDEFINED_BITS : fn->env_record.rawBits();
+    icEntry[BRONZE_ABI_METHOD_IC_EPOCH_WORD] = probe.cached_epoch;
+    icEntry[0] = shapeWord;
 }
 
 // The site's latched entry, read exactly as the METHOD-CALL site contract
@@ -382,7 +390,13 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
     if (w0 == 0) return false;
     const Value thisVal(thisBits);
 
-    auto dispatchDirect = [&](const uint64_t* way) -> bool {
+    // `epochWord` is the word holding the entry's latch epoch, or -1 for a form
+    // answered from an immutable C table and never epoch-guarded.
+    auto dispatchDirect = [&](const uint64_t* way, int epochWord) -> bool {
+        if (epochWord >= 0 &&
+            icEntry[epochWord] != static_cast<uint64_t>(protoMutationEpoch())) {
+            return false;
+        }
         const uint64_t arityWord = way[BRONZE_ABI_METHOD_IC_ARITY_WORD];
         if ((arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0) return false;
         const auto code = reinterpret_cast<bronze_fn_code>(way[BRONZE_ABI_METHOD_IC_CODE_WORD]);
@@ -437,7 +451,9 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
         } else if (Value(aux).isObject()) {
             return false;
         }
-        return dispatchDirect(icEntry);
+        return dispatchDirect(icEntry, kind == TypedArrayHeader::kFlags
+                                           ? BRONZE_ABI_METHOD_IC_EPOCH_WORD
+                                           : -1);
     }
 
     if (hdr->flags == HeapKind::Plain) {
@@ -445,12 +461,13 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
         const uint64_t shapeWord = reinterpret_cast<uint64_t>(obj->shape);
         if (shapeWord == w0) {
             if (slotPlusOne != 0) return dispatchSlot(obj, slotPlusOne);
-            return dispatchDirect(icEntry);
+            return dispatchDirect(icEntry, BRONZE_ABI_METHOD_IC_EPOCH_WORD);
         }
         // WAY 1 holds a plain-receiver DIRECT entry and nothing else.
         if (rtPolyMethodIcEnabled() &&
             icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] == shapeWord) {
-            return dispatchDirect(icEntry + BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD);
+            return dispatchDirect(icEntry + BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD,
+                                  BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD);
         }
         return false;
     }

@@ -1,6 +1,7 @@
 #include "il_lowering_calls.h"
 #include "il_lowering.h"
 #include "il_abi.h"
+#include <brass/mir/module.hpp>
 #include <algorithm>
 #include <cctype>
 #include <string>
@@ -155,14 +156,25 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     Value* shape = nullptr;
     pl.receiver_shape(b, recv, plain, ptr, shape);
     Value* target = b.build_func_addr("__wrapper_" + callee);
+    // A DIRECT entry answers only while the prototype-mutation epoch it was
+    // latched at is current: `C.prototype.m = f` moves no shape, only the
+    // epoch (bronze_abi.h, the METHOD-CALL site contract).
+    Module* mod = b.current_block()->parent()->parent();
+    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+    Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
     Value* way0 = b.build_and(
         b.build_and(b.build_eq(shape, b.build_load(Type::i64(), site, 0)),
                     b.build_ult(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord),
                                 b.build_iconst_i64(kDirectFormLimit))),
-        b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord), target));
+        b.build_and(
+            b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord), target),
+            b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord), epoch)));
     Value* way1 = b.build_and(
-        b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord)),
-        b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord), target));
+        b.build_and(
+            b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord)),
+            b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord), target)),
+        b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord), epoch));
     Value* hit = b.build_and(plain, b.build_or(way0, way1));
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
     Value* argv = lowering->stage_argv(b, args);

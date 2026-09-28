@@ -134,9 +134,9 @@ void rtEnsureFunctionPrototype(Rooted<Value>& fnVal) {
     // `[].map(...)` in the program.
     if (fn->prototype.isObject()) {
         Rooted<Value> proto{fn->prototype};
-        if (ObjectHeader* protoObj = proto.get().asObject<ObjectHeader>();
-            protoObj->shape != nullptr) {
-            protoObj->shape->used_as_prototype = true;
+        if (auto* protoHdr = proto.get().asObject<HeapObjectHeader>();
+            HeapKind::carriesShape(protoHdr->flags)) {
+            Shape::markObjectAsPrototype(rtArena(), reinterpret_cast<ObjectHeader*>(protoHdr));
         }
         fnVal.get().asObject<FunctionHeader>()->instance_shape = rtNewRootShape(proto.get());
         return;

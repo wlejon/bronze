@@ -222,6 +222,7 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
                         }
                     }
                     if (existing.writable && hasValue) {
+                        obj->notePrototypeSlotOverwrite(existing.slot);
                         obj->setSlot(existing.slot, value.get());
                     }
                     if (existing.writable && hasWritable && !writable) {
@@ -243,6 +244,7 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
                     ObjectHeader::defineAccessor(rtHeap(), rtArena(), target, keyRoot, getter, setter,
                                                  enumerable, configurable);
                 } else if (hasValue) {
+                    obj->notePrototypeSlotOverwrite(existing.slot);
                     obj->setSlot(existing.slot, value.get());
                 }
                 return true;
@@ -314,6 +316,7 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
         live->setSlot(slot, hasGet ? getter.get() : keptValue.get());
         live->setSlot(slot + 1, hasSet ? setter.get() : keptSetter.get());
     } else {
+        if (existing != nullptr && hasValue) live->notePrototypeSlotOverwrite(slot);
         live->setSlot(slot, hasValue ? value.get() : keptValue.get());
     }
     DictEntry* entry = entryOf(target.get(), name);

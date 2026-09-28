@@ -183,6 +183,22 @@ public:
     // caller's job (see newRootShape in rt_helpers), not this one's.
     static Shape* createRoot(NonMovingArena& arena, Value proto = Value::fromUndefined());
 
+    // Mark `obj` as somebody's prototype, the one entry every route to a
+    // prototype takes (createRoot above, and the callers that hand an object
+    // its prototype without minting a root).
+    //
+    // A marked shape is the contract the store side of the method cache rests
+    // on: a set-site entry is never filled for one, so every write to a
+    // prototype's own slot reaches the runtime, which bumps the epoch when it
+    // overwrites a function (`ObjectHeader::setProp`). An object that becomes
+    // a prototype LATE may sit on a shape some set site already cached — so
+    // instead of marking that shared shape in place, the object moves to a
+    // private, marked copy of its chain that no transition table leads to:
+    // slot for slot the same layout, and a shape no existing entry can name.
+    //
+    // Arena-only, like `withSlotBoxed`: the object does not move.
+    static void markObjectAsPrototype(NonMovingArena& arena, struct ObjectHeader* obj);
+
     bool isDictionary() const noexcept { return dict != nullptr; }
 
     // How many slots this node's own property occupies.

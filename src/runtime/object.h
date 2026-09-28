@@ -378,6 +378,15 @@ struct ObjectHeader {
     // for every real chain — asking anyway is what keeps it a fact about the
     // cache rather than a fact about two other files.
     bool chainIsCacheable() const noexcept;
+
+    // Called before a write REPLACES the value in own data slot `slot`. A
+    // method-call site's DIRECT entry caches the code of a function it found on
+    // a prototype, and overwriting that slot moves no shape — so when this
+    // object is somebody's prototype and the slot held a function, the epoch
+    // those entries are validated against moves. Any other overwrite is left
+    // alone: a property read re-loads the slot, so only a cached callee can go
+    // stale, and no entry can have cached what was never a function.
+    void notePrototypeSlotOverwrite(uint32_t slot) const noexcept;
     // May allocate (overflow growth), which can move this object; use the
     // returned pointer afterwards, not `this`. May also run user code, for
     // the same reason getProp can: an inherited setter.

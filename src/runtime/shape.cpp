@@ -28,22 +28,77 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
     if (proto.isObject()) {
         auto* hdr = proto.asObject<HeapObjectHeader>();
         if (HeapKind::carriesShape(hdr->flags)) {
-            auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
-            if (Shape* protoShape = obj->shape) {
-                Shape* plainShape = runtime::rtCurrentPlainObjectShape();
-                if (plainShape && protoShape == plainShape) {
-                    Shape* dedicated = arena.create<Shape>();
-                    dedicated->prototype = protoShape->prototype;
-                    dedicated->used_as_prototype = true;
-                    obj->shape = dedicated;
-                    runtime::rtRegisterRootShape(dedicated);
-                } else {
-                    protoShape->used_as_prototype = true;
-                }
-            }
+            markObjectAsPrototype(arena, reinterpret_cast<ObjectHeader*>(hdr));
         }
     }
     return root;
+}
+
+// A marked copy of `chain` (root-first) hung off `root` WITHOUT entering the
+// root's transition table, so no other object can ever take a transition onto
+// it: every node is private to the object that moves there, and every add it
+// makes later transitions from a private node. `boxIndex`, when not
+// UINT32_MAX, is a slot whose node is rebuilt boxed (the generalization step).
+static Shape* privateMarkedChain(NonMovingArena& arena, Shape* root, const std::vector<Shape*>& chain,
+                                 uint32_t boxIndex) {
+    Shape* cur = root;
+    for (Shape* node : chain) {
+        SlotRepr repr = node->repr;
+        if (node->slot_index == boxIndex) repr = SlotRepr::Boxed;
+        Shape* next = arena.create<Shape>(cur, node->key, node->slot_index, root, node->enumerable,
+                                          node->accessor, node->writable, node->configurable, repr);
+        next->used_as_prototype = true;
+        cur = next;
+    }
+    return cur;
+}
+
+static std::vector<Shape*> chainOf(Shape* shape) {
+    std::vector<Shape*> chain;
+    for (Shape* cur = shape; cur != nullptr && cur->key.valid(); cur = cur->parent) {
+        chain.push_back(cur);
+    }
+    std::reverse(chain.begin(), chain.end());
+    return chain;
+}
+
+void Shape::markObjectAsPrototype(NonMovingArena& arena, ObjectHeader* obj) {
+    Shape* protoShape = obj ? obj->shape : nullptr;
+    if (!protoShape || protoShape->used_as_prototype) return;
+    // A dictionary shape is already private to the object, and no set-site
+    // entry is ever filled with one — marking it in place is the private copy.
+    if (protoShape->isDictionary()) {
+        protoShape->used_as_prototype = true;
+        return;
+    }
+
+    const std::vector<Shape*> chain = chainOf(protoShape);
+    if (!chain.empty()) {
+        // The same root, so the prototype, any brand a root carries (a Date's)
+        // and the root's collector registration are all unchanged.
+        obj->shape = privateMarkedChain(arena, protoShape->root, chain, UINT32_MAX);
+        return;
+    }
+
+    // The object sits AT a root every object built on that prototype shares,
+    // and the next property it gains would transition from there onto shared
+    // nodes. It gets a root of its own — which the collector has to forward,
+    // and can only forward when the prototype is on this thread's heap (a
+    // test's private heap is not); otherwise it keeps the shared root, marked.
+    // The new root also lives in `arena`, and the registry outlives a test's
+    // private arena, so it is only registered when that arena is the thread's.
+    const Value proto = protoShape->prototypeValue();
+    const bool threadOwned = &arena == &runtime::rtArena() && runtime::rtHeap().contains(obj);
+    if (!threadOwned ||
+        (proto.isObject() && !runtime::rtHeap().contains(proto.asObject<HeapObjectHeader>()))) {
+        protoShape->used_as_prototype = true;
+        return;
+    }
+    Shape* fresh = arena.create<Shape>();
+    fresh->prototype = proto;
+    fresh->used_as_prototype = true;
+    runtime::rtRegisterRootShape(fresh);
+    obj->shape = fresh;
 }
 
 Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name,
@@ -154,6 +209,20 @@ Shape* Shape::withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index)
         chain.push_back(cur);
     }
     std::reverse(chain.begin(), chain.end());
+
+    // A prototype's chain is private to it (markObjectAsPrototype), and the
+    // rebuild keeps it so: through the shared transitions it would land on
+    // nodes other objects reach, marked in place.
+    if (shape->used_as_prototype) {
+        for (Shape* node : chain) {
+            if (node->slot_index == index && node->repr == SlotRepr::Double && !node->repr_generalized) {
+                node->repr_generalized = true;
+                ++runtime::slotReprMutableCounters().generalized_nodes;
+            }
+        }
+        ++runtime::slotReprMutableCounters().generalizations;
+        return privateMarkedChain(arena, shape->root, chain, index);
+    }
 
     Shape* rebuilt = shape->root;
     for (Shape* node : chain) {

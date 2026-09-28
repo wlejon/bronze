@@ -1,0 +1,27 @@
+after warm-up: 103 206 202
+restored: 6 6
+patched before warm-up: 12
+patched again: 13
+base patched: <patched-base> <patched-base>
+mid shadows: <mid> <patched-base>
+after delete: A A
+re-added: B again
+prototype of prototype swapped: Q.show Q Q.show Q
+instance swapped: Q.show Q
+getter installed: from getter from getter 3001
+value defined: defined value defined value
+value over method: e2
+super target patched: B>A2 B>A2
+overrider patched: B2
+static patched: 12 12
+static shadowed on subclass: 12 13
+static shadow deleted: 12
+accessors replaced: 2 500 102
+getter to data: 7
+late prototype: patched late patched late
+stranger: hello patched late
+computed key: Ab
+Object.assign: AB
+polymorphic site: x2 y2
+own shadow: own class
+own replaced: own2 own2

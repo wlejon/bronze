@@ -252,6 +252,14 @@ bool ObjectHeader::chainIsCacheable() const noexcept {
     return false;  // a cycle, or a chain past the bound: not an answer
 }
 
+void ObjectHeader::notePrototypeSlotOverwrite(uint32_t slot) const noexcept {
+    if (!shape || !shape->used_as_prototype) return;
+    const Value old = getSlot(slot);
+    if (old.isObject() && old.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        bumpProtoMutationEpoch();
+    }
+}
+
 void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shape* newRoot) {
     // The most direct form of "the chain an entry was filled against is not
     // the chain any more". Dictionary mode below already makes every walk
@@ -463,7 +471,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // Refill rather than leave alone: the bump above (or an epoch the
         // entry outlived) would otherwise expire an entry that has just
         // proven itself.
-        if (!runtime::censusFillsSuppressed()) {
+        if (!runtime::censusFillsSuppressed() && !next->used_as_prototype) {
             ic->fillForSet(next, slot, next->slotIsDouble(slot));
         }
         live->setSlot(slot, val.get());
@@ -503,9 +511,14 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             if (refused) *refused = SetRefusal::NotWritable;
             return this;
         }
-        if (ic && !shape->isDictionary() && !runtime::censusFillsSuppressed()) {
+        // A prototype's shape is never cached for a store: generated code's
+        // inline store would overwrite a method without the epoch moving
+        // (Shape::markObjectAsPrototype). Every such write lands here instead.
+        if (ic && !shape->isDictionary() && !shape->used_as_prototype &&
+            !runtime::censusFillsSuppressed()) {
             ic->fillForSet(shape, own.slot, shape->slotIsDouble(own.slot));
         }
+        notePrototypeSlotOverwrite(own.slot);
         setSlot(own.slot, val.get());
         return this;
     }
@@ -629,7 +642,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // the flag is for: the arm then tests the value for Number and misses
         // to here when it is not, where `setSlot` below generalizes the slot
         // and the next fill hands back an ordinary entry.
-        if (ic && !runtime::censusFillsSuppressed()) {
+        if (ic && !next_shape->used_as_prototype && !runtime::censusFillsSuppressed()) {
             ic->fillForSet(next_shape, new_slot, next_shape->slotIsDouble(new_slot));
         }
     }

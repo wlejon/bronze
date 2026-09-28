@@ -1030,11 +1030,21 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  *           callee's environment record, a HEAP Value the module registered
  *           as a value cell via bronze_register_method_ic_cells at init.
  *
- * The DIRECT form is the original mechanism plus one load: shape match calls
- * word 1 with word 3 as env. It is latched for an env-free callee found
- * anywhere, and for an env-CARRYING callee found on the PROTOTYPE CHAIN
- * (depth >= 1), where the receiver's shape determines the holder and so the
- * function object — caching its env is exactly as sound as caching its code.
+ * The DIRECT form is for a callee found on the PROTOTYPE CHAIN (depth >= 1)
+ * as a data property: shape match AND epoch match calls word 1 with word 3 as
+ * env. The receiver's shape determines the holder, but not what the holder's
+ * slot holds — `C.prototype.m = f` overwrites it without moving any shape, and
+ * an add to an intermediate prototype shadows it without moving the
+ * receiver's. So word BRONZE_ABI_METHOD_IC_EPOCH_WORD records the thread's
+ * prototype-mutation epoch (bronze_tls_block.proto_epoch) at latch time, and a
+ * hit requires it to still be current. Every such change moves the epoch: an
+ * add, delete, accessor define or prototype swap on a marked prototype, and an
+ * overwrite of a FUNCTION in a marked prototype's slot — which always reaches
+ * the runtime, because no set-site entry is ever filled for a marked shape
+ * (Shape::markObjectAsPrototype). With the epoch current the function object
+ * is the one latched, so caching its env is as sound as caching its code.
+ * A callee found anywhere else — an own property, through an accessor, on a
+ * dictionary — is never latched DIRECT.
  *
  * The SLOT form is for a callee that is the receiver's OWN data property
  * (depth 0), where same-shape receivers can hold DIFFERENT functions in the
@@ -1155,8 +1165,9 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
  * way-0-only), but either may displace a plain-direct entry into it.
  *
  * A way-1 hit obeys the same envelope as the way-0 direct entry it once was:
- * shape match, no epoch guard (the deliberate looseness the depth >= 1 form
- * documents above). Word 9 is an env argument exactly as word 3 is, and
+ * shape match and epoch match, the epoch in word
+ * BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD (moved there with the rest of the
+ * entry). Word 9 is an env argument exactly as word 3 is, and
  * bronze_register_method_ic_cells registers BOTH as value cells — which is
  * why this contract change moves the fingerprint: an old runtime would leave
  * way 1's env word dangling at the first flip.
@@ -1204,6 +1215,11 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD  7
 #define BRONZE_ABI_METHOD_IC_WAY1_ARITY_WORD 8
 #define BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD   9
+/* The prototype-mutation epoch a DIRECT entry was latched at, per way. Also
+ * written for the typed-array view's EXOTIC form, which is the DIRECT form's
+ * depth >= 1 case under a different guard. Plain integers, never Values. */
+#define BRONZE_ABI_METHOD_IC_EPOCH_WORD      5
+#define BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD 10
 
 /* ---- the COMPUTED-read cache, as generated code reads it -----------------
  *
