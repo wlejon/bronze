@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -17,6 +18,23 @@
 #include "runtime/value.h"
 
 namespace bronze::eval {
+
+// Where a compile is, for a host showing progress while it runs elsewhere.
+// `phase` is one of "load" (the module graph read and parsed), "cache" (a
+// stored program found valid), "infer", "lower", "codegen" and "done";
+// `fraction` rises from 0 to 1 and is an estimate weighted by what each phase
+// typically costs, not a measurement.
+struct CompileProgress {
+    const char* phase = "";
+    double fraction = 0.0;
+};
+
+// Whether a compile used the on-disk code cache (src/eval/code_cache.h).
+enum class CodeCacheStatus : uint8_t {
+    Off,     // no cache directory, or nothing cacheable
+    Hit,     // the stored IL was valid and the front end was skipped
+    Miss,    // compiled from source (no entry, or a stale or damaged one)
+};
 
 struct EvalOptions {
     std::string filename = "<eval>";
@@ -64,6 +82,24 @@ struct EvalOptions {
     // many threads, as workers do. Explicit Tier2_Optimized programs are
     // never shared.
     bool shareAcrossThreads = false;
+    // With `moduleRegistry`: `externalModules` is the registry's list as
+    // captured (captureThreadInputs), even when empty, and the compile does
+    // not ask the realm again — the compiling thread may not be the realm's.
+    bool externalModulesCaptured = false;
+    // The natives manifest to compile against in place of this thread's
+    // registry (embed::nativeManifestJson), captured on the thread that will
+    // run the program; "" means none. The program's import table is then
+    // bound by runCompiledScript, on the running thread, rather than by the
+    // compile.
+    std::optional<std::string> nativeManifestJson = std::nullopt;
+    // The on-disk code cache (src/eval/code_cache.h): a directory where a
+    // compile keeps its IL, keyed by everything the compile reads, so an
+    // unchanged program skips parsing, inference and lowering next time.
+    // Empty: no cache. Bounded to `codeCacheMaxBytes`, oldest entries first.
+    std::string codeCacheDir = {};
+    uint64_t codeCacheMaxBytes = uint64_t{256} << 20;
+    // Called on the compiling thread at each phase boundary.
+    std::function<void(const CompileProgress&)> onProgress = {};
 };
 
 struct CompiledScript {
@@ -72,7 +108,21 @@ struct CompiledScript {
     std::string resName;
     std::string errorMessage;
     bool success = false;
+    CodeCacheStatus cacheStatus = CodeCacheStatus::Off;
+    // Why a cache lookup missed ("no entry", "source changed", ...), for a
+    // host's log; empty on a hit or with no cache.
+    std::string cacheNote;
+    // The native import table runCompiledScript binds before the entry runs,
+    // when the compile used a captured manifest; empty otherwise.
+    std::string deferredNativeTable;
 };
+
+// Everything a compile reads from the CALLING thread's runtime state — its
+// host globals, its registered natives, its realm's module registry — copied
+// into `options`, so that compileScript/compileFile may then run on any
+// thread and build the program the calling thread would have. The program is
+// still run (runCompiledScript) on the calling thread.
+BRONZE_EMBED_API void captureThreadInputs(EvalOptions& options);
 
 // The tier a program compiles at when its options name none: Auto (the
 // tiered pipeline: interpreted first, hot functions compiled to baseline and

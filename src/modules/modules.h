@@ -32,6 +32,40 @@ struct ModuleRoot {
     std::filesystem::path target;
 };
 
+// What a load's OUTPUT depends on beyond the text of the files it read (which
+// the SourceSet already holds): the directory listings behind a template-literal
+// `import()` glob, and every non-relative specifier's resolution, which reads
+// module roots, `node_modules` and `package.json` files along the way. A
+// relative specifier needs no entry: it is joined, never searched for
+// (resolve.cpp), so only its target's text can change it.
+//
+// Filled by a load when `ModuleOptions::dependencyLog` is set, and re-checked by
+// `dependenciesUnchanged` — the on-disk code cache's proof that a program it
+// stored would still be the program a fresh load builds.
+struct DependencyLog {
+    struct Glob {
+        std::string dirSpecifier;  // the head up to its last '/', as written
+        std::string importer;      // the path it resolved from
+        std::string namePrefix;
+        std::string tail;
+        std::vector<std::string> names;  // the sorted matches found
+    };
+    struct Edge {
+        std::string specifier;
+        std::string importer;
+        std::string target;  // generic_string of the resolved path
+    };
+    std::vector<Glob> globs;
+    std::vector<Edge> edges;
+    // The SourceSet names of the buffers read from disk. Every other buffer
+    // (the in-memory entry, text the linker synthesizes) is not a file.
+    std::vector<std::string> filesRead;
+};
+
+// True when every glob in `log` still lists the same names and every edge still
+// resolves to the same file. The file TEXTS are the caller's to compare.
+bool dependenciesUnchanged(const DependencyLog& log, const std::vector<ModuleRoot>& moduleRoots);
+
 struct ModuleOptions {
     std::vector<ModuleRoot> moduleRoots;
     std::string importMapPath;
@@ -67,6 +101,10 @@ struct ModuleOptions {
     // Only for an entry that is a real file; inline script text has no URL a
     // module could be imported by.
     bool publishEntry = false;
+    // Filled with what the load depended on (see DependencyLog). Null: nothing
+    // is recorded. Last, so positional initializers of the fields above keep
+    // their meaning.
+    DependencyLog* dependencyLog = nullptr;
 };
 
 // Loads an import map from a JSON file, resolving relative target paths relative

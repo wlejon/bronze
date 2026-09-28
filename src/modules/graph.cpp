@@ -164,6 +164,7 @@ public:
         std::string text;
         const bool read = readFile(path, text);
         const SourceBuffer& buffer = sources_.add(path.generic_string(), read ? text : "");
+        if (read && options_.dependencyLog) options_.dependencyLog->filesRead.push_back(path.generic_string());
         if (!read) {
             diags_.error(importSpan, "cannot read module " + path.generic_string());
             return false;
@@ -330,7 +331,14 @@ private:
         const std::string namePrefix = pattern.head.substr(slash + 1);
 
         std::filesystem::path dir;
-        if (!resolveSpecifierDirectory(dirSpec, resolvesFrom(file), options_.moduleRoots, dir)) {
+        const bool haveDir = resolveSpecifierDirectory(dirSpec, resolvesFrom(file), options_.moduleRoots, dir);
+        const std::vector<std::string> names =
+            haveDir ? listGlobMatches(dir, namePrefix, pattern.tail) : std::vector<std::string>{};
+        if (options_.dependencyLog) {
+            options_.dependencyLog->globs.push_back(
+                {dirSpec, resolvesFrom(file).generic_string(), namePrefix, pattern.tail, names});
+        }
+        if (!haveDir) {
             // No such directory is the same answer as an empty one: the
             // pattern still gets its (empty) table, so every string the call
             // computes is a MISS in it — named in the rejection — rather than
@@ -341,25 +349,6 @@ private:
             return true;
         }
 
-        std::error_code ec;
-        std::vector<std::string> names;
-        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-            if (ec) break;
-            std::error_code kindEc;
-            if (!entry.is_regular_file(kindEc) || kindEc) continue;
-            const std::string name = entry.path().filename().generic_string();
-            if (name.size() <= namePrefix.size() + pattern.tail.size()) continue;
-            if (name.compare(0, namePrefix.size(), namePrefix) != 0) continue;
-            if (name.compare(name.size() - pattern.tail.size(), pattern.tail.size(),
-                             pattern.tail) != 0) {
-                continue;
-            }
-            names.push_back(name);
-        }
-        // Directory order is not defined across filesystems, and the specifier
-        // list reaches the output (it is the load order of these modules), so
-        // it is sorted rather than taken as read.
-        std::sort(names.begin(), names.end());
         for (const std::string& name : names) {
             const std::string specifier = dirSpec + name;
             if (!follow(file, specifier, pattern.span)) return false;
@@ -380,6 +369,10 @@ private:
         if (file.deps.count(specifier)) return true;  // the same specifier twice is one edge
         std::filesystem::path target;
         if (!resolveSpecifier(specifier, resolvesFrom(file), span, diags_, target, options_.moduleRoots)) return false;
+        if (options_.dependencyLog && specifier.rfind("./", 0) != 0 && specifier.rfind("../", 0) != 0) {
+            options_.dependencyLog->edges.push_back(
+                {specifier, resolvesFrom(file).generic_string(), target.generic_string()});
+        }
         uint16_t targetId = 0;
         if (!load(target, span, targetId)) return false;
         file.deps[specifier] = targetId;

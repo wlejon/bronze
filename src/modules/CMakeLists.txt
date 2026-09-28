@@ -7,6 +7,7 @@ bronze_add_module(modules
         link.cpp
         link_exports.cpp
         rename.cpp
+        deps.cpp
     DEPS parse lex ast support json
     TEST_SOURCES ../../tests/modules/modules_test.cpp
 )

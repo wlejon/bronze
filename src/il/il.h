@@ -58,6 +58,9 @@ struct BlockTarget {
     std::vector<ValueId> args;
 };
 
+// A field added to Instruction, Block, Param, Function or Module is a field the
+// on-disk code cache must carry: add it to il/serialize.cpp and bump its
+// kFormatVersion (the layout guards there fail the build until the first is done).
 struct Instruction {
     Op op;
     Type type = Type::Void;          // result type (Void: no result)

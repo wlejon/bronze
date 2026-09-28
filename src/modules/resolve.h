@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "modules/modules.h"
 #include "support/diagnostics.h"
@@ -46,5 +47,12 @@ bool isModuleFileName(const std::string& name);
 bool resolvePackageSpecifier(const std::string& specifier,
                              const std::filesystem::path& importerPath, Span span,
                              DiagnosticSink& diags, std::filesystem::path& out);
+
+// The regular files in `dir` whose names start with `namePrefix` and end with
+// `tail` (strictly longer than both together), sorted: what a template-literal
+// glob matches. Shared by the loader and by `dependenciesUnchanged`, which must
+// list a directory exactly as the load did.
+std::vector<std::string> listGlobMatches(const std::filesystem::path& dir, const std::string& namePrefix,
+                                         const std::string& tail);
 
 }  // namespace bronze::modules
