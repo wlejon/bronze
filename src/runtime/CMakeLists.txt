@@ -105,6 +105,7 @@ bronze_add_module(runtime
         native_fn_memo.cpp
         rt_prop.cpp
         rt_prop_absent.cpp
+        rt_prop_counted.cpp
         rt_prop_function.cpp
         rt_prop_primitive.cpp
         rt_prop_array.cpp

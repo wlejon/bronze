@@ -59,7 +59,9 @@ but `-LE "threejs|pixi"` is the loop to iterate against.
 - Recursive descent for parsers, visitor for AST traversal (house
   preference).
 - **The generated-code ABI lives in `src/abi/bronze_abi.h`, and only
-  there.** Pure C, primitives only (u64 in / u64 out); every helper
+  there** (with its two textual parts, `bronze_abi_functions.h` — the
+  registry — and `bronze_abi_layout.h`, which the fingerprint and export
+  scan read back in place: `cmake/bronze_abi_text.cmake`). Pure C, primitives only (u64 in / u64 out); every helper
   generated code calls is an X(...) line in its registry, which expands
   into both the C prototypes and the backend's declarations. Never
   hand-declare a runtime symbol in the backend, and never put a C++ type

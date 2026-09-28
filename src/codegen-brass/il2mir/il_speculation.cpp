@@ -1,4 +1,5 @@
 #include "il_speculation.h"
+#include "il_ic_stub.h"
 #include "il_spec_profile.h"
 
 #include "abi/bronze_abi.h"
@@ -166,7 +167,7 @@ bool SpecSiteEmitter::apply_profile(Builder& b, Value*& hit, BasicBlock* slow, S
 }
 
 void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, SpecKind kind,
-                                  std::string_view tag) {
+                                  std::string_view tag, Value** counter_out) {
     uint32_t* count = nullptr;
     if (profile_ && !feedback_) apply_profile(b, hit, slow, kind, tag);
     if (feedback_) {
@@ -183,6 +184,10 @@ void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, Basi
     }
     b.build_br_if(hit, fast, slow);
     b.position_at_end(slow);
+    if (counter_out) {
+        *counter_out = b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(count)));
+        return;
+    }
     if (count) {
         Value* addr = b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(count)));
         Value* old = b.build_load(Type::i32(), addr, 0);
@@ -268,6 +273,8 @@ void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {
             prune.max_iterations = 2;
             cfg_simplify_function(*fn, prune);
         }
+        // What survives of the reads' out-of-line scans goes back inline.
+        expand_ic_stubs(*fn);
         if (trace && !seen.empty()) {
             std::fprintf(stderr, "spec: %.*s armed %u of %zu\n", static_cast<int>(fn->name().size()),
                          fn->name().data(), armed, seen.size());

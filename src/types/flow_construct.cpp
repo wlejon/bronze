@@ -97,13 +97,15 @@ void FlowAnalyzer::contributeCtorArgs(uint32_t ctorIndex, const std::vector<Type
             // evidence. The default's own type is joined in by the walk that
             // evaluates it (`runParamDefaults`).
             if (info.hasDefault[i] && args[i].is(TypeKind::Undefined)) continue;
-            info.observedParams[i] = join(info.observedParams[i], args[i]);
+            mod_.contribute(InferMemo::Contrib::CtorParam, ctorIndex, static_cast<uint32_t>(i),
+                            args[i]);
             continue;
         }
         // A missing argument at a position with no default binds `undefined`,
         // exactly as the construction delivers it.
         if (!info.hasDefault[i]) {
-            info.observedParams[i] = join(info.observedParams[i], Type::undefined());
+            mod_.contribute(InferMemo::Contrib::CtorParam, ctorIndex, static_cast<uint32_t>(i),
+                            Type::undefined());
         }
     }
 }

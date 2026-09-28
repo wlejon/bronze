@@ -491,6 +491,7 @@ il2mir::BronzeModuleAST lowerToBrassAst(
                               : mapType(fn.returnType);
         bfn.is_exported = fn.isExported;
         bfn.coro_kind = fn.coroKind;
+        bfn.is_toplevel = (fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0;
 
         bfn.params.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {

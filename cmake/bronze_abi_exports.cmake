@@ -30,6 +30,11 @@
 # header may be annotated and the runtime sources may not), so on Windows it
 # arrives through dllexport and on ELF/Mach-O through a mangled-name wildcard
 # in the two files below.
+#
+# The header is read with its textual parts in place (bronze_abi_text.cmake):
+# the registry lives in one of them, and the scan sees the one text either way.
+
+include("${CMAKE_CURRENT_LIST_DIR}/bronze_abi_text.cmake")
 
 # The text of the macro block that `define_line` opens, and everything after
 # it. A block runs from its `#define` to the first blank line, which is what
@@ -80,9 +85,7 @@ endfunction()
 # BRONZE_ABI_BRASS_SYSV_ALIASES to the brass names the ELF and Mach-O links
 # must define as aliases.
 function(bronze_abi_export_files header outdir def_var ver_var exp_var)
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${header}")
-
-    file(READ "${header}" _text)
+    bronze_abi_read_text("${header}" _text)
     string(REPLACE "\r" "" _text "${_text}")
 
     # The scan works on the TEXT, never on a list of lines. Splitting a C

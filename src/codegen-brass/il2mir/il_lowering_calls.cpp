@@ -79,7 +79,7 @@ Value* lower_builtin_method_call(IlLowering* lowering, const BronzeInstruction& 
     const BuiltinTarget target = builtin_target(lowering, inst);
     if (target.op == BuiltinOp::None || !site) return nullptr;
     PropertyLoweringHelper& pl = lowering->prop_lowering();
-    Value* method = pl.lower_prop_get_mono(b, recv, inst.index, site);
+    Value* method = pl.lower_prop_get_mono(b, recv, inst.index, IcSite{site, 0});
 
     BasicBlock* cur = b.current_block();
     const std::string prefix = "builtin_" + std::to_string(cur->parent()->next_block_id());
@@ -285,6 +285,9 @@ bool lower_call_instruction(
                 can_direct = (direct_fn->param_types().size() == argc + 1);
             }
 
+            // Code that runs once dispatches generically: the direct form's
+            // guard is only size there.
+            if (can_direct && lowering && lowering->run_once()) can_direct = false;
             if (!can_direct && method_call_is_speculated_builtin(lowering, inst_ast)) {
                 if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
                     Value* arg = ensure_type(get_opd(1), Type::i64());

@@ -222,6 +222,8 @@ struct BronzeFunction {
     // through `coro_create`.
     int32_t coro_kind = -1;
     bool is_coroutine_body() const { return coro_kind >= 0; }
+    // The program's top level (`main` and its segments): run once.
+    bool is_toplevel = false;
     std::vector<BronzeBlock> blocks;
 };
 

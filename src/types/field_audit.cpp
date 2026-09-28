@@ -441,7 +441,11 @@ void FieldAudit::recordComputedDelete(const ast::Expr* receiver, const ast::Expr
 void FieldAudit::observe(const ast::Expr* rhs, Type t) {
     const auto it = rhsTypes_.find(rhs);
     if (it == rhsTypes_.end()) return;
-    it->second = join(it->second, t);
+    const Type joined = join(it->second, t);
+    if (joined != it->second) {
+        it->second = joined;
+        ++observeChanges_;
+    }
 }
 
 void FieldAudit::refuse(const std::string& name, std::string why) {

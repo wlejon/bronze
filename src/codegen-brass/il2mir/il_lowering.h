@@ -75,8 +75,33 @@ public:
     uint32_t next_coro_state_id(uint32_t kind) {
         return (++coro_suspend_count_ << 2) | (kind & BRONZE_ABI_SUSPEND_KIND_MASK);
     }
+    // Whether the IL block being lowered runs at most once per call of a
+    // function that runs once: the program's top level outside any loop.
+    // Its operations call their helpers, with no inline fast path — a path
+    // run once is only size, and every inline cache misses its first run.
+    bool run_once() const { return run_once_; }
+    // Whether IL value `id` is an object this function created
+    // (CreateObject): a write to it adds a property.
+    bool is_fresh_object(uint32_t id) const { return fresh_objects_.count(id) != 0; }
 
 private:
+    // Per-function values computed once at the function's entry and shared
+    // by every use (il_lowering_hoist.cpp): the inline-cache table's address.
+    enum class Hoist : uint8_t { IcTable, Count };
+    Value* hoisted(Builder& b, Hoist kind);
+    // Starts a function's hoisting: values go into `block`, after whatever it
+    // holds now.
+    void begin_hoisting(BasicBlock* block);
+    // The function's run-once blocks (run_once) and fresh objects.
+    void analyze_function(const BronzeFunction& fn_ast);
+    BasicBlock* hoist_block_ = nullptr;
+    Instruction* hoist_after_ = nullptr;
+    bool hoist_at_head_ = false;
+    Value* hoisted_[static_cast<size_t>(Hoist::Count)] = {};
+    bool run_once_ = false;
+    bool small_forms_ = true;
+    std::unordered_set<uint32_t> run_once_blocks_;
+    std::unordered_set<uint32_t> fresh_objects_;
     Value* coro_frame_val_ = nullptr;
     uint32_t coro_suspend_count_ = 0;
     // AST function `i`'s body, and its `__wrapper_` (a no-op for a function

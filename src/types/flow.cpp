@@ -72,12 +72,14 @@ void FlowAnalyzer::runParamDefaults(const std::vector<ast::Param>& params) {
             if (scope_.ctorIndex != kNoCtor && mod_.ctorParamTypes) {
                 auto& info = mod_.ctors.ctors()[scope_.ctorIndex];
                 if (i < info.observedParams.size()) {
-                    info.observedParams[i] = join(info.observedParams[i], t);
+                    mod_.contribute(InferMemo::Contrib::CtorParam, scope_.ctorIndex,
+                                    static_cast<uint32_t>(i), t);
                 }
             } else if (scope_.methodIndex != kNoMethod && mod_.methodParamTypes) {
                 auto& info = mod_.methods.methods()[scope_.methodIndex];
                 if (i < info.observedParams.size()) {
-                    info.observedParams[i] = join(info.observedParams[i], t);
+                    mod_.contribute(InferMemo::Contrib::MethodParam, scope_.methodIndex,
+                                    static_cast<uint32_t>(i), t);
                 }
             }
         }
@@ -93,12 +95,29 @@ Type FlowAnalyzer::inferredReturn(const std::vector<const ast::Stmt*>& body) con
 
 // ---- environment -------------------------------------------------------
 
+// A name read past this body's own scope, through the cells of the functions
+// enclosing it: where it resolved (1 for the parent, 0 for nowhere) and what it
+// held. Noted for the memo, since that is an input to this walk that no
+// argument of it carries.
+std::pair<uint32_t, Type> FlowAnalyzer::outerCell(const std::string& name) const {
+    uint32_t level = 1;
+    std::pair<uint32_t, Type> found{0, Type::never()};
+    for (const Scope* p = scope_.parent; p != nullptr; p = p->parent, ++level) {
+        if (const auto it = p->cells.find(name); it != p->cells.end()) {
+            found = {level, it->second};
+            break;
+        }
+    }
+    if (scope_.parent != nullptr) {
+        if (InferMemo* memo = mod_.rec()) memo->noteOuterName(name, found.first, found.second);
+    }
+    return found;
+}
+
 Type FlowAnalyzer::lookup(const std::string& name) const {
     if (const auto it = scope_.env.find(name); it != scope_.env.end()) return it->second;
     if (const auto it = scope_.cells.find(name); it != scope_.cells.end()) return it->second;
-    for (const Scope* p = scope_.parent; p != nullptr; p = p->parent) {
-        if (const auto it = p->cells.find(name); it != p->cells.end()) return it->second;
-    }
+    if (const auto [level, t] = outerCell(name); level != 0) return t;
     if (const auto it = mod_.indexByName.find(name); it != mod_.indexByName.end()) {
         return Type::function(it->second);
     }
@@ -107,7 +126,12 @@ Type FlowAnalyzer::lookup(const std::string& name) const {
     // body. See `ModuleContext::moduleBindings` for why the answer is an
     // identity and never a value.
     if (mod_.valueFlow) {
-        if (const auto it = mod_.moduleBindings.find(name); it != mod_.moduleBindings.end()) {
+        const auto it = mod_.moduleBindings.find(name);
+        const bool present = it != mod_.moduleBindings.end();
+        if (InferMemo* memo = mod_.rec()) {
+            memo->noteBinding(name, present, present ? it->second : Type::dynamic());
+        }
+        if (present) {
             const Type held = it->second;
             if (held.is(TypeKind::Object) && held.shapeClass() != kNoShapeClass) {
                 return Type::objectIdentityOnly(held.shapeClass());
@@ -119,9 +143,7 @@ Type FlowAnalyzer::lookup(const std::string& name) const {
 
 bool FlowAnalyzer::resolvesToUserBinding(const std::string& name) const {
     if (scope_.env.count(name) != 0 || scope_.cells.count(name) != 0) return true;
-    for (const Scope* p = scope_.parent; p != nullptr; p = p->parent) {
-        if (p->cells.count(name) != 0) return true;
-    }
+    if (outerCell(name).first != 0) return true;
     return mod_.indexByName.count(name) != 0 || mod_.moduleScopeNames.count(name) != 0;
 }
 
@@ -196,11 +218,13 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
     // anything else is either a MODULE binding — one cell for the whole
     // program, which no scope chain from inside a function reaches — or a
     // global, which nothing here tracks.
-    for (Scope* p = scope_.parent; p != nullptr; p = p->parent) {
-        if (const auto it = p->cells.find(name); it != p->cells.end()) {
-            it->second = join(it->second, t);
-            return;
-        }
+    if (const uint32_t level = outerCell(name).first; level != 0) {
+        Scope* p = scope_.parent;
+        for (uint32_t i = 1; i < level; ++i) p = p->parent;
+        Type& slot = p->cells.find(name)->second;
+        slot = join(slot, t);
+        if (InferMemo* memo = mod_.rec()) memo->noteOuterWrite(name, level, t);
+        return;
     }
     // Joined, never replaced: this is one fact about a binding the whole
     // program shares, so a write anywhere widens it and none narrows it. That
@@ -208,7 +232,9 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
     // of whichever body was walked last.
     if (mod_.valueFlow && mod_.moduleScopeNames.count(name) != 0) {
         Type& slot = mod_.moduleBindings[name];
-        slot = join(slot, t);
+        const Type joined = join(slot, t);
+        if (joined != slot) ++mod_.persistentWrites;
+        slot = joined;
     }
 }
 
@@ -710,7 +736,23 @@ Env joinEnv(const Env& a, const Env& b) {
     return out;
 }
 
+namespace {
+
+FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& args);
+
+}  // namespace
+
+// A probe walk goes through the memo (types/infer_memo.h), which replays a walk
+// whose reads have not moved; the recording walk always walks, because filling
+// the side tables is what it is for.
 FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& args) {
+    if (mod.memo == nullptr || args.record || mod.failed) return walkFunction(mod, args);
+    return mod.memo->analyze(mod, args, &walkFunction);
+}
+
+namespace {
+
+FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& args) {
     Scope scope;
     scope.parent = args.parent;
     scope.thisClass = args.thisClass;
@@ -799,7 +841,9 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
             for (const auto& [name, t] : *half) {
                 if (mod.moduleScopeNames.count(name) == 0) continue;
                 Type& held = mod.moduleBindings[name];
-                held = join(held, t);
+                const Type joined = join(held, t);
+                if (joined != held) ++mod.persistentWrites;
+                held = joined;
             }
         }
     }
@@ -825,5 +869,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
     if (slot != kNoSlot) mod.result->functions[slot] = std::move(facts);
     return FunctionOutcome{returnType, true};
 }
+
+}  // namespace
 
 }  // namespace bronze::types

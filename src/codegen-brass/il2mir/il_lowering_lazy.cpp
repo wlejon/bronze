@@ -26,6 +26,8 @@ bool IlLowering::lower_wrapper(size_t i, Module& mod) {
     current_fn_idx_ = i;
     // What the function's body computed at its entry is not the wrapper's.
     current_module_delta_ = nullptr;
+    begin_hoisting(nullptr);
+    run_once_ = false;
     uint32_t arity = static_cast<uint32_t>(fn_ast.params.size());
     auto it_ar = callee_param_counts_.find(fn_ast.name);
     if (it_ar != callee_param_counts_.end()) {

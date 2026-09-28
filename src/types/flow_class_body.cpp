@@ -93,6 +93,9 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
         paramTypes = ctorParamTypes(ctorIndex, params.size());
     } else if (methodIndex != kNoMethod) {
         const MethodInfo& self = mod_.methods.methods()[methodIndex];
+        if (InferMemo* memo = mod_.rec()) {
+            memo->noteMethod(methodIndex, self.version, mod_.methodPoison.poisons(methodIndex));
+        }
         if (self.plainParams && !mod_.methodPoison.poisons(methodIndex)) {
             for (size_t i = 0; i < paramTypes.size() && i < self.signature.params.size(); ++i) {
                 const Type proven = self.signature.params[i];
@@ -147,8 +150,7 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
                 analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
                               m.fn->isGenerator || m.fn->isAsync, receiver, index, ctorIndex);
             if (index != kNoMethod) {
-                MethodInfo& self = mod_.methods.methods()[index];
-                self.observedReturn = join(self.observedReturn, returned);
+                mod_.contribute(InferMemo::Contrib::MethodReturn, index, 0, returned);
             }
         } else if (m.init) {
             const ShapeClassId saved = scope_.thisClass;

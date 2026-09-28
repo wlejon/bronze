@@ -69,12 +69,32 @@ bool paramClassGuessOff() {
 // this feeds decides the question at run time for whatever the argument
 // actually is. Two callers naming different classes leave an object with no
 // class, which is how "the callers disagree" is spelled, and no claim is made.
-void contributeShape(MethodInfo& target, size_t i, const std::vector<Type>& args) {
+void contributeShape(ModuleContext& mod, uint32_t index, const MethodInfo& target, size_t i,
+                     const std::vector<Type>& args) {
     if (paramClassGuessOff()) return;
     if (i >= args.size() || i >= target.observedParamShapes.size()) return;
     if (!args[i].is(TypeKind::Object) || args[i].shapeClass() == kNoShapeClass) return;
-    target.observedParamShapes[i] =
-        join(target.observedParamShapes[i], Type::object(args[i].shapeClass()));
+    mod.contribute(InferMemo::Contrib::MethodShape, index, static_cast<uint32_t>(i),
+                   Type::object(args[i].shapeClass()));
+}
+
+// A parameter's contribution to a method's join, under pin optimism's rule for
+// a Dynamic argument (see `methodCall`).
+void contributeMethodArg(ModuleContext& mod, uint32_t index, const MethodInfo& target, size_t i,
+                         const std::vector<Type>& args) {
+    const auto param = static_cast<uint32_t>(i);
+    if (i < args.size()) {
+        if (target.hasDefault.size() > i && target.hasDefault[i] && args[i].is(TypeKind::Undefined)) {
+            return;
+        }
+        if (mod.pinOptimism() && args[i].is(TypeKind::Dynamic)) {
+            mod.contribute(InferMemo::Contrib::MethodSkipped, index, param, Type::dynamic());
+            return;
+        }
+        mod.contribute(InferMemo::Contrib::MethodParam, index, param, args[i]);
+    } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
+        mod.contribute(InferMemo::Contrib::MethodParam, index, param, Type::undefined());
+    }
 }
 
 }  // namespace
@@ -182,6 +202,10 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             base.shapeClass() != kNoShapeClass && !m->isPrivate) {
             Type field =
                 mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
+            if (InferMemo* memo = mod_.rec()) {
+                memo->noteField(base.shapeClass(), m->property, field,
+                                mod_.fieldAudit.numberCleanFor(base.shapeClass(), m->property));
+            }
             // The harvest has not decided this field yet: its only writes are
             // constructor parameters the call-graph fixpoint is still joining
             // (types/ctor_ident.h). `Never` is how "undecided" is spelled here,
@@ -551,13 +575,14 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     // argument is `undefined`, exactly as the call would deliver it.
     for (size_t i = 0; i < callee.observedParams.size(); ++i) {
         const Type at = i < args.size() ? args[i] : Type::undefined();
-        callee.observedParams[i] = join(callee.observedParams[i], at);
+        mod_.contribute(InferMemo::Contrib::FnParam, index, static_cast<uint32_t>(i), at);
     }
     // The pin wins over the join for the RESULT — the invocation's promise is
     // the stronger statement, and it is the one the callee's typed entry was
     // built from (`applySignaturePins`). The contribution above happened either
     // way.
     if (pinnedReturn) return Type::number();
+    if (InferMemo* memo = mod_.rec()) memo->noteFunction(index, callee.version);
     return callee.signature.returnType;
 }
 
@@ -631,36 +656,22 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
             return Type::dynamic();
         }
 
-        auto contributeArgs = [&](MethodInfo& target) {
+        // Under pin optimism (flow.h `pinOptimism`): a Dynamic argument does not
+        // poison the join — the optimistic stand-in for what an offline profile
+        // would report as the site's actual class. The commonest source is an
+        // UNCALLED forwarder (three.js `multiply(m) { return
+        // this.multiplyMatrices(this, m) }`) whose own dynamic parameter
+        // otherwise reaches every hot method, and `Matrix4.multiplyMatrices` is
+        // exactly the method it costs.
+        //
+        // Deliberately NOT per-field, unlike the read path above: a census
+        // profile is what should decide it. What the flag buys is bounded at the
+        // fold (`widenMethods`) instead — see there for why skipping the
+        // contribution outright is a miscompile and what is done about it.
+        auto contributeArgs = [&](uint32_t index, const MethodInfo& target) {
             for (size_t i = 0; i < target.observedParams.size(); ++i) {
-                contributeShape(target, i, args);
-                if (i < args.size()) {
-                    if (target.hasDefault.size() > i && target.hasDefault[i] &&
-                        args[i].is(TypeKind::Undefined)) {
-                        continue;
-                    }
-                    // Under pin optimism (flow.h `pinOptimism`): a Dynamic
-                    // argument does not poison the join — the optimistic
-                    // stand-in for what an offline profile would report as the
-                    // site's actual class. The commonest source is an UNCALLED
-                    // forwarder (three.js `multiply(m) { return
-                    // this.multiplyMatrices(this, m) }`) whose own dynamic
-                    // parameter otherwise reaches every hot method, and
-                    // `Matrix4.multiplyMatrices` is exactly the method it costs.
-                    //
-                    // Deliberately NOT per-field, unlike the read path above:
-                    // a census profile is what should decide it. What the flag
-                    // buys is bounded at the fold (`widenMethods`) instead —
-                    // see there for why skipping the contribution outright is a
-                    // miscompile and what is done about it.
-                    if (mod_.pinOptimism() && args[i].is(TypeKind::Dynamic)) {
-                        target.sawSkippedDynamicArg[i] = true;
-                        continue;
-                    }
-                    target.observedParams[i] = join(target.observedParams[i], args[i]);
-                } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
-                    target.observedParams[i] = join(target.observedParams[i], Type::undefined());
-                }
+                contributeShape(mod_, index, target, i, args);
+                contributeMethodArg(mod_, index, target, i, args);
             }
         };
 
@@ -676,7 +687,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                 }
                 if (!hasDefaults) continue;
             }
-            contributeArgs(target);
+            contributeArgs(index, target);
         }
         if (record_) ++mod_.unboundedMethodCalls;
         return Type::dynamic();
@@ -692,33 +703,20 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
         return Type::dynamic();
     }
 
-    auto contributeArgs = [&](MethodInfo& target) {
-        for (size_t i = 0; i < target.observedParams.size(); ++i) {
-            contributeShape(target, i, args);
-            if (i < args.size()) {
-                if (target.hasDefault.size() > i && target.hasDefault[i] &&
-                    args[i].is(TypeKind::Undefined)) {
-                    continue;
-                }
-                // As in the unbounded-receiver path above — under pin optimism
-                // a Dynamic argument does not poison the join, and the
-                // parameter is marked so the fold can charge for it.
-                if (mod_.pinOptimism() && args[i].is(TypeKind::Dynamic)) {
-                    target.sawSkippedDynamicArg[i] = true;
-                    continue;
-                }
-                target.observedParams[i] = join(target.observedParams[i], args[i]);
-            } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
-                target.observedParams[i] = join(target.observedParams[i], Type::undefined());
-            }
-        }
-    };
-
+    // As in the unbounded-receiver path above — under pin optimism a Dynamic
+    // argument does not poison the join, and the parameter is marked so the fold
+    // can charge for it.
     Type ret = Type::never();
     bool everyTargetSpeaks = true;
     for (const uint32_t index : targets) {
-        MethodInfo& target = mod_.methods.methods()[index];
-        contributeArgs(target);
+        const MethodInfo& target = mod_.methods.methods()[index];
+        for (size_t i = 0; i < target.observedParams.size(); ++i) {
+            contributeShape(mod_, index, target, i, args);
+            contributeMethodArg(mod_, index, target, i, args);
+        }
+        if (InferMemo* memo = mod_.rec()) {
+            memo->noteMethod(index, target.version, mod_.methodPoison.poisons(index));
+        }
         if (mod_.methodPoison.poisons(index)) {
             everyTargetSpeaks = false;
             continue;
@@ -751,6 +749,9 @@ std::vector<Type> FlowAnalyzer::ctorParamTypes(uint32_t ctorIndex, size_t count)
     std::vector<Type> out(count, Type::dynamic());
     if (!mod_.ctorParamTypes || ctorIndex == kNoCtor) return out;
     const CtorInfo& self = mod_.ctors.ctors()[ctorIndex];
+    if (InferMemo* memo = mod_.rec()) {
+        memo->noteCtor(ctorIndex, self.version, mod_.ctorPoison.poisons(self.className));
+    }
     if (!self.plainParams || mod_.ctorPoison.poisons(self.className)) return out;
     for (size_t i = 0; i < count && i < self.signature.params.size(); ++i) {
         out[i] = self.signature.params[i];

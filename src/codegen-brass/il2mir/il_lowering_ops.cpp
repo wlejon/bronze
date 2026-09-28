@@ -12,6 +12,7 @@ namespace {
 // guard where the helper never ran.
 Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value* op0, Value* op1,
                            const char* helper) {
+    if (lowering->run_once()) return b.build_call(helper, Type::i64(), {op0, op1});
     BasicBlock* cur = b.current_block();
     const std::string prefix = "num_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* fast = b.append_block(prefix + "_fast");
@@ -97,7 +98,9 @@ Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, co
 // A dynamic `< <= > >=`: two Numbers compare inline as doubles (the ordered
 // compare, false at NaN, as IsLessThan answers); anything else takes the
 // helper, which owns ToPrimitive and the string and BigInt orders.
-Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper) {
+Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1, const char* helper,
+                                bool helper_only) {
+    if (helper_only) return b.build_and(b.build_call(helper, Type::i32(), {op0, op1}), b.build_iconst_i32(1));
     BasicBlock* cur = b.current_block();
     const std::string prefix = "rel_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* fast = b.append_block(prefix + "_fast");
@@ -370,7 +373,8 @@ bool lower_ops_instruction(
                     inst_ast.op == BronzeOp::Shl    ? "bronze_dynamic_shl" :
                     inst_ast.op == BronzeOp::Shr    ? "bronze_dynamic_shr" :
                                                       "bronze_dynamic_ushr";
-                res_val = lower_dynamic_bitwise(b, inst_ast.op, op0, op1, helper);
+                res_val = lowering->run_once() ? b.build_call(helper, Type::i64(), {op0, op1})
+                                               : lower_dynamic_bitwise(b, inst_ast.op, op0, op1, helper);
                 return true;
             }
             Value* op0 = lowering->ensure_type(get_opd(0), Type::i32(), b);
@@ -462,7 +466,7 @@ bool lower_ops_instruction(
             const char* helper = (inst_ast.op == BronzeOp::RelLt) ? "bronze_rel_lt" :
                                  (inst_ast.op == BronzeOp::RelLe) ? "bronze_rel_le" :
                                  (inst_ast.op == BronzeOp::RelGt) ? "bronze_rel_gt" : "bronze_rel_ge";
-            res_val = lower_dynamic_relational(b, inst_ast.op, op0, op1, helper);
+            res_val = lower_dynamic_relational(b, inst_ast.op, op0, op1, helper, lowering->run_once());
             return true;
         }
 

@@ -173,6 +173,12 @@ public:
                a.identityOnly_ == b.identityOnly_ && a.builtHere_ == b.builtHere_;
     }
     friend constexpr bool operator!=(Type a, Type b) { return !(a == b); }
+    // Every field, packed: equal exactly when the types are, and otherwise an
+    // arbitrary but fixed order (for sorting, never for meaning).
+    constexpr uint64_t bitsForOrdering() const {
+        return (uint64_t{static_cast<uint8_t>(kind_)} << 40) | (uint64_t{payload_} << 8) |
+               (identityOnly_ ? 2u : 0u) | (builtHere_ ? 1u : 0u);
+    }
 
     // Canonical text: "number", "object", "object#3", "function#1", ...
     std::string str() const;

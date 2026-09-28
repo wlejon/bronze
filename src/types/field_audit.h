@@ -25,6 +25,9 @@ public:
     void scan(const ast::Module& module);
     void observe(const ast::Expr* rhs, Type t);
     bool settle();
+    // How many `observe` calls moved a type: what the incremental rounds'
+    // check reads to see a walk change the audit (types/infer_memo.h).
+    uint64_t observeChanges() const { return observeChanges_; }
 
     // Whether the NAME is clean everywhere, ignoring the receiver-scoped
     // refusals. The reporting question ("which names did the audit certify at
@@ -105,6 +108,7 @@ private:
     std::map<std::string, uint32_t> globalRefusals_;
     std::map<ShapeClassId, std::string> classRefusals_;
     bool numericKeyWrite_ = false;
+    uint64_t observeChanges_ = 0;
 };
 
 bool builtinOwnedName(const std::string& name);

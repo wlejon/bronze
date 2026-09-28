@@ -24,6 +24,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_env_get", "bronze_env_get_tdz", "bronze_env_set", "bronze_env_ancestor", "bronze_create_func",
         "bronze_create_function", "bronze_function_singleton", "bronze_import_meta", "bronze_create_array",
         "bronze_create_object", "bronze_prop_get", "bronze_prop_set", "bronze_elem_get", "bronze_elem_set",
+        "bronze_prop_poly_scan", "bronze_prop_get_counted", "bronze_prop_set_counted",
         "bronze_method_def", "bronze_method_def_computed", "bronze_define_own_attr", "bronze_accessor_def",
         "bronze_accessor_def_computed", "bronze_module_namespace", "bronze_ic_get", "bronze_ic_set",
         "bronze_call_dynamic_0", "bronze_call_dynamic_1", "bronze_call_dynamic_2", "bronze_call_dynamic_3",

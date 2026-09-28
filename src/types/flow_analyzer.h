@@ -69,6 +69,7 @@ private:
     const Env& visible() const { return scope_.env; }
 
     Type lookup(const std::string& name) const;
+    std::pair<uint32_t, Type> outerCell(const std::string& name) const;
     void declare(const std::string& name, Type t);
     void assign(const std::string& name, Type t);
 

@@ -110,18 +110,21 @@ bool widenSignatures(ModuleContext& mod) {
     bool changed = false;
     for (auto& fn : mod.functions) {
         if (!fn.directCallable) continue;
+        bool moved = false;
         for (size_t p = 0; p < fn.signature.params.size(); ++p) {
             const Type widened = join(fn.signature.params[p], fn.observedParams[p]);
             if (widened != fn.signature.params[p]) {
                 fn.signature.params[p] = widened;
-                changed = true;
+                moved = true;
             }
         }
         const Type widenedReturn = join(fn.signature.returnType, fn.observedReturn);
         if (widenedReturn != fn.signature.returnType) {
             fn.signature.returnType = widenedReturn;
-            changed = true;
+            moved = true;
         }
+        if (moved) ++fn.version;
+        changed = moved || changed;
     }
     return changed;
 }
@@ -160,6 +163,8 @@ bool widenMethods(ModuleContext& mod) {
     for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
         auto& m = mod.methods.methods()[i];
         const bool speaks = m.plainParams && !mod.methodPoison.poisons(i);
+        const bool changedBefore = changed;
+        changed = false;
         for (size_t p = 0; p < m.signature.params.size(); ++p) {
             Type widened =
                 speaks ? join(m.signature.params[p], m.observedParams[p]) : Type::dynamic();
@@ -190,6 +195,8 @@ bool widenMethods(ModuleContext& mod) {
             m.signature.returnType = widenedReturn;
             changed = true;
         }
+        if (changed) ++m.version;
+        changed = changed || changedBefore;
     }
     return changed;
 }
@@ -212,6 +219,7 @@ bool widenCtors(ModuleContext& mod) {
                 speaks ? join(c.signature.params[i], c.observedParams[i]) : Type::dynamic();
             if (widened != c.signature.params[i]) {
                 c.signature.params[i] = widened;
+                ++c.version;
                 changed = true;
             }
         }
@@ -227,6 +235,7 @@ bool finalizeUnreachedCtors(ModuleContext& mod) {
             if (!param.is(TypeKind::Never)) continue;
             param = Type::dynamic();
             c.unreached = true;
+            ++c.version;
             changed = true;
         }
     }
@@ -260,10 +269,12 @@ bool finalizeUnreachedMethods(ModuleContext& mod) {
             if (!param.is(TypeKind::Never)) continue;
             param = Type::dynamic();
             m.unreached = true;
+            ++m.version;
             changed = true;
         }
         if (m.signature.returnType.is(TypeKind::Never)) {
             m.signature.returnType = Type::dynamic();
+            ++m.version;
             changed = true;
         }
     }
@@ -547,6 +558,11 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         mod.indexByName.emplace(decl->name, i);
     }
 
+    // The incremental rounds (types/infer_memo.h): on unless switched off, and
+    // under BRONZE_INFER_CHECK every replay is walked as well and compared.
+    InferMemo memo(std::getenv("BRONZE_INFER_CHECK") != nullptr);
+    if (std::getenv("BRONZE_NO_INFER_MEMO") == nullptr) mod.memo = &memo;
+
     support::PhaseTimer timer(support::timingsEnabled(), 4);
     timer.mark("setup");
     const uint32_t primeRounds = primeFixpoint(mod, split, result);
@@ -610,6 +626,12 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     timer.mark("record");
     if (support::timingsEnabled()) {
         std::fprintf(stderr, "    rounds: %u narrowing, %u fixpoint, 1 record\n", primeRounds, rounds);
+        if (mod.memo != nullptr) {
+            std::fprintf(stderr, "    memo: %llu walked, %llu replayed, %llu checked\n",
+                         static_cast<unsigned long long>(memo.walks()),
+                         static_cast<unsigned long long>(memo.hits()),
+                         static_cast<unsigned long long>(memo.checked()));
+        }
     }
 
     if (mod.ctorParamTypes) {

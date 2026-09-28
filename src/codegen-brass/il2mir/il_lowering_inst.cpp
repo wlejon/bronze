@@ -189,7 +189,8 @@ bool IlLowering::lower_instruction(
         case BronzeOp::EnvCreate: {
             Value* parent_val = ensure_type(get_opd(0), Type::i64(), b);
             Value* size_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.param_count));
-            res_val = alloc_lowering_.lower_env_create(b, parent_val, size_val, inst_ast.param_count);
+            res_val = run_once_ ? b.build_call("bronze_env_create", Type::i64(), {parent_val, size_val})
+                                : alloc_lowering_.lower_env_create(b, parent_val, size_val, inst_ast.param_count);
             break;
         }
 
@@ -372,12 +373,14 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::CreateArray: {
             Value* size_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.param_count));
-            res_val = alloc_lowering_.lower_create_array(b, size_val, inst_ast.param_count);
+            res_val = run_once_ ? b.build_call("bronze_create_array", Type::i64(), {size_val})
+                                : alloc_lowering_.lower_create_array(b, size_val, inst_ast.param_count);
             break;
         }
 
         case BronzeOp::CreateObject: {
-            res_val = alloc_lowering_.lower_create_object(b);
+            res_val = run_once_ ? b.build_call("bronze_create_object", Type::i64(), {})
+                                : alloc_lowering_.lower_create_object(b);
             break;
         }
 

@@ -126,6 +126,16 @@ Value* sign_extend(Builder& b, Value* v, int bits) {
 
 } // namespace
 
+Value* PropertyLoweringHelper::lower_elem_get_call(Builder& b, Value* obj, Value* index) {
+    return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)});
+}
+
+void PropertyLoweringHelper::lower_elem_set_call(Builder& b, Value* obj, Value* index, Value* val,
+                                                 uint32_t strict) {
+    b.build_call("bronze_elem_set", Type::void_type(),
+                 {obj, boxed_index(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
+}
+
 Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index) {
     if (!enable_inlined_fastpaths_) {
         return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)});

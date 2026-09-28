@@ -40,10 +40,13 @@ add_library(bronze_codegen_brass STATIC
     # il2mir: the bronze IL → brass MIR translator.
     il2mir/il_alloc_lowering.cpp
     il2mir/il_elem_lowering.cpp
+    il2mir/il_ic_lowering.cpp
+    il2mir/il_ic_stub.cpp
     il2mir/il_lowering.cpp
     il2mir/il_lowering_calls.cpp
     il2mir/il_lowering_coro.cpp
     il2mir/il_lowering_eh.cpp
+    il2mir/il_lowering_hoist.cpp
     il2mir/il_lowering_inst.cpp
     il2mir/il_lowering_lazy.cpp
     il2mir/il_lowering_ops.cpp

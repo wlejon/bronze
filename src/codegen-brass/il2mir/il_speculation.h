@@ -108,6 +108,7 @@ inline constexpr std::string_view kSpecEntryName = "<entry>";
 class SpecSiteEmitter {
 public:
     void set_feedback(SpecFeedback* feedback) { feedback_ = feedback; }
+    [[nodiscard]] bool has_feedback() const noexcept { return feedback_ != nullptr; }
     // An AOT lowering with a profile (il_spec_profile.h): each site's branch
     // stays a branch (no guard, no count), laid out as the profile's counts
     // say, and a site the profile shows megamorphic skips its poly scan.
@@ -119,8 +120,11 @@ public:
     // Ends the current block with the site's branch to `fast` / `slow` (and
     // its guard, where the function can deopt), then leaves the builder at
     // the end of `slow`, after its miss count. `slow` must be new and empty.
+    // With `counter_out`, `slow` does not count: *counter_out is the
+    // counter's address (0 without feedback), for a helper the slow path
+    // calls anyway to increment (the `*_counted` helpers, bronze_abi.h).
     void emit_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, SpecKind kind,
-                     std::string_view tag = {});
+                     std::string_view tag = {}, Value** counter_out = nullptr);
     // Gives each guard of the function its state: the values live into its
     // resume block. Run once the function's CFG is final.
     void finish_function(Function& fn);

@@ -13,9 +13,14 @@ bronze_add_module(abi
 # as `bronze_object_abi_fingerprint`; the runtime compares the object's stamp
 # against its own value at program entry (runtime/abi_guard.h). PUBLIC so
 # both sides read one value from one place.
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/bronze_abi.h" _abi_content)
+#
+# bronze_abi.h is read with its textual parts put back in place
+# (cmake/bronze_abi_text.cmake), so the hash is of the ABI's text however the
+# header is split across files.
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/bronze_abi_text.cmake")
+bronze_abi_read_text("${CMAKE_CURRENT_SOURCE_DIR}/bronze_abi.h" _abi_content)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/bronze_abi_tls.h" _abi_tls_content)
 string(SHA256 _bronze_abi_sha256 "${_abi_content}${_abi_tls_content}")
 string(SUBSTRING "${_bronze_abi_sha256}" 0 8 _bronze_abi_fingerprint)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS bronze_abi.h bronze_abi_tls.h)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS bronze_abi_tls.h)
 target_compile_definitions(bronze_abi PUBLIC "BRONZE_ABI_FINGERPRINT=0x${_bronze_abi_fingerprint}u")

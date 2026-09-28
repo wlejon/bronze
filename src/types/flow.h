@@ -13,6 +13,7 @@
 #include "types/ctor_ident.h"
 #include "types/env.h"
 #include "types/field_audit.h"
+#include "types/infer_memo.h"
 #include "types/method_ident.h"
 #include "types/pins.h"
 #include "types/result.h"
@@ -45,6 +46,9 @@ struct FunctionInfo {
     // into `signature` at the end of it.
     std::vector<Type> observedParams;
     Type observedReturn = Type::never();
+    // Moves whenever `signature` does: what a memoized walk that read the
+    // signature compares (types/infer_memo.h).
+    uint32_t version = 0;
 };
 
 // One function's binding state, chained through `parent` for closures.
@@ -239,6 +243,20 @@ struct ModuleContext {
 
     // The syntactic answers every round re-asks (types/syntax_memo.h).
     SyntaxMemo syntax;
+
+    // ---- incremental rounds (types/infer_memo.h) ------------------------------
+
+    // Null when the memo is off. `rec()` is non-null exactly while a probe walk
+    // is recording what it reads, which is when a read has to be noted.
+    InferMemo* memo = nullptr;
+    InferMemo* rec() const { return memo != nullptr && memo->recording() ? memo : nullptr; }
+    // Every join that moved a module binding; with the poison versions and the
+    // audit's own count, what the memo's check compares to see a walk change a
+    // program-wide table.
+    uint64_t persistentWrites = 0;
+    // Every join into a round's observation tables goes through here, so a
+    // replayed walk can make the same joins without walking.
+    void contribute(InferMemo::Contrib kind, uint32_t index, uint32_t param, Type t);
 };
 
 struct FunctionOutcome {

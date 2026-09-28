@@ -7,6 +7,7 @@
 #include <brass/mir/verifier.hpp>
 #include "support/timings.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -69,6 +70,18 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     prop_lowering_.set_feedback_driven(options.spec_feedback != nullptr || spec_.has_profile());
     prop_lowering_.set_in_process(options.spec_feedback != nullptr);
     prop_lowering_.set_key_names(&options_.key_constants);
+    // Only the table address is shared: it is live across the body anyway
+    // (it replaces the module delta every site read), where a shared key map
+    // address or guard constant would join every guard's state for nothing.
+    prop_lowering_.set_table_base_fn([this](Builder& b) { return hoisted(b, Hoist::IcTable); });
+    // BRONZE_IC_FULL=1: every inline path in full everywhere, the lowering
+    // before the small forms and run-once code (the A/B seam).
+    static const bool full = [] {
+        const char* v = std::getenv("BRONZE_IC_FULL");
+        return v && v[0] == '1';
+    }();
+    small_forms_ = !full;
+    prop_lowering_.set_small_forms(small_forms_);
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
@@ -668,6 +681,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     argv_block_ = nullptr;
     argv_block_words_ = 0;
     current_module_delta_ = nullptr;
+    begin_hoisting(nullptr);
+    analyze_function(fn_ast);
 
     // Every dynamic value is a tagged SSA value (lower_abi_type): the stack
     // maps of every tier describe it, so bronze's collector finds and
@@ -709,6 +724,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     Builder b(mod);
     b.set_function(fn);
+    // The lowering spells every tag, offset and limit inline; one of each per
+    // block is enough (BRONZE_NO_CONST_REUSE=1 for the A/B).
+    static const bool no_const_reuse = std::getenv("BRONZE_NO_CONST_REUSE") != nullptr;
+    b.set_const_reuse(!no_const_reuse);
     // Every function carries guards (il_speculation.h), a coroutine body
     // too: brass's coroutine lowering keeps its suspend states out of the
     // guards' resume ids and adds the frame, and anything it reloads, to
@@ -858,6 +877,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 b.build_call("bronze_register_fn_sources", Type::void_type(), {text_addr, text_len, entries_addr, entries_count});
             }
         }
+        // Everything the body shares is computed here, where it dominates
+        // every block, and only once something first asks for it.
+        begin_hoisting(b.current_block());
     }
 
     // 3. Set up non-entry block parameters
@@ -881,6 +903,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         b.position_at_end(bb);
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();
+        run_once_ = run_once_blocks_.count(blk_ast.id) != 0;
 
         for (const auto& inst_ast : blk_ast.instructions) {
             if (current_file_id_ != 0 && inst_ast.line > 0) {
@@ -900,6 +923,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         }
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
     }
+    run_once_ = false;
     route_exception_edges(b, block_map);
 
     if (stack_check_entry_bb_ != nullptr) {

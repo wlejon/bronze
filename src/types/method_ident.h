@@ -60,6 +60,8 @@ struct MethodInfo {
     // flow_expr.cpp, where the contribution is).
     std::vector<Type> observedParamShapes;
     std::vector<Type> paramShapes;
+    // Moves whenever `signature` or `paramShapes` does (types/infer_memo.h).
+    uint32_t version = 0;
 };
 
 // Forward declaration

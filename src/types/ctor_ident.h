@@ -95,6 +95,8 @@ struct CtorInfo {
     // No construction site this compilation saw reaches it: the signature was
     // still `Never` when the fixpoint settled.
     bool unreached = false;
+    // Moves whenever `signature` does (types/infer_memo.h).
+    uint32_t version = 0;
 };
 
 // Every named `class` in the program, the constructor each declares, and the
