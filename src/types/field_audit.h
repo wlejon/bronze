@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ast/ast.h"
@@ -97,7 +98,9 @@ private:
     std::vector<Write> writes_;
     std::vector<Computed> computed_;
     uint32_t computedRefuted_ = 0;
-    std::map<const ast::Expr*, Type> rhsTypes_;
+    // Looked up for every expression of every round (observe), and never
+    // walked in order.
+    std::unordered_map<const ast::Expr*, Type> rhsTypes_;
     std::map<std::string, std::string> names_;
     std::map<std::string, uint32_t> globalRefusals_;
     std::map<ShapeClassId, std::string> classRefusals_;

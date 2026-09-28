@@ -180,10 +180,19 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     newFn.displayName = dName;
     if (isAsync) newFn.descFlags |= BRONZE_FN_DESC_ASYNC;
 
+    // The enclosing function's state, set aside for the nested body and put
+    // back after it. What the body starts from empty (lowerBodyWithPlan
+    // clears it, enterFunctionEnv recomputes it, and nothing between here
+    // and there reads it) moves out rather than being copied: at the top
+    // level of a large module these hold thousands of names, once per
+    // closure.
     size_t outerBlockIdx = currentBlockIdx_;
-    auto outerVarBindings = varBindings_;
-    auto outerVarNativeClasses = varNativeClasses_;
-    auto outerActiveVarMap = activeVarMap_;
+    auto outerVarBindings = std::move(varBindings_);
+    varBindings_.clear();
+    auto outerVarNativeClasses = std::move(varNativeClasses_);
+    varNativeClasses_.clear();
+    auto outerActiveVarMap = std::move(activeVarMap_);
+    activeVarMap_.clear();
     // The `func.ref` memo is per IL FUNCTION: a `Value` in it names an
     // instruction result, and result ids are numbered within one function.
     // `lowerFunctionBody` clears it on the way in, which is only half of what
@@ -193,17 +202,22 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // number. `(function () { h(g, 4); })(); h(g, 3);` called the anonymous
     // function twice and never called `h` again. Saved with the rest of the
     // per-function state, and restored below with it.
-    auto outerFunctionRefMap = functionRefMap_;
+    auto outerFunctionRefMap = std::move(functionRefMap_);
+    functionRefMap_.clear();
     auto outerScopeDepth = currentScopeDepth_;
     auto outerVarDeclCounter = varDeclCounter_;
-    auto outerJumpStack = jumpStack_;
+    auto outerJumpStack = std::move(jumpStack_);
+    jumpStack_.clear();
     // Labels do not cross a function boundary: `break outer` inside a nested
     // function names nothing, and the outer label must not be visible to it.
     auto outerLabelStack = labelStack_;
     labelStack_.clear();
-    auto outerScopeHasEnv = scopeHasEnv_;
-    auto outerCaptured = capturedNames_;
-    auto outerMemoryNames = memoryNames_;
+    auto outerScopeHasEnv = std::move(scopeHasEnv_);
+    scopeHasEnv_.clear();
+    auto outerCaptured = std::move(capturedNames_);
+    capturedNames_.clear();
+    auto outerMemoryNames = std::move(memoryNames_);
+    memoryNames_.clear();
     // A `return` inside a nested function runs THAT function's finallys and
     // none of the enclosing ones, exactly as `break outer` names nothing
     // across the same boundary.
@@ -213,7 +227,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     currentHandler_ = il::kNoBlock;
     auto outerEntryEnvValue = entryEnvValue_;
     auto outerImmutableEnvCache = std::move(immutableEnvCache_);
-    auto outerAssignedNames = assignedNames_;
+    assignedNamesUndo_.emplace_back();
     auto outerCachedTypedElemGet = cachedTypedElemGet_;
     cachedTypedElemGet_.reset();
     auto outerThisValue = currentThisValue_;
@@ -238,7 +252,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // `var` names are per FUNCTION, so the nested body's list must not outlive
     // it: leaving the callee's behind would make an enclosing free name look
     // like a `var` the callee declared.
-    auto outerVarNames = functionVarNames_;
+    auto outerVarNames = std::move(functionVarNames_);
+    functionVarNames_.clear();
     // The typed-element binding scan asks about the body being lowered NOW;
     // lowerFunctionBody points it at the nested body, so the outer pointer
     // comes back with everything else here.
@@ -252,15 +267,16 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // The `--pins` signature entries, before the body is lowered: the parameter
     // types are what the body's reads of them resolve against, and the return
     // type is part of the calling convention a recursive call already reads.
-    if (!applySignaturePins(params, span, newFn)) return std::nullopt;
+    // A failure still puts the enclosing state back, below.
+    const bool pinsOk = applySignaturePins(params, span, newFn);
     // And the proof, which since stage E4 covers the case a pin used to be the
     // only answer for: a nested declaration whose every call site this
     // compilation can enumerate (`planClosureParamNumbers`). After the pins, so
     // that the manifest's error reporting still owns a position it cannot
     // honour; both only ever move a slot from Dynamic to F64, so the order
     // decides nothing else.
-    applyProvenClosureParams(site, params, newFn);
-    const bool bodyOk = lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
+    if (pinsOk) applyProvenClosureParams(site, params, newFn);
+    const bool bodyOk = pinsOk && lowerFunctionBody(params, body, newFn, isGenerator, isAsync);
     // The name's record is visible to the BODY and to nothing else — 15.2.5
     // creates it around the closure, not in the scope that wrote the
     // expression — so it leaves the stack the moment the body is lowered, and
@@ -268,31 +284,32 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     if (nfeEnv != il::kNoValue) envScopes_.pop_back();
 
     strictCode_ = outerStrict;
-    varBindings_ = outerVarBindings;
-    varNativeClasses_ = outerVarNativeClasses;
-    activeVarMap_ = outerActiveVarMap;
-    functionRefMap_ = outerFunctionRefMap;
+    varBindings_ = std::move(outerVarBindings);
+    varNativeClasses_ = std::move(outerVarNativeClasses);
+    activeVarMap_ = std::move(outerActiveVarMap);
+    functionRefMap_ = std::move(outerFunctionRefMap);
     currentScopeDepth_ = outerScopeDepth;
     varDeclCounter_ = outerVarDeclCounter;
-    jumpStack_ = outerJumpStack;
-    labelStack_ = outerLabelStack;
+    jumpStack_ = std::move(outerJumpStack);
+    labelStack_ = std::move(outerLabelStack);
     currentBlockIdx_ = outerBlockIdx;
-    scopeHasEnv_ = outerScopeHasEnv;
-    capturedNames_ = outerCaptured;
-    memoryNames_ = outerMemoryNames;
-    cleanupStack_ = outerCleanupStack;
+    scopeHasEnv_ = std::move(outerScopeHasEnv);
+    capturedNames_ = std::move(outerCaptured);
+    memoryNames_ = std::move(outerMemoryNames);
+    cleanupStack_ = std::move(outerCleanupStack);
     currentHandler_ = outerHandler;
     currentEnvValue_ = outerEnvValue;
     entryEnvValue_ = outerEntryEnvValue;
     immutableEnvCache_ = std::move(outerImmutableEnvCache);
-    assignedNames_ = std::move(outerAssignedNames);
+    for (const std::string& name : assignedNamesUndo_.back()) assignedNames_.erase(name);
+    assignedNamesUndo_.pop_back();
     cachedTypedElemGet_ = outerCachedTypedElemGet;
     currentThisValue_ = outerThisValue;
     currentFunctionIsArrow_ = outerIsArrow;
     derivedCtorThis_ = outerDerivedCtorThis;
     functionEnvBase_ = outerEnvBase;
     functionEnvScope_ = outerEnvScope;
-    functionVarNames_ = outerVarNames;
+    functionVarNames_ = std::move(outerVarNames);
     currentBodyStmts_ = outerBodyStmts;
     if (!bodyOk) {
         if (envScopes_.size() > outerEnvDepth) envScopes_.resize(outerEnvDepth);

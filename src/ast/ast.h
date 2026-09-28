@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -13,6 +14,9 @@ class Visitor;
 
 struct Node {
     bronze::Span span;
+    // The node's class as a small number (typeTagOf), filled on the first
+    // exactAs asked of it; 0 until then. See exactAs.
+    mutable uint16_t typeTag_ = 0;
     virtual ~Node() = default;
     virtual void accept(Visitor& v) const = 0;
 };
@@ -919,13 +923,39 @@ public:
 // general-purpose hierarchy walk, which in a chain of thirty casts per
 // expression was a tenth of an embedded load's front end (FlowAnalyzer::
 // exprKind). `P` is the pointer type, as a dynamic_cast spells it.
+//
+// The compare is of small numbers rather than of type_info objects: a node's
+// class is looked up once (typeid, which on MSVC is an out-of-line call, and a
+// by-name compare whenever two modules hold their own copy of a class's
+// type_info) and remembered in the node, so a chain of thirty questions asked
+// of it on every inference round is thirty integer compares.
+namespace detail {
+// The number naming the class `ti` describes: the same for every type_info of
+// one class, whichever module it lives in; never 0.
+uint16_t typeTagOf(const std::type_info& ti) noexcept;
+template <typename T>
+inline uint16_t typeTag() noexcept {
+    static const uint16_t tag = typeTagOf(typeid(T));
+    return tag;
+}
+inline uint16_t nodeTypeTag(const Node& n) noexcept {
+    // A node may be asked about on two threads at once; both would write the
+    // same number, so the plain store needs no ordering.
+    uint16_t tag = n.typeTag_;
+    if (tag == 0) {
+        tag = typeTagOf(typeid(n));
+        n.typeTag_ = tag;
+    }
+    return tag;
+}
+}  // namespace detail
+
 template <typename P>
 inline P exactAs(const Node* n) noexcept {
     using T = std::remove_const_t<std::remove_pointer_t<P>>;
     static_assert(std::is_final_v<T>, "exactAs names a final node class");
     if (n == nullptr) return nullptr;
-    const std::type_info& ti = typeid(*n);
-    return (&ti == &typeid(T) || ti == typeid(T)) ? static_cast<P>(n) : nullptr;
+    return detail::nodeTypeTag(*n) == detail::typeTag<T>() ? static_cast<P>(n) : nullptr;
 }
 
 }  // namespace bronze::ast

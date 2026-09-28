@@ -384,7 +384,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
 
     caller_to_callee_map_.clear();
     external_signatures_.clear();
-    std::vector<std::string> resolved_names(ast.functions.size());
+    resolved_names_.assign(ast.functions.size(), std::string());
+    std::vector<std::string>& resolved_names = resolved_names_;
     std::unordered_set<std::string> curry_names;
     for (const auto& [name, indices] : name_to_indices) {
         if (indices.size() == 1) {
@@ -527,14 +528,14 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
-    std::unordered_map<std::string, uint32_t> callee_param_counts;
-    std::unordered_set<std::string> closure_functions;
+    callee_param_counts_.clear();
+    closure_functions_.clear();
     for (const auto& fn : ast.functions) {
         for (const auto& blk : fn.blocks) {
             for (const auto& inst : blk.instructions) {
                 if (inst.op == BronzeOp::CreateFunc) {
-                    callee_param_counts[inst.callee_name] = inst.param_count;
-                    closure_functions.insert(inst.callee_name);
+                    callee_param_counts_[inst.callee_name] = inst.param_count;
+                    closure_functions_.insert(inst.callee_name);
                 }
             }
         }
@@ -574,36 +575,37 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     }
 
     ltimer.mark("declare");
-    // 2. Lower each function body
+    // 2. Lower each function body, or leave it lazy (il_lowering_lazy.cpp).
+    lazy_bodies_.clear();
     for (size_t i = 0; i < ast.functions.size(); ++i) {
         if (resolved_names[i].empty()) continue;
-        const auto& fn_ast = ast.functions[i];
-        if (fn_ast.blocks.empty()) continue;
-        current_fn_idx_ = i;
-        const std::string& fn_name = resolved_names[i];
-        if (!lower_function(fn_ast, *mod, fn_name)) {
-            return nullptr;
-        }
-        if (fn_name != "main" && !fn_ast.is_coroutine_body()) {
-            uint32_t arity = static_cast<uint32_t>(fn_ast.params.size());
-            auto it_ar = callee_param_counts.find(fn_ast.name);
-            if (it_ar != callee_param_counts.end()) {
-                arity = it_ar->second;
-            } else {
-                auto it_res = callee_param_counts.find(fn_name);
-                if (it_res != callee_param_counts.end()) {
-                    arity = it_res->second;
-                }
+        if (ast.functions[i].blocks.empty()) continue;
+        if (options_.lazy_bodies && !must_lower_eagerly(i)) {
+            Function* fn = mod->get_function(resolved_names[i]);
+            if (!fn) return nullptr;
+            fn->mark_lazy();
+            lazy_bodies_.emplace(fn, LazyBody{i, false});
+            if (Function* wfn = mod->get_function("__wrapper_" + resolved_names[i])) {
+                wfn->mark_lazy();
+                lazy_bodies_.emplace(wfn, LazyBody{i, true});
             }
-            bool is_closure = closure_functions.count(fn_ast.name) || closure_functions.count(fn_name);
-            if (!emit_wrapper(fn_ast, *mod, fn_name, arity, is_closure)) {
-                return nullptr;
-            }
+            continue;
         }
+        if (!lower_body(i, *mod) || !lower_wrapper(i, *mod)) return nullptr;
     }
 
     ltimer.mark("lower fns");
     declare_data_symbols(*mod);
+    // A lazy body is not there for the scan to see, and declaring its data
+    // symbols when it is built would change the module's declarations while
+    // other threads read them: every table a function other than the entry
+    // can address is declared here (the entry is always built).
+    if (!lazy_bodies_.empty()) {
+        for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
+                                 "__bronze_ic_table", "__bronze_module_slot"}) {
+            mod->add_symbol_role(module_sym(base), SymbolRole::Data);
+        }
+    }
     if (bronze::support::timingsEnabled()) {
         size_t fns = 0, blocks = 0, insts = 0;
         for (const Function* f : mod->functions()) {
@@ -614,7 +616,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
                 for (const Instruction* inst : *const_cast<BasicBlock*>(bb)) insts += inst ? 1 : 0;
             }
         }
-        std::fprintf(stderr, "        mir: %zu functions, %zu blocks, %zu instructions\n", fns, blocks, insts);
+        std::fprintf(stderr, "        mir: %zu functions (%zu lazy), %zu blocks, %zu instructions\n", fns,
+                     lazy_bodies_.size(), blocks, insts);
     }
     ltimer.mark("data syms");
 

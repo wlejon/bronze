@@ -112,7 +112,7 @@ private:
     // caller is how the shadowing bug above got in once already.
     template <typename List>
     void scopedStmtList(const List& stmts, uint32_t depth) {
-        const ScopeSave saved = saveDeclarations(ast::getScopeDeclarations(stmts));
+        const ScopeSave saved = saveDeclarations(mod_.syntax.scopeDeclarations(stmts));
         stmtList(stmts, depth);
         restoreDeclarations(saved);
     }

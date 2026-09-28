@@ -68,7 +68,7 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
     // entries) are the pipeline's function pointers: what a closure's code
     // pointer is in every tier.
     for (const brass::Function* fn : module.functions()) {
-        if (!fn || fn->block_count() == 0) continue;
+        if (!fn || !fn->has_body()) continue;
         data.register_external_symbol(fn->name(), pipeline.function_address(fn->name(), fn));
     }
     if (!data.load_object(image)) {
@@ -90,7 +90,7 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
     }
 
     for (const brass::Function* fn : module.functions()) {
-        if (!fn || fn->block_count() == 0) continue;
+        if (!fn || !fn->has_body()) continue;
         const std::string mirName(fn->name());
         const std::string unique = (mirName == entrySymbol) ? "main" : mirName;
         const void* desc =

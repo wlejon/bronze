@@ -9,6 +9,7 @@
 
 #include "ast/ast.h"
 #include "types/class_layout.h"
+#include "types/env.h"
 #include "types/module_literal.h"
 #include "types/shape_class.h"
 #include "types/type.h"
@@ -107,9 +108,9 @@ struct InferenceResult {
 
     // Per merge point: the binding types the join at that point produced.
     // See `typeOfBindingAt` for what a merge point is and what the entry
-    // covers. The inner map is ordered only so the analysis can compare
-    // whole environments cheaply; nothing here reaches an output path.
-    std::unordered_map<const ast::Stmt*, std::map<std::string, Type>> mergeBindings;
+    // covers. The inner environment is ordered only so the analysis can
+    // compare whole environments cheaply; nothing here reaches an output path.
+    std::unordered_map<const ast::Stmt*, Env> mergeBindings;
 
     // Call sites proven to reach a pristine builtin `Math` method: the
     // module-wide taint scan says nothing can have changed `Math`, and no

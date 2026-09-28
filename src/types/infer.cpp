@@ -1,6 +1,7 @@
 
 #include "types/infer.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <set>
 #include <string>
@@ -12,6 +13,7 @@
 #include "types/escape.h"
 #include "types/flow.h"
 #include "types/method_ident.h"
+#include "support/timings.h"
 
 namespace bronze::types {
 namespace {
@@ -399,26 +401,29 @@ private:
 // the module bindings decided before a method body read them; walking the
 // bodies too also finds the bindings that are assigned inside a function rather
 // than at the top level, which a top-level-only seed could not see.
-void primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceResult& result) {
-    if (!mod.valueFlow) return;
+uint32_t primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceResult& result) {
+    if (!mod.valueFlow) return 0;
+    uint32_t rounds = 0;
     for (uint32_t iter = 0; iter <= kMaxCallGraphIterations; ++iter) {
+        ++rounds;
         resetObservations(mod);
         const size_t poisonBefore = mod.methodPoison.version();
         const size_t ctorPoisonBefore = mod.ctorPoison.version();
-        const std::map<std::string, Type> bindingsBefore = mod.moduleBindings;
+        const auto bindingsBefore = mod.moduleBindings;
         // The outcome is deliberately not consulted: a walk that fails has set
         // `mod.failed`, and the loop below walks the same statements and
         // reports it — these are extra looks at bodies that loop reads anyway,
         // and a second road out of the function here would be a second place to
         // keep right.
-        if (!runPass(mod, split, /*record=*/false)) return;
+        if (!runPass(mod, split, /*record=*/false)) return rounds;
         bool changed = refineFieldHarvest(mod, result);
         changed = mod.methodPoison.version() != poisonBefore || changed;
         changed = mod.ctorPoison.version() != ctorPoisonBefore || changed;
         changed = mod.moduleBindings != bindingsBefore || changed;
         changed = mod.fieldAudit.settle() || changed;
-        if (!changed) return;
+        if (!changed) return rounds;
     }
+    return rounds;
 }
 
 }  // namespace
@@ -542,18 +547,23 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         mod.indexByName.emplace(decl->name, i);
     }
 
-    primeFixpoint(mod, split, result);
+    support::PhaseTimer timer(support::timingsEnabled(), 4);
+    timer.mark("setup");
+    const uint32_t primeRounds = primeFixpoint(mod, split, result);
+    timer.mark("narrowing");
 
     bool converged = false;
     bool finalized = false;
+    uint32_t rounds = 0;
     for (uint32_t iter = 0; iter <= kMaxCallGraphIterations; ++iter) {
+        ++rounds;
         resetObservations(mod);
         const size_t poisonBefore = mod.methodPoison.version();
         const size_t ctorPoisonBefore = mod.ctorPoison.version();
         // The module-binding table is joined into, never rebuilt, so a round
         // that widens one entry has to be a round that says "changed" — the
         // consumers of the table are the very bodies this pass just walked.
-        const std::map<std::string, Type> bindingsBefore = mod.moduleBindings;
+        const auto bindingsBefore = mod.moduleBindings;
         if (!runPass(mod, split, /*record=*/false)) return std::nullopt;
         bool changed = widenSignatures(mod);
         changed = widenMethods(mod) || changed;
@@ -591,10 +601,16 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         return std::nullopt;
     }
 
+    timer.mark("fixpoint");
+
     // One more walk, this time filling the side table. Everything it reads is
     // already at the fixpoint, so this pass cannot change any signature.
     resetObservations(mod);
     if (!runPass(mod, split, /*record=*/true)) return std::nullopt;
+    timer.mark("record");
+    if (support::timingsEnabled()) {
+        std::fprintf(stderr, "    rounds: %u narrowing, %u fixpoint, 1 record\n", primeRounds, rounds);
+    }
 
     if (mod.ctorParamTypes) {
         auto& rep = result.ctorParams;
@@ -703,7 +719,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         result.moduleSignatures.push_back(fn.signature);
         result.moduleDirectCallable.push_back(fn.directCallable);
     }
-    result.moduleFunctionIndex = mod.indexByName;
+    result.moduleFunctionIndex = std::map<std::string, uint32_t>(mod.indexByName.begin(), mod.indexByName.end());
 
     for (uint32_t slot = 0; slot < result.functions.size(); ++slot) {
         const uint32_t index = result.functions[slot].index;

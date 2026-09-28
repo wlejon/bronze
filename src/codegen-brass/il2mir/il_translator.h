@@ -57,6 +57,15 @@ struct TranslatorOptions {
     // tiered engine turns it off unless asked (BrassTieredEngine,
     // BRONZE_VERIFY_MIR). An object-file build keeps it.
     bool verify_lowered_module = true;
+    // Build each function's body when something first needs it (its first
+    // call, or a tier-up that copies it) instead of up front: the module
+    // declares every function, builds the entry and the coroutine bodies
+    // with every function that starts one (coroutine lowering pairs them
+    // once, before anything runs), and leaves the rest lazy, with a body
+    // provider (brass Module::set_body_provider) that owns the lowering.
+    // Only an unoptimized module for brass's tiered pipeline, whose tiers
+    // build a body on demand; see translate_bronze_ast_lazy.
+    bool lazy_bodies = false;
     bool allow_fp_reassociation = false;
     bool trace_lowering = false;
     bool enable_f64_demote = true;
@@ -179,6 +188,17 @@ struct TranslationResult {
 // Translate the flattened bronze IL module to a brass MIR module.
 TranslationResult translate_bronze_ast(
     const BronzeModuleAST& ast,
+    const TranslatorOptions& options,
+    DiagnosticReporter* diag = nullptr
+);
+
+// translate_bronze_ast for options.lazy_bodies: the module's body provider
+// keeps `ast` and the lowering alive for as long as the module lives, and a
+// body that fails to build reports its diagnostics on stderr (brass then
+// stops the program: the function has nothing to run). Without
+// lazy_bodies, the same as translate_bronze_ast.
+TranslationResult translate_bronze_ast_lazy(
+    BronzeModuleAST&& ast,
     const TranslatorOptions& options,
     DiagnosticReporter* diag = nullptr
 );

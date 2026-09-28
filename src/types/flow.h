@@ -4,16 +4,19 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ast/ast.h"
 #include "support/diagnostics.h"
 #include "types/class_layout.h"
 #include "types/ctor_ident.h"
+#include "types/env.h"
 #include "types/field_audit.h"
 #include "types/method_ident.h"
 #include "types/pins.h"
 #include "types/result.h"
+#include "types/syntax_memo.h"
 #include "types/type.h"
 
 namespace bronze::types {
@@ -28,8 +31,6 @@ inline constexpr uint32_t kMaxCallGraphIterations = 32;
 // limit: a chain this long is a cyclic one, which is a run-time TypeError.
 inline constexpr uint32_t kMaxExtendsHops = 64;
 
-// `name -> Type` at one program point.
-using Env = std::map<std::string, Type>;
 
 // One module-level function as the call-graph fixpoint sees it.
 struct FunctionInfo {
@@ -55,7 +56,10 @@ struct Scope {
     Scope* parent = nullptr;
     Env env;                        // flow-sensitive, per program point
     Env cells;                      // env-backed, one cell joined over the function
-    std::set<std::string> captured;
+    // The names this body keeps in cells (SyntaxMemo::cellNames); owned by
+    // the module's memo.
+    const std::set<std::string>* captured = nullptr;
+    bool isCell(const std::string& name) const { return captured != nullptr && captured->count(name) != 0; }
     // The class whose instances `this` names in this body, or `kNoShapeClass`.
     //
     // Set for a non-static class method, accessor, field initializer and
@@ -88,7 +92,9 @@ struct Scope {
 
 struct ModuleContext {
     std::vector<FunctionInfo> functions;      // by module function index
-    std::map<std::string, uint32_t> indexByName;
+    // This and the two name tables below are looked up by every identifier
+    // read of every round, and never walked in order.
+    std::unordered_map<std::string, uint32_t> indexByName;
     InferenceResult* result = nullptr;
     DiagnosticSink* diags = nullptr;
     // Shape class per constructor, computed once from its `this.x = ...`
@@ -100,7 +106,7 @@ struct ModuleContext {
     // can tell a read of a module-level `const Float64Array` from a read of
     // the global builtin — and the builtin-identity proofs need exactly that
     // distinction.
-    std::set<std::string> moduleScopeNames;
+    std::unordered_set<std::string> moduleScopeNames;
     // No statement in the whole (merged) program can change what `Math`
     // means: the global is unassignable by compile error, no bare `Math`
     // escapes member-read position, no member write/update/delete goes
@@ -192,7 +198,7 @@ struct ModuleContext {
     // `Scope::thisClass` records, and the same reason a primitive is never
     // answered from here — a `number` would be an unguarded claim about a value,
     // and this table has no program order to justify one with.
-    std::map<std::string, Type> moduleBindings;
+    std::unordered_map<std::string, Type> moduleBindings;
     // `BRONZE_NO_VALUE_FLOW` turns the table off, leaving every module-scope
     // read `Dynamic` as it was.
     bool valueFlow = false;
@@ -230,6 +236,9 @@ struct ModuleContext {
     // needs to come back down within a round. Cleared per round because the
     // round loop is where inputs that NARROW (the field audit) change.
     std::unordered_map<const ast::Node*, Env> nestedCells;
+
+    // The syntactic answers every round re-asks (types/syntax_memo.h).
+    SyntaxMemo syntax;
 };
 
 struct FunctionOutcome {

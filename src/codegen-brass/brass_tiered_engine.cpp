@@ -137,7 +137,7 @@ void* BrassTieredProgram::symbolAddress(std::string_view name) const {
     if (tier_ == ExecutionTier::Tier2_Optimized) return jitProgram_ ? jitProgram_->symbolAddress(name) : nullptr;
     if (void* addr = image_ ? image_->symbolAddress(name) : nullptr) return addr;
     const brass::Function* fn = mirModule_ ? mirModule_->get_function(name) : nullptr;
-    if (!fn || fn->block_count() == 0) return nullptr;
+    if (!fn || !fn->has_body()) return nullptr;
     return dispatchTable_->pipeline().function_address(name, fn);
 }
 
@@ -236,6 +236,18 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     backend.setOptimize(tier == ExecutionTier::Tier2_Optimized);
     backend.setEmitDebugInfo(config_.emitDebugInfo);
     backend.setVerifyLowered(jitVerifiesMir());
+    // The pipeline tiers build a function's MIR when it first runs, or a
+    // tier-up first copies it: a large program's load lowers what its start
+    // needs, not every function it has. Tier 1 compiles everything before
+    // running anyway. A speculation profile names every site of the
+    // program, so a run writing one lowers them all. BRONZE_EAGER_MIR=1 is
+    // the A/B seam.
+    {
+        const char* eager = std::getenv("BRONZE_EAGER_MIR");
+        const char* profileOut = std::getenv("BRONZE_SPEC_PROFILE_OUT");
+        backend.setLazyBodies((tier == ExecutionTier::Auto || tier == ExecutionTier::Tier0_Interpreter) &&
+                              !(eager && std::string_view(eager) == "1") && !(profileOut && *profileOut));
+    }
 
     std::unique_ptr<BrassTieredProgram> prog(new BrassTieredProgram(tier, entrySymbol));
     if (tier == ExecutionTier::Tier2_Optimized) {

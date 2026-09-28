@@ -68,7 +68,10 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     cachedTypedElemGet_.reset();
     currentStmtSpan_ = Span{};
     functionVarNames_ = ast::getHoistedVarDeclarations(body);
-    for (auto& n : ast::getAssignedNames(body)) assignedNames_.insert(std::move(n));
+    for (auto& n : ast::getAssignedNames(body)) {
+        auto [it, added] = assignedNames_.insert(std::move(n));
+        if (added && !assignedNamesUndo_.empty()) assignedNamesUndo_.back().push_back(*it);
+    }
 
     // Synthetic parameters lead: [__env?][__this?] then source params.
     const uint32_t paramBase = static_cast<uint32_t>(ilFn.firstSourceParam());

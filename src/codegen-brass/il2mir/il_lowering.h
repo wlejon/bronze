@@ -27,6 +27,11 @@ public:
     IlLowering(const TranslatorOptions& options, DiagnosticReporter* diag = nullptr);
 
     std::unique_ptr<Module> lower_module(const BronzeModuleAST& ast);
+    // Lazy bodies (TranslatorOptions::lazy_bodies): builds the body of `fn`,
+    // a function lower_module left lazy, from the AST it was given (which
+    // must outlive this object, as must this object the module). The
+    // module's body provider; run one at a time.
+    bool lower_lazy_body(Function& fn);
     Value* ensure_type(Value* val, Type target_type, Builder& b);
     std::string resolve_callee(const std::string& callee_name) const;
     std::string resolve_create_func_callee(const std::string& callee_name);
@@ -47,6 +52,7 @@ public:
     const TranslatorOptions& options() const { return options_; }
     const BronzeModuleAST* current_ast() const { return current_ast_; }
     DiagnosticReporter* diag() const { return diag_; }
+    void set_diag(DiagnosticReporter* diag) { diag_ = diag; }
     void set_has_error(bool e) { has_error_ = e; }
     std::string module_sym(const std::string& base) const {
         if (options_.entry_symbol.empty() || options_.entry_symbol == "main" || options_.entry_symbol == "bronze_main") {
@@ -73,6 +79,24 @@ public:
 private:
     Value* coro_frame_val_ = nullptr;
     uint32_t coro_suspend_count_ = 0;
+    // AST function `i`'s body, and its `__wrapper_` (a no-op for a function
+    // that has none).
+    bool lower_body(size_t i, Module& mod);
+    bool lower_wrapper(size_t i, Module& mod);
+    // Whether AST function `i` is built up front even with lazy bodies.
+    bool must_lower_eagerly(size_t i) const;
+    // The lazy functions: AST index, and whether it is the wrapper.
+    struct LazyBody {
+        size_t index = 0;
+        bool wrapper = false;
+    };
+    std::unordered_map<const Function*, LazyBody> lazy_bodies_;
+    // Per AST function: its MIR name, empty for a duplicate not defined.
+    std::vector<std::string> resolved_names_;
+    // What each wrapper's arity and closure-ness come from (CreateFunc
+    // sites anywhere in the module).
+    std::unordered_map<std::string, uint32_t> callee_param_counts_;
+    std::unordered_set<std::string> closure_functions_;
     bool lower_function(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name);
     bool emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name, uint32_t declared_param_count, bool is_closure = false);
     bool lower_instruction(const BronzeInstruction& inst_ast, Builder& b, Function* fn,

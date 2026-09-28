@@ -85,6 +85,10 @@ public:
     // Whether buildMirModule runs brass's verifier over what it lowered
     // (il2mir::TranslatorOptions::verify_lowered_module).
     void setVerifyLowered(bool on) { verifyLowered_ = on; }
+    // Whether buildMirModule leaves function bodies to be built on first
+    // need (il2mir::TranslatorOptions::lazy_bodies). Only for a module run
+    // unoptimized by brass's tiered pipeline.
+    void setLazyBodies(bool on) { lazyBodies_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -118,6 +122,7 @@ private:
     bool registerFnSources_ = true;
     bool perThreadModuleData_ = true;
     bool verifyLowered_ = true;
+    bool lazyBodies_ = false;
     brass::Target target_ = brass::Target::host();
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;

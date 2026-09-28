@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -18,8 +19,15 @@ struct SafeConstructorInfo {
 struct FunctionEffects {
     bool hasUnresolvedCalls = false;
     bool mutatesLength = false;
-    std::vector<uint8_t> writtenKeys;
+    // The key indexes the function (or anything it calls directly) sets,
+    // sorted and distinct: a module has thousands of keys and functions, and
+    // a function writes a handful, so a dense flag per key was most of the
+    // pass's time.
+    std::vector<uint32_t> writtenKeys;
     std::vector<uint32_t> directCallees;
+    bool writes(uint32_t key) const {
+        return std::binary_search(writtenKeys.begin(), writtenKeys.end(), key);
+    }
 };
 
 bool isImpureForLoopPropHoist(const il::Instruction& inst);

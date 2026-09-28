@@ -509,6 +509,9 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
         moduleCaptures.insert(std::move(name));
     }
 
+    // What moduleEnvSlots_ holds, to look up: a segmented top level slots
+    // every declaration, thousands in a large module.
+    std::unordered_set<std::string> slotted(moduleEnvSlots_.begin(), moduleEnvSlots_.end());
     auto addSlot = [&](const std::string& name) {
         // A segmented top level gives EVERY declaration a slot, captured or
         // not: a binding declared in one segment and read in another crosses
@@ -518,10 +521,7 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
         // record instead of SSA — paid by modules big enough that compile
         // time, not top-level throughput, is the binding constraint.
         if (!segmentTopLevel_ && !moduleCaptures.contains(name)) return;
-        if (std::find(moduleEnvSlots_.begin(), moduleEnvSlots_.end(), name) !=
-            moduleEnvSlots_.end()) {
-            return;
-        }
+        if (!slotted.insert(name).second) return;
         moduleEnvSlots_.push_back(name);
     };
     // Only the top level's OWN declarations. A top-level function
@@ -664,8 +664,11 @@ bool Lowerer::referencesModuleEnv(const std::vector<ast::Param>& params,
     // expression — `function bump(v = ++calls)`. Left out, the record is
     // never loaded and the name resolves to nothing at all.
     for (auto& name : ast::getParamReferencedNames(params)) referenced.insert(std::move(name));
-    for (const auto& slot : moduleEnvSlots_) {
-        if (referenced.contains(slot)) return true;
+    // Whether the two sets meet, walked from the referenced side: a function
+    // names a few dozen, the module record can hold thousands.
+    const auto& slotOf = envScopes_[moduleEnvScope_].slotOf;
+    for (const auto& name : referenced) {
+        if (slotOf.contains(name)) return true;
     }
     return false;
 }

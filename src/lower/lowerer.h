@@ -107,6 +107,11 @@ private:
     il::ValueId entryEnvValue_ = il::kNoValue;
     std::unordered_map<uint64_t, Value> immutableEnvCache_;
     std::unordered_set<std::string> assignedNames_;
+    // Per closure being lowered, the names its body added to
+    // `assignedNames_`, which lowerClosure takes back out when it is done:
+    // the enclosing function's set comes back without a copy of it (at the
+    // top level of a large module, thousands of names per closure).
+    std::vector<std::vector<std::string>> assignedNamesUndo_;
     std::optional<CachedTypedElemGet> cachedTypedElemGet_;
     bool inUserFunction_ = false;
     il::ValueId currentEnv(il::Function& ilFn);

@@ -368,6 +368,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     // bronze_module_instance), laid out by brass_backend_sections.cpp.
     options.per_thread_module_data = perThreadModuleData_;
     options.verify_lowered_module = verifyLowered_;
+    options.lazy_bodies = lazyBodies_ && !optimize;
     options.spec_feedback = specFeedback_;
     options.spec_profile = specProfile_;
     // The inline-cache table: lowering numbered every property and method
@@ -420,7 +421,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     mtimer.mark("options");
     auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
     mtimer.mark("brass ast");
-    il2mir::TranslationResult res = il2mir::translate_bronze_ast(ast, options, &reporter);
+    il2mir::TranslationResult res = il2mir::translate_bronze_ast_lazy(std::move(ast), options, &reporter);
     mtimer.mark("translate");
 
     if (!res.success || !res.module || reporter.has_errors()) {

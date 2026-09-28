@@ -1,6 +1,7 @@
 #include "lower/loop_prop_analysis.h"
 
 #include <algorithm>
+#include <iterator>
 
 namespace bronze::lower {
 
@@ -337,7 +338,6 @@ std::vector<FunctionEffects> computeModuleEffects(
 
     for (size_t f = 0; f < module.functions.size(); ++f) {
         const auto& fn = module.functions[f];
-        effects[f].writtenKeys.assign(module.keyConstants.size(), 0);
         std::vector<DefSite> defs = computeDefSites(fn);
 
         for (const auto& blk : fn.blocks) {
@@ -345,8 +345,8 @@ std::vector<FunctionEffects> computeModuleEffects(
                 if (inst.op == il::Op::PropSet) {
                     if (inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex]) {
                         effects[f].hasUnresolvedCalls = true;
-                    } else if (inst.keyIndex < effects[f].writtenKeys.size()) {
-                        effects[f].writtenKeys[inst.keyIndex] = 1;
+                    } else if (inst.keyIndex < module.keyConstants.size()) {
+                        effects[f].writtenKeys.push_back(inst.keyIndex);
                     }
                     if (inst.keyIndex == lengthKeyIndex ||
                         (inst.keyIndex < module.keyConstants.size() &&
@@ -397,6 +397,9 @@ std::vector<FunctionEffects> computeModuleEffects(
                 }
             }
         }
+        auto& keys = effects[f].writtenKeys;
+        std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
     }
 
     // Fixed-point propagation
@@ -413,11 +416,16 @@ std::vector<FunctionEffects> computeModuleEffects(
                     effects[f].mutatesLength = true;
                     changed = true;
                 }
-                for (size_t k = 0; k < effects[callee].writtenKeys.size(); ++k) {
-                    if (effects[callee].writtenKeys[k] && !effects[f].writtenKeys[k]) {
-                        effects[f].writtenKeys[k] = 1;
-                        changed = true;
-                    }
+                const auto& theirs = effects[callee].writtenKeys;
+                auto& mine = effects[f].writtenKeys;
+                if (theirs.empty() || &theirs == &mine) continue;
+                std::vector<uint32_t> merged;
+                merged.reserve(mine.size() + theirs.size());
+                std::set_union(mine.begin(), mine.end(), theirs.begin(), theirs.end(),
+                               std::back_inserter(merged));
+                if (merged.size() != mine.size()) {
+                    mine = std::move(merged);
+                    changed = true;
                 }
             }
         }
@@ -523,7 +531,7 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
                     if (keyIndex == lengthKeyIndex && eff.mutatesLength) {
                         if (!isNonEscapingLocalObject(recv, fn, defs)) return true;
                     }
-                    if (keyIndex < eff.writtenKeys.size() && eff.writtenKeys[keyIndex]) {
+                    if (eff.writes(keyIndex)) {
                         for (il::ValueId op : inst.operands) {
                             if (op == recv) return true;
                         }

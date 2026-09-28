@@ -138,7 +138,7 @@ bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
 }
 
 void FlowAnalyzer::declare(const std::string& name, Type t) {
-    if (scope_.captured.count(name) != 0) {
+    if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
     } else {
         scope_.env[name] = t;
@@ -183,7 +183,7 @@ void FlowAnalyzer::restoreDeclarations(const ScopeSave& saved) {
 }
 
 void FlowAnalyzer::assign(const std::string& name, Type t) {
-    if (scope_.captured.count(name) != 0) {
+    if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
         return;
     }
@@ -251,7 +251,7 @@ void FlowAnalyzer::pushMarker(const char* label, uint32_t depth) {
 
 void FlowAnalyzer::closeStmt(size_t slot, const Env& before) {
     if (slot == kNoSlot) return;
-    const Env after = visible();
+    const Env& after = visible();
     std::vector<BindingChange> changes;
     for (const auto& entry : after) {
         const auto it = before.find(entry.first);
@@ -286,12 +286,12 @@ static bool isExportClause(const ast::Stmt& s) {
 }
 
 void FlowAnalyzer::seedHoistedVars(const std::vector<const ast::Stmt*>& body) {
-    for (const auto& name : ast::getHoistedVarDeclarations(body)) {
+    for (const auto& name : mod_.syntax.hoistedVars(body)) {
         // A parameter of the same name IS the binding (10.2.11 step 27.e
         // copies its value), and seedParams has already typed it. A captured
         // name is one cell for the whole function, which `lookup` finds
         // without a declaration.
-        if (scope_.env.count(name) != 0 || scope_.captured.count(name) != 0) continue;
+        if (scope_.env.count(name) != 0 || scope_.isCell(name)) continue;
         scope_.env[name] = Type::undefined();
     }
 }
@@ -327,8 +327,14 @@ void FlowAnalyzer::stmt(const ast::Stmt& s, uint32_t index, uint32_t depth) {
         fail(s.span, "saw an unknown statement node kind");
         return;
     }
-    const Env before = visible();
+    // Only a recording walk reports what the statement changed; a probe walk
+    // would copy the environment at every statement for nothing.
     const size_t slot = pushStmt(label, index, depth);
+    if (slot == kNoSlot) {
+        dispatch(s, depth);
+        return;
+    }
+    const Env before = visible();
     dispatch(s, depth);
     closeStmt(slot, before);
 }
@@ -391,7 +397,7 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         // spans the condition, the body and the update and ends here.
         std::vector<const ast::Stmt*> initList;
         for (const auto& initStmt : f->init) initList.push_back(initStmt.get());
-        const ScopeSave saved = saveDeclarations(ast::getScopeDeclarations(initList));
+        const ScopeSave saved = saveDeclarations(mod_.syntax.scopeDeclarations(initList));
         if (!f->init.empty()) {
             pushMarker("init", depth + 1);
             for (const auto& initStmt : f->init) stmt(*initStmt, 0, depth + 2);
@@ -528,7 +534,7 @@ void FlowAnalyzer::switchStmt(const ast::SwitchStmt& sw, uint32_t depth) {
     }
     breakStack_.pop_back();
     scope_.env = entry;
-    widenAssigned(ast::getAssignedNames(sw));
+    widenAssigned(mod_.syntax.assignedNames(sw));
     recordMerge(sw, scope_.env);
 }
 
@@ -570,7 +576,7 @@ void FlowAnalyzer::tryStmt(const ast::TryStmt& t, uint32_t depth) {
         scopedStmtList(t.finallyBody, depth + 2);
     }
     scope_.env = entry;
-    widenAssigned(ast::getAssignedNames(t));
+    widenAssigned(mod_.syntax.assignedNames(t));
     recordMerge(t, scope_.env);
 }
 
@@ -657,7 +663,7 @@ namespace {
 void seedParams(Scope& scope, const std::vector<ast::Param>& params,
                 const std::vector<Type>& paramTypes) {
     auto seedOne = [&](const std::string& name, Type t) {
-        if (scope.captured.count(name) != 0) {
+        if (scope.isCell(name)) {
             scope.cells[name] = join(scope.cells[name], t);
         } else {
             scope.env[name] = t;
@@ -682,12 +688,24 @@ void seedParams(Scope& scope, const std::vector<ast::Param>& params,
 
 Env joinEnv(const Env& a, const Env& b) {
     Env out;
-    for (const auto& entry : a) {
-        const auto it = b.find(entry.first);
-        // A name in only one side is a block-scoped declaration that did not
-        // survive the merge; dropping it makes a later read answer Dynamic,
-        // which is the sound direction.
-        if (it != b.end()) out.emplace(entry.first, join(entry.second, it->second));
+    out.reserve(std::min(a.size(), b.size()));
+    // Both sides are in name order, so one merge walk pairs them up.
+    auto ia = a.begin();
+    auto ib = b.begin();
+    while (ia != a.end() && ib != b.end()) {
+        const int c = ia->first.compare(ib->first);
+        if (c < 0) {
+            ++ia;
+        } else if (c > 0) {
+            ++ib;
+        } else {
+            // A name in only one side is a block-scoped declaration that did
+            // not survive the merge; dropping it makes a later read answer
+            // Dynamic, which is the sound direction.
+            out.appendSorted(ia->first, join(ia->second, ib->second));
+            ++ia;
+            ++ib;
+        }
     }
     return out;
 }
@@ -703,10 +721,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
     // believe about a variable exactly what lowering decided about where it
     // lives. Flow sensitivity on a cell would be unsound — a handler can
     // observe any of the writes.
-    const auto captured = ast::getCapturedNames(args.body);
-    scope.captured.insert(captured.begin(), captured.end());
-    const auto tryAssigned = ast::getTryAssignedNames(args.body);
-    scope.captured.insert(tryAssigned.begin(), tryAssigned.end());
+    scope.captured = &mod.syntax.cellNames(args.body);
 
     static const std::vector<ast::Param> kEmptyParams;
     const auto& params = args.params != nullptr ? *args.params : kEmptyParams;

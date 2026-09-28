@@ -1,6 +1,37 @@
 #include "ast/ast.h"
 
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 namespace bronze::ast {
+
+namespace detail {
+
+uint16_t typeTagOf(const std::type_info& ti) noexcept {
+    // Per thread, by type_info address: a program holds a few dozen node
+    // classes, and a node is asked here once.
+    thread_local std::vector<std::pair<const std::type_info*, uint16_t>> seen;
+    for (const auto& [info, tag] : seen) {
+        if (info == &ti) return tag;
+    }
+    // By name across threads and modules: two type_infos of one class are
+    // equal (`==` compares names) but need not be one object.
+    static std::mutex mutex;
+    static auto* byName = new std::unordered_map<std::string, uint16_t>();
+    uint16_t tag = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto [it, fresh] = byName->try_emplace(ti.name(), static_cast<uint16_t>(byName->size() + 1));
+        tag = it->second;
+    }
+    seen.emplace_back(&ti, tag);
+    return tag;
+}
+
+}  // namespace detail
 
 void NumberLit::accept(Visitor& v) const { v.visit(*this); }
 void BigIntLit::accept(Visitor& v) const { v.visit(*this); }
