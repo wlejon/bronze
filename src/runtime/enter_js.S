@@ -92,21 +92,24 @@ SYM(bronze_enter_js):
     .p2align 2
 SYM(bronze_enter_js):
     .cfi_startproc
-    stp x29, x30, [sp, #-64]!
-    .cfi_def_cfa_offset 64
-    .cfi_offset x29, -64
-    .cfi_offset x30, -56
-    mov x29, sp
-    .cfi_def_cfa x29, 64
-    stp x28, x19, [sp, #16]
-    .cfi_offset x28, -48
-    .cfi_offset x19, -40
-    stp x20, x21, [sp, #32]
+    stp x28, x27, [sp, #-80]!
+    .cfi_def_cfa_offset 80
+    stp x24, x23, [sp, #16]
+    stp x22, x21, [sp, #32]
+    stp x20, x19, [sp, #48]
+    stp x29, x30, [sp, #64]
+    add x29, sp, #64
+    .cfi_def_cfa x29, 16
+    .cfi_offset x30, -8
+    .cfi_offset x29, -16
+    .cfi_offset x19, -24
     .cfi_offset x20, -32
-    .cfi_offset x21, -24
-    stp x22, x23, [sp, #48]
-    .cfi_offset x22, -16
-    .cfi_offset x23, -8
+    .cfi_offset x21, -40
+    .cfi_offset x22, -48
+    .cfi_offset x23, -56
+    .cfi_offset x24, -64
+    .cfi_offset x27, -72
+    .cfi_offset x28, -80
     mov x19, x0
     mov x20, x1
     mov x21, x2
@@ -122,11 +125,11 @@ SYM(bronze_enter_js):
     mov x3, x23
     blr x19
 
-    ldp x22, x23, [sp, #48]
-    ldp x20, x21, [sp, #32]
-    ldp x28, x19, [sp, #16]
-    ldp x29, x30, [sp], #64
-    .cfi_def_cfa sp, 0
+    ldp x29, x30, [sp, #64]
+    ldp x20, x19, [sp, #48]
+    ldp x22, x21, [sp, #32]
+    ldp x24, x23, [sp, #16]
+    ldp x28, x27, [sp], #80
     ret
     .cfi_endproc
 #if !defined(__APPLE__)
