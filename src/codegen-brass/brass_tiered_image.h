@@ -75,7 +75,10 @@ private:
 
     const brass::Module* module_ = nullptr;
     std::unique_ptr<brass::codegen::JitExecutionEngine> data_;
-    std::unordered_map<std::string, const bronze_fn_desc*> descs_;
+    std::string entrySymbol_;
+    // Resolved on first ask, misses included (descriptorOf).
+    mutable std::mutex descsMutex_;
+    mutable std::unordered_map<std::string, const bronze_fn_desc*> descs_;
     std::unordered_map<uint32_t, uint32_t> fileIndexById_;
     uint32_t placeholderFileId_ = 0;
     const char* const* files_ = nullptr;

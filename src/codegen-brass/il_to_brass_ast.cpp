@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace bronze::codegen {
@@ -454,6 +455,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
     return out;
 }
 
+il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
+                                       const std::vector<std::string>& uniqueNames, const LowerContext& ctx,
+                                       std::vector<uint32_t>* globalReadKeys);
+
 } // namespace
 
 std::string globalReadThunkName(uint32_t keyIndex) {
@@ -468,7 +473,7 @@ il2mir::BronzeModuleAST lowerToBrassAst(
     il2mir::BronzeModuleAST ast;
     ast.name = !module.name.empty() ? module.name : (!module.sourceFiles.empty() ? module.sourceFiles[0] : "");
     ast.source_files = module.sourceFiles;
-    ast.functions.reserve(module.functions.size());
+    ast.functions.resize(module.functions.size());
 
     if (globalReadKeys) {
         globalReadKeys->clear();
@@ -479,9 +484,54 @@ il2mir::BronzeModuleAST lowerToBrassAst(
     const std::vector<LineTable>& lineTables = module.lineTables;
     const LowerContext ctx{module, uniqueNames, lineTables};
 
-    for (size_t fnIdx = 0; fnIdx < module.functions.size(); ++fnIdx) {
-        const auto& fn = module.functions[fnIdx];
+    // Functions convert independently (the conversion reads the module and
+    // writes only its own function), so a large program's are split across
+    // threads: a page of ten thousand functions spent ~50 ms here on one
+    // thread, most of it allocating instructions. The read keys are sorted
+    // and made unique below, so the order the chunks report them in is moot.
+    const size_t count = module.functions.size();
+    size_t threads = 1;
+    if (count >= 2048) {
+        threads = std::min<size_t>(std::max(1u, std::thread::hardware_concurrency()), 8);
+        threads = std::min(threads, count / 1024);
+    }
+    std::vector<std::vector<uint32_t>> chunkKeys(threads);
+    auto convertRange = [&](size_t chunk) {
+        const size_t begin = count * chunk / threads;
+        const size_t end = count * (chunk + 1) / threads;
+        for (size_t fnIdx = begin; fnIdx < end; ++fnIdx) {
+            ast.functions[fnIdx] = convertFunction(module.functions[fnIdx], fnIdx, uniqueNames, ctx,
+                                                   globalReadKeys ? &chunkKeys[chunk] : nullptr);
+        }
+    };
+    if (threads == 1) {
+        convertRange(0);
+    } else {
+        std::vector<std::thread> workers;
+        workers.reserve(threads - 1);
+        for (size_t t = 1; t < threads; ++t) workers.emplace_back(convertRange, t);
+        convertRange(0);
+        for (std::thread& w : workers) w.join();
+    }
+    if (globalReadKeys) {
+        for (const auto& keys : chunkKeys) globalReadKeys->insert(globalReadKeys->end(), keys.begin(), keys.end());
+    }
 
+    if (globalReadKeys && !globalReadKeys->empty()) {
+        std::sort(globalReadKeys->begin(), globalReadKeys->end());
+        globalReadKeys->erase(std::unique(globalReadKeys->begin(), globalReadKeys->end()),
+                              globalReadKeys->end());
+    }
+
+    return ast;
+}
+
+namespace {
+
+il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
+                                       const std::vector<std::string>& uniqueNames, const LowerContext& ctx,
+                                       std::vector<uint32_t>* globalReadKeys) {
+    {
         il2mir::BronzeFunction bfn;
         bfn.name = (fnIdx < uniqueNames.size() && !uniqueNames[fnIdx].empty())
                        ? uniqueNames[fnIdx]
@@ -498,10 +548,7 @@ il2mir::BronzeModuleAST lowerToBrassAst(
             bfn.params.push_back({static_cast<uint32_t>(p), mapType(fn.params[p].type)});
         }
 
-        if (fn.blocks.empty()) {
-            ast.functions.push_back(std::move(bfn));
-            continue;
-        }
+        if (fn.blocks.empty()) return bfn;
 
         bfn.blocks.reserve(fn.blocks.size());
         for (const auto& block : fn.blocks) {
@@ -525,16 +572,10 @@ il2mir::BronzeModuleAST lowerToBrassAst(
             bfn.blocks.push_back(std::move(bblk));
         }
 
-        ast.functions.push_back(std::move(bfn));
+        return bfn;
     }
-
-    if (globalReadKeys && !globalReadKeys->empty()) {
-        std::sort(globalReadKeys->begin(), globalReadKeys->end());
-        globalReadKeys->erase(std::unique(globalReadKeys->begin(), globalReadKeys->end()),
-                              globalReadKeys->end());
-    }
-
-    return ast;
 }
+
+} // namespace
 
 } // namespace bronze::codegen

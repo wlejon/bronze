@@ -9,6 +9,7 @@
 #include "embed/embed.h"
 
 #include "support/diagnostics.h"
+#include "support/timings.h"
 
 #include <brass/runtime/multi_tier_pipeline.hpp>
 #include <brass/runtime/code_installer.hpp>
@@ -281,9 +282,12 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         // exit, for an AOT build (il2mir/il_spec_profile.h).
         il2mir::register_spec_profile_dump(spec);
     }
+    // The inside of eval's "codegen" phase for a tiered program.
+    support::PhaseTimer ptimer(support::timingsEnabled(), 4);
     std::vector<uint32_t> globalReadKeys;
     prog->mirModule_ = backend.buildMirModule(module, diags, &globalReadKeys);
     if (!prog->mirModule_) return nullptr;
+    ptimer.mark("mir");
 
     brass::runtime::MultiTierPipeline& pipeline = prog->dispatchTable().pipeline();
     pipeline.initialize(tieringConfigFor(tier));
@@ -304,9 +308,13 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         osr.set_enabled(true);
     }
 
-    prog->image_ = TieredProgramImage::load(backend.buildDataImage(module, globalReadKeys.size()),
-                                            *prog->mirModule_, module, entrySymbol, pipeline, diags);
+    ptimer.mark("pipeline");
+    brass::object::ObjectFile dataImage = backend.buildDataImage(module, globalReadKeys.size());
+    ptimer.mark("data image");
+    prog->image_ = TieredProgramImage::load(std::move(dataImage), *prog->mirModule_, module, entrySymbol,
+                                            pipeline, diags);
     if (!prog->image_) return nullptr;
+    ptimer.mark("image load");
 
     if (tier == ExecutionTier::Tier1_Baseline) {
         // Every function compiled before anything runs; one the baseline

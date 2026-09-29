@@ -5,6 +5,8 @@
 #include "runtime/value.h"
 
 #include <brass/gc/heap.hpp>
+#include <brass/runtime/code_installer.hpp>
+#include <brass/runtime/tiering.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/host_symbols.hpp>
@@ -188,9 +190,52 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
     if (!interp) return false;
 
     uintptr_t codePtr = reinterpret_cast<uintptr_t>(code);
-    const brass::Function* mirFn = interp->find_function_by_pointer(codePtr);
-    const brass::BytecodeFunction* bfn = interp->find_bytecode_function_by_pointer(codePtr);
+    // What `code` resolves to, per thread, direct-mapped: three hash lookups
+    // (two pointer maps, the handle by name under the table's lock) on every
+    // call were most of what a closure call from compiled code cost. Valid
+    // while the registry generation is the one it was resolved in: a handle
+    // made, rebound or retired, and a table destroyed, all move it
+    // (code_installer.hpp), which is what the interpreter's own call caches
+    // key on.
+    struct Resolved {
+        uintptr_t code = 0;
+        const brass::FastInterpreter* interp = nullptr;
+        uint64_t gen = 0;
+        const brass::Function* mirFn = nullptr;
+        const brass::BytecodeFunction* bfn = nullptr;
+        brass::runtime::FunctionHandle* handle = nullptr;
+    };
+    thread_local Resolved cache[64];
+    Resolved& r = cache[(codePtr >> 4) & 63];
+    const uint64_t gen = brass::runtime::registry_generation();
+    if (r.code != codePtr || r.interp != interp || r.gen != gen) {
+        r.code = codePtr;
+        r.interp = interp;
+        r.gen = gen;
+        r.mirFn = interp->find_function_by_pointer(codePtr);
+        r.bfn = interp->find_bytecode_function_by_pointer(codePtr);
+        r.handle = nullptr;
+        if (r.mirFn && codePtr != reinterpret_cast<uintptr_t>(r.mirFn)) {
+            brass::runtime::FunctionHandle* h = interp->dispatch_table().find(r.mirFn->name());
+            if (h && h->mir_function() == r.mirFn) r.handle = h;
+        }
+    }
+    const brass::Function* mirFn = r.mirFn;
+    const brass::BytecodeFunction* bfn = r.bfn;
     if (!mirFn && !bfn) return false;
+
+    // A function that already has native code (tier 1, tier 2) is left to
+    // rtEnterJs, which enters `code` through the trampoline every compiled
+    // call takes. `code` is the function's module stub (a closure's code
+    // pointer in every tier, MultiTierPipeline::function_address), whose
+    // cell follows its best code. Running it through the interpreter instead
+    // looked its handle up by name, boxed the four arguments into a vector
+    // and crossed the generic invoke thunk on every call: a closure called
+    // from optimized or OSR code (a `const rnd = () => ...` in a hot loop)
+    // paid that per iteration, 3x the cost of the same loop compiled whole.
+    // A pointer that is the Function itself (registered for a module the
+    // interpreter was handed whole) is not code, and still runs here.
+    if (r.handle && r.handle->native_entry()) return false;
 
     // One argument vector per nesting depth, reused: every JS call the
     // interpreter takes from native code comes through here, and a fresh

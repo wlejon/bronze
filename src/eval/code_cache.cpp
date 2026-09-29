@@ -6,9 +6,11 @@
 #include <cstring>
 #include <fstream>
 #include <system_error>
+#include <thread>
 #include <unordered_set>
 
 #include "il/serialize.h"
+#include "support/timings.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -341,12 +343,14 @@ const std::string& processKeyMaterial() {
 
 bool load(const std::string& dir, const Digest& key, std::string_view entryText,
           const std::vector<modules::ModuleRoot>& moduleRoots, bool retainSource, Hit& out, std::string& why) {
+    support::PhaseTimer timer(support::timingsEnabled(), 4);
     const std::filesystem::path path = entryFile(dir, key);
     std::string bytes;
     if (!readWholeFile(path, bytes)) {
         why = "no entry";
         return false;
     }
+    timer.mark("read entry");
     Cursor h(bytes);
     const uint32_t magic = h.u32();
     const uint32_t version = h.u32();
@@ -377,6 +381,7 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
         why = "checksum mismatch";
         return false;
     }
+    timer.mark("checksum");
 
     Cursor c(payload);
     const std::string resName(c.str());
@@ -429,6 +434,17 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
         why = "entry changed";
         return false;
     }
+    // The IL decodes on a worker while this thread re-reads and hashes the
+    // sources: independent, and each about half of a large entry's load.
+    // Joined on every path out (the view it reads is `bytes`, a local).
+    auto module = std::make_unique<il::Module>();
+    std::string err;
+    bool decoded = false;
+    std::thread decoder([&] { decoded = il::deserializeModule(ilBytes, *module, err); });
+    struct Join {
+        std::thread& t;
+        ~Join() { if (t.joinable()) t.join(); }
+    } join{decoder};
     out.sources.add(std::string(files[0].name), std::string(entryText));
     for (size_t i = 1; i < files.size(); ++i) {
         if (files[i].embedded) {
@@ -446,17 +462,19 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
         }
         out.sources.add(std::string(files[i].name), std::move(text));
     }
+    timer.mark("sources");
     if (!modules::dependenciesUnchanged(deps, moduleRoots)) {
         why = "module resolution changed";
         return false;
     }
+    timer.mark("resolution");
 
-    auto module = std::make_unique<il::Module>();
-    std::string err;
-    if (!il::deserializeModule(ilBytes, *module, err)) {
+    decoder.join();
+    if (!decoded) {
         why = err;
         return false;
     }
+    timer.mark("decode wait");
     if (module->sourceFiles.size() != files.size()) {
         why = "malformed entry";
         return false;
@@ -467,6 +485,7 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
     il::attachSources(*module, texts, retainSource);
     out.module = std::move(module);
     out.resName = resName;
+    timer.mark("attach");
 
     // Recently used: the trim keeps it.
     std::error_code ec;

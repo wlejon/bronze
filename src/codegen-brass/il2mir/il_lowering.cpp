@@ -385,9 +385,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     }
 
     current_ast_ = &ast;
-
-
-
+    ltimer.mark("externals");
 
     // 1. Forward-declare all functions (uniquifying any duplicate function names from Bronze)
     std::unordered_map<std::string, std::vector<size_t>> name_to_indices;
@@ -487,6 +485,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
+    ltimer.mark("resolve names");
     // Map callers to callees for duplicate function names based on CreateFunc instantiation order and lexical scope inheritance
     caller_create_func_targets_.clear();
     std::unordered_map<std::string, size_t> create_func_occurrence;
@@ -530,16 +529,23 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
-    // Default fallback for any remaining duplicate function references
-    for (size_t fn_idx = 0; fn_idx < ast.functions.size(); ++fn_idx) {
-        for (const auto& [name, indices] : name_to_indices) {
-            if (indices.size() > 1 && name != "main" && !curry_names.count(name) && !resolved_names[indices[0]].empty()) {
-                if (caller_to_callee_map_[fn_idx].find(name) == caller_to_callee_map_[fn_idx].end()) {
-                    caller_to_callee_map_[fn_idx][name] = resolved_names[indices[0]];
-                }
-            }
+    // Default fallback for any remaining duplicate function references. The
+    // duplicated names are collected first: walking every name for every
+    // function was functions x names map probes, for the (usually empty)
+    // handful of names that are duplicated.
+    std::vector<std::pair<const std::string*, const std::string*>> fallback_names;
+    for (const auto& [name, indices] : name_to_indices) {
+        if (indices.size() > 1 && name != "main" && !curry_names.count(name) && !resolved_names[indices[0]].empty()) {
+            fallback_names.emplace_back(&name, &resolved_names[indices[0]]);
         }
     }
+    if (!fallback_names.empty()) {
+        for (size_t fn_idx = 0; fn_idx < ast.functions.size(); ++fn_idx) {
+            auto& callees = caller_to_callee_map_[fn_idx];
+            for (const auto& [name, target] : fallback_names) callees.try_emplace(*name, *target);
+        }
+    }
+    ltimer.mark("name maps");
 
     callee_param_counts_.clear();
     closure_functions_.clear();
@@ -553,6 +559,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             }
         }
     }
+    ltimer.mark("closure set");
 
     for (size_t i = 0; i < ast.functions.size(); ++i) {
         if (resolved_names[i].empty()) continue;

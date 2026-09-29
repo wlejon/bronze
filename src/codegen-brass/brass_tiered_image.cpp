@@ -5,6 +5,7 @@
 #include "embed/embed.h"
 #include "embed/embed_profiler.h"
 #include "support/diagnostics.h"
+#include "support/timings.h"
 
 #include <brass/mir/function.hpp>
 #include <brass/vm/fast_interpreter.hpp>
@@ -70,11 +71,13 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
                                                              const std::string& entrySymbol,
                                                              brass::runtime::MultiTierPipeline& pipeline,
                                                              DiagnosticSink& diags) {
+    support::PhaseTimer timer(support::timingsEnabled(), 6);
     std::unique_ptr<TieredProgramImage> self(new TieredProgramImage());
     self->module_ = &module;
     self->data_ = std::make_unique<brass::codegen::JitExecutionEngine>(brass::Target::host());
     brass::codegen::JitExecutionEngine& data = *self->data_;
     registerBronzeJitSymbols(data);
+    timer.mark("jit symbols");
     // The image's pointers to the program's functions (descriptors, source
     // entries) are the pipeline's function pointers: what a closure's code
     // pointer is in every tier.
@@ -82,10 +85,12 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
         if (!fn || !fn->has_body()) continue;
         data.register_external_symbol(fn->name(), pipeline.function_address(fn->name(), fn));
     }
+    timer.mark("fn stubs");
     if (!data.load_object(image)) {
         diags.error(Span{}, "Failed to load the program's data image");
         return nullptr;
     }
+    timer.mark("load object");
 
     // Every tier resolves the program's data symbols here.
     for (const auto& sym : image.symbols) {
@@ -100,14 +105,9 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
         pipeline.register_external_symbol("bronze_main_key_constants", keys);
     }
 
-    for (const brass::Function* fn : module.functions()) {
-        if (!fn || !fn->has_body()) continue;
-        const std::string mirName(fn->name());
-        const std::string unique = (mirName == entrySymbol) ? "main" : mirName;
-        const void* desc =
-            data.get_symbol_address(codegen::moduleSymbolName(entrySymbol, "__bronze_fn_desc_" + unique));
-        if (desc) self->descs_.emplace(mirName, static_cast<const bronze_fn_desc*>(desc));
-    }
+    // Descriptors resolve on first ask (descriptorOf).
+    self->entrySymbol_ = entrySymbol;
+    timer.mark("symbols");
 
     // The file table and the MIR's file ids of its files, as
     // translateDebugLocations reads an object's (brass_backend_debug.cpp).
@@ -153,8 +153,22 @@ void* TieredProgramImage::symbolAddress(std::string_view name) const {
 }
 
 const bronze_fn_desc* TieredProgramImage::descriptorOf(std::string_view mirName) const {
-    auto it = descs_.find(std::string(mirName));
-    return it != descs_.end() ? it->second : nullptr;
+    // Looked up on first ask rather than for all of a program's functions at
+    // load: most never install code, and the load is on the page's critical
+    // path. Asked from the mutator and from background compile threads.
+    std::lock_guard<std::mutex> lock(descsMutex_);
+    std::string key(mirName);
+    auto it = descs_.find(key);
+    if (it != descs_.end()) return it->second;
+    const brass::Function* fn = module_ ? module_->get_function(mirName) : nullptr;
+    const bronze_fn_desc* desc = nullptr;
+    if (fn && fn->has_body() && data_) {
+        const std::string unique = (key == entrySymbol_) ? "main" : key;
+        desc = static_cast<const bronze_fn_desc*>(
+            data_->get_symbol_address(codegen::moduleSymbolName(entrySymbol_, "__bronze_fn_desc_" + unique)));
+    }
+    descs_.emplace(std::move(key), desc);
+    return desc;
 }
 
 bronze_pc_entry TieredProgramImage::translate(const brass::DebugLoc& loc, const bronze_fn_desc& desc) const {
