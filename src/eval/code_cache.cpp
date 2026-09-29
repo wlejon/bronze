@@ -233,7 +233,7 @@ std::string binaryIdentity() {
     const auto mtime = std::filesystem::last_write_time(self, ec);
     if (ec) return {};
     return self.generic_string() + "|" + std::to_string(size) + "|" +
-           std::to_string(mtime.time_since_epoch().count());
+           std::to_string(static_cast<long long>(mtime.time_since_epoch().count()));
 }
 
 // Every BRONZE_* variable but the ones that only report: the lowering's
