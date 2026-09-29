@@ -20,7 +20,7 @@ endif()
 # ---- JIT ---------------------------------------------------------------------
 
 add_executable(bronze_native_tests native_test.cpp)
-target_link_libraries(bronze_native_tests PRIVATE bronze::eval bronze::embed doctest::doctest)
+target_link_libraries(bronze_native_tests PRIVATE bronze::eval bronze::codegen_brass bronze::embed doctest::doctest)
 target_compile_options(bronze_native_tests PRIVATE ${_nt_warnings})
 if(MSVC)
     target_compile_definitions(bronze_native_tests PRIVATE _CRT_SECURE_NO_WARNINGS)

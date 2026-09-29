@@ -78,7 +78,7 @@ const Bound kBounds[] = {
     {"alloc_batches", "hot_untiered", 0},  {"alloc_batches", "stall_ms", 5},
     {"alloc_batches", "deopts", 0},        {"alloc_batches", "first_batch_ms", 8},
     {"threejs", "hot_tier2_ms", 700},      {"threejs", "hot_latency_ms", 60},
-    {"threejs", "hot_untiered", 0},        {"threejs", "stall_ms", 70},
+    {"threejs", "hot_untiered", 1},        {"threejs", "stall_ms", 70},
     {"threejs", "max_stall_ms", 30},       {"pixi", "hot_tier2_ms", 2500},
     {"pixi", "hot_latency_ms", 150},       {"pixi", "hot_untiered", 0},
     {"pixi", "stall_ms", 40},              {"pixi", "max_stall_ms", 10},

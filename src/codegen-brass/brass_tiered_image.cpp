@@ -2,8 +2,8 @@
 
 #include "codegen-brass/brass_backend_sections.h"
 #include "codegen-brass/brass_symbol_registration.h"
-#include "runtime/interpreted_frames.h"
-#include "runtime/profiler.h"
+#include "embed/embed.h"
+#include "embed/embed_profiler.h"
 #include "support/diagnostics.h"
 #include "support/timings.h"
 
@@ -133,8 +133,8 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
         std::lock_guard<std::mutex> lock(registryMutex());
         registry()[&module] = raw;
     }
-    runtime::rtSetInterpretedFrameWalker(&walkInterpretedFrames);
-    runtime::setMirNameDescriber(&describeMirName);
+    embed::setInterpretedFrameWalker(&walkInterpretedFrames);
+    embed::setMirNameDescriber(&describeMirName);
     return self;
 }
 
