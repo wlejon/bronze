@@ -19,6 +19,7 @@
 #include <windows.h>
 #else
 #include <brass/gc/native_unwind.hpp>
+#include <dlfcn.h>
 #include <pthread.h>
 #include <unwind.h>
 #if defined(__APPLE__)
@@ -461,12 +462,24 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         if (CodeSite site; find_code_site(call_pc, site)) {
             pushCompiled(site);
             if (done()) break;
+#if defined(__APPLE__)
+        } else {
+            Dl_info dlinfo;
+            if (dladdr(call_pc, &dlinfo) && dlinfo.dli_saddr) {
+                const char* builtinName = rtGetNativeDisplayName(dlinfo.dli_saddr);
+                if (builtinName) {
+                    frames.push_back({nullptr, 0, 0, nullptr, builtinName});
+                }
+            }
+        }
+#else
         } else if (void* fnBegin = _Unwind_FindEnclosingFunction(call_pc)) {
             const char* builtinName = rtGetNativeDisplayName(fnBegin);
             if (builtinName) {
                 frames.push_back({nullptr, 0, 0, nullptr, builtinName});
             }
         }
+#endif
         have = brass::brass_unwind_step(cur);
     }
 #endif
