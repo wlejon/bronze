@@ -78,6 +78,18 @@ set_tests_properties(oracle-tiers-arm-all-stress-3 PROPERTIES LABELS "oracle;jit
 add_test(NAME oracle-spec-profile COMMAND bronze_oracle_tests "--test-case=Oracle spec-profile*")
 set_tests_properties(oracle-spec-profile PROPERTIES LABELS "oracle;jit;tiers;spec-profile")
 
+# Each of these suites runs its cases on getWorkerJobCount() threads
+# (oracle_test.cpp: BRONZE_TEST_JOBS, else at most 4), one child process per
+# thread, so one suite is four busy cores and not one. ctest has to be told:
+# counted as a single slot each, `ctest --parallel 4` starts four suites at
+# once, sixteen processes on a four-core runner, and every case then runs at
+# a quarter speed against a wall-clock limit (run_process.h) measured for a
+# whole core.
+set_tests_properties(oracle oracle-jit oracle-jit-tier0 oracle-jit-tier2
+                     oracle-tiers oracle-tiers-deopt-stress oracle-tiers-deopt-stress-3
+                     oracle-tiers-arm-all-stress-3 oracle-spec-profile
+                     PROPERTIES PROCESSORS 4)
+
 # Unmodified three.js r160 (tests/oracle/threejs/README.md). Its own label
 # because it costs more than the whole rest of the suite: `-L threejs` runs
 # only the milestone, `-LE threejs` is the fast loop. It carries its own

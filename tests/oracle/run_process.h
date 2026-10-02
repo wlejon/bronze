@@ -35,11 +35,20 @@
 
 namespace oracle {
 
+// The limits stop a hung or miscompiled case; they are not a speed check, so
+// they are sized for the slowest machine the suite runs on. With four
+// workers a hosted CI runner (four hardware threads on two cores) gives each
+// case about a third of the core these times were measured on: the slowest
+// plain runs (tiers_19, tiers_22 at tier 0) are 9 s here and near 30 s there,
+// and the slowest stressed one (async_suspend_protocol under gc-stress at
+// tier 2, which scans a 16,000-frame stack at every allocation on the way to
+// its RangeError) is 48 s here and near 150 s there.
 #ifdef _WIN32
-constexpr uint32_t kRunTimeoutMs = 30000;
+constexpr uint32_t kRunTimeoutMs = 60000;
 #else
 constexpr uint32_t kRunTimeoutMs = 15000;
 #endif
+constexpr uint32_t kStressTimeoutMs = 300000;
 
 struct RunResult {
     bool ran = false;       // process started and exited on its own
@@ -77,7 +86,7 @@ inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
     RunResult result;
     static const bool s_deoptStress = deoptStressActive();
     uint32_t effectiveTimeoutMs =
-        (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptStress)) ? (kRunTimeoutMs * 4) : timeoutMs;
+        (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptStress)) ? kStressTimeoutMs : timeoutMs;
 
     HANDLE outRead = nullptr;
     HANDLE errRead = nullptr;

@@ -49,8 +49,17 @@ Requirements the harness enforces:
 - **LF endings.** `.gitattributes` marks `*.expected -text` so CRLF
   conversion cannot corrupt a comparison.
 
-Cases run under a 15s timeout and are killed on expiry, so a miscompiled loop
-fails its case instead of hanging the suite.
+On Windows a run is killed at a wall-clock limit, so a miscompiled loop fails
+its case instead of hanging the suite: 60 s for a plain run, 300 s for one
+under gc-stress or `BRASS_DEOPT_STRESS` (`run_process.h`, which says what the
+figures are sized against). The POSIX harness reads the run through `popen`
+and enforces no limit; there a hung case holds its suite until the CI job's
+own timeout.
+
+Each suite runs its cases on `BRONZE_TEST_JOBS` worker threads (default: half
+the hardware threads, at most 4), and its ctest entry declares `PROCESSORS 4`
+to match, so `ctest --parallel N` counts a suite as four slots and does not
+stack suites past the cores there are.
 
 Every case is compiled and run **twice — with inference and with
 `--no-infer`** — and both must produce the same bytes. A case only inference

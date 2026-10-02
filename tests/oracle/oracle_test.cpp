@@ -72,6 +72,14 @@ RunResult runWithTimeout(const std::string& exePath, bool gcStress = false,
     return oracle::runCommand(oracle::quoted(exePath), gcStress, timeoutMs);
 }
 
+// What a built program that printed the wrong bytes did instead: its exit
+// code and stderr, which is where a crash, a loader failure or the shell's
+// refusal to start the program says so. Without them a run that printed
+// nothing reports only that nothing was printed.
+std::string runSummary(const RunResult& run) {
+    return "\n--- exit code " + std::to_string(run.exitCode) + ", stderr ---\n" + run.errors;
+}
+
 // BRONZE_ORACLE_TIER: the tier the in-process suite is pinned to, or empty
 // for `bronze run`'s default (the tiered pipeline).
 std::string pinnedTier() {
@@ -429,7 +437,7 @@ TEST_CASE("Oracle differential test suite") {
             if (res.runInfer.ran) {
                 CHECK_MESSAGE(res.expected == res.runInfer.output,
                               ("Output differs from the pinned expectation for " +
-                               res.oracleCase.id + " (inference on)").c_str());
+                               res.oracleCase.id + " (inference on)" + runSummary(res.runInfer)).c_str());
             }
 
             // GC stress (inference on)
@@ -439,7 +447,7 @@ TEST_CASE("Oracle differential test suite") {
             if (res.runInferGc.ran) {
                 CHECK_MESSAGE(res.expected == res.runInferGc.output,
                               ("Output differs from the pinned expectation for " +
-                               res.oracleCase.id + " (gc-stress)").c_str());
+                               res.oracleCase.id + " (gc-stress)" + runSummary(res.runInferGc)).c_str());
             }
 
             // No-inference mode
@@ -454,7 +462,7 @@ TEST_CASE("Oracle differential test suite") {
             if (res.runNoInfer.ran) {
                 CHECK_MESSAGE(res.expected == res.runNoInfer.output,
                               ("Output differs from the pinned expectation for " +
-                               res.oracleCase.id + " (--no-infer)").c_str());
+                               res.oracleCase.id + " (--no-infer)" + runSummary(res.runNoInfer)).c_str());
             }
 
             // GC stress (--no-infer)
@@ -464,7 +472,8 @@ TEST_CASE("Oracle differential test suite") {
             if (res.runNoInferGc.ran) {
                 CHECK_MESSAGE(res.expected == res.runNoInferGc.output,
                               ("Output differs from the pinned expectation for " +
-                               res.oracleCase.id + " (gc-stress, --no-infer)").c_str());
+                               res.oracleCase.id + " (gc-stress, --no-infer)" +
+                               runSummary(res.runNoInferGc)).c_str());
             }
         }
     }
