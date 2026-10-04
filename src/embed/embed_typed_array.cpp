@@ -196,6 +196,7 @@ uint32_t typedArrayByteOffset(Value view) {
 }
 
 void detachArrayBuffer(Value v) {
+    ShadowStackFrame frame;
     ArrayBufferHeader* buf = bufferBehind(v);
     if (buf) {
         buf->setDetached();
