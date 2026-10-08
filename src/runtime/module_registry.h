@@ -47,6 +47,13 @@ void rtModulePublish(const std::string& path, Value ns);
 // the caller compile the file instead.
 bool rtModuleLookup(const std::string& path, Value& out);
 
+// Forget every module published in the current realm. A host that RELOADS a
+// page in the same realm calls this first: without it the new compile treats
+// every path the old page evaluated as external and binds the OLD instance —
+// an edited module's new exports read as undefined, a deleted one keeps
+// answering. Clearing also stops the registry keeping the old graph alive.
+void rtModuleRegistryClear();
+
 // Every published path in the current realm, in publication order. This is
 // what a compiler consults to decide which specifiers resolve to an instance
 // that already exists, so it is a list of keys and never of values.

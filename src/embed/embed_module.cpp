@@ -18,6 +18,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/microtask.h"
+#include "runtime/module_registry.h"
 #include "runtime/profile.h"
 #include "runtime/rt_state.h"
 #include "runtime/sampler.h"
@@ -84,6 +85,7 @@ void runEntry(ModuleEntry entry) {
 ModuleHandle beginModuleLoad() { return runtime::rtBeginModuleEpoch(); }
 void endModuleLoad(ModuleHandle module) { runtime::rtEndModuleEpoch(module); }
 void unloadModule(ModuleHandle module) { runtime::rtDropModuleEpoch(module); }
+void clearModuleRegistry() { runtime::rtModuleRegistryClear(); }
 
 void collectGarbage() { runtime::rtHeap().collect(); }
 

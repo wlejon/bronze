@@ -347,3 +347,25 @@ TEST_CASE("rtModuleRegistryPaths lists what the units published") {
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+
+TEST_CASE("clearing the registry lets a reloaded page see its edited modules") {
+    // The host reload seam: a page evaluated, its module edited on disk, the
+    // registry cleared, the page compiled again. Without the clear the second
+    // compile binds the first instance, and the renamed export reads undefined.
+    const std::filesystem::path dir = makeDir("bronze_modreg_reload");
+    writeFile(dir / "dep.js", "export class OldName { v() { return 1; } }\n");
+    embed::CallResult r1 = evalScript(
+        "import { OldName } from './dep.js'; new OldName().v()", unitOptions(dir, "page.js"));
+    REQUIRE(!r1.thrown);
+    CHECK(r1.value.asNumber() == 1.0);
+
+    writeFile(dir / "dep.js", "export class NewName { v() { return 2; } }\n");
+    embed::clearModuleRegistry();
+    embed::CallResult r2 = evalScript(
+        "import { NewName } from './dep.js'; new NewName().v()", unitOptions(dir, "page.js"));
+    REQUIRE(!r2.thrown);
+    CHECK(r2.value.asNumber() == 2.0);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}

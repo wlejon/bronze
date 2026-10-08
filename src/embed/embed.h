@@ -311,6 +311,13 @@ BRONZE_EMBED_API ModuleHandle beginModuleLoad();
 BRONZE_EMBED_API void endModuleLoad(ModuleHandle module);
 BRONZE_EMBED_API void unloadModule(ModuleHandle module);
 
+// Forget the current realm's module registry (runtime/module_registry.h): the
+// module namespaces earlier units published so later units bind them. A host
+// reloading its page in the same realm calls this alongside unloadModule, so
+// the reloaded page compiles and evaluates its modules afresh rather than
+// binding the previous page's instances.
+BRONZE_EMBED_API void clearModuleRegistry();
+
 // Collect now. A host that has just released a large graph — a level torn
 // down, a frame's scratch objects dropped — knows something the heap's own
 // growth heuristic does not, and this is how it says so. Everything the host
