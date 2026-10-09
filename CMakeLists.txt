@@ -47,10 +47,11 @@ endif()
 project(bronze VERSION 0.1.0 LANGUAGES C CXX)
 
 # Dependencies (cmake/bro_deps.cmake): the ../brass working tree beside the
-# top-level project, else this pinned commit, fetched. A project embedding
-# bronze (bro) pins its own brass first, and that pin wins.
+# top-level project, else the head of brass's main, fetched (a release tag's
+# cmake/bro_lock.cmake fixes the commit). A project embedding bronze (bro)
+# resolves brass first, and its choice wins.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
-bro_dependency(brass GITHUB wlejon/brass REF d272c0172c2755079c8679c64129d7f3fa8133a7 PIN_ONLY)
+bro_dependency(brass GITHUB wlejon/brass PIN_ONLY)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

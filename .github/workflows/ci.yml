@@ -7,8 +7,8 @@ name: CI
 # in the Nightly workflow's full suite instead, same three platforms.
 #
 # brass, the code generator, is the one sibling dependency; CMake fetches the
-# commit cmake/bro_deps.cmake pins at configure, so there is no checkout step
-# for it and no submodule.
+# head of its main at configure (cmake/bro_deps.cmake), so there is no checkout
+# step for it and no submodule.
 
 on:
   push:
@@ -68,7 +68,7 @@ jobs:
         with:
           arch: x64
 
-      # brass comes from the commit CMakeLists.txt pins (cmake/bro_deps.cmake),
+      # brass comes from the head of its main (cmake/bro_deps.cmake),
       # fetched at configure: no checkout step.
 
       # doctest is the only default vcpkg dependency; clone vcpkg at the same

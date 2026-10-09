@@ -112,7 +112,8 @@ ctest --preset dev
 The native code generation backend is Brass (`src/codegen-brass`), which compiles
 Bronze IL to native machine code. Brass is a dependency, not a submodule: a
 working tree at `../brass` is used when there is one, otherwise configure fetches
-the commit `CMakeLists.txt` pins (`cmake/bro_deps.cmake`).
+the head of brass's main (`cmake/bro_deps.cmake`; a release tag's
+`cmake/bro_lock.cmake` fixes the commit).
 [docs/internals.md](docs/internals.md) has the full build-and-iteration workflow.
 
 ## Testing

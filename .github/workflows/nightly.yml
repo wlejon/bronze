@@ -77,7 +77,7 @@ jobs:
         with:
           arch: x64
 
-      # brass comes from the commit CMakeLists.txt pins (cmake/bro_deps.cmake),
+      # brass comes from the head of its main (cmake/bro_deps.cmake),
       # fetched at configure: no checkout step.
 
       - name: vcpkg (pinned)

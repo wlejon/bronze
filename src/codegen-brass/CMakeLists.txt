@@ -1,6 +1,6 @@
 # brass, through cmake/bro_deps.cmake: an outer project's brass target, else
-# the ../brass working tree beside the top-level project, else the commit
-# pinned in the top-level CMakeLists.txt, fetched. A BRASS_ROOT environment
+# the ../brass working tree beside the top-level project, else the head of
+# brass's main, fetched. A BRASS_ROOT environment
 # variable or -DBRASS_ROOT names another tree to build it from. BRASS_ROOT in
 # the cache then reports the tree chosen (the runtimes read brass's headers
 # from it). brass is always compiled in this build tree, never linked prebuilt:
