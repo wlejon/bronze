@@ -90,6 +90,11 @@ void aggregate(Collected& c, const ProfilerStopOptions& options, ProfilerResult&
                 f.module = s.module;
                 f.file = s.file;
                 f.line = s.line;
+                if (!s.mirName.empty()) {
+                    if (MirNameTier1Rejection rejection = mirNameTier1Rejection()) {
+                        f.tier1Rejected = rejection(s.mirName);
+                    }
+                }
                 out.functions.push_back(std::move(f));
             }
             symRow[i] = it->second;
@@ -191,6 +196,18 @@ void aggregate(Collected& c, const ProfilerStopOptions& options, ProfilerResult&
                       static_cast<unsigned long long>(f.self), static_cast<unsigned long long>(f.total),
                       100.0 * double(f.self) / denom);
         t += line;
+    }
+    {
+        // The rows above whose function the baseline tier rejected: why.
+        std::string rejected;
+        std::unordered_set<std::string> listed;
+        for (size_t i = 0; i < out.functions.size() && i < top; ++i) {
+            const ProfilerFunction& f = out.functions[i];
+            if (f.tier1Rejected.empty() || !listed.insert(f.name).second) continue;
+            std::snprintf(line, sizeof line, "  %.60s: %.400s\n", f.name.c_str(), f.tier1Rejected.c_str());
+            rejected += line;
+        }
+        if (!rejected.empty()) t += "\nrejected by tier 1 (interpreted until hot, then tier 2):\n" + rejected;
     }
     if (options.callers && !out.edges.empty()) {
         t += "\ncallers (caller -> callee):\n";

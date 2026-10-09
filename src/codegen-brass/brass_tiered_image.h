@@ -64,6 +64,12 @@ public:
     bronze_pc_entry translate(const brass::DebugLoc& loc, const bronze_fn_desc& desc) const;
     const char* fileName(uint32_t fileIndex) const;
 
+    // Stops asking the pipeline the image was loaded into, which is about
+    // to go (the program destroys its dispatch table before its image).
+    void detachPipeline();
+    // That pipeline until then; read under the image registry's lock.
+    brass::runtime::MultiTierPipeline* loadedPipeline() const { return pipeline_; }
+
 private:
     TieredProgramImage() = default;
     void onCodeInstalled(const brass::runtime::InstalledCode& code);
@@ -74,6 +80,9 @@ private:
     };
 
     const brass::Module* module_ = nullptr;
+    // Asked why tier 1 rejected a function (the profiler's rows); null once
+    // detached. Under the image registry's lock.
+    brass::runtime::MultiTierPipeline* pipeline_ = nullptr;
     std::unique_ptr<brass::codegen::JitExecutionEngine> data_;
     std::string entrySymbol_;
     // Resolved on first ask, misses included (descriptorOf).

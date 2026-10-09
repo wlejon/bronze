@@ -34,5 +34,8 @@ BRONZE_EMBED_API bool profilerStop(const runtime::ProfilerStopOptions& options, 
 // How the profiler names a function it saw by its MIR name (interpreted, or
 // in brass's JIT registry): installed by the engine that loads programs.
 BRONZE_EMBED_API void setMirNameDescriber(runtime::MirNameDescriber describer);
+// Why the baseline tier rejected a function, by its MIR name: installed by
+// the same engine.
+BRONZE_EMBED_API void setMirNameTier1Rejection(runtime::MirNameTier1Rejection lookup);
 
 }  // namespace bronze::embed

@@ -128,6 +128,8 @@ BrassTieredProgram::~BrassTieredProgram() {
     if (const brass::ModuleStackMap* maps = stackMaps(); maps && brass::brass_get_active_stack_maps() == maps) {
         brass::brass_set_active_stack_maps(nullptr);
     }
+    // The image outlives the dispatch table that owns the pipeline.
+    if (image_) image_->detachPipeline();
 }
 
 const brass::ModuleStackMap* BrassTieredProgram::stackMaps() const noexcept {

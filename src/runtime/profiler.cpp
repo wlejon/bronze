@@ -30,10 +30,19 @@ namespace bronze::runtime {
 
 namespace {
 std::atomic<MirNameDescriber> g_describer{nullptr};
+std::atomic<MirNameTier1Rejection> g_tier1Rejection{nullptr};
 }  // namespace
 
 void setMirNameDescriber(MirNameDescriber describer) noexcept {
     g_describer.store(describer, std::memory_order_release);
+}
+
+void setMirNameTier1Rejection(MirNameTier1Rejection lookup) noexcept {
+    g_tier1Rejection.store(lookup, std::memory_order_release);
+}
+
+MirNameTier1Rejection mirNameTier1Rejection() noexcept {
+    return g_tier1Rejection.load(std::memory_order_acquire);
 }
 
 #if !defined(BRONZE_PROFILER_SUPPORTED)
@@ -157,6 +166,7 @@ uint32_t symForPc(Session& s, uint64_t lookup) {
             sym.tier = brass::debug::jit_tier_label(jit.tier);
             sym.module = "jit";
             sym.name = jit.name.empty() ? "<anonymous>" : jit.name;
+            sym.mirName = jit.name;
             const bronze_fn_desc* desc = range ? range->desc : nullptr;
             if (!desc) {
                 if (MirNameDescriber d = g_describer.load(std::memory_order_acquire)) desc = d(jit.name);
@@ -198,6 +208,7 @@ uint32_t symForFunction(Session& s, const brass::Function* fn) {
     if (fn) {
         const std::string_view mir = fn->name();
         sym.name = mir.empty() ? "<anonymous>" : std::string(mir);
+        sym.mirName = std::string(mir);
         if (MirNameDescriber d = g_describer.load(std::memory_order_acquire)) {
             if (const bronze_fn_desc* desc = d(mir)) fillFromDesc(sym, desc);
         }

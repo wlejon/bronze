@@ -22,6 +22,9 @@ struct Sym {
     std::string module;
     std::string file;
     uint32_t line = 0;
+    // Jit and Interp: the function's MIR name, to ask at stop whether the
+    // baseline tier rejected it.
+    std::string mirName;
     // Native: the pc to symbolize at stop (functions merge by their start).
     uint64_t pc = 0;
 };

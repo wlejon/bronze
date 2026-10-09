@@ -23,6 +23,10 @@
 //   stub          JIT trampolines and lazy-link stubs
 //   native        everything else: runtime helpers, the host, the OS
 //
+// A JS function the baseline tier (tier 1) rejected carries why
+// (ProfilerFunction::tier1Rejected): it has no tier-1 rows, and goes from the
+// interpreter straight to tier 2 once it is hot.
+//
 // Self time goes to the innermost frame that is not the interpreter's own
 // dispatch loop, so a function the interpreter runs is billed for its
 // bytecode while a runtime helper it calls is billed to the helper.
@@ -65,6 +69,9 @@ struct ProfilerFunction {
     std::string module;  // the image a native or aot frame is in; "jit" / "interpreter"
     std::string file;    // a JS function's source file, when known
     uint32_t line = 0;   // its definition line, when known
+    // Why the baseline tier rejected this JS function ("" if it did not, or
+    // for a row that is no JS function of a loaded program).
+    std::string tier1Rejected;
     uint64_t self = 0;
     uint64_t total = 0;
 };
@@ -108,5 +115,11 @@ bool profilerStop(const ProfilerStopOptions& options, ProfilerResult& out, std::
 // the sampler thread, never while a target is suspended.
 using MirNameDescriber = const bronze_fn_desc* (*)(std::string_view mirName);
 void setMirNameDescriber(MirNameDescriber describer) noexcept;
+
+// A MIR function name to why the baseline tier rejected it ("" if it did
+// not), installed by the same engine. Called at stop, on the stopping thread.
+using MirNameTier1Rejection = std::string (*)(std::string_view mirName);
+void setMirNameTier1Rejection(MirNameTier1Rejection lookup) noexcept;
+MirNameTier1Rejection mirNameTier1Rejection() noexcept;
 
 }  // namespace bronze::runtime

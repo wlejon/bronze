@@ -64,6 +64,19 @@ const bronze_fn_desc* describeMirName(std::string_view mirName) {
     return nullptr;
 }
 
+// runtime/profiler.h's tier-1 rejection lookup: why the baseline tier
+// rejected the program function of that MIR name, in the first loaded
+// program that has one.
+std::string tier1RejectionOf(std::string_view mirName) {
+    std::lock_guard<std::mutex> lock(registryMutex());
+    for (const auto& [module, image] : registry()) {
+        if (!module->get_function(mirName)) continue;
+        brass::runtime::MultiTierPipeline* pipeline = image->loadedPipeline();
+        return pipeline ? pipeline->baseline_rejection(mirName) : std::string();
+    }
+    return {};
+}
+
 }  // namespace
 
 std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object::ObjectFile& image,
@@ -74,7 +87,8 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
     support::PhaseTimer timer(support::timingsEnabled(), 6);
     std::unique_ptr<TieredProgramImage> self(new TieredProgramImage());
     self->module_ = &module;
-    self->data_ = std::make_unique<brass::codegen::JitExecutionEngine>(brass::Target::host());
+    self->pipeline_ = &pipeline;
+    self->data_ =std::make_unique<brass::codegen::JitExecutionEngine>(brass::Target::host());
     brass::codegen::JitExecutionEngine& data = *self->data_;
     registerBronzeJitSymbols(data);
     timer.mark("jit symbols");
@@ -135,7 +149,13 @@ std::unique_ptr<TieredProgramImage> TieredProgramImage::load(const brass::object
     }
     embed::setInterpretedFrameWalker(&walkInterpretedFrames);
     embed::setMirNameDescriber(&describeMirName);
+    embed::setMirNameTier1Rejection(&tier1RejectionOf);
     return self;
+}
+
+void TieredProgramImage::detachPipeline() {
+    std::lock_guard<std::mutex> lock(registryMutex());
+    pipeline_ = nullptr;
 }
 
 TieredProgramImage::~TieredProgramImage() {

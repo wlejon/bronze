@@ -8,6 +8,7 @@
 
 #include <brass/runtime/code_installer.hpp>
 #include <brass/runtime/multi_tier_pipeline.hpp>
+#include <brass/runtime/osr_coordinator.hpp>
 #include <brass/runtime/tiering.hpp>
 #include <chrono>
 #include <thread>
@@ -178,6 +179,79 @@ TEST_CASE("an auto-tiered program's hot function reaches optimized code with no 
     } while (std::chrono::steady_clock::now() < deadline);
     CHECK(h->tier() == brass::runtime::TierLevel::Tier2_Optimized);
     CHECK(prog->invoke("pp_work", {a, b}).as_f64() == doctest::Approx(42.0));
+}
+
+TEST_CASE("a function tier 1 rejects goes from the interpreter to tier 2, deopts back and re-tiers") {
+    embed::setupIo();
+    ShadowStackFrame rootFrame;
+    eval::installDefaultDynamicHooks();
+
+    // `hotGet` is hot with one object shape, so tier 2 arms its property
+    // guard; a second shape then fails it twice, which drops the code and
+    // leaves the function in the interpreter (it has no tier-1 code); the
+    // first shape makes it hot again, and the recompile keeps that site a
+    // branch.
+    const char* src =
+        "function hotGet(o) { return o.a * 2; }\n"
+        "function drive(n, o) { let s; for (let i = 0; i < n; i++) s = hotGet(o); return s; }\n"
+        "const plain = { a: 3 };\n"
+        "const r1 = drive(600, plain);\n"
+        "const r2 = drive(3, { q: 1, a: 5 });\n"
+        "const r3 = drive(600, plain);\n"
+        "const r4 = drive(3, { z: 1, a: 7 });\n"
+        "(r1 === 6 && r2 === 10 && r3 === 6 && r4 === 14) ? 1 : 0;\n";
+    eval::EvalOptions opts{.filename = "<tier0-promotion>", .tier = ExecutionTier::Auto};
+    std::unique_ptr<eval::CompiledScript> script = eval::compileScript(src, opts);
+    REQUIRE(script != nullptr);
+    REQUIRE(script->success);
+    std::shared_ptr<BrassTieredProgram> prog = script->program;
+    REQUIRE(prog != nullptr);
+    brass::runtime::MultiTierPipeline& pipeline = prog->dispatchTable().pipeline();
+    // Tier 1 rejects hotGet here as it rejects a construct it does not
+    // compile on some targets (coroutines on arm64, exceptions on Windows
+    // arm64), which no program reaches on every host.
+    pipeline.set_tier1_reject_hook([](std::string_view name) -> std::string {
+        return name.find("hotGet") != std::string_view::npos ? "rejected by the test" : "";
+    });
+    // Compiles on the program's thread, so the order of events is the
+    // script's; no OSR, so drive's loop stays interpreted and every call to
+    // hotGet goes through its handle.
+    brass::runtime::TieringConfig cfg = pipeline.config();
+    cfg.enable_background_compile = false;
+    cfg.enable_background_tier1 = false;
+    pipeline.set_config(cfg);
+    prog->dispatchTable().osr().set_enabled(false);
+
+    const uint64_t deopts0 = pipeline.tier2_deopts();
+    const uint64_t inval0 = pipeline.tier2_invalidations();
+    embed::CallResult res = eval::runCompiledScript(std::move(script), opts);
+    REQUIRE(!res.thrown);
+    CHECK(res.value.asNumber() == doctest::Approx(1.0));
+
+    std::vector<std::string> rejected;
+    for (const brass::runtime::BaselineRejection& r : pipeline.baseline_rejections()) {
+        CHECK(r.reason.find("rejected by the test") != std::string::npos);
+        rejected.push_back(r.name);
+    }
+    REQUIRE(!rejected.empty());
+    for (const std::string& name : rejected) {
+        CAPTURE(name);
+        brass::runtime::FunctionHandle* h = prog->dispatchTable().find(name);
+        REQUIRE(h != nullptr);
+        CHECK(h->baseline_function() == nullptr);
+    }
+    // Some rejected function (hotGet, or the wrapper that carries it) went to
+    // tier 2 twice, deoptimized into the interpreter, and ends in tier 2.
+    bool endsInTier2 = false;
+    for (const std::string& name : rejected) {
+        if (prog->dispatchTable().find(name)->tier() == brass::runtime::TierLevel::Tier2_Optimized) endsInTier2 = true;
+    }
+    CHECK(endsInTier2);
+    const brass::runtime::MultiTierStats stats = pipeline.stats();
+    CHECK(stats.tier1_rejections.load() >= 1);
+    CHECK(stats.tier0_promotions.load() >= 2);
+    CHECK(pipeline.tier2_deopts() - deopts0 >= 2);
+    CHECK(pipeline.tier2_invalidations() - inval0 >= 1);
 }
 
 TEST_CASE("execution tier parsing and string conversion") {
