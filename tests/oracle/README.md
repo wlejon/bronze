@@ -49,12 +49,17 @@ Requirements the harness enforces:
 - **LF endings.** `.gitattributes` marks `*.expected -text` so CRLF
   conversion cannot corrupt a comparison.
 
-On Windows a run is killed at a wall-clock limit, so a miscompiled loop fails
-its case instead of hanging the suite: 60 s for a plain run, 300 s for one
-under gc-stress or `BRASS_DEOPT_STRESS` (`run_process.h`, which says what the
-figures are sized against). The POSIX harness reads the run through `popen`
-and enforces no limit; there a hung case holds its suite until the CI job's
-own timeout.
+A run is killed at a wall-clock limit, so a miscompiled loop fails its case
+instead of hanging the suite: 60 s for a plain run, 300 s for one under
+gc-stress or `BRASS_DEOPT_STRESS` (`run_process.h`, which says what the
+figures are sized against). The limits are the same on every OS; on POSIX the
+run is its own process group and the whole group is killed, so a `bronze run`
+and anything it started go together. The group's leader is a watchdog that
+also kills it when the harness dies first (ctest's own timeout, a signal, a
+dropped ssh session), so no run is left spinning as an orphan. A POSIX run also gets the 8 MB stack a
+default shell gives, whatever limit the harness inherited (ctest raises it to
+the hard limit, 64 MB on macOS), so a case that recurses to its RangeError
+goes as deep under ctest as from a terminal.
 
 Each suite runs its cases on `BRONZE_TEST_JOBS` worker threads (default: half
 the hardware threads, at most 4), and its ctest entry declares `PROCESSORS 4`

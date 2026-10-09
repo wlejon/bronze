@@ -23,6 +23,7 @@
 #include <brass/mir/function.hpp>
 #include <brass/vm/fast_interpreter.hpp>
 
+#include <cstdint>
 #include <cstdlib>
 #include <string_view>
 #include <utility>
@@ -289,6 +290,15 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     if (!prog->mirModule_) return nullptr;
     ptimer.mark("mir");
 
+    // Recursion depth is the native stack's to bound: every function's code
+    // checks the stack against the thread's limit (bronze_tls_enter) and
+    // throws a RangeError there, in Tier 0 as in compiled code. The fast
+    // interpreter's own frame count (10000 by default) would otherwise end
+    // a deep recursion first on a large stack (an 8 MB+ main thread on arm64
+    // macOS, any thread given more) with an InterpreterException no script
+    // can catch: async_suspend_protocol aborted that way under a raised
+    // `ulimit -s`.
+    brass::FastInterpreter::set_default_max_call_depth(SIZE_MAX);
     brass::runtime::MultiTierPipeline& pipeline = prog->dispatchTable().pipeline();
     pipeline.initialize(tieringConfigFor(tier));
     registerBronzeMultiTierSymbols(pipeline);

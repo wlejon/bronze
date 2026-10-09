@@ -26,7 +26,7 @@ concurrency:
 
 # Workflow-level write, with the build job pinned back down below. Job-level
 # elevation above a read-only workflow default was refused with a 403 in
-# practice (llvm-prebuilt run 31924758912), so grant here and restrict per-job.
+# practice (run 31924758912), so grant here and restrict per-job.
 permissions:
   contents: write
 
@@ -282,9 +282,8 @@ jobs:
 
       # Re-point the single "nightly" tag/release at this run's commit and
       # replace its assets. Deleting first (with --cleanup-tag) is the reliable
-      # way to move the tag. --latest is explicit and load-bearing: the
-      # llvm-prebuilt prerelease also exists on this repo, and without the flag
-      # GitHub could pick another release to serve at /releases/latest.
+      # way to move the tag. --latest is explicit so GitHub never serves
+      # another release on this repo at /releases/latest.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

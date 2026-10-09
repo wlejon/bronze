@@ -2,7 +2,7 @@ name: CodeQL
 
 # Static analysis for bronze's own C++ (compiler, runtime, embedding API).
 #
-# Build-mode: none (build-free extraction) — it needs no LLVM/vcpkg toolchain,
+# Build-mode: none (build-free extraction) — it needs no brass or vcpkg fetch,
 # and it is the one C/C++ mode where paths-ignore is honored, which keeps the
 # vendored oracle milestone sources (unmodified three.js / pixi.js JavaScript)
 # out of the results. JavaScript analysis is deliberately not enabled: nearly

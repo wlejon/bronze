@@ -221,5 +221,11 @@ TEST_CASE("bronze_strict_eq follows JS === semantics") {
     CHECK(bronze_strict_eq(Value::fromUndefined().rawBits(), Value::fromUndefined().rawBits()));
     Rooted<Value> obj(Value::fromRawBits(bronze_create_object()));
     CHECK(bronze_strict_eq(obj.get().rawBits(), obj.get().rawBits()));
-    CHECK_FALSE(bronze_strict_eq(obj.get().rawBits(), bronze_create_object()));
+    // The second object is allocated before obj's bits are read: an argument
+    // list may be evaluated in either order, and where obj's bits are read
+    // first (clang on arm64 macOS) the allocation's collection under
+    // BRONZE_GC_STRESS moves obj and can hand its old address to the new
+    // object, so the stale bits compared equal.
+    Rooted<Value> other(Value::fromRawBits(bronze_create_object()));
+    CHECK_FALSE(bronze_strict_eq(obj.get().rawBits(), other.get().rawBits()));
 }

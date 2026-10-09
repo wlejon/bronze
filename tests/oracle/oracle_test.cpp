@@ -991,6 +991,116 @@ TEST_CASE("threejs-jit milestone: unmodified r160 runs under bronze run") {
                       /*compileAllowanceMs=*/kRunTimeoutMs * 3);
 }
 
+#ifndef _WIN32
+// A recursion with more stack than 10000 interpreter frames take ends in the
+// RangeError the stack check throws, at every tier. The fast interpreter
+// counted its own frames and stopped at 10000 with an InterpreterException,
+// which no script can catch and which aborted `bronze run`: an 8 MB stack
+// already holds more than that on arm64 macOS, and ctest runs its tests with
+// the stack limit raised to the hard limit (64 MB there), where
+// async_suspend_protocol aborted that way. The run here raises the limit
+// itself, so the case does not depend on what the harness inherited.
+TEST_CASE("deep recursion on a raised stack limit ends in a RangeError at every tier") {
+    const std::filesystem::path js = bronze_test::tempDir() / "deep_recursion_raised_stack.js";
+    {
+        std::ofstream out(js, std::ios::binary);
+        out << "function sync(n) { return n === 0 ? 0 : sync(n - 1) + 1; }\n"
+               "try { sync(1e7); console.log('sync returned'); }\n"
+               "catch (e) { console.log('sync', e instanceof RangeError); }\n"
+               "async function down(n) { if (n === 0) return 0; return (await down(n - 1)) + 1; }\n"
+               "down(1e7).then(() => console.log('async returned'),\n"
+               "               e => console.log('async', e instanceof RangeError));\n";
+    }
+    const std::string expected = "sync true\nasync true\n";
+    for (const char* tier : {"0", "1", "2", "auto"}) {
+        // 64 MB, or as much as the hard limit allows.
+        const std::string cmd = "ulimit -s 65536 2>/dev/null || ulimit -s \"$(ulimit -Hs)\"; " +
+                                oracle::quoted(TEST_BRONZE_CLI) + " run --tier=" + tier + " " +
+                                oracle::quoted(js.string());
+        const RunResult run = oracle::runCommand(cmd);
+        const std::string where = std::string("--tier=") + tier;
+        CHECK_MESSAGE(!run.timedOut, ("timed out: " + where).c_str());
+        CHECK_MESSAGE(run.exitCode == 0, (where + runSummary(run)).c_str());
+        CHECK_MESSAGE(run.output == expected, (where + ": " + run.output + runSummary(run)).c_str());
+    }
+}
+
+namespace {
+// The pid a run wrote to `file` (`echo $$ > file; exec ...`), once it has.
+pid_t waitForPidFile(const std::filesystem::path& file) {
+    for (int i = 0; i < 1000; ++i) {
+        std::ifstream in(file);
+        long pid = 0;
+        if (in >> pid && pid > 0) return static_cast<pid_t>(pid);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return -1;
+}
+
+// Whether `pid` is gone within five seconds (reaped, or never there).
+bool processGone(pid_t pid) {
+    for (int i = 0; i < 500; ++i) {
+        if (::kill(pid, 0) != 0 && errno == ESRCH) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+}  // namespace
+
+// A run gets a default shell's 8 MB stack, not the limit the harness
+// inherited, and gets it when started from a worker thread, as every case
+// is: on macOS a setrlimit in a fork of a worker thread did not reach the
+// program, which ran on ctest's 64 MB stack, and async_suspend_protocol's
+// overflow under gc-stress went from 10 s to past the 300 s limit.
+TEST_CASE("runCommand runs on an 8 MB stack whatever the harness's limit") {
+    struct rlimit limit;
+    REQUIRE(::getrlimit(RLIMIT_STACK, &limit) == 0);
+    const struct rlimit saved = limit;
+    limit.rlim_cur = limit.rlim_max;  // what ctest does
+    ::setrlimit(RLIMIT_STACK, &limit);
+    RunResult run;
+    std::thread worker([&] { run = oracle::runCommand("ulimit -s"); });
+    worker.join();
+    ::setrlimit(RLIMIT_STACK, &saved);
+    const bool hardAbove = limit.rlim_max == RLIM_INFINITY || limit.rlim_max > 8 * 1024 * 1024;
+    if (hardAbove) CHECK(run.output == "8192\n");
+}
+
+// A run past its limit is reported as timed out, and the program it ran is
+// killed with it, not left running.
+TEST_CASE("runCommand kills a run that outlives its limit") {
+    const std::filesystem::path pidFile = bronze_test::tempDir() / "run_timeout.pid";
+    std::filesystem::remove(pidFile);
+    const RunResult run =
+        oracle::runCommand("echo $$ > " + oracle::quoted(pidFile.string()) + "; exec sleep 60", false, 1000);
+    CHECK(run.timedOut);
+    CHECK_FALSE(run.ran);
+    const pid_t sleeper = waitForPidFile(pidFile);
+    REQUIRE(sleeper > 0);
+    CHECK_MESSAGE(processGone(sleeper), "the timed-out run is still alive");
+}
+
+// A run outlives nothing: when the harness dies mid-run (ctest's timeout, a
+// signal, a dropped session), the run dies with it rather than spinning on,
+// orphaned, in a process group of its own.
+TEST_CASE("runCommand's run dies with the harness") {
+    const std::filesystem::path pidFile = bronze_test::tempDir() / "run_orphan.pid";
+    std::filesystem::remove(pidFile);
+    const pid_t harness = ::fork();
+    REQUIRE(harness >= 0);
+    if (harness == 0) {
+        oracle::runCommand("echo $$ > " + oracle::quoted(pidFile.string()) + "; exec sleep 60");
+        ::_exit(0);
+    }
+    const pid_t sleeper = waitForPidFile(pidFile);
+    ::kill(harness, SIGKILL);
+    int status = 0;
+    ::waitpid(harness, &status, 0);
+    REQUIRE(sleeper > 0);
+    CHECK_MESSAGE(processGone(sleeper), "the run outlived the harness that started it");
+}
+#endif
+
 TEST_CASE("pixi-jit milestone: unmodified v8.19.0 runs under bronze run") {
     std::filesystem::path dir = findTestDirectory(TEST_PIXI_DIR, "tests/oracle/pixi");
     REQUIRE_MESSAGE(!dir.empty(), "tests/oracle/pixi not found");

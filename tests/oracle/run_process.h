@@ -26,11 +26,20 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
-#include <filesystem>
-#include <fstream>
-#include <iterator>
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/resource.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <libproc.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#endif
 #endif
 
 namespace oracle {
@@ -43,11 +52,7 @@ namespace oracle {
 // and the slowest stressed one (async_suspend_protocol under gc-stress at
 // tier 2, which scans a 16,000-frame stack at every allocation on the way to
 // its RangeError) is 48 s here and near 150 s there.
-#ifdef _WIN32
 constexpr uint32_t kRunTimeoutMs = 60000;
-#else
-constexpr uint32_t kRunTimeoutMs = 15000;
-#endif
 constexpr uint32_t kStressTimeoutMs = 300000;
 
 struct RunResult {
@@ -60,7 +65,6 @@ struct RunResult {
 
 inline std::string quoted(const std::string& arg) { return "\"" + arg + "\""; }
 
-#ifdef _WIN32
 // BRASS_DEOPT_STRESS set to anything but off (`1`/`all`, a period `<N>`, a
 // `site:` selection), inherited by every run: the guards it picks take
 // their exits, so each forced failure runs a site's slow path (the generic
@@ -70,6 +74,7 @@ inline std::string quoted(const std::string& arg) { return "\"" + arg + "\""; }
 // which a loaded machine pushes past the plain limit, so every stressed
 // run gets the stress limit, not only period 1.
 inline bool deoptStressActive() {
+#ifdef _WIN32
     char* env = nullptr;
     size_t len = 0;
     bool active = false;
@@ -79,14 +84,26 @@ inline bool deoptStressActive() {
     }
     free(env);
     return active;
+#else
+    const char* env = std::getenv("BRASS_DEOPT_STRESS");
+    if (env == nullptr) return false;
+    const std::string v(env);
+    return !v.empty() && v != "0" && v != "off";
+#endif
 }
 
+// The limit a run gets: the caller's, except that a run at the default limit
+// under gc-stress or deopt stress gets the stress limit.
+inline uint32_t effectiveTimeout(bool gcStress, uint32_t timeoutMs) {
+    static const bool s_deoptStress = deoptStressActive();
+    return (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptStress)) ? kStressTimeoutMs : timeoutMs;
+}
+
+#ifdef _WIN32
 inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
                             uint32_t timeoutMs = kRunTimeoutMs) {
     RunResult result;
-    static const bool s_deoptStress = deoptStressActive();
-    uint32_t effectiveTimeoutMs =
-        (timeoutMs == kRunTimeoutMs && (gcStress || s_deoptStress)) ? kStressTimeoutMs : timeoutMs;
+    const uint32_t effectiveTimeoutMs = effectiveTimeout(gcStress, timeoutMs);
 
     HANDLE outRead = nullptr;
     HANDLE errRead = nullptr;
@@ -169,34 +186,227 @@ inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
     return result;
 }
 #else
+constexpr rlim_t kChildStackBytes = 8 * 1024 * 1024;
+
+// Closes every descriptor above stderr but `keep` (ascending). A fork copies
+// all of the harness's descriptors, including ones other workers have open
+// without close-on-exec, such as an executable a build is still writing:
+// while any process holds that open for writing, running it fails with
+// ETXTBSY ("Text file busy"). Async-signal-safe.
+inline void closeInheritedFds(const int* keep, int nkeep) {
+#if defined(__APPLE__)
+    proc_fdinfo fds[1024];
+    const int bytes = ::proc_pidinfo(::getpid(), PROC_PIDLISTFDS, 0, fds, sizeof(fds));
+    if (bytes > 0 && static_cast<size_t>(bytes) < sizeof(fds)) {
+        for (int i = 0; i < bytes / static_cast<int>(sizeof(proc_fdinfo)); ++i) {
+            const int fd = fds[i].proc_fd;
+            bool kept = fd <= 2;
+            for (int k = 0; k < nkeep && !kept; ++k) kept = keep[k] == fd;
+            if (!kept) ::close(fd);
+        }
+        return;
+    }
+#elif defined(__linux__) && defined(SYS_close_range)
+    int lo = 3;
+    bool ok = true;
+    for (int k = 0; k <= nkeep && ok; ++k) {
+        const unsigned hi = k < nkeep ? static_cast<unsigned>(keep[k] - 1) : ~0u;
+        if (k < nkeep && keep[k] < lo) continue;
+        if (static_cast<unsigned>(lo) <= hi) ok = ::syscall(SYS_close_range, lo, hi, 0) == 0;
+        if (k < nkeep) lo = keep[k] + 1;
+    }
+    if (ok) return;
+#endif
+    struct rlimit files;
+    rlim_t top = 65536;
+    if (::getrlimit(RLIMIT_NOFILE, &files) == 0 && files.rlim_cur != RLIM_INFINITY && files.rlim_cur < top) {
+        top = files.rlim_cur;
+    }
+    for (int fd = 3; static_cast<rlim_t>(fd) < top; ++fd) {
+        bool kept = false;
+        for (int k = 0; k < nkeep && !kept; ++k) kept = keep[k] == fd;
+        if (!kept) ::close(fd);
+    }
+}
+
+// The forked child's watchdog half (see runCommand): it waits for whichever
+// comes first, the run ending (EOF on `doneRead`, whose write end only the
+// run's processes hold) or the harness going away (EOF on `lifelineRead`,
+// whose write end only the harness holds), and in the second case kills
+// its whole process group, itself included. Otherwise it reaps the run and
+// exits with its status, a signal death as 128 + the signal, the number the
+// harness reports for one. Async-signal-safe calls only: it runs in a fork
+// of a threaded process and never execs.
+[[noreturn]] inline void watchRun(pid_t runner, int lifelineRead, int doneRead) {
+    pollfd fds[2] = {{lifelineRead, POLLIN, 0}, {doneRead, POLLIN, 0}};
+    for (;;) {
+        if (::poll(fds, 2, -1) < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (fds[0].revents != 0) ::kill(0, SIGKILL);
+        if (fds[1].revents != 0) break;
+    }
+    int status = 0;
+    while (::waitpid(runner, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (WIFEXITED(status)) ::_exit(WEXITSTATUS(status));
+    if (WIFSIGNALED(status)) ::_exit(128 + WTERMSIG(status));
+    ::_exit(127);
+}
+
+// The command line goes through `/bin/sh -c`, as it did under popen, so the
+// harness's quoting and `VAR=value` prefixes mean the same thing.
+//
+// The forked child leads a process group of its own (setpgid) and forks
+// again: the grandchild execs the shell, the child stays behind as its
+// watchdog (watchRun). A timeout kills that whole group: the watchdog, the
+// shell, the program it started, and anything that program started. And
+// when the harness itself dies first (ctest's own timeout, a signal, a
+// dropped ssh session), the watchdog sees the lifeline pipe close and kills
+// the group, so no run outlives the harness that started it. A process in a
+// group of its own is out of reach of whatever killed the harness, and
+// without the lifeline it would run on, orphaned, for as long as it takes.
+//
+// The child closes everything else it inherited first (closeInheritedFds):
+// a watchdog never execs, so close-on-exec would not do it, and it would
+// hold other runs' lifelines and other workers' half-written files open for
+// as long as its run lasts.
 inline RunResult runCommand(const std::string& cmdLine, bool gcStress = false,
                             uint32_t timeoutMs = kRunTimeoutMs) {
-    (void)timeoutMs;
     RunResult result;
-    static std::atomic<unsigned> s_serial{0};
-    const std::filesystem::path errFile =
-        std::filesystem::temp_directory_path() /
-        ("oracle_stderr_" + std::to_string(::getpid()) + "_" + std::to_string(s_serial++) + ".txt");
-    std::string cmd = (gcStress ? "BRONZE_GC_STRESS=1 " : "") + cmdLine + " 2>" + quoted(errFile.string());
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return result;
-    char buf[4096];
-    while (std::size_t n = std::fread(buf, 1, sizeof(buf), pipe)) {
-        result.output.append(buf, n);
+    const uint32_t effectiveTimeoutMs = effectiveTimeout(gcStress, timeoutMs);
+    // The stack a program gets from a default shell. ctest raises the soft
+    // limit to the hard one (64 MB on macOS), and a case that recurses until
+    // RangeError then goes eight times as deep: under gc-stress, which walks
+    // the whole stack at every allocation, that is 64 times the work, and
+    // the pinned output would be compared against a stack nobody runs with.
+    // The shell lowers it, not the forked child: on macOS a setrlimit of
+    // RLIMIT_STACK in a fork made from a worker thread (every oracle run's
+    // case) leaves the stack the program gets at exec unchanged.
+    const std::string cmd = "s=$(ulimit -s); if [ \"$s\" = unlimited ] || [ \"$s\" -gt " +
+                            std::to_string(kChildStackBytes / 1024) + " ]; then ulimit -s " +
+                            std::to_string(kChildStackBytes / 1024) + "; fi; " +
+                            (gcStress ? "BRONZE_GC_STRESS=1 " : "") + cmdLine;
+
+    int outPipe[2] = {-1, -1};
+    int errPipe[2] = {-1, -1};
+    int lifeline[2] = {-1, -1};
+    pid_t pid = -1;
+
+    // Pipe creation through fork is one critical section, for the reason the
+    // Windows half gives: every pipe end is close-on-exec before another
+    // worker can fork, so no other case's child keeps this case's pipes open
+    // (macOS has no pipe2, so the flag is set after the fact, under the lock).
+    static std::mutex s_spawnMutex;
+    {
+        std::lock_guard<std::mutex> lock(s_spawnMutex);
+        if (::pipe(outPipe) != 0) return result;
+        if (::pipe(errPipe) != 0) {
+            ::close(outPipe[0]);
+            ::close(outPipe[1]);
+            return result;
+        }
+        if (::pipe(lifeline) != 0) {
+            for (int fd : {outPipe[0], outPipe[1], errPipe[0], errPipe[1]}) ::close(fd);
+            return result;
+        }
+        for (int fd : {outPipe[0], outPipe[1], errPipe[0], errPipe[1], lifeline[0], lifeline[1]}) {
+            ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+        }
+        pid = ::fork();
+        if (pid == 0) {
+            // Async-signal-safe calls only from here on (a fork of a
+            // threaded process).
+            ::setpgid(0, 0);
+            int keep[3] = {outPipe[1], errPipe[1], lifeline[0]};
+            for (int i = 1; i < 3; ++i) {
+                for (int j = i; j > 0 && keep[j - 1] > keep[j]; --j) std::swap(keep[j - 1], keep[j]);
+            }
+            closeInheritedFds(keep, 3);  // lifeline[1] among them
+            // The run holds the write end of `done` (not close-on-exec, so
+            // the shell and the program keep it); EOF on the read end is the
+            // watchdog's sign that the run is over.
+            int done[2] = {-1, -1};
+            if (::pipe(done) != 0) ::_exit(127);
+            const pid_t runner = ::fork();
+            if (runner != 0) {
+                ::close(done[1]);
+                ::close(outPipe[1]);
+                ::close(errPipe[1]);
+                if (runner < 0) ::_exit(127);
+                watchRun(runner, lifeline[0], done[0]);
+            }
+            ::close(done[0]);
+            ::close(lifeline[0]);
+            ::dup2(outPipe[1], STDOUT_FILENO);  // dup2 clears close-on-exec
+            ::dup2(errPipe[1], STDERR_FILENO);
+            ::execl("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr));
+            ::_exit(127);
+        }
+        if (pid > 0) ::setpgid(pid, pid);  // also set here: no race with the kill below
+        ::close(outPipe[1]);
+        ::close(errPipe[1]);
+        ::close(lifeline[0]);
+        if (pid < 0) {
+            ::close(outPipe[0]);
+            ::close(errPipe[0]);
+            ::close(lifeline[1]);
+            return result;
+        }
     }
-    int status = pclose(pipe);
+
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::milliseconds(effectiveTimeoutMs);
+    pollfd fds[2] = {{outPipe[0], POLLIN, 0}, {errPipe[0], POLLIN, 0}};
+    std::string* sinks[2] = {&result.output, &result.errors};
+    int open = 2;
+    char buf[4096];
+    while (open > 0) {
+        int waitMs = -1;
+        if (!result.timedOut) {
+            const auto left =
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+            if (left <= 0) {
+                // Past the limit: kill the group, then keep draining until
+                // the pipes reach EOF, which they do once the group is gone.
+                result.timedOut = true;
+                ::kill(-pid, SIGKILL);
+                continue;
+            }
+            waitMs = static_cast<int>(left);
+        }
+        const int ready = ::poll(fds, 2, waitMs);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (fds[i].fd < 0 || fds[i].revents == 0) continue;
+            const ssize_t n = ::read(fds[i].fd, buf, sizeof(buf));
+            if (n > 0) {
+                sinks[i]->append(buf, static_cast<size_t>(n));
+            } else if (n == 0 || (errno != EINTR && errno != EAGAIN)) {
+                ::close(fds[i].fd);
+                fds[i].fd = -1;  // poll ignores a negative fd
+                --open;
+            }
+        }
+    }
+    for (pollfd& p : fds) {
+        if (p.fd >= 0) ::close(p.fd);
+    }
+
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    ::close(lifeline[1]);  // only now: closing it tells the watchdog to kill the run
     if (WIFEXITED(status)) {
         result.exitCode = WEXITSTATUS(status);
     } else if (WIFSIGNALED(status)) {
         result.exitCode = 128 + WTERMSIG(status);
     }
-    {
-        std::ifstream in(errFile, std::ios::binary);
-        result.errors.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    }
-    std::error_code ec;
-    std::filesystem::remove(errFile, ec);
-    result.ran = true;
+    result.ran = !result.timedOut;
     return result;
 }
 #endif

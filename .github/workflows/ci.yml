@@ -6,9 +6,9 @@ name: CI
 # excluded here for wall time (it alone is ~80% of the test step) and runs
 # in the Nightly workflow's full suite instead, same three platforms.
 #
-# LLVM comes from this repo's own llvm-prebuilt-<ver> release (built by
-# llvm-prebuilt.yml), not from vcpkg — vcpkg builds LLVM from source, which
-# is hours, while the hosted tarball restores in about a minute.
+# brass, the code generator, is the one sibling dependency; CMake fetches the
+# commit cmake/bro_deps.cmake pins at configure, so there is no checkout step
+# for it and no submodule.
 
 on:
   push:

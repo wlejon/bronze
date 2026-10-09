@@ -590,7 +590,11 @@ uint64_t rtConstructWithNewTarget(Rooted<Value>& targetRoot, uint32_t count, con
     }
 
     // Ordinary constructor with different newTarget
-    Rooted<Value> proto{Value(bronze_elem_get(newTargetRoot.get().rawBits(), rtMakeString("prototype").rawBits()))};
+    // The key is made before newTarget's bits are read: making it allocates,
+    // and an argument list may be evaluated left to right (clang does), so
+    // bits read first can be stale once a collection has moved newTarget.
+    Rooted<Value> key{rtMakeString("prototype")};
+    Rooted<Value> proto{Value(bronze_elem_get(newTargetRoot.get().rawBits(), key.get().rawBits()))};
     if (!proto.get().isObject()) {
         proto.set(rtObjectPrototype());
     }
