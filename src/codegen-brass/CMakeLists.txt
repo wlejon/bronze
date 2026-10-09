@@ -1,31 +1,20 @@
+# brass, through cmake/bro_deps.cmake: an outer project's brass target, else
+# the ../brass working tree beside the top-level project, else the commit
+# pinned in the top-level CMakeLists.txt, fetched. A BRASS_ROOT environment
+# variable or -DBRASS_ROOT names another tree to build it from. BRASS_ROOT in
+# the cache then reports the tree chosen (the runtimes read brass's headers
+# from it). brass is always compiled in this build tree, never linked prebuilt:
+# the backend and the runtime cross a C++ boundary that needs one compiler and
+# one CRT on both sides, which a library built elsewhere cannot promise.
 if(NOT TARGET brass)
     if(DEFINED ENV{BRASS_ROOT} AND NOT "$ENV{BRASS_ROOT}" STREQUAL "")
-        set(BRASS_ROOT "$ENV{BRASS_ROOT}")
-    elseif(NOT DEFINED BRASS_ROOT OR BRASS_ROOT STREQUAL "")
-        foreach(_candidate
-            "${CMAKE_CURRENT_SOURCE_DIR}/../../../brass"
-            "${CMAKE_SOURCE_DIR}/../brass"
-            "${CMAKE_SOURCE_DIR}/third_party/brass"
-        )
-            if(EXISTS "${_candidate}/include/brass/brass.hpp")
-                get_filename_component(BRASS_ROOT "${_candidate}" ABSOLUTE)
-                break()
-            endif()
-        endforeach()
+        set(FETCHCONTENT_SOURCE_DIR_BRASS "$ENV{BRASS_ROOT}")
+    elseif(BRASS_ROOT AND NOT BRASS_ROOT STREQUAL _BRONZE_BRASS_ROOT_CHOSEN)
+        set(FETCHCONTENT_SOURCE_DIR_BRASS "${BRASS_ROOT}")
     endif()
-    if(EXISTS "${BRASS_ROOT}/CMakeLists.txt")
-        file(TO_CMAKE_PATH "${BRASS_ROOT}" BRASS_ROOT)
-        set(BRASS_ROOT "${BRASS_ROOT}" CACHE PATH "Path to Brass root directory" FORCE)
-        add_subdirectory("${BRASS_ROOT}" "${CMAKE_BINARY_DIR}/brass-build" EXCLUDE_FROM_ALL)
-    endif()
-endif()
-# brass is always compiled in this build tree, never linked prebuilt: the
-# backend and the runtime cross a C++ boundary that needs one compiler and one
-# CRT on both sides, which a library built elsewhere cannot promise.
-if(NOT TARGET brass)
-    message(FATAL_ERROR
-        "brass not found (BRASS_ROOT='${BRASS_ROOT}'). Check it out beside bronze "
-        "(../brass) or pass -DBRASS_ROOT=<brass source tree>.")
+    bro_dependency(brass)
+    set(BRASS_ROOT "${brass_SOURCE_DIR}" CACHE PATH "brass source tree" FORCE)
+    set(_BRONZE_BRASS_ROOT_CHOSEN "${brass_SOURCE_DIR}" CACHE INTERNAL "")
 endif()
 
 add_library(bronze_codegen_brass STATIC

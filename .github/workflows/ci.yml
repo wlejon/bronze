@@ -68,15 +68,8 @@ jobs:
         with:
           arch: x64
 
-      - name: Checkout brass
-        uses: actions/checkout@v7
-        with:
-          repository: wlejon/brass
-          path: brass
-
-      - name: Set BRASS_ROOT
-        shell: bash
-        run: echo "BRASS_ROOT=$GITHUB_WORKSPACE/brass" >> "$GITHUB_ENV"
+      # brass comes from the commit CMakeLists.txt pins (cmake/bro_deps.cmake),
+      # fetched at configure: no checkout step.
 
       # doctest is the only default vcpkg dependency; clone vcpkg at the same
       # commit the manifest baseline pins so tool + ports + scripts agree.

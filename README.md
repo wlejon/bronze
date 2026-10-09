@@ -110,8 +110,10 @@ ctest --preset dev
 ```
 
 The native code generation backend is Brass (`src/codegen-brass`), which compiles
-Bronze IL to native machine code. [docs/internals.md](docs/internals.md) has the full
-build-and-iteration workflow.
+Bronze IL to native machine code. Brass is a dependency, not a submodule: a
+working tree at `../brass` is used when there is one, otherwise configure fetches
+the commit `CMakeLists.txt` pins (`cmake/bro_deps.cmake`).
+[docs/internals.md](docs/internals.md) has the full build-and-iteration workflow.
 
 ## Testing
 

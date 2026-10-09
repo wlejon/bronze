@@ -46,6 +46,12 @@ endif()
 # generated-code ABI header as pure C to keep C++ types out of it.
 project(bronze VERSION 0.1.0 LANGUAGES C CXX)
 
+# Dependencies (cmake/bro_deps.cmake): the ../brass working tree beside the
+# top-level project, else this pinned commit, fetched. A project embedding
+# bronze (bro) pins its own brass first, and that pin wins.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
+bro_dependency(brass GITHUB wlejon/brass REF 634e3d5cd3ea27c48e3b820aec3115fb66aae2ec PIN_ONLY)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
