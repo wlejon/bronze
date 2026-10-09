@@ -50,7 +50,7 @@ project(bronze VERSION 0.1.0 LANGUAGES C CXX)
 # top-level project, else this pinned commit, fetched. A project embedding
 # bronze (bro) pins its own brass first, and that pin wins.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bro_deps.cmake)
-bro_dependency(brass GITHUB wlejon/brass REF 9784fe4ec5e62c8a69c7bdb67548478b6c72a1ef PIN_ONLY)
+bro_dependency(brass GITHUB wlejon/brass REF b49d2bde0046fb96b93b95f544d766137dd5563a PIN_ONLY)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
