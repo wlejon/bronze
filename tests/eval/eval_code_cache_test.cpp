@@ -5,6 +5,8 @@
 // compiles from source.
 #include <doctest/doctest.h>
 
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -13,6 +15,7 @@
 
 #include "../test_temp_dir.h"
 #include "embed/embed.h"
+#include "eval/code_cache.h"
 #include "eval/eval.h"
 
 using namespace bronze;
@@ -240,9 +243,69 @@ TEST_CASE("code cache: the directory is trimmed to its byte limit") {
     opts.codeCacheMaxBytes = 1;  // every store evicts all older entries
     CHECK(runNumber(compileScript("1 + 1;", opts), opts) == 2.0);
     CHECK(runNumber(compileScript("2 + 2;", opts), opts) == 4.0);
+    cache::waitForTrims();
     int entries = 0;
     for (const auto& e : std::filesystem::directory_iterator(cacheDir)) entries += e.path().extension() == ".bzc";
-    CHECK(entries <= 1);
+    // The entry just stored stays, however small the limit.
+    CHECK(entries == 1);
+    CHECK(compileScript("2 + 2;", opts)->cacheStatus == CodeCacheStatus::Hit);
+}
+
+TEST_CASE("code cache: the limit counts disk space, warm lists included") {
+    // Many small entries, each with a warm list: what the bytes written add up
+    // to is under the limit, what they take on disk (whole 4 KiB units) is
+    // over it. The oldest go first, each with its warm list; a warm list whose
+    // entry is gone goes too.
+    const auto cacheDir = makeDir("bronze_cc_trim_disk");
+    constexpr int kFillers = 40;
+    constexpr uint64_t kLimit = 64 * 1024;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    auto fillerName = [](int i) {
+        char name[40];
+        std::snprintf(name, sizeof name, "%032x", i + 1);
+        return std::string(name);
+    };
+    for (int i = 0; i < kFillers; ++i) {
+        const std::filesystem::path entry = cacheDir / (fillerName(i) + ".bzc");
+        const std::filesystem::path warm = cacheDir / (fillerName(i) + ".bzw");
+        writeFile(entry, std::string(600, 'e'));
+        writeFile(warm, std::string(200, 'w'));
+        // Filler i was last used i minutes after filler 0, all over an hour ago.
+        std::filesystem::last_write_time(entry, now - std::chrono::minutes(120 - i));
+    }
+    writeFile(cacheDir / "ffffffffffffffffffffffffffffffff.bzw", "an orphan");
+    // 40 x 800 bytes written, 40 x 8 KiB on disk.
+    REQUIRE(kFillers * 800 < kLimit);
+
+    EvalOptions opts = cached(cacheDir, "<cc-trim-disk>");
+    opts.codeCacheMaxBytes = kLimit;
+    auto script = compileScript("3 + 3;", opts);
+    CHECK(script->cacheStatus == CodeCacheStatus::Miss);
+    CHECK(runNumber(std::move(script), opts) == 6.0);
+    cache::waitForTrims();
+
+    uint64_t disk = 0;
+    int entries = 0;
+    for (const auto& e : std::filesystem::directory_iterator(cacheDir)) {
+        disk += (e.file_size() + 4095) / 4096 * 4096;
+        entries += e.path().extension() == ".bzc";
+    }
+    CHECK(disk <= kLimit);
+    CHECK(entries >= 2);  // trimmed, not emptied
+    CHECK(!std::filesystem::exists(cacheDir / "ffffffffffffffffffffffffffffffff.bzw"));
+    // The survivors are the most recently used, each still with its warm list;
+    // no evicted entry left its warm list behind.
+    bool evicting = true;
+    for (int i = 0; i < kFillers; ++i) {
+        const bool hasEntry = std::filesystem::exists(cacheDir / (fillerName(i) + ".bzc"));
+        const bool hasWarm = std::filesystem::exists(cacheDir / (fillerName(i) + ".bzw"));
+        CHECK(hasEntry == hasWarm);
+        if (hasEntry) evicting = false;
+        CHECK(hasEntry != evicting);
+    }
+    CHECK(!std::filesystem::exists(cacheDir / (fillerName(0) + ".bzc")));
+    CHECK(std::filesystem::exists(cacheDir / (fillerName(kFillers - 1) + ".bzc")));
+    CHECK(compileScript("3 + 3;", opts)->cacheStatus == CodeCacheStatus::Hit);
 }
 
 TEST_CASE("captured inputs compile on another thread; progress reaches done") {

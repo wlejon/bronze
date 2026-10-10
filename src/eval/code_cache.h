@@ -38,9 +38,14 @@
 // program compiles from source and replaces the entry. Writes go to a temporary
 // file renamed into place, so a reader never sees half an entry.
 //
-// BOUND. After each store the directory is trimmed to the byte limit by
-// deleting the least recently used entries (a hit refreshes its entry's
-// modification time).
+// BOUND. Everything the cache writes counts toward the byte limit at the space
+// it takes on disk (whole 4 KiB units): entries, their warm lists, and writes
+// in progress. A store that takes the directory past the limit — by what the
+// process last saw there plus what it stored since; the first store of a
+// process always looks — has a background thread delete the least recently
+// used entries, each with its warm list, down to 7/8 of the limit (a hit
+// refreshes its entry's modification time). The compiling thread never walks
+// the directory.
 namespace bronze::eval::cache {
 
 struct Digest {
@@ -80,10 +85,14 @@ struct Hit {
 bool load(const std::string& dir, const Digest& key, std::string_view entryText,
           const std::vector<modules::ModuleRoot>& moduleRoots, bool retainSource, Hit& out, std::string& why);
 
-// Writes the entry for `key` and trims the directory to `maxBytes`. Failures
-// are silent: a cache that cannot be written is a cache that misses.
+// Writes the entry for `key` and has the directory trimmed to `maxBytes` (see
+// BOUND), off this thread. Failures are silent: a cache that cannot be
+// written is a cache that misses.
 void store(const std::string& dir, uint64_t maxBytes, const Digest& key, const std::string& resName,
            const SourceSet& sources, const modules::DependencyLog& deps, const il::Module& module);
+
+// Blocks until every trim the process's stores asked for has finished.
+void waitForTrims();
 
 // The entry's warm list (`<key>.bzw`, text): the functions a run of the
 // program first called, in order, which the next run builds Tier-0 bytecode

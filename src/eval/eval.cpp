@@ -644,6 +644,9 @@ void retainProgram(std::shared_ptr<BrassTieredProgram> program) {
 
 void stopBackgroundCompiles() {
     saveWarmLists();
+    // A short run's one store would otherwise leave with its trim unfinished,
+    // and a cache filled by short runs would never be trimmed.
+    cache::waitForTrims();
     std::lock_guard<std::mutex> lock(g_programsMutex);
     for (auto& program : retainedPrograms()) program->stopBackgroundCompilation();
 }

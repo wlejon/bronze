@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <system_error>
 #include <thread>
 #include <unordered_set>
@@ -266,13 +269,31 @@ uint64_t processId() {
 #endif
 }
 
-void trim(const std::string& dir, uint64_t maxBytes) {
+// What a file of `size` bytes costs on disk: whole allocation units. Most
+// entries are a few kilobytes and most warm lists a few hundred bytes, so
+// counting bytes written rather than space taken under-counts a full cache by
+// well over a tenth.
+constexpr uint64_t kAllocUnit = 4096;
+uint64_t diskBytes(uint64_t size) { return (size + kAllocUnit - 1) / kAllocUnit * kAllocUnit; }
+
+// A trim that finds the directory over its limit takes it down to this much
+// of it, so that the stores after it do not each walk the directory again.
+uint64_t lowWater(uint64_t maxBytes) { return maxBytes - maxBytes / 8; }
+
+// Walks `dir` and, when everything the cache keeps there (entries, their warm
+// lists, writes in progress) takes more than `maxBytes` on disk, deletes the
+// least recently used entries, each with its warm list, until it takes no more
+// than the low-water mark. `keep` (a key's hex, or empty) is the entry just
+// stored, which stays. Returns what the directory takes afterwards.
+uint64_t trimDir(const std::string& dir, uint64_t maxBytes, const std::string& keep) {
     struct Item {
-        std::filesystem::path path;
-        uint64_t size;
+        std::filesystem::path entry;  // <key>.bzc
+        uint64_t bytes = 0;           // the entry and its warm list
         std::filesystem::file_time_type mtime;
+        bool kept = false;
     };
     std::vector<Item> items;
+    std::vector<std::pair<std::filesystem::path, uint64_t>> warm;
     uint64_t total = 0;
     std::error_code ec;
     const auto now = std::filesystem::file_time_type::clock::now();
@@ -282,31 +303,128 @@ void trim(const std::string& dir, uint64_t maxBytes) {
         const auto& p = entry.path();
         const auto mtime = entry.last_write_time(e2);
         if (e2) continue;
+        const uint64_t size = entry.file_size(e2);
+        if (e2) continue;
         const std::string name = p.filename().string();
         if (name.find(".tmp") != std::string::npos) {
-            // A writer that died between write and rename.
-            if (now - mtime > std::chrono::minutes(10)) std::filesystem::remove(p, e2);
+            // A writer that died between write and rename; a live one's bytes
+            // are about to be an entry.
+            if (now - mtime > std::chrono::minutes(10)) {
+                std::filesystem::remove(p, e2);
+            } else {
+                total += diskBytes(size);
+            }
             continue;
         }
         if (p.extension() == kWarmExt) {
-            // A warm list outlives nothing: its entry trimmed, it goes too.
-            std::filesystem::path owner = p;
-            if (!std::filesystem::exists(owner.replace_extension(kExt), e2)) std::filesystem::remove(p, e2);
+            warm.emplace_back(p, diskBytes(size));
             continue;
         }
         if (p.extension() != kExt) continue;
-        const uint64_t size = entry.file_size(e2);
-        if (e2) continue;
-        items.push_back({p, size, mtime});
-        total += size;
+        items.push_back({p, diskBytes(size), mtime, !keep.empty() && p.stem().string() == keep});
     }
-    if (total <= maxBytes) return;
+    // Each warm list is charged to its entry; one whose entry is gone goes.
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.entry < b.entry; });
+    for (auto& [path, bytes] : warm) {
+        std::filesystem::path owner = path;
+        owner.replace_extension(kExt);
+        auto it = std::lower_bound(items.begin(), items.end(), owner,
+                                   [](const Item& a, const std::filesystem::path& b) { return a.entry < b; });
+        if (it != items.end() && it->entry == owner) {
+            it->bytes += bytes;
+        } else {
+            std::error_code e2;
+            std::filesystem::remove(path, e2);
+        }
+    }
+    for (const Item& item : items) total += item.bytes;
+    if (total <= maxBytes) return total;
+    const uint64_t target = lowWater(maxBytes);
     std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.mtime < b.mtime; });
     for (const auto& item : items) {
-        if (total <= maxBytes) break;
+        if (total <= target) break;
+        if (item.kept) continue;
         std::error_code e2;
-        if (std::filesystem::remove(item.path, e2)) total -= item.size;
+        if (!std::filesystem::remove(item.entry, e2)) continue;
+        std::filesystem::path w = item.entry;
+        std::filesystem::remove(w.replace_extension(kWarmExt), e2);
+        total -= item.bytes;
     }
+    return total;
+}
+
+// THE TRIMMER. A store must not walk the directory on the thread that
+// compiles (a page's first compile, on a full cache of tens of thousands of
+// files, would wait on it), so trims run on one thread of their own, started
+// by the first store. Per directory the process keeps what the last walk found
+// plus what it has stored since; a store asks for a walk only when that
+// estimate passes the limit, or when the directory has not been walked yet.
+// Other processes' stores are not in the estimate — the next walk sees them.
+struct TrimState {
+    uint64_t estimate = 0;
+    uint64_t maxBytes = 0;
+    std::string keep;
+    bool walked = false;
+    bool pending = false;
+};
+
+struct Trimmer {
+    std::mutex mutex;
+    std::condition_variable cv;           // work queued, or a walk finished
+    std::map<std::string, TrimState> dirs;
+    bool started = false;
+    bool busy = false;                    // a walk is running
+
+    void run() {
+        std::unique_lock<std::mutex> lock(mutex);
+        for (;;) {
+            cv.wait(lock, [&] {
+                for (auto& [d, s] : dirs) {
+                    if (s.pending) return true;
+                }
+                return false;
+            });
+            for (auto& [dir, s] : dirs) {
+                if (!s.pending) continue;
+                s.pending = false;
+                const std::string d = dir;
+                const uint64_t maxBytes = s.maxBytes;
+                const std::string keep = s.keep;
+                busy = true;
+                lock.unlock();
+                const uint64_t total = trimDir(d, maxBytes, keep);
+                lock.lock();
+                busy = false;
+                TrimState& after = dirs[d];
+                after.estimate = total;
+                after.walked = true;
+                cv.notify_all();
+                break;  // `dirs` may have changed; look again
+            }
+        }
+    }
+};
+
+Trimmer& trimmer() {
+    // Never destroyed: the thread may be mid-walk at exit.
+    static auto* t = new Trimmer();
+    return *t;
+}
+
+void requestTrim(const std::string& dir, uint64_t maxBytes, const std::string& keep, uint64_t storedBytes) {
+    Trimmer& t = trimmer();
+    std::lock_guard<std::mutex> lock(t.mutex);
+    TrimState& s = t.dirs[dir];
+    s.estimate += storedBytes;
+    s.maxBytes = maxBytes;
+    s.keep = keep;
+    if (s.walked && s.estimate <= maxBytes) return;
+    s.pending = true;
+    if (!t.started) {
+        t.started = true;
+        std::thread([&t] { t.run(); }).detach();
+    }
+    t.cv.notify_all();
 }
 
 }  // namespace
@@ -566,7 +684,19 @@ void store(const std::string& dir, uint64_t maxBytes, const Digest& key, const s
         std::filesystem::remove(tmp, ec);
         return;
     }
-    trim(dir, maxBytes);
+    requestTrim(dir, maxBytes, key.hex(), diskBytes(header.size() + payload.size()));
+}
+
+void waitForTrims() {
+    Trimmer& t = trimmer();
+    std::unique_lock<std::mutex> lock(t.mutex);
+    t.cv.wait(lock, [&] {
+        if (t.busy) return false;
+        for (auto& [d, s] : t.dirs) {
+            if (s.pending) return false;
+        }
+        return true;
+    });
 }
 
 namespace {
