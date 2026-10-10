@@ -127,9 +127,9 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     endif()
 
     # The brass runtime symbols compiled modules name outside the registry:
-    # the raise entry points on every platform, and the personality routine
-    # each platform's unwind information names (the runtime defines only its
-    # own).
+    # the raise entry points and the coroutine-frame allocator on every
+    # platform, and the personality routine each platform's unwind
+    # information names (the runtime defines only its own).
     bronze_abi_cut_block("${_after_fns}" "#define BRONZE_ABI_BRASS_SYMBOLS(Y)" _brass_text _unused)
     string(REGEX MATCHALL "Y[(][A-Za-z_][A-Za-z0-9_]*[)]" _brass_entries "${_brass_text}")
     set(_brass "")
@@ -142,14 +142,6 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
             "bronze_abi_export_files: found no Y(...) lines in BRONZE_ABI_BRASS_SYMBOLS in "
             "${header}.")
     endif()
-    # The brass runtime functions exported under their own names.
-    bronze_abi_cut_block("${_after_fns}" "#define BRONZE_ABI_BRASS_EXPORTS(Z)" _brass_exports_text _unused)
-    string(REGEX MATCHALL "Z[(][A-Za-z_][A-Za-z0-9_]*[)]" _brass_export_entries "${_brass_exports_text}")
-    set(_brass_exports "")
-    foreach(_entry IN LISTS _brass_export_entries)
-        string(REGEX MATCH "Z[(]([A-Za-z_][A-Za-z0-9_]*)" _matched "${_entry}")
-        list(APPEND _brass_exports "${CMAKE_MATCH_1}")
-    endforeach()
     foreach(_flavor WINDOWS SYSV)
         string(REGEX MATCH "#define BRONZE_ABI_PERSONALITY_${_flavor}[ \t]+([A-Za-z_][A-Za-z0-9_]*)"
                _matched "${_after_fns}")
@@ -166,7 +158,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set(_def_text "; Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _def_text "; DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _def_text "EXPORTS\n")
-    foreach(_name IN LISTS _fns _brass_exports)
+    foreach(_name IN LISTS _fns)
         string(APPEND _def_text "    ${_name}\n")
     endforeach()
     # brass defines each of these as brass_default_<rest> and no image but
@@ -191,7 +183,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set(_ver_text "# Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _ver_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _ver_text "{\n  global:\n")
-    foreach(_name IN LISTS _fns _brass_exports)
+    foreach(_name IN LISTS _fns)
         string(APPEND _ver_text "    ${_name};\n")
     endforeach()
     foreach(_name IN LISTS _brass _personality_SYSV)
@@ -210,7 +202,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     # mangled name picks up on top of it).
     set(_exp_text "# Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _exp_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
-    foreach(_name IN LISTS _fns _brass_exports)
+    foreach(_name IN LISTS _fns)
         string(APPEND _exp_text "_${_name}\n")
     endforeach()
     foreach(_name IN LISTS _brass _personality_SYSV)

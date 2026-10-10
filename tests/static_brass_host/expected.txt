@@ -1,0 +1,5 @@
+generator sum=10
+plain=42
+gathered=1,2,3
+host gathered=4,5
+host done

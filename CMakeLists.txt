@@ -145,6 +145,9 @@ if(BRONZE_BUILD_TESTS)
         # The unload half of the same story: retire a loaded module, load its
         # replacement, one runtime throughout.
         add_subdirectory(tests/hot_swap)
+        # A module linked into a host that uses the shared runtime and links
+        # brass itself: its coroutine frames still come from the runtime.
+        add_subdirectory(tests/static_brass_host)
     endif()
 endif()
 

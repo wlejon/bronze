@@ -641,25 +641,20 @@
  *   throw lands at its landing pads: named from .xdata on Windows and from
  *   the .eh_frame CIE on ELF and Mach-O. The runtime defines the one for its
  *   platform.
+ * - brass_coro_create: a generator or async function's stub creating its
+ *   body's coroutine frame, in code compiled outside a tiered program.
  *
  * brass defines each as brass_default_<rest>; the runtime exports the
  * canonical name as an alias of it, the one definition of that name in the
- * process.
+ * process. A host that also links brass statically (a compiler in-process)
+ * therefore cannot hand a module linked into it its own copy: a frame
+ * brass_coro_create made in the host's copy of the coroutine runtime is one
+ * the runtime's copy, which starts and resumes it, has never heard of.
  */
 #define BRONZE_ABI_BRASS_SYMBOLS(Y) \
     Y(brass_throw) \
-    Y(brass_rethrow)
-
-/*
- * The brass runtime functions a compiled module names under their own names,
- * which the shared runtime exports as they are (brass defines them; nothing
- * overrides them):
- *
- * - brass_coro_create: a generator or async function's stub creating its
- *   body's coroutine frame, in code compiled outside a tiered program.
- */
-#define BRONZE_ABI_BRASS_EXPORTS(Z) \
-    Z(brass_coro_create)
+    Y(brass_rethrow) \
+    Y(brass_coro_create)
 
 #define BRONZE_ABI_PERSONALITY_WINDOWS brass_seh_personality
 #define BRONZE_ABI_PERSONALITY_SYSV    brass_sysv_personality
