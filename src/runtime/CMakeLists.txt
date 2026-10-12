@@ -78,6 +78,8 @@ bronze_add_module(runtime
         unicode_case.cpp
         unicode_case_data_simple.cpp
         unicode_case_data_full.cpp
+        unicode_norm.cpp
+        unicode_norm_data.cpp
         builtin_string_iterator.cpp
         builtin_function.cpp
         builtin_function_kinds.cpp
@@ -173,6 +175,7 @@ bronze_add_module(runtime
         ../../tests/runtime/gc_test.cpp
         ../../tests/runtime/string_test.cpp
         ../../tests/runtime/unicode_case_test.cpp
+        ../../tests/runtime/unicode_norm_test.cpp
         ../../tests/runtime/symbol_test.cpp
         ../../tests/runtime/global_statics_test.cpp
         ../../tests/runtime/shape_test.cpp

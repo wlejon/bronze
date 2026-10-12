@@ -40,6 +40,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/unicode_case.h"
+#include "runtime/unicode_norm.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -698,15 +699,37 @@ uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
         Rooted<Value> formVal{rtValueToString(args[0])};
         form = rtUtf8Chars(formVal.get().asString<StringHeader>());
     }
-    if (form != "NFC" && form != "NFD" && form != "NFKC" && form != "NFKD") {
+    unicode::NormForm nf = unicode::NormForm::NFC;
+    if (form == "NFD") {
+        nf = unicode::NormForm::NFD;
+    } else if (form == "NFKC") {
+        nf = unicode::NormForm::NFKC;
+    } else if (form == "NFKD") {
+        nf = unicode::NormForm::NFKD;
+    } else if (form != "NFC") {
         return rtThrowRangeError(
                    "The normalization form should be one of 'NFC', 'NFD', 'NFKC', 'NFKD'")
             .rawBits();
     }
 
+    // Nothing allocates between here and the quick check, so the header is
+    // read in place: a string whose every unit is under the form's bound is
+    // already normalized, and the answer is the receiver itself -- which is
+    // most strings, and every Latin-1 one under NFC.
     Value str;
     rtThisStringValue(selfVal.get(), str);
-    return str.rawBits();
+    const StringHeader* header = str.asString<StringHeader>();
+    const bool trivial =
+        header->isLatin1()
+            ? unicode::isTriviallyNormalizedLatin1(header->latin1Data(), header->getLength(), nf)
+            : unicode::isTriviallyNormalized(header->utf16Data(), header->getLength(), nf);
+    if (trivial) return str.rawBits();
+
+    const Units self = unitsOf(header);
+    const Units out = unicode::normalize(self, nf);
+    // Still nothing on the JS heap has been allocated, so `str` is current.
+    if (out == self) return str.rawBits();
+    return stringFromUnits(out).rawBits();
 }
 
 extern "C" uint64_t bronze_string_char_code_at(uint64_t env, uint64_t thisBits, uint32_t argc,

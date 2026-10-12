@@ -107,5 +107,6 @@ void generateRegexTables(const std::filesystem::path& ucdDir,
                          const std::filesystem::path& outDir);
 void generateRuntimeTables(const std::filesystem::path& ucdDir,
                            const std::filesystem::path& outDir);
+void generateNormTables(const std::filesystem::path& ucdDir, const std::filesystem::path& outDir);
 
 }  // namespace gen

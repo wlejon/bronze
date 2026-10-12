@@ -10,7 +10,10 @@
 //   src/runtime/  DEFAULT CASE CONVERSION -- the simple and full case mappings
 //                 String.prototype.toUpperCase / toLowerCase apply (11.1.3),
 //                 plus the two derived properties the Final_Sigma condition is
-//                 written in terms of.
+//                 written in terms of. And NORMALIZATION (UAX #15), which
+//                 String.prototype.normalize applies: combining classes,
+//                 one-level decompositions and the explicit composition
+//                 exclusions (gen_unicode_norm.cpp).
 //
 // Folding and conversion are different operations over different tables, and
 // each module's half is its own translation unit for that reason:
@@ -61,7 +64,7 @@ int main(int argc, char** argv) {
     const char* const kInputs[] = {"UnicodeData.txt",   "CaseFolding.txt",
                                    "SpecialCasing.txt", "DerivedCoreProperties.txt",
                                    "Scripts.txt",       "ScriptExtensions.txt",
-                                   "PropertyValueAliases.txt"};
+                                   "PropertyValueAliases.txt", "CompositionExclusions.txt"};
     bool haveInputs = !ucdDir.empty() && !outDir.empty();
     for (const char* name : kInputs) {
         if (!haveInputs) break;
@@ -78,6 +81,7 @@ int main(int argc, char** argv) {
 
     gen::generateRegexTables(ucdDir, outDir);
     gen::generateRuntimeTables(ucdDir, outDir);
+    gen::generateNormTables(ucdDir, outDir);
 
     std::cout << "Done.\n";
     return 0;

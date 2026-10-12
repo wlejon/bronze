@@ -1,0 +1,46 @@
+NFD e-acute: 0065 0301
+NFD A-ring: 0041 030A
+NFD n-tilde: 006E 0303
+NFD Creme Brulee: 0043 0072 0065 0300 006D 0065 0020 0042 0072 0075 0302 006C 0065 0301 0065
+NFD length 15
+NFC e + acute: 00E9
+NFC round trip true
+default: 00E9
+undefined: 00E9
+NFD a 0307 0323: 0061 0323 0307
+NFD a 0323 0307: 0061 0323 0307
+NFC a 0307 0323: 1EA1 0307
+NFC 1E0B 0323: 1E0D 0307
+NFD ga: 1100 1161
+NFC g a: AC00
+NFD hih: 1112 1175 11C2
+NFC hih: D7A3
+NFKD fi: 0066 0069
+NFKC fi: 0066 0069
+NFC fi: FB01
+NFKC circled 1: 0031
+NFKC halfwidth ka: 30AB
+NFKC halfwidth ga: 30AC
+NFKD nbsp: 0020
+NFKC math bold A: 0041
+NFKD FDFA length 18
+NFC 0958: 0915 093C
+NFC angstrom: 00C5
+NFD angstrom: 0041 030A
+NFC ohm: 03A9
+NFD 1D15E: 1D157 1D165
+NFC 1D15E: 1D157 1D165
+lone lead: D800
+lone trail + e acute: DC00 00E9
+e lone acute: 0065 D800 0301
+true
+Creme Brulee
+true true
+true false
+00E9
+bogus true
+nfc true
+NFC  true
+ true
+null true
+wrapper: 00E9

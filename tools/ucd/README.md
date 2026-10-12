@@ -13,6 +13,8 @@ conversion are different operations over different data:
 | `src/runtime/unicode_case_data.h` | runtime | declarations for the two below |
 | `src/runtime/unicode_case_data_simple.cpp` | runtime | 1:1 case mappings |
 | `src/runtime/unicode_case_data_full.cpp` | runtime | 1:many case mappings, plus `Cased` / `Case_Ignorable` |
+| `src/runtime/unicode_norm_data.h` | runtime | declarations and quick-check bounds for the one below |
+| `src/runtime/unicode_norm_data.cpp` | runtime | normalization (UAX #15): combining class runs, one-level canonical and compatibility decomposition streams, the explicit composition exclusions |
 
 ## Vendored Files
 
@@ -25,6 +27,7 @@ conversion are different operations over different data:
 | `Scripts.txt` | `https://www.unicode.org/Public/16.0.0/ucd/Scripts.txt` | `9e88f0a677df47311106340be8ede2ecdacd9c1c931831218d2be6d5508e0039` | 189,588 |
 | `ScriptExtensions.txt` | `https://www.unicode.org/Public/16.0.0/ucd/ScriptExtensions.txt` | `049117ce26b9769fe2749b06eef51a50a89faef4a97764dd2d81daa715980700` | 20,576 |
 | `PropertyValueAliases.txt` | `https://www.unicode.org/Public/16.0.0/ucd/PropertyValueAliases.txt` | `440fd3e5460b9bfe31da67b6f923992e1989d31fe2ed91e091c4b8f8e2620bf9` | 80,773 |
+| `CompositionExclusions.txt` | `https://www.unicode.org/Public/16.0.0/ucd/CompositionExclusions.txt` | `89e83cf9cc8bef6c1f8bf77e42cf6f0341dfa42e66261f4dbe9b492e7a23c8ee` | 9,007 |
 
 `SpecialCasing.txt` is what makes case conversion FULL rather than simple:
 `UnicodeData.txt` carries only the mappings that are one code point to one, so
@@ -47,6 +50,19 @@ emitting a second full table that could drift from the first.
 `\p{Script=Greek}` and `\p{sc=Grek}` one set: ECMA-262 22.2.1 matches a property
 value exactly against the names and aliases that file lists, so the spellings
 bronze accepts come from the UCD rather than from a list written out by hand.
+
+Normalization reads `UnicodeData.txt` fields 3 (Canonical_Combining_Class)
+and 5 (the decomposition mapping, whose `<tag>` marks it compatibility) and
+`CompositionExclusions.txt`'s data lines: the script-specific and
+post-composition-version exclusions. The file's singleton and non-starter
+sections are published commented out because both follow from
+`UnicodeData.txt`, and `src/runtime/unicode_norm.cpp` derives them, so
+Full_Composition_Exclusion is the explicit list plus those two clauses, as
+UAX #15 defines it. The emitted mappings are one level deep; the full
+decomposition, the composition pairs and Hangul are computed at run time.
+`NormalizationTest.txt` (2.8 MB) is not vendored; checked against it once,
+the implementation passes every line and the invariance of every code point
+the file does not list.
 
 ## Provenance and Usage
 

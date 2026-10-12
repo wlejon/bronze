@@ -6,6 +6,7 @@ add_executable(gen_unicode_tables
     gen_unicode_tables.cpp
     gen_unicode_regex.cpp
     gen_unicode_runtime.cpp
+    gen_unicode_norm.cpp
 )
 target_include_directories(gen_unicode_tables PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 set_target_properties(gen_unicode_tables PROPERTIES FOLDER "tools")
