@@ -254,6 +254,21 @@ enum class PromiseRejectionOperation : uint32_t { Unhandled = 0, Handled = 1 };
 using PromiseRejectionHook = void (*)(PromiseRejectionOperation op, Value promise, Value reason);
 BRONZE_EMBED_API void setPromiseRejectionHook(PromiseRejectionHook hook);
 
+// Install (all three) or remove (any null) the calling thread's job-context
+// hooks: for an embedder that runs realms of its own on one global object
+// (bro's iframes), so a promise job runs in the realm that subscribed it, as
+// NewPromiseReactionJob's realm would be in a runtime with one global per
+// realm. `capture` names the context current at a `then`, an `await` or a
+// thenable's adoption (0: none, the job runs wherever the checkpoint does;
+// below 2^53); the job's call is wrapped in `enter` / `leave` of it, leave
+// also when it throws. Both run inside the microtask checkpoint and may
+// allocate and call into JS. With none installed a subscription costs one
+// branch more.
+using JobContextCapture = uint64_t (*)();
+using JobContextSwitch = void (*)(uint64_t context);
+BRONZE_EMBED_API void setJobContextHooks(JobContextCapture capture, JobContextSwitch enter,
+                                         JobContextSwitch leave);
+
 // ---- module unload / hot swap ----------------------------------------------
 //
 // A module's entry registers the module's own root spans (its global cache,

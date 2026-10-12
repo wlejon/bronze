@@ -212,6 +212,18 @@ void rtUnparkRejection(Value promise) {
 
 void rtSetRejectionHook(RejectionHook hook) { g_rejectionHook = hook; }
 
+namespace {
+thread_local JobContextHooks g_jobContext;
+thread_local bool g_jobContextOn = false;
+}  // namespace
+
+void rtSetJobContextHooks(const JobContextHooks& hooks) {
+    g_jobContext = hooks;
+    g_jobContextOn = hooks.capture != nullptr && hooks.enter != nullptr && hooks.leave != nullptr;
+}
+
+const JobContextHooks* rtJobContextHooks() { return g_jobContextOn ? &g_jobContext : nullptr; }
+
 void rtNotifyRejectionHandled(Value promise) {
     if (g_rejectionHook == nullptr) return;
     Rooted<Value> p{promise};

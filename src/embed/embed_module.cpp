@@ -54,6 +54,16 @@ void setPromiseRejectionHook(PromiseRejectionHook hook) {
     runtime::rtSetRejectionHook(hook != nullptr ? &rejectionTrampoline : nullptr);
 }
 
+void setJobContextHooks(JobContextCapture capture, JobContextSwitch enter, JobContextSwitch leave) {
+    runtime::JobContextHooks hooks;
+    if (capture != nullptr && enter != nullptr && leave != nullptr) {
+        hooks.capture = capture;
+        hooks.enter = enter;
+        hooks.leave = leave;
+    }
+    runtime::rtSetJobContextHooks(hooks);
+}
+
 void runEntry(ModuleEntry entry) {
     if (entry == nullptr) return;
     // The thread that runs a module's entry is the thread that runs its

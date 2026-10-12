@@ -400,6 +400,75 @@ TEST_CASE("promise reject -> catch") {
     CHECK(caught == "bad error");
 }
 
+namespace {
+// The embedder's context for the job-context test: what is current, and what
+// each handler saw when it ran.
+uint64_t g_ctxCurrent = 0;
+std::vector<uint64_t> g_ctxStack;
+uint64_t ctxCapture() { return g_ctxCurrent; }
+void ctxEnter(uint64_t c) { g_ctxStack.push_back(g_ctxCurrent); g_ctxCurrent = c; }
+void ctxLeave(uint64_t c) {
+    CHECK(g_ctxCurrent == c);
+    g_ctxCurrent = g_ctxStack.back();
+    g_ctxStack.pop_back();
+}
+}  // namespace
+
+TEST_CASE("a job runs in the embedder's context where it was subscribed") {
+    embed::setJobContextHooks(ctxCapture, ctxEnter, ctxLeave);
+    std::vector<std::string> seen;
+    auto handler = [&seen](const char* name, bool throws) {
+        return embed::makeFunction(
+            [&seen, name, throws](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+                seen.push_back(std::string(name) + ":" + std::to_string(g_ctxCurrent) + ":" +
+                               (args.empty() ? "" : embed::toUtf8(args[0])));
+                if (throws) {
+                    embed::Persistent msg{embed::fromUtf8("thrown")};
+                    return embed::throwValue(msg.get());
+                }
+                return embed::undefined();
+            },
+            1);
+    };
+    embed::Persistent pending{embed::createPromise()};
+    embed::Persistent thenMethod{embed::getProperty(pending.get(), "then")};
+    embed::Persistent a{handler("a", false)}, b{handler("b", true)}, c{handler("c", false)};
+
+    // Subscribed under 7 (pending), under none, and under 9 (settled: queued at once).
+    g_ctxCurrent = 7;
+    embed::Persistent chained{embed::call(thenMethod.get(), pending.get(), std::vector<embed::Value>{b.get()}).value};
+    g_ctxCurrent = 0;
+    embed::call(thenMethod.get(), pending.get(), std::vector<embed::Value>{a.get()});
+    // The chained promise rejects with b's throw; c catches it, under 9.
+    g_ctxCurrent = 9;
+    embed::Persistent catchMethod{embed::getProperty(chained.get(), "catch")};
+    embed::call(catchMethod.get(), chained.get(), std::vector<embed::Value>{c.get()});
+    g_ctxCurrent = 0;
+
+    embed::Persistent v{embed::fromUtf8("v")};
+    embed::resolvePromise(pending.get(), v.get());
+    embed::drainMicrotasks();
+    REQUIRE(seen.size() == 3);
+    CHECK(seen[0] == "b:7:v");   // in its context, which it left on its throw
+    CHECK(seen[1] == "a:0:v");   // none: wherever the checkpoint runs
+    CHECK(seen[2] == "c:9:thrown");
+    CHECK(g_ctxCurrent == 0);
+    CHECK(g_ctxStack.empty());
+
+    // Removed: nothing captured.
+    embed::setJobContextHooks(nullptr, nullptr, nullptr);
+    seen.clear();
+    g_ctxCurrent = 5;
+    embed::Persistent settled{embed::createPromise()};
+    embed::resolvePromise(settled.get(), v.get());
+    embed::Persistent then2{embed::getProperty(settled.get(), "then")};
+    embed::call(then2.get(), settled.get(), std::vector<embed::Value>{a.get()});
+    g_ctxCurrent = 0;
+    embed::drainMicrotasks();
+    REQUIRE(seen.size() == 1);
+    CHECK(seen[0] == "a:0:v");
+}
+
 TEST_CASE("promise settlement after GC pressure") {
     embed::Persistent p{embed::createPromise()};
     embed::Persistent payload{embed::fromUtf8("survived_gc_data")};

@@ -6,6 +6,7 @@
 #include "runtime/promise.h"
 
 #include <string>
+#include <vector>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
@@ -35,6 +36,61 @@ void writeSlot(Value promise, uint32_t slot, Value val) {
 
 bool isCallable(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+}
+
+// ---- the embedder's job context (microtask.h JobContextHooks) ---------------
+// A handler subscribed under a context runs inside it: the wrapper's env holds
+// the handler and the context, and enters it around the call, as the job's
+// realm would be entered if functions had one.
+
+namespace ContextSlot {
+enum : uint32_t { Fn, Context, kCount };
+}
+
+uint64_t contextCall(uint64_t env, uint64_t self, uint32_t argc, const uint64_t* argv) {
+    RootedArgs args{argc, argv};
+    Rooted<Value> wrapper{Value(env)};
+    Rooted<Value> receiver{Value(self)};
+    const JobContextHooks* hooks = rtJobContextHooks();
+    const uint64_t context = static_cast<uint64_t>(
+        wrapper.get().asObject<ObjectHeader>()->internalSlot(ContextSlot::Context).asNumber());
+    // Entering may allocate (the embedder's own swap), so the callee and the
+    // arguments are read from their roots after it.
+    if (hooks) hooks->enter(context);
+    Rooted<Value> result{Value::fromUndefined()};
+    Value caught;
+    const bool threw = rtTryCatch(
+        [&] {
+            std::vector<uint64_t> bits(args.count());
+            for (uint32_t i = 0; i < args.count(); ++i) bits[i] = args[i].rawBits();
+            const Value fn = wrapper.get().asObject<ObjectHeader>()->internalSlot(ContextSlot::Fn);
+            result.set(Value(bronze_dynamic_call(fn.rawBits(), receiver.get().rawBits(), args.count(),
+                                                 bits.data())));
+        },
+        caught);
+    Rooted<Value> thrown{threw ? caught : Value::fromUndefined()};
+    if (hooks) hooks->leave(context);
+    if (threw) rtThrow(thrown.get());
+    return result.get().rawBits();
+}
+
+// `fn` (callable), or a wrapper that runs it in the context current now.
+// Itself with no hooks installed or no context current.
+Value inJobContext(Rooted<Value>& fn) {
+    const JobContextHooks* hooks = rtJobContextHooks();
+    if (hooks == nullptr || !isCallable(fn.get())) return fn.get();
+    const uint64_t context = hooks->capture();
+    if (context == 0) return fn.get();
+    Rooted<Value> env{Value::fromUndefined()};
+    {
+        ObjectHeader* rec = ObjectHeader::createWithInternalSlots(rtHeap(), rtArena(), rtPlainObjectShape(),
+                                                                 ContextSlot::kCount);
+        rec->header.flags = HeapKind::Plain;
+        rec->setInternalSlot(ContextSlot::Context, Value::fromDouble(static_cast<double>(context)));
+        env.set(Value::fromObject(rec));
+    }
+    env.get().asObject<ObjectHeader>()->setInternalSlot(ContextSlot::Fn, fn.get());
+    return rtMakeNativeClosure(contextCall, env, 0);
 }
 
 // FulfillPromise / RejectPromise (27.2.1.4, 27.2.1.7), fused because they are
@@ -115,7 +171,9 @@ void runResolutionSteps(Rooted<Value>& promise, Rooted<Value>& value) {
         return;
     }
     // Steps 13-15: the adoption is DEFERRED to a job, so no user `then`
-    // runs inside whatever called resolve.
+    // runs inside whatever called resolve. Its realm, the embedder's context
+    // where it was resolved.
+    if (rtJobContextHooks() != nullptr) thenFn.set(inJobContext(thenFn));
     rtEnqueueThenableJob(promise.get(), value.get(), thenFn.get());
 }
 
@@ -278,6 +336,12 @@ void rtPerformPromiseThen(Rooted<Value>& promise, Rooted<Value>& onFulfilled,
     Rooted<Value> onF{isCallable(onFulfilled.get()) ? onFulfilled.get()
                                                     : Value::fromUndefined()};
     Rooted<Value> onR{isCallable(onRejected.get()) ? onRejected.get() : Value::fromUndefined()};
+    // NewPromiseReactionJob's realm: the embedder's context where it was
+    // subscribed (a function here has no realm of its own).
+    if (rtJobContextHooks() != nullptr) {
+        onF.set(inJobContext(onF));
+        onR.set(inJobContext(onR));
+    }
 
     const uint32_t state = rtPromiseStateOf(promise.get());
     switch (state) {

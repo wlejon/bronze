@@ -57,6 +57,22 @@ void rtSetRejectionHook(RejectionHook hook);
 // first handler. A no-op with no hook installed.
 void rtNotifyRejectionHandled(Value promise);
 
+// The embedder's job context (embed.h setJobContextHooks), per thread: the
+// context a job runs in, for an embedder that runs several realms of its own
+// on one global object, where a function has no realm the runtime knows.
+// `capture` names the context current where a reaction is subscribed (a
+// `then`, an `await`) or a thenable adopted; 0 is none. A handler subscribed
+// under a context other than 0 is wrapped so its job runs between `enter`
+// and `leave` of it (leave on a throw too). With no hooks installed nothing
+// is captured and nothing wrapped: one branch per subscription.
+struct JobContextHooks {
+    uint64_t (*capture)() = nullptr;
+    void (*enter)(uint64_t context) = nullptr;
+    void (*leave)(uint64_t context) = nullptr;
+};
+void rtSetJobContextHooks(const JobContextHooks& hooks);
+const JobContextHooks* rtJobContextHooks();  // null with none installed
+
 // Test accessors: the queue's depth and the registry's population, so a unit
 // test can pin "one await of a settled promise is ONE job" and the
 // parked/unparked transitions without capturing stderr.
