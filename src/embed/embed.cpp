@@ -25,6 +25,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/weak_ref.h"
 
@@ -194,7 +195,9 @@ Value fromBool(bool b) { return Value::fromBool(b); }
 
 Value fromUtf8(std::string_view utf8) {
     ShadowStackFrame frame;
-    return runtime::rtMakeString(utf8);
+    // A host's bytes, as the WHATWG decoder reads them (U+FFFD for each
+    // maximal ill-formed subpart, an encoded surrogate included).
+    return Value::fromString(StringHeader::createFromHostUTF8(runtime::rtHeap(), utf8));
 }
 
 // A frame, because ToNumber of an OBJECT is 7.1.4 step 1: ToPrimitive, which

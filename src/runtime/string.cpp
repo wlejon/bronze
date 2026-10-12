@@ -35,6 +35,92 @@ struct ArenaStringTable {
     std::unordered_set<const StringHeader*, ArenaStringHash, ArenaStringEq> strings;
 };
 
+// One step of the WHATWG UTF-8 decoder (Encoding Standard 4.3, Unicode's
+// maximal subparts): the code point at s[i] and the bytes it takes. A lead
+// byte that cannot start a sequence (a continuation byte, C0/C1, F5..FF) is
+// U+FFFD; so is a sequence cut short or broken by a byte out of range, for
+// the lead and the continuation bytes valid so far, and the byte that broke
+// it starts the next step (D7 34 is U+FFFD then '4'). The first
+// continuation's range after E0, ED, F0 and F4 refuses overlongs, surrogates
+// and anything past U+10FFFF. With `surrogates` (WTF-8, the runtime's own
+// UTF-8 for a string, which a lone surrogate round-trips through), ED takes
+// A0..BF as well: U+D800..U+DFFF decode.
+uint32_t utf8Step(const unsigned char* s, uint32_t n, uint32_t i, uint32_t& cp, bool surrogates) {
+    const uint32_t b0 = s[i];
+    if (b0 < 0x80) {
+        cp = b0;
+        return 1;
+    }
+    uint32_t need = 0, lower = 0x80, upper = 0xBF;
+    if (b0 >= 0xC2 && b0 <= 0xDF) {
+        need = 1;
+        cp = b0 & 0x1F;
+    } else if (b0 >= 0xE0 && b0 <= 0xEF) {
+        need = 2;
+        cp = b0 & 0x0F;
+        if (b0 == 0xE0) lower = 0xA0;
+        else if (b0 == 0xED && !surrogates) upper = 0x9F;
+    } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+        need = 3;
+        cp = b0 & 0x07;
+        if (b0 == 0xF0) lower = 0x90;
+        else if (b0 == 0xF4) upper = 0x8F;
+    } else {
+        cp = 0xFFFD;
+        return 1;
+    }
+    for (uint32_t k = 1; k <= need; ++k) {
+        if (i + k >= n || s[i + k] < lower || s[i + k] > upper) {
+            cp = 0xFFFD;
+            return k;
+        }
+        cp = (cp << 6) | (s[i + k] & 0x3F);
+        lower = 0x80;
+        upper = 0xBF;
+    }
+    return need + 1;
+}
+
+// UTF-8 into a string: Latin-1 when every code point fits, else UTF-16
+// (surrogate pairs past U+FFFF). `latin1(n)` / `utf16(n)` allocate n units.
+template <class MakeLatin1, class MakeUTF16>
+StringHeader* decodeUTF8(const char* str, uint32_t n, bool surrogates, MakeLatin1 latin1, MakeUTF16 utf16) {
+    const auto* s = reinterpret_cast<const unsigned char*>(str);
+    bool isLatin1 = true;
+    uint32_t units = 0;
+    for (uint32_t i = 0, cp = 0; i < n;) {
+        i += utf8Step(s, n, i, cp, surrogates);
+        units += cp >= 0x10000 ? 2 : 1;
+        if (cp > 0xFF) isLatin1 = false;
+    }
+    if (isLatin1) {
+        StringHeader* h = latin1(units);
+        char* dst = h->latin1Data();
+        uint32_t o = 0;
+        for (uint32_t i = 0, cp = 0; i < n;) {
+            i += utf8Step(s, n, i, cp, surrogates);
+            dst[o++] = static_cast<char>(cp);
+        }
+        dst[units] = '\0';
+        return h;
+    }
+    StringHeader* h = utf16(units);
+    uint16_t* dst = h->utf16Data();
+    uint32_t o = 0;
+    for (uint32_t i = 0, cp = 0; i < n;) {
+        i += utf8Step(s, n, i, cp, surrogates);
+        if (cp >= 0x10000) {
+            const uint32_t v = cp - 0x10000;
+            dst[o++] = static_cast<uint16_t>(0xD800 + (v >> 10));
+            dst[o++] = static_cast<uint16_t>(0xDC00 + (v & 0x3FF));
+        } else {
+            dst[o++] = static_cast<uint16_t>(cp);
+        }
+    }
+    dst[units] = 0;
+    return h;
+}
+
 }  // namespace
 
 StringHeader* StringHeader::createLatin1(Heap& heap, const char* str, uint32_t len) {
@@ -67,135 +153,21 @@ StringHeader* StringHeader::createFromUTF8(Heap& heap, const char* str, uint32_t
     if (!str || utf8_len == 0) {
         return createLatin1(heap, "", 0);
     }
-
-    bool is_latin1 = true;
-    uint32_t code_units = 0;
-    uint32_t i = 0;
-
-    while (i < utf8_len) {
-        uint8_t b0 = static_cast<uint8_t>(str[i]);
-        if (b0 < 0x80) {
-            code_units++;
-            i++;
-        } else if ((b0 & 0xE0) == 0xC0) {
-            if (i + 1 < utf8_len) {
-                uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-                if (cp > 0xFF) {
-                    is_latin1 = false;
-                }
-                code_units++;
-                i += 2;
-            } else {
-                is_latin1 = false;
-                code_units++;
-                i++;
-            }
-        } else if ((b0 & 0xF0) == 0xE0) {
-            is_latin1 = false;
-            code_units++;
-            if (i + 2 < utf8_len) {
-                i += 3;
-            } else {
-                i++;
-            }
-        } else if ((b0 & 0xF8) == 0xF0) {
-            is_latin1 = false;
-            code_units += 2;
-            if (i + 3 < utf8_len) {
-                i += 4;
-            } else {
-                i++;
-            }
-        } else {
-            is_latin1 = false;
-            code_units++;
-            i++;
-        }
-    }
-
-    if (is_latin1) {
-        StringHeader* s = createLatin1(heap, nullptr, code_units);
-        char* dst = s->latin1Data();
-        uint32_t out_idx = 0;
-        i = 0;
-        while (i < utf8_len) {
-            uint8_t b0 = static_cast<uint8_t>(str[i]);
-            if (b0 < 0x80) {
-                dst[out_idx++] = static_cast<char>(b0);
-                i++;
-            } else if ((b0 & 0xE0) == 0xC0 && i + 1 < utf8_len) {
-                uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-                dst[out_idx++] = static_cast<char>(cp & 0xFF);
-                i += 2;
-            } else {
-                dst[out_idx++] = str[i++];
-            }
-        }
-        dst[code_units] = '\0';
-        return s;
-    } else {
-        StringHeader* s = createUTF16(heap, nullptr, code_units);
-        uint16_t* dst = s->utf16Data();
-        uint32_t out_idx = 0;
-        i = 0;
-        while (i < utf8_len) {
-            uint8_t b0 = static_cast<uint8_t>(str[i]);
-            if (b0 < 0x80) {
-                dst[out_idx++] = static_cast<uint16_t>(b0);
-                i++;
-            } else if ((b0 & 0xE0) == 0xC0) {
-                if (i + 1 < utf8_len) {
-                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                    uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-                    dst[out_idx++] = static_cast<uint16_t>(cp);
-                    i += 2;
-                } else {
-                    dst[out_idx++] = 0xFFFD;
-                    i++;
-                }
-            } else if ((b0 & 0xF0) == 0xE0) {
-                if (i + 2 < utf8_len) {
-                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                    uint8_t b2 = static_cast<uint8_t>(str[i + 2]);
-                    uint32_t cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
-                    dst[out_idx++] = static_cast<uint16_t>(cp);
-                    i += 3;
-                } else {
-                    dst[out_idx++] = 0xFFFD;
-                    i++;
-                }
-            } else if ((b0 & 0xF8) == 0xF0) {
-                if (i + 3 < utf8_len) {
-                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                    uint8_t b2 = static_cast<uint8_t>(str[i + 2]);
-                    uint8_t b3 = static_cast<uint8_t>(str[i + 3]);
-                    uint32_t cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
-                    if (cp >= 0x10000) {
-                        uint32_t v = cp - 0x10000;
-                        dst[out_idx++] = static_cast<uint16_t>(0xD800 + (v >> 10));
-                        dst[out_idx++] = static_cast<uint16_t>(0xDC00 + (v & 0x3FF));
-                    } else {
-                        dst[out_idx++] = static_cast<uint16_t>(cp);
-                    }
-                    i += 4;
-                } else {
-                    dst[out_idx++] = 0xFFFD;
-                    i++;
-                }
-            } else {
-                dst[out_idx++] = 0xFFFD;
-                i++;
-            }
-        }
-        dst[code_units] = 0;
-        return s;
-    }
+    return decodeUTF8(
+        str, utf8_len, /*surrogates=*/true, [&](uint32_t n) { return createLatin1(heap, nullptr, n); },
+        [&](uint32_t n) { return createUTF16(heap, nullptr, n); });
 }
 
 StringHeader* StringHeader::createFromUTF8(Heap& heap, std::string_view sv) {
     return createFromUTF8(heap, sv.data(), static_cast<uint32_t>(sv.size()));
+}
+
+StringHeader* StringHeader::createFromHostUTF8(Heap& heap, std::string_view sv) {
+    if (sv.empty()) return createLatin1(heap, "", 0);
+    return decodeUTF8(
+        sv.data(), static_cast<uint32_t>(sv.size()), /*surrogates=*/false,
+        [&](uint32_t n) { return createLatin1(heap, nullptr, n); },
+        [&](uint32_t n) { return createUTF16(heap, nullptr, n); });
 }
 
 uint16_t StringHeader::charCodeAt(uint32_t index) const noexcept {
@@ -485,131 +457,9 @@ StringHeader* StringHeader::createFromUTF8InArena(NonMovingArena& arena, const c
     if (!str || utf8_len == 0) {
         return createLatin1InArena(arena, "", 0);
     }
-
-    bool is_latin1 = true;
-    uint32_t code_units = 0;
-    uint32_t i = 0;
-
-    while (i < utf8_len) {
-        uint8_t b0 = static_cast<uint8_t>(str[i]);
-        if (b0 < 0x80) {
-            code_units++;
-            i++;
-        } else if ((b0 & 0xE0) == 0xC0) {
-            if (i + 1 < utf8_len) {
-                uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-                if (cp > 0xFF) {
-                    is_latin1 = false;
-                }
-                code_units++;
-                i += 2;
-            } else {
-                is_latin1 = false;
-                code_units++;
-                i++;
-            }
-        } else if ((b0 & 0xF0) == 0xE0) {
-            is_latin1 = false;
-            code_units++;
-            if (i + 2 < utf8_len) {
-                i += 3;
-            } else {
-                i++;
-            }
-        } else if ((b0 & 0xF8) == 0xF0) {
-            is_latin1 = false;
-            code_units += 2;
-            if (i + 3 < utf8_len) {
-                i += 4;
-            } else {
-                i++;
-            }
-        } else {
-            is_latin1 = false;
-            code_units++;
-            i++;
-        }
-    }
-
-    if (is_latin1) {
-        StringHeader* s = createLatin1InArena(arena, nullptr, code_units);
-        char* dst = s->latin1Data();
-        uint32_t out_idx = 0;
-        i = 0;
-        while (i < utf8_len) {
-            uint8_t b0 = static_cast<uint8_t>(str[i]);
-            if (b0 < 0x80) {
-                dst[out_idx++] = static_cast<char>(b0);
-                i++;
-            } else if ((b0 & 0xE0) == 0xC0 && i + 1 < utf8_len) {
-                uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-                dst[out_idx++] = static_cast<char>(cp & 0xFF);
-                i += 2;
-            } else {
-                dst[out_idx++] = str[i++];
-            }
-        }
-        dst[code_units] = '\0';
-        return s;
-    } else {
-        StringHeader* s = createUTF16InArena(arena, nullptr, code_units);
-        uint16_t* dst = s->utf16Data();
-        uint32_t out_idx = 0;
-        i = 0;
-        while (i < utf8_len) {
-            uint8_t b0 = static_cast<uint8_t>(str[i]);
-            if (b0 < 0x80) {
-                dst[out_idx++] = static_cast<uint16_t>(b0);
-                i++;
-            } else if ((b0 & 0xE0) == 0xC0) {
-                if (i + 1 < utf8_len) {
-                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                    uint32_t cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
-                    dst[out_idx++] = static_cast<uint16_t>(cp);
-                    i += 2;
-                } else {
-                    dst[out_idx++] = 0xFFFD;
-                    i++;
-                }
-            } else if ((b0 & 0xF0) == 0xE0) {
-                if (i + 2 < utf8_len) {
-                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                    uint8_t b2 = static_cast<uint8_t>(str[i + 2]);
-                    uint32_t cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
-                    dst[out_idx++] = static_cast<uint16_t>(cp);
-                    i += 3;
-                } else {
-                    dst[out_idx++] = 0xFFFD;
-                    i++;
-                }
-            } else if ((b0 & 0xF8) == 0xF0) {
-                if (i + 3 < utf8_len) {
-                    uint8_t b1 = static_cast<uint8_t>(str[i + 1]);
-                    uint8_t b2 = static_cast<uint8_t>(str[i + 2]);
-                    uint8_t b3 = static_cast<uint8_t>(str[i + 3]);
-                    uint32_t cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
-                    if (cp >= 0x10000) {
-                        uint32_t v = cp - 0x10000;
-                        dst[out_idx++] = static_cast<uint16_t>(0xD800 + (v >> 10));
-                        dst[out_idx++] = static_cast<uint16_t>(0xDC00 + (v & 0x3FF));
-                    } else {
-                        dst[out_idx++] = static_cast<uint16_t>(cp);
-                    }
-                    i += 4;
-                } else {
-                    dst[out_idx++] = 0xFFFD;
-                    i++;
-                }
-            } else {
-                dst[out_idx++] = 0xFFFD;
-                i++;
-            }
-        }
-        dst[code_units] = 0;
-        return s;
-    }
+    return decodeUTF8(
+        str, utf8_len, /*surrogates=*/true, [&](uint32_t n) { return createLatin1InArena(arena, nullptr, n); },
+        [&](uint32_t n) { return createUTF16InArena(arena, nullptr, n); });
 }
 
 StringHeader* StringHeader::createFromUTF8InArena(NonMovingArena& arena, std::string_view sv) {

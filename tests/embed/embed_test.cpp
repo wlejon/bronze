@@ -363,6 +363,38 @@ TEST_CASE("promise create -> resolve -> then-callback-order") {
     CHECK(order[2] == "then3:hello");
 }
 
+TEST_CASE("host UTF-8 decodes as the WHATWG decoder does: U+FFFD for each maximal invalid subpart") {
+    const std::string R = "\xEF\xBF\xBD";  // U+FFFD, as toUtf8 writes it
+    auto through = [](std::string_view bytes) {
+        embed::Persistent s{embed::fromUtf8(bytes)};
+        return embed::toUtf8(s.get());
+    };
+    // A lead byte then an ASCII byte (not a continuation): U+FFFD, then '4'.
+    CHECK(through("\xD7\x34") == R + "4");
+    // Overlongs, by the lead (C0, C1) or by the first continuation (E0 80, F0 80).
+    CHECK(through("\xC0\x80") == R + R);
+    CHECK(through("\xC1\xBF") == R + R);
+    CHECK(through("\xE0\x80\x80") == R + R + R);
+    CHECK(through("\xF0\x80\x80\x80") == R + R + R + R);
+    // A surrogate (ED A0 80 is U+D800) and past U+10FFFF (F4 90, F5).
+    CHECK(through("\xED\xA0\x80") == R + R + R);
+    CHECK(through("\xF4\x90\x80\x80") == R + R + R + R);
+    CHECK(through("\xF5\x80") == R + R);
+    // A lone continuation byte; a sequence cut short is one U+FFFD.
+    CHECK(through("a\x80z") == "a" + R + "z");
+    CHECK(through("\xE2\x82") == R);
+    CHECK(through("\xE2\x82x") == R + "x");
+    CHECK(through("\xF0\x9F\x98") == R);
+    // Valid text is unchanged: Latin-1, the BMP, past it, and the edges.
+    CHECK(through("caf\xC3\xA9") == "caf\xC3\xA9");
+    CHECK(through("\xE2\x82\xAC \xF0\x9F\x98\x80") == "\xE2\x82\xAC \xF0\x9F\x98\x80");
+    CHECK(through("\xED\x9F\xBF\xEE\x80\x80\xF4\x8F\xBF\xBF") == "\xED\x9F\xBF\xEE\x80\x80\xF4\x8F\xBF\xBF");
+    // Each U+FFFD is one code unit.
+    embed::Persistent s{embed::fromUtf8("\xD7\x34")};
+    embed::Persistent len{embed::getProperty(s.get(), "length")};
+    CHECK(embed::toDouble(len.get()) == 2.0);
+}
+
 TEST_CASE("promise reject -> catch") {
     embed::Persistent p{embed::createPromise()};
     CHECK(embed::isPromise(p.get()));

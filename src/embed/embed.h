@@ -718,8 +718,10 @@ BRONZE_EMBED_API Value undefined();
 BRONZE_EMBED_API Value null();
 BRONZE_EMBED_API Value fromDouble(double d);
 BRONZE_EMBED_API Value fromBool(bool b);
-// UTF-8 in, heap string out. ALLOCATES — root the result before the next
-// allocating call.
+// UTF-8 in, heap string out, decoded as the WHATWG decoder does: each
+// maximal ill-formed subpart (a byte that cannot lead, a sequence cut short or
+// broken, an overlong, an encoded surrogate, past U+10FFFF) is U+FFFD.
+// ALLOCATES — root the result before the next allocating call.
 BRONZE_EMBED_API Value fromUtf8(std::string_view utf8);
 
 // ToNumber over primitives (an object here is the hard error rt_convert.cpp

@@ -28,8 +28,13 @@ struct StringHeader {
 
     static StringHeader* createLatin1(Heap& heap, const char* str, uint32_t len);
     static StringHeader* createUTF16(Heap& heap, const uint16_t* str, uint32_t len);
+    // The runtime's own UTF-8 (WTF-8: a lone surrogate, encoded, round-trips);
+    // any other ill-formed sequence decodes to U+FFFD by maximal subparts.
     static StringHeader* createFromUTF8(Heap& heap, const char* str, uint32_t utf8_len);
     static StringHeader* createFromUTF8(Heap& heap, std::string_view sv);
+    // A host's UTF-8 (embed::fromUtf8, TextDecoder), as the WHATWG decoder
+    // reads it: an encoded surrogate is ill-formed too.
+    static StringHeader* createFromHostUTF8(Heap& heap, std::string_view sv);
     // Immortal, non-moving copy for consumers that must never point into
     // the movable heap (shape keys, the compiled key-constant table).
     // Deduplicated: the same content answers the same copy.
