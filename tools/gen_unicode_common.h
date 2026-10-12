@@ -90,6 +90,54 @@ inline bool parseCodeRange(const std::string& text, uint32_t& first, uint32_t& l
     return parseHex(text.substr(0, dots), first) && parseHex(text.substr(dots + 2), last);
 }
 
+// A closed code point interval of a derived property.
+struct PropRange {
+    uint32_t first;
+    uint32_t last;
+};
+
+// One property of DerivedCoreProperties.txt, as merged ascending ranges. Both
+// halves read it: the runtime for Cased / Case_Ignorable (Final_Sigma), the
+// regex module for ID_Start / ID_Continue (identifier code points).
+inline std::vector<PropRange> parseDerivedProperty(const std::filesystem::path& path,
+                                                   const std::string& property) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::cerr << "error: cannot open " << path << "\n";
+        std::exit(1);
+    }
+    std::vector<PropRange> ranges;
+    std::string line;
+    while (std::getline(in, line)) {
+        std::vector<std::string> fields;
+        if (!dataFields(line, fields)) continue;
+        if (fields.size() < 2) continue;
+        if (fields[1] != property) continue;
+        uint32_t first = 0;
+        uint32_t last = 0;
+        if (!parseCodeRange(fields[0], first, last)) continue;
+        ranges.push_back({first, last});
+    }
+    if (ranges.empty()) {
+        std::cerr << "error: DerivedCoreProperties.txt carries no " << property << " ranges\n";
+        std::exit(1);
+    }
+    std::sort(ranges.begin(), ranges.end(),
+              [](const PropRange& a, const PropRange& b) { return a.first < b.first; });
+    // Merged and adjacency-joined, so the lookup is one binary search over
+    // disjoint intervals and the table is a function of the PROPERTY rather
+    // than of the order the file happens to list it in.
+    std::vector<PropRange> merged;
+    for (const PropRange& r : ranges) {
+        if (!merged.empty() && r.first <= merged.back().last + 1) {
+            if (r.last > merged.back().last) merged.back().last = r.last;
+            continue;
+        }
+        merged.push_back(r);
+    }
+    return merged;
+}
+
 inline void writeFile(const std::filesystem::path& path, const std::string& content) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {

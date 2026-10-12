@@ -1,7 +1,7 @@
 // The regex module's half of the generated Unicode data: the General_Category
 // runs `\p{...}` is answered from, the simple case FOLDING 22.2.2.9's
-// Canonicalize applies under `u` and `i`, and the Script / Script_Extensions
-// tables of UAX #24.
+// Canonicalize applies under `u` and `i`, the Script / Script_Extensions
+// tables of UAX #24, and the ID_Start / ID_Continue ranges of UAX #31.
 //
 // All three are properties of a code point read straight out of the UCD, which
 // is what puts them together and what separates them from the case CONVERSION
@@ -407,7 +407,8 @@ void checkScripts(const std::vector<std::string>& names,
 
 std::string generateHeader(const std::vector<std::string>& aliases, size_t runCount,
                            size_t foldCount, size_t scriptCount, size_t scriptRunCount,
-                           size_t scriptAliasCount, size_t scxRangeCount, size_t scxScriptCount) {
+                           size_t scriptAliasCount, size_t scxRangeCount, size_t scxScriptCount,
+                           size_t idStartCount, size_t idContinueCount) {
     std::ostringstream ss;
     ss << kBanner << "\n";
     ss << "#pragma once\n\n";
@@ -481,6 +482,44 @@ std::string generateHeader(const std::vector<std::string>& aliases, size_t runCo
     ss << "constexpr uint32_t kScxRangeCount = " << scxRangeCount << ";\n";
     ss << "extern const uint16_t kScxScripts[];\n";
     ss << "constexpr uint32_t kScxScriptCount = " << scxScriptCount << ";\n\n";
+    ss << "// Identifier properties (UAX #31 / ECMA-262 Table 66): ID_Start and ID_Continue.\n";
+    ss << "struct IdRange {\n";
+    ss << "    uint32_t first;\n";
+    ss << "    uint32_t last;\n";
+    ss << "};\n\n";
+    ss << "extern const IdRange kIdStartRanges[];\n";
+    ss << "constexpr uint32_t kIdStartRangeCount = " << idStartCount << ";\n\n";
+    ss << "extern const IdRange kIdContinueRanges[];\n";
+    ss << "constexpr uint32_t kIdContinueRangeCount = " << idContinueCount << ";\n\n";
+    ss << "}  // namespace bronze::regex::data\n";
+    return ss.str();
+}
+
+// ID_Start and ID_Continue as merged closed ranges, four to a line.
+std::string generateIdCpp(const std::vector<PropRange>& idStart,
+                          const std::vector<PropRange>& idContinue) {
+    std::ostringstream ss;
+    ss << kBanner << "\n";
+    ss << "#include \"regex/unicode_data.h\"\n\n";
+    ss << "namespace bronze::regex::data {\n\n";
+    auto emit = [&](const char* name, const std::vector<PropRange>& ranges) {
+        ss << "const IdRange " << name << "[] = {\n";
+        for (size_t i = 0; i < ranges.size(); ++i) {
+            if (i % 4 == 0) ss << "    ";
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "{0x%06X, 0x%06X},", ranges[i].first,
+                          ranges[i].last);
+            ss << buf;
+            if (i + 1 == ranges.size() || (i + 1) % 4 == 0) {
+                ss << "\n";
+            } else {
+                ss << " ";
+            }
+        }
+        ss << "};\n\n";
+    };
+    emit("kIdStartRanges", idStart);
+    emit("kIdContinueRanges", idContinue);
     ss << "}  // namespace bronze::regex::data\n";
     return ss.str();
 }
@@ -685,6 +724,10 @@ void generateRegexTables(const std::filesystem::path& ucdDir,
     std::vector<ScxRange> scx =
         parseScriptExtensions(ucdDir / "ScriptExtensions.txt", scriptAliases);
     checkScripts(scriptNames, scriptAliases, scriptRuns, scx);
+    const std::vector<PropRange> idStart =
+        parseDerivedProperty(ucdDir / "DerivedCoreProperties.txt", "ID_Start");
+    const std::vector<PropRange> idContinue =
+        parseDerivedProperty(ucdDir / "DerivedCoreProperties.txt", "ID_Continue");
 
     std::cout << "Parsed " << runs.size() << " General_Category runs (" << aliases.size()
               << " aliases)\n";
@@ -700,10 +743,11 @@ void generateRegexTables(const std::filesystem::path& ucdDir,
     writeFile(outDir / "regex" / "unicode_data.h",
               generateHeader(aliases, runs.size(), folds.size(), scriptNames.size(),
                              scriptRuns.size(), scriptAliases.size(), scx.size(),
-                             scxScriptCount));
+                             scxScriptCount, idStart.size(), idContinue.size()));
     writeFile(outDir / "regex" / "unicode_data_gc.cpp", generateGcCpp(runs, aliases));
     writeFile(outDir / "regex" / "unicode_data_scf.cpp", generateScfCpp(folds));
     writeFile(outDir / "regex" / "unicode_data_script.cpp", scriptCpp);
+    writeFile(outDir / "regex" / "unicode_data_id.cpp", generateIdCpp(idStart, idContinue));
 }
 
 }  // namespace gen

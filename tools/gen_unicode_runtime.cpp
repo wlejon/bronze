@@ -38,12 +38,6 @@ struct FullCaseEntry {
     std::vector<uint32_t> to;
 };
 
-// A closed code point interval of a derived property.
-struct PropRange {
-    uint32_t first;
-    uint32_t last;
-};
-
 // UnicodeData.txt fields 12 and 13, the SIMPLE case mappings: one code point
 // in, one out. `split` drops a trailing empty field, so a line ending in `;`
 // yields 14 elements rather than 15 and each field is bounds-checked on its own
@@ -215,51 +209,12 @@ void parseSpecialCasing(const std::filesystem::path& path, std::vector<FullCaseE
               [](const FullCaseEntry& a, const FullCaseEntry& b) { return a.from < b.from; });
 }
 
-// One property of DerivedCoreProperties.txt, as merged ascending ranges. Two
-// are read, Cased and Case_Ignorable, and they are read because SpecialCasing's
-// own definition of Final_Sigma is written in terms of exactly those two:
-// "C is preceded by a sequence consisting of a cased letter and then zero or
-// more case-ignorable characters, and C is not followed by a sequence
-// consisting of zero or more case-ignorable characters and then a cased
-// letter."
-std::vector<PropRange> parseDerivedProperty(const std::filesystem::path& path,
-                                            const std::string& property) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        std::cerr << "error: cannot open " << path << "\n";
-        std::exit(1);
-    }
-    std::vector<PropRange> ranges;
-    std::string line;
-    while (std::getline(in, line)) {
-        std::vector<std::string> fields;
-        if (!dataFields(line, fields)) continue;
-        if (fields.size() < 2) continue;
-        if (fields[1] != property) continue;
-        uint32_t first = 0;
-        uint32_t last = 0;
-        if (!parseCodeRange(fields[0], first, last)) continue;
-        ranges.push_back({first, last});
-    }
-    if (ranges.empty()) {
-        std::cerr << "error: DerivedCoreProperties.txt carries no " << property << " ranges\n";
-        std::exit(1);
-    }
-    std::sort(ranges.begin(), ranges.end(),
-              [](const PropRange& a, const PropRange& b) { return a.first < b.first; });
-    // Merged and adjacency-joined, so the lookup is one binary search over
-    // disjoint intervals and the table is a function of the PROPERTY rather
-    // than of the order the file happens to list it in.
-    std::vector<PropRange> merged;
-    for (const PropRange& r : ranges) {
-        if (!merged.empty() && r.first <= merged.back().last + 1) {
-            if (r.last > merged.back().last) merged.back().last = r.last;
-            continue;
-        }
-        merged.push_back(r);
-    }
-    return merged;
-}
+// Two properties of DerivedCoreProperties.txt are read here (parseDerivedProperty,
+// gen_unicode_common.h), Cased and Case_Ignorable, because SpecialCasing's own
+// definition of Final_Sigma is written in terms of exactly those two: "C is
+// preceded by a sequence consisting of a cased letter and then zero or more
+// case-ignorable characters, and C is not followed by a sequence consisting of
+// zero or more case-ignorable characters and then a cased letter."
 
 std::string generateCaseHeader(size_t simpleUpper, size_t simpleLower, size_t fullUpper,
                                size_t fullLower, size_t cased, size_t caseIgnorable) {
