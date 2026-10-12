@@ -200,7 +200,9 @@ void detachArrayBuffer(Value v) {
     ArrayBufferHeader* buf = bufferBehind(v);
     if (buf) {
         buf->setDetached();
-        Rooted<Value> root{v};
+        // The BUFFER, not `v`: `v` may be a view, and every view over its
+        // buffer closes, `v` among them.
+        Rooted<Value> root{Value::fromObject(buf)};
         closeOrReopenViews(runtime::rtHeap(), root);
     }
 }

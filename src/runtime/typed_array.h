@@ -132,10 +132,11 @@ struct ArrayBufferHeader {
     // `notify` refusals rather than implementations (builtin_shared_memory.cpp).
     static constexpr uint32_t kFlagShared = 1U << 2;
     // Every view over this buffer is listed in the view table
-    // (buffer_views.cpp), so a length change refreshes exactly those views
-    // instead of searching the heap for them. Set at creation on every buffer
-    // that can change length in place (a resizable ArrayBuffer, a growable
-    // SharedArrayBuffer).
+    // (buffer_views.cpp), so a length change or a detach refreshes exactly
+    // those views instead of searching the heap for them. Set at creation on
+    // every buffer that can change length in place (a resizable ArrayBuffer,
+    // a growable SharedArrayBuffer), and on every buffer a thread makes once
+    // it has detached an untracked one (trackNewBuffer).
     static constexpr uint32_t kFlagViewsTracked = 1U << 3;
 
     // Zero-filled, as 25.1.3.1 AllocateArrayBuffer requires. `byte_length` is
@@ -355,17 +356,24 @@ static_assert(sizeof(ArrayBufferHeader) == BRONZE_ABI_BUF_DATA_OFFSET,
 // buffer's byteLength changed — the cold end of the bargain that keeps every
 // element bounds check a single compare. A tracked buffer's views come from
 // the view table; any other buffer's (only a detach reaches here for one,
-// once in its life) from a walk of the heap.
+// once in its life) from a walk of the heap, after which the thread tracks
+// every buffer it makes (trackNewBuffersFromNowOn), so a program that keeps
+// detaching walks once, not once a detach.
 void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val);
 
-// The view table (buffer_views.cpp). `trackBufferViews` gives a buffer that
-// can change length a row and sets kFlagViewsTracked; `registerBufferView`
-// adds a view to its buffer's row when the buffer is tracked (a no-op
-// otherwise); `refreshTrackedViews` runs refreshLength over a tracked
-// buffer's live views and answers false for an untracked buffer. None of them
-// allocates on the bronze heap: the rows live off-heap and the collector
-// visits them weakly, so a row neither keeps its buffer nor its views alive.
+// The view table (buffer_views.cpp). `trackBufferViews` gives a buffer a row
+// and sets kFlagViewsTracked (once; a tracked buffer keeps its row);
+// `trackNewBuffer` does so for a buffer just made when this thread tracks new
+// buffers, which `trackNewBuffersFromNowOn` turns on for good;
+// `registerBufferView` adds a view to its buffer's row when the buffer is
+// tracked (a no-op otherwise); `refreshTrackedViews` runs refreshLength over a
+// tracked buffer's live views and answers false for an untracked buffer. None
+// of them allocates on the bronze heap: the rows live off-heap and the
+// collector visits them weakly, so a row neither keeps its buffer nor its
+// views alive.
 void trackBufferViews(Heap& heap, ArrayBufferHeader* buf);
+void trackNewBuffer(Heap& heap, ArrayBufferHeader* buf);
+void trackNewBuffersFromNowOn();
 void registerBufferView(TypedArrayHeader* view);
 bool refreshTrackedViews(ArrayBufferHeader* buf);
 

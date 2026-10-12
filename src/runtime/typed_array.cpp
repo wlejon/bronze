@@ -342,6 +342,7 @@ ArrayBufferHeader* ArrayBufferHeader::create(Heap& heap, Shape* shape, uint32_t 
     buf->maxByteLength = byte_length;
     buf->bufferFlags = 0;
     std::memset(buf->data(), 0, byte_length);
+    trackNewBuffer(heap, buf);
     return buf;
 }
 
@@ -372,6 +373,7 @@ ArrayBufferHeader* ArrayBufferHeader::createShared(Heap& heap, Shape* shape, uin
     buf->bufferFlags = kFlagShared | (reserve > byte_length ? kFlagResizable : 0u);
     std::memset(buf->data(), 0, reserve);
     if (buf->isResizable()) trackBufferViews(heap, buf);
+    else trackNewBuffer(heap, buf);
     return buf;
 }
 
@@ -381,6 +383,7 @@ ArrayBufferHeader* ArrayBufferHeader::createExternal(Heap& heap, Shape* shape,
     buf->byteLength = byte_length;
     buf->maxByteLength = byte_length;
     buf->bufferFlags = 0;
+    trackNewBuffer(heap, buf);
     return buf;
 }
 
@@ -446,6 +449,9 @@ void closeOrReopenViews(Heap& heap, Rooted<Value>& buffer_val) {
         if (view->buffer.asObject<ArrayBufferHeader>() != buf) return;
         view->refreshLength();
     });
+    // This thread detaches buffers: the ones it makes from here on keep their
+    // views in the table, so their detaches never walk.
+    trackNewBuffersFromNowOn();
 }
 
 DataViewHeader* DataViewHeader::create(Heap& heap, Shape* shape, Rooted<Value>& buffer_val,

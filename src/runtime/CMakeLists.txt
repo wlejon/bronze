@@ -188,6 +188,7 @@ bronze_add_module(runtime
         ../../tests/runtime/array_test.cpp
         ../../tests/runtime/array_named_property_test.cpp
         ../../tests/runtime/typed_array_test.cpp
+        ../../tests/runtime/buffer_views_test.cpp
         ../../tests/runtime/data_view_test.cpp
         ../../tests/runtime/fn_test.cpp
         ../../tests/runtime/inspect_test.cpp

@@ -397,6 +397,15 @@ TEST_CASE("a detached buffer is a TypeError, and the native is not called") {
     CHECK(contains(msg, "detached"));
 }
 
+TEST_CASE("a host detaching through a view closes every view over its buffer") {
+    // The host may hand the view rather than its buffer (a WebGL mapping is one).
+    CHECK(number("const v = new Float32Array(4); const w = new Uint8Array(v.buffer, 4, 8); detach(v); "
+                 "v.length * 100 + w.length * 10 + v.buffer.byteLength") == 0);
+    // After a detach the thread tracks its new buffers' views: the same through the table.
+    CHECK(number("const v = new Float32Array(4); const w = new Uint8Array(v.buffer, 4, 8); detach(v); "
+                 "v.length * 100 + w.length * 10 + v.buffer.byteLength") == 0);
+}
+
 TEST_CASE("a TypeError from a native argument is catchable in the program") {
     CHECK(text("let r = 'no'; try { nt.peek({}); } catch (e) { r = e instanceof TypeError ? 'caught' : 'other'; } r") ==
           "caught");
