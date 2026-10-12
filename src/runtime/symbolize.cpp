@@ -2,7 +2,13 @@
 #include "runtime/symbolize.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+
+#ifdef __APPLE__
+#include <cxxabi.h>
+#include <dlfcn.h>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -119,6 +125,23 @@ void symbolizePc(uint64_t pc, SymbolizedPc& out) {
                           static_cast<unsigned long long>(out.funcStart - imageBase),
                           exportsOnly ? " [exports only: no matching PDB]" : "");
         }
+    }
+#elif defined(__APPLE__)
+    // The nearest exported or local symbol dyld knows, demangled; the
+    // module's basename either way.
+    Dl_info info;
+    if (::dladdr(reinterpret_cast<const void*>(static_cast<uintptr_t>(pc)), &info) == 0) return;
+    if (info.dli_fname) {
+        const char* base = std::strrchr(info.dli_fname, '/');
+        std::snprintf(out.module, sizeof(out.module), "%s", base ? base + 1 : info.dli_fname);
+    }
+    if (info.dli_sname && info.dli_saddr) {
+        int status = 0;
+        char* demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
+        std::snprintf(out.name, sizeof(out.name), "%s", status == 0 && demangled ? demangled : info.dli_sname);
+        std::free(demangled);
+        out.funcStart = reinterpret_cast<uint64_t>(info.dli_saddr);
+        out.resolved = true;
     }
 #else
     (void)pc;

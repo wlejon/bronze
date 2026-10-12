@@ -89,6 +89,43 @@ uint32_t walkStack(const ModuleRanges& modules, const void* context, uint64_t* p
     return n;
 }
 
+#elif defined(__APPLE__) && defined(__aarch64__)
+
+void ModuleRanges::refresh() {}
+bool ModuleRanges::contains(uint64_t) const { return false; }
+
+uint32_t walkStack(const ModuleRanges&, const void* context, uint64_t* pcs, uint64_t* sps, uint32_t maxFrames) {
+    auto& ctx = *const_cast<Arm64Context*>(static_cast<const Arm64Context*>(context));
+    ctx.lrFrame = false;
+    const uint64_t lo = ctx.stackLo, hi = ctx.stackHi;
+    // A frame record [fp] = caller's fp, [fp + 8] = return address, inside
+    // the stack and 16-byte aligned.
+    auto validRecord = [&](uint64_t fp) { return fp >= lo && fp + 16 <= hi && (fp & 15) == 0; };
+    if (maxFrames == 0 || ctx.pc == 0 || hi == 0) return 0;
+    uint32_t n = 0;
+    if (sps) sps[n] = ctx.sp;
+    pcs[n++] = ctx.pc;
+    uint64_t fp = ctx.fp;
+    if (!validRecord(fp)) return n;
+    const uint64_t savedLr = reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(fp))[1];
+    if (ctx.lr != 0 && ctx.lr != savedLr && n < maxFrames) {
+        if (sps) sps[n] = ctx.sp;
+        pcs[n++] = ctx.lr;
+        ctx.lrFrame = true;
+    }
+    while (n < maxFrames && validRecord(fp)) {
+        const auto* rec = reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(fp));
+        const uint64_t ret = rec[1];
+        const uint64_t next = rec[0];
+        if (ret == 0) break;
+        if (sps) sps[n] = fp + 16;
+        pcs[n++] = ret;
+        if (next <= fp) break;  // the chain only climbs toward the stack's base
+        fp = next;
+    }
+    return n;
+}
+
 #else
 
 void ModuleRanges::refresh() {}

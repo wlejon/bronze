@@ -7,7 +7,8 @@
 // (brass/debug/jit_unwind_registry.hpp) — never RtlLookupFunctionEntry's
 // dynamic-table path, whose lock the suspended thread may hold.
 //
-// Windows x64 only; elsewhere the walk finds nothing.
+// Windows x64, and arm64 macOS by the frame-pointer chain (Arm64Context);
+// elsewhere the walk finds nothing.
 
 #include <cstdint>
 #include <vector>
@@ -30,8 +31,21 @@ private:
     std::vector<Range> ranges_;
 };
 
-// Walks the suspended thread whose context `context` (a CONTEXT captured with
-// CONTEXT_CONTROL | CONTEXT_INTEGER) holds, innermost first, into `pcs`, and
+// arm64 macOS: what walkStack takes for `context`. The walk follows the
+// frame-pointer chain (the platform ABI keeps one; brass's JIT frames keep
+// it too), and puts the link register in as frame 1 when it differs from
+// the innermost frame record's return address: a frameless leaf's caller is
+// only there. It sets lrFrame then; a profiler drops that frame when it
+// names frame 0's own function (an LR left by a call it made earlier).
+struct Arm64Context {
+    uint64_t pc = 0, lr = 0, fp = 0, sp = 0;
+    uint64_t stackLo = 0, stackHi = 0;  // the thread's stack; nothing outside it is read
+    bool lrFrame = false;               // out
+};
+
+// Walks the suspended thread whose context `context` (Windows x64: a CONTEXT
+// captured with CONTEXT_CONTROL | CONTEXT_INTEGER; arm64 macOS: an
+// Arm64Context) holds, innermost first, into `pcs`, and
 // each frame's stack pointer into `sps` when non-null. Frame 0's pc is the
 // instruction the thread stopped on; every later one is a return address.
 // Reads only the target's stack and the unwind tables; allocates nothing.
