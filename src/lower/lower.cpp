@@ -222,9 +222,24 @@ std::optional<il::Module> Lowerer::lower() {
         mainFn.name = "main";
         mainFn.displayName = "";
         mainFn.descFlags |= BRONZE_FN_DESC_TOPLEVEL;
-        mainFn.sourceFile = topLevelStmts.front()->span.file;
-        mainFn.sourceBegin = topLevelStmts.front()->span.begin;
-        mainFn.sourceEnd = topLevelStmts.back()->span.end;
+        // The program's top level is the entry file's (file 0, SourceSet): a
+        // merged program's starts with the modules it links in, often a
+        // synthesized binding of one already loaded, whose label named the
+        // whole entry ("lib/icons.js (external module bindings)" for a test
+        // script that imports it, in a profile and a stack trace). Its span is
+        // the entry file's statements; with none, the first statement's file.
+        const ast::Stmt* firstOwn = nullptr;
+        const ast::Stmt* lastOwn = nullptr;
+        for (const auto* stmt : topLevelStmts) {
+            if (stmt->span.file != 0) continue;
+            if (!firstOwn) firstOwn = stmt;
+            lastOwn = stmt;
+        }
+        const ast::Stmt* first = firstOwn ? firstOwn : topLevelStmts.front();
+        const ast::Stmt* last = firstOwn ? lastOwn : topLevelStmts.back();
+        mainFn.sourceFile = first->span.file;
+        mainFn.sourceBegin = first->span.begin;
+        mainFn.sourceEnd = last->span.end;
         // A throw nothing in `main` catches leaves it for the host that
         // entered it (rtRunModuleEntry reports it). No handler BLOCK, and so
         // no IL at all in a program that never throws — which is what keeps
