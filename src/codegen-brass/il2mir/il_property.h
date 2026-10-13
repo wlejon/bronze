@@ -133,11 +133,27 @@ public:
         Value* index
     );
 
+    Value* lower_elem_get_typed(
+        Builder& b,
+        Value* obj,
+        Value* index,
+        int64_t elem_kind
+    );
+
     void lower_elem_set(
         Builder& b,
         Value* obj,
         Value* index,
         Value* val,
+        uint32_t strict
+    );
+
+    void lower_elem_set_typed(
+        Builder& b,
+        Value* obj,
+        Value* index,
+        Value* val_f64,
+        int64_t elem_kind,
         uint32_t strict
     );
 

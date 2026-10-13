@@ -171,6 +171,58 @@ uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) 
     return dropped;
 }
 
+void cseFastElemGetTyped(il::Function& fn) {
+    struct CachedRead {
+        il::ValueId obj = il::kNoValue;
+        il::ValueId idx = il::kNoValue;
+        int32_t kind = 0;
+        il::ValueId result = il::kNoValue;
+    };
+    Rename replacements;
+    for (auto& block : fn.blocks) {
+        if (block.copyClass != il::CopyClass::Fast) continue;
+        std::vector<CachedRead> active;
+        for (size_t i = 0; i < block.instructions.size();) {
+            auto& inst = block.instructions[i];
+            if (!replacements.empty()) {
+                rewriteUses(inst, [&](il::ValueId v) { return renamed(replacements, v); });
+            }
+            if (inst.op == il::Op::ElemGetTyped && inst.operands.size() == 2 &&
+                inst.result != il::kNoValue) {
+                il::ValueId hit = il::kNoValue;
+                for (const auto& entry : active) {
+                    if (entry.obj == inst.operands[0] && entry.idx == inst.operands[1] &&
+                        entry.kind == inst.immI32) {
+                        hit = entry.result;
+                        break;
+                    }
+                }
+                if (hit != il::kNoValue) {
+                    replacements.emplace_back(inst.result, hit);
+                    block.instructions.erase(block.instructions.begin() + static_cast<ptrdiff_t>(i));
+                    continue;
+                }
+                active.push_back(CachedRead{inst.operands[0], inst.operands[1], inst.immI32, inst.result});
+                ++i;
+                continue;
+            }
+            if (il::canThrow(inst) || il::canCollect(inst) ||
+                inst.op == il::Op::ElemSet || inst.op == il::Op::ElemSetTyped ||
+                inst.op == il::Op::PropSet) {
+                active.clear();
+            }
+            ++i;
+        }
+    }
+    if (!replacements.empty()) {
+        for (auto& block : fn.blocks) {
+            for (auto& inst : block.instructions) {
+                rewriteUses(inst, [&](il::ValueId v) { return renamed(replacements, v); });
+            }
+        }
+    }
+}
+
 // A `box.f64` whose result nothing reads. The entry edge is where these appear:
 // a candidate whose def is a box promotes to the box's OPERAND, so redirecting
 // the edge to the fast copy hands over the double and leaves the box with no
@@ -831,6 +883,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     il::Function rewritten = fn;
     rewritten.blocks = std::move(out);
     rewritten.valueCount = nextValue;
+    cseFastElemGetTyped(rewritten);
     dropDeadF64Boxes(rewritten);
     // Everything this rewrite made, and everything it was made from, in the new
     // numbering: the next look at this function must not find the slow copy —

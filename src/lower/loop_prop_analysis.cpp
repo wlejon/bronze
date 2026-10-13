@@ -258,13 +258,89 @@ bool isMathObject(il::ValueId val, const il::Function& fn, const std::vector<Def
            module.keyConstants[inst.keyIndex] == "Math";
 }
 
-bool isProvablyNonNullish(il::ValueId val, const il::Function& fn,
-                          const std::vector<DefSite>& defs,
-                          const il::Module& module,
-                          std::vector<std::optional<SafeConstructorInfo>>& /*ctorCache*/) {
-    if (val >= defs.size()) return false;
+namespace {
+
+bool isProvablyNonNullishImpl(il::ValueId val, const il::Function& fn,
+                              const std::vector<DefSite>& defs,
+                              const il::Module& module,
+                              std::vector<std::optional<SafeConstructorInfo>>& ctorCache,
+                              int depth) {
+    if (depth <= 0 || val >= defs.size()) return false;
     const auto& def = defs[val];
     if (def.block == il::kNoBlock || def.block >= fn.blocks.size()) {
+        // A source parameter of a non-exported, non-entry function that is only
+        // ever invoked via direct `il::Op::Call`, where every call site passes a
+        // provably non-nullish argument.
+        if (!fn.isExported && !fn.isEntryPoint && val < fn.params.size() &&
+            val >= fn.firstSourceParam()) {
+            size_t fnIdx = SIZE_MAX;
+            for (size_t i = 0; i < module.functions.size(); ++i) {
+                if (&module.functions[i] == &fn || module.functions[i].name == fn.name) {
+                    fnIdx = i;
+                    break;
+                }
+            }
+            if (fnIdx == SIZE_MAX) return false;
+
+            uint32_t callCount = 0;
+            for (const auto& callerFn : module.functions) {
+                for (const auto& blk : callerFn.blocks) {
+                    for (const auto& inst : blk.instructions) {
+                        if (inst.op == il::Op::CreateFunction || inst.op == il::Op::FunctionRef) {
+                            const bool refsTarget = (inst.calleeIndex == fnIdx);
+                            if (refsTarget && inst.result != il::kNoValue) {
+                                // Allow only if the function object is stored in an env slot that
+                                // is never read via EnvGet (because all calls use direct Call).
+                                for (const auto& b2 : callerFn.blocks) {
+                                    for (const auto& u : b2.instructions) {
+                                        for (il::ValueId op : u.operands) {
+                                            if (op != inst.result) continue;
+                                            if (u.op != il::Op::EnvSet || u.operands.size() < 2 ||
+                                                u.operands[1] != inst.result) {
+                                                return false;
+                                            }
+                                            const uint32_t fnSlot = u.envIndex;
+                                            for (const auto& f3 : module.functions) {
+                                                for (const auto& b3 : f3.blocks) {
+                                                    for (const auto& i3 : b3.instructions) {
+                                                        if (i3.op == il::Op::EnvGet &&
+                                                            i3.envIndex == fnSlot) {
+                                                            return false;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (const auto& callerFn : module.functions) {
+                std::vector<DefSite> callerDefs;
+                bool defsReady = false;
+                for (const auto& blk : callerFn.blocks) {
+                    for (const auto& inst : blk.instructions) {
+                        if (inst.op == il::Op::Call && inst.calleeIndex == fnIdx) {
+                            if (val >= inst.operands.size()) return false;
+                            if (!defsReady) {
+                                callerDefs = computeDefSites(callerFn);
+                                defsReady = true;
+                            }
+                            if (!isProvablyNonNullishImpl(inst.operands[val], callerFn, callerDefs,
+                                                          module, ctorCache, depth - 1)) {
+                                return false;
+                            }
+                            ++callCount;
+                        }
+                    }
+                }
+            }
+            return callCount > 0;
+        }
         return false;
     }
     const auto& blk = fn.blocks[def.block];
@@ -312,9 +388,99 @@ bool isProvablyNonNullish(il::ValueId val, const il::Function& fn,
             }
             return false;
 
+        case il::Op::EnvGet: {
+            if (inst.envDepth != 0 || inst.operands.empty()) return false;
+            const il::ValueId envVal = inst.operands[0];
+            if (envVal >= defs.size()) return false;
+            const auto& envDef = defs[envVal];
+            if (envDef.block == il::kNoBlock || envDef.block >= fn.blocks.size()) return false;
+            const auto& envBlk = fn.blocks[envDef.block];
+            if (envDef.index >= envBlk.instructions.size()) return false;
+            const auto& envInst = envBlk.instructions[envDef.index];
+            const uint32_t slotIdx = inst.envIndex;
+
+            if (envInst.op == il::Op::ModuleEnvGet) {
+                const il::Function* mainFn = nullptr;
+                for (const auto& f : module.functions) {
+                    if (f.isEntryPoint) {
+                        mainFn = &f;
+                        break;
+                    }
+                }
+                if (!mainFn || mainFn->blocks.empty()) return false;
+                const std::vector<DefSite> mainDefs = computeDefSites(*mainFn);
+
+                il::ValueId modEnvReg = il::kNoValue;
+                il::ValueId initVal = il::kNoValue;
+                bool hasTdzInit = false;
+                bool callBeforeInit = false;
+                for (const auto& mInst : mainFn->blocks[0].instructions) {
+                    if (mInst.op == il::Op::ModuleEnvSet && !mInst.operands.empty()) {
+                        modEnvReg = mInst.operands[0];
+                    } else if (mInst.op == il::Op::EnvInitTdz && mInst.envDepth == 0 &&
+                               mInst.envIndex == slotIdx && !mInst.operands.empty() &&
+                               mInst.operands[0] == modEnvReg) {
+                        hasTdzInit = true;
+                    } else if (mInst.op == il::Op::EnvSet && mInst.envDepth == 0 &&
+                               mInst.envIndex == slotIdx && mInst.operands.size() >= 2 &&
+                               mInst.operands[0] == modEnvReg) {
+                        initVal = mInst.operands[1];
+                        break;
+                    } else if (mInst.op == il::Op::Call || mInst.op == il::Op::DynamicCall ||
+                               mInst.op == il::Op::MethodCall) {
+                        callBeforeInit = true;
+                    }
+                }
+                if (!hasTdzInit && callBeforeInit) return false;
+                if (initVal == il::kNoValue ||
+                    !isProvablyNonNullishImpl(initVal, *mainFn, mainDefs, module, ctorCache, depth - 1)) {
+                    return false;
+                }
+                uint32_t envSetCount = 0;
+                for (const auto& f : module.functions) {
+                    const std::vector<DefSite> fDefs = computeDefSites(f);
+                    for (const auto& b : f.blocks) {
+                        for (const auto& i : b.instructions) {
+                            if (i.op != il::Op::EnvSet || i.envIndex != slotIdx || i.operands.empty()) {
+                                continue;
+                            }
+                            if (i.envDepth == 0) {
+                                const il::ValueId targetEnv = i.operands[0];
+                                if (&f == mainFn && targetEnv == modEnvReg) {
+                                    ++envSetCount;
+                                } else if (targetEnv < fDefs.size() &&
+                                           fDefs[targetEnv].block != il::kNoBlock &&
+                                           fDefs[targetEnv].block < f.blocks.size()) {
+                                    const auto& eb = f.blocks[fDefs[targetEnv].block];
+                                    if (fDefs[targetEnv].index < eb.instructions.size() &&
+                                        eb.instructions[fDefs[targetEnv].index].op == il::Op::ModuleEnvGet) {
+                                        ++envSetCount;
+                                    }
+                                }
+                            } else {
+                                ++envSetCount;
+                            }
+                            if (envSetCount > 1) return false;
+                        }
+                    }
+                }
+                return envSetCount == 1;
+            }
+            return false;
+        }
+
         default:
             return false;
     }
+}
+
+}  // namespace
+
+bool isProvablyNonNullish(il::ValueId val, const il::Function& fn,
+                          const std::vector<DefSite>& defs,
+                          const il::Module& module,
+                          std::vector<std::optional<SafeConstructorInfo>>& ctorCache) {
+    return isProvablyNonNullishImpl(val, fn, defs, module, ctorCache, 4);
 }
 
 bool isArrayMutatingMethod(const std::string& name) {

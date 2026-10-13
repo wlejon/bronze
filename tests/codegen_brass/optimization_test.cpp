@@ -17,6 +17,8 @@
 
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_jit.h"
+#include "codegen-brass/il2mir/il_translator.h"
+#include "codegen-brass/il_to_brass_ast.h"
 #include "il/il.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -431,4 +433,97 @@ TEST_CASE("Brass Backend - End-to-End IL JIT Execution with Optimizations Enable
     uint64_t res2 = bronze::rtEnterJs(wrapperCode, 0, 0, 2, args2);
     CHECK(bronze::Value::fromRawBits(res2).asNumber() == doctest::Approx(17.5));
 }
+
+TEST_CASE("Brass il2mir - ElemGetTyped and ElemSetTyped specialize by elem_kind without switches or f64 write barriers") {
+    bronze::il::Module m;
+    m.name = "elem_typed_spec_test";
+
+    // kernel(ta: dynamic, arr: dynamic, idx: f64) -> f64
+    //   %3 = elem.get.typed %0, %2, 7    (Float32Array)
+    //   elem.set.typed %0, %2, %3, 7
+    //   %4 = elem.get.typed %1, %2, 100  (kElemKindPlainArrayF64)
+    //   %5 = add %3, %4
+    //   elem.set.typed %1, %2, %5, 100
+    //   ret %5
+    bronze::il::Function fn;
+    fn.name = "kernel";
+    fn.params = {{"ta", bronze::il::Type::Dynamic},
+                 {"arr", bronze::il::Type::Dynamic},
+                 {"idx", bronze::il::Type::F64}};
+    fn.returnType = bronze::il::Type::F64;
+    fn.valueCount = 6;
+
+    bronze::il::Block b0;
+    b0.id = 0;
+
+    bronze::il::Instruction getTa;
+    getTa.op = bronze::il::Op::ElemGetTyped;
+    getTa.type = bronze::il::Type::F64;
+    getTa.result = 3;
+    getTa.operands = {0, 2};
+    getTa.immI32 = 7;
+    b0.instructions.push_back(getTa);
+
+    bronze::il::Instruction setTa;
+    setTa.op = bronze::il::Op::ElemSetTyped;
+    setTa.type = bronze::il::Type::Void;
+    setTa.result = bronze::il::kNoValue;
+    setTa.operands = {0, 2, 3};
+    setTa.immI32 = 7;
+    b0.instructions.push_back(setTa);
+
+    bronze::il::Instruction getArr;
+    getArr.op = bronze::il::Op::ElemGetTyped;
+    getArr.type = bronze::il::Type::F64;
+    getArr.result = 4;
+    getArr.operands = {1, 2};
+    getArr.immI32 = bronze::il::kElemKindPlainArrayF64;
+    b0.instructions.push_back(getArr);
+
+    b0.instructions.push_back({bronze::il::Op::Add, bronze::il::Type::F64, 5, {3, 4}, 0, 0, 0});
+
+    bronze::il::Instruction setArr;
+    setArr.op = bronze::il::Op::ElemSetTyped;
+    setArr.type = bronze::il::Type::Void;
+    setArr.result = bronze::il::kNoValue;
+    setArr.operands = {1, 2, 5};
+    setArr.immI32 = bronze::il::kElemKindPlainArrayF64;
+    b0.instructions.push_back(setArr);
+
+    b0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::F64, bronze::il::kNoValue, {5}, 0, 0, 0});
+    fn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> uniqueNames = {"kernel"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, uniqueNames);
+    il2mir::TranslatorOptions opts;
+    opts.enable_optimizations = false;
+    opts.verify_lowered_module = true;
+
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    REQUIRE(tr.module != nullptr);
+
+    brass::Function* mirFn = tr.module->get_function("kernel");
+    REQUIRE(mirFn != nullptr);
+    CHECK(brass::verify_function(*mirFn));
+
+    bool hasSwitch = false;
+    bool hasWriteBarrier = false;
+    for (brass::BasicBlock* bb : mirFn->blocks()) {
+        for (brass::Instruction* inst : *bb) {
+            if (inst->opcode() == brass::Opcode::switch_) {
+                hasSwitch = true;
+            }
+            if (inst->opcode() == brass::Opcode::call && inst->symbol() == "brass_gc_write_barrier") {
+                hasWriteBarrier = true;
+            }
+        }
+    }
+    CHECK_FALSE(hasSwitch);
+    CHECK_FALSE(hasWriteBarrier);
+    // 4 specialized operations (4 * 5 new blocks + 1 entry block = 21 blocks total, down from 73).
+    CHECK(mirFn->blocks().size() <= 22);
+}
+
 

@@ -232,3 +232,102 @@ TEST_CASE("module-wide reflection does not disable hoisting in independent funct
     // Hoisting should have succeeded in independent function's preheader (b0)
     CHECK(blockHasPropGet(fn->blocks[0]));
 }
+
+TEST_CASE("loop property hoisting proves non-nullishness across module env slots and direct call args") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "class Base {}\n"
+        "const shared = new Base();\n"
+        "function sumProps(o, n) {\n"
+        "  let s = 0;\n"
+        "  for (let i = 0; i < n; i++) {\n"
+        "    s = s + o.a + o.b + shared.c;\n"
+        "  }\n"
+        "  return s;\n"
+        "}\n"
+        "const obj = { a: 1, b: 2 };\n"
+        "console.log(sumProps(obj, 100));\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+
+    const il::Function* fn = findFunction(*optMod, "sumProps");
+    REQUIRE(fn != nullptr);
+
+    // All three loop-invariant property reads (`o.a`, `o.b`, `shared.c`) are hoisted to b0.
+    size_t preheaderPropGets = 0;
+    for (const auto& inst : fn->blocks[0].instructions) {
+        if (inst.op == il::Op::PropGet) ++preheaderPropGets;
+    }
+    CHECK(preheaderPropGets == 3);
+    for (size_t b = 1; b < fn->blocks.size(); ++b) {
+        CHECK_FALSE(blockHasPropGet(fn->blocks[b]));
+    }
+}
+
+TEST_CASE("TypedArray and plain-array numeric loops type sum as f64 and CSE ElemGetTyped") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto astMod = lower_test::parseOnly(
+        "function overTyped(rounds) {\n"
+        "  const a = new Float32Array(16);\n"
+        "  let sum = 0;\n"
+        "  for (let r = 0; r < rounds; r++) {\n"
+        "    for (let i = 0; i < 16; i++) {\n"
+        "      sum = sum + a[i];\n"
+        "      a[i] = a[i] * 1.5;\n"
+        "    }\n"
+        "  }\n"
+        "  return sum;\n"
+        "}\n"
+        "function overPlain(rounds) {\n"
+        "  const a = [];\n"
+        "  for (let i = 0; i < 16; i++) a.push(i * 0.5);\n"
+        "  let sum = 0;\n"
+        "  for (let r = 0; r < rounds; r++) {\n"
+        "    for (let i = 0; i < 16; i++) {\n"
+        "      sum = sum + a[i];\n"
+        "      a[i] = a[i] * 1.5;\n"
+        "    }\n"
+        "  }\n"
+        "  return sum;\n"
+        "}\n"
+        "console.log(overTyped(4), overPlain(4));\n",
+        diags, buf);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(astMod != nullptr);
+    auto inferred = types::inferModule(*astMod, diags);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(inferred.has_value());
+    const auto optMod = lower::lowerModule(*astMod, diags, &*inferred, nullptr, nullptr, nullptr,
+                                           /*assumeNoBigInt=*/true);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+
+    const il::Function* typedFn = findFunction(*optMod, "overTyped");
+    REQUIRE(typedFn != nullptr);
+    CHECK(typedFn->returnType == il::Type::F64);
+
+    size_t typedGets = 0;
+    for (const auto& blk : typedFn->blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == il::Op::ElemGetTyped) ++typedGets;
+        }
+    }
+    CHECK(typedGets == 1);
+
+    const il::Function* plainFn = findFunction(*optMod, "overPlain");
+    REQUIRE(plainFn != nullptr);
+    size_t fastElemGets = 0;
+    for (const auto& blk : plainFn->blocks) {
+        if (blk.copyClass != il::CopyClass::Fast) continue;
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == il::Op::ElemGetTyped) ++fastElemGets;
+        }
+    }
+    CHECK(fastElemGets == 1);
+}
+

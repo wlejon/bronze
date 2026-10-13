@@ -316,8 +316,13 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return Type::dynamic();
     }
     if (const auto* ix = ast::exactAs<const ast::IndexAccess*>(&e)) {
-        expr(*ix->object);
-        expr(*ix->index);
+        const Type base = expr(*ix->object);
+        const Type idx = expr(*ix->index);
+        if (!ix->optional && idx.is(TypeKind::Number) &&
+            ((base.is(TypeKind::TypedArray) && base.typedArrayElemRaw() != kNoTypedArrayElem) ||
+             base.arrayElementsPinned())) {
+            lastNumericElem_ = ix;
+        }
         return Type::dynamic();
     }
     if (const auto* c = ast::exactAs<const ast::Call*>(&e)) return call(*c);
@@ -423,8 +428,26 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     return Type::dynamic();
 }
 
+// Evaluates `e` and, when `e` is a numeric TypedArray (Int8..Float64) or
+// pinned-array element read at a Number index, upgrades its `Dynamic` answer to
+// `Type::undefined()` for operator-result typing. By ECMA-262 10.4.5.4 such a
+// read produces only a Number or `undefined` (on an invalid/out-of-bounds
+// index), never a String, Object, or BigInt — and `Undefined` has the exact
+// operator coercion behaviour of `Number | undefined` in `operator_types.cpp`
+// (`isNumericPrimitive` and `isNeverBigInt`).
+Type FlowAnalyzer::exprForOperator(const ast::Expr& e) {
+    const Type t = expr(e);
+    if (t.is(TypeKind::Dynamic)) {
+        const auto* ix = ast::exactAs<const ast::IndexAccess*>(&e);
+        if (ix != nullptr && lastNumericElem_ == ix) {
+            return Type::undefined();
+        }
+    }
+    return t;
+}
+
 Type FlowAnalyzer::unary(const ast::Unary& u) {
-    const Type operand = expr(*u.operand);
+    const Type operand = exprForOperator(*u.operand);
     const Type result = unaryResult(u.op, operand);
     // The update forms are the one place a USE site sharpens a name — but
     // only to what 13.4.4 actually stores: ToNumeric of the old value, which
@@ -453,9 +476,9 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
     }
     if (ast::isCompoundAssignOp(b.op)) {
         const ast::BinaryOp plain = ast::compoundAssignBase(b.op);
-        const Type rhs = expr(*b.rhs);
+        const Type rhs = exprForOperator(*b.rhs);
         const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get());
-        const Type current = id != nullptr ? lookup(id->name) : expr(*b.lhs);
+        const Type current = id != nullptr ? lookup(id->name) : exprForOperator(*b.lhs);
         const Type result = compoundResult(plain, current, rhs);
         if (id != nullptr) assign(id->name, result);
         return result;
@@ -473,8 +496,14 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
         return join(l, r);
     }
 
-    const Type l = expr(*b.lhs);
-    const Type r = expr(*b.rhs);
+    if (b.op == ast::BinaryOp::Comma) {
+        const Type l = expr(*b.lhs);
+        const Type r = expr(*b.rhs);
+        return binaryResult(b.op, l, r);
+    }
+
+    const Type l = exprForOperator(*b.lhs);
+    const Type r = exprForOperator(*b.rhs);
     return binaryResult(b.op, l, r);
 }
 

@@ -171,6 +171,7 @@ private:
     // ---- expressions (flow_expr.cpp) ---------------------------------------
 
     Type expr(const ast::Expr& e);
+    Type exprForOperator(const ast::Expr& e);
     Type exprKind(const ast::Expr& e);
     Type unary(const ast::Unary& u);
     Type binary(const ast::Binary& b);
@@ -230,6 +231,7 @@ private:
     // with the outermost member read, which is the one the call is on.
     const ast::MemberAccess* lastMember_ = nullptr;
     Type lastMemberBase_ = Type::dynamic();
+    const ast::IndexAccess* lastNumericElem_ = nullptr;
     std::vector<std::vector<Env>> breakStack_;
     std::vector<std::vector<Env>> continueStack_;
     std::vector<Env> loopBreaks_;

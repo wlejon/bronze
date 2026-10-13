@@ -33,11 +33,11 @@ Value* box_f64(Builder& b, Value* f) {
 
 // An element index: `i64` is the index when `ok` (an integral Number; the
 // element paths range-check it against an unsigned length, so a negative one
-// misses there), `boxed` the Value the helper takes.
+// misses there). The boxed Value for the slow-path helper is materialized only
+// in `bb_slow`.
 struct ElemIndex {
     Value* i64 = nullptr;
     Value* ok = nullptr;
-    Value* boxed = nullptr;
 };
 
 // The f64 an i64 Value was boxed from here (box_f64, IlLowering::ensure_type:
@@ -67,20 +67,16 @@ ElemIndex elem_index(Builder& b, Value* index) {
     if (index->type() == Type::i32()) {
         r.i64 = b.build_sext_i64(index);
         r.ok = b.build_iconst_i32(1);
-        r.boxed = boxed_index(b, index);
         return r;
     }
     Value* f = nullptr;
     Value* is_number = nullptr;
     if (index->type() == Type::f64()) {
         f = index;
-        r.boxed = box_f64(b, index);
     } else if (Value* src = boxed_f64_source(index)) {
         f = src;
-        r.boxed = index;
     } else {
         // A Number's bits are the double; any other Value is a tag above them.
-        r.boxed = index;
         is_number = b.build_ule(index, iconst(b, kBronzeNumberMaxBits));
         f = b.build_bitcast_f64_i64(index);
     }
@@ -233,10 +229,132 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.build_br(bb_merge, {box_f64(b, number)});
 
     b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, idx.boxed})});
+    b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
 
     b.position_at_end(bb_merge);
     return result;
+}
+
+Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Value* index, int64_t elem_kind) {
+    if (!enable_inlined_fastpaths_) {
+        return b.build_bitcast_f64_i64(b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)}));
+    }
+
+    constexpr int64_t kElemKindPlainArrayF64 = 100;
+    if (elem_kind == kElemKindPlainArrayF64) {
+        BasicBlock* cur = b.current_block();
+        Function* fn = cur->parent();
+        const std::string prefix = "elem_get_arr_" + std::to_string(fn->next_block_id());
+        BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+        BasicBlock* bb_array = b.append_block(prefix + "_array");
+        BasicBlock* bb_array_load = b.append_block(prefix + "_array_load");
+        BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+        Value* result = b.add_block_param(bb_merge, Type::i64());
+
+        b.position_at_end(cur);
+        Value* ptr = nullptr;
+        Value* is_obj = nullptr;
+        object_pointer(b, obj, ptr, is_obj);
+        const ElemIndex idx = elem_index(b, index);
+        b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
+
+        b.position_at_end(bb_obj);
+        Value* header_low = b.build_load(Type::i32(), ptr, 0);
+        b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_slow);
+
+        b.position_at_end(bb_array);
+        Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+        b.build_br_if(b.build_ult(idx.i64, length), bb_array_load, bb_slow);
+
+        b.position_at_end(bb_array_load);
+        Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+        Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        Value* elem = b.build_load_indexed(Type::i64(), block, b.build_add(idx.i64, head), 8,
+                                           static_cast<int32_t>(kBronzeHdrBytes));
+        Value* is_hole = b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS));
+        b.build_br(bb_merge, {b.build_select(is_hole, iconst(b, kUndefinedTag), elem)});
+
+        b.position_at_end(bb_slow);
+        b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
+
+        b.position_at_end(bb_merge);
+        return b.build_bitcast_f64_i64(result);
+    }
+
+    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
+        return b.build_bitcast_f64_i64(lower_elem_get(b, obj, index));
+    }
+
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "elem_get_ta_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
+    BasicBlock* bb_load = b.append_block(prefix + "_load");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* ptr = nullptr;
+    Value* is_obj = nullptr;
+    object_pointer(b, obj, ptr, is_obj);
+    const ElemIndex idx = elem_index(b, index);
+    b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
+
+    b.position_at_end(bb_obj);
+    Value* header_low = b.build_load(Type::i32(), ptr, 0);
+    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
+
+    b.position_at_end(bb_ta);
+    Value* ta_length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
+    Value* in_bounds = b.build_ult(idx.i64, ta_length);
+    Value* kind_ok = b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
+    b.build_br_if(b.build_and(in_bounds, kind_ok), bb_load, bb_slow);
+
+    b.position_at_end(bb_load);
+    Value* data = typed_array_data(b, ptr);
+    Value* number = nullptr;
+    bool may_be_nan = false;
+    switch (elem_kind) {
+        case BRONZE_ABI_TA_KIND_FLOAT64:
+            number = b.build_load_indexed(Type::f64(), data, idx.i64, 8);
+            may_be_nan = true;
+            break;
+        case BRONZE_ABI_TA_KIND_FLOAT32:
+            number = b.build_fpext_f64_f32(b.build_load_indexed(Type::f32(), data, idx.i64, 4));
+            may_be_nan = true;
+            break;
+        case BRONZE_ABI_TA_KIND_INT32:
+            number = b.build_sitofp_f64_i32(b.build_load_indexed(Type::i32(), data, idx.i64, 4));
+            break;
+        case BRONZE_ABI_TA_KIND_UINT32:
+            number = b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i32(), data, idx.i64, 4)));
+            break;
+        case BRONZE_ABI_TA_KIND_INT16:
+            number = b.build_sitofp_f64_i64(sign_extend(b, load_u16(b, data, idx.i64), 16));
+            break;
+        case BRONZE_ABI_TA_KIND_UINT16:
+            number = b.build_sitofp_f64_i64(load_u16(b, data, idx.i64));
+            break;
+        case BRONZE_ABI_TA_KIND_INT8:
+            number = b.build_sitofp_f64_i64(
+                sign_extend(b, b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx.i64, 1)), 8));
+            break;
+        default: // UINT8, UINT8CLAMPED
+            number = b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx.i64, 1)));
+            break;
+    }
+    Value* boxed_num = may_be_nan ? box_f64(b, number) : b.build_bitcast_i64_f64(number);
+    b.build_br(bb_merge, {boxed_num});
+
+    b.position_at_end(bb_slow);
+    b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
+
+    b.position_at_end(bb_merge);
+    return b.build_bitcast_f64_i64(result);
 }
 
 // The inline stores are exactly the helper's own fast path
@@ -386,7 +504,148 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.build_br(bb_merge);
 
     b.position_at_end(bb_slow);
-    b.build_call("bronze_elem_set", Type::void_type(), {obj, idx.boxed, val, strict_val});
+    b.build_call("bronze_elem_set", Type::void_type(), {obj, boxed_index(b, index), val, strict_val});
+    b.build_br(bb_merge);
+
+    b.position_at_end(bb_merge);
+}
+
+void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value* index, Value* val_f64,
+                                                  int64_t elem_kind, uint32_t strict) {
+    Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
+    if (!enable_inlined_fastpaths_) {
+        b.build_call("bronze_elem_set", Type::void_type(),
+                     {obj, boxed_index(b, index), box_f64(b, val_f64), strict_val});
+        return;
+    }
+
+    constexpr int64_t kElemKindPlainArrayF64 = 100;
+    if (elem_kind == kElemKindPlainArrayF64) {
+        BasicBlock* cur = b.current_block();
+        Function* fn = cur->parent();
+        const std::string prefix = "elem_set_arr_" + std::to_string(fn->next_block_id());
+        BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+        BasicBlock* bb_array = b.append_block(prefix + "_array");
+        BasicBlock* bb_array_store = b.append_block(prefix + "_array_store");
+        BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+        BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+
+        b.position_at_end(cur);
+        Value* ptr = nullptr;
+        Value* is_obj = nullptr;
+        object_pointer(b, obj, ptr, is_obj);
+        const ElemIndex idx = elem_index(b, index);
+        b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
+
+        b.position_at_end(bb_obj);
+        Value* header_low = b.build_load(Type::i32(), ptr, 0);
+        b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_slow);
+
+        b.position_at_end(bb_array);
+        Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+        Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+        Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+        Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+        Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(idx.i64, capacity));
+        b.build_br_if(b.build_and(in_bounds, no_props), bb_array_store, bb_slow);
+
+        b.position_at_end(bb_array_store);
+        Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+        Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        Value* slot = b.build_add(idx.i64, head);
+        // A boxed f64 is a primitive Number, never a heap reference, so no write barrier is needed.
+        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64(b, val_f64));
+        b.build_br(bb_merge);
+
+        b.position_at_end(bb_slow);
+        b.build_call("bronze_elem_set", Type::void_type(),
+                     {obj, boxed_index(b, index), box_f64(b, val_f64), strict_val});
+        b.build_br(bb_merge);
+
+        b.position_at_end(bb_merge);
+        return;
+    }
+
+    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
+        lower_elem_set(b, obj, index, box_f64(b, val_f64), strict);
+        return;
+    }
+
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "elem_set_ta_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
+    BasicBlock* bb_store = b.append_block(prefix + "_store");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+
+    b.position_at_end(cur);
+    Value* ptr = nullptr;
+    Value* is_obj = nullptr;
+    object_pointer(b, obj, ptr, is_obj);
+    const ElemIndex idx = elem_index(b, index);
+    b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
+
+    b.position_at_end(bb_obj);
+    Value* header_low = b.build_load(Type::i32(), ptr, 0);
+    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
+
+    b.position_at_end(bb_ta);
+    Value* ta_length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
+    Value* ok = b.build_and(b.build_ult(idx.i64, ta_length),
+                            b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind))));
+    Value* whole = nullptr;
+    if (elem_kind == BRONZE_ABI_TA_KIND_UINT8CLAMPED) {
+        Value* c_abs = b.build_and(b.build_bitcast_i64_f64(val_f64), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
+        whole = b.build_fptosi_i64(val_f64);
+        Value* c_exact = b.build_eq(b.build_sitofp_f64_i64(whole), val_f64);
+        Value* c_ok = b.build_and(b.build_ult(c_abs, iconst(b, 0x43E0000000000000ULL)), c_exact);
+        ok = b.build_and(ok, c_ok);
+    } else if (elem_kind != BRONZE_ABI_TA_KIND_FLOAT64 && elem_kind != BRONZE_ABI_TA_KIND_FLOAT32) {
+        Value* abs_bits = b.build_and(b.build_bitcast_i64_f64(val_f64), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
+        ok = b.build_and(ok, b.build_ult(abs_bits, iconst(b, 0x43E0000000000000ULL)));
+    }
+    b.build_br_if(ok, bb_store, bb_slow);
+
+    b.position_at_end(bb_store);
+    Value* data = typed_array_data(b, ptr);
+    switch (elem_kind) {
+        case BRONZE_ABI_TA_KIND_FLOAT64:
+            b.build_store_indexed(Type::f64(), data, idx.i64, 8, val_f64);
+            break;
+        case BRONZE_ABI_TA_KIND_FLOAT32:
+            b.build_store_indexed(Type::f32(), data, idx.i64, 4, b.build_fptrunc_f32_f64(val_f64));
+            break;
+        case BRONZE_ABI_TA_KIND_INT32:
+        case BRONZE_ABI_TA_KIND_UINT32:
+            whole = b.build_fptosi_i64(val_f64);
+            b.build_store_indexed(Type::i32(), data, idx.i64, 4, b.build_trunc_i32(whole));
+            break;
+        case BRONZE_ABI_TA_KIND_INT16:
+        case BRONZE_ABI_TA_KIND_UINT16:
+            whole = b.build_fptosi_i64(val_f64);
+            b.build_store_indexed(Type::i8(), data, idx.i64, 2, 0, b.build_trunc_i8(whole));
+            b.build_store_indexed(Type::i8(), data, idx.i64, 2, 1, b.build_trunc_i8(b.build_lshr(whole, iconst(b, 8))));
+            break;
+        case BRONZE_ABI_TA_KIND_INT8:
+        case BRONZE_ABI_TA_KIND_UINT8:
+            whole = b.build_fptosi_i64(val_f64);
+            b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(whole));
+            break;
+        default: { // UINT8CLAMPED
+            Value* lo = b.build_select(b.build_slt(whole, iconst(b, 0)), iconst(b, 0), whole);
+            Value* clamped = b.build_select(b.build_sgt(lo, iconst(b, 255)), iconst(b, 255), lo);
+            b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(clamped));
+            break;
+        }
+    }
+    b.build_br(bb_merge);
+
+    b.position_at_end(bb_slow);
+    b.build_call("bronze_elem_set", Type::void_type(),
+                 {obj, boxed_index(b, index), box_f64(b, val_f64), strict_val});
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);

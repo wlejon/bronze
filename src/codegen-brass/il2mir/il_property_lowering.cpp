@@ -165,21 +165,34 @@ bool lower_property_instruction(
             return true;
         }
 
-        case BronzeOp::ElemGet:
-        case BronzeOp::ElemGetTyped: {
+        case BronzeOp::ElemGet: {
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
             res_val = lowering->run_once() ? prop_lowering.lower_elem_get_call(b, obj_val, idx_val)
                                            : prop_lowering.lower_elem_get(b, obj_val, idx_val);
-            if (inst_ast.op == BronzeOp::ElemGetTyped && inst_ast.result_type == BronzeType::F64) {
-                res_val = ensure_type(res_val, Type::f64());
+            return true;
+        }
+
+        case BronzeOp::ElemGetTyped: {
+            Value* obj_val = ensure_type(get_opd(0), Type::i64());
+            Value* idx_val = get_opd(1);
+            if (!idx_val) return false;
+            if (lowering->run_once()) {
+                res_val = prop_lowering.lower_elem_get_call(b, obj_val, idx_val);
+                if (inst_ast.result_type == BronzeType::F64) {
+                    res_val = ensure_type(res_val, Type::f64());
+                }
+            } else {
+                res_val = prop_lowering.lower_elem_get_typed(b, obj_val, idx_val, inst_ast.imm_i64);
+                if (inst_ast.result_type != BronzeType::F64) {
+                    res_val = ensure_type(res_val, Type::i64());
+                }
             }
             return true;
         }
 
-        case BronzeOp::ElemSet:
-        case BronzeOp::ElemSetTyped: {
+        case BronzeOp::ElemSet: {
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
@@ -188,6 +201,22 @@ bool lower_property_instruction(
                 prop_lowering.lower_elem_set_call(b, obj_val, idx_val, val, inst_ast.index);
             } else {
                 prop_lowering.lower_elem_set(b, obj_val, idx_val, val, inst_ast.index);
+            }
+            return true;
+        }
+
+        case BronzeOp::ElemSetTyped: {
+            Value* obj_val = ensure_type(get_opd(0), Type::i64());
+            Value* idx_val = get_opd(1);
+            if (!idx_val) return false;
+            Value* raw_val = get_opd(2);
+            if (!raw_val) return false;
+            if (lowering->run_once()) {
+                prop_lowering.lower_elem_set_call(b, obj_val, idx_val, ensure_type(raw_val, Type::i64()),
+                                                  inst_ast.index);
+            } else {
+                prop_lowering.lower_elem_set_typed(b, obj_val, idx_val, ensure_type(raw_val, Type::f64()),
+                                                   inst_ast.imm_i64, inst_ast.index);
             }
             return true;
         }
