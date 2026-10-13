@@ -50,6 +50,7 @@ struct TieredEngineConfig {
     std::string entrySymbol = "main";
     std::vector<std::string> hostGlobals;
     bool emitDebugInfo = false;
+    bool perThreadModuleData = true;
 };
 
 class BrassTieredProgram {
@@ -87,11 +88,17 @@ public:
     const brass::ModuleStackMap* stackMaps() const noexcept;
 
     // Whether a run on another thread starts from fresh module data: true
-    // for the pipeline tiers, whose writable tables are per thread; false
-    // for Tier2_Optimized, whose tables are the image's own.
-    bool perThreadData() const noexcept { return tier_ != ExecutionTier::Tier2_Optimized; }
+    // for the pipeline tiers when configured for multi-thread sharing; false
+    // for single-thread dynamic evaluations and Tier2_Optimized.
+    bool perThreadData() const noexcept { return perThreadData_; }
+    // Whether the module defines any non-entry function or coroutine body
+    // whose code/data could outlive the top-level run().
+    bool hasEscapableCode() const noexcept { return hasEscapableCode_; }
+    // Code pointers and dispatch-table tokens identifying this program's
+    // functions and coroutine bodies on the GC heap.
+    const std::vector<const void*>& codeTokens() const noexcept { return codeTokens_; }
     // The cell naming the module's per-thread data slot (bronze_abi.h,
-    // `bronze_module_instance`); null for Tier2_Optimized.
+    // `bronze_module_instance`); null when !perThreadData().
     const uint64_t* moduleSlotCell() const;
 
     // Drops the optimizations queued for this program and waits out the one
@@ -110,6 +117,9 @@ private:
 
     ExecutionTier tier_;
     std::string entrySymbol_;
+    bool perThreadData_ = false;
+    bool hasEscapableCode_ = true;
+    std::vector<const void*> codeTokens_;
 
     // Tier2_Optimized only.
     std::unique_ptr<BrassJitProgram> jitProgram_;

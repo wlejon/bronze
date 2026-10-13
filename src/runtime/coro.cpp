@@ -17,6 +17,7 @@
 #include "runtime/iterator.h"
 #include "runtime/promise.h"
 #include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 
 namespace bronze::runtime {
 
@@ -31,6 +32,14 @@ uintptr_t frameAddress(const Rooted<Value>& frame) {
 }
 
 uint64_t resumeFrame(uintptr_t frame, uint64_t cell, uint32_t mode) {
+    const auto* header = reinterpret_cast<const brass::runtime::BrassCoroFrame*>(frame);
+    const void* token = nullptr;
+    if (const auto* body = brass::runtime::coro_body(header)) {
+        token = body->table.load(std::memory_order_acquire);
+    } else if (header) {
+        token = header->fn_ptr;
+    }
+    ActiveDynamicTokenScope activeScope(token);
     uint64_t thrown = 0;
     try {
         return brass_coro_resume_with(frame, cell, mode);

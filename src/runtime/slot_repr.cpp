@@ -136,6 +136,11 @@ SlotReprCounters& slotReprMutableCounters() noexcept {
 }
 const SlotReprCounters& slotReprCounters() noexcept { return slotReprMutableCounters(); }
 
+NonMovingArena& slotReprArena() {
+    static auto* a = new NonMovingArena();
+    return *a;
+}
+
 void slotReprRegisterName(StringHeader* name) {
     if (name == nullptr) return;
     const PropertyKey incoming = PropertyKey::forString(name);
@@ -143,7 +148,8 @@ void slotReprRegisterName(StringHeader* name) {
     for (StringHeader* existing : eligibleNames()) {
         if (PropertyKey::forString(existing).matches(incoming)) return;
     }
-    eligibleNames().push_back(name);
+    StringHeader* owned = StringHeader::createFromUTF8InArena(slotReprArena(), rtUtf8Chars(name));
+    eligibleNames().push_back(owned);
 }
 
 uint32_t slotReprEligibleCount() noexcept {

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "runtime/heap.h"
 #include "runtime/shape.h"
@@ -53,7 +55,12 @@ struct KeyInfo {
 const std::string& rtKeyString(uint32_t index);
 StringHeader* rtKeyHeader(uint32_t index);
 const KeyInfo& rtKeyInfo(uint32_t index);
+void rtTeardownThreadKeys();
 extern "C" uint32_t bronze_register_key_string_len(const char* str, size_t len);
+
+// Arm and execute per-thread runtime teardown on worker thread exit.
+void rtArmThreadTeardown();
+void rtTeardownThreadState();
 
 uint32_t rtArrayMethodId(const std::string& key);
 Value rtArrayMethodById(uint32_t id);
@@ -66,12 +73,41 @@ void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
 // interned through the module's own fn slots — from the collector's roots.
 // Epoch 0 is "no bracket": spans registered outside any bracket (a linked
 // program's, a host that never unloads) are permanent, exactly as before.
-// Ending an epoch returns the thread to "no bracket" if that epoch is the
-// current one; spans registered after the entry has returned are then
-// permanent rather than tagged with a module they do not belong to.
+// Ending an epoch returns the thread to its enclosing epoch if that epoch is
+// the current one; spans registered after the entry has returned are then
+// permanent (or resolved to their owning dynamic module) rather than tagged
+// with a module they do not belong to.
 uint64_t rtBeginModuleEpoch();
 void rtEndModuleEpoch(uint64_t epoch);
 void rtDropModuleEpoch(uint64_t epoch);
+uint64_t rtCurrentModuleEpoch() noexcept;
+
+// Dynamic modules (eval / Function / evalScript) whose functions or coroutines
+// may escape to the heap: kept alive only while at least one FunctionHeader or
+// CoroutineHeader referencing one of their code/dispatch tokens is reachable or
+// actively executing on the stack, and swept on full GC once unreachable.
+void rtRegisterDynamicModule(uint64_t epoch, std::shared_ptr<void> owner,
+                             const std::vector<const void*>& codeTokens);
+bool rtHasDynamicModules() noexcept;
+size_t rtDynamicModuleCount() noexcept;
+void rtTraceDynamicModuleToken(const void* token, brass::gc::Tracer& t);
+void rtPushActiveDynamicToken(const void* token) noexcept;
+void rtPopActiveDynamicToken() noexcept;
+
+struct ActiveDynamicTokenScope {
+    bool pushed = false;
+    explicit ActiveDynamicTokenScope(const void* token) noexcept {
+        if (token && rtHasDynamicModules()) {
+            rtPushActiveDynamicToken(token);
+            pushed = true;
+        }
+    }
+    ~ActiveDynamicTokenScope() {
+        if (pushed) rtPopActiveDynamicToken();
+    }
+    ActiveDynamicTokenScope(const ActiveDynamicTokenScope&) = delete;
+    ActiveDynamicTokenScope& operator=(const ActiveDynamicTokenScope&) = delete;
+};
 
 // Invalidate cached global cells across all modules on host global registration and realm switches.
 void rtInvalidateGlobalCaches();

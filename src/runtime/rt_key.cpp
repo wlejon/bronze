@@ -18,8 +18,12 @@
 
 #include <cmath>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
@@ -30,6 +34,101 @@
 #include "runtime/value.h"
 
 namespace bronze::runtime {
+
+namespace {
+
+std::mutex g_keyMutex;
+std::deque<std::string> g_keyStrings;
+std::deque<KeyInfo> g_keyInfos;
+std::unordered_map<std::string, uint32_t> g_keyIndex;
+const std::string g_emptyKey;
+const KeyInfo g_emptyKeyInfo{};
+
+thread_local std::vector<StringHeader*> g_keyHeaders;
+thread_local std::vector<const KeyInfo*> g_threadKeyInfos;
+
+}  // namespace
+
+const std::string& rtKeyString(uint32_t index) {
+    std::lock_guard<std::mutex> lock(g_keyMutex);
+    return index < g_keyStrings.size() ? g_keyStrings[index] : g_emptyKey;
+}
+
+StringHeader* rtKeyHeader(uint32_t index) {
+    if (index >= g_keyHeaders.size()) {
+        g_keyHeaders.resize(index + 1, nullptr);
+    }
+    StringHeader* hdr = g_keyHeaders[index];
+    if (!hdr) {
+        bool valid = false;
+        std::string str;
+        {
+            std::lock_guard<std::mutex> lock(g_keyMutex);
+            if (index < g_keyStrings.size()) {
+                str = g_keyStrings[index];
+                valid = true;
+            }
+        }
+        if (valid) {
+            hdr = StringHeader::createFromUTF8InArena(rtArena(), std::string_view(str));
+            g_keyHeaders[index] = hdr;
+        }
+    }
+    return hdr;
+}
+
+const KeyInfo& rtKeyInfo(uint32_t index) {
+    if (index < g_threadKeyInfos.size()) {
+        const KeyInfo* cached = g_threadKeyInfos[index];
+        if (cached != nullptr) return *cached;
+    }
+    std::lock_guard<std::mutex> lock(g_keyMutex);
+    if (index >= g_keyInfos.size()) return g_emptyKeyInfo;
+    const KeyInfo* ptr = &g_keyInfos[index];
+    if (index >= g_threadKeyInfos.size()) {
+        g_threadKeyInfos.resize(index + 1, nullptr);
+    }
+    g_threadKeyInfos[index] = ptr;
+    return *ptr;
+}
+
+void rtTeardownThreadKeys() {
+    g_keyHeaders.clear();
+    g_keyHeaders.shrink_to_fit();
+    g_threadKeyInfos.clear();
+    g_threadKeyInfos.shrink_to_fit();
+}
+
+extern "C" {
+
+uint32_t bronze_register_key_string_len(const char* str, size_t len) {
+    const std::string text(str ? str : "", str ? len : 0);
+    std::lock_guard<std::mutex> lock(g_keyMutex);
+    if (auto it = g_keyIndex.find(text); it != g_keyIndex.end()) return it->second;
+
+    const uint32_t index = static_cast<uint32_t>(g_keyStrings.size());
+    g_keyStrings.push_back(text);
+
+    KeyInfo info;
+    uint32_t elemIdx = 0;
+    if (rtIsIntegerLikeKey(text, elemIdx)) {
+        info.isElemIndex = true;
+        info.elemIndex = elemIdx;
+    } else {
+        info.isElemIndex = false;
+        info.elemIndex = UINT32_MAX;
+    }
+    info.isLength = (text == "length");
+    g_keyInfos.push_back(info);
+    g_keyIndex.emplace(text, index);
+    return index;
+}
+
+uint32_t bronze_register_key_string(const char* str) {
+    return bronze_register_key_string_len(str, str ? std::strlen(str) : 0);
+}
+
+}  // extern "C"
 
 // Whether a key names an ELEMENT rather than a named property, for the
 // receivers that store their elements by index. This is `rtIsIntegerLikeKey`

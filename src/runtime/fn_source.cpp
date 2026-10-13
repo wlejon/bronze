@@ -2,6 +2,8 @@
 
 #include <unordered_map>
 
+#include "runtime/rt_state.h"
+
 namespace bronze::runtime {
 
 namespace {
@@ -10,6 +12,7 @@ struct SourceSlice {
     const char* text;
     uint32_t begin;
     uint32_t length;
+    uint64_t epoch;
 };
 
 // thread_local, like every other module-registration table in the runtime: a
@@ -27,9 +30,20 @@ std::string_view rtFunctionSourceText(const void* code) {
     return std::string_view(it->second.text + it->second.begin, it->second.length);
 }
 
+void rtDropModuleFnSources(uint64_t epoch) {
+    if (epoch == 0) return;
+    std::erase_if(g_fnSources, [epoch](const auto& kv) { return kv.second.epoch == epoch; });
+}
+
+void rtTeardownThreadFnSources() {
+    g_fnSources.clear();
+    g_fnSources.rehash(0);
+}
+
 extern "C" void bronze_register_fn_sources(const char* text, uint32_t textLen,
                                            const uint64_t* entries, uint32_t count) {
     if (!text || !entries) return;
+    const uint64_t epoch = rtCurrentModuleEpoch();
     for (uint32_t i = 0; i < count; ++i) {
         const uint64_t code = entries[i * 2];
         const uint64_t range = entries[i * 2 + 1];
@@ -43,7 +57,7 @@ extern "C" void bronze_register_fn_sources(const char* text, uint32_t textLen,
         // back neighbouring rodata.
         if (begin > textLen || length > textLen - begin) continue;
         g_fnSources.insert_or_assign(reinterpret_cast<const void*>(static_cast<uintptr_t>(code)),
-                                     SourceSlice{text, begin, length});
+                                     SourceSlice{text, begin, length, epoch});
     }
 }
 

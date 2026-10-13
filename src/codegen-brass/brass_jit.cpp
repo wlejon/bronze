@@ -14,11 +14,13 @@
 namespace bronze {
 
 BrassJitProgram::BrassJitProgram(std::unique_ptr<brass::codegen::JitExecutionEngine> engine,
-                                 void* entryPoint, const void* codeRanges, uint32_t codeRangeCount)
+                                 void* entryPoint, const void* codeRanges, uint32_t codeRangeCount,
+                                 std::vector<const void*> codeTokens)
     : engine_(std::move(engine)),
       entryPoint_(entryPoint),
       codeRanges_(codeRanges),
-      codeRangeCount_(codeRangeCount) {
+      codeRangeCount_(codeRangeCount),
+      codeTokens_(std::move(codeTokens)) {
     if (engine_) {
         brass::brass_set_active_stack_maps(&engine_->stack_maps());
     }
@@ -39,7 +41,8 @@ BrassJitProgram::BrassJitProgram(BrassJitProgram&& other) noexcept
     : engine_(std::move(other.engine_)),
       entryPoint_(std::exchange(other.entryPoint_, nullptr)),
       codeRanges_(std::exchange(other.codeRanges_, nullptr)),
-      codeRangeCount_(std::exchange(other.codeRangeCount_, 0)) {
+      codeRangeCount_(std::exchange(other.codeRangeCount_, 0)),
+      codeTokens_(std::move(other.codeTokens_)) {
     if (engine_) {
         brass::brass_set_active_stack_maps(&engine_->stack_maps());
     }
@@ -57,6 +60,7 @@ BrassJitProgram& BrassJitProgram::operator=(BrassJitProgram&& other) noexcept {
         entryPoint_ = std::exchange(other.entryPoint_, nullptr);
         codeRanges_ = std::exchange(other.codeRanges_, nullptr);
         codeRangeCount_ = std::exchange(other.codeRangeCount_, 0);
+        codeTokens_ = std::move(other.codeTokens_);
         if (engine_) {
             brass::brass_set_active_stack_maps(&engine_->stack_maps());
         }
@@ -148,7 +152,15 @@ std::unique_ptr<BrassJitProgram> BrassBackend::compileToJit(const il::Module& mo
     if (rangesAddr && count > 0) {
         bronze_register_code_ranges(rangesAddr, count);
     }
-    return std::make_unique<BrassJitProgram>(std::move(engine), entry, rangesAddr, count);
+    std::vector<const void*> tokens;
+    tokens.reserve(obj->functions.size());
+    for (const auto& cfi : obj->functions) {
+        if (void* addr = engine->get_symbol_address(cfi.name)) {
+            tokens.push_back(addr);
+        }
+    }
+    return std::make_unique<BrassJitProgram>(std::move(engine), entry, rangesAddr, count,
+                                             std::move(tokens));
 }
 
 }  // namespace bronze

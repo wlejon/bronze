@@ -139,6 +139,7 @@ void Realm::visitRoots(const Heap::RootVisitor& visit) {
 
 Realm* rtDefaultRealm() {
     if (!g_defaultRealm) {
+        runtime::rtArmThreadTeardown();
         auto* r = new Realm(/*deferInit=*/true);
         g_defaultRealm = r;
         g_liveRealms.push_back(r);
@@ -224,6 +225,17 @@ void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value) {
         // pointing at whatever the collector moved out from under it.
         r->setGlobalObject(glob.get());
     }
+}
+
+void rtTeardownThreadRealms() {
+    g_realmStack.clear();
+    g_realmStack.shrink_to_fit();
+    g_defaultRealm = nullptr;
+    for (Realm* r : g_liveRealms) {
+        delete r;
+    }
+    g_liveRealms.clear();
+    g_liveRealms.shrink_to_fit();
 }
 
 }  // namespace bronze

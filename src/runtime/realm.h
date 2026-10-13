@@ -81,5 +81,6 @@ void rtVisitRealmRoots(const Heap::RootVisitor& visit);
 // code) and the property would then disagree with the bare name. `performance`
 // is the one name a host may shadow, so it is the one exception.
 void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value);
+void rtTeardownThreadRealms();
 
 }  // namespace bronze

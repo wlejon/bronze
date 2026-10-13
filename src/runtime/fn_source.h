@@ -20,5 +20,7 @@ namespace bronze::runtime {
 // when nothing registered one. Points into the module's read-only data and
 // stays valid for the life of the image.
 std::string_view rtFunctionSourceText(const void* code);
+void rtDropModuleFnSources(uint64_t epoch);
+void rtTeardownThreadFnSources();
 
 }  // namespace bronze::runtime

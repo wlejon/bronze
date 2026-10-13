@@ -41,6 +41,7 @@
 #include "runtime/module_instance.h"
 #include "runtime/atomic_ref.h"
 #include "runtime/fatal.h"
+#include "runtime/rt_state.h"
 #include "runtime/tls_block.h"
 
 namespace bronze::runtime {
@@ -74,20 +75,47 @@ constexpr uint64_t kNoDelta = ~uint64_t{0};
 // alignment the backend gave it in the image.
 constexpr size_t kInstanceAlign = 64;
 
-thread_local uint64_t* t_deltas = nullptr;
-thread_local size_t t_deltaCapacity = 0;
+struct ThreadModuleInstanceState {
+    uint64_t* deltas = nullptr;
+    size_t deltaCapacity = 0;
+    std::vector<uint64_t*> retiredDeltas;
+    std::vector<void*> threadCopies;
+
+    void clear() {
+        delete[] deltas;
+        deltas = nullptr;
+        deltaCapacity = 0;
+        for (uint64_t* old : retiredDeltas) {
+            delete[] old;
+        }
+        retiredDeltas.clear();
+        retiredDeltas.shrink_to_fit();
+        for (void* copy : threadCopies) {
+            ::operator delete(copy, std::align_val_t{kInstanceAlign});
+        }
+        threadCopies.clear();
+        threadCopies.shrink_to_fit();
+    }
+
+    ~ThreadModuleInstanceState() { clear(); }
+};
+
+thread_local ThreadModuleInstanceState t_inst;
 
 void ensureDeltaCapacity(size_t slot) {
-    if (slot < t_deltaCapacity) return;
-    size_t cap = t_deltaCapacity == 0 ? 16 : t_deltaCapacity;
+    if (slot < t_inst.deltaCapacity) return;
+    size_t cap = t_inst.deltaCapacity == 0 ? 16 : t_inst.deltaCapacity;
     while (cap <= slot) cap *= 2;
     auto* grown = new uint64_t[cap];
     for (size_t i = 0; i < cap; ++i) grown[i] = kNoDelta;
-    if (t_deltas) std::memcpy(grown, t_deltas, t_deltaCapacity * sizeof(uint64_t));
-    // The old array is leaked on purpose: generated code may hold its address
-    // across the call that grew it (see the header comment).
-    t_deltas = grown;
-    t_deltaCapacity = cap;
+    if (t_inst.deltas) {
+        std::memcpy(grown, t_inst.deltas, t_inst.deltaCapacity * sizeof(uint64_t));
+        // Kept alive for the life of the thread: generated code may hold its
+        // address across the call that grew it (see the header comment).
+        t_inst.retiredDeltas.push_back(t_inst.deltas);
+    }
+    t_inst.deltas = grown;
+    t_inst.deltaCapacity = cap;
     rtTls()->module_deltas = grown;
 }
 
@@ -97,7 +125,12 @@ bool rtThreadHasModuleInstance(const uint64_t* slotCell) {
     if (!slotCell) return false;
     AtomicRef<uint64_t> slotRef(*const_cast<uint64_t*>(slotCell));
     const uint64_t slot = slotRef.load(std::memory_order_acquire);
-    return slot != 0 && slot < t_deltaCapacity && t_deltas[slot] != kNoDelta;
+    return slot != 0 && slot < t_inst.deltaCapacity && t_inst.deltas[slot] != kNoDelta;
+}
+
+void rtTeardownThreadModuleInstances() {
+    rtTls()->module_deltas = nullptr;
+    t_inst.clear();
 }
 
 }  // namespace bronze::runtime
@@ -109,13 +142,14 @@ extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, 
     }
     AtomicRef<uint64_t> slotRef(*slotCell);
     uint64_t slot = slotRef.load(std::memory_order_acquire);
-    if (slot != 0 && slot < t_deltaCapacity && t_deltas[slot] != kNoDelta) {
-        return t_deltas[slot];
+    if (slot != 0 && slot < t_inst.deltaCapacity && t_inst.deltas[slot] != kNoDelta) {
+        return t_inst.deltas[slot];
     }
 
     const auto* runBegin = reinterpret_cast<const uint8_t*>(begin);
     const size_t size = static_cast<size_t>(reinterpret_cast<const uint8_t*>(end) - runBegin);
     uint64_t delta = 0;
+    void* newCopy = nullptr;
     {
         std::lock_guard<std::mutex> lock(imagesMutex());
         slot = slotRef.load(std::memory_order_relaxed);
@@ -131,12 +165,15 @@ extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, 
             if (rec.begin != runBegin || rec.size != size) {
                 bronze::fatal("bronze_module_instance: a module's slot cell names another image");
             }
-            void* copy = ::operator new(size == 0 ? 1 : size, std::align_val_t{kInstanceAlign});
-            if (size != 0) std::memcpy(copy, rec.pristine.data(), size);
-            delta = reinterpret_cast<uint64_t>(copy) - reinterpret_cast<uint64_t>(runBegin);
+            newCopy = ::operator new(size == 0 ? 1 : size, std::align_val_t{kInstanceAlign});
+            if (size != 0) std::memcpy(newCopy, rec.pristine.data(), size);
+            delta = reinterpret_cast<uint64_t>(newCopy) - reinterpret_cast<uint64_t>(runBegin);
         }
     }
+    if (newCopy) {
+        t_inst.threadCopies.push_back(newCopy);
+    }
     ensureDeltaCapacity(static_cast<size_t>(slot));
-    t_deltas[slot] = delta;
+    t_inst.deltas[slot] = delta;
     return delta;
 }

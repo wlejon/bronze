@@ -216,6 +216,7 @@ brass::RuntimeValue BrassTieredProgram::invokeUntranslated(std::string_view fnNa
 }
 
 void BrassTieredProgram::enterThreadInstance() const {
+    if (!perThreadData_) return;
     auto* slot = static_cast<uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_module_slot")));
     auto* begin = static_cast<uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_instance")));
     auto* end = static_cast<uint64_t*>(symbolAddress(codegen::moduleSymbolName(entrySymbol_, "__bronze_instance_end")));
@@ -237,10 +238,12 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
 
     const ExecutionTier tier = config_.tier;
     const std::string entrySymbol = config_.entrySymbol.empty() ? "main" : config_.entrySymbol;
+    const bool perThreadData = config_.perThreadModuleData && (tier != ExecutionTier::Tier2_Optimized);
 
     BrassBackend backend;
     backend.setEntrySymbol(entrySymbol);
     backend.setHostGlobals(config_.hostGlobals);
+    backend.setPerThreadModuleData(perThreadData);
     // Tier 2 optimizes the whole program before it runs. The pipeline tiers
     // translate it as it stands and optimize a function when it tiers up.
     backend.setOptimize(tier == ExecutionTier::Tier2_Optimized);
@@ -259,10 +262,23 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
                               !(eager && std::string_view(eager) == "1") && !(profileOut && *profileOut));
     }
 
+    bool hasEscapable = !module.censusSites.empty() && !module.censusOutPath.empty();
+    if (!hasEscapable) {
+        for (const auto& fn : module.functions) {
+            if (!fn.isExternal && (!fn.isEntryPoint || fn.isCoroutineBody())) {
+                hasEscapable = true;
+                break;
+            }
+        }
+    }
+
     std::unique_ptr<BrassTieredProgram> prog(new BrassTieredProgram(tier, entrySymbol));
+    prog->perThreadData_ = perThreadData;
+    prog->hasEscapableCode_ = hasEscapable;
     if (tier == ExecutionTier::Tier2_Optimized) {
         prog->jitProgram_ = backend.compileToJit(module, diags);
         if (!prog->jitProgram_) return nullptr;
+        prog->codeTokens_ = prog->jitProgram_->codeTokens();
         prog->activateStackMaps();
         return prog;
     }
@@ -327,6 +343,15 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
                                             pipeline, diags);
     if (!prog->image_) return nullptr;
     ptimer.mark("image load");
+
+    prog->codeTokens_.reserve(prog->mirModule_->functions().size() + 1);
+    prog->codeTokens_.push_back(&prog->dispatchTable());
+    for (const brass::Function* fn : prog->mirModule_->functions()) {
+        if (!fn || !fn->has_body()) continue;
+        if (void* addr = pipeline.function_address(fn->name(), fn)) {
+            prog->codeTokens_.push_back(addr);
+        }
+    }
 
     if (tier == ExecutionTier::Tier1_Baseline) {
         // Every function compiled before anything runs; one the baseline

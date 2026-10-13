@@ -225,15 +225,21 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
     // cache that resolved through or to this object must be invalidated.
     if (shape->used_as_prototype) bumpProtoMutationEpoch();
 
+    ObjectHeader* live = this;
     if (!shape->isDictionary()) {
         // Nothing below allocates on the heap, so the root is a formality —
         // but toDictionary takes one because the object it edits must be
         // reachable if that ever changes.
         Rooted<Value> self{Value::fromObject(this)};
         toDictionary(arena, self);
-        return self.get().asObject<ObjectHeader>()->shape->dict->remove(name);
+        live = self.get().asObject<ObjectHeader>();
     }
-    return shape->dict->remove(name);
+    const bool removed = live->shape->dict->remove(name);
+    if (removed) {
+        live->setSlot(info.slot, Value::fromUndefined());
+        if (info.accessor) live->setSlot(info.slot + 1, Value::fromUndefined());
+    }
+    return removed;
 }
 
 ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted<Value>& self,

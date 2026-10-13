@@ -22,9 +22,12 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/class_family.h"
+#include "runtime/fn_source.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/module_instance.h"
 #include "runtime/property_key.h"
+#include "runtime/realm.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
@@ -265,4 +268,47 @@ TEST_CASE("key info registry thread-local caching eliminates mutex contention ac
         th.join();
     }
 }
+
+TEST_CASE("repeated worker thread creation and exit cleanly tears down per-thread runtime state") {
+    alignas(64) uint64_t sharedDataRun[16] = {};
+    uint64_t slotCell = 0;
+    // Register on the home thread first so worker threads allocate per-thread copies.
+    CHECK(bronze_module_instance(&slotCell, sharedDataRun, sharedDataRun + 16) == 0);
+    CHECK(rtThreadHasModuleInstance(&slotCell));
+
+    std::atomic<int> completedWorkers{0};
+    for (int i = 0; i < 24; ++i) {
+        std::thread worker([&slotCell, &sharedDataRun, i, &completedWorkers] {
+            ShadowStackFrame workerFrame;
+            (void)rtGlobalThisObject();
+            (void)rtDefaultRealm();
+            (void)rtCreateRealm();
+            uint32_t k = bronze_register_key_string(("churn_key_" + std::to_string(i)).c_str());
+            (void)rtKeyInfo(k);
+
+            const uint64_t epoch = rtBeginModuleEpoch();
+            int dummyCode = 0;
+            const char* src = "function f() { return 1; }";
+            const uint64_t fnEntries[2] = {
+                static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&dummyCode)),
+                26ull,
+            };
+            bronze_register_fn_sources(src, 26, fnEntries, 1);
+            rtEndModuleEpoch(epoch);
+            rtDropModuleFnSources(epoch);
+            rtDropModuleEpoch(epoch);
+
+            (void)bronze_module_instance(&slotCell, sharedDataRun, sharedDataRun + 16);
+            for (int a = 0; a < 16; ++a) {
+                (void)rtMakeString("churn-str-" + std::to_string(a));
+            }
+            rtHeap().collect();
+            completedWorkers.fetch_add(1, std::memory_order_relaxed);
+        });
+        worker.join();
+    }
+
+    CHECK(completedWorkers.load() == 24);
+}
+
 

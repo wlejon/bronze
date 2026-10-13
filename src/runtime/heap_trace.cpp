@@ -13,8 +13,11 @@
 #include "runtime/heap_trace.h"
 
 #include <algorithm>
+#include <brass/runtime/coroutine.hpp>
 
+#include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 
 namespace bronze::gc_detail {
@@ -41,6 +44,22 @@ void traceShapePrototype(const uint64_t* words, Tracer& t) {
     auto* shape = reinterpret_cast<Shape*>(static_cast<uintptr_t>(words[1]));
     if (!shape || !shape->root) return;
     t.visit(reinterpret_cast<uint64_t*>(&shape->root->prototype));
+}
+
+void traceDynamicModuleFromWord(uint64_t bits, Tracer& t) {
+    const Value v(bits);
+    if (!v.isObject()) return;
+    const auto target = reinterpret_cast<uintptr_t>(v.asObject<void>());
+    if (!target || isBronzeLayout(brass::gc::header_of(target)->layout)) return;
+    const auto* frame = reinterpret_cast<const brass::runtime::BrassCoroFrame*>(target);
+    if (frame->is_done) return;
+    const void* token = nullptr;
+    if (const auto* body = brass::runtime::coro_body(frame)) {
+        token = body->table.load(std::memory_order_acquire);
+    } else {
+        token = frame->fn_ptr;
+    }
+    if (token) runtime::rtTraceDynamicModuleToken(token, t);
 }
 
 // The words of the object that hold Values, as [first, end).
@@ -73,7 +92,21 @@ ValueWords valueWordsOf(uintptr_t payload, size_t payload_bytes) {
 void traceCell(uintptr_t payload, size_t payload_bytes, Tracer& t) {
     auto* w = reinterpret_cast<uint64_t*>(payload);
     const ValueWords v = valueWordsOf(payload, payload_bytes);
-    for (size_t i = v.first; i < v.end; ++i) t.visit(w + i);
+    const bool traceDyn =
+        (t.purpose() == Tracer::Purpose::Full) && runtime::rtHasDynamicModules();
+    if (traceDyn) {
+        const auto* h = reinterpret_cast<const HeapObjectHeader*>(payload);
+        if (h->tag == static_cast<uint16_t>(Tag::Object) && h->flags == HeapKind::Function) {
+            const auto* fn = reinterpret_cast<const FunctionHeader*>(payload);
+            if (fn->code) {
+                runtime::rtTraceDynamicModuleToken(reinterpret_cast<const void*>(fn->code), t);
+            }
+        }
+    }
+    for (size_t i = v.first; i < v.end; ++i) {
+        if (traceDyn) traceDynamicModuleFromWord(w[i], t);
+        t.visit(w + i);
+    }
     if (v.shaped) traceShapePrototype(w, t);
 }
 
@@ -88,7 +121,21 @@ void traceCellRange(uintptr_t payload, size_t payload_bytes, size_t begin, size_
     const ValueWords v = valueWordsOf(payload, payload_bytes);
     const size_t first = std::max(v.first, begin / sizeof(Value));
     const size_t last = std::min(v.end, (end + sizeof(Value) - 1) / sizeof(Value));
-    for (size_t i = first; i < last; ++i) t.visit(w + i);
+    const bool traceDyn =
+        (t.purpose() == Tracer::Purpose::Full) && runtime::rtHasDynamicModules();
+    if (traceDyn && begin == 0) {
+        const auto* h = reinterpret_cast<const HeapObjectHeader*>(payload);
+        if (h->tag == static_cast<uint16_t>(Tag::Object) && h->flags == HeapKind::Function) {
+            const auto* fn = reinterpret_cast<const FunctionHeader*>(payload);
+            if (fn->code) {
+                runtime::rtTraceDynamicModuleToken(reinterpret_cast<const void*>(fn->code), t);
+            }
+        }
+    }
+    for (size_t i = first; i < last; ++i) {
+        if (traceDyn) traceDynamicModuleFromWord(w[i], t);
+        t.visit(w + i);
+    }
     if (v.shaped && begin == 0) traceShapePrototype(w, t);
 }
 

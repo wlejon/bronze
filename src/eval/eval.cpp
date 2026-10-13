@@ -69,6 +69,10 @@ static std::unordered_set<const BrassTieredProgram*>& retainedSet() {
     static auto* set = new std::unordered_set<const BrassTieredProgram*>();
     return *set;
 }
+static std::vector<std::weak_ptr<BrassTieredProgram>>& liveDynamicPrograms() {
+    static auto* list = new std::vector<std::weak_ptr<BrassTieredProgram>>();
+    return *list;
+}
 static std::mutex g_programsMutex;
 static std::mutex g_jitCompileMutex;
 
@@ -95,14 +99,30 @@ static std::condition_variable& sharedInFlightCv() {
 static std::atomic<uint64_t> s_evalCounter{0};
 static std::atomic<ExecutionTier> s_defaultTier{ExecutionTier::Auto};
 
-// At exit, no retained program may still be compiling in the background:
-// a compile worker would be running brass while the process tears brass's
-// statics down. Queued compiles are dropped, the ones in flight finish, and
-// the process's compile pool stops.
+// At exit, no retained or live dynamic program may still be compiling in the
+// background: a compile worker would be running brass while the process tears
+// brass's statics down. Queued compiles are dropped, the ones in flight finish,
+// and the process's compile pool stops.
 void stopRetainedBackgroundCompiles() {
     if (brass::runtime::process_exiting()) return;
     stopBackgroundCompiles();
     brass::runtime::CompilePool::shared().shutdown();
+}
+
+void ensureAtExitCompileStop() {
+    static std::once_flag atExitOnce;
+    std::call_once(atExitOnce, [] { std::atexit(&stopRetainedBackgroundCompiles); });
+}
+
+void trackDynamicProgram(const std::shared_ptr<BrassTieredProgram>& program) {
+    if (!program) return;
+    ensureAtExitCompileStop();
+    std::lock_guard<std::mutex> lock(g_programsMutex);
+    auto& dyn = liveDynamicPrograms();
+    if (dyn.size() >= 64) {
+        std::erase_if(dyn, [](const std::weak_ptr<BrassTieredProgram>& w) { return w.expired(); });
+    }
+    dyn.push_back(program);
 }
 
 // Warm lists (code_cache.h, brass/runtime/bytecode_warmer.hpp): a program
@@ -466,9 +486,16 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     config.entrySymbol = entrySym;
     config.hostGlobals = hostGlobals;
     config.emitDebugInfo = options.emitDebugInfo;
+    config.perThreadModuleData = share;
 
-    std::shared_ptr<BrassTieredProgram> program = BrassTieredEngine(config).compile(*ilModule, diags);
-    if (!program) return nullptr;
+    std::unique_ptr<BrassTieredProgram> compiled = BrassTieredEngine(config).compile(*ilModule, diags);
+    if (!compiled) return nullptr;
+    std::shared_ptr<BrassTieredProgram> program(
+        compiled.release(), [](BrassTieredProgram* p) {
+            if (!p) return;
+            if (!brass::runtime::process_exiting()) p->stopBackgroundCompilation();
+            delete p;
+        });
     timer.mark("codegen");
     // Bind the program's import table from the registry it was compiled
     // against, before anything runs. The entry rebinds on its own first
@@ -529,16 +556,23 @@ embed::CallResult runProgramAndCollectResult(
     embed::ModuleHandle* moduleHandleOut) {
 
     auto* programPtr = program.get();
-    retainProgram(std::move(program));
+    const bool hostManaged = (moduleHandleOut != nullptr) || programPtr->perThreadData();
+    const bool escapable = programPtr->hasEscapableCode();
 
-    // The bracket a host asked for: opened immediately before the entry, so
-    // the spans the entry registers carry the handle, and closed after the
-    // microtask checkpoint, so a later program's registrations do not. The
-    // handle is written even when the entry throws — a top level that got
-    // halfway registered its spans on the way, and they are still the host's
-    // to unload.
-    const embed::ModuleHandle handle = moduleHandleOut ? embed::beginModuleLoad() : 0;
-    if (moduleHandleOut) *moduleHandleOut = handle;
+    uint64_t epoch = 0;
+    if (moduleHandleOut) {
+        epoch = embed::beginModuleLoad();
+        *moduleHandleOut = epoch;
+        retainProgram(std::move(program));
+    } else if (hostManaged) {
+        retainProgram(std::move(program));
+    } else {
+        epoch = runtime::rtBeginModuleEpoch();
+        if (escapable) {
+            trackDynamicProgram(program);
+            runtime::rtRegisterDynamicModule(epoch, program, programPtr->codeTokens());
+        }
+    }
 
     // The entry's value — a module with top-level await returns its promise —
     // is held across the drain, which runs the whole rest of such a module
@@ -555,11 +589,25 @@ embed::CallResult runProgramAndCollectResult(
     }
     embed::Persistent entryVal{entryOut};
     embed::drainMicrotasks();
-    embed::endModuleLoad(handle);
+    if (moduleHandleOut) {
+        embed::endModuleLoad(epoch);
+    } else if (epoch != 0) {
+        runtime::rtEndModuleEpoch(epoch);
+    }
 
-    if (threw) return embed::CallResult{entryVal.get(), /*thrown=*/true};
+    auto cleanupUnescaping = [&]() {
+        if (!hostManaged && !escapable && epoch != 0) {
+            runtime::rtDropModuleEpoch(epoch);
+        }
+    };
+
+    if (threw) {
+        cleanupUnescaping();
+        return embed::CallResult{entryVal.get(), /*thrown=*/true};
+    }
 
     if (entryVal.get().isObject() && embed::isPromise(entryVal.get())) {
+        cleanupUnescaping();
         return embed::CallResult{entryVal.get(), /*thrown=*/false};
     }
 
@@ -571,6 +619,7 @@ embed::CallResult runProgramAndCollectResult(
         embed::deleteProperty(glob.value, resName);
     }
 
+    cleanupUnescaping();
     return embed::CallResult{result.get(), /*thrown=*/false};
 }
 
@@ -634,8 +683,7 @@ ExecutionTier defaultTier() {
 
 void retainProgram(std::shared_ptr<BrassTieredProgram> program) {
     if (!program) return;
-    static std::once_flag atExitOnce;
-    std::call_once(atExitOnce, [] { std::atexit(&stopRetainedBackgroundCompiles); });
+    ensureAtExitCompileStop();
     std::lock_guard<std::mutex> lock(g_programsMutex);
     // A program shared across threads is run, and retained, by each.
     if (!retainedSet().insert(program.get()).second) return;
@@ -647,8 +695,16 @@ void stopBackgroundCompiles() {
     // A short run's one store would otherwise leave with its trim unfinished,
     // and a cache filled by short runs would never be trimmed.
     cache::waitForTrims();
-    std::lock_guard<std::mutex> lock(g_programsMutex);
-    for (auto& program : retainedPrograms()) program->stopBackgroundCompilation();
+    std::vector<std::shared_ptr<BrassTieredProgram>> toStop;
+    {
+        std::lock_guard<std::mutex> lock(g_programsMutex);
+        toStop = retainedPrograms();
+        for (const auto& w : liveDynamicPrograms()) {
+            if (auto p = w.lock()) toStop.push_back(std::move(p));
+        }
+        liveDynamicPrograms().clear();
+    }
+    for (auto& program : toStop) program->stopBackgroundCompilation();
 }
 
 void clearRetainedPrograms() {
@@ -659,6 +715,7 @@ void clearRetainedPrograms() {
     std::lock_guard<std::mutex> lock(g_programsMutex);
     retainedSet().clear();
     retainedPrograms().clear();
+    liveDynamicPrograms().clear();
 }
 
 void captureThreadInputs(EvalOptions& options) {

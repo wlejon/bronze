@@ -677,3 +677,96 @@ TEST_CASE("unicode identifier evaluation") {
     CHECK(embed::toUtf8(r4.value) == "espresso");
 }
 
+TEST_CASE("dynamic eval and Function modules are reclaimed when unreachable and preserved when escaping") {
+    installDefaultDynamicHooks();
+    runtime::rtHeap().collect();
+    const size_t baseline = runtime::rtDynamicModuleCount();
+
+    // 1. Expression-only evals with no inner functions/classes/coroutines drop
+    //    their module epoch immediately upon return without waiting for GC.
+    for (int i = 0; i < 50; ++i) {
+        embed::CallResult r = evalScript("({ a: 10, b: 32 }).a + ({ a: 10, b: 32 }).b");
+        CHECK(!r.thrown);
+        CHECK(r.value.asNumber() == 42.0);
+    }
+    CHECK(runtime::rtDynamicModuleCount() == baseline);
+
+    // 2. An escaping closure keeps its dynamic module and module slots alive across
+    //    Full GCs until the closure itself becomes unreachable.
+    {
+        embed::CallResult r1 = evalScript(
+            "globalThis.__dynClosure = (function() {\n"
+            "  let count = 40;\n"
+            "  return function(step) { count += step; return count; };\n"
+            "})();\n"
+            "undefined;\n");
+        CHECK(!r1.thrown);
+        CHECK(runtime::rtDynamicModuleCount() == baseline + 1);
+
+        runtime::rtHeap().collect();
+        CHECK(runtime::rtDynamicModuleCount() == baseline + 1);
+
+        embed::CallResult r2 = evalScript("globalThis.__dynClosure(2);");
+        CHECK(!r2.thrown);
+        CHECK(r2.value.asNumber() == 42.0);
+
+        embed::CallResult r3 = evalScript("delete globalThis.__dynClosure; undefined;");
+        CHECK(!r3.thrown);
+        runtime::rtHeap().collect();
+        CHECK(runtime::rtDynamicModuleCount() == baseline);
+    }
+
+    // 3. A suspended generator coroutine keeps its dynamic module alive across
+    //    Full GCs even when only the generator object is reachable.
+    {
+        embed::CallResult r1 = evalScript(
+            "globalThis.__dynGen = (function*() {\n"
+            "  let base = 100;\n"
+            "  yield base + 1;\n"
+            "  yield base + 2;\n"
+            "})();\n"
+            "undefined;\n");
+        CHECK(!r1.thrown);
+        CHECK(runtime::rtDynamicModuleCount() == baseline + 1);
+
+        runtime::rtHeap().collect();
+        CHECK(runtime::rtDynamicModuleCount() == baseline + 1);
+
+        embed::CallResult step1 = evalScript("globalThis.__dynGen.next().value;");
+        CHECK(!step1.thrown);
+        CHECK(step1.value.asNumber() == 101.0);
+
+        runtime::rtHeap().collect();
+        CHECK(runtime::rtDynamicModuleCount() == baseline + 1);
+
+        embed::CallResult step2 = evalScript("globalThis.__dynGen.next().value;");
+        CHECK(!step2.thrown);
+        CHECK(step2.value.asNumber() == 102.0);
+
+        embed::CallResult cleanup = evalScript("delete globalThis.__dynGen; undefined;");
+        CHECK(!cleanup.thrown);
+        runtime::rtHeap().collect();
+        CHECK(runtime::rtDynamicModuleCount() == baseline);
+    }
+
+    // 4. Repeated transient new Function() and eval() calls with inner functions
+    //    are swept on Full GC instead of accumulating unboundedly.
+    {
+        embed::CallResult r = evalScript(
+            "let acc = 0;\n"
+            "for (let i = 0; i < 40; ++i) {\n"
+            "  let fn = new Function('a', 'b', 'return a + b + ' + i + ';');\n"
+            "  acc += fn(1, 2);\n"
+            "  acc += eval('(function(x) { return x * 2; })(' + i + ')');\n"
+            "}\n"
+            "acc;\n");
+        CHECK(!r.thrown);
+        // sum_{i=0..39} ((i + 3) + 2*i) = 3 * (39 * 40 / 2) + 40 * 3 = 2340 + 120 = 2460
+        CHECK(r.value.asNumber() == 2460.0);
+
+        runtime::rtHeap().collect();
+        CHECK(runtime::rtDynamicModuleCount() == baseline);
+    }
+}
+
+

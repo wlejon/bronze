@@ -8,6 +8,8 @@
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/exception.hpp>
 
+#include "runtime/rt_state.h"
+
 namespace bronze {
 
 FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Value env_record,
@@ -111,6 +113,7 @@ namespace {
 
 uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits, uint32_t argc,
                    const uint64_t* argv) {
+    runtime::ActiveDynamicTokenScope activeScope(reinterpret_cast<const void*>(code));
     uint64_t thrown = 0;
     try {
         if (auto* hook = s_enter_js_hook) {

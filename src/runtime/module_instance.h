@@ -9,5 +9,6 @@ namespace bronze::runtime {
 // run the module's entry, so its copy of the module's data is no longer the
 // pristine one a first run starts from.
 bool rtThreadHasModuleInstance(const uint64_t* slotCell);
+void rtTeardownThreadModuleInstances();
 
 }  // namespace bronze::runtime

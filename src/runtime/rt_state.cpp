@@ -13,10 +13,13 @@
 // compiled module runs against whichever thread's runtime ran its entry.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -28,9 +31,11 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/fn_source.h"
 #include "runtime/gc.h"
 #include "runtime/host_globals.h"
 #include "runtime/iterator.h"
+#include "runtime/module_instance.h"
 #include "runtime/module_registry.h"
 #include "runtime/native_registry.h"
 #include "runtime/object.h"
@@ -57,39 +62,52 @@ static thread_local std::vector<Shape*> g_rootShapes;
 // Swept after collections so dead prototype objects and their subgraphs can be collected.
 static thread_local std::vector<Shape*> g_userPrototypeShapes;
 
-// The heap and arena are LEAKED POINTERS behind lazy accessors, not
-// thread_local objects, for two reasons. Lazy: a thread that never touches
-// the runtime must not pay a heap reservation at thread start. Leaked: the
-// per-thread tables above and below (weak-ref tables, root shapes, key
-// headers) are destroyed at thread exit in an order nothing controls, and a
-// heap destructor running among them would be teardown-order roulette — the
-// process (or the thread, holding nothing) exits instead.
-//
-// The root-source registrations (the shape-root walk and the value-cache
-// walk below) happen HERE, per thread, because a
-// fresh heap needs its root sources before its first collection — and the
-// lambdas read the calling thread's thread_local tables, which is the right
-// table because a heap only ever collects on its own thread.
 static void registerThreadRootSources(Heap& heap);
+
+static const std::thread::id g_mainThreadId = std::this_thread::get_id();
+static thread_local Heap* g_threadHeap = nullptr;
+static thread_local NonMovingArena* g_threadArena = nullptr;
+
+static void releaseThreadDynamicModules();
+
+namespace {
+
+struct ThreadRuntimeTeardown {
+    bool armed = false;
+    ~ThreadRuntimeTeardown() {
+        if (!armed || std::this_thread::get_id() == g_mainThreadId) return;
+        rtTeardownThreadState();
+    }
+};
+
+thread_local ThreadRuntimeTeardown g_threadTeardown;
+
+}  // namespace
+
+void rtArmThreadTeardown() {
+    g_threadTeardown.armed = true;
+}
 
 // The thread's heap, bound as the thread's heap for generated code and for
 // brass's runtime (Heap::bind_thread) the moment it exists, so that every
 // brass interpreter on the thread registers its frames with it and allocates
 // on it.
 Heap& rtHeap() {
-    static thread_local Heap* heap = nullptr;
-    if (!heap) {
-        heap = new Heap();
-        heap->bind_thread();
-        registerThreadRootSources(*heap);
+    if (!g_threadHeap) {
+        rtArmThreadTeardown();
+        g_threadHeap = new Heap();
+        g_threadHeap->bind_thread();
+        registerThreadRootSources(*g_threadHeap);
     }
-    return *heap;
+    return *g_threadHeap;
 }
 
 NonMovingArena& rtArena() {
-    static thread_local NonMovingArena* arena = nullptr;
-    if (!arena) arena = new NonMovingArena();
-    return *arena;
+    if (!g_threadArena) {
+        rtArmThreadTeardown();
+        g_threadArena = new NonMovingArena();
+    }
+    return *g_threadArena;
 }
 
 Shape* rtNewRootShape(Value proto) {
@@ -193,74 +211,13 @@ static_assert(sizeof(FunctionHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OB
 static_assert(sizeof(TypedArrayHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 static_assert(sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI_OBJ_MIN_PAYLOAD);
 
-// ---- Property keys ----------------------------------------------------------
-
-static std::mutex g_keyMutex;
-static std::deque<std::string> g_keyStrings;
-static std::deque<KeyInfo> g_keyInfos;
-static std::unordered_map<std::string, uint32_t> g_keyIndex;
-static const std::string g_emptyKey;
-static const KeyInfo g_emptyKeyInfo{};
-
-static thread_local std::vector<StringHeader*> g_keyHeaders;
-
-const std::string& rtKeyString(uint32_t index) {
-    std::lock_guard<std::mutex> lock(g_keyMutex);
-    return index < g_keyStrings.size() ? g_keyStrings[index] : g_emptyKey;
-}
-
-StringHeader* rtKeyHeader(uint32_t index) {
-    if (index >= g_keyHeaders.size()) {
-        g_keyHeaders.resize(index + 1, nullptr);
-    }
-    StringHeader* hdr = g_keyHeaders[index];
-    if (!hdr) {
-        bool valid = false;
-        std::string str;
-        {
-            std::lock_guard<std::mutex> lock(g_keyMutex);
-            if (index < g_keyStrings.size()) {
-                str = g_keyStrings[index];
-                valid = true;
-            }
-        }
-        if (valid) {
-            hdr = StringHeader::createFromUTF8InArena(rtArena(), std::string_view(str));
-            g_keyHeaders[index] = hdr;
-        }
-    }
-    return hdr;
-}
-
-static thread_local std::vector<const KeyInfo*> g_threadKeyInfos;
-
-const KeyInfo& rtKeyInfo(uint32_t index) {
-    if (index < g_threadKeyInfos.size()) {
-        const KeyInfo* cached = g_threadKeyInfos[index];
-        if (cached != nullptr) return *cached;
-    }
-    std::lock_guard<std::mutex> lock(g_keyMutex);
-    if (index >= g_keyInfos.size()) return g_emptyKeyInfo;
-    const KeyInfo* ptr = &g_keyInfos[index];
-    if (index >= g_threadKeyInfos.size()) {
-        g_threadKeyInfos.resize(index + 1, nullptr);
-    }
-    g_threadKeyInfos[index] = ptr;
-    return *ptr;
-}
-
 // ---- Caches with heap Values ------------------------------------------------
 
-// The one function object for a top-level function declaration. A declaration
-// is evaluated once, so every mention of its name must yield the SAME object —
-// otherwise `Foo.prototype.m =...` would decorate one object and `new Foo()`
-// would read another. Keyed on the code pointer, which is 1:1 with the
-// declaration; closures never come here, since their identity is per-evaluation
-// and they carry an environment. The map is an index into the vector rather
-// than holding Values itself so the ROOT SOURCE below stays one flat walk;
-// nothing iterates the map, so its ordering never reaches output.
-static thread_local std::vector<std::pair<bronze_fn_code, Value>> g_functionSingletons;
-static thread_local std::unordered_map<void*, size_t> g_functionSingletonIndex;
+struct SingletonEntry {
+    bronze_fn_code code{nullptr};
+    Value value{Value::fromUndefined()};
+    uint64_t epoch{0};
+};
 
 // One {code, value} entry of a module's fn-singleton table. The layout is the
 // ABI's, because generated code reads the two words inline; this declaration
@@ -277,90 +234,283 @@ static_assert(offsetof(FnSingletonSlot, value) == BRONZE_ABI_FNSLOT_VALUE_OFFSET
 static_assert(sizeof(Value) == sizeof(uint64_t),
               "module cache spans are registered as raw u64 cells");
 
-// The global cache and the fn-singleton slots are arrays in each MODULE's own
-// data, and a module hands the runtime its two spans at init. The runtime holds
-// only the spans, because the only thing it needs from them is to trace the
-// Values they hold: the collector moves objects, so a cell holding pre-move
-// bits after a collection is the whole failure these roots exist to prevent.
-//
-// The epoch is what makes a span removable: a host brackets a module's entry
-// with rtBeginModuleEpoch, every span registered inside the bracket carries
-// that epoch, and rtDropModuleEpoch takes them back out. Epoch 0 marks a span
-// registered outside any bracket — a linked program's — and those are
-// permanent. Removal is safe ONLY because the unload contract (embed.h) keeps
-// the module's image mapped: a dropped span stops being a ROOT, it does not
-// start being dangling memory.
 template <typename Cell>
 struct ModuleSpan {
     Cell* cells;
     uint64_t count;
     uint64_t epoch;
 };
-static thread_local std::vector<ModuleSpan<Value>> g_moduleValueCells;
-static thread_local std::vector<ModuleSpan<FnSingletonSlot>> g_moduleFnSlots;
 
-// The provided-global CACHE spans: one per module, registered by the module's
-// first cache miss (bronze_global_get_cached below) rather than at module init,
-// which is why they are their own list and not entries in g_moduleValueCells —
-// the runtime has to be able to put the hole back into every one of them when
-// a host re-registers a global, and a walk of the value-cell spans would
-// overwrite template objects and environment cells it has no business
-// touching. Traced by the same root source; dropped by the same epoch.
-static thread_local std::vector<ModuleSpan<Value>> g_globalCacheSpans;
+struct DynamicModule {
+    uint64_t epoch{0};
+    std::shared_ptr<void> owner;
+    std::vector<const void*> codeTokens;
+    std::atomic<bool> marked{false};
+};
 
-// Every cached answer, in every module on this thread, becomes the hole
-// again. The next read of each name re-resolves through the ladder and
-// refills; a cell that was never filled is unchanged. Cheap because the
-// caller is a host REGISTERING a global — a handful of times at startup and
-// on a realm swap — and never a read.
+struct ThreadModuleState {
+    std::vector<SingletonEntry> functionSingletons;
+    std::unordered_map<void*, size_t> functionSingletonIndex;
+    std::vector<ModuleSpan<Value>> moduleValueCells;
+    std::vector<ModuleSpan<FnSingletonSlot>> moduleFnSlots;
+    std::vector<ModuleSpan<Value>> globalCacheSpans;
+    uint64_t moduleEpochCounter = 0;
+    uint64_t currentModuleEpoch = 0;
+    std::vector<uint64_t> activeModuleEpochs;
+    std::vector<std::unique_ptr<DynamicModule>> dynamicModules;
+    std::unordered_map<const void*, DynamicModule*> codeToModule;
+    std::vector<const void*> activeTokens;
+};
+
+static thread_local ThreadModuleState* g_threadModules = nullptr;
+static std::atomic<uint32_t> g_totalDynamicModules{0};
+static std::mutex g_heapStateMu;
+static std::unordered_map<const brass::gc::Heap*, ThreadModuleState*> g_heapToModuleState;
+static std::atomic<uint64_t> g_heapStateGeneration{1};
+
+static ThreadModuleState& threadModules() {
+    if (!g_threadModules) {
+        rtArmThreadTeardown();
+        g_threadModules = new ThreadModuleState();
+    }
+    return *g_threadModules;
+}
+
+static ThreadModuleState* moduleStateForGcHeap(const brass::gc::Heap& gcHeap) noexcept {
+    if (g_threadHeap && &g_threadHeap->gc() == &gcHeap && g_threadModules) {
+        return g_threadModules;
+    }
+    static thread_local const brass::gc::Heap* t_cachedHeap = nullptr;
+    static thread_local ThreadModuleState* t_cachedState = nullptr;
+    static thread_local uint64_t t_cachedGen = 0;
+    const uint64_t gen = g_heapStateGeneration.load(std::memory_order_acquire);
+    if (t_cachedGen == gen && t_cachedHeap == &gcHeap) {
+        return t_cachedState;
+    }
+    std::lock_guard<std::mutex> lock(g_heapStateMu);
+    auto it = g_heapToModuleState.find(&gcHeap);
+    t_cachedHeap = &gcHeap;
+    t_cachedState = (it != g_heapToModuleState.end()) ? it->second : nullptr;
+    t_cachedGen = g_heapStateGeneration.load(std::memory_order_relaxed);
+    return t_cachedState;
+}
+
 void rtInvalidateGlobalCaches() {
-    for (const auto& span : g_globalCacheSpans) {
+    if (!g_threadModules) return;
+    for (const auto& span : g_threadModules->globalCacheSpans) {
         for (uint64_t i = 0; i < span.count; ++i) span.cells[i] = Value::fromHole();
     }
 }
 
-static thread_local uint64_t g_moduleEpochCounter = 0;
-static thread_local uint64_t g_currentModuleEpoch = 0;
-
 uint64_t rtBeginModuleEpoch() {
-    g_currentModuleEpoch = ++g_moduleEpochCounter;
-    return g_currentModuleEpoch;
+    ThreadModuleState& s = threadModules();
+    const uint64_t epoch = ++s.moduleEpochCounter;
+    s.activeModuleEpochs.push_back(epoch);
+    s.currentModuleEpoch = epoch;
+    return epoch;
 }
 
 void rtEndModuleEpoch(uint64_t epoch) {
-    if (epoch != 0 && g_currentModuleEpoch == epoch) g_currentModuleEpoch = 0;
+    if (epoch == 0 || !g_threadModules) return;
+    ThreadModuleState& s = *g_threadModules;
+    if (auto it = std::find(s.activeModuleEpochs.rbegin(), s.activeModuleEpochs.rend(), epoch);
+        it != s.activeModuleEpochs.rend()) {
+        s.activeModuleEpochs.erase(std::next(it).base());
+    }
+    s.currentModuleEpoch = s.activeModuleEpochs.empty() ? 0 : s.activeModuleEpochs.back();
 }
 
-void rtDropModuleEpoch(uint64_t epoch) {
-    if (epoch == 0) return;
-    // The function singletons this module interned die with it. Their code
-    // pointers are 1:1 with declarations in the module's image, and every
-    // intern a module performs fills a cell in its own slot span — so the
-    // spans being dropped name exactly the by-code-pointer map entries whose
-    // last mentioner is going away. The runtime's own interning (null slot
-    // cell) lands in no span and is untouched.
-    for (const auto& span : g_moduleFnSlots) {
+uint64_t rtCurrentModuleEpoch() noexcept {
+    return g_threadModules ? g_threadModules->currentModuleEpoch : 0;
+}
+
+static void dropModuleSpansAndSingletons(ThreadModuleState& s, uint64_t epoch) {
+    for (const auto& span : s.moduleFnSlots) {
         if (span.epoch != epoch) continue;
         for (uint64_t i = 0; i < span.count; ++i) {
             if (span.cells[i].code) {
-                g_functionSingletonIndex.erase(reinterpret_cast<void*>(span.cells[i].code));
+                s.functionSingletonIndex.erase(reinterpret_cast<void*>(span.cells[i].code));
             }
         }
     }
-    std::erase_if(g_functionSingletons, [](const std::pair<bronze_fn_code, Value>& entry) {
-        return !g_functionSingletonIndex.contains(reinterpret_cast<void*>(entry.first));
-    });
-    // The erase shifted vector positions; the map's indices must follow.
-    for (size_t i = 0; i < g_functionSingletons.size(); ++i) {
-        g_functionSingletonIndex[reinterpret_cast<void*>(g_functionSingletons[i].first)] = i;
+    for (const auto& entry : s.functionSingletons) {
+        if (entry.epoch == epoch) {
+            s.functionSingletonIndex.erase(reinterpret_cast<void*>(entry.code));
+        }
     }
-    std::erase_if(g_moduleValueCells,
-                  [epoch](const ModuleSpan<Value>& s) { return s.epoch == epoch; });
-    std::erase_if(g_moduleFnSlots,
-                  [epoch](const ModuleSpan<FnSingletonSlot>& s) { return s.epoch == epoch; });
-    std::erase_if(g_globalCacheSpans,
-                  [epoch](const ModuleSpan<Value>& s) { return s.epoch == epoch; });
-    if (g_currentModuleEpoch == epoch) g_currentModuleEpoch = 0;
+    std::erase_if(s.functionSingletons, [epoch, &s](const SingletonEntry& entry) {
+        return entry.epoch == epoch ||
+               !s.functionSingletonIndex.contains(reinterpret_cast<void*>(entry.code));
+    });
+    for (size_t i = 0; i < s.functionSingletons.size(); ++i) {
+        s.functionSingletonIndex[reinterpret_cast<void*>(s.functionSingletons[i].code)] = i;
+    }
+    std::erase_if(s.moduleValueCells,
+                  [epoch](const ModuleSpan<Value>& sp) { return sp.epoch == epoch; });
+    std::erase_if(s.moduleFnSlots,
+                  [epoch](const ModuleSpan<FnSingletonSlot>& sp) { return sp.epoch == epoch; });
+    std::erase_if(s.globalCacheSpans,
+                  [epoch](const ModuleSpan<Value>& sp) { return sp.epoch == epoch; });
+    rtDropModuleFnSources(epoch);
+}
+
+void rtDropModuleEpoch(uint64_t epoch) {
+    if (epoch == 0 || !g_threadModules) return;
+    ThreadModuleState& s = *g_threadModules;
+    dropModuleSpansAndSingletons(s, epoch);
+    std::erase_if(s.dynamicModules, [epoch, &s](const std::unique_ptr<DynamicModule>& mod) {
+        if (mod->epoch != epoch) return false;
+        for (const void* tok : mod->codeTokens) s.codeToModule.erase(tok);
+        g_totalDynamicModules.fetch_sub(1, std::memory_order_relaxed);
+        return true;
+    });
+    rtEndModuleEpoch(epoch);
+}
+
+void rtRegisterDynamicModule(uint64_t epoch, std::shared_ptr<void> owner,
+                             const std::vector<const void*>& codeTokens) {
+    if (epoch == 0 || !owner) return;
+    ThreadModuleState& s = threadModules();
+    auto mod = std::make_unique<DynamicModule>();
+    mod->epoch = epoch;
+    mod->owner = std::move(owner);
+    mod->codeTokens = codeTokens;
+    DynamicModule* raw = mod.get();
+    for (const void* tok : raw->codeTokens) {
+        if (tok) s.codeToModule[tok] = raw;
+    }
+    s.dynamicModules.push_back(std::move(mod));
+    g_totalDynamicModules.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool rtHasDynamicModules() noexcept {
+    return g_totalDynamicModules.load(std::memory_order_relaxed) != 0;
+}
+
+size_t rtDynamicModuleCount() noexcept {
+    return g_threadModules ? g_threadModules->dynamicModules.size() : 0;
+}
+
+void rtPushActiveDynamicToken(const void* token) noexcept {
+    if (!g_threadModules || !token) return;
+    g_threadModules->activeTokens.push_back(token);
+}
+
+void rtPopActiveDynamicToken() noexcept {
+    if (!g_threadModules || g_threadModules->activeTokens.empty()) return;
+    g_threadModules->activeTokens.pop_back();
+}
+
+static void markDynamicModuleSpans(ThreadModuleState& s, DynamicModule* mod, brass::gc::Tracer& t) {
+    if (!mod || mod->marked.load(std::memory_order_relaxed)) return;
+    if (mod->marked.exchange(true, std::memory_order_acq_rel)) return;
+    const uint64_t epoch = mod->epoch;
+    for (auto& entry : s.functionSingletons) {
+        if (entry.epoch == epoch) {
+            t.visit(reinterpret_cast<uint64_t*>(&entry.value));
+        }
+    }
+    for (const auto& span : s.moduleFnSlots) {
+        if (span.epoch != epoch) continue;
+        for (uint64_t i = 0; i < span.count; ++i) {
+            if (span.cells[i].code) {
+                t.visit(reinterpret_cast<uint64_t*>(&span.cells[i].value));
+            }
+        }
+    }
+    for (const auto& span : s.moduleValueCells) {
+        if (span.epoch != epoch) continue;
+        for (uint64_t i = 0; i < span.count; ++i) {
+            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+        }
+    }
+    for (const auto& span : s.globalCacheSpans) {
+        if (span.epoch != epoch) continue;
+        for (uint64_t i = 0; i < span.count; ++i) {
+            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+        }
+    }
+}
+
+void rtTraceDynamicModuleToken(const void* token, brass::gc::Tracer& t) {
+    if (!token || t.purpose() != brass::gc::Tracer::Purpose::Full) return;
+    ThreadModuleState* s = moduleStateForGcHeap(t.heap());
+    if (!s || s->dynamicModules.empty()) return;
+    auto it = s->codeToModule.find(token);
+    if (it != s->codeToModule.end()) {
+        markDynamicModuleSpans(*s, it->second, t);
+    }
+}
+
+static bool isEpochActiveOnStack(const ThreadModuleState& s, uint64_t epoch) noexcept {
+    if (epoch == 0) return true;
+    for (uint64_t active : s.activeModuleEpochs) {
+        if (active == epoch) return true;
+    }
+    return false;
+}
+
+static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
+    if (!g_threadModules) return;
+    ThreadModuleState& s = *g_threadModules;
+    const bool full = (t.purpose() == brass::gc::Tracer::Purpose::Full) && !s.dynamicModules.empty();
+    if (full) {
+        for (const auto& mod : s.dynamicModules) {
+            mod->marked.store(false, std::memory_order_relaxed);
+        }
+        for (const auto& mod : s.dynamicModules) {
+            if (isEpochActiveOnStack(s, mod->epoch)) {
+                markDynamicModuleSpans(s, mod.get(), t);
+            }
+        }
+        for (const void* tok : s.activeTokens) {
+            if (auto it = s.codeToModule.find(tok); it != s.codeToModule.end()) {
+                markDynamicModuleSpans(s, it->second, t);
+            }
+        }
+    }
+    for (auto& entry : s.functionSingletons) {
+        if (!full || isEpochActiveOnStack(s, entry.epoch)) {
+            t.visit(reinterpret_cast<uint64_t*>(&entry.value));
+        }
+    }
+    for (const auto& span : s.moduleFnSlots) {
+        if (full && !isEpochActiveOnStack(s, span.epoch)) continue;
+        for (uint64_t i = 0; i < span.count; ++i) {
+            if (span.cells[i].code) {
+                t.visit(reinterpret_cast<uint64_t*>(&span.cells[i].value));
+            }
+        }
+    }
+    for (const auto& span : s.moduleValueCells) {
+        if (full && !isEpochActiveOnStack(s, span.epoch)) continue;
+        for (uint64_t i = 0; i < span.count; ++i) {
+            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+        }
+    }
+    for (const auto& span : s.globalCacheSpans) {
+        if (full && !isEpochActiveOnStack(s, span.epoch)) continue;
+        for (uint64_t i = 0; i < span.count; ++i) {
+            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+        }
+    }
+}
+
+static void sweepDynamicModules() {
+    if (!g_threadHeap || !g_threadHeap->collecting_full() || !g_threadModules) return;
+    ThreadModuleState& s = *g_threadModules;
+    if (s.dynamicModules.empty()) return;
+    std::vector<std::shared_ptr<void>> retiredOwners;
+    std::erase_if(s.dynamicModules, [&s, &retiredOwners](const std::unique_ptr<DynamicModule>& mod) {
+        if (mod->marked.load(std::memory_order_relaxed) || isEpochActiveOnStack(s, mod->epoch)) {
+            return false;
+        }
+        for (const void* tok : mod->codeTokens) s.codeToModule.erase(tok);
+        dropModuleSpansAndSingletons(s, mod->epoch);
+        g_totalDynamicModules.fetch_sub(1, std::memory_order_relaxed);
+        retiredOwners.push_back(std::move(mod->owner));
+        return true;
+    });
 }
 
 // Globals an embedding host registered (host_globals.h). A vector of pairs
@@ -369,50 +519,27 @@ void rtDropModuleEpoch(uint64_t epoch) {
 // builtin ladder did not answer.
 static thread_local std::vector<std::pair<std::string, Value>> g_hostGlobals;
 
-// All of these hold heap Values, so all of them are root SOURCES rather than
-// fixed slots: the objects live in the moving heap and cached raw bits would go
-// stale at the first collection.
-//
-// The two module-span walks are what make a compiled module's own tables real
-// roots — its global cache, its module-environment cell, and its
-// function-singleton slots. Their absence would be invisible until a collection
-// ran with a closure alive over one, which is exactly what oracle-gc-stress
-// forces at every allocation. A fn slot whose code word is null was never
-// filled, and its value word is whatever the module's .bss started as rather
-// than a Value — so the code word, not the value, is what says an entry is
-// worth tracing.
-// Both root sources for a fresh thread's heap, registered from rtHeap()'s
-// first-use path. Each lambda reads thread_local tables, and reads the RIGHT
-// thread's: a heap only ever collects on the thread that owns it.
 static void registerThreadRootSources(Heap& heap) {
+    {
+        ThreadModuleState& s = threadModules();
+        std::lock_guard<std::mutex> lock(g_heapStateMu);
+        g_heapToModuleState[&heap.gc()] = &s;
+        g_heapStateGeneration.fetch_add(1, std::memory_order_release);
+    }
     heap.add_root_source([](const Heap::RootVisitor& visit) {
         for (Shape* root : g_rootShapes) visit(root->prototype);
     });
     heap.add_tracer_source(visitUserPrototypeShapes);
+    heap.add_tracer_source(visitModuleAndCacheRoots);
     heap.add_post_collection_hook([]() {
         sweepUserPrototypeShapes();
+        sweepDynamicModules();
     });
     heap.add_root_source([](const Heap::RootVisitor& visit) {
-        for (auto& entry : g_functionSingletons) visit(entry.second);
-        for (const auto& span : g_moduleFnSlots) {
-            for (uint64_t i = 0; i < span.count; ++i) {
-                if (span.cells[i].code) visit(span.cells[i].value);
-            }
-        }
-        for (const auto& span : g_moduleValueCells) {
-            for (uint64_t i = 0; i < span.count; ++i) visit(span.cells[i]);
-        }
-        for (const auto& span : g_globalCacheSpans) {
-            for (uint64_t i = 0; i < span.count; ++i) visit(span.cells[i]);
-        }
         for (auto& entry : g_hostGlobals) visit(entry.second);
         rtVisitArrayMethodRoots(visit);
         rtVisitRealmRoots(visit);
     });
-    // brass's own roots on this thread — its interpreters' frames, the native
-    // frames under a re-entered interpreter, suspended coroutine frames — are
-    // visited by the collector itself: every interpreter registers its frames
-    // on the thread's current heap, which is this one (Heap::bind_thread).
 }
 
 void rtRegisterHostGlobal(const std::string& name, Value value) {
@@ -515,55 +642,41 @@ extern "C" {
 
 void bronze_register_value_cells(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
-    g_moduleValueCells.push_back(
-        {reinterpret_cast<Value*>(cells), count, g_currentModuleEpoch});
+    ThreadModuleState& s = threadModules();
+    s.moduleValueCells.push_back(
+        {reinterpret_cast<Value*>(cells), count, s.currentModuleEpoch});
 }
 
 void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
-    g_moduleFnSlots.push_back(
-        {reinterpret_cast<FnSingletonSlot*>(cells), count, g_currentModuleEpoch});
+    ThreadModuleState& s = threadModules();
+    s.moduleFnSlots.push_back(
+        {reinterpret_cast<FnSingletonSlot*>(cells), count, s.currentModuleEpoch});
 }
 
-// The env words of the module's method-call sites, as ordinary value cells —
-// one single-cell span each, because the words sit one per site at the IC
-// table's stride and the span walk wants contiguous cells. TWO cells per site
-// since the site grew a second way: word BRONZE_ABI_METHOD_IC_ENV_WORD is way
-// 0's env argument and word BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD is way 1's
-// (the site contract in bronze_abi.h). A module whose sites never fill way 1
-// leaves that word 0 — a double, which the forwarding walk ignores — so
-// registering it unconditionally costs one dead visit per site and no
-// correctness anywhere. The count is the module's method-site count
-// (hundreds, not millions), paid once at init; the per-collection cost is one
-// visit per cell, the same bill the global cache already pays.
 void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteIndexes,
                                      uint64_t count) {
     if (!icTable || !siteIndexes || count == 0) return;
+    ThreadModuleState& s = threadModules();
     constexpr uint64_t kSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
     for (uint64_t k = 0; k < count; ++k) {
         uint64_t* site = icTable + siteIndexes[k] * kSiteWords;
-        g_moduleValueCells.push_back(
+        s.moduleValueCells.push_back(
             {reinterpret_cast<Value*>(site + BRONZE_ABI_METHOD_IC_ENV_WORD), 1,
-             g_currentModuleEpoch});
-        g_moduleValueCells.push_back(
+             s.currentModuleEpoch});
+        s.moduleValueCells.push_back(
             {reinterpret_cast<Value*>(site + BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD), 1,
-             g_currentModuleEpoch});
+             s.currentModuleEpoch});
     }
 }
 
 }  // extern "C"
 
-// Default ON: the seam exists to turn the mechanism OFF for an A/B, and a
-// thread that never ran heap.cpp's env scan (there is none, but the default
-// should not depend on that) behaves like the shipped configuration.
 static thread_local bool g_envMethodIcEnabled = true;
 
 void rtSetEnvMethodIcEnabled(bool enabled) { g_envMethodIcEnabled = enabled; }
 bool rtEnvMethodIcEnabled() noexcept { return g_envMethodIcEnabled; }
 
-// Default ON for the reason the seam above is: the flag exists to turn the
-// exotic-receiver latch OFF for an A/B, and a thread that never ran heap.cpp's
-// env scan should behave like the shipped configuration.
 static thread_local bool g_exoticMethodIcEnabled = true;
 
 void rtSetExoticMethodIcEnabled(bool enabled) { g_exoticMethodIcEnabled = enabled; }
@@ -575,29 +688,23 @@ void rtSetPolyMethodIcEnabled(bool enabled) { g_polyMethodIcEnabled = enabled; }
 bool rtPolyMethodIcEnabled() noexcept { return g_polyMethodIcEnabled; }
 
 // ---- the interned-native table, as the memo in front of it sees it --------
-//
-// `runtime/native_fn_memo.cpp` keeps a direct-mapped (code -> INDEX) table so
-// a repeat interning costs a hash and two loads instead of an unordered_map
-// probe and a cross-module call. It stores an index and never a Value, which
-// is the whole reason these two functions exist rather than the memo reaching
-// into the vector: the index is meaningless without the vector's own
-// bounds-and-identity check, and that check is also what makes the memo
-// self-healing across a module UNLOAD, which erases entries and renumbers
-// everything after them.
 
 uint32_t rtFunctionSingletonIndexOf(bronze_fn_code code) {
-    if (auto it = g_functionSingletonIndex.find(reinterpret_cast<void*>(code));
-        it != g_functionSingletonIndex.end()) {
+    if (!g_threadModules) return UINT32_MAX;
+    const auto& idxMap = g_threadModules->functionSingletonIndex;
+    if (auto it = idxMap.find(reinterpret_cast<void*>(code)); it != idxMap.end()) {
         return static_cast<uint32_t>(it->second);
     }
     return UINT32_MAX;
 }
 
 Value rtFunctionSingletonAt(uint32_t index, bronze_fn_code expect) {
-    if (index >= g_functionSingletons.size()) return Value::fromUndefined();
-    const auto& entry = g_functionSingletons[index];
-    if (entry.first != expect) return Value::fromUndefined();
-    return entry.second;
+    if (!g_threadModules || index >= g_threadModules->functionSingletons.size()) {
+        return Value::fromUndefined();
+    }
+    const auto& entry = g_threadModules->functionSingletons[index];
+    if (entry.code != expect) return Value::fromUndefined();
+    return entry.value;
 }
 
 static std::mutex g_nativeDisplayNamesMu;
@@ -647,13 +754,11 @@ extern "C" {
 uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t length,
                                    uint32_t nameKey, uint32_t fnFlags, uint64_t* slotCell) {
     recordHelperCall("bronze_function_singleton");
-    // The by-code-pointer map is the authority; it replaced a linear scan
-    // that every native builtin ever interned lengthened for every mention of
-    // every top-level declaration.
+    ThreadModuleState& s = threadModules();
     Value result = Value::fromUndefined();
-    if (auto it = g_functionSingletonIndex.find(reinterpret_cast<void*>(code));
-        it != g_functionSingletonIndex.end()) {
-        result = g_functionSingletons[it->second].second;
+    if (auto it = s.functionSingletonIndex.find(reinterpret_cast<void*>(code));
+        it != s.functionSingletonIndex.end()) {
+        result = s.functionSingletons[it->second].value;
     } else {
         FunctionHeader* fn =
             FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity, fnFlags);
@@ -661,33 +766,27 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
         fn->header.flags = HeapKind::Function;
         rtSetFunctionNameAndLength(fn, nameKey, length);
         result = Value::fromObject(fn);
-        g_functionSingletons.emplace_back(code, result);
-        g_functionSingletonIndex.emplace(reinterpret_cast<void*>(code),
-                                         g_functionSingletons.size() - 1);
+        uint64_t fnEpoch = 0;
+        if ((fnFlags & BRONZE_ABI_FN_FLAG_NATIVE) == 0) {
+            if (auto modIt = s.codeToModule.find(reinterpret_cast<const void*>(code));
+                modIt != s.codeToModule.end()) {
+                fnEpoch = modIt->second->epoch;
+            } else {
+                fnEpoch = s.currentModuleEpoch;
+            }
+        }
+        s.functionSingletons.push_back(SingletonEntry{code, result, fnEpoch});
+        s.functionSingletonIndex.emplace(reinterpret_cast<void*>(code),
+                                         s.functionSingletons.size() - 1);
     }
-    // Fill the calling module's slot so the NEXT mention at this slot needs no
-    // call at all. The runtime's own native interning passes null: it has no
-    // module, and the by-code-pointer map above already answered.
     if (slotCell) {
         *reinterpret_cast<FnSingletonSlot*>(slotCell) = FnSingletonSlot{code, result};
     }
     return result.rawBits();
 }
 
-// An unknown name never reaches here. Lowering emits this instruction only for
-// a name on its provided-globals list — the closed builtin set, plus whatever a
-// `--host-globals` manifest admitted; anything else becomes `name.resolve`,
-// which asks the global object and raises the JS ReferenceError on a miss. A
-// name in NEITHER the builtin ladder nor the host registry is therefore still a
-// drift between lowering's list and this one — an internal tripwire, not a
-// program error — and a manifest name the host never registered is the same
-// drift with the host on one side of it.
 }  // extern "C"
 
-// The builtin half of global resolution, name in and value out, with no
-// cache: `bronze_global_get` fills the calling module's cell, and `rtGlobalThisObject`
-// walks this same ladder to give the global object real properties — two
-// callers, one list, so `Math` and `globalThis.Math` cannot drift.
 bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
     if (keyStr == "Math") {
         out = rtMathObject();
@@ -737,10 +836,6 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
         out = numeric;
     } else if (Value moduleIntrinsic = rtModuleRegistryIntrinsic(keyStr);
                moduleIntrinsic.isObject()) {
-        // The two module-registry intrinsics the linker's generated source
-        // calls (module_registry.h). On the ladder rather than in the host
-        // registry because they are the compiler's own, not a host's — and
-        // last, so no name a program can reasonably write is shadowed by one.
         out = moduleIntrinsic;
     } else {
         return false;
@@ -758,10 +853,6 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     if (keyStr == "globalThis") {
         return rtGlobalThisObject().rawBits();
     }
-    // Host-registered globals take precedence for platform/host APIs (e.g. `performance`,
-    // where a host provides its own clock bound to the engine's virtual / rAF frame seam
-    // rather than the standalone runtime's default steady_clock namespace). Returned
-    // directly rather than through `resolved`, which the cache below would pin.
     if (keyStr == "performance") {
         if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
             return host.rawBits();
@@ -769,32 +860,15 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     }
     Value resolved = Value::fromUndefined();
     if (!rtResolveBuiltinGlobal(keyStr, resolved)) {
-        // AFTER every language builtin, so a host cannot swap out `Math` under
-        // code that was compiled against it — and BEFORE the fatal, because a
-        // host-registered name is a legitimate answer. Returned directly
-        // rather than through `resolved`, which the cache below would pin:
-        // rtRegisterHostGlobal replaces on re-registration, and a cached
-        // first answer would keep serving the old value. The registry scan
-        // per read is the price, paid only by host-global reads.
         if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
             return host.rawBits();
         }
-        // A property of the global object IS a global binding (9.1.1.4.1
-        // resolves an unqualified name against the global environment, whose
-        // object record is `globalThis`). A program that assigned
-        // `globalThis.navigator = {...}` created the global the next free
-        // `navigator` reads — so the object is consulted before the fatal,
-        // and never cached, because the program can assign again.
         if (Value fromGlobalObject = Value::fromUndefined();
             rtGlobalThisOwnLookup(keyStr, fromGlobalObject)) {
             return fromGlobalObject.rawBits();
         }
         fatal(("internal: no global named " + keyStr).c_str());
     }
-    // Only a BUILTIN reaches here, and only a builtin is ever written back: the
-    // two fallthroughs above returned directly, which is what keeps their
-    // scan-per-read semantics. The cell belongs to the calling module; the
-    // runtime's own callers pass none.
     if (cacheCell) *cacheCell = resolved.rawBits();
     return resolved.rawBits();
 }
@@ -802,29 +876,28 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
 uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t count,
                                   uint32_t slot) {
     recordPropCall("bronze_global_get_cached", keyIndex, nullptr);
-    // The span, registered on first contact with this module's array. A
-    // linear probe: a thread holds a handful of modules, and this runs once
-    // per (module, name) — the fast path in generated code never gets here
-    // again for a name that filled.
+    ThreadModuleState& s = threadModules();
     auto* valueCells = reinterpret_cast<Value*>(cells);
     if (cells && count != 0 && slot < count) {
         bool known = false;
-        for (const auto& span : g_globalCacheSpans) {
+        for (const auto& span : s.globalCacheSpans) {
             if (span.cells == valueCells) {
                 known = true;
                 break;
             }
         }
-        if (!known) g_globalCacheSpans.push_back({valueCells, count, g_currentModuleEpoch});
+        if (!known) {
+            uint64_t spanEpoch = s.currentModuleEpoch;
+            for (const auto& vspan : s.moduleValueCells) {
+                if (vspan.cells + vspan.count == valueCells) {
+                    spanEpoch = vspan.epoch;
+                    break;
+                }
+            }
+            s.globalCacheSpans.push_back({valueCells, count, spanEpoch});
+        }
     }
     const std::string& keyStr = rtKeyString(keyIndex);
-    // The same ladder as bronze_global_get, in the same order — `performance`
-    // is the one name a host may shadow, every other builtin wins, then the
-    // host registry, then the global object's own properties. The difference
-    // is WHICH answers fill the cell: builtins and host globals both, because
-    // both are stable until the host says otherwise (and rtRegisterHostGlobal
-    // says so by holing every span). A globalThis property is the program's
-    // to reassign at any moment and stays uncached.
     Value resolved = Value::fromUndefined();
     bool cacheable = false;
     if (keyStr == "globalThis") {
@@ -843,33 +916,42 @@ uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t c
     return resolved.rawBits();
 }
 
-uint32_t bronze_register_key_string_len(const char* str, size_t len) {
-    const std::string text(str ? str : "", str ? len : 0);
-    std::lock_guard<std::mutex> lock(g_keyMutex);
-    if (auto it = g_keyIndex.find(text); it != g_keyIndex.end()) return it->second;
-
-    const uint32_t index = static_cast<uint32_t>(g_keyStrings.size());
-    g_keyStrings.push_back(text);
-
-    KeyInfo info;
-    uint32_t elemIdx = 0;
-    if (rtIsIntegerLikeKey(text, elemIdx)) {
-        info.isElemIndex = true;
-        info.elemIndex = elemIdx;
-    } else {
-        info.isElemIndex = false;
-        info.elemIndex = UINT32_MAX;
-    }
-    info.isLength = (text == "length");
-    g_keyInfos.push_back(info);
-    g_keyIndex.emplace(text, index);
-    return index;
-}
-
-uint32_t bronze_register_key_string(const char* str) {
-    return bronze_register_key_string_len(str, str ? std::strlen(str) : 0);
-}
-
 }  // extern "C"
+
+static void releaseThreadDynamicModules() {
+    if (!g_threadModules) return;
+    const size_t n = g_threadModules->dynamicModules.size();
+    if (n != 0) {
+        g_totalDynamicModules.fetch_sub(static_cast<uint32_t>(n), std::memory_order_relaxed);
+    }
+    g_threadModules->codeToModule.clear();
+    g_threadModules->dynamicModules.clear();
+}
+
+void rtTeardownThreadState() {
+    g_plainObjectShape = nullptr;
+    bronze_tls_block_addr()->plain_shape = 0;
+
+    if (g_threadHeap) {
+        std::lock_guard<std::mutex> lock(g_heapStateMu);
+        g_heapToModuleState.erase(&g_threadHeap->gc());
+        g_heapStateGeneration.fetch_add(1, std::memory_order_release);
+    }
+
+    if (g_threadModules) {
+        releaseThreadDynamicModules();
+        delete g_threadModules;
+        g_threadModules = nullptr;
+    }
+
+    if (g_threadHeap) {
+        delete g_threadHeap;
+        g_threadHeap = nullptr;
+    }
+    if (g_threadArena) {
+        delete g_threadArena;
+        g_threadArena = nullptr;
+    }
+}
 
 }  // namespace bronze::runtime
