@@ -190,12 +190,14 @@ private:
 // promise.
 void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
                                      const std::vector<const ast::Stmt*>& body,
-                                     const std::string& functionName,
+                                     const il::Function& ilFn,
                                      EnvScopeInfo& info) const {
     if (inference_ == nullptr || unboxedFieldsDisabled_) return;
+    const std::string& functionName = ilFn.name;
 
     // The candidates: this body's own top-level `let`/`const` with an
-    // initializer, that also got a slot in this record.
+    // initializer, that also got a slot in this record, plus plain parameters
+    // whose entry convention is already proven F64.
     std::unordered_set<std::string> candidates;
     std::unordered_map<std::string, const ast::Expr*> declInit;
     std::unordered_set<const ast::VarDecl*> ownDecls;
@@ -215,24 +217,51 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
     // A parameter of THIS function with the same name is the binding the body's
     // mentions resolve to; the declaration below it would be a redeclaration
     // error, but the record is laid out before that is diagnosed.
+    std::unordered_map<std::string, size_t> paramCounts;
     for (const auto& p : params) {
         if (p.pattern) {
-            for (const auto& n : ast::patternBoundNames(*p.pattern)) candidates.erase(n);
+            for (const auto& n : ast::patternBoundNames(*p.pattern)) {
+                candidates.erase(n);
+                declInit.erase(n);
+                paramCounts[n] += 2;
+            }
         } else {
             candidates.erase(p.name);
+            declInit.erase(p.name);
+            if (!p.name.empty()) paramCounts[p.name]++;
+        }
+    }
+    if (!ilFn.needsArguments) {
+        const size_t paramBase = ilFn.firstSourceParam();
+        for (size_t i = 0; i < params.size() && i + paramBase < ilFn.params.size(); ++i) {
+            const auto& p = params[i];
+            if (p.pattern || p.isRest || p.defaultValue || p.name.empty()) continue;
+            if (paramCounts[p.name] != 1 || lexical.count(p.name) != 0) continue;
+            const auto& ilParam = ilFn.params[i + paramBase];
+            if (ilParam.type != il::Type::F64 || ilParam.pinned) continue;
+            if (!info.slotOf.contains(p.name)) continue;
+            candidates.insert(p.name);
         }
     }
     if (candidates.empty()) return;
 
     EnvSlotWriteScan scan(candidates, ownDecls);
+    for (const auto& p : params) {
+        if (p.defaultValue) p.defaultValue->accept(scan);
+        if (p.pattern) ast::detail::visitPatternExprs(p.pattern.get(), scan);
+    }
     for (const ast::Stmt* s : body) s->accept(scan);
     for (const auto& name : scan.disqualified) candidates.erase(name);
     if (candidates.empty()) return;
     // What is left has the binding STRUCTURE the claim needs, whatever its
     // writes turn out to hold. Kept apart from `candidates` because the pin arm
     // below may only re-admit a name the fixpoint dropped — never one a
-    // parameter shadows or a nested scope re-declares.
-    const std::unordered_set<std::string> structural = candidates;
+    // parameter shadows or a nested scope re-declares. Only `let`/`const`
+    // declarations belong here; parameters use `param <fn>(<p>)` pins instead.
+    std::unordered_set<std::string> structural;
+    for (const auto& name : candidates) {
+        if (declInit.contains(name)) structural.insert(name);
+    }
 
     // Is `e` a Number given that every name in `live` holds one? The `live`
     // reference is read at call time, which is what makes this a fixpoint step
@@ -286,7 +315,8 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
     for (bool changed = true; changed;) {
         changed = false;
         for (auto it = candidates.begin(); it != candidates.end();) {
-            bool ok = numericUnder(*declInit.at(*it), 8);
+            const auto initIt = declInit.find(*it);
+            bool ok = (initIt == declInit.end()) || numericUnder(*initIt->second, 8);
             if (ok) {
                 const auto w = scan.writes.find(*it);
                 if (w != scan.writes.end()) {

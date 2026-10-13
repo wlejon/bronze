@@ -161,7 +161,13 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberUpdate(const ast::MemberAccess
     stampStaticSlot(getInst, *mem.object);
     emitInst(ilFn, getInst);
 
-    Value numOld = emitUpdateOld(Value{cur, il::Type::Dynamic}, ilFn);
+    Value curVal{cur, il::Type::Dynamic};
+    if (provenFieldRead(mem)) {
+        curVal = emitRawUnbox(curVal, ilFn);
+    } else if (nullishNumberFieldRead(mem)) {
+        curVal = emitNullishUnbox(curVal, ilFn);
+    }
+    Value numOld = emitUpdateOld(curVal, ilFn);
     Value newVal = emitUpdateStep(numOld, op, ilFn);
     // `o.x++` is ToNumERIC, not ToNumber: a BigInt operand yields a BigInt, so
     // an update is a store a `number` pin can be contradicted by.

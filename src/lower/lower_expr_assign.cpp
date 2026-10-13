@@ -153,9 +153,19 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             stampStaticSlot(getInst, *mem->object);
             emitInst(ilFn, getInst);
             curVal = Value{cur, il::Type::Dynamic};
+            if (provenFieldRead(*mem) &&
+                (bin->op != ast::BinaryOp::PlusAssign || provenNumber(*bin))) {
+                curVal = emitRawUnbox(*curVal, ilFn);
+            } else if (nullishNumberFieldRead(*mem) &&
+                       (bin->op != ast::BinaryOp::PlusAssign || provenNumber(*bin))) {
+                curVal = emitNullishUnbox(*curVal, ilFn);
+            }
         }
 
-        auto rhsVal = lowerExpr(*bin->rhs, ilFn);
+        const bool rhsCoerces =
+            bin->op != ast::BinaryOp::Assign && binaryCoercesOperand(bin->op, *bin->lhs);
+        auto rhsVal = rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn)
+                                 : lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
         Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
                                                    provenNumber(*bin), ilFn)

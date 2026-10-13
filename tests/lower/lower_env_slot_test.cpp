@@ -167,3 +167,30 @@ TEST_CASE("a proven binding may not vouch for one that is refused") {
     // Neither of them, which is what the module-wide form says here.
     CHECK_FALSE(anyReadIsRaw(il));
 }
+
+TEST_CASE("a proven f64 parameter captured in an env slot reads raw in closures and stays in SSA in its owner") {
+    const auto il = lowerToText(
+        "function run(n, steps) {\n"
+        "  const arr = new Float64Array(n);\n"
+        "  function inner() {\n"
+        "    for (let i = 0; i < n; i++) arr[i] = i;\n"
+        "  }\n"
+        "  inner();\n"
+        "  let sum = 0;\n"
+        "  for (let s = 0; s < steps; s++) {\n"
+        "    for (let i = 0; i < n; i++) sum += arr[i];\n"
+        "  }\n"
+        "  return sum;\n"
+        "}\n"
+        "console.log(run(16, 4));\n");
+    CHECK(anyReadIsRaw(il));
+    // The owning function `run` should not emit `env.get` to read its own
+    // immutable `n` or `arr` bindings inside its loops.
+    const auto runPos = il.find("func run(");
+    REQUIRE(runPos != std::string::npos);
+    const auto runEnd = il.find("\n}\n", runPos);
+    REQUIRE(runEnd != std::string::npos);
+    const std::string runBody = il.substr(runPos, runEnd - runPos);
+    CHECK(runBody.find("env.get") == std::string::npos);
+}
+

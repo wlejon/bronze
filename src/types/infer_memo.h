@@ -57,6 +57,7 @@ public:
         Field,      // the harvest's type and the audit's verdict for one field
         Function,   // a module function's signature
         Method,     // a class method's signature and poison
+        Setter,     // a class setter's reachability version
         Ctor,       // a constructor's signature and poison
     };
     enum class Contrib : uint8_t {
@@ -65,6 +66,8 @@ public:
         MethodShape,
         MethodReturn,
         MethodSkipped,
+        MethodReached,
+        SetterReached,
         CtorParam,
     };
 
@@ -112,6 +115,7 @@ public:
     void noteField(ShapeClassId cls, std::string_view field, Type fieldType, bool clean);
     void noteFunction(uint32_t index, uint32_t version);
     void noteMethod(uint32_t index, uint32_t version, bool poisoned);
+    void noteSetter(uint32_t index, uint32_t version);
     void noteCtor(uint32_t index, uint32_t version, bool poisoned);
 
     // ---- effects -------------------------------------------------------------

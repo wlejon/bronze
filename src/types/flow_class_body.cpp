@@ -146,6 +146,33 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
                 mod_.interprocIdent ? mod_.methods.indexOfNode(m.fn.get()) : kNoMethod;
             const uint32_t ctorIndex =
                 mod_.ctorParamTypes ? mod_.ctors.indexOfNode(m.fn.get()) : kNoCtor;
+            if (!record_ && mod_.interprocIdent && mod_.valueFlow) {
+                if (index != kNoMethod) {
+                    const MethodInfo& self = mod_.methods.methods()[index];
+                    if (InferMemo* memo = mod_.rec()) {
+                        memo->noteMethod(index, self.version, mod_.methodPoison.poisons(index));
+                    }
+                    if (!self.reached && self.plainParams && !mod_.methodPoison.poisons(index)) {
+                        continue;
+                    }
+                } else if (m.isStatic && !m.isStaticBlock && !m.computed() && !m.name.empty()) {
+                    if (!mod_.methods.isStaticMethodReachable(className, m.name)) {
+                        continue;
+                    }
+                } else if (!m.isStatic && m.accessor == ast::AccessorKind::Setter &&
+                           !m.computed() && !m.name.empty()) {
+                    const uint32_t sIdx = mod_.methods.setterIndexOfNode(m.fn.get());
+                    if (sIdx != kNoMethod) {
+                        const SetterInfo& s = mod_.methods.setters()[sIdx];
+                        if (InferMemo* memo = mod_.rec()) {
+                            memo->noteSetter(sIdx, s.version);
+                        }
+                        if (!s.reached) {
+                            continue;
+                        }
+                    }
+                }
+            }
             const Type returned =
                 analyzeNested(*m.fn, m.fn->name, m.fn->params, m.fn->body, m.fn->span,
                               m.fn->isGenerator || m.fn->isAsync, receiver, index, ctorIndex);
@@ -159,6 +186,85 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
             scope_.thisClass = saved;
         }
     }
+}
+
+std::vector<Type> FlowAnalyzer::ctorParamTypes(uint32_t ctorIndex, size_t count) const {
+    std::vector<Type> out(count, Type::dynamic());
+    if (!mod_.ctorParamTypes || ctorIndex == kNoCtor) return out;
+    const CtorInfo& self = mod_.ctors.ctors()[ctorIndex];
+    if (InferMemo* memo = mod_.rec()) {
+        memo->noteCtor(ctorIndex, self.version, mod_.ctorPoison.poisons(self.className));
+    }
+    if (!self.plainParams || mod_.ctorPoison.poisons(self.className)) return out;
+    for (size_t i = 0; i < count && i < self.signature.params.size(); ++i) {
+        out[i] = self.signature.params[i];
+    }
+    return out;
+}
+
+void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
+    if (!record_) return;
+    if (!resolved.is(TypeKind::Dynamic)) return;
+
+    if (mod_.interprocIdent && scope_.methodIndex != kNoMethod) {
+        const MethodInfo& self = mod_.methods.methods()[scope_.methodIndex];
+        bool isParam = false;
+        for (const auto& p : self.fn->params) {
+            if (p.name == id.name) {
+                isParam = true;
+                break;
+            }
+        }
+        if (isParam) {
+            for (size_t p = 0; p < self.safeParamNames.size(); ++p) {
+                if (self.safeParamNames[p] != id.name) continue;
+                if (p >= self.paramShapes.size()) break;
+                const Type shape = self.paramShapes[p];
+                if (shape.is(TypeKind::Object) && shape.shapeClass() != kNoShapeClass) {
+                    mod_.result->guessedParamShapes.emplace(&id, shape.shapeClass());
+                }
+                break;
+            }
+            std::string reason;
+            if (!self.plainParams) {
+                reason = "the method's parameter list is not plain";
+            } else if (mod_.methodPoison.poisons(scope_.methodIndex)) {
+                reason = mod_.methodPoison.reasonFor(scope_.methodIndex);
+            } else if (self.unreached) {
+                reason = "no call site this compilation saw reaches the method";
+            } else {
+                reason = "the call sites disagree about the argument's class";
+            }
+            mod_.result->identRefusals.emplace(
+                &id, "receiver is dynamic: parameter (" + reason + ")");
+            return;
+        }
+    }
+
+    for (const auto& p : facts_.paramNames) {
+        if (p == id.name) {
+            mod_.result->identRefusals.emplace(&id, "receiver is dynamic: function-value parameter");
+            return;
+        }
+    }
+
+    if (scope_.env.count(id.name) != 0 || scope_.cells.count(id.name) != 0) {
+        mod_.result->identRefusals.emplace(&id, "receiver is dynamic: local binding");
+        return;
+    }
+    for (const Scope* p = scope_.parent; p != nullptr; p = p->parent) {
+        if (p->cells.count(id.name) != 0) {
+            mod_.result->identRefusals.emplace(&id, "receiver is dynamic: captured binding");
+            return;
+        }
+    }
+
+    if (mod_.moduleScopeNames.count(id.name) != 0) {
+        mod_.result->identRefusals.emplace(&id, "receiver is dynamic: module binding");
+        return;
+    }
+
+    mod_.result->identRefusals.emplace(&id, "receiver is dynamic: global or host name");
 }
 
 }  // namespace bronze::types

@@ -183,6 +183,7 @@ private:
     // reach, and the type its dispatch produces. See method_ident.h.
     Type methodCall(const std::string& name, Type receiver, const std::vector<Type>& args,
                     bool spreadArgs);
+    void notePropertyWrite(const std::string& propName, Type receiver);
 
     // One construction site's contribution to a constructor's parameters. See
     // ctor_ident.h; `constructSite` is `new <a class name>(...)` and every

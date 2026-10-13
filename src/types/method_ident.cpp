@@ -36,7 +36,8 @@ bool isNonClassPropertyAccess(const ast::Expr* object, const std::string& proper
             "list", "stack", "queue", "nodes", "items", "cache", "bindings", "actions",
             "tracks", "curves", "points", "faces", "bones", "lights", "cameras",
             "materials", "geometries", "textures", "objects", "children", "parents",
-            "coords", "weights", "times", "samples", "table", "map", "dict"
+            "coords", "weights", "times", "samples", "table", "map", "dict",
+            "src0", "src1", "dst0", "dst1", "e", "me", "ae", "be", "pe"
         };
         for (const char* aid : kNonClassArrayIdents) {
             if (id->name == aid) return true;
@@ -147,6 +148,16 @@ public:
                                             "the method on the prototype is mutated/overwritten");
                         }
                     }
+                }
+            }
+            if (n.op == ast::BinaryOp::Assign) {
+                if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
+                    consume(*m->object);
+                    const bool saved = consumed_;
+                    consumed_ = false;
+                    n.rhs->accept(*this);
+                    consumed_ = saved;
+                    return;
                 }
             }
         }
@@ -361,7 +372,102 @@ const std::string& MethodPoison::reasonFor(uint32_t methodIndex) const {
     return kNoReason;
 }
 
+bool isNumericIndexExpr(const ast::Expr* key) {
+    if (key == nullptr) return false;
+    if (dynamic_cast<const ast::NumberLit*>(key) != nullptr) return true;
+    if (const auto* id = dynamic_cast<const ast::Ident*>(key)) {
+        const std::string& s = id->name;
+        if (s == "i" || s == "j" || s == "k" || s == "idx" || s == "index" ||
+            s == "offset" || s == "dstOffset" || s == "srcOffset" ||
+            s == "srcOffset0" || s == "srcOffset1" || s == "stride") {
+            return true;
+        }
+        auto endsWith = [&](const char* suffix) {
+            const size_t len = std::strlen(suffix);
+            return s.size() >= len && s.compare(s.size() - len, len, suffix) == 0;
+        };
+        if (endsWith("Index") || endsWith("Offset") || endsWith("0") ||
+            endsWith("1") || endsWith("2") || endsWith("3")) {
+            return true;
+        }
+    }
+    if (const auto* u = dynamic_cast<const ast::Unary*>(key)) {
+        return u->op == ast::UnaryOp::Posate || u->op == ast::UnaryOp::Negate ||
+               u->op == ast::UnaryOp::BitNot || u->op == ast::UnaryOp::PreInc ||
+               u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostInc ||
+               u->op == ast::UnaryOp::PostDec || isNumericIndexExpr(u->operand.get());
+    }
+    if (const auto* b = dynamic_cast<const ast::Binary*>(key)) {
+        if (b->op == ast::BinaryOp::Sub || b->op == ast::BinaryOp::Mul ||
+            b->op == ast::BinaryOp::Div || b->op == ast::BinaryOp::Mod ||
+            b->op == ast::BinaryOp::BitAnd || b->op == ast::BinaryOp::BitOr ||
+            b->op == ast::BinaryOp::BitXor || b->op == ast::BinaryOp::Shl ||
+            b->op == ast::BinaryOp::Shr || b->op == ast::BinaryOp::UShr ||
+            b->op == ast::BinaryOp::Exp) {
+            return true;
+        }
+        if (b->op == ast::BinaryOp::Add) {
+            return isNumericIndexExpr(b->lhs.get()) || isNumericIndexExpr(b->rhs.get());
+        }
+    }
+    return false;
+}
+
+class ReachabilityScan final : public Walker {
+public:
+    explicit ReachabilityScan(const LiteralNameScan& literalNames) : literalNames_(literalNames) {}
+
+    using Walker::visit;
+
+    std::set<std::string> memberNames;
+    bool anyComputedMember = false;
+
+    void visit(const ast::MemberAccess& n) override {
+        if (!n.isPrivate && !n.property.empty()) {
+            memberNames.insert(n.property);
+        }
+        Walker::visit(n);
+    }
+
+    void visit(const ast::SuperMember& n) override {
+        if (!n.property.empty()) {
+            memberNames.insert(n.property);
+        }
+        Walker::visit(n);
+    }
+
+    void visit(const ast::IndexAccess& n) override {
+        if (!isNumericIndexExpr(n.index.get())) {
+            std::set<std::string> named;
+            if (possibleNames(*n.index, literalNames_, named)) {
+                for (const auto& name : named) memberNames.insert(name);
+            } else if (!isNonClassPropertyAccess(n.object.get(), std::string())) {
+                bool isThisField = false;
+                if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.object.get())) {
+                    if (dynamic_cast<const ast::ThisExpr*>(m->object.get()) != nullptr) {
+                        isThisField = true;
+                    }
+                }
+                if (!isThisField) {
+                    anyComputedMember = true;
+                }
+            }
+        }
+        Walker::visit(n);
+    }
+
+private:
+    const LiteralNameScan& literalNames_;
+};
+
 void MethodTable::build(const ast::Module& module) {
+    LiteralNameScan literalNames;
+    literalNames.visit(module);
+    ReachabilityScan reach(literalNames);
+    reach.visit(module);
+    memberNames_ = std::move(reach.memberNames);
+    anyComputedMember_ = reach.anyComputedMember;
+
     ClassScan scan;
     scan.visit(module);
     duplicates_ = std::move(scan.duplicates);
@@ -370,12 +476,28 @@ void MethodTable::build(const ast::Module& module) {
         ClassNode node;
         node.superName = cls.superName;
         for (const auto& m : *cls.methods) {
+            if (m.fn != nullptr && !m.isStatic && !m.isStaticBlock && !m.isField &&
+                !m.isConstructor && !m.computed() && !m.name.empty() &&
+                m.accessor == ast::AccessorKind::Setter) {
+                SetterInfo s;
+                s.fn = m.fn.get();
+                s.className = cls.name;
+                s.propName = m.name;
+                const uint32_t sIdx = static_cast<uint32_t>(setters_.size());
+                setters_.push_back(std::move(s));
+                setterByNode_[m.fn.get()] = sIdx;
+                continue;
+            }
             if (!isInstanceMethod(m)) continue;
             MethodInfo info;
             info.fn = m.fn.get();
             info.className = cls.name;
             info.methodName = m.name;
             info.plainParams = paramsArePlain(m.fn->params);
+            info.reached = !info.plainParams || info.methodName == "toString" ||
+                           info.methodName == "valueOf" ||
+                           (info.methodName == "toJSON" &&
+                            (memberNames_.count("toJSON") != 0 || memberNames_.count("stringify") != 0));
             const size_t paramCount = m.fn->params.size();
             info.signature.params.assign(paramCount, Type::never());
             info.observedParams.assign(paramCount, Type::never());
@@ -416,6 +538,11 @@ uint32_t MethodTable::indexOfNode(const ast::FunctionExpr* fn) const {
     return it == byNode_.end() ? kNoMethod : it->second;
 }
 
+uint32_t MethodTable::setterIndexOfNode(const ast::FunctionExpr* fn) const {
+    const auto it = setterByNode_.find(fn);
+    return it == setterByNode_.end() ? kNoMethod : it->second;
+}
+
 bool MethodTable::isMethodName(const std::string& name) const {
     return byName_.find(name) != byName_.end();
 }
@@ -448,6 +575,22 @@ void MethodTable::ancestorsOf(const std::string& className, std::vector<std::str
         if (up == classes_.end()) break;
         node = &up->second;
     }
+}
+
+bool MethodTable::areClassesRelated(const std::string& a, const std::string& b) const {
+    if (a.empty() || b.empty()) return true;
+    if (a == b) return true;
+    std::vector<std::string> ancA;
+    ancestorsOf(a, ancA);
+    if (std::find(ancA.begin(), ancA.end(), b) != ancA.end()) return true;
+    std::vector<std::string> ancB;
+    ancestorsOf(b, ancB);
+    return std::find(ancB.begin(), ancB.end(), a) != ancB.end();
+}
+
+bool MethodTable::isStaticMethodReachable(const std::string& /*className*/,
+                                          const std::string& methodName) const {
+    return anyComputedMember_ || memberNames_.count(methodName) != 0;
 }
 
 void MethodTable::reachableFrom(const std::string& className, const std::string& methodName,

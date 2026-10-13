@@ -29,7 +29,7 @@ bool Lowerer::declareVariable(const std::string& name, il::Type type, bool isCon
             existing.isConst = isConst;
             existing.isLet = isLet;
             existing.isInitialized = isInitialized;
-            if (!existing.inEnv) existing.valueId = valId;
+            existing.valueId = valId;
             return true;
         }
         if (isVar && existing.isVar) {
@@ -74,7 +74,7 @@ bool Lowerer::declareVariable(const std::string& name, il::Type type, bool isCon
         b.inEnv = true;
         b.envScopeIndex = ownerScope;
         b.envSlot = envScopes_[ownerScope].slotOf.at(name);
-        b.valueId = il::kNoValue;
+        if (isVar || !isInitialized) b.valueId = il::kNoValue;
     }
 
     size_t idx = varBindings_.size();
@@ -422,6 +422,22 @@ uint32_t Lowerer::envDepthOf(size_t scopeIndex) const {
 
 Lowerer::Value Lowerer::readBinding(const VarBinding& b, il::Function& ilFn) {
     if (!b.inEnv) return Value{b.valueId, b.type};
+    if (inUserFunction_ && !coro_ && !ilFn.needsArguments && !b.isVar && !b.isTdzHoisted &&
+        b.isInitialized && b.valueId != il::kNoValue &&
+        b.envScopeIndex == functionEnvScope_ && b.envScopeIndex < envScopes_.size()) {
+        const EnvScopeInfo& scope = envScopes_[b.envScopeIndex];
+        const bool definite =
+            b.envSlot >= scope.slotIsLexical.size() || !scope.slotIsLexical[b.envSlot] ||
+            (b.envSlot < scope.slotIsDefiniteInit.size() && scope.slotIsDefiniteInit[b.envSlot]);
+        const bool pinnedOrCensus =
+            (b.envSlot < scope.slotIsPinned.size() && scope.slotIsPinned[b.envSlot]) ||
+            (b.envSlot < scope.slotIsCensus.size() && scope.slotIsCensus[b.envSlot]);
+        const bool immutable =
+            scope.rebindsKnown && !scope.deeplyAssigned.contains(b.name);
+        if (definite && !pinnedOrCensus && immutable) {
+            return Value{b.valueId, b.type};
+        }
+    }
     return emitEnvGet(envDepthOf(b.envScopeIndex), b.envSlot, ilFn);
 }
 

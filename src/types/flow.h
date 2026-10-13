@@ -92,6 +92,7 @@ struct Scope {
     // sites (types/ctor_ident.h) — so the walk that evaluates the default needs
     // to know whose observation to join it into.
     uint32_t ctorIndex = kNoCtor;
+    std::unordered_set<std::string> pristineMathFns;
 };
 
 struct ModuleContext {
@@ -217,6 +218,7 @@ struct ModuleContext {
     // primitive field type a proof rather than a guess, and a compiler with it
     // switched off miscompiles.
     FieldAudit fieldAudit;
+    bool auditSettled = false;
 
     // ---- nested-function cells, carried across the enclosing fixpoint -------
 

@@ -38,7 +38,7 @@ std::string Type::str() const {
             case TypedArrayElem::Uint8Clamped: out += ":u8c"; break;
             default: break;
         }
-    } else if (kind_ == TypeKind::Array && payload_ != kNoPayload) {
+    } else if (arrayElementsPinned()) {
         out += ":pinned";
     }
     return out;
@@ -75,7 +75,10 @@ Type join(Type a, Type b) {
         // A pinned array joined with a plain one is plain: the pin is a claim
         // about every element of THAT array, and one edge that never made it
         // is enough to take the guards back.
-        case TypeKind::Array: return Type::array();
+        case TypeKind::Array:
+            if (a.arrayElementsUndecided()) return b;
+            if (b.arrayElementsUndecided()) return a;
+            return Type::array();
         default: break;
     }
     // Unreachable: every identity-free kind compares equal above.

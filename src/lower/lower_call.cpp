@@ -69,9 +69,12 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
             argVals.push_back(emitConstUndefined(ilFn));
             continue;
         }
-        auto argVal = lowerExpr(*call->args[i], ilFn);
-        if (!argVal) return std::nullopt;
         const il::Type paramType = calleeFn.params[i + base].type;
+        const bool isPinned = calleeFn.params[i + base].pinned;
+        auto argVal = (paramType == il::Type::F64 && !isPinned)
+                          ? lowerCoercingOperand(*call->args[i], ilFn)
+                          : lowerExpr(*call->args[i], ilFn);
+        if (!argVal) return std::nullopt;
         // The `--pins` barrier for `param <owner>(<p>): number`, at the CALL
         // SITE, because a pinned parameter has no boxed store to put one on:
         // the value arrives in an f64 register and is written to an f64 slot.
@@ -81,7 +84,7 @@ std::optional<Lowerer::Value> Lowerer::lowerDirectCall(const ast::Call* call, ui
         // REPLACES the ToNumber it was quietly relying on rather than joining
         // it: the pin says the caller passes a Number, not that the callee
         // will coerce whatever arrives.
-        if (calleeFn.params[i + base].pinned) {
+        if (isPinned) {
             emitPinGuard(*argVal, keyStrings_[calleeFn.params[i + base].pinKeyIndex],
                          il::PinBarrier::Number, ilFn);
         }

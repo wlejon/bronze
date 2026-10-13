@@ -103,12 +103,16 @@ void contributeMethodArg(ModuleContext& mod, uint32_t index, const MethodInfo& t
 
 Type FlowAnalyzer::expr(const ast::Expr& e) {
     const Type t = exprKind(e);
-    if (record_) mod_.result->exprTypes[&e] = t;
-    // EVERY round, not only the recording one: the audit is part of the outer
-    // fixpoint and has to see the types each round produced. It ignores every
-    // expression that is not the right-hand side of a write it recorded, so
-    // this is one lookup in a table sized by the program's property writes.
-    mod_.fieldAudit.observe(&e, t);
+    if (record_) {
+        mod_.result->exprTypes[&e] = t;
+    } else if (!mod_.auditSettled) {
+        // Every probe round: the audit is part of the outer fixpoint and has to
+        // see the types each round produced. On the final recording pass the
+        // audit has already settled and unreached methods have been widened to
+        // dynamic parameters, so observing inside inner probe walks there would
+        // pollute the settled audit.
+        mod_.fieldAudit.observe(&e, t);
+    }
     return t;
 }
 
@@ -248,6 +252,10 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                 return base.identityOnly() ? Type::objectIdentityOnly(field.shapeClass())
                                            : Type::objectNotBuiltHere(field.shapeClass());
             }
+            if (field.is(TypeKind::Array) &&
+                (field.arrayElemClass() != kNoShapeClass || field.arrayElementsUndecided())) {
+                return field;
+            }
             if (field.is(TypeKind::Dynamic) &&
                 mod_.fieldAudit.numberCleanFor(base.shapeClass(), m->property)) {
                 field = Type::number();
@@ -318,6 +326,16 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     if (const auto* ix = ast::exactAs<const ast::IndexAccess*>(&e)) {
         const Type base = expr(*ix->object);
         const Type idx = expr(*ix->index);
+        if (base.is(TypeKind::Never) || idx.is(TypeKind::Never)) return Type::never();
+        if (!ix->optional && base.is(TypeKind::Array)) {
+            if (base.arrayElementsUndecided()) return Type::never();
+            if (base.arrayElemClass() != kNoShapeClass) {
+                const ShapeClassId cls = base.arrayElemClass();
+                return mod_.result->classLayouts.isExtended(cls)
+                           ? Type::objectIdentityOnly(cls)
+                           : Type::objectNotBuiltHere(cls);
+            }
+        }
         if (!ix->optional && idx.is(TypeKind::Number) &&
             ((base.is(TypeKind::TypedArray) && base.typedArrayElemRaw() != kNoTypedArrayElem) ||
              base.arrayElementsPinned())) {
@@ -336,8 +354,32 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (const auto* o = ast::exactAs<const ast::ObjectLit*>(&e)) return objectLit(*o);
     if (const auto* a = ast::exactAs<const ast::ArrayLit*>(&e)) {
+        bool canTrackElem = !a->elements.empty();
+        bool allNever = true;
+        ShapeClassId commonCls = kNoShapeClass;
         for (const auto& el : a->elements) {
-            if (el) expr(*el);
+            if (!el) {
+                canTrackElem = false;
+                continue;
+            }
+            if (ast::exactAs<const ast::SpreadElement*>(el.get())) canTrackElem = false;
+            const Type elT = expr(*el);
+            if (!canTrackElem) continue;
+            if (elT.is(TypeKind::Never)) continue;
+            allNever = false;
+            if (elT.is(TypeKind::Object) && elT.shapeClass() != kNoShapeClass) {
+                if (commonCls == kNoShapeClass) {
+                    commonCls = elT.shapeClass();
+                } else if (commonCls != elT.shapeClass()) {
+                    canTrackElem = false;
+                }
+            } else {
+                canTrackElem = false;
+            }
+        }
+        if (canTrackElem) {
+            if (allNever) return Type::arrayOfNever();
+            if (commonCls != kNoShapeClass) return Type::arrayOfObject(commonCls);
         }
         return Type::array();
     }
@@ -459,6 +501,10 @@ Type FlowAnalyzer::unary(const ast::Unary& u) {
         u.op == ast::UnaryOp::PostInc || u.op == ast::UnaryOp::PostDec) {
         if (const auto* id = ast::exactAs<const ast::Ident*>(u.operand.get())) {
             assign(id->name, result);
+        } else if (const auto* m = ast::exactAs<const ast::MemberAccess*>(u.operand.get())) {
+            if (!m->isPrivate) {
+                notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic());
+            }
         }
     }
     return result;
@@ -471,6 +517,28 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
             assign(id->name, rhs);
         } else {
             expr(*b.lhs);
+            if (const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get())) {
+                if (!m->isPrivate) {
+                    notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic());
+                }
+            } else if (const auto* ix = ast::exactAs<const ast::IndexAccess*>(b.lhs.get())) {
+                if (const auto* arrId = ast::exactAs<const ast::Ident*>(ix->object.get())) {
+                    if (scope_.env.count(arrId->name) != 0 || scope_.cells.count(arrId->name) != 0) {
+                        const Type arrT = lookup(arrId->name);
+                        if (arrT.is(TypeKind::Array) &&
+                            (arrT.arrayElemClass() != kNoShapeClass || arrT.arrayElementsUndecided())) {
+                            Type elemArr = Type::array();
+                            if (rhs.is(TypeKind::Never)) {
+                                elemArr = Type::arrayOfNever();
+                            } else if (rhs.is(TypeKind::Object) && rhs.shapeClass() != kNoShapeClass) {
+                                elemArr = Type::arrayOfObject(rhs.shapeClass());
+                            }
+                            const Type updated = join(arrT, elemArr);
+                            if (updated != arrT) assign(arrId->name, updated);
+                        }
+                    }
+                }
+            }
         }
         return rhs;
     }
@@ -479,6 +547,11 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
         const Type rhs = exprForOperator(*b.rhs);
         const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get());
         const Type current = id != nullptr ? lookup(id->name) : exprForOperator(*b.lhs);
+        if (const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get())) {
+            if (!m->isPrivate) {
+                notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic());
+            }
+        }
         const Type result = compoundResult(plain, current, rhs);
         if (id != nullptr) assign(id->name, result);
         return result;
@@ -533,6 +606,13 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         if (record_) mod_.result->pristineMathCalls.insert(&c);
         return Type::number();
     }
+    if (!c.optional) {
+        if (const auto* id = ast::exactAs<const ast::Ident*>(c.callee.get())) {
+            if (!scope_.isCell(id->name) && scope_.pristineMathFns.count(id->name) != 0) {
+                return Type::number();
+            }
+        }
+    }
 
     // A pinned RETURN, spent HERE and not only on the callee's own signature.
     // Lowering has always turned `return <owner>: number` into an f64 result on
@@ -563,6 +643,40 @@ Type FlowAnalyzer::call(const ast::Call& c) {
 
     // `recv.m(...)`: the call sites a class METHOD has, enumerated through the
     // receiver's class rather than through the callee's name.
+    if (member != nullptr && !c.optional && lastMember_ == member &&
+        receiver.is(TypeKind::Array)) {
+        if (member->property == "push" || member->property == "unshift") {
+            if (const auto* id = ast::exactAs<const ast::Ident*>(member->object.get())) {
+                if (scope_.env.count(id->name) != 0 || scope_.cells.count(id->name) != 0) {
+                    Type updated = receiver;
+                    if (spreadArgs) {
+                        updated = Type::array();
+                    } else {
+                        for (const Type& at : args) {
+                            if (at.is(TypeKind::Never)) {
+                                updated = join(updated, Type::arrayOfNever());
+                            } else if (at.is(TypeKind::Object) && at.shapeClass() != kNoShapeClass) {
+                                updated = join(updated, Type::arrayOfObject(at.shapeClass()));
+                            } else {
+                                updated = Type::array();
+                            }
+                        }
+                    }
+                    if (updated != receiver) assign(id->name, updated);
+                }
+            }
+        } else if ((member->property == "shift" || member->property == "pop") &&
+                   args.empty() && !spreadArgs &&
+                   !mod_.methods.isMethodName(member->property)) {
+            if (receiver.arrayElementsUndecided()) return Type::never();
+            if (receiver.arrayElemClass() != kNoShapeClass) {
+                const ShapeClassId cls = receiver.arrayElemClass();
+                return mod_.result->classLayouts.isExtended(cls)
+                           ? Type::objectIdentityOnly(cls)
+                           : Type::objectNotBuiltHere(cls);
+            }
+        }
+    }
     if (member != nullptr) return methodCall(member->property, receiver, args, spreadArgs);
     // `super.m(...)`. The receiver is this method's `this` — a subclass instance
     // — but the LOOKUP starts at the enclosing class's base, which is the one
@@ -651,14 +765,14 @@ const PinKind* FlowAnalyzer::pinnedField(ShapeClassId cls, const std::string& fi
 Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                               const std::vector<Type>& args, bool spreadArgs) {
     if (!mod_.interprocIdent) return Type::dynamic();
-    // No class declares a method by this name, so no parameter of any modelled
-    // method is at stake — this is a call on a builtin, on host code, or on a
-    // function a property happens to hold.
-    if (!mod_.methods.isMethodName(name)) return Type::dynamic();
     // Nothing has reached this receiver yet. The call-graph fixpoint has not
     // finished; a round that read this as "unproven" would be poisoning the name
     // on evidence that does not exist.
     if (receiver.is(TypeKind::Never)) return Type::never();
+    // No class declares a method by this name, so no parameter of any modelled
+    // method is at stake — this is a call on a builtin, on host code, or on a
+    // function a property happens to hold.
+    if (!mod_.methods.isMethodName(name)) return Type::dynamic();
 
     if (receiver.is(TypeKind::TypedArray) || receiver.is(TypeKind::Number) ||
         receiver.is(TypeKind::String) || receiver.is(TypeKind::Bool) ||
@@ -680,6 +794,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
 
         if (spreadArgs) {
             for (const uint32_t index : *decls) {
+                mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
                 mod_.methodPoison.add(index, "an argument list is spread at a call site");
             }
             return Type::dynamic();
@@ -698,6 +813,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
         // fold (`widenMethods`) instead — see there for why skipping the
         // contribution outright is a miscompile and what is done about it.
         auto contributeArgs = [&](uint32_t index, const MethodInfo& target) {
+            mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
             for (size_t i = 0; i < target.observedParams.size(); ++i) {
                 contributeShape(mod_, index, target, i, args);
                 contributeMethodArg(mod_, index, target, i, args);
@@ -727,6 +843,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
 
     if (spreadArgs) {
         for (const uint32_t index : targets) {
+            mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
             mod_.methodPoison.add(index, "an argument list is spread at a call site");
         }
         return Type::dynamic();
@@ -739,6 +856,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     bool everyTargetSpeaks = true;
     for (const uint32_t index : targets) {
         const MethodInfo& target = mod_.methods.methods()[index];
+        mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
         for (size_t i = 0; i < target.observedParams.size(); ++i) {
             contributeShape(mod_, index, target, i, args);
             contributeMethodArg(mod_, index, target, i, args);
@@ -756,9 +874,12 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     // out of here is as good as the dispatch that chose it, which is a guess —
     // so it travels as one. `return this` is the case that pays: three.js
     // methods chain, and `v.copy(u).add(w)` is two sites, not one.
-    if (!everyTargetSpeaks || ret.is(TypeKind::Never)) return Type::dynamic();
+    if (!everyTargetSpeaks) return Type::dynamic();
+    if (ret.is(TypeKind::Never)) return Type::never();
     if (ret.is(TypeKind::Object) && ret.shapeClass() != kNoShapeClass) {
-        return Type::objectIdentityOnly(ret.shapeClass());
+        return ret.builtHere() && !mod_.result->classLayouts.isExtended(ret.shapeClass())
+                   ? Type::objectNotBuiltHere(ret.shapeClass())
+                   : Type::objectIdentityOnly(ret.shapeClass());
     }
     // Only an identity is worth carrying out of an optimistic dispatch. A
     // primitive return type would be a claim about a VALUE, which is what
@@ -766,118 +887,28 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     return Type::dynamic();
 }
 
-
-// What a constructor's body may believe about its own parameters.
-//
-// The whole proven type, unlike a method's, which is cut down to an identity
-// because the dispatch that chose it is a guess. There is no dispatch here:
-// `new C(...)` names C, `super(...)` names the base statically, and a class
-// whose binding never left `new` position has no other callers. So `Number`
-// travels, and an unboxed f64 with it — which is the point of the chunk.
-std::vector<Type> FlowAnalyzer::ctorParamTypes(uint32_t ctorIndex, size_t count) const {
-    std::vector<Type> out(count, Type::dynamic());
-    if (!mod_.ctorParamTypes || ctorIndex == kNoCtor) return out;
-    const CtorInfo& self = mod_.ctors.ctors()[ctorIndex];
-    if (InferMemo* memo = mod_.rec()) {
-        memo->noteCtor(ctorIndex, self.version, mod_.ctorPoison.poisons(self.className));
-    }
-    if (!self.plainParams || mod_.ctorPoison.poisons(self.className)) return out;
-    for (size_t i = 0; i < count && i < self.signature.params.size(); ++i) {
-        out[i] = self.signature.params[i];
-    }
-    return out;
-}
-
-// Why one identifier read came back `Dynamic`.
-//
-// Diagnostics only; nothing types anything from this. It exists because
-// "receiver is dynamic: identifier" was the single largest row in the report
-// and named a SYNTAX rather than a mechanism — a method parameter the
-// interprocedural join could not speak for, a closure parameter no join covers
-// at all, and a read of a host global are three unrelated problems wearing one
-// label, and a chunk that cannot tell them apart cannot size any of them.
-//
-// The order below is the order a fix would attack them in, and each branch is
-// the mechanism that would have to change.
-void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
-    if (!record_) return;
-    if (!resolved.is(TypeKind::Dynamic)) return;
-
-    // A class method's parameter: the interprocedural pass knows its own reason.
-    if (mod_.interprocIdent && scope_.methodIndex != kNoMethod) {
-        const MethodInfo& self = mod_.methods.methods()[scope_.methodIndex];
-        bool isParam = false;
-        for (const auto& p : self.fn->params) {
-            if (p.name == id.name) {
-                isParam = true;
-                break;
-            }
-        }
-        if (isParam) {
-            // The SHAPE claim rides on exactly this refusal: a parameter whose
-            // type the join could not prove is the only place it is worth
-            // having, and `safeParamNames` is the name-to-position map that is
-            // safe to read one from — it is empty for a parameter the body
-            // rebinds, which is the case where this identifier is not the
-            // parameter at all.
-            for (size_t p = 0; p < self.safeParamNames.size(); ++p) {
-                if (self.safeParamNames[p] != id.name) continue;
-                if (p >= self.paramShapes.size()) break;
-                const Type shape = self.paramShapes[p];
-                if (shape.is(TypeKind::Object) && shape.shapeClass() != kNoShapeClass) {
-                    mod_.result->guessedParamShapes.emplace(&id, shape.shapeClass());
-                }
-                break;
-            }
-            std::string reason;
-            if (!self.plainParams) {
-                reason = "the method's parameter list is not plain";
-            } else if (mod_.methodPoison.poisons(scope_.methodIndex)) {
-                reason = mod_.methodPoison.reasonFor(scope_.methodIndex);
-            } else if (self.unreached) {
-                reason = "no call site this compilation saw reaches the method";
-            } else {
-                reason = "the call sites disagree about the argument's class";
-            }
-            mod_.result->identRefusals.emplace(
-                &id, "receiver is dynamic: parameter (" + reason + ")");
-            return;
-        }
-    }
-
-    for (const auto& p : facts_.paramNames) {
-        if (p == id.name) {
-            mod_.result->identRefusals.emplace(&id, "receiver is dynamic: function-value parameter");
-            return;
-        }
-    }
-
-    // A binding of this body, or of a function enclosing it: the flow pass DID
-    // resolve the name and what it holds is genuinely unproven — a value out of
-    // a dynamic read, or a join of two kinds.
-    if (scope_.env.count(id.name) != 0 || scope_.cells.count(id.name) != 0) {
-        mod_.result->identRefusals.emplace(&id, "receiver is dynamic: local binding");
+void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver) {
+    if (!mod_.interprocIdent || !mod_.valueFlow || propName.empty()) return;
+    if (receiver.is(TypeKind::Never)) return;
+    if (receiver.is(TypeKind::Array) || receiver.is(TypeKind::TypedArray) ||
+        receiver.is(TypeKind::Number) || receiver.is(TypeKind::String) ||
+        receiver.is(TypeKind::Bool) || receiver.is(TypeKind::Null) ||
+        receiver.is(TypeKind::Undefined)) {
         return;
     }
-    for (const Scope* p = scope_.parent; p != nullptr; p = p->parent) {
-        if (p->cells.count(id.name) != 0) {
-            mod_.result->identRefusals.emplace(&id, "receiver is dynamic: captured binding");
-            return;
+    const ClassLayout* cl = nullptr;
+    if (receiver.is(TypeKind::Object) && receiver.shapeClass() != kNoShapeClass) {
+        cl = mod_.result->classLayouts.byShapeClass(receiver.shapeClass());
+        if (cl == nullptr) return;
+    }
+    const auto& setters = mod_.methods.setters();
+    for (uint32_t i = 0; i < setters.size(); ++i) {
+        if (setters[i].propName != propName) continue;
+        if (cl != nullptr && !mod_.methods.areClassesRelated(setters[i].className, cl->name)) {
+            continue;
         }
+        mod_.contribute(InferMemo::Contrib::SetterReached, i, 0, Type::never());
     }
-
-    // A name the MODULE binds, read from a body whose scope chain does not
-    // reach the module top level. This is the road value flow opens: a module
-    // `const` is one binding for the whole program, so what it holds can be
-    // joined program-wide even though no scope chain connects the two.
-    if (mod_.moduleScopeNames.count(id.name) != 0) {
-        mod_.result->identRefusals.emplace(&id, "receiver is dynamic: module binding");
-        return;
-    }
-
-    // Nothing in the program declares it: a builtin, or a host global.
-    mod_.result->identRefusals.emplace(&id, "receiver is dynamic: global or host name");
 }
-
 
 }  // namespace bronze::types

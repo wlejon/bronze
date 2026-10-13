@@ -308,7 +308,7 @@ private:
     bool envSlotIsF64(uint32_t depth, uint32_t index) const;
     void planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
                                 const std::vector<const ast::Stmt*>& body,
-                                const std::string& functionName, EnvScopeInfo& info) const;
+                                const il::Function& ilFn, EnvScopeInfo& info) const;
     void emitImmutableAssign(const std::string& name, il::Function& ilFn);
 
     // --- --pins write barriers (lower_pin.cpp) ---

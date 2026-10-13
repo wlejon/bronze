@@ -177,6 +177,7 @@ public:
 
     // Every class, in first-declaration order — the reason it is a vector.
     const std::vector<ClassLayout>& all() const { return classes_; }
+    std::vector<ClassLayout>& allMutable() { return classes_; }
 
     // reason -> how many classes it refused. The chunk's histogram.
     std::map<std::string, uint32_t> refusalHistogram() const;

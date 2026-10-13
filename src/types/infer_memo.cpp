@@ -121,6 +121,10 @@ void InferMemo::noteMethod(uint32_t index, uint32_t version, bool poisoned) {
          FactValue{Type::never(), (uint64_t{version} << 1) | (poisoned ? 1u : 0u)});
 }
 
+void InferMemo::noteSetter(uint32_t index, uint32_t version) {
+    note(factKey(FactKind::Setter, index, 0), FactValue{Type::never(), version});
+}
+
 void InferMemo::noteCtor(uint32_t index, uint32_t version, bool poisoned) {
     note(factKey(FactKind::Ctor, index, 0),
          FactValue{Type::never(), (uint64_t{version} << 1) | (poisoned ? 1u : 0u)});
@@ -163,6 +167,12 @@ void InferMemo::apply(ModuleContext& mod, const Contribution& c) {
         case Contrib::MethodSkipped:
             mod.methods.methods()[c.index].sawSkippedDynamicArg[c.param] = true;
             break;
+        case Contrib::MethodReached:
+            mod.methods.methods()[c.index].observedReached = true;
+            break;
+        case Contrib::SetterReached:
+            mod.methods.setters()[c.index].observedReached = true;
+            break;
         case Contrib::CtorParam: {
             Type& slot = mod.ctors.ctors()[c.index].observedParams[c.param];
             slot = join(slot, c.t);
@@ -202,6 +212,8 @@ InferMemo::FactValue InferMemo::current(const ModuleContext& mod, const Scope* p
             return FactValue{Type::never(),
                              (uint64_t{m.version} << 1) | (mod.methodPoison.poisons(a) ? 1u : 0u)};
         }
+        case FactKind::Setter:
+            return FactValue{Type::never(), mod.methods.setters()[a].version};
         case FactKind::Ctor: {
             const auto& c = mod.ctors.ctors()[a];
             return FactValue{Type::never(), (uint64_t{c.version} << 1) |

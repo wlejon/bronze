@@ -160,6 +160,7 @@ bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
 }
 
 void FlowAnalyzer::declare(const std::string& name, Type t) {
+    scope_.pristineMathFns.erase(name);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
     } else {
@@ -187,6 +188,7 @@ FlowAnalyzer::ScopeSave FlowAnalyzer::saveDeclarations(const std::vector<std::st
     ScopeSave saved;
     saved.reserve(names.size());
     for (const auto& name : names) {
+        scope_.pristineMathFns.erase(name);
         const auto it = scope_.env.find(name);
         saved.emplace_back(name, it == scope_.env.end() ? std::optional<Type>()
                                                         : std::optional<Type>(it->second));
@@ -196,6 +198,7 @@ FlowAnalyzer::ScopeSave FlowAnalyzer::saveDeclarations(const std::vector<std::st
 
 void FlowAnalyzer::restoreDeclarations(const ScopeSave& saved) {
     for (const auto& entry : saved) {
+        scope_.pristineMathFns.erase(entry.first);
         if (entry.second.has_value()) {
             scope_.env[entry.first] = *entry.second;
         } else {
@@ -205,6 +208,7 @@ void FlowAnalyzer::restoreDeclarations(const ScopeSave& saved) {
 }
 
 void FlowAnalyzer::assign(const std::string& name, Type t) {
+    scope_.pristineMathFns.erase(name);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
         return;
@@ -239,12 +243,14 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
 }
 
 void FlowAnalyzer::widenAll() {
+    scope_.pristineMathFns.clear();
     for (auto& entry : scope_.env) entry.second = Type::dynamic();
     for (auto& entry : scope_.cells) entry.second = Type::dynamic();
 }
 
 void FlowAnalyzer::widenAssigned(const std::unordered_set<std::string>& assigned) {
     for (const auto& name : assigned) {
+        scope_.pristineMathFns.erase(name);
         if (const auto it = scope_.env.find(name); it != scope_.env.end()) {
             it->second = Type::dynamic();
         }
@@ -385,6 +391,14 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
             return;
         }
         declare(v->name, v->init ? expr(*v->init) : Type::undefined());
+        if (v->isConst && v->init != nullptr && !scope_.isCell(v->name)) {
+            if (const auto* ma = ast::exactAs<const ast::MemberAccess*>(v->init.get())) {
+                if (!ma->optional && isPristineMathBase(*ma->object) &&
+                    isMathMethodReturningNumber(ma->property)) {
+                    scope_.pristineMathFns.insert(v->name);
+                }
+            }
+        }
         return;
     }
     if (const auto* r = ast::exactAs<const ast::ReturnStmt*>(&s)) {
@@ -791,6 +805,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     for (uint32_t iter = 0; iter <= kMaxFlowIterations; ++iter) {
         const Env beforeCells = scope.cells;
         scope.env.clear();
+        scope.pristineMathFns.clear();
         seedParams(scope, params, args.paramTypes);
         FlowAnalyzer probe(mod, scope, facts, args.qualifiedName, /*record=*/false);
         probe.runParamDefaults(params);
@@ -824,6 +839,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     Type bodyReturn = probeReturn;
     if (args.record) {
         scope.env.clear();
+        scope.pristineMathFns.clear();
         seedParams(scope, params, args.paramTypes);
         FlowAnalyzer recorder(mod, scope, facts, args.qualifiedName, /*record=*/true);
         recorder.runParamDefaults(params);

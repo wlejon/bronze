@@ -470,7 +470,7 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // Which of the slots hold Numbers, decided once, here, because this is
     // where the layout is fixed and every reader of the record — the body and
     // every closure written in it — is lowered after it.
-    planEnvSlotNumberTypes(params, body, ilFn.name, info);
+    planEnvSlotNumberTypes(params, body, ilFn, info);
     // And which of them hold a function declaration nothing can rebind — the
     // static call plan, lower_scope.cpp.
     planStableFunctionSlots(body, &params, info);

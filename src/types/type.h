@@ -122,6 +122,11 @@ public:
     // an object; the native element path needs the kind and stays dynamic.
     static constexpr Type typedArray() { return Type(TypeKind::TypedArray); }
     static constexpr Type array() { return Type(TypeKind::Array); }
+    static constexpr Type arrayOfNever() { return Type(TypeKind::Array, kArrayElemNever); }
+    static constexpr Type arrayOfObject(ShapeClassId cls) {
+        return cls == kNoShapeClass ? Type(TypeKind::Array)
+                                    : Type(TypeKind::Array, kArrayElemClassTag | cls);
+    }
     // A dense JS array whose elements are PINNED: every element a Number,
     // every index in bounds (types/pins.h). Only a `--pins numeric-elements`
     // field read produces one.
@@ -167,6 +172,15 @@ public:
     constexpr bool arrayElementsPinned() const {
         return kind_ == TypeKind::Array && payload_ == kPinnedElements;
     }
+    constexpr bool arrayElementsUndecided() const {
+        return kind_ == TypeKind::Array && payload_ == kArrayElemNever;
+    }
+    constexpr ShapeClassId arrayElemClass() const {
+        return (kind_ == TypeKind::Array && payload_ != kNoPayload &&
+                (payload_ & kArrayElemClassTag) != 0)
+                   ? (payload_ & ~kArrayElemClassTag)
+                   : kNoShapeClass;
+    }
 
     friend constexpr bool operator==(Type a, Type b) {
         return a.kind_ == b.kind_ && a.payload_ == b.payload_ &&
@@ -185,9 +199,10 @@ public:
 
 private:
     static constexpr uint32_t kNoPayload = 0xFFFFFFFFu;
-    // The `Array` payload marking pinned elements. Arrays carry no other
-    // payload, so one value is the whole encoding.
+    // The `Array` payload marking pinned elements.
     static constexpr uint32_t kPinnedElements = 1;
+    static constexpr uint32_t kArrayElemNever = 2;
+    static constexpr uint32_t kArrayElemClassTag = 0x80000000u;
     constexpr explicit Type(TypeKind k, uint32_t payload = kNoPayload,
                             bool identityOnly = false, bool builtHere = true)
         : kind_(k), payload_(payload), identityOnly_(identityOnly), builtHere_(builtHere) {}

@@ -157,9 +157,44 @@ Type demoteToGuess(Type t) {
 // poison only grows, so a method that gives up its parameters mid-fixpoint has
 // them dynamic on every later round, and the round that discovers it is the
 // round that reports "changed".
-bool widenMethods(ModuleContext& mod) {
+bool foldMethodReachability(ModuleContext& mod) {
     if (!mod.interprocIdent) return false;
     bool changed = false;
+    for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
+        auto& m = mod.methods.methods()[i];
+        bool mChanged = false;
+        if (!m.reached &&
+            (m.observedReached || !m.plainParams || mod.methodPoison.poisons(i))) {
+            m.reached = true;
+            mChanged = true;
+        }
+        if (m.reached) {
+            const bool speaks = m.plainParams && !mod.methodPoison.poisons(i);
+            const Type widenedReturn =
+                speaks ? join(m.signature.returnType, m.observedReturn) : Type::dynamic();
+            if (widenedReturn != m.signature.returnType) {
+                m.signature.returnType = widenedReturn;
+                mChanged = true;
+            }
+        }
+        if (mChanged) {
+            ++m.version;
+            changed = true;
+        }
+    }
+    for (auto& s : mod.methods.setters()) {
+        if (!s.reached && s.observedReached) {
+            s.reached = true;
+            ++s.version;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool widenMethods(ModuleContext& mod) {
+    if (!mod.interprocIdent) return false;
+    bool changed = foldMethodReachability(mod);
     for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
         auto& m = mod.methods.methods()[i];
         const bool speaks = m.plainParams && !mod.methodPoison.poisons(i);
@@ -265,6 +300,9 @@ bool finalizeUnreachedMethods(ModuleContext& mod) {
     if (!mod.interprocIdent) return false;
     bool changed = false;
     for (auto& m : mod.methods.methods()) {
+        if (!m.reached) {
+            m.unreached = true;
+        }
         for (auto& param : m.signature.params) {
             if (!param.is(TypeKind::Never)) continue;
             param = Type::dynamic();
@@ -290,6 +328,10 @@ void resetObservations(ModuleContext& mod) {
         m.observedParams.assign(m.signature.params.size(), Type::never());
         m.observedParamShapes.assign(m.signature.params.size(), Type::never());
         m.observedReturn = Type::never();
+        m.observedReached = false;
+    }
+    for (auto& s : mod.methods.setters()) {
+        s.observedReached = false;
     }
     for (auto& c : mod.ctors.ctors()) {
         c.observedParams.assign(c.signature.params.size(), Type::never());
@@ -427,7 +469,8 @@ uint32_t primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceRe
         // and a second road out of the function here would be a second place to
         // keep right.
         if (!runPass(mod, split, /*record=*/false)) return rounds;
-        bool changed = refineFieldHarvest(mod, result);
+        bool changed = foldMethodReachability(mod);
+        changed = refineFieldHarvest(mod, result) || changed;
         changed = mod.methodPoison.version() != poisonBefore || changed;
         changed = mod.ctorPoison.version() != ctorPoisonBefore || changed;
         changed = mod.moduleBindings != bindingsBefore || changed;
@@ -513,6 +556,9 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     if (mod.interprocIdent) {
         mod.methods.build(module);
         scanMethodEscapes(module, mod.methods, mod.methodPoison);
+        for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
+            if (mod.methodPoison.poisons(i)) mod.methods.methods()[i].reached = true;
+        }
     }
     mod.ctorParamTypes = std::getenv("BRONZE_NO_CTOR_PARAM_TYPES") == nullptr;
     if (mod.ctorParamTypes || mod.methodParamTypes) {
@@ -598,14 +644,12 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         // un-refute one.
         changed = mod.fieldAudit.settle() || changed;
         if (changed) continue;
-        // Nothing moved. The one widening that could not run inside the loop
-        // does so now, and the loop re-enters to let its consequences settle:
-        // a method put back on the dynamic convention makes its body's receivers
-        // dynamic, which can poison further names.
+        // Nothing moved. Widen any unreached constructors and re-harvest fields;
+        // unreached methods are finalized after the fixpoint so dead library
+        // methods do not pollute live method signatures or the field audit.
         if (!finalized) {
             finalized = true;
-            bool moved = finalizeUnreachedMethods(mod);
-            moved = finalizeUnreachedCtors(mod) || moved;
+            bool moved = finalizeUnreachedCtors(mod);
             moved = refineFieldHarvest(mod, result) || moved;
             if (moved) continue;
         }
@@ -617,6 +661,13 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         return std::nullopt;
     }
 
+    mod.auditSettled = true;
+    finalizeUnreachedMethods(mod);
+    for (auto& cl : result.classLayouts.allMutable()) {
+        for (auto& [k, v] : cl.fieldTypes) {
+            if (v.arrayElementsUndecided()) v = Type::array();
+        }
+    }
     timer.mark("fixpoint");
 
     // One more walk, this time filling the side table. Everything it reads is

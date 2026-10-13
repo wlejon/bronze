@@ -325,3 +325,74 @@ TEST_CASE("foreign object passed to method does not qualify for raw f64 unboxing
     const auto& r = *inferred.result;
     CHECK(r.provenFieldReads.empty());
 }
+
+TEST_CASE("uncalled library method with unproven parameter does not poison constructor-proven number fields") {
+    const auto inferred = infer(
+        "class Vec3 {\n"
+        "  constructor(x = 0, y = 0, z = 0) {\n"
+        "    this.x = x;\n"
+        "    this.y = y;\n"
+        "    this.z = z;\n"
+        "  }\n"
+        "  add(v) {\n"
+        "    this.x += v.x;\n"
+        "    this.y += v.y;\n"
+        "    this.z += v.z;\n"
+        "    return this;\n"
+        "  }\n"
+        "  uncalledSetFromArray(array, offset = 0) {\n"
+        "    this.x = array[offset];\n"
+        "    this.y = array[offset + 1];\n"
+        "    this.z = array[offset + 2];\n"
+        "    return this;\n"
+        "  }\n"
+        "  uncalledSetComponent(index, value) {\n"
+        "    this[index] = value;\n"
+        "    return this;\n"
+        "  }\n"
+        "}\n"
+        "const a = new Vec3(1, 2, 3);\n"
+        "const b = new Vec3(4, 5, 6);\n"
+        "a.add(b);\n"
+        "console.log(a.x + a.y + a.z);\n");
+    const auto& r = *inferred.result;
+    CHECK(r.fieldAudit.globalRefusals.empty());
+    CHECK(r.fieldAudit.namesClean == 3);
+    CHECK(r.provenFieldReads.size() >= 6);
+}
+
+TEST_CASE("homogeneous array element class inference propagates through push, index, and shift") {
+    const auto inferred = infer(
+        "class GraphNode {\n"
+        "  constructor(id, x) {\n"
+        "    this.id = id;\n"
+        "    this.x = x;\n"
+        "    this.children = [];\n"
+        "  }\n"
+        "  addChild(child) {\n"
+        "    this.children.push(child);\n"
+        "  }\n"
+        "}\n"
+        "function traverse(root) {\n"
+        "  const queue = [root];\n"
+        "  let sum = 0;\n"
+        "  while (queue.length > 0) {\n"
+        "    const node = queue.shift();\n"
+        "    sum += node.x;\n"
+        "    for (let i = 0; i < node.children.length; i++) {\n"
+        "      const child = node.children[i];\n"
+        "      sum += child.x;\n"
+        "      queue.push(child);\n"
+        "    }\n"
+        "  }\n"
+        "  return sum;\n"
+        "}\n"
+        "const r = new GraphNode(0, 1.5);\n"
+        "r.addChild(new GraphNode(1, 2.5));\n"
+        "console.log(traverse(r));\n");
+    const auto& res = *inferred.result;
+    CHECK(res.fieldAudit.namesClean == 2);
+    CHECK(res.fieldAudit.refusedNotBuiltHere == 0);
+    CHECK(res.provenFieldReads.size() >= 2);
+}
+

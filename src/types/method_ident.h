@@ -38,6 +38,8 @@ struct MethodInfo {
     std::vector<bool> hasDefault;
     std::vector<std::string> safeParamNames;
     bool unreached = false;
+    bool reached = false;
+    bool observedReached = false;
 
     // Per parameter: the object identity every call site that NAMED ONE agreed
     // on, `Never` while none has, and an object with no class once two named
@@ -64,6 +66,15 @@ struct MethodInfo {
     uint32_t version = 0;
 };
 
+struct SetterInfo {
+    const ast::FunctionExpr* fn = nullptr;
+    std::string className;
+    std::string propName;
+    bool reached = false;
+    bool observedReached = false;
+    uint32_t version = 0;
+};
+
 // Forward declaration
 struct MethodPoison;
 
@@ -74,6 +85,7 @@ public:
     void build(const ast::Module& module);
 
     uint32_t indexOfNode(const ast::FunctionExpr* fn) const;
+    uint32_t setterIndexOfNode(const ast::FunctionExpr* fn) const;
     bool isMethodName(const std::string& name) const;
     void reachableFrom(const std::string& className, const std::string& methodName,
                        std::vector<uint32_t>& out) const;
@@ -81,8 +93,13 @@ public:
     void subtreeOf(const std::string& className, std::vector<uint32_t>& out) const;
     void ancestorsOf(const std::string& className, std::vector<std::string>& out) const;
 
+    bool isStaticMethodReachable(const std::string& className, const std::string& methodName) const;
+    bool areClassesRelated(const std::string& a, const std::string& b) const;
+
     std::vector<MethodInfo>& methods() { return methods_; }
     const std::vector<MethodInfo>& methods() const { return methods_; }
+    std::vector<SetterInfo>& setters() { return setters_; }
+    const std::vector<SetterInfo>& setters() const { return setters_; }
 
     // Parameter names the field-type harvest may answer for:
     // className -> methodName -> paramName -> Type
@@ -98,10 +115,14 @@ private:
     };
 
     std::vector<MethodInfo> methods_;
+    std::vector<SetterInfo> setters_;
     std::map<const ast::FunctionExpr*, uint32_t> byNode_;
+    std::map<const ast::FunctionExpr*, uint32_t> setterByNode_;
     std::map<std::string, std::vector<uint32_t>> byName_;
     std::map<std::string, ClassNode> classes_;
     std::set<std::string> duplicates_;
+    std::set<std::string> memberNames_;
+    bool anyComputedMember_ = false;
 };
 
 // Why a method's parameters cannot carry an identity or primitive type.
