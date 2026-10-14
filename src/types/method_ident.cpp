@@ -1,6 +1,7 @@
 #include "types/method_ident.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "types/walk.h"
 

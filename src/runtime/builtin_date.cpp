@@ -279,6 +279,19 @@ uint64_t dateSetYear(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     return Value::fromDouble(u).rawBits();
 }
 
+template <bool DefaultDate, bool DefaultTime>
+uint64_t dateToLocaleText(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    double t = 0.0;
+    if (!rtDateThisTimeValue(Value(thisBits), "a Date string method", t)) {
+        return Value::fromUndefined().rawBits();
+    }
+    Value out = Value::fromUndefined();
+    if (!rtFormatDateLocale(t, argc, argv, DefaultDate, DefaultTime, out)) {
+        return Value::fromUndefined().rawBits();
+    }
+    return out.rawBits();
+}
+
 const NativeMethod kStringMembers[] = {
     {"toString", dateToText<dt::dateTimeString>, 0, 0},
     {"toDateString", dateToText<dt::dateOnlyString>, 0, 0},
@@ -286,9 +299,9 @@ const NativeMethod kStringMembers[] = {
     {"toUTCString", dateToText<dt::utcString>, 0, 0},
     {"toISOString", dateToISOString, 0, 0},
     {"toJSON", dateToJSON, 0, 1},
-    {"toLocaleString", dateToText<dt::localeDateTimeString>, 0, 0},
-    {"toLocaleDateString", dateToText<dt::localeDateString>, 0, 0},
-    {"toLocaleTimeString", dateToText<dt::localeTimeString>, 0, 0},
+    {"toLocaleString", dateToLocaleText<true, true>, 0, 0},
+    {"toLocaleDateString", dateToLocaleText<true, false>, 0, 0},
+    {"toLocaleTimeString", dateToLocaleText<false, true>, 0, 0},
     {"getYear", dateGetYear, 0, 0},
     {"setYear", dateSetYear, 0, 1},
     // B.2.3.3: `toGMTString` IS `toUTCString` — the same function object,

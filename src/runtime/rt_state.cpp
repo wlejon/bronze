@@ -804,6 +804,8 @@ bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
         out = rtReflectNamespace();
     } else if (keyStr == "Date") {
         out = rtDateConstructor();
+    } else if (keyStr == "Intl") {
+        out = rtIntlNamespace();
     } else if (keyStr == "Symbol") {
         out = rtSymbolFunction();
     } else if (Value bigint = rtBigIntConstructor(keyStr); bigint.isObject()) {

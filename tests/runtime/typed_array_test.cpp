@@ -1,17 +1,24 @@
 #include <doctest/doctest.h>
 
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 
+#include "abi/bronze_abi.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/typed_array.h"
 
 using namespace bronze;
+using namespace bronze::runtime;
 
 namespace {
 
@@ -416,3 +423,153 @@ TEST_CASE("an auto-length DataView measures its buffer when asked (25.3.1)") {
     heap.collect();
     CHECK(view.get().asObject<DataViewHeader>()->isAutoLength());
 }
+
+TEST_CASE("new TypedArray(otherTypedArray): same-type, cross-type, subarray, clamped, and 8MB perf") {
+    ShadowStackFrame frame;
+
+    auto constructFrom = [](const char* ctorName, Rooted<Value>& src) -> Value {
+        Rooted<Value> ctor{rtTypedArrayConstructor(ctorName)};
+        return Value(bronze_construct(ctor.get().rawBits(), 1,
+                                      reinterpret_cast<const uint64_t*>(src.slot_ptr())));
+    };
+
+    // 1. Same-type and raw-compatible integer / BigInt views.
+    {
+        Rooted<Value> src{rtNewTypedArray(ElementKind::Int16, 4)};
+        auto* s = src.get().asObject<TypedArrayHeader>();
+        s->set(0, -32768);
+        s->set(1, -1);
+        s->set(2, 0);
+        s->set(3, 32767);
+
+        Rooted<Value> same{constructFrom("Int16Array", src)};
+        auto* dSame = same.get().asObject<TypedArrayHeader>();
+        CHECK(dSame->length == 4);
+        CHECK(dSame->get(0) == -32768);
+        CHECK(dSame->get(1) == -1);
+        CHECK(dSame->get(2) == 0);
+        CHECK(dSame->get(3) == 32767);
+
+        Rooted<Value> compat{constructFrom("Uint16Array", src)};
+        auto* dCompat = compat.get().asObject<TypedArrayHeader>();
+        CHECK(dCompat->length == 4);
+        CHECK(dCompat->get(0) == 32768);
+        CHECK(dCompat->get(1) == 65535);
+        CHECK(dCompat->get(2) == 0);
+        CHECK(dCompat->get(3) == 32767);
+    }
+
+    // 2. Cross-type conversions (Float32 -> Int32, Int32 -> Float64, Float64 -> Uint8Clamped, Int8 -> Uint8Clamped).
+    {
+        Rooted<Value> f32{rtNewTypedArray(ElementKind::Float32, 4)};
+        auto* sf = f32.get().asObject<TypedArrayHeader>();
+        sf->set(0, 1.75f);
+        sf->set(1, -42.5f);
+        sf->set(2, 0.0f);
+        sf->set(3, 1000.25f);
+
+        Rooted<Value> i32{constructFrom("Int32Array", f32)};
+        auto* di = i32.get().asObject<TypedArrayHeader>();
+        CHECK(di->length == 4);
+        CHECK(di->get(0) == 1);
+        CHECK(di->get(1) == -42);
+        CHECK(di->get(2) == 0);
+        CHECK(di->get(3) == 1000);
+
+        Rooted<Value> f64{constructFrom("Float64Array", i32)};
+        auto* df = f64.get().asObject<TypedArrayHeader>();
+        CHECK(df->length == 4);
+        CHECK(df->get(0) == 1.0);
+        CHECK(df->get(1) == -42.0);
+        CHECK(df->get(2) == 0.0);
+        CHECK(df->get(3) == 1000.0);
+
+        Rooted<Value> clampSrc{rtNewTypedArray(ElementKind::Float64, 6)};
+        auto* sc = clampSrc.get().asObject<TypedArrayHeader>();
+        sc->set(0, -10.5);
+        sc->set(1, 0.5);
+        sc->set(2, 1.5);
+        sc->set(3, 2.5);
+        sc->set(4, 255.6);
+        sc->set(5, std::numeric_limits<double>::quiet_NaN());
+
+        Rooted<Value> clamped{constructFrom("Uint8ClampedArray", clampSrc)};
+        auto* dc = clamped.get().asObject<TypedArrayHeader>();
+        CHECK(dc->length == 6);
+        CHECK(dc->get(0) == 0);
+        CHECK(dc->get(1) == 0);
+        CHECK(dc->get(2) == 2);
+        CHECK(dc->get(3) == 2);
+        CHECK(dc->get(4) == 255);
+        CHECK(dc->get(5) == 0);
+
+        Rooted<Value> i8Src{rtNewTypedArray(ElementKind::Int8, 3)};
+        i8Src.get().asObject<TypedArrayHeader>()->set(0, -5);
+        i8Src.get().asObject<TypedArrayHeader>()->set(1, 0);
+        i8Src.get().asObject<TypedArrayHeader>()->set(2, 120);
+        Rooted<Value> clampedFromI8{constructFrom("Uint8ClampedArray", i8Src)};
+        auto* dcI8 = clampedFromI8.get().asObject<TypedArrayHeader>();
+        CHECK(dcI8->get(0) == 0);
+        CHECK(dcI8->get(1) == 0);
+        CHECK(dcI8->get(2) == 120);
+    }
+
+    // 3. Offset subarray views.
+    {
+        Rooted<Value> base{rtNewTypedArray(ElementKind::Int32, 6)};
+        for (uint32_t i = 0; i < 6; ++i) {
+            base.get().asObject<TypedArrayHeader>()->set(i, static_cast<double>((i + 1) * 10));
+        }
+        Rooted<Value> buf{base.get().asObject<TypedArrayHeader>()->buffer};
+        Rooted<Value> i32Ctor{rtTypedArrayConstructor("Int32Array")};
+        RootedBlock subArgs(3);
+        subArgs.set(0, buf.get());
+        subArgs.set(1, Value::fromDouble(8.0));
+        subArgs.set(2, Value::fromDouble(3.0));
+        Rooted<Value> sub{Value(bronze_construct(i32Ctor.get().rawBits(), 3, subArgs.data()))};
+
+        Rooted<Value> copySame{constructFrom("Int32Array", sub)};
+        CHECK(copySame.get().asObject<TypedArrayHeader>()->length == 3);
+        CHECK(copySame.get().asObject<TypedArrayHeader>()->byteOffset == 0);
+        CHECK(copySame.get().asObject<TypedArrayHeader>()->get(0) == 30);
+        CHECK(copySame.get().asObject<TypedArrayHeader>()->get(1) == 40);
+        CHECK(copySame.get().asObject<TypedArrayHeader>()->get(2) == 50);
+
+        Rooted<Value> copyCross{constructFrom("Float64Array", sub)};
+        CHECK(copyCross.get().asObject<TypedArrayHeader>()->length == 3);
+        CHECK(copyCross.get().asObject<TypedArrayHeader>()->get(0) == 30.0);
+        CHECK(copyCross.get().asObject<TypedArrayHeader>()->get(1) == 40.0);
+        CHECK(copyCross.get().asObject<TypedArrayHeader>()->get(2) == 50.0);
+    }
+
+    // 4. 8 MB Uint8Array copy completes in < 15 ms.
+    {
+        const bool wasStress = rtHeap().gc_stress();
+        rtHeap().set_gc_stress(false);
+
+        constexpr uint32_t kLen = 8'000'000;
+        Rooted<Value> src{rtNewTypedArray(ElementKind::Uint8, kLen)};
+        uint8_t* srcBytes = src.get().asObject<TypedArrayHeader>()->bytes();
+        srcBytes[0] = 42;
+        srcBytes[kLen / 2] = 123;
+        srcBytes[kLen - 1] = 251;
+
+        Rooted<Value> ctor{rtTypedArrayConstructor("Uint8Array")};
+        const auto t0 = std::chrono::steady_clock::now();
+        Rooted<Value> dst{Value(bronze_construct(
+            ctor.get().rawBits(), 1, reinterpret_cast<const uint64_t*>(src.slot_ptr())))};
+        const auto t1 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        auto* d = dst.get().asObject<TypedArrayHeader>();
+        CHECK(d->length == kLen);
+        CHECK(d->bytes()[0] == 42);
+        CHECK(d->bytes()[kLen / 2] == 123);
+        CHECK(d->bytes()[kLen - 1] == 251);
+        if (!wasStress) {
+            CHECK(ms < 15.0);
+        }
+        rtHeap().set_gc_stress(wasStress);
+    }
+}
+

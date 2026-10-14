@@ -294,6 +294,7 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
     if (everyMatch && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
 
     Units out;
+    out.reserve(input.size());
     size_t at = 0;
     size_t from = 0;
     // A non-global, non-sticky pattern ignores `lastIndex` entirely (22.2.7.2
@@ -326,9 +327,8 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
         if (stickyOnly && !rtRegExpSetLastIndex(re, static_cast<double>(pieces.end))) {
             return Value::fromUndefined();
         }
-        const Units before = slice(input, at, pieces.start);
-        out.insert(out.end(), before.begin(), before.end());
-        if (!appendReplacement(out, input, pieces, replacement, replacerIsFunction)) {
+        string_regexp::appendUnitsSlice(out, input, at, pieces.start);
+        if (!appendReplacement(out, input, str, pieces, replacement, replacerIsFunction)) {
             return Value::fromUndefined();
         }
         at = pieces.end;
@@ -342,9 +342,8 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
     // The global walk ends on an exec that failed, which is what put the
     // cursor back at 0 (22.2.7.2 step 12.a.i).
     if (everyMatch && !rtRegExpSetLastIndex(re, 0.0)) return Value::fromUndefined();
-    const Units tail = slice(input, at, input.size());
-    out.insert(out.end(), tail.begin(), tail.end());
-    return stringOf(out);
+    string_regexp::appendUnitsSlice(out, input, at, input.size());
+    return string_regexp::stringOfSpan(out.data(), out.size());
 }
 
 // ---- 22.2.6.14 [@@split] ----------------------------------------------------

@@ -9,6 +9,8 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <type_traits>
+#include <vector>
 
 #include "runtime/fatal.h"
 
@@ -38,6 +40,18 @@ static_assert(std::size(kElementKinds) == static_cast<size_t>(ElementKind::Count
 // stored here would read back as -0 and print as `-0`, announcing a sign that
 // ToInt8 does not produce.
 double toIntegerModulo(double number, int bits, bool isSigned) noexcept {
+    if (number > -9007199254740992.0 && number < 9007199254740992.0) {
+        const auto u = static_cast<uint32_t>(static_cast<int64_t>(number));
+        if (bits == 8) {
+            return isSigned ? static_cast<double>(static_cast<int8_t>(u))
+                            : static_cast<double>(static_cast<uint8_t>(u));
+        }
+        if (bits == 16) {
+            return isSigned ? static_cast<double>(static_cast<int16_t>(u))
+                            : static_cast<double>(static_cast<uint16_t>(u));
+        }
+        return isSigned ? static_cast<double>(static_cast<int32_t>(u)) : static_cast<double>(u);
+    }
     if (!std::isfinite(number)) return 0.0;
     const double modulus = std::ldexp(1.0, bits);  // 2^bits, exactly
     // fmod is exact for finite operands, so even 1e40 narrows without any
@@ -306,6 +320,174 @@ void TypedArrayHeader::setRawBits64(uint32_t index, uint64_t bits) noexcept {
         fatal("internal: a 64-bit raw write to a typed array whose elements are not 8 bytes");
     }
     std::memcpy(bytes() + static_cast<size_t>(index) * 8, &bits, sizeof bits);
+}
+
+bool sameRawTypedArrayEncoding(ElementKind dstKind, ElementKind srcKind) noexcept {
+    if (dstKind == srcKind) return true;
+    const bool srcByte = srcKind == ElementKind::Int8 || srcKind == ElementKind::Uint8 ||
+                         srcKind == ElementKind::Uint8Clamped;
+    if (srcByte && (dstKind == ElementKind::Int8 || dstKind == ElementKind::Uint8 ||
+                    (dstKind == ElementKind::Uint8Clamped && srcKind == ElementKind::Uint8))) {
+        return true;
+    }
+    if ((dstKind == ElementKind::Int16 || dstKind == ElementKind::Uint16) &&
+        (srcKind == ElementKind::Int16 || srcKind == ElementKind::Uint16)) {
+        return true;
+    }
+    if ((dstKind == ElementKind::Int32 || dstKind == ElementKind::Uint32) &&
+        (srcKind == ElementKind::Int32 || srcKind == ElementKind::Uint32)) {
+        return true;
+    }
+    return isBigIntElementKind(dstKind) && isBigIntElementKind(srcKind);
+}
+
+namespace {
+
+template <typename SrcT, typename DstT>
+void convertLoopIntToInt(uint8_t* dstBytes, const uint8_t* srcBytes, uint32_t count) noexcept {
+    for (uint32_t i = 0; i < count; ++i) {
+        SrcT s;
+        std::memcpy(&s, srcBytes + static_cast<size_t>(i) * sizeof(SrcT), sizeof(SrcT));
+        const auto d = static_cast<DstT>(static_cast<uint32_t>(static_cast<int64_t>(s)));
+        std::memcpy(dstBytes + static_cast<size_t>(i) * sizeof(DstT), &d, sizeof(DstT));
+    }
+}
+
+template <typename SrcT, typename DstT>
+void convertLoopFloatToInt(uint8_t* dstBytes, const uint8_t* srcBytes, uint32_t count,
+                           int bits, bool isSigned) noexcept {
+    for (uint32_t i = 0; i < count; ++i) {
+        SrcT s;
+        std::memcpy(&s, srcBytes + static_cast<size_t>(i) * sizeof(SrcT), sizeof(SrcT));
+        const auto d = static_cast<DstT>(toIntegerModulo(static_cast<double>(s), bits, isSigned));
+        std::memcpy(dstBytes + static_cast<size_t>(i) * sizeof(DstT), &d, sizeof(DstT));
+    }
+}
+
+template <typename SrcT, typename DstT>
+void convertLoopToFloat(uint8_t* dstBytes, const uint8_t* srcBytes, uint32_t count) noexcept {
+    for (uint32_t i = 0; i < count; ++i) {
+        SrcT s;
+        std::memcpy(&s, srcBytes + static_cast<size_t>(i) * sizeof(SrcT), sizeof(SrcT));
+        const auto d = static_cast<DstT>(s);
+        std::memcpy(dstBytes + static_cast<size_t>(i) * sizeof(DstT), &d, sizeof(DstT));
+    }
+}
+
+template <typename SrcT>
+void copyFromSrcType(uint8_t* dstBytes, ElementKind dstKind, const uint8_t* srcBytes,
+                     uint32_t count) noexcept {
+    constexpr bool kSrcInt = std::is_integral_v<SrcT>;
+    switch (dstKind) {
+        case ElementKind::Int8:
+            if constexpr (kSrcInt) convertLoopIntToInt<SrcT, int8_t>(dstBytes, srcBytes, count);
+            else convertLoopFloatToInt<SrcT, int8_t>(dstBytes, srcBytes, count, 8, true);
+            return;
+        case ElementKind::Uint8:
+            if constexpr (kSrcInt) convertLoopIntToInt<SrcT, uint8_t>(dstBytes, srcBytes, count);
+            else convertLoopFloatToInt<SrcT, uint8_t>(dstBytes, srcBytes, count, 8, false);
+            return;
+        case ElementKind::Uint8Clamped:
+            for (uint32_t i = 0; i < count; ++i) {
+                SrcT s;
+                std::memcpy(&s, srcBytes + static_cast<size_t>(i) * sizeof(SrcT), sizeof(SrcT));
+                uint8_t d;
+                if constexpr (kSrcInt) {
+                    const auto v = static_cast<int64_t>(s);
+                    d = v <= 0 ? 0u : (v >= 255 ? 255u : static_cast<uint8_t>(v));
+                } else {
+                    d = static_cast<uint8_t>(toUint8Clamp(static_cast<double>(s)));
+                }
+                dstBytes[i] = d;
+            }
+            return;
+        case ElementKind::Int16:
+            if constexpr (kSrcInt) convertLoopIntToInt<SrcT, int16_t>(dstBytes, srcBytes, count);
+            else convertLoopFloatToInt<SrcT, int16_t>(dstBytes, srcBytes, count, 16, true);
+            return;
+        case ElementKind::Uint16:
+            if constexpr (kSrcInt) convertLoopIntToInt<SrcT, uint16_t>(dstBytes, srcBytes, count);
+            else convertLoopFloatToInt<SrcT, uint16_t>(dstBytes, srcBytes, count, 16, false);
+            return;
+        case ElementKind::Int32:
+            if constexpr (kSrcInt) convertLoopIntToInt<SrcT, int32_t>(dstBytes, srcBytes, count);
+            else convertLoopFloatToInt<SrcT, int32_t>(dstBytes, srcBytes, count, 32, true);
+            return;
+        case ElementKind::Uint32:
+            if constexpr (kSrcInt) convertLoopIntToInt<SrcT, uint32_t>(dstBytes, srcBytes, count);
+            else convertLoopFloatToInt<SrcT, uint32_t>(dstBytes, srcBytes, count, 32, false);
+            return;
+        case ElementKind::Float32:
+            convertLoopToFloat<SrcT, float>(dstBytes, srcBytes, count);
+            return;
+        case ElementKind::Float64:
+            convertLoopToFloat<SrcT, double>(dstBytes, srcBytes, count);
+            return;
+        case ElementKind::Float16:
+            for (uint32_t i = 0; i < count; ++i) {
+                SrcT s;
+                std::memcpy(&s, srcBytes + static_cast<size_t>(i) * sizeof(SrcT), sizeof(SrcT));
+                const uint16_t h = halfBitsOf(static_cast<double>(s));
+                std::memcpy(dstBytes + static_cast<size_t>(i) * 2, &h, 2);
+            }
+            return;
+        case ElementKind::BigInt64:
+        case ElementKind::BigUint64:
+        case ElementKind::Count: break;
+    }
+    fatal("internal: unexpected destination element kind in copyFromSrcType");
+}
+
+}  // namespace
+
+void copyTypedArrayElements(uint8_t* dstBytes, ElementKind dstKind, const uint8_t* srcBytes,
+                            ElementKind srcKind, uint32_t count) noexcept {
+    if (count == 0) return;
+    if (sameRawTypedArrayEncoding(dstKind, srcKind)) {
+        std::memmove(dstBytes, srcBytes,
+                     static_cast<size_t>(count) * elementKindInfo(dstKind).bytesPerElement);
+        return;
+    }
+    switch (srcKind) {
+        case ElementKind::Int8: copyFromSrcType<int8_t>(dstBytes, dstKind, srcBytes, count); return;
+        case ElementKind::Uint8:
+        case ElementKind::Uint8Clamped:
+            copyFromSrcType<uint8_t>(dstBytes, dstKind, srcBytes, count);
+            return;
+        case ElementKind::Int16:
+            copyFromSrcType<int16_t>(dstBytes, dstKind, srcBytes, count);
+            return;
+        case ElementKind::Uint16:
+            copyFromSrcType<uint16_t>(dstBytes, dstKind, srcBytes, count);
+            return;
+        case ElementKind::Int32:
+            copyFromSrcType<int32_t>(dstBytes, dstKind, srcBytes, count);
+            return;
+        case ElementKind::Uint32:
+            copyFromSrcType<uint32_t>(dstBytes, dstKind, srcBytes, count);
+            return;
+        case ElementKind::Float32:
+            copyFromSrcType<float>(dstBytes, dstKind, srcBytes, count);
+            return;
+        case ElementKind::Float64:
+            copyFromSrcType<double>(dstBytes, dstKind, srcBytes, count);
+            return;
+        case ElementKind::Float16: {
+            std::vector<double> tmp(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                uint16_t h;
+                std::memcpy(&h, srcBytes + static_cast<size_t>(i) * 2, 2);
+                tmp[i] = doubleOfHalfBits(h);
+            }
+            copyFromSrcType<double>(dstBytes, dstKind, reinterpret_cast<const uint8_t*>(tmp.data()),
+                                    count);
+            return;
+        }
+        case ElementKind::BigInt64:
+        case ElementKind::BigUint64:
+        case ElementKind::Count: break;
+    }
+    fatal("internal: unexpected source element kind in copyTypedArrayElements");
 }
 
 namespace {

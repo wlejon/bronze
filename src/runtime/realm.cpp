@@ -34,7 +34,7 @@ static const char* const kGlobalObjectNames[] = {
     "parseFloat", "ArrayBuffer", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
     "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "DataView",
     "Float16Array", "BigInt64Array", "BigUint64Array", "SharedArrayBuffer", "Atomics",
-    "Function", "Proxy", "Reflect", "Date", "encodeURI", "encodeURIComponent", "decodeURI",
+    "Function", "Proxy", "Reflect", "Date", "Intl", "encodeURI", "encodeURIComponent", "decodeURI",
     "decodeURIComponent", "escape", "unescape", "Iterator", "WeakRef", "FinalizationRegistry",
     "eval", "performance",
 };

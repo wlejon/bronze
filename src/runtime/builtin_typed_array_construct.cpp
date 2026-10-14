@@ -134,18 +134,9 @@ bool fillFromTypedArray(Rooted<Value>& view, ElementKind kind, Rooted<Value>& so
     }
     const uint32_t length = lengthOf(source.get());
     if (!fillFromLength(view, kind, length)) return false;
-    for (uint32_t i = 0; i < length; ++i) {
-        auto* src = source.get().asObject<TypedArrayHeader>();
-        auto* dst = view.get().asObject<TypedArrayHeader>();
-        if (isBigIntElementKind(kind)) {
-            // Both views are 8 bytes wide and the stored bits are the same 64
-            // whichever signedness each has, so this is a copy and never a
-            // conversion — which is also why it cannot allocate.
-            dst->setRawBits64(i, src->rawBits64(i));
-            continue;
-        }
-        dst->set(i, src->get(i));
-    }
+    auto* src = source.get().asObject<TypedArrayHeader>();
+    auto* dst = view.get().asObject<TypedArrayHeader>();
+    copyTypedArrayElements(dst->bytes(), kind, src->bytes(), srcKind, length);
     return true;
 }
 

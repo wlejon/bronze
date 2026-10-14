@@ -136,29 +136,135 @@ int64_t indexOfUnits(const Units& hay, const Units& needle, size_t from) {
     return -1;
 }
 
+bool matchAtHeaders(const StringHeader* hay, const StringHeader* needle, uint32_t at) {
+    const uint32_t hayLen = hay->getLength();
+    const uint32_t needleLen = needle->getLength();
+    if (needleLen > hayLen || at > hayLen - needleLen) return false;
+    if (needleLen == 0) return true;
+    if (hay->isLatin1() && needle->isLatin1()) {
+        return std::memcmp(hay->latin1Data() + at, needle->latin1Data(), needleLen) == 0;
+    }
+    if (!hay->isLatin1() && !needle->isLatin1()) {
+        return std::memcmp(hay->utf16Data() + at, needle->utf16Data(),
+                           static_cast<size_t>(needleLen) * sizeof(uint16_t)) == 0;
+    }
+    if (hay->isLatin1()) {
+        const auto* h = reinterpret_cast<const uint8_t*>(hay->latin1Data()) + at;
+        const uint16_t* n = needle->utf16Data();
+        for (uint32_t i = 0; i < needleLen; ++i) {
+            if (static_cast<uint16_t>(h[i]) != n[i]) return false;
+        }
+        return true;
+    }
+    const uint16_t* h = hay->utf16Data() + at;
+    const auto* n = reinterpret_cast<const uint8_t*>(needle->latin1Data());
+    for (uint32_t i = 0; i < needleLen; ++i) {
+        if (h[i] != static_cast<uint16_t>(n[i])) return false;
+    }
+    return true;
+}
+
+int64_t indexOfHeaders(const StringHeader* hay, const StringHeader* needle, uint32_t from) {
+    const uint32_t hayLen = hay->getLength();
+    const uint32_t needleLen = needle->getLength();
+    if (needleLen > hayLen || from > hayLen - needleLen) return -1;
+    if (needleLen == 0) return static_cast<int64_t>(from);
+    if (hay->isLatin1() && needle->isLatin1()) {
+        const std::string_view h(hay->latin1Data(), hayLen);
+        const std::string_view n(needle->latin1Data(), needleLen);
+        const size_t pos = h.find(n, from);
+        return pos == std::string_view::npos ? -1 : static_cast<int64_t>(pos);
+    }
+    if (!hay->isLatin1() && !needle->isLatin1()) {
+        const std::basic_string_view<uint16_t> h(hay->utf16Data(), hayLen);
+        const std::basic_string_view<uint16_t> n(needle->utf16Data(), needleLen);
+        const size_t pos = h.find(n, from);
+        return pos == std::basic_string_view<uint16_t>::npos ? -1 : static_cast<int64_t>(pos);
+    }
+    if (hay->isLatin1()) {
+        const uint16_t* n = needle->utf16Data();
+        for (uint32_t i = 0; i < needleLen; ++i) {
+            if (n[i] > 0xFF) return -1;
+        }
+    }
+    const uint32_t limit = hayLen - needleLen;
+    for (uint32_t i = from; i <= limit; ++i) {
+        if (matchAtHeaders(hay, needle, i)) return static_cast<int64_t>(i);
+    }
+    return -1;
+}
+
+Value directSlice(const Rooted<Value>& strRoot, uint32_t start, uint32_t end) {
+    if (end <= start) {
+        return rtMakeString("");
+    }
+    const uint32_t sliceLen = end - start;
+    const StringHeader* s = strRoot.get().asString<StringHeader>();
+    if (s->isLatin1()) {
+        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
+        const StringHeader* src = strRoot.get().asString<StringHeader>();
+        std::memcpy(res->latin1Data(), src->latin1Data() + start, sliceLen);
+        return Value::fromString(res);
+    }
+    const uint16_t* u16 = s->utf16Data() + start;
+    bool allLatin1 = true;
+    for (uint32_t i = 0; i < sliceLen; ++i) {
+        if (u16[i] > 0xFF) {
+            allLatin1 = false;
+            break;
+        }
+    }
+    if (allLatin1) {
+        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
+        const StringHeader* src = strRoot.get().asString<StringHeader>();
+        const uint16_t* srcU16 = src->utf16Data() + start;
+        char* dst = res->latin1Data();
+        for (uint32_t i = 0; i < sliceLen; ++i) {
+            dst[i] = static_cast<char>(srcU16[i]);
+        }
+        return Value::fromString(res);
+    }
+    StringHeader* res = StringHeader::createUTF16(rtHeap(), nullptr, sliceLen);
+    const StringHeader* src = strRoot.get().asString<StringHeader>();
+    std::memcpy(res->utf16Data(), src->utf16Data() + start, sliceLen * sizeof(uint16_t));
+    return Value::fromString(res);
+}
+
 // ---- simple readers -------------------------------------------------------
 
 uint64_t stringCharAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "charAt");
-    double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
-    if (idx < 0 || idx >= static_cast<double>(self.size())) {
-        return stringFromUnits({}).rawBits();  // out of range is "", not undefined
+    Value selfVal;
+    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.charAt called on a value that is not a string")
+            .rawBits();
     }
-    Units one{self[static_cast<size_t>(idx)]};
-    return stringFromUnits(one).rawBits();
+    Rooted<Value> str{selfVal};
+    double idx = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
+    const uint32_t len = str.get().asString<StringHeader>()->getLength();
+    if (idx < 0 || idx >= static_cast<double>(len)) {
+        return rtMakeString("").rawBits();  // out of range is "", not undefined
+    }
+    const auto i = static_cast<uint32_t>(idx);
+    return directSlice(str, i, i + 1).rawBits();
 }
 
 uint64_t stringAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "at");
+    Value selfVal;
+    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.at called on a value that is not a string")
+            .rawBits();
+    }
+    Rooted<Value> str{selfVal};
     double rel = toInteger(rtToNumber(args.at(0, Value::fromDouble(0.0))));
-    double idx = rel < 0 ? static_cast<double>(self.size()) + rel : rel;
-    if (idx < 0 || idx >= static_cast<double>(self.size())) {
+    const uint32_t len = str.get().asString<StringHeader>()->getLength();
+    double idx = rel < 0 ? static_cast<double>(len) + rel : rel;
+    if (idx < 0 || idx >= static_cast<double>(len)) {
         return Value::fromUndefined().rawBits();  // out of range is undefined, unlike charAt
     }
-    Units one{self[static_cast<size_t>(idx)]};
-    return stringFromUnits(one).rawBits();
+    const auto i = static_cast<uint32_t>(idx);
+    return directSlice(str, i, i + 1).rawBits();
 }
 
 // Out of range is NaN, not 0: 0 is a real code unit (NUL), so answering it
@@ -226,16 +332,31 @@ uint64_t stringCodePointAt(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 
 uint64_t stringIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "indexOf");
-    Units needle = argUnits(args[0]);
-    uint32_t from = args.count() > 1 ? clampIndex(toInteger(rtToNumber(args[1])), self.size()) : 0;
-    return Value::fromDouble(static_cast<double>(indexOfUnits(self, needle, from))).rawBits();
+    Value selfVal;
+    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.indexOf called on a value that is not a string")
+            .rawBits();
+    }
+    Rooted<Value> self{selfVal};
+    Rooted<Value> needle{rtValueToString(args[0])};
+    const double posArg = args.count() > 1 ? toInteger(rtToNumber(args[1])) : 0.0;
+    const StringHeader* hayHdr = self.get().asString<StringHeader>();
+    const StringHeader* needleHdr = needle.get().asString<StringHeader>();
+    const uint32_t from = args.count() > 1 ? clampIndex(posArg, hayHdr->getLength()) : 0;
+    return Value::fromDouble(static_cast<double>(indexOfHeaders(hayHdr, needleHdr, from)))
+        .rawBits();
 }
 
 uint64_t stringLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "lastIndexOf");
-    Units needle = argUnits(args[0]);
+    Value selfVal;
+    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+        return rtThrowTypeError(
+                   "String.prototype.lastIndexOf called on a value that is not a string")
+            .rawBits();
+    }
+    Rooted<Value> self{selfVal};
+    Rooted<Value> needle{rtValueToString(args[0])};
     // 22.1.3.11 steps 4-7: a NaN position (absent included) searches from the
     // end; any other is truncated and clamped to [0, len]. The match found is
     // the largest start at or below that position.
@@ -244,16 +365,20 @@ uint64_t stringLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uin
         double numPos = rtToNumber(args[1]);
         if (!std::isnan(numPos)) pos = toInteger(numPos);
     }
-    if (needle.size() > self.size()) return Value::fromDouble(-1.0).rawBits();
-    const size_t lastStart = self.size() - needle.size();
-    size_t at = lastStart;
+    const StringHeader* hayHdr = self.get().asString<StringHeader>();
+    const StringHeader* needleHdr = needle.get().asString<StringHeader>();
+    const uint32_t hayLen = hayHdr->getLength();
+    const uint32_t needleLen = needleHdr->getLength();
+    if (needleLen > hayLen) return Value::fromDouble(-1.0).rawBits();
+    const uint32_t lastStart = hayLen - needleLen;
+    uint32_t at = lastStart;
     if (pos <= 0) {
         at = 0;
     } else if (pos < static_cast<double>(lastStart)) {
-        at = static_cast<size_t>(pos);
+        at = static_cast<uint32_t>(pos);
     }
     for (;;) {
-        if (std::equal(needle.begin(), needle.end(), self.begin() + at)) {
+        if (matchAtHeaders(hayHdr, needleHdr, at)) {
             return Value::fromDouble(static_cast<double>(at)).rawBits();
         }
         if (at == 0) break;
@@ -264,70 +389,55 @@ uint64_t stringLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 
 uint64_t stringIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "includes");
-    Units needle = argUnits(args[0]);
-    uint32_t from = args.count() > 1 ? clampIndex(toInteger(rtToNumber(args[1])), self.size()) : 0;
-    return Value::fromBool(indexOfUnits(self, needle, from) >= 0).rawBits();
+    Value selfVal;
+    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.includes called on a value that is not a string")
+            .rawBits();
+    }
+    Rooted<Value> self{selfVal};
+    Rooted<Value> needle{rtValueToString(args[0])};
+    const double posArg = args.count() > 1 ? toInteger(rtToNumber(args[1])) : 0.0;
+    const StringHeader* hayHdr = self.get().asString<StringHeader>();
+    const StringHeader* needleHdr = needle.get().asString<StringHeader>();
+    const uint32_t from = args.count() > 1 ? clampIndex(posArg, hayHdr->getLength()) : 0;
+    return Value::fromBool(indexOfHeaders(hayHdr, needleHdr, from) >= 0).rawBits();
 }
 
 uint64_t stringStartsWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "startsWith");
-    Units needle = argUnits(args[0]);
-    uint32_t from = args.count() > 1 ? clampIndex(toInteger(rtToNumber(args[1])), self.size()) : 0;
-    bool ok = from + needle.size() <= self.size() &&
-              std::equal(needle.begin(), needle.end(), self.begin() + from);
-    return Value::fromBool(ok).rawBits();
+    Value selfVal;
+    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+        return rtThrowTypeError(
+                   "String.prototype.startsWith called on a value that is not a string")
+            .rawBits();
+    }
+    Rooted<Value> self{selfVal};
+    Rooted<Value> needle{rtValueToString(args[0])};
+    const double posArg = args.count() > 1 ? toInteger(rtToNumber(args[1])) : 0.0;
+    const StringHeader* hayHdr = self.get().asString<StringHeader>();
+    const StringHeader* needleHdr = needle.get().asString<StringHeader>();
+    const uint32_t from = args.count() > 1 ? clampIndex(posArg, hayHdr->getLength()) : 0;
+    return Value::fromBool(matchAtHeaders(hayHdr, needleHdr, from)).rawBits();
 }
 
 uint64_t stringEndsWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "endsWith");
-    Units needle = argUnits(args[0]);
-    size_t end = args.count() > 1 && !args[1].isUndefined()
-                     ? clampIndex(toInteger(rtToNumber(args[1])), self.size())
-                     : self.size();
-    bool ok = needle.size() <= end &&
-              std::equal(needle.begin(), needle.end(), self.begin() + (end - needle.size()));
+    Value selfVal;
+    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.endsWith called on a value that is not a string")
+            .rawBits();
+    }
+    Rooted<Value> self{selfVal};
+    Rooted<Value> needle{rtValueToString(args[0])};
+    const bool hasEnd = args.count() > 1 && !args[1].isUndefined();
+    const double endArg = hasEnd ? toInteger(rtToNumber(args[1])) : 0.0;
+    const StringHeader* hayHdr = self.get().asString<StringHeader>();
+    const StringHeader* needleHdr = needle.get().asString<StringHeader>();
+    const uint32_t hayLen = hayHdr->getLength();
+    const uint32_t needleLen = needleHdr->getLength();
+    const uint32_t end = hasEnd ? clampIndex(endArg, hayLen) : hayLen;
+    const bool ok = needleLen <= end && matchAtHeaders(hayHdr, needleHdr, end - needleLen);
     return Value::fromBool(ok).rawBits();
-}
-
-// ---- producers ------------------------------------------------------------
-
-Value directSlice(const Rooted<Value>& strRoot, uint32_t start, uint32_t end) {
-    if (end <= start) {
-        return rtMakeString("");
-    }
-    const uint32_t sliceLen = end - start;
-    const StringHeader* s = strRoot.get().asString<StringHeader>();
-    if (s->isLatin1()) {
-        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
-        const StringHeader* src = strRoot.get().asString<StringHeader>();
-        std::memcpy(res->latin1Data(), src->latin1Data() + start, sliceLen);
-        return Value::fromString(res);
-    }
-    const uint16_t* u16 = s->utf16Data() + start;
-    bool allLatin1 = true;
-    for (uint32_t i = 0; i < sliceLen; ++i) {
-        if (u16[i] > 0xFF) {
-            allLatin1 = false;
-            break;
-        }
-    }
-    if (allLatin1) {
-        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, sliceLen);
-        const StringHeader* src = strRoot.get().asString<StringHeader>();
-        const uint16_t* srcU16 = src->utf16Data() + start;
-        char* dst = res->latin1Data();
-        for (uint32_t i = 0; i < sliceLen; ++i) {
-            dst[i] = static_cast<char>(srcU16[i]);
-        }
-        return Value::fromString(res);
-    }
-    StringHeader* res = StringHeader::createUTF16(rtHeap(), nullptr, sliceLen);
-    const StringHeader* src = strRoot.get().asString<StringHeader>();
-    std::memcpy(res->utf16Data(), src->utf16Data() + start, sliceLen * sizeof(uint16_t));
-    return Value::fromString(res);
 }
 
 }  // namespace

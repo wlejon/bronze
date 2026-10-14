@@ -5,9 +5,17 @@
 #include <cstdlib>
 #include <cstring>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
 #include <cxxabi.h>
 #include <dlfcn.h>
+#endif
+
+#ifdef __linux__
+#include <algorithm>
+#include <elf.h>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #endif
 
 #ifdef _WIN32
@@ -73,6 +81,96 @@ void moduleBasename(uint64_t pc, char* out, size_t outSize) {
 }
 #endif
 
+#ifdef __linux__
+struct ElfSymEntry {
+    uint64_t value = 0;
+    uint64_t size = 0;
+    std::string name;
+};
+
+struct ElfModuleSymTable {
+    uint64_t loadBias = 0;
+    std::vector<ElfSymEntry> funcs;
+};
+
+const ElfModuleSymTable& getElfModuleSyms(const void* fbase, const char* fname) {
+    static std::unordered_map<const void*, ElfModuleSymTable> cache;
+    auto it = cache.find(fbase);
+    if (it != cache.end()) return it->second;
+
+    ElfModuleSymTable& table = cache[fbase];
+    const char* path = (fname && fname[0]) ? fname : "/proc/self/exe";
+    FILE* f = std::fopen(path, "rb");
+    if (!f && std::strcmp(path, "/proc/self/exe") != 0) {
+        f = std::fopen("/proc/self/exe", "rb");
+    }
+    if (!f) return table;
+
+    Elf64_Ehdr ehdr{};
+    if (std::fread(&ehdr, sizeof(ehdr), 1, f) != 1 ||
+        std::memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0 ||
+        ehdr.e_ident[EI_CLASS] != ELFCLASS64) {
+        std::fclose(f);
+        return table;
+    }
+
+    // For ET_DYN (PIE / shared object), dli_fbase is the load bias; for ET_EXEC,
+    // symbol values are already virtual addresses so loadBias is 0.
+    table.loadBias = (ehdr.e_type == ET_DYN) ? reinterpret_cast<uint64_t>(fbase) : 0;
+
+    if (ehdr.e_shoff == 0 || ehdr.e_shnum == 0 || ehdr.e_shentsize != sizeof(Elf64_Shdr)) {
+        std::fclose(f);
+        return table;
+    }
+
+    std::vector<Elf64_Shdr> shdrs(ehdr.e_shnum);
+    if (std::fseek(f, static_cast<long>(ehdr.e_shoff), SEEK_SET) != 0 ||
+        std::fread(shdrs.data(), sizeof(Elf64_Shdr), ehdr.e_shnum, f) != ehdr.e_shnum) {
+        std::fclose(f);
+        return table;
+    }
+
+    for (const Elf64_Shdr& sh : shdrs) {
+        if ((sh.sh_type != SHT_SYMTAB && sh.sh_type != SHT_DYNSYM) ||
+            sh.sh_entsize != sizeof(Elf64_Sym) || sh.sh_link >= shdrs.size()) {
+            continue;
+        }
+        const Elf64_Shdr& strSh = shdrs[sh.sh_link];
+        if (strSh.sh_size == 0 || strSh.sh_size > (128ull << 20)) continue;
+        std::vector<char> strtab(strSh.sh_size);
+        if (std::fseek(f, static_cast<long>(strSh.sh_offset), SEEK_SET) != 0 ||
+            std::fread(strtab.data(), 1, strSh.sh_size, f) != strSh.sh_size) {
+            continue;
+        }
+        strtab.back() = '\0';
+
+        const size_t nSyms = sh.sh_size / sizeof(Elf64_Sym);
+        std::vector<Elf64_Sym> syms(nSyms);
+        if (std::fseek(f, static_cast<long>(sh.sh_offset), SEEK_SET) != 0 ||
+            std::fread(syms.data(), sizeof(Elf64_Sym), nSyms, f) != nSyms) {
+            continue;
+        }
+
+        for (const Elf64_Sym& s : syms) {
+            if (s.st_shndx == SHN_UNDEF || s.st_value == 0 || s.st_name >= strtab.size()) continue;
+            const unsigned char type = ELF64_ST_TYPE(s.st_info);
+            if (type != STT_FUNC && type != STT_NOTYPE) continue;
+            const char* rawName = &strtab[s.st_name];
+            if (!rawName[0]) continue;
+            table.funcs.push_back(ElfSymEntry{s.st_value, s.st_size, rawName});
+        }
+    }
+    std::fclose(f);
+
+    std::sort(table.funcs.begin(), table.funcs.end(),
+              [](const ElfSymEntry& a, const ElfSymEntry& b) {
+                  if (a.value != b.value) return a.value < b.value;
+                  return a.size > b.size;
+              });
+    return table;
+}
+#endif
+
 }  // namespace
 
 void symbolizePc(uint64_t pc, SymbolizedPc& out) {
@@ -89,15 +187,6 @@ void symbolizePc(uint64_t pc, SymbolizedPc& out) {
     sym->SizeOfStruct = sizeof(SYMBOL_INFO);
     sym->MaxNameLen = 511;
     DWORD64 disp = 0;
-    // A module whose PDB is missing or does not match the binary (a DLL
-    // restaged while its build tree's PDB moved on) has only its exports:
-    // SymFromAddr then names every PC after the nearest exported function
-    // before it, which piles unrelated code onto a few export names. Such
-    // a PC is named by its unwind-table function instead, marked so.
-    // (Asked after SymFromAddr: deferred loading loads the module's symbols
-    // on its first lookup.)
-    // Windows' own DLLs keep their export names (they export what runs hot
-    // in them: RtlAllocateHeap and the like).
     const bool found = ::SymFromAddr(::GetCurrentProcess(), static_cast<DWORD64>(pc), &disp, sym) != FALSE;
     IMAGEHLP_MODULE64 modInfo{};
     modInfo.SizeOfStruct = sizeof(modInfo);
@@ -109,14 +198,9 @@ void symbolizePc(uint64_t pc, SymbolizedPc& out) {
     }
     if (found && !exportsOnly) {
         std::snprintf(out.name, sizeof(out.name), "%s", sym->Name);
-        // sym->Address is the function's start; two samples anywhere inside
-        // one function share this key.
         out.funcStart = sym->Address ? sym->Address : (pc & ~0xFULL);
         out.resolved = true;
     } else {
-        // No symbol (a module without a PDB): fall back to the x64 unwind
-        // table's function START so the PCs of one function still aggregate
-        // into one row instead of one row per 16 bytes.
         DWORD64 imageBase = 0;
         if (PRUNTIME_FUNCTION rf =
                 ::RtlLookupFunctionEntry(static_cast<DWORD64>(pc), &imageBase, nullptr)) {
@@ -126,21 +210,39 @@ void symbolizePc(uint64_t pc, SymbolizedPc& out) {
                           exportsOnly ? " [exports only: no matching PDB]" : "");
         }
     }
-#elif defined(__APPLE__)
-    // The nearest exported or local symbol dyld knows, demangled; the
-    // module's basename either way.
-    Dl_info info;
+#elif defined(__APPLE__) || defined(__linux__)
+    Dl_info info{};
     if (::dladdr(reinterpret_cast<const void*>(static_cast<uintptr_t>(pc)), &info) == 0) return;
     if (info.dli_fname) {
         const char* base = std::strrchr(info.dli_fname, '/');
         std::snprintf(out.module, sizeof(out.module), "%s", base ? base + 1 : info.dli_fname);
     }
-    if (info.dli_sname && info.dli_saddr) {
+    const char* rawSymName = info.dli_sname;
+    uint64_t symAddr = reinterpret_cast<uint64_t>(info.dli_saddr);
+#ifdef __linux__
+    if ((!rawSymName || !symAddr) && info.dli_fbase) {
+        const ElfModuleSymTable& table = getElfModuleSyms(info.dli_fbase, info.dli_fname);
+        if (!table.funcs.empty() && pc >= table.loadBias) {
+            const uint64_t relPc = pc - table.loadBias;
+            auto it = std::upper_bound(
+                table.funcs.begin(), table.funcs.end(), relPc,
+                [](uint64_t v, const ElfSymEntry& e) { return v < e.value; });
+            if (it != table.funcs.begin()) {
+                --it;
+                if (it->size == 0 ? (relPc - it->value < 0x10000) : (relPc < it->value + it->size)) {
+                    rawSymName = it->name.c_str();
+                    symAddr = table.loadBias + it->value;
+                }
+            }
+        }
+    }
+#endif
+    if (rawSymName && symAddr) {
         int status = 0;
-        char* demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
-        std::snprintf(out.name, sizeof(out.name), "%s", status == 0 && demangled ? demangled : info.dli_sname);
+        char* demangled = abi::__cxa_demangle(rawSymName, nullptr, nullptr, &status);
+        std::snprintf(out.name, sizeof(out.name), "%s", status == 0 && demangled ? demangled : rawSymName);
         std::free(demangled);
-        out.funcStart = reinterpret_cast<uint64_t>(info.dli_saddr);
+        out.funcStart = symAddr;
         out.resolved = true;
     }
 #else

@@ -121,7 +121,7 @@ bool Lowerer::isProvidedGlobal(const std::string& name) const {
            // operations that need a second agent are named refusals.
            name == "SharedArrayBuffer" || name == "Atomics" ||
            name == "globalThis" || name == "Proxy" || name == "URIError" ||
-           name == "Reflect" || name == "Date" || name == "encodeURI" ||
+           name == "Reflect" || name == "Date" || name == "Intl" || name == "encodeURI" ||
            name == "encodeURIComponent" || name == "decodeURI" ||
            name == "decodeURIComponent" ||
            // Annex B B.2.1. Normative for a web browser, and bronze's target is

@@ -30,6 +30,7 @@
 // chain (stack_sampling.cpp), mach_absolute_time.
 #define BRONZE_PROFILER_SUPPORTED 1
 #define BRONZE_PROFILER_DARWIN 1
+#define BRONZE_PROFILER_POSIX 1
 #include <brass/debug/jit_code_registry.hpp>
 #include <brass/mir/function.hpp>
 #include <brass/vm/fast_interpreter.hpp>
@@ -42,6 +43,29 @@
 #include <pthread.h>
 
 #include <thread>
+#elif defined(__linux__) && defined(__x86_64__)
+// Linux x64: tgkill(SIGPROF) + SA_SIGINFO ucontext_t capture, the %rbp
+// frame-pointer chain (stack_sampling.cpp), CLOCK_MONOTONIC.
+#define BRONZE_PROFILER_SUPPORTED 1
+#define BRONZE_PROFILER_LINUX 1
+#define BRONZE_PROFILER_POSIX 1
+#include <brass/debug/jit_code_registry.hpp>
+#include <brass/mir/function.hpp>
+#include <brass/vm/fast_interpreter.hpp>
+
+#include "runtime/stack_sampling.h"
+#include "runtime/stack_trace.h"
+
+#include <chrono>
+#include <cstdlib>
+#include <ctime>
+#include <dirent.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <thread>
+#include <ucontext.h>
+#include <unistd.h>
 #endif
 
 namespace bronze::runtime {
@@ -68,7 +92,7 @@ MirNameTier1Rejection mirNameTier1Rejection() noexcept {
 void registerProfilerThread(uint32_t, std::string_view) {}
 void unregisterProfilerThread() {}
 bool profilerStart(const ProfilerOptions&, std::string* error) {
-    if (error) *error = "the sampling profiler is supported on Windows x64 and arm64 macOS only";
+    if (error) *error = "the sampling profiler is supported on Windows x64, Linux x64, and arm64 macOS only";
     return false;
 }
 bool profilerRunning() { return false; }
@@ -93,10 +117,14 @@ constexpr size_t kMaxWords = (256ull << 20) / sizeof(uint64_t);
 using ThreadId = DWORD;
 using ThreadHandle = HANDLE;
 constexpr ThreadHandle kNoThread = nullptr;
-#else
+#elif BRONZE_PROFILER_DARWIN
 using ThreadId = uint64_t;           // pthread_threadid_np
 using ThreadHandle = mach_port_t;    // a send right of our own, released at unregister
 constexpr ThreadHandle kNoThread = MACH_PORT_NULL;
+#elif BRONZE_PROFILER_LINUX
+using ThreadId = uint64_t;           // kernel tid (SYS_gettid)
+using ThreadHandle = uint64_t;       // kernel tid
+constexpr ThreadHandle kNoThread = 0;
 #endif
 
 struct RegisteredThread {
@@ -105,8 +133,7 @@ struct RegisteredThread {
     uint32_t kind = kProfilerThreadOther;
     std::string name;
     brass::FastFrame* const* topSlot = nullptr;
-    // arm64 macOS: the thread's stack, read at registration (the walk stays
-    // inside it).
+    // POSIX: the thread's stack, read at registration (the walk stays inside it).
     uint64_t stackLo = 0, stackHi = 0;
 };
 
@@ -184,7 +211,7 @@ uint64_t qpcFrequency() {
 }
 ThreadId currentThreadId() { return ::GetCurrentThreadId(); }
 void releaseThread(ThreadHandle h) { ::CloseHandle(h); }
-#else
+#elif BRONZE_PROFILER_DARWIN
 uint64_t qpcNow() { return mach_absolute_time(); }
 uint64_t qpcFrequency() {
     mach_timebase_info_data_t tb;
@@ -197,6 +224,15 @@ ThreadId currentThreadId() {
     return id;
 }
 void releaseThread(ThreadHandle h) { mach_port_deallocate(mach_task_self(), h); }
+#elif BRONZE_PROFILER_LINUX
+uint64_t qpcNow() {
+    struct timespec ts{};
+    ::clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+uint64_t qpcFrequency() { return 1000000000ull; }
+ThreadId currentThreadId() { return static_cast<uint64_t>(::syscall(SYS_gettid)); }
+void releaseThread(ThreadHandle) {}
 #endif
 
 uint32_t addSym(Session& s, Sym sym) {
@@ -350,6 +386,135 @@ void refreshOthers(Session& s, std::vector<std::pair<uint64_t, uint64_t>>& bound
         bounds.emplace_back(lo, hi);
     }
     vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(list), n * sizeof(thread_act_t));
+}
+#elif BRONZE_PROFILER_LINUX
+void stackBounds(pthread_t pt, uint64_t& lo, uint64_t& hi) {
+    lo = hi = 0;
+    if (!pt) return;
+    pthread_attr_t attr;
+    if (::pthread_getattr_np(pt, &attr) != 0) return;
+    void* addr = nullptr;
+    size_t sz = 0;
+    if (::pthread_attr_getstack(&attr, &addr, &sz) == 0 && addr && sz > 0) {
+        lo = reinterpret_cast<uint64_t>(addr);
+        hi = lo + sz;
+    }
+    ::pthread_attr_destroy(&attr);
+}
+
+struct LinuxSampleRequest {
+    std::atomic<uint64_t> targetTid{0};
+    uint64_t stackLo = 0;
+    uint64_t stackHi = 0;
+    brass::FastFrame* const* topSlot = nullptr;
+    const sampling::ModuleRanges* modules = nullptr;
+    Raw* raw = nullptr;
+    // 0 = idle, 1 = armed, 2 = in_handler, 3 = done
+    std::atomic<int> state{0};
+};
+
+LinuxSampleRequest g_linuxReq;
+
+void sigprofHandler(int, siginfo_t*, void* uctx) {
+    const uint64_t myTid = static_cast<uint64_t>(::syscall(SYS_gettid));
+    if (g_linuxReq.targetTid.load(std::memory_order_acquire) != myTid) return;
+    int expected = 1;
+    if (!g_linuxReq.state.compare_exchange_strong(expected, 2, std::memory_order_acq_rel)) return;
+
+    auto* uc = static_cast<ucontext_t*>(uctx);
+    sampling::LinuxX64Context ctx;
+    ctx.pc = static_cast<uint64_t>(uc->uc_mcontext.gregs[REG_RIP]);
+    ctx.sp = static_cast<uint64_t>(uc->uc_mcontext.gregs[REG_RSP]);
+    ctx.fp = static_cast<uint64_t>(uc->uc_mcontext.gregs[REG_RBP]);
+    if (g_linuxReq.stackHi > g_linuxReq.stackLo) {
+        ctx.stackLo = g_linuxReq.stackLo;
+        ctx.stackHi = g_linuxReq.stackHi;
+    } else {
+        ctx.stackLo = ctx.sp;
+        ctx.stackHi = (ctx.sp & ~0xFFFULL) + (64ull << 10);
+    }
+
+    Raw* raw = g_linuxReq.raw;
+    if (raw && g_linuxReq.modules) {
+        raw->nNative = sampling::walkStack(*g_linuxReq.modules, &ctx, raw->pcs, raw->sps, kMaxNative);
+        if (g_linuxReq.topSlot) {
+            raw->nInterp = static_cast<uint32_t>(
+                brass::FastInterpreter::read_suspended_frames(*g_linuxReq.topSlot, raw->frameAddrs, raw->fns, kMaxInterp));
+        }
+    }
+    g_linuxReq.state.store(3, std::memory_order_release);
+}
+
+void ensureSigprofHandler() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        struct sigaction sa{};
+        sa.sa_sigaction = sigprofHandler;
+        ::sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+        ::sigaction(SIGPROF, &sa, nullptr);
+    });
+}
+
+void capture(Session& s, ThreadHandle threadTid, brass::FastFrame* const* topSlot, Raw& raw, uint64_t stackLo,
+             uint64_t stackHi) {
+    raw.nNative = 0;
+    raw.nInterp = 0;
+    raw.lrFrame = false;
+    if (threadTid == 0) return;
+
+    g_linuxReq.stackLo = stackLo;
+    g_linuxReq.stackHi = stackHi;
+    g_linuxReq.topSlot = topSlot;
+    g_linuxReq.modules = &s.modules;
+    g_linuxReq.raw = &raw;
+    g_linuxReq.targetTid.store(threadTid, std::memory_order_release);
+    g_linuxReq.state.store(1, std::memory_order_release);
+
+    if (::syscall(SYS_tgkill, ::getpid(), static_cast<pid_t>(threadTid), SIGPROF) != 0) {
+        g_linuxReq.state.store(0, std::memory_order_release);
+        g_linuxReq.targetTid.store(0, std::memory_order_release);
+        return;
+    }
+
+    const uint64_t deadlineNs = qpcNow() + 2000000ull;  // 2 ms max wait
+    while (g_linuxReq.state.load(std::memory_order_acquire) != 3) {
+        if (qpcNow() >= deadlineNs) {
+            int exp = 1;
+            if (g_linuxReq.state.compare_exchange_strong(exp, 0, std::memory_order_acq_rel)) {
+                g_linuxReq.targetTid.store(0, std::memory_order_release);
+                return;
+            }
+            // State is 2 (handler is running right now) — spin briefly until it stores 3.
+            while (g_linuxReq.state.load(std::memory_order_acquire) != 3) {
+                std::this_thread::yield();
+            }
+            break;
+        }
+        std::this_thread::yield();
+    }
+    g_linuxReq.targetTid.store(0, std::memory_order_release);
+    g_linuxReq.state.store(0, std::memory_order_release);
+}
+
+void refreshOthers(Session& s, std::vector<std::pair<uint64_t, uint64_t>>& bounds) {
+    s.others.clear();
+    bounds.clear();
+    std::unordered_set<ThreadId> skip{s.samplerId};
+    {
+        std::lock_guard<std::mutex> lock(registryMutex());
+        for (const RegisteredThread& t : registered()) skip.insert(t.id);
+    }
+    DIR* dir = ::opendir("/proc/self/task");
+    if (!dir) return;
+    while (struct dirent* ent = ::readdir(dir)) {
+        if (ent->d_name[0] < '1' || ent->d_name[0] > '9') continue;
+        const uint64_t tid = std::strtoull(ent->d_name, nullptr, 10);
+        if (tid == 0 || skip.count(tid)) continue;
+        s.others.emplace_back(tid, tid);
+        bounds.emplace_back(0, 0);
+    }
+    ::closedir(dir);
 }
 #else
 void capture(Session& s, HANDLE thread, brass::FastFrame* const* topSlot, Raw& raw) {
@@ -519,7 +684,7 @@ DWORD WINAPI samplerLoop(LPVOID param) {
 
 }  // namespace
 
-#if BRONZE_PROFILER_DARWIN
+#if BRONZE_PROFILER_POSIX
 
 void registerProfilerThread(uint32_t kind, std::string_view name) {
     RegisteredThread t;
@@ -527,9 +692,13 @@ void registerProfilerThread(uint32_t kind, std::string_view name) {
     t.kind = kind;
     t.name = std::string(name);
     t.topSlot = &brass::FastInterpreter::thread_frame_top();
+#if BRONZE_PROFILER_DARWIN
     // A send right of our own (mach_thread_self adds one), released at
     // unregister.
     t.handle = mach_thread_self();
+#elif BRONZE_PROFILER_LINUX
+    t.handle = t.id;
+#endif
     stackBounds(pthread_self(), t.stackLo, t.stackHi);
     std::lock_guard<std::mutex> lock(registryMutex());
     for (RegisteredThread& existing : registered()) {
@@ -560,6 +729,9 @@ bool profilerStart(const ProfilerOptions& options, std::string* error) {
         if (error) *error = "a profile is already running";
         return false;
     }
+#if BRONZE_PROFILER_LINUX
+    ensureSigprofHandler();
+#endif
     auto* s = new Session();
     s->hz = options.hz < 50 ? 50 : options.hz > 4000 ? 4000 : options.hz;
     s->mask = options.threads;

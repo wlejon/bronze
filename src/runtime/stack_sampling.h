@@ -43,11 +43,19 @@ struct Arm64Context {
     bool lrFrame = false;               // out
 };
 
+// Linux x64: what walkStack takes for `context`. Follows the 16-byte-aligned
+// %rbp frame-pointer chain ([fp] = caller's fp, [fp + 8] = return address)
+// within [stackLo, stackHi).
+struct LinuxX64Context {
+    uint64_t pc = 0, sp = 0, fp = 0;
+    uint64_t stackLo = 0, stackHi = 0;
+};
+
 // Walks the suspended thread whose context `context` (Windows x64: a CONTEXT
 // captured with CONTEXT_CONTROL | CONTEXT_INTEGER; arm64 macOS: an
-// Arm64Context) holds, innermost first, into `pcs`, and
-// each frame's stack pointer into `sps` when non-null. Frame 0's pc is the
-// instruction the thread stopped on; every later one is a return address.
+// Arm64Context; Linux x64: a LinuxX64Context) holds, innermost first, into
+// `pcs`, and each frame's stack pointer into `sps` when non-null. Frame 0's pc
+// is the instruction the thread stopped on; every later one is a return address.
 // Reads only the target's stack and the unwind tables; allocates nothing.
 uint32_t walkStack(const ModuleRanges& modules, const void* context, uint64_t* pcs, uint64_t* sps,
                    uint32_t maxFrames);

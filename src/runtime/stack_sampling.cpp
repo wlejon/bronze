@@ -126,6 +126,33 @@ uint32_t walkStack(const ModuleRanges&, const void* context, uint64_t* pcs, uint
     return n;
 }
 
+#elif defined(__linux__) && defined(__x86_64__)
+
+void ModuleRanges::refresh() {}
+bool ModuleRanges::contains(uint64_t) const { return false; }
+
+uint32_t walkStack(const ModuleRanges&, const void* context, uint64_t* pcs, uint64_t* sps, uint32_t maxFrames) {
+    const auto& ctx = *static_cast<const LinuxX64Context*>(context);
+    const uint64_t lo = ctx.stackLo, hi = ctx.stackHi;
+    auto validRecord = [&](uint64_t fp) { return fp >= lo && fp + 16 <= hi && (fp & 7) == 0; };
+    if (maxFrames == 0 || ctx.pc == 0 || hi == 0) return 0;
+    uint32_t n = 0;
+    if (sps) sps[n] = ctx.sp;
+    pcs[n++] = ctx.pc;
+    uint64_t fp = ctx.fp;
+    while (n < maxFrames && validRecord(fp)) {
+        const auto* rec = reinterpret_cast<const uint64_t*>(static_cast<uintptr_t>(fp));
+        const uint64_t next = rec[0];
+        const uint64_t ret = rec[1];
+        if (ret == 0) break;
+        if (sps) sps[n] = fp + 16;
+        pcs[n++] = ret;
+        if (next <= fp) break;
+        fp = next;
+    }
+    return n;
+}
+
 #else
 
 void ModuleRanges::refresh() {}

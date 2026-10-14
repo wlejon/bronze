@@ -266,23 +266,18 @@ uint64_t replaceLiteral(Rooted<Value>& self, Rooted<Value>& searchValue,
     const Units needle = unitsOf(rtValueToString(searchValue.get()));
 
     Units out;
+    out.reserve(input.size());
     size_t at = 0;
+    const std::basic_string_view<uint16_t> hayView(input.data(), input.size());
+    const std::basic_string_view<uint16_t> needleView(needle.data(), needle.size());
     for (;;) {
-        size_t found = std::string::npos;
-        for (size_t i = at; i + needle.size() <= input.size(); ++i) {
-            if (std::equal(needle.begin(), needle.end(),
-                           input.begin() + static_cast<std::ptrdiff_t>(i))) {
-                found = i;
-                break;
-            }
-        }
-        if (found == std::string::npos) break;
-        const Units before = slice(input, at, found);
-        out.insert(out.end(), before.begin(), before.end());
+        const size_t found = hayView.find(needleView, at);
+        if (found == std::basic_string_view<uint16_t>::npos) break;
+        string_regexp::appendUnitsSlice(out, input, at, found);
         MatchPieces pieces;
         pieces.start = found;
         pieces.end = found + needle.size();
-        if (!appendReplacement(out, input, pieces, replacement, replacerIsFunction)) {
+        if (!appendReplacement(out, input, self, pieces, replacement, replacerIsFunction)) {
             return Value::fromUndefined().rawBits();
         }
         at = found + needle.size();
@@ -297,9 +292,8 @@ uint64_t replaceLiteral(Rooted<Value>& self, Rooted<Value>& searchValue,
             break;
         }
     }
-    const Units tail = slice(input, at, input.size());
-    out.insert(out.end(), tail.begin(), tail.end());
-    return stringOf(out).rawBits();
+    string_regexp::appendUnitsSlice(out, input, at, input.size());
+    return string_regexp::stringOfSpan(out.data(), out.size()).rawBits();
 }
 
 template <bool All>

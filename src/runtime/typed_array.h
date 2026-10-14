@@ -474,6 +474,18 @@ static_assert(sizeof(DataViewHeader) == sizeof(ObjectHeader) +
 // a view. `value` has already been through ToNumber.
 double convertForStore(ElementKind kind, double value) noexcept;
 
+// True when `srcKind` and `dstKind` have identical stored byte representations
+// for every element value `srcKind` can hold, so copying elements from `srcKind`
+// to `dstKind` is a raw byte copy.
+bool sameRawTypedArrayEncoding(ElementKind dstKind, ElementKind srcKind) noexcept;
+
+// Bulk-copy `count` elements from `srcBytes` (`srcKind`) into `dstBytes`
+// (`dstKind`), using `memmove` when the stored representations match and tight
+// typed loops otherwise. Caller must ensure non-overlapping buffers when
+// `sameRawTypedArrayEncoding(dstKind, srcKind)` is false.
+void copyTypedArrayElements(uint8_t* dstBytes, ElementKind dstKind, const uint8_t* srcBytes,
+                            ElementKind srcKind, uint32_t count) noexcept;
+
 // IEEE 754 binary16, both directions, exposed because `Math.f16round` (21.3.2.26)
 // is the round trip and nothing else about it is Math's business.
 //

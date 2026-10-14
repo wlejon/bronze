@@ -134,8 +134,10 @@ bronze_add_module(runtime
         builtin_group_by.cpp
         builtin_date.cpp
         builtin_date_accessors.cpp
+        builtin_intl.cpp
         date_math.cpp
         date_text.cpp
+        date_parse.cpp
         builtin_weak_map.cpp
         weak_ref.cpp
         builtin_shared_memory.cpp

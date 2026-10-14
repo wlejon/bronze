@@ -1,15 +1,24 @@
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
+#include "abi/bronze_abi.h"
+#include "runtime/builtin_regexp_internal.h"
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
 using namespace bronze;
+using namespace bronze::runtime;
 
 TEST_CASE("string creation latin1 vs utf16") {
     Heap heap;
@@ -415,3 +424,130 @@ TEST_CASE("fast direct string slicing - UTF-16 strings (BMP non-ASCII and surrog
     CHECK(hEmoji4->length == 1);
     CHECK(hEmoji4->charCodeAt(0) == 0xD83C);
 }
+
+namespace {
+
+uint64_t upperLineReplacer(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return rtMakeString("LINE").rawBits();
+}
+
+uint64_t bracketReplacer(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    if (argc < 3) return rtMakeString("").rawBits();
+    const std::string m = rtUtf8Chars(Value(argv[0]).asString<StringHeader>());
+    const int offset = static_cast<int>(Value(argv[1]).asNumber());
+    const uint32_t wholeLen = Value(argv[2]).asString<StringHeader>()->getLength();
+    return rtMakeString("[" + m + "@" + std::to_string(offset) + "/" + std::to_string(wholeLen) +
+                        "]")
+        .rawBits();
+}
+
+Value callStringMethod(Rooted<Value>& self, const char* name, Rooted<Value>& a0,
+                       Rooted<Value>& a1) {
+    const uint32_t key = bronze_register_key_string(name);
+    Rooted<Value> fn{Value(bronze_prop_get(self.get().rawBits(), key, nullptr))};
+    uint64_t argv[2] = {a0.get().rawBits(), a1.get().rawBits()};
+    return Value(bronze_dynamic_call(fn.get().rawBits(), self.get().rawBits(), 2, argv));
+}
+
+}  // namespace
+
+TEST_CASE("String.prototype.indexOf and replace(re, fn) / replaceAll(re, fn): ASCII, Unicode, and 5000-line perf") {
+    ShadowStackFrame frame;
+
+    // 1. ASCII and Unicode (BMP + astral surrogate pairs) indexOf loops.
+    {
+        Rooted<Value> s{rtMakeString("a🌍b世界c🌍d世界e")};
+        Rooted<Value> needleEmoji{rtMakeString("🌍")};
+        Rooted<Value> needleBmp{rtMakeString("世界")};
+
+        Rooted<Value> pos0{Value::fromDouble(0)};
+        Value p1 = callStringMethod(s, "indexOf", needleEmoji, pos0);
+        CHECK(p1.asNumber() == 1.0);
+
+        Rooted<Value> pos1{Value::fromDouble(p1.asNumber() + 1.0)};
+        Value p2 = callStringMethod(s, "indexOf", needleEmoji, pos1);
+        CHECK(p2.asNumber() == 7.0);
+
+        Rooted<Value> pos2{Value::fromDouble(p2.asNumber() + 1.0)};
+        Value p3 = callStringMethod(s, "indexOf", needleEmoji, pos2);
+        CHECK(p3.asNumber() == -1.0);
+
+        Value b1 = callStringMethod(s, "indexOf", needleBmp, pos0);
+        CHECK(b1.asNumber() == 4.0);
+        Rooted<Value> posB1{Value::fromDouble(b1.asNumber() + 1.0)};
+        Value b2 = callStringMethod(s, "indexOf", needleBmp, posB1);
+        CHECK(b2.asNumber() == 10.0);
+    }
+
+    // 2. replace(re, fn) and replaceAll(re, fn) with Unicode & callback arguments.
+    {
+        Rooted<Value> s{rtMakeString("Hi 🌍 and 🌍!")};
+        Rooted<Value> pat{rtMakeString("🌍")};
+        Rooted<Value> re{rtRegExpFromParts(pat, "gu")};
+        Rooted<Value> fn{rtNativeFunction(bracketReplacer, 3, "bracketReplacer", 3)};
+        Rooted<Value> replaced{callStringMethod(s, "replace", re, fn)};
+        CHECK(rtUtf8Chars(replaced.get().asString<StringHeader>()) ==
+              "Hi [🌍@3/13] and [🌍@10/13]!");
+
+        Rooted<Value> replacedAll{callStringMethod(s, "replaceAll", re, fn)};
+        CHECK(rtUtf8Chars(replacedAll.get().asString<StringHeader>()) ==
+              "Hi [🌍@3/13] and [🌍@10/13]!");
+    }
+
+    // 3. 5,000-line benchmark for indexOf('\n', p) loop and s.replace(/line/g, () => 'LINE').
+    {
+        const bool wasStress = rtHeap().gc_stress();
+        rtHeap().set_gc_stress(false);
+
+        std::string big;
+        big.reserve(5000 * 12);
+        for (int i = 0; i < 5000; ++i) {
+            big += "line ";
+            big += std::to_string(10000 + i);
+            big += '\n';
+        }
+        Rooted<Value> s{rtMakeString(big)};
+        Rooted<Value> nl{rtMakeString("\n")};
+        const uint32_t indexOfKey = bronze_register_key_string("indexOf");
+        Rooted<Value> indexOfFn{Value(bronze_prop_get(s.get().rawBits(), indexOfKey, nullptr))};
+
+        const auto t0 = std::chrono::steady_clock::now();
+        int count = 0;
+        double pos = 0.0;
+        for (;;) {
+            uint64_t argv[2] = {nl.get().rawBits(), Value::fromDouble(pos).rawBits()};
+            Value res{bronze_dynamic_call(indexOfFn.get().rawBits(), s.get().rawBits(), 2, argv)};
+            const double found = res.asNumber();
+            if (found < 0.0) break;
+            ++count;
+            pos = found + 1.0;
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        const double indexOfMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        CHECK(count == 5000);
+        if (!wasStress) {
+            CHECK(indexOfMs < 20.0);
+        }
+
+        Rooted<Value> pat{rtMakeString("line")};
+        Rooted<Value> re{rtRegExpFromParts(pat, "g")};
+        Rooted<Value> replFn{rtNativeFunction(upperLineReplacer, 0, "upperLineReplacer", 0)};
+
+        const auto t2 = std::chrono::steady_clock::now();
+        Rooted<Value> out{callStringMethod(s, "replace", re, replFn)};
+        const auto t3 = std::chrono::steady_clock::now();
+        const double replaceMs = std::chrono::duration<double, std::milli>(t3 - t2).count();
+
+        const StringHeader* outHdr = out.get().asString<StringHeader>();
+        CHECK(outHdr->getLength() == s.get().asString<StringHeader>()->getLength());
+        CHECK(outHdr->charCodeAt(0) == 'L');
+        CHECK(outHdr->charCodeAt(1) == 'I');
+        CHECK(outHdr->charCodeAt(2) == 'N');
+        CHECK(outHdr->charCodeAt(3) == 'E');
+        if (!wasStress) {
+            CHECK(replaceMs < 20.0);
+        }
+        rtHeap().set_gc_stress(wasStress);
+    }
+}
+

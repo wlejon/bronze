@@ -13,7 +13,17 @@
 #include <cmath>
 #include <string>
 
+#include "abi/bronze_abi.h"
 #include "runtime/date.h"
+#include "runtime/exception.h"
+#include "runtime/gc.h"
+#include "runtime/object.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
+#include "runtime/string.h"
+#include "runtime/value.h"
 
 using namespace bronze::runtime::datetime;
 
@@ -318,3 +328,159 @@ TEST_CASE("date parse treats surrounding whitespace as V8 does") {
     CHECK(parse(" 2020-01-01 GMT ") == at(2020.0, 0.0, 1.0));
     CHECK(parse("2020- 01-01 GMT") == at(2020.0, 0.0, 1.0));
 }
+
+TEST_CASE("resolveTimeZone and timeZoneOffsetMs support UTC, Etc/GMT, ISO offsets, and IANA zones") {
+    std::string canonical;
+
+    REQUIRE(resolveTimeZone("UTC", canonical));
+    CHECK(canonical == "UTC");
+    REQUIRE(resolveTimeZone("gmt", canonical));
+    CHECK(canonical == "UTC");
+    REQUIRE(resolveTimeZone("Etc/UTC", canonical));
+    CHECK(canonical == "UTC");
+    REQUIRE(resolveTimeZone("Etc/GMT", canonical));
+    CHECK(canonical == "UTC");
+    REQUIRE(resolveTimeZone("Z", canonical));
+    CHECK(canonical == "UTC");
+    CHECK(timeZoneOffsetMs(0.0, "UTC") == 0.0);
+
+    // POSIX sign inversion on Etc/GMT±N: Etc/GMT-9 is UTC+9, Etc/GMT+5 is UTC-5.
+    REQUIRE(resolveTimeZone("Etc/GMT-9", canonical));
+    CHECK(canonical == "Etc/GMT-9");
+    CHECK(timeZoneOffsetMs(0.0, canonical) == 9.0 * kMsPerHour);
+
+    REQUIRE(resolveTimeZone("etc/gmt+5", canonical));
+    CHECK(canonical == "Etc/GMT+5");
+    CHECK(timeZoneOffsetMs(0.0, canonical) == -5.0 * kMsPerHour);
+
+    // Explicit ISO 8601 offsets.
+    REQUIRE(resolveTimeZone("+09:00", canonical));
+    CHECK(canonical == "+09:00");
+    CHECK(timeZoneOffsetMs(0.0, canonical) == 9.0 * kMsPerHour);
+
+    REQUIRE(resolveTimeZone("+05:30", canonical));
+    CHECK(canonical == "+05:30");
+    CHECK(timeZoneOffsetMs(0.0, canonical) == 5.5 * kMsPerHour);
+
+    REQUIRE(resolveTimeZone("-0500", canonical));
+    CHECK(canonical == "-05:00");
+    CHECK(timeZoneOffsetMs(0.0, canonical) == -5.0 * kMsPerHour);
+
+    // IANA timezones.
+    REQUIRE(resolveTimeZone("Asia/Tokyo", canonical));
+    CHECK(canonical == "Asia/Tokyo");
+    CHECK(timeZoneOffsetMs(0.0, canonical) == 9.0 * kMsPerHour);
+
+    REQUIRE(resolveTimeZone("america/new_york", canonical));
+    CHECK(canonical == "America/New_York");
+    CHECK(timeZoneOffsetMs(0.0, canonical) == -5.0 * kMsPerHour);
+
+    REQUIRE(resolveTimeZone("Europe/London", canonical));
+    CHECK(canonical == "Europe/London");
+    CHECK(timeZoneOffsetMs(at(2024.0, 0.0, 15.0, 12.0), canonical) == 0.0);
+
+    REQUIRE(resolveTimeZone("Australia/Sydney", canonical));
+    CHECK(canonical == "Australia/Sydney");
+
+    // Invalid timeZone strings must fail resolution.
+    CHECK_FALSE(resolveTimeZone("Invalid/Zone", canonical));
+    CHECK_FALSE(resolveTimeZone("Not_A_Zone", canonical));
+    CHECK_FALSE(resolveTimeZone("+25:00", canonical));
+    CHECK_FALSE(resolveTimeZone("Etc/GMT+15", canonical));
+    CHECK_FALSE(resolveTimeZone("", canonical));
+}
+
+TEST_CASE("Intl.DateTimeFormat formats dates in IANA timeZones and throws RangeError on invalid timeZone") {
+    using namespace bronze;
+    using namespace bronze::runtime;
+    ShadowStackFrame frame;
+
+    Rooted<Value> intl{rtIntlNamespace()};
+    REQUIRE(intl.get().isObject());
+    Rooted<Value> dtfKey{rtMakeString("DateTimeFormat")};
+    Rooted<Value> dtfCtor{Value(bronze_elem_get(intl.get().rawBits(), dtfKey.get().rawBits()))};
+    REQUIRE(dtfCtor.get().isObject());
+
+    auto makeFormat = [&](const char* tzName, bool withTime) -> Value {
+        Rooted<Value> loc{rtMakeString("en-US")};
+        Rooted<Value> opts{Value::fromObject(
+            ObjectHeader::create(rtHeap(), rtArena(), rtPlainObjectShape()))};
+        opts.get().asObject<ObjectHeader>()->header.flags = HeapKind::Plain;
+        Rooted<Value> tzKey{rtMakeString("timeZone")};
+        Rooted<Value> tzVal{rtMakeString(tzName)};
+        opts.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), tzKey, tzVal);
+        if (withTime) {
+            for (const char* comp : {"year", "month", "day", "hour", "minute", "second"}) {
+                Rooted<Value> k{rtMakeString(comp)};
+                Rooted<Value> v{rtMakeString(std::string(comp) == "year" ? "numeric" : "2-digit")};
+                opts.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), k, v);
+            }
+            Rooted<Value> h12Key{rtMakeString("hour12")};
+            Rooted<Value> h12Val{Value::fromBool(false)};
+            opts.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), h12Key, h12Val);
+        }
+        RootedBlock ctorArgs(2);
+        ctorArgs.set(0, loc.get());
+        ctorArgs.set(1, opts.get());
+        return Value(bronze_construct(dtfCtor.get().rawBits(), 2, ctorArgs.data()));
+    };
+
+    auto callFormat = [&](Rooted<Value>& dtf, double epochMs) -> std::string {
+        Rooted<Value> dateCtor{rtDateConstructor()};
+        Rooted<Value> msVal{Value::fromDouble(epochMs)};
+        Rooted<Value> dateObj{Value(bronze_construct(
+            dateCtor.get().rawBits(), 1, reinterpret_cast<const uint64_t*>(msVal.slot_ptr())))};
+        Rooted<Value> fmtKey{rtMakeString("format")};
+        Rooted<Value> fmtFn{Value(bronze_elem_get(dtf.get().rawBits(), fmtKey.get().rawBits()))};
+        uint64_t fArgs[1] = {dateObj.get().rawBits()};
+        Value res(bronze_dynamic_call(fmtFn.get().rawBits(), dtf.get().rawBits(), 1, fArgs));
+        REQUIRE(res.isString());
+        return rtUtf8Chars(res.asString<StringHeader>());
+    };
+
+    Rooted<Value> dtfUtc{makeFormat("UTC", /*withTime=*/true)};
+    Rooted<Value> dtfTokyo{makeFormat("Asia/Tokyo", /*withTime=*/true)};
+    Rooted<Value> dtfNy{makeFormat("America/New_York", /*withTime=*/true)};
+    Rooted<Value> dtfEtcGmtMinus9{makeFormat("Etc/GMT-9", /*withTime=*/true)};
+    Rooted<Value> dtfIso530{makeFormat("+05:30", /*withTime=*/true)};
+
+    const std::string sUtc = callFormat(dtfUtc, 0.0);
+    const std::string sTokyo = callFormat(dtfTokyo, 0.0);
+    const std::string sNy = callFormat(dtfNy, 0.0);
+    const std::string sEtc9 = callFormat(dtfEtcGmtMinus9, 0.0);
+    const std::string sIso530 = callFormat(dtfIso530, 0.0);
+
+    CHECK(sUtc == "01/01/1970, 00:00:00");
+    CHECK(sTokyo == "01/01/1970, 09:00:00");
+    CHECK(sNy == "12/31/1969, 19:00:00");
+    CHECK(sEtc9 == "01/01/1970, 09:00:00");
+    CHECK(sIso530 == "01/01/1970, 05:30:00");
+    CHECK(sUtc != sTokyo);
+    CHECK(sTokyo != sNy);
+
+    // Default date-only options also differ between Asia/Tokyo (1/1/1970) and America/New_York (12/31/1969).
+    Rooted<Value> dtfDateTokyo{makeFormat("Asia/Tokyo", /*withTime=*/false)};
+    Rooted<Value> dtfDateNy{makeFormat("America/New_York", /*withTime=*/false)};
+    CHECK(callFormat(dtfDateTokyo, 0.0) == "1/1/1970");
+    CHECK(callFormat(dtfDateNy, 0.0) == "12/31/1969");
+
+    // resolvedOptions().timeZone returns the canonicalized zone.
+    Rooted<Value> roKey{rtMakeString("resolvedOptions")};
+    Rooted<Value> roFn{Value(bronze_elem_get(dtfTokyo.get().rawBits(), roKey.get().rawBits()))};
+    Rooted<Value> roObj{Value(bronze_dynamic_call(roFn.get().rawBits(), dtfTokyo.get().rawBits(), 0, nullptr))};
+    Rooted<Value> tzKey{rtMakeString("timeZone")};
+    Value tzResolved(bronze_elem_get(roObj.get().rawBits(), tzKey.get().rawBits()));
+    REQUIRE(tzResolved.isString());
+    CHECK(rtUtf8Chars(tzResolved.asString<StringHeader>()) == "Asia/Tokyo");
+
+    // Invalid timeZone throws RangeError.
+    Value exc = Value::fromUndefined();
+    CHECK(rtTryCatch([&] { (void)makeFormat("Invalid/Zone", /*withTime=*/false); }, exc));
+    REQUIRE(exc.isObject());
+    Rooted<Value> excRoot{exc};
+    Rooted<Value> nameKey{rtMakeString("name")};
+    Value errName(bronze_elem_get(excRoot.get().rawBits(), nameKey.get().rawBits()));
+    REQUIRE(errName.isString());
+    CHECK(rtUtf8Chars(errName.asString<StringHeader>()) == "RangeError");
+}
+

@@ -48,6 +48,50 @@ inline Units slice(const Units& units, size_t from, size_t to) {
                  units.begin() + static_cast<std::ptrdiff_t>(to));
 }
 
+inline void appendUnitsSlice(Units& out, const Units& units, size_t from, size_t to) {
+    if (from > units.size()) from = units.size();
+    if (to > units.size()) to = units.size();
+    if (to <= from) return;
+    out.insert(out.end(), units.begin() + static_cast<std::ptrdiff_t>(from),
+               units.begin() + static_cast<std::ptrdiff_t>(to));
+}
+
+inline void appendStringUnits(Units& out, const StringHeader* s) {
+    const uint32_t len = s->getLength();
+    if (len == 0) return;
+    if (s->isLatin1()) {
+        const auto* data = reinterpret_cast<const uint8_t*>(s->latin1Data());
+        out.insert(out.end(), data, data + len);
+    } else {
+        const uint16_t* data = s->utf16Data();
+        out.insert(out.end(), data, data + len);
+    }
+}
+
+inline Value stringOfSpan(const uint16_t* data, size_t len) {
+    bool latin1 = true;
+    for (size_t i = 0; i < len; ++i) {
+        if (data[i] > 0xFF) {
+            latin1 = false;
+            break;
+        }
+    }
+    if (latin1) {
+        StringHeader* res = StringHeader::createLatin1(rtHeap(), nullptr, static_cast<uint32_t>(len));
+        char* dst = res->latin1Data();
+        for (size_t i = 0; i < len; ++i) dst[i] = static_cast<char>(data[i]);
+        return Value::fromString(res);
+    }
+    return Value::fromString(StringHeader::createUTF16(rtHeap(), data, static_cast<uint32_t>(len)));
+}
+
+inline Value stringOfSlice(const Units& units, size_t from, size_t to) {
+    if (from > units.size()) from = units.size();
+    if (to > units.size()) to = units.size();
+    if (to < from) to = from;
+    return stringOfSpan(units.data() + from, to - from);
+}
+
 inline bool isCallable(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
 }
@@ -83,20 +127,17 @@ inline Units substitute(const Units& replacement, const Units& input, size_t mat
             continue;
         }
         if (next == '&') {
-            const Units whole = slice(input, matchStart, matchEnd);
-            out.insert(out.end(), whole.begin(), whole.end());
+            appendUnitsSlice(out, input, matchStart, matchEnd);
             ++i;
             continue;
         }
         if (next == '`') {
-            const Units before = slice(input, 0, matchStart);
-            out.insert(out.end(), before.begin(), before.end());
+            appendUnitsSlice(out, input, 0, matchStart);
             ++i;
             continue;
         }
         if (next == '\'') {
-            const Units after = slice(input, matchEnd, input.size());
-            out.insert(out.end(), after.begin(), after.end());
+            appendUnitsSlice(out, input, matchEnd, input.size());
             ++i;
             continue;
         }
@@ -153,23 +194,33 @@ inline Units substitute(const Units& replacement, const Units& input, size_t mat
 // The replacer function's arguments (22.1.3.19 step 14.g): the matched text,
 // then every capture, then the offset, then the whole input, then the groups
 // object when the pattern has named groups.
-inline Value callReplacer(Rooted<Value>& fn, const MatchPieces& pieces, const Units& input) {
-    Rooted<Value> matched{stringOf(slice(input, pieces.start, pieces.end))};
+inline Value callReplacer(Rooted<Value>& fn, const MatchPieces& pieces, const Units& input,
+                          Rooted<Value>& whole) {
+    Rooted<Value> matched{stringOfSlice(input, pieces.start, pieces.end)};
+    if (pieces.captures.empty() && pieces.names.empty()) {
+        Value argv[3] = {matched.get(), Value::fromDouble(static_cast<double>(pieces.start)),
+                         whole.get()};
+        Rooted<Value> undefinedThis;
+        return Value(bronze_dynamic_call(fn.get().rawBits(), undefinedThis.get().rawBits(), 3,
+                                         reinterpret_cast<const uint64_t*>(argv)));
+    }
     std::vector<Rooted<Value>> roots;
     roots.reserve(pieces.captures.size());
     for (size_t g = 0; g < pieces.captures.size(); ++g) {
-        roots.emplace_back(pieces.present[g] ? stringOf(pieces.captures[g])
-                                             : Value::fromUndefined());
+        roots.emplace_back(pieces.present[g]
+                               ? stringOfSpan(pieces.captures[g].data(), pieces.captures[g].size())
+                               : Value::fromUndefined());
     }
-    Rooted<Value> whole{stringOf(input)};
     Rooted<Value> groups;
     if (!pieces.names.empty()) {
         groups.set(Value(bronze_create_object()));
         for (size_t g = 0; g < pieces.names.size(); ++g) {
             if (pieces.names[g].empty()) continue;
             Rooted<Value> key{rtMakeString(pieces.names[g])};
-            Rooted<Value> value{pieces.present[g] ? stringOf(pieces.captures[g])
-                                                  : Value::fromUndefined()};
+            Rooted<Value> value{
+                pieces.present[g]
+                    ? stringOfSpan(pieces.captures[g].data(), pieces.captures[g].size())
+                    : Value::fromUndefined()};
             groups.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, value);
         }
     }
@@ -195,8 +246,9 @@ inline Value callReplacer(Rooted<Value>& fn, const MatchPieces& pieces, const Un
 // One replacement, appended to `out`. Shared by every combination of
 // (string pattern, RegExp pattern) x (string replacement, function
 // replacement), which is why it takes the pieces rather than a match.
-inline bool appendReplacement(Units& out, const Units& input, const MatchPieces& pieces,
-                              Rooted<Value>& replacement, bool replacerIsFunction) {
+inline bool appendReplacement(Units& out, const Units& input, Rooted<Value>& whole,
+                              const MatchPieces& pieces, Rooted<Value>& replacement,
+                              bool replacerIsFunction) {
     if (!replacerIsFunction) {
         const Units text = unitsOf(replacement.get());
         const Units expanded = substitute(text, input, pieces.start, pieces.end, pieces.captures,
@@ -204,10 +256,9 @@ inline bool appendReplacement(Units& out, const Units& input, const MatchPieces&
         out.insert(out.end(), expanded.begin(), expanded.end());
         return true;
     }
-    Value produced = callReplacer(replacement, pieces, input);
+    Value produced = callReplacer(replacement, pieces, input, whole);
     Rooted<Value> text{rtValueToString(produced)};
-    const Units piece = unitsOf(text.get());
-    out.insert(out.end(), piece.begin(), piece.end());
+    appendStringUnits(out, text.get().asString<StringHeader>());
     return true;
 }
 

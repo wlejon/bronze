@@ -40,10 +40,12 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
             return rtThrowTypeError("Cannot mix BigInt and other types, use explicit conversions")
                 .rawBits();
         }
-        if (srcView->elementKind() == targetView->elementKind() || srcBig) {
+        if (sameRawTypedArrayEncoding(targetView->elementKind(), srcView->elementKind()) ||
+            srcView->buffer.rawBits() != targetView->buffer.rawBits()) {
             const uint32_t bpe = targetView->bytesPerElement();
-            std::memmove(targetView->bytes() + static_cast<uint32_t>(offset) * bpe,
-                         srcView->bytes(), static_cast<size_t>(srcLength) * bpe);
+            copyTypedArrayElements(targetView->bytes() + static_cast<size_t>(offset) * bpe,
+                                   targetView->elementKind(), srcView->bytes(),
+                                   srcView->elementKind(), srcLength);
             return Value::fromUndefined().rawBits();
         }
         std::vector<double> staged(srcLength);

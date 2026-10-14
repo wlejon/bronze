@@ -43,6 +43,9 @@ bool rtIsDateConstructor(Value fn);
 // contract is that it cannot move the heap) ask.
 bool rtDateInspectText(Value v, std::string& out);
 bool rtIsDateObject(Value v);
+Value rtIntlNamespace();
+bool rtFormatDateLocale(double tv, uint32_t argc, const uint64_t* argv, bool defaultDate,
+                        bool defaultTime, Value& out);
 // The builtin half of global resolution, shared by `bronze_global_get` and
 // the global object's population (rt_object.cpp) so the two cannot drift.
 bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out);

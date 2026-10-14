@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 // The PURE half of ECMA-262 §21.4: the calendar arithmetic every Date method is
 // written in terms of, the local-time bridge, the pinned text formats, and the
@@ -112,20 +113,66 @@ std::string dateTimeString(double t);
 std::string dateOnlyString(double t);
 std::string timeOnlyString(double t);
 std::string utcString(double t);
-std::string localeDateTimeString(double t);
-std::string localeDateString(double t);
-std::string localeTimeString(double t);
+std::string localeDateTimeString(double t, std::string_view canonicalZone = {});
+std::string localeDateString(double t, std::string_view canonicalZone = {});
+std::string localeTimeString(double t, std::string_view canonicalZone = {});
+
+// ---- IANA / offset timeZone resolution and formatting (date_text.cpp) -------
+
+// Validates and canonicalizes an ECMA-402 `timeZone` identifier:
+// - `'UTC'`, `'GMT'`, `'Etc/UTC'`, `'Etc/GMT'`, `'Z'` (case-insensitive) -> `"UTC"`
+// - `'Etc/GMT+N'` / `'Etc/GMT-N'` (`1 <= N <= 14`, POSIX sign inversion) -> `"Etc/GMT+N"` / `"Etc/GMT-N"`
+// - Explicit ISO 8601 offsets (`+HH:MM`, `-HH:MM`, `+HHMM`, `-HHMM`, `+HH`, `-HH`) -> `"[+-]HH:MM"`
+// - IANA timezone names (e.g. `'Asia/Tokyo'`, `'America/New_York'`, `'Europe/London'`, `'Australia/Sydney'`)
+// Returns false when `input` is not a valid timezone identifier.
+bool resolveTimeZone(std::string_view input, std::string& canonicalOut);
+
+// The host system's canonical IANA timezone name (or `"UTC"` if unavailable).
+std::string defaultTimeZone();
+
+// Milliseconds to ADD to a UTC time value to obtain wall-clock time in
+// `canonicalZone` (or local time when `canonicalZone` is empty).
+double timeZoneOffsetMs(double tUtc, std::string_view canonicalZone);
+double zonedTime(double tUtc, std::string_view canonicalZone = {});
+
+struct DateTimeFormatOptions {
+    std::string locale = "en-US";
+    std::string timeZone;       // Canonicalized zone name; empty means system local time.
+    std::string weekday;        // "", "narrow", "short", "long"
+    std::string year;           // "", "numeric", "2-digit"
+    std::string month;          // "", "numeric", "2-digit", "narrow", "short", "long"
+    std::string day;            // "", "numeric", "2-digit"
+    std::string hour;           // "", "numeric", "2-digit"
+    std::string minute;         // "", "numeric", "2-digit"
+    std::string second;         // "", "numeric", "2-digit"
+    std::string timeZoneName;   // "", "short", "long", "shortOffset", "longOffset"
+    std::string dateStyle;      // "", "full", "long", "medium", "short"
+    std::string timeStyle;      // "", "full", "long", "medium", "short"
+    bool hour12 = true;
+    bool hasHour12 = false;
+    std::string hourCycle;      // "", "h11", "h12", "h23", "h24"
+};
+
+struct DateTimePart {
+    std::string type;
+    std::string value;
+};
+
+void applyDateTimeDefaults(DateTimeFormatOptions& opts, bool defaultDate, bool defaultTime);
+bool formatDateTimeParts(double tUtc, const DateTimeFormatOptions& opts,
+                         std::vector<DateTimePart>& out);
+bool formatDateTime(double tUtc, const DateTimeFormatOptions& opts, std::string& out);
 
 // What console.log prints for a Date: node's form, which is the ISO string
 // bare (no quotes, no braces), and "Invalid Date" for NaN. Never allocates a JS
 // value, because the inspect walk may not move the heap.
 std::string inspectString(double t);
 
-// ---- Date.parse (date_text.cpp) --------------------------------------------
+// ---- Date.parse (date_parse.cpp) -------------------------------------------
 
 // 21.4.3.2: the time value the text names, or NaN when it names none. The
 // grammar is 21.4.1.15's date-time string format first and, for everything
-// else, V8's legacy heuristics carried over step for step (date_text.cpp says
+// else, V8's legacy heuristics carried over step for step (date_parse.cpp says
 // why and how) — so "Jan 1 2020", "1/2/2020 10:00 PM", "Wed, 01 Jan 2020
 // 00:00:00 GMT" and the rest of what node accepts answer what node answers,
 // including the corners nobody would design on purpose.
