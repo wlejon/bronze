@@ -331,3 +331,50 @@ TEST_CASE("TypedArray and plain-array numeric loops type sum as f64 and CSE Elem
     CHECK(fastElemGets == 1);
 }
 
+TEST_CASE("static-slot intra-block CSE and store-to-load forwarding eliminate redundant PropGet and Unbox") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "class Node {\n"
+        "  constructor(x, y) {\n"
+        "    this.x = x;\n"
+        "    this.y = y;\n"
+        "  }\n"
+        "}\n"
+        "class Acc {\n"
+        "  constructor() {\n"
+        "    this.visited = 0;\n"
+        "    this.sumX = 0;\n"
+        "  }\n"
+        "}\n"
+        "function step(node, acc) {\n"
+        "  node.x = node.x * 0.99 + node.y * 0.01;\n"
+        "  node.y = node.y * 0.99 - node.x * 0.01;\n"
+        "  acc.visited = acc.visited + 1;\n"
+        "  acc.sumX = acc.sumX + node.x;\n"
+        "  return acc.visited + acc.sumX;\n"
+        "}\n"
+        "const n = new Node(1.0, 2.0);\n"
+        "const a = new Acc();\n"
+        "console.log(step(n, a));\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+
+    const il::Function* stepFn = findFunction(*optMod, "step");
+    REQUIRE(stepFn != nullptr);
+    CHECK(stepFn->returnType == il::Type::F64);
+
+    // `node.x`, `node.y`, `acc.visited`, and `acc.sumX` are each loaded once in b0;
+    // subsequent reads after stores in the same block are forwarded directly.
+    size_t propGets = 0;
+    size_t rawUnboxes = 0;
+    for (const auto& inst : stepFn->blocks[0].instructions) {
+        if (inst.op == il::Op::PropGet) ++propGets;
+        if (inst.op == il::Op::Unbox && inst.rawUnbox) ++rawUnboxes;
+    }
+    CHECK(propGets == 4);
+    CHECK(rawUnboxes == 4);
+}
+

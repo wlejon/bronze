@@ -526,4 +526,188 @@ TEST_CASE("Brass il2mir - ElemGetTyped and ElemSetTyped specialize by elem_kind 
     CHECK(mirFn->blocks().size() <= 22);
 }
 
+TEST_CASE("Brass il2mir - IsDenseArray and constant-index PropGet/PropSet runs lower to straight-line array loads and stores") {
+    bronze::il::Module m;
+    m.name = "dense_array_prop_run_test";
+    m.keyConstants = {"0", "1"};
 
+    // dense_kernel(src: dynamic, dst: dynamic) -> f64
+    // b0:
+    //   %2 = is.dense_array %0, 1
+    //   br %2, b1, b2
+    // b1:
+    //   %3 = prop.get %0, "0"
+    //   %4 = prop.get %0, "1"
+    //   %5 = is.number %3
+    //   %6 = is.number %4
+    //   %7 = bit.and %5, %6
+    //   br %7, b3, b2
+    // b3:
+    //   %8 = unbox.f64 %3, raw
+    //   %9 = unbox.f64 %4, raw
+    //   %10 = add %8, %9
+    //   %11 = box.f64 %8
+    //   prop.set %1, "0", %11
+    //   %12 = box.f64 %10
+    //   prop.set %1, "1", %12
+    //   ret %10
+    // b2:
+    //   %13 = const.f64 -1.0
+    //   ret %13
+    bronze::il::Function fn;
+    fn.name = "dense_kernel";
+    fn.params = {{"src", bronze::il::Type::Dynamic},
+                 {"dst", bronze::il::Type::Dynamic}};
+    fn.returnType = bronze::il::Type::F64;
+    fn.valueCount = 14;
+
+    bronze::il::Block b0;
+    b0.id = 0;
+    bronze::il::Instruction isDense;
+    isDense.op = bronze::il::Op::IsDenseArray;
+    isDense.type = bronze::il::Type::Bool;
+    isDense.result = 2;
+    isDense.operands = {0};
+    isDense.immI32 = 1;
+    b0.instructions.push_back(isDense);
+
+    bronze::il::Instruction br0;
+    br0.op = bronze::il::Op::Branch;
+    br0.operands = {2};
+    br0.target = {1, {}};
+    br0.elseTarget = {2, {}};
+    b0.instructions.push_back(br0);
+
+    bronze::il::Block b1;
+    b1.id = 1;
+    bronze::il::Instruction get0;
+    get0.op = bronze::il::Op::PropGet;
+    get0.type = bronze::il::Type::Dynamic;
+    get0.result = 3;
+    get0.operands = {0};
+    get0.keyIndex = 0;
+    b1.instructions.push_back(get0);
+
+    bronze::il::Instruction get1;
+    get1.op = bronze::il::Op::PropGet;
+    get1.type = bronze::il::Type::Dynamic;
+    get1.result = 4;
+    get1.operands = {0};
+    get1.keyIndex = 1;
+    b1.instructions.push_back(get1);
+
+    b1.instructions.push_back({bronze::il::Op::IsNumber, bronze::il::Type::Bool, 5, {3}, 0, 0, 0});
+    b1.instructions.push_back({bronze::il::Op::IsNumber, bronze::il::Type::Bool, 6, {4}, 0, 0, 0});
+    b1.instructions.push_back({bronze::il::Op::BitAnd, bronze::il::Type::Bool, 7, {5, 6}, 0, 0, 0});
+
+    bronze::il::Instruction br1;
+    br1.op = bronze::il::Op::Branch;
+    br1.operands = {7};
+    br1.target = {3, {}};
+    br1.elseTarget = {2, {}};
+    b1.instructions.push_back(br1);
+
+    bronze::il::Block b3;
+    b3.id = 3;
+    bronze::il::Instruction unbox0;
+    unbox0.op = bronze::il::Op::Unbox;
+    unbox0.type = bronze::il::Type::F64;
+    unbox0.result = 8;
+    unbox0.operands = {3};
+    unbox0.rawUnbox = true;
+    b3.instructions.push_back(unbox0);
+
+    bronze::il::Instruction unbox1;
+    unbox1.op = bronze::il::Op::Unbox;
+    unbox1.type = bronze::il::Type::F64;
+    unbox1.result = 9;
+    unbox1.operands = {4};
+    unbox1.rawUnbox = true;
+    b3.instructions.push_back(unbox1);
+
+    b3.instructions.push_back({bronze::il::Op::Add, bronze::il::Type::F64, 10, {8, 9}, 0, 0, 0});
+    bronze::il::Instruction box0;
+    box0.op = bronze::il::Op::Box;
+    box0.type = bronze::il::Type::Dynamic;
+    box0.result = 11;
+    box0.operands = {8};
+    box0.boxType = bronze::il::Type::F64;
+    b3.instructions.push_back(box0);
+
+    bronze::il::Instruction set0;
+    set0.op = bronze::il::Op::PropSet;
+    set0.type = bronze::il::Type::Void;
+    set0.result = bronze::il::kNoValue;
+    set0.operands = {1, 11};
+    set0.keyIndex = 0;
+    b3.instructions.push_back(set0);
+
+    bronze::il::Instruction box1;
+    box1.op = bronze::il::Op::Box;
+    box1.type = bronze::il::Type::Dynamic;
+    box1.result = 12;
+    box1.operands = {10};
+    box1.boxType = bronze::il::Type::F64;
+    b3.instructions.push_back(box1);
+
+    bronze::il::Instruction set1;
+    set1.op = bronze::il::Op::PropSet;
+    set1.type = bronze::il::Type::Void;
+    set1.result = bronze::il::kNoValue;
+    set1.operands = {1, 12};
+    set1.keyIndex = 1;
+    b3.instructions.push_back(set1);
+
+    b3.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::F64, bronze::il::kNoValue, {10}, 0, 0, 0});
+
+    bronze::il::Block b2;
+    b2.id = 2;
+    b2.instructions.push_back({bronze::il::Op::ConstF64, bronze::il::Type::F64, 13, {}, -1.0, 0, 0});
+    b2.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::F64, bronze::il::kNoValue, {13}, 0, 0, 0});
+
+    fn.blocks.push_back(std::move(b0));
+    fn.blocks.push_back(std::move(b1));
+    fn.blocks.push_back(std::move(b2));
+    fn.blocks.push_back(std::move(b3));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> uniqueNames = {"dense_kernel"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, uniqueNames);
+    il2mir::TranslatorOptions opts;
+    opts.key_constants = m.keyConstants;
+    opts.enable_optimizations = false;
+    opts.verify_lowered_module = true;
+
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    REQUIRE(tr.module != nullptr);
+
+    brass::Function* mirFn = tr.module->get_function("dense_kernel");
+    REQUIRE(mirFn != nullptr);
+    CHECK(brass::verify_function(*mirFn));
+
+    int propGetCalls = 0;
+    int propSetCalls = 0;
+    int writeBarriers = 0;
+    int indexedLoads = 0;
+    int indexedStores = 0;
+    for (brass::BasicBlock* bb : mirFn->blocks()) {
+        for (brass::Instruction* inst : *bb) {
+            if (inst->opcode() == brass::Opcode::call) {
+                if (inst->symbol() == "bronze_prop_get") ++propGetCalls;
+                if (inst->symbol() == "bronze_prop_set") ++propSetCalls;
+                if (inst->symbol() == "brass_gc_write_barrier") ++writeBarriers;
+            }
+            if (inst->opcode() == brass::Opcode::load_indexed) ++indexedLoads;
+            if (inst->opcode() == brass::Opcode::store_indexed) ++indexedStores;
+        }
+    }
+    // b1's two PropGets are proven dense by b0's IsDenseArray and emit zero bronze_prop_get calls.
+    CHECK(propGetCalls == 0);
+    CHECK(indexedLoads == 2);
+    // b3's two PropSets batch into a single run guard (one fast block with two indexed stores,
+    // one slow block with two bronze_prop_set calls, and zero write barriers for boxed f64).
+    CHECK(indexedStores == 2);
+    CHECK(propSetCalls == 2);
+    CHECK(writeBarriers == 0);
+}

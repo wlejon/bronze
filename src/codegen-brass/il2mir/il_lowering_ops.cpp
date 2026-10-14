@@ -550,7 +550,14 @@ bool lower_ops_instruction(
         }
 
         case BronzeOp::IsDenseArray: {
-            res_val = b.build_iconst_i32(0);
+            if (!lowering->prop_lowering().enable_inlined_fastpaths() ||
+                !lowering->prop_lowering().inline_sets()) {
+                res_val = b.build_iconst_i32(0);
+                return true;
+            }
+            Value* src = lowering->ensure_type(get_opd(0), Type::i64(), b);
+            const auto max_index = static_cast<uint32_t>(inst_ast.imm_i64);
+            res_val = lowering->prop_lowering().lower_is_dense_array(b, src, max_index);
             return true;
         }
 

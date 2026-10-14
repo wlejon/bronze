@@ -17,9 +17,16 @@ namespace {
 constexpr uint64_t kTagMask = 0xFFFF000000000000ULL;
 constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
+constexpr uint64_t kPayloadLimit = uint64_t{1} << 48;
+constexpr uint64_t kMaxInlineDispIndex = (uint64_t{INT32_MAX} - kBronzeHdrBytes) / 8;
 // The header word's low half: the object tag, then HeapObjectHeader::flags.
 constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
 constexpr int32_t kTypedArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+
+// A non-object's header and array words, for an in-process module: the zeroed
+// block's header is no Array's, so branchless header/length/elements loads
+// through it safely refuse non-objects.
+alignas(16) const uint64_t kNotAnArray[8] = {};
 
 Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
@@ -43,7 +50,13 @@ struct ElemIndex {
 // The f64 an i64 Value was boxed from here (box_f64, IlLowering::ensure_type:
 // a select of the canonical NaN and the bits), or null.
 Value* boxed_f64_source(Value* v) {
-    const Instruction* def = v->defining_instruction();
+    const Instruction* def = v ? v->defining_instruction() : nullptr;
+    if (def && def->opcode() == Opcode::bitcast_i64_tagged && def->operand_count() >= 1) {
+        const Instruction* inner = def->operand(0)->defining_instruction();
+        if (inner && inner->opcode() == Opcode::bitcast_tagged_i64 && inner->operand_count() >= 1) {
+            def = inner->operand(0)->defining_instruction();
+        }
+    }
     if (!def || def->opcode() != Opcode::select || def->operand_count() < 3) return nullptr;
     const Instruction* nan = def->operand(1)->defining_instruction();
     if (!nan || nan->opcode() != Opcode::iconst_i64 ||
@@ -418,15 +431,15 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.position_at_end(bb_array);
     Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    Value* slot = b.build_add(idx.i64, head);
     Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
     Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-    Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(idx.i64, capacity));
+    Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(slot, capacity));
     b.build_br_if(b.build_and(in_bounds, no_props), bb_array_store, bb_slow);
 
     b.position_at_end(bb_array_store);
     Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    Value* slot = b.build_add(idx.i64, head);
     b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
     // Every reference is tagged above the Number range.
     b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), bb_barrier, bb_merge);
@@ -544,15 +557,15 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         b.position_at_end(bb_array);
         Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
         Value* capacity = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+        Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        Value* slot = b.build_add(idx.i64, head);
         Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
         Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-        Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(idx.i64, capacity));
+        Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(slot, capacity));
         b.build_br_if(b.build_and(in_bounds, no_props), bb_array_store, bb_slow);
 
         b.position_at_end(bb_array_store);
         Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-        Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-        Value* slot = b.build_add(idx.i64, head);
         // A boxed f64 is a primitive Number, never a heap reference, so no write barrier is needed.
         b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64(b, val_f64));
         b.build_br(bb_merge);
@@ -646,6 +659,204 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     b.position_at_end(bb_slow);
     b.build_call("bronze_elem_set", Type::void_type(),
                  {obj, boxed_index(b, index), box_f64(b, val_f64), strict_val});
+    b.build_br(bb_merge);
+
+    b.position_at_end(bb_merge);
+}
+
+void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
+    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
+    out_block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+    out_head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+}
+
+Value* PropertyLoweringHelper::dense_array_slot_addr(Builder& b, Value* block, Value* head, uint32_t index) {
+    Value* slot = index == 0 ? head : b.build_add(head, iconst(b, index));
+    return b.build_add(b.build_add(block, b.build_shl(slot, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
+}
+
+Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
+                                                            bool check_hole) {
+    Value* elem = nullptr;
+    if (index <= kMaxInlineDispIndex) {
+        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+        elem = b.build_load_indexed(Type::i64(), block, head, 8, disp);
+    } else {
+        Value* slot = b.build_add(head, iconst(b, index));
+        elem = b.build_load_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
+    }
+    if (check_hole) {
+        Value* is_hole = b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS));
+        elem = b.build_select(is_hole, iconst(b, kUndefinedTag), elem);
+    }
+    return elem;
+}
+
+void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
+                                                           Value* val) {
+    if (index <= kMaxInlineDispIndex) {
+        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+        b.build_store_indexed(Type::i64(), block, head, 8, disp, val);
+    } else {
+        Value* slot = b.build_add(head, iconst(b, index));
+        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
+    }
+}
+
+bool PropertyLoweringHelper::is_known_non_ref(Value* val) const {
+    if (!val) return false;
+    if (boxed_f64_source(val) != nullptr) return true;
+    const Instruction* def = val->defining_instruction();
+    if (def && def->opcode() == Opcode::bitcast_i64_tagged && def->operand_count() >= 1) {
+        const Instruction* inner = def->operand(0)->defining_instruction();
+        if (inner && inner->opcode() == Opcode::bitcast_tagged_i64 && inner->operand_count() >= 1) {
+            def = inner->operand(0)->defining_instruction();
+        }
+    }
+    if (!def) return false;
+    if (def->opcode() == Opcode::iconst_i64) {
+        const uint64_t imm = static_cast<uint64_t>(def->imm_i64());
+        return imm <= kBronzeNumberMaxBits || imm == kUndefinedTag || imm == kNullTag ||
+               imm == kBoolTag || imm == (kBoolTag | 1);
+    }
+    return def->opcode() == Opcode::bitcast_i64_f64;
+}
+
+void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint32_t max_index, bool writable,
+                                                    Value*& out_ok, Value*& out_block, Value*& out_head) {
+    const bool can_select = in_process_ || (b.current_module() && b.current_module()->pinned_tls_register());
+    auto emit_header_checks = [&](Value* base, Value* is_obj_val, Value*& ok, Value*& block, Value*& head) {
+        Value* hdr_ok = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow));
+        Value* is_array = is_obj_val ? b.build_and(is_obj_val, hdr_ok) : hdr_ok;
+        Value* elems = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
+        Value* has_elems = b.build_eq(b.build_and(elems, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+        block = b.build_and(elems, iconst(b, kPayloadMask));
+        head = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        if (!writable) {
+            Value* len = b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+            Value* in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
+            ok = b.build_and(is_array, b.build_and(in_bounds, has_elems));
+        } else {
+            Value* len = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+            Value* cap = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
+            Value* max_slot = max_index == 0 ? head : b.build_add(head, iconst(b, max_index));
+            Value* in_bounds = b.build_and(b.build_ult(iconst(b, max_index), len), b.build_ult(max_slot, cap));
+            Value* props = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+            Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+            ok = b.build_and(b.build_and(is_array, no_props), b.build_and(in_bounds, has_elems));
+        }
+    };
+
+    if (can_select) {
+        Value* ptr = b.build_xor(obj, iconst(b, kObjectTagBits));
+        Value* is_obj = b.build_ult(ptr, iconst(b, kPayloadLimit));
+        Value* not_arr = in_process_
+            ? iconst(b, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&kNotAnArray[0])))
+            : b.build_pinned_tls_read();
+        Value* base = b.build_select(is_obj, ptr, not_arr);
+        emit_header_checks(base, in_process_ ? nullptr : is_obj, out_ok, out_block, out_head);
+        return;
+    }
+
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "dense_guard_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    out_ok = b.add_block_param(bb_merge, Type::i32());
+    out_block = b.add_block_param(bb_merge, Type::i64());
+    out_head = b.add_block_param(bb_merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* ptr = nullptr;
+    Value* is_obj = nullptr;
+    object_pointer(b, obj, ptr, is_obj);
+    b.build_br_if(is_obj, bb_arr, {}, bb_merge, {b.build_iconst_i32(0), iconst(b, 0), iconst(b, 0)});
+
+    b.position_at_end(bb_arr);
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_header_checks(ptr, nullptr, ok, block, head);
+    b.build_br(bb_merge, {ok, block, head});
+
+    b.position_at_end(bb_merge);
+}
+
+Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index) {
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_dense_array_guard(b, obj, max_index, /*writable=*/false, ok, block, head);
+    return ok;
+}
+
+Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint32_t key_index,
+                                                    uint32_t elem_index, const IcSite& site,
+                                                    bool check_hole) {
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_dense_array_guard(b, obj, elem_index, /*writable=*/false, ok, block, head);
+    BasicBlock* guard_bb = b.current_block();
+
+    Function* fn = guard_bb->parent();
+    const std::string prefix = "prop_idx_get_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i64());
+
+    b.position_at_end(guard_bb);
+    b.build_br_if(ok, bb_fast, bb_slow);
+
+    b.position_at_end(bb_fast);
+    Value* fast_val = load_proven_dense_array_elem(b, block, head, elem_index, check_hole);
+    b.build_br(bb_merge, {fast_val});
+
+    b.position_at_end(bb_slow);
+    Value* slow_val = lower_prop_get(b, obj, key_index, site ? site_ptr(b, site) : nullptr);
+    b.build_br(bb_merge, {slow_val});
+
+    b.position_at_end(bb_merge);
+    return result;
+}
+
+void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index,
+                                                  uint32_t elem_index, Value* val, uint32_t strict,
+                                                  const IcSite& site, bool val_is_primitive) {
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_dense_array_guard(b, obj, elem_index, /*writable=*/true, ok, block, head);
+    BasicBlock* guard_bb = b.current_block();
+
+    const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
+    Function* fn = guard_bb->parent();
+    const std::string prefix = "prop_idx_set_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_barrier") : nullptr;
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+
+    b.position_at_end(guard_bb);
+    b.build_br_if(ok, bb_fast, bb_slow);
+
+    b.position_at_end(bb_fast);
+    store_proven_dense_array_elem(b, block, head, elem_index, val);
+    if (need_barrier) {
+        Value* is_ref = b.build_ugt(val, iconst(b, kBronzeNumberMaxBits));
+        b.build_br_if(is_ref, bb_barrier, bb_merge);
+        b.position_at_end(bb_barrier);
+        Value* slot_addr = dense_array_slot_addr(b, block, head, elem_index);
+        b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+        b.build_br(bb_merge);
+    } else {
+        b.build_br(bb_merge);
+    }
+
+    b.position_at_end(bb_slow);
+    lower_prop_set(b, obj, key_index, val, strict, site ? site_ptr(b, site) : nullptr);
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);

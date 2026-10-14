@@ -161,6 +161,31 @@ public:
     Value* lower_elem_get_call(Builder& b, Value* obj, Value* index);
     void lower_elem_set_call(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict);
 
+    // `is.dense_array`: whether `obj` is an Array with an elements block and
+    // `max_index < length`.
+    Value* lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index);
+
+    // Element address and load/store on an Array already proven dense in range
+    // of `index`.
+    void load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head);
+    Value* dense_array_slot_addr(Builder& b, Value* block, Value* head, uint32_t index);
+    Value* load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index, bool check_hole);
+    void store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index, Value* val);
+    bool is_known_non_ref(Value* val) const;
+
+    // Guard for an Array read/write run over constant indices `0..max_index`:
+    // sets `out_ok`, `out_block` and `out_head`.
+    void emit_dense_array_guard(Builder& b, Value* obj, uint32_t max_index, bool writable,
+                                Value*& out_ok, Value*& out_block, Value*& out_head);
+
+    // A constant-index property read or write (`o[0]`, `o[15] = v`): an inline
+    // Array element access in front of `bronze_prop_get` / `bronze_prop_set`.
+    Value* lower_prop_get_index(Builder& b, Value* obj, uint32_t key_index, uint32_t elem_index,
+                                const IcSite& site, bool check_hole = true);
+    void lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index, uint32_t elem_index,
+                              Value* val, uint32_t strict, const IcSite& site,
+                              bool val_is_primitive = false);
+
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
 
     // A plain object's payload and shape word, and whether it is one; a

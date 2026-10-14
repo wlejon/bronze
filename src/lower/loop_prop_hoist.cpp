@@ -113,8 +113,28 @@ bool hoistInFunction(il::Function& fn, const std::vector<uint8_t>& isAccessorKey
                         if (isInvariant) {
                             // Issue 1: Restrict hoisting to PropGet instructions in blocks
                             // that are guaranteed to execute if the loop is entered, or
-                            // where the receiver is provably non-nullish.
-                            if (!guaranteedToExecute[b] &&
+                            // where the receiver is provably non-nullish (either statically
+                            // or by a dominating dereference before the preheader).
+                            bool dominatedByDeref = false;
+                            if (!guaranteedToExecute[b]) {
+                                const auto numBlocks = static_cast<il::BlockId>(fn.blocks.size());
+                                for (il::BlockId domBlk = 0; domBlk < numBlocks; ++domBlk) {
+                                    if (!inLoop[domBlk] && cfg.dominates(domBlk, preheader) &&
+                                        fn.blocks[domBlk].handler == il::kNoBlock) {
+                                        for (const auto& domInst : fn.blocks[domBlk].instructions) {
+                                            if ((domInst.op == il::Op::PropGet ||
+                                                 domInst.op == il::Op::PropSet) &&
+                                                !domInst.operands.empty() &&
+                                                domInst.operands[0] == recv) {
+                                                dominatedByDeref = true;
+                                                break;
+                                            }
+                                        }
+                                        if (dominatedByDeref) break;
+                                    }
+                                }
+                            }
+                            if (!guaranteedToExecute[b] && !dominatedByDeref &&
                                 !isProvablyNonNullish(recv, fn, defs, module, ctorCache)) {
                                 ++i;
                                 continue;
@@ -197,13 +217,73 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
         uint32_t keyIndex;
         il::ValueId val;
     };
+    struct UnboxCell {
+        il::ValueId boxed;
+        il::Type type;
+        bool rawUnbox;
+        bool nullishUnbox;
+        il::ValueId raw;
+    };
     bool changed = false;
     std::vector<DefSite> defs = computeDefSites(fn);
 
+    auto replaceAllUses = [&](il::ValueId oldVal, il::ValueId newVal) {
+        for (il::Block& targetBlk : fn.blocks) {
+            for (il::Instruction& userInst : targetBlk.instructions) {
+                for (il::ValueId& op : userInst.operands) {
+                    if (op == oldVal) op = newVal;
+                }
+                for (il::ValueId& arg : userInst.target.args) {
+                    if (arg == oldVal) arg = newVal;
+                }
+                for (il::ValueId& arg : userInst.elseTarget.args) {
+                    if (arg == oldVal) arg = newVal;
+                }
+            }
+        }
+    };
+
     for (il::Block& blk : fn.blocks) {
         std::vector<PropCell> table;
+        std::vector<UnboxCell> unboxTable;
         for (size_t i = 0; i < blk.instructions.size();) {
             auto& inst = blk.instructions[i];
+
+            if (inst.op == il::Op::Unbox && inst.result != il::kNoValue &&
+                !inst.operands.empty()) {
+                const il::ValueId src = inst.operands[0];
+                il::ValueId folded = il::kNoValue;
+                if (src < defs.size() && defs[src].block != il::kNoBlock &&
+                    defs[src].index != UINT32_MAX) {
+                    const auto& defInst =
+                        fn.blocks[defs[src].block].instructions[defs[src].index];
+                    if (defInst.op == il::Op::Box && defInst.boxType == inst.type &&
+                        !defInst.operands.empty()) {
+                        folded = defInst.operands[0];
+                    }
+                }
+                if (folded == il::kNoValue) {
+                    for (const auto& entry : unboxTable) {
+                        if (entry.boxed == src && entry.type == inst.type &&
+                            entry.rawUnbox == inst.rawUnbox &&
+                            entry.nullishUnbox == inst.nullishUnbox) {
+                            folded = entry.raw;
+                            break;
+                        }
+                    }
+                }
+                if (folded != il::kNoValue) {
+                    replaceAllUses(inst.result, folded);
+                    blk.instructions.erase(blk.instructions.begin() + i);
+                    defs = computeDefSites(fn);
+                    changed = true;
+                    continue;
+                }
+                unboxTable.push_back(
+                    {src, inst.type, inst.rawUnbox, inst.nullishUnbox, inst.result});
+                ++i;
+                continue;
+            }
 
             if (inst.op == il::Op::Construct) {
                 const uint32_t calleeIdx = findCalleeIndex(inst, fn, defs, module);
@@ -236,9 +316,18 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                     const il::ValueId target = inst.operands[0];
                     const il::ValueId val = inst.operands[1];
                     const uint32_t key = inst.keyIndex;
+                    const bool hasStaticSlot =
+                        inst.staticSlot != il::Instruction::kNoStaticSlot;
 
-                    if (!isKnownPlainObject(target, fn, defs, module, ctorCache)) {
-                        table.clear();
+                    if (!hasStaticSlot &&
+                        !isKnownPlainObject(target, fn, defs, module, ctorCache)) {
+                        for (size_t t = 0; t < table.size();) {
+                            if (table[t].keyIndex == key) {
+                                table.erase(table.begin() + t);
+                            } else {
+                                ++t;
+                            }
+                        }
                         ++i;
                         continue;
                     }
@@ -303,8 +392,10 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                 const bool isArrIdx = (key < module.keyConstants.size() &&
                                        isArrayIndexKey(module.keyConstants[key]));
                 if (!isArrIdx && key < isAccessorKey.size() && !isAccessorKey[key]) {
-                    if (!isKnownPlainObject(recv, fn, defs, module, ctorCache)) {
-                        table.clear();
+                    const bool hasStaticSlot =
+                        inst.staticSlot != il::Instruction::kNoStaticSlot;
+                    if (!hasStaticSlot &&
+                        !isKnownPlainObject(recv, fn, defs, module, ctorCache)) {
                         ++i;
                         continue;
                     }
@@ -316,20 +407,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                         }
                     }
                     if (existing != il::kNoValue) {
-                        const il::ValueId oldVal = inst.result;
-                        for (il::Block& targetBlk : fn.blocks) {
-                            for (il::Instruction& userInst : targetBlk.instructions) {
-                                for (il::ValueId& op : userInst.operands) {
-                                    if (op == oldVal) op = existing;
-                                }
-                                for (il::ValueId& arg : userInst.target.args) {
-                                    if (arg == oldVal) arg = existing;
-                                }
-                                for (il::ValueId& arg : userInst.elseTarget.args) {
-                                    if (arg == oldVal) arg = existing;
-                                }
-                            }
-                        }
+                        replaceAllUses(inst.result, existing);
                         blk.instructions.erase(blk.instructions.begin() + i);
                         defs = computeDefSites(fn);
                         changed = true;
@@ -363,7 +441,8 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
             auto& inst = blk.instructions[i];
             if (inst.result != il::kNoValue && useCount[inst.result] == 0) {
                 bool canPrune = false;
-                if (inst.op == il::Op::CreateObject || inst.op == il::Op::CreateArray) {
+                if (inst.op == il::Op::CreateObject || inst.op == il::Op::CreateArray ||
+                    (changed && inst.op == il::Op::Box && inst.boxType == il::Type::F64)) {
                     canPrune = true;
                 } else if (inst.op == il::Op::Construct) {
                     const uint32_t calleeIdx = findCalleeIndex(inst, fn, defs, module);

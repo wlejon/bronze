@@ -2,6 +2,7 @@
 #include "il_lowering.h"
 #include "il_abi.h"
 #include "il_property.h"
+#include "il/key.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 
@@ -70,6 +71,30 @@ bool lower_property_instruction(
         case BronzeOp::PropGet: {
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
+            if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {
+                if (const auto elem_idx = bronze::il::parseIndexKey(prop_lowering.key_tag(inst_ast.index))) {
+                    if (prop_lowering.enable_inlined_fastpaths() && prop_lowering.inline_sets()) {
+                        const bool check_hole = !lowering->is_hole_insensitive(inst_ast.result_id);
+                        if (lowering->is_proven_dense_array(inst_ast.operands[0], *elem_idx)) {
+                            Value* block = nullptr;
+                            Value* head = nullptr;
+                            lowering->get_dense_array_cursor(inst_ast.operands[0], obj_val, b, block, head);
+                            res_val = prop_lowering.load_proven_dense_array_elem(b, block, head, *elem_idx, check_hole);
+                            return true;
+                        }
+                        if (!lowering->run_once()) {
+                            res_val = prop_lowering.lower_prop_get_index(b, obj_val, inst_ast.index, *elem_idx, site,
+                                                                         check_hole);
+                            lowering->invalidate_dense_array_proofs();
+                            return true;
+                        }
+                    }
+                    res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index,
+                                                           site ? prop_lowering.site_ptr(b, site) : nullptr);
+                    lowering->invalidate_dense_array_proofs();
+                    return true;
+                }
+            }
             // A site the IL calls monomorphic gets the way-0 guard-and-load
             // in front of the helper: one compare against the most recently
             // installed shape (the helper fills move-to-front), never a
@@ -98,6 +123,22 @@ bool lower_property_instruction(
             Value* val = ensure_type(get_opd(1), Type::i64());
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
             const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
+            if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {
+                if (const auto elem_idx = bronze::il::parseIndexKey(prop_lowering.key_tag(inst_ast.index))) {
+                    if (prop_lowering.enable_inlined_fastpaths() && prop_lowering.inline_sets() &&
+                        !lowering->run_once()) {
+                        const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
+                        prop_lowering.lower_prop_set_index(b, obj_val, inst_ast.index, *elem_idx, val, strict, site,
+                                                           val_prim);
+                        lowering->invalidate_dense_array_proofs();
+                        return true;
+                    }
+                    prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
+                                                 site ? prop_lowering.site_ptr(b, site) : nullptr);
+                    lowering->invalidate_dense_array_proofs();
+                    return true;
+                }
+            }
             // The same sites the read inlines (see PropGet), less the writes
             // to an object this function just created: those add a property
             // (a shape transition), which the inline store never does.

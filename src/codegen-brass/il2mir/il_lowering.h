@@ -83,6 +83,16 @@ public:
     // Whether IL value `id` is an object this function created
     // (CreateObject): a write to it adds a property.
     bool is_fresh_object(uint32_t id) const { return fresh_objects_.count(id) != 0; }
+    // Whether every use of `id` in the function is `IsNumber` or a raw `Unbox`.
+    bool is_hole_insensitive(uint32_t id) const { return hole_insensitive_ids_.count(id) != 0; }
+    // Whether `id` is statically guaranteed to be a primitive value (never a
+    // heap reference), so storing it requires no GC write barrier.
+    bool is_primitive_value(uint32_t id) const { return primitive_value_ids_.count(id) != 0; }
+    // Whether `arr_id` is proven at the current lowering point to be a dense
+    // Array with `index < length` and a valid elements block.
+    bool is_proven_dense_array(uint32_t arr_id, uint32_t index) const;
+    void get_dense_array_cursor(uint32_t arr_id, Value* obj_val, Builder& b, Value*& out_block, Value*& out_head);
+    void invalidate_dense_array_proofs();
 
 private:
     // Per-function values computed once at the function's entry and shared
@@ -92,8 +102,23 @@ private:
     // Starts a function's hoisting: values go into `block`, after whatever it
     // holds now.
     void begin_hoisting(BasicBlock* block);
-    // The function's run-once blocks (run_once) and fresh objects.
+    // The function's run-once blocks (run_once), fresh objects, and array proofs.
     void analyze_function(const BronzeFunction& fn_ast);
+    void begin_block_proofs(uint32_t block_id);
+    void after_instruction_proofs(const BronzeInstruction& inst_ast);
+    bool try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
+                                   std::unordered_map<uint32_t, Value*>& val_map,
+                                   const std::unordered_map<uint32_t, BasicBlock*>& block_map,
+                                   uint32_t* cont_counter);
+    struct DenseArrayProof {
+        uint32_t arr_id = UINT32_MAX;
+        uint32_t max_index = 0;
+    };
+    struct DenseArrayCursor {
+        BasicBlock* bb = nullptr;
+        Value* block = nullptr;
+        Value* head = nullptr;
+    };
     BasicBlock* hoist_block_ = nullptr;
     Instruction* hoist_after_ = nullptr;
     bool hoist_at_head_ = false;
@@ -102,6 +127,12 @@ private:
     bool small_forms_ = true;
     std::unordered_set<uint32_t> run_once_blocks_;
     std::unordered_set<uint32_t> fresh_objects_;
+    std::unordered_set<uint32_t> hole_insensitive_ids_;
+    std::unordered_set<uint32_t> primitive_value_ids_;
+    std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
+    std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
+    std::unordered_map<uint32_t, DenseArrayCursor> dense_array_cursors_;
+    std::unordered_map<uint32_t, uint32_t> single_block_propset_use_;
     Value* coro_frame_val_ = nullptr;
     uint32_t coro_suspend_count_ = 0;
     // AST function `i`'s body, and its `__wrapper_` (a no-op for a function

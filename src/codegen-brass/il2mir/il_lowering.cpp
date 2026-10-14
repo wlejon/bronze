@@ -48,7 +48,7 @@ Value* IlLowering::unbox_tagged(Value* tagged, Builder& b) {
     // is an ordinary unbox.
     Instruction* def = tagged->defining_instruction();
     if (def && def->opcode() == Opcode::bitcast_tagged_i64 && def->parent() == b.current_block()) {
-        int budget = 32;
+        int budget = 256;
         for (Instruction* i = b.current_block()->tail(); i && budget-- > 0; i = i->prev()) {
             if (i == def) return def->operand(0);
             if (may_collect(i)) break;
@@ -703,7 +703,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             if (is_dynamic(p.second)) current_fn_dynamic_ids_.insert(p.first);
         }
         for (const auto& inst : blk.instructions) {
-            if (inst.result_id != UINT32_MAX && is_dynamic(inst.result_type)) {
+            if (inst.result_id != UINT32_MAX && is_dynamic(inst.result_type) &&
+                !is_hole_insensitive(inst.result_id)) {
                 current_fn_dynamic_ids_.insert(inst.result_id);
             }
         }
@@ -911,8 +912,14 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();
         run_once_ = run_once_blocks_.count(blk_ast.id) != 0;
+        begin_block_proofs(blk_ast.id);
 
-        for (const auto& inst_ast : blk_ast.instructions) {
+        for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
+            if (try_lower_array_index_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter)) {
+                if (has_error_) return false;
+                continue;
+            }
+            const auto& inst_ast = blk_ast.instructions[inst_idx];
             if (current_file_id_ != 0 && inst_ast.line > 0) {
                 // The instruction's own file: a merged top level holds lines
                 // of every imported module, so the module's name is only the
@@ -927,6 +934,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             if (!lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, &cont_counter)) {
                 return false;
             }
+            after_instruction_proofs(inst_ast);
         }
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
     }
