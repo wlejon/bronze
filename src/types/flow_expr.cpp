@@ -104,7 +104,11 @@ void contributeMethodArg(ModuleContext& mod, uint32_t index, const MethodInfo& t
 Type FlowAnalyzer::expr(const ast::Expr& e) {
     const Type t = exprKind(e);
     if (record_) {
-        mod_.result->exprTypes[&e] = t;
+        Type rec = t;
+        if (rec.arrayElementsUndecided()) rec = Type::array();
+        if (rec.functionReturnsNever() || rec.functionReturnsNumber()) rec = Type::function();
+        if (rec.isDynamicNumOrUndef()) rec = Type::dynamic();
+        mod_.result->exprTypes[&e] = rec;
     } else if (!mod_.auditSettled) {
         // Every probe round: the audit is part of the outer fixpoint and has to
         // see the types each round produced. On the final recording pass the
@@ -154,6 +158,22 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
                                                  : Type::objectNotBuiltHere(scope_.thisClass);
     }
     if (const auto* id = ast::exactAs<const ast::Ident*>(&e)) {
+        if (!suppressObjectLitSetterReach_ && !scope_.isCell(id->name)) {
+            if (const auto it = scope_.objectLitMethodAliases.find(id->name);
+                it != scope_.objectLitMethodAliases.end()) {
+                if (InferMemo* memo = mod_.rec()) {
+                    memo->noteObjectLitTable(mod_.objectLitTableVersion);
+                }
+                for (const auto& [key, vec] : mod_.objectLitSetters) {
+                    if (key.second == it->second) {
+                        for (const uint32_t sIdx : vec) {
+                            mod_.contribute(InferMemo::Contrib::SetterReached, sIdx, 0,
+                                            Type::dynamic());
+                        }
+                    }
+                }
+            }
+        }
         const Type t = lookup(id->name);
         noteIdentRefusal(*id, t);
         return t;
@@ -171,19 +191,32 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return join(a, b);
     }
     if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&e)) {
+        const bool suppressHere = suppressObjectLitSetterReach_;
+        suppressObjectLitSetterReach_ = false;
         const Type base = expr(*m->object);
         lastMember_ = m;
         lastMemberBase_ = base;
-        // A read from a value that never arrives produces a value that never
-        // arrives. Answering `Dynamic` here instead would be a claim, and the
-        // wrong one: `Never` is the bottom of this lattice and only widens, so a
-        // base that is `Never` on one round of the call-graph fixpoint and a
-        // class on the next would have made this expression's type NARROW
-        // between rounds. The interprocedural pass (method_ident.h) reads
-        // receiver types to decide which methods it can still speak for, and a
-        // decision taken from a narrowing sequence is not a fixpoint — it is
-        // whichever round happened to run last.
         if (base.is(TypeKind::Never)) return Type::never();
+        const bool savedSuppress = suppressObjectLitSetterReach_;
+        suppressObjectLitSetterReach_ = suppressHere;
+        noteStaticMethodAccess(*m, base);
+        suppressObjectLitSetterReach_ = savedSuppress;
+        if (!m->optional && !m->isPrivate && mod_.valueFlow) {
+            if (const auto* id = ast::exactAs<const ast::Ident*>(m->object.get())) {
+                if (mod_.ctors.isClassName(id->name)) {
+                    const std::string key = id->name + "." + m->property;
+                    const auto it = mod_.moduleBindings.find(key);
+                    const bool present = it != mod_.moduleBindings.end();
+                    if (InferMemo* memo = mod_.rec()) {
+                        memo->noteBinding(key, present, present ? it->second : Type::dynamic());
+                    }
+                    if (present && it->second.is(TypeKind::Object) &&
+                        it->second.shapeClass() != kNoShapeClass) {
+                        return Type::objectIdentityOnly(it->second.shapeClass());
+                    }
+                }
+            }
+        }
         // The Math VALUE properties are numbers on the pristine builtin —
         // 21.3.1 lists exactly these eight, all non-writable and
         // non-configurable, though what carries the proof here is the
@@ -204,6 +237,30 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // produces `undefined`, which is not the field's type.
         if (!m->optional && base.is(TypeKind::Object) &&
             base.shapeClass() != kNoShapeClass && !m->isPrivate) {
+            if (mod_.result->classLayouts.byShapeClass(base.shapeClass()) == nullptr) {
+                if (!base.identityOnly()) {
+                    const Type field = mod_.objectLitFieldType(base.shapeClass(), m->property);
+                    const bool clean =
+                        mod_.arrayElemShapeClasses.count(base.shapeClass()) != 0 &&
+                        mod_.fieldAudit.objectLitFieldClean(base.shapeClass(), m->property);
+                    if (InferMemo* memo = mod_.rec()) {
+                        memo->noteField(base.shapeClass(), m->property, field, clean);
+                    }
+                    if (mod_.arrayElemShapeClasses.count(base.shapeClass()) != 0) {
+                        if (field.is(TypeKind::Never)) return Type::never();
+                        if (field.is(TypeKind::Number)) {
+                            if (record_) ++mod_.result->fieldAudit.numberFieldReads;
+                            if (!clean) {
+                                if (record_) ++mod_.result->fieldAudit.refusedByAudit;
+                                return Type::dynamic();
+                            }
+                            if (record_) mod_.result->provenFieldReads.insert(m);
+                            return Type::number();
+                        }
+                    }
+                }
+                return Type::dynamic();
+            }
             Type field =
                 mod_.result->classLayouts.fieldTypeOf(base.shapeClass(), m->property);
             if (InferMemo* memo = mod_.rec()) {
@@ -341,6 +398,18 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
              base.arrayElementsPinned())) {
             lastNumericElem_ = ix;
         }
+        if (!ix->optional) {
+            if (const auto* id = ast::exactAs<const ast::Ident*>(ix->object.get())) {
+                if (!scope_.isCell(id->name)) {
+                    const auto it = scope_.dictElemTypes.find(id->name);
+                    if (it != scope_.dictElemTypes.end() && it->second.is(TypeKind::Object) &&
+                        !it->second.identityOnly() && it->second.shapeClass() != kNoShapeClass &&
+                        mod_.result->classLayouts.byShapeClass(it->second.shapeClass()) == nullptr) {
+                        return it->second;
+                    }
+                }
+            }
+        }
         return Type::dynamic();
     }
     if (const auto* c = ast::exactAs<const ast::Call*>(&e)) return call(*c);
@@ -354,7 +423,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (const auto* o = ast::exactAs<const ast::ObjectLit*>(&e)) return objectLit(*o);
     if (const auto* a = ast::exactAs<const ast::ArrayLit*>(&e)) {
-        bool canTrackElem = !a->elements.empty();
+        bool canTrackElem = true;
         bool allNever = true;
         ShapeClassId commonCls = kNoShapeClass;
         for (const auto& el : a->elements) {
@@ -379,44 +448,14 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         }
         if (canTrackElem) {
             if (allNever) return Type::arrayOfNever();
-            if (commonCls != kNoShapeClass) return Type::arrayOfObject(commonCls);
+            if (commonCls != kNoShapeClass) {
+                if (mod_.arrayElemShapeClasses.insert(commonCls).second) ++mod_.persistentWrites;
+                return Type::arrayOfObject(commonCls);
+            }
         }
         return Type::array();
     }
-    if (const auto* sc = ast::exactAs<const ast::SuperCall*>(&e)) {
-        // The parent constructor runs on the current receiver and its
-        // result is discarded, so nothing is proven about the value.
-        std::vector<Type> args;
-        args.reserve(sc->args.size());
-        bool spreadArgs = false;
-        for (const auto& a : sc->args) {
-            if (ast::exactAs<const ast::SpreadElement*>(a.get())) spreadArgs = true;
-            args.push_back(expr(*a));
-        }
-        // It is also a CALL SITE of the base's constructor, and in three.js it
-        // is the commonest one there is: every class below `Object3D` reaches
-        // its fields through one. Which constructor that is, is decided
-        // statically — the enclosing class's base, and then whatever that base
-        // forwards to when it declares none.
-        // The implicit `constructor(...args) { super(...args) }` is a link and
-        // not a call site: what reaches the base is what reached the subclass,
-        // and `CtorTable::targetOf` already walks straight through it. Reading
-        // this spread as evidence would poison the base of every bare
-        // `class X extends Y {}` in the program.
-        const bool forwarding = scope_.ctorIndex != kNoCtor &&
-                                mod_.ctors.ctors()[scope_.ctorIndex].isForwarder;
-        if (mod_.ctorParamTypes && !forwarding) {
-            const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
-            // A base this pass cannot name — an anonymous enclosing class, or
-            // `extends (expr)` — needs no poison of its own: the only road from
-            // there to one of the program's classes is a read of that class's
-            // binding, and such a read is an escape the scan already saw.
-            if (here != nullptr && !here->superName.empty()) {
-                constructSite(here->superName, args, spreadArgs);
-            }
-        }
-        return Type::dynamic();
-    }
+    if (const auto* sc = ast::exactAs<const ast::SuperCall*>(&e)) return superCall(*sc);
     if (ast::exactAs<const ast::SuperMember*>(&e)) return Type::dynamic();
     if (const auto* ce = ast::exactAs<const ast::ClassExpr*>(&e)) {
         analyzeClassBody(ce->name, ce->methods);
@@ -457,13 +496,25 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return value;
     }
     if (const auto* f = ast::exactAs<const ast::FunctionExpr*>(&e)) {
+        if (!record_ && !mod_.auditSettled && mod_.interprocIdent && mod_.valueFlow) {
+            const uint32_t sIdx = mod_.methods.setterIndexOfNode(f);
+            if (sIdx != kNoMethod) {
+                const SetterInfo& s = mod_.methods.setters()[sIdx];
+                if (InferMemo* memo = mod_.rec()) memo->noteSetter(sIdx, s.version);
+                if (!s.reached) return Type::function();
+            }
+        }
         // 15.3.4: an arrow has no `this` binding of its own and resolves the
         // name in the enclosing scope, so it inherits whatever receiver is in
         // hand. A non-arrow function expression binds its own, which the
         // caller supplies and no declaration here can name.
-        analyzeNested(*f, f->name, f->params, f->body, f->span,
-                      f->isGenerator || f->isAsync,
-                      f->isArrow ? scope_.thisClass : kNoShapeClass);
+        const Type ret = analyzeNested(*f, f->name, f->params, f->body, f->span,
+                                       f->isGenerator || f->isAsync,
+                                       f->isArrow ? scope_.thisClass : kNoShapeClass);
+        if (!f->isGenerator && !f->isAsync) {
+            if (ret.is(TypeKind::Never)) return Type::functionReturningNever();
+            if (ret.is(TypeKind::Number)) return Type::functionReturningNumber();
+        }
         return Type::function();
     }
     fail(e.span, "saw an unknown expression node kind");
@@ -484,111 +535,44 @@ Type FlowAnalyzer::exprForOperator(const ast::Expr& e) {
         if (ix != nullptr && lastNumericElem_ == ix) {
             return Type::undefined();
         }
-    }
-    return t;
-}
-
-Type FlowAnalyzer::unary(const ast::Unary& u) {
-    const Type operand = exprForOperator(*u.operand);
-    const Type result = unaryResult(u.op, operand);
-    // The update forms are the one place a USE site sharpens a name — but
-    // only to what 13.4.4 actually stores: ToNumeric of the old value, which
-    // `unaryResult` already computed, and which is a Number only when the
-    // operand can never be a BigInt. Writing `number` unconditionally here
-    // was the unsound claim that let `let c = 1n; c++` unbox a BigInt as an
-    // f64 wherever a later read consumed the proof.
-    if (u.op == ast::UnaryOp::PreInc || u.op == ast::UnaryOp::PreDec ||
-        u.op == ast::UnaryOp::PostInc || u.op == ast::UnaryOp::PostDec) {
-        if (const auto* id = ast::exactAs<const ast::Ident*>(u.operand.get())) {
-            assign(id->name, result);
-        } else if (const auto* m = ast::exactAs<const ast::MemberAccess*>(u.operand.get())) {
-            if (!m->isPrivate) {
-                notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic());
-            }
-        }
-    }
-    return result;
-}
-
-Type FlowAnalyzer::binary(const ast::Binary& b) {
-    if (b.op == ast::BinaryOp::Assign) {
-        const Type rhs = expr(*b.rhs);
-        if (const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get())) {
-            assign(id->name, rhs);
-        } else {
-            expr(*b.lhs);
-            if (const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get())) {
-                if (!m->isPrivate) {
-                    notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic());
-                }
-            } else if (const auto* ix = ast::exactAs<const ast::IndexAccess*>(b.lhs.get())) {
-                if (const auto* arrId = ast::exactAs<const ast::Ident*>(ix->object.get())) {
-                    if (scope_.env.count(arrId->name) != 0 || scope_.cells.count(arrId->name) != 0) {
-                        const Type arrT = lookup(arrId->name);
-                        if (arrT.is(TypeKind::Array) &&
-                            (arrT.arrayElemClass() != kNoShapeClass || arrT.arrayElementsUndecided())) {
-                            Type elemArr = Type::array();
-                            if (rhs.is(TypeKind::Never)) {
-                                elemArr = Type::arrayOfNever();
-                            } else if (rhs.is(TypeKind::Object) && rhs.shapeClass() != kNoShapeClass) {
-                                elemArr = Type::arrayOfObject(rhs.shapeClass());
-                            }
-                            const Type updated = join(arrT, elemArr);
-                            if (updated != arrT) assign(arrId->name, updated);
+        if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&e)) {
+            if (lastMember_ == m && !m->optional && !m->isPrivate && mod_.interprocIdent) {
+                if (const ClassLayout* cl = receiverClass(lastMemberBase_)) {
+                    const std::string backing =
+                        mod_.methods.getterBackingField(cl->name, m->property);
+                    if (!backing.empty()) {
+                        const Type ft =
+                            mod_.result->classLayouts.fieldTypeOf(cl->shapeClass, backing);
+                        const bool clean = mod_.fieldAudit.numberCleanFor(cl->shapeClass, backing);
+                        if (InferMemo* memo = mod_.rec()) {
+                            memo->noteField(cl->shapeClass, backing, ft, clean);
+                        }
+                        if (ft.is(TypeKind::Never)) return Type::never();
+                        if ((ft.is(TypeKind::Number) || ft.is(TypeKind::Dynamic)) && clean) {
+                            return Type::number();
                         }
                     }
                 }
             }
         }
-        return rhs;
     }
-    if (ast::isCompoundAssignOp(b.op)) {
-        const ast::BinaryOp plain = ast::compoundAssignBase(b.op);
-        const Type rhs = exprForOperator(*b.rhs);
-        const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get());
-        const Type current = id != nullptr ? lookup(id->name) : exprForOperator(*b.lhs);
-        if (const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get())) {
-            if (!m->isPrivate) {
-                notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic());
-            }
-        }
-        const Type result = compoundResult(plain, current, rhs);
-        if (id != nullptr) assign(id->name, result);
-        return result;
-    }
-
-    // `&&` / `||` / `??` are short-circuiting, so the right operand may
-    // not run; joining its environment back in would be a claim it did.
-    // The value is one operand or the other, hence the type join.
-    if (b.op == ast::BinaryOp::LogicalAnd || b.op == ast::BinaryOp::LogicalOr ||
-        b.op == ast::BinaryOp::NullishCoalescing) {
-        const Type l = expr(*b.lhs);
-        const Env entry = scope_.env;
-        const Type r = expr(*b.rhs);
-        scope_.env = joinEnv(entry, scope_.env);
-        return join(l, r);
-    }
-
-    if (b.op == ast::BinaryOp::Comma) {
-        const Type l = expr(*b.lhs);
-        const Type r = expr(*b.rhs);
-        return binaryResult(b.op, l, r);
-    }
-
-    const Type l = exprForOperator(*b.lhs);
-    const Type r = exprForOperator(*b.rhs);
-    return binaryResult(b.op, l, r);
+    return t;
 }
 
 Type FlowAnalyzer::call(const ast::Call& c) {
-    const Type calleeType = expr(*c.callee);
-    // The receiver of a method call, recovered from the one evaluation of the
-    // callee rather than by walking its base a second time. `lastMember_` is the
-    // outermost member read that evaluation finished with, so the pointer
-    // compare is what confirms this call really is on it.
     const auto* member = ast::exactAs<const ast::MemberAccess*>(c.callee.get());
-    const Type receiver = (member != nullptr && lastMember_ == member) ? lastMemberBase_
-                                                                       : Type::dynamic();
+    const auto* calleeId = ast::exactAs<const ast::Ident*>(c.callee.get());
+    const bool suppressSetter =
+        !c.optional &&
+        ((member != nullptr && !member->optional && !member->isPrivate && !member->property.empty()) ||
+         (calleeId != nullptr && !scope_.isCell(calleeId->name) &&
+          scope_.objectLitMethodAliases.count(calleeId->name) != 0));
+    const bool savedSuppressSetter = suppressObjectLitSetterReach_;
+    if (suppressSetter) suppressObjectLitSetterReach_ = true;
+    const Type calleeType = expr(*c.callee);
+    suppressObjectLitSetterReach_ = savedSuppressSetter;
+    const bool hadMemberBase = (member != nullptr && lastMember_ == member);
+    const Type receiver = hadMemberBase ? lastMemberBase_ : Type::dynamic();
     std::vector<Type> args;
     args.reserve(c.args.size());
     bool spreadArgs = false;
@@ -596,6 +580,8 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         if (ast::exactAs<const ast::SpreadElement*>(a.get())) spreadArgs = true;
         args.push_back(expr(*a));
     }
+    const std::optional<Type> objLitSetterRet =
+        callObjectLitSetter(c, member, receiver, args, spreadArgs);
 
     // `Math.<fn>(...)` on the pristine builtin: every OWN function property
     // of 21.3 returns a Number for ANY arguments (a BigInt argument throws
@@ -614,27 +600,6 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         }
     }
 
-    // A pinned RETURN, spent HERE and not only on the callee's own signature.
-    // Lowering has always turned `return <owner>: number` into an f64 result on
-    // the callee's typed entry, and that is half a promise: the value arrives
-    // in a register and the caller then boxes it, because the analysis that
-    // types the caller's arithmetic — and, decisively, a loop-carried binding
-    // at its merge — never heard the claim. `hits = hits + useProgram(i)` stayed
-    // a `bronze_dynamic_add` per iteration over an f64 the callee had already
-    // computed. A pin is a promise the invocation makes to the whole
-    // compilation, so it is answered wherever the compilation asks.
-    //
-    // A closure is exactly the case that needs it: its callers are reached
-    // through a function value, so it has no `functionIndex` and no signature
-    // below can speak for it. `?.()` is excluded — the call may not happen and
-    // the result is then `undefined`, which is not a Number.
-    //
-    // NOTED, not returned. A pin about the RESULT says nothing about the
-    // ARGUMENTS, and answering here used to skip the contribution loop at the
-    // bottom of this function — so `return run: number` on a direct call
-    // `run(iters)` silently un-typed `run`'s own parameter, and the census
-    // emitting that entry cost 1.8 ns/call on mat4_kernel (stage C1). A pin adds
-    // a promise; it must never subtract a proof.
     bool pinnedReturn = false;
     if (!c.optional && mod_.pins != nullptr) {
         const auto* ident = ast::exactAs<const ast::Ident*>(c.callee.get());
@@ -643,8 +608,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
 
     // `recv.m(...)`: the call sites a class METHOD has, enumerated through the
     // receiver's class rather than through the callee's name.
-    if (member != nullptr && !c.optional && lastMember_ == member &&
-        receiver.is(TypeKind::Array)) {
+    if (member != nullptr && !c.optional && hadMemberBase && receiver.is(TypeKind::Array)) {
         if (member->property == "push" || member->property == "unshift") {
             if (const auto* id = ast::exactAs<const ast::Ident*>(member->object.get())) {
                 if (scope_.env.count(id->name) != 0 || scope_.cells.count(id->name) != 0) {
@@ -656,6 +620,9 @@ Type FlowAnalyzer::call(const ast::Call& c) {
                             if (at.is(TypeKind::Never)) {
                                 updated = join(updated, Type::arrayOfNever());
                             } else if (at.is(TypeKind::Object) && at.shapeClass() != kNoShapeClass) {
+                                if (mod_.arrayElemShapeClasses.insert(at.shapeClass()).second) {
+                                    ++mod_.persistentWrites;
+                                }
                                 updated = join(updated, Type::arrayOfObject(at.shapeClass()));
                             } else {
                                 updated = Type::array();
@@ -666,8 +633,8 @@ Type FlowAnalyzer::call(const ast::Call& c) {
                 }
             }
         } else if ((member->property == "shift" || member->property == "pop") &&
-                   args.empty() && !spreadArgs &&
-                   !mod_.methods.isMethodName(member->property)) {
+                    args.empty() && !spreadArgs &&
+                    !mod_.methods.isMethodName(member->property)) {
             if (receiver.arrayElementsUndecided()) return Type::never();
             if (receiver.arrayElemClass() != kNoShapeClass) {
                 const ShapeClassId cls = receiver.arrayElemClass();
@@ -677,7 +644,78 @@ Type FlowAnalyzer::call(const ast::Call& c) {
             }
         }
     }
-    if (member != nullptr) return methodCall(member->property, receiver, args, spreadArgs);
+    if (member != nullptr) {
+        if (!c.optional && member->property == "freeze" && !args.empty()) {
+            if (const auto* objId = ast::exactAs<const ast::Ident*>(member->object.get())) {
+                if (objId->name == "Object" && !resolvesToUserBinding("Object")) {
+                    return args[0];
+                }
+            }
+        }
+        if (member->property == "stringify" && mod_.interprocIdent && !args.empty()) {
+            const Type arg0 = args[0];
+            bool canHaveToJSON =
+                !arg0.is(TypeKind::Never) && !arg0.is(TypeKind::Number) &&
+                !arg0.is(TypeKind::String) && !arg0.is(TypeKind::Bool) &&
+                !arg0.is(TypeKind::Null) && !arg0.is(TypeKind::Undefined) &&
+                !arg0.is(TypeKind::TypedArray);
+            if (canHaveToJSON && arg0.is(TypeKind::Object) && arg0.shapeClass() != kNoShapeClass &&
+                mod_.result->classLayouts.byShapeClass(arg0.shapeClass()) == nullptr &&
+                mod_.objectLitUnclosed.count(arg0.shapeClass()) == 0) {
+                const auto fIt = mod_.objectLitFields.find(arg0.shapeClass());
+                bool hasComplexField = false;
+                if (fIt != mod_.objectLitFields.end()) {
+                    for (const auto& [fk, fv] : fIt->second) {
+                        if (fv.is(TypeKind::Object) || fv.is(TypeKind::Array) ||
+                            fv.is(TypeKind::Dynamic)) {
+                            hasComplexField = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hasComplexField) canHaveToJSON = false;
+            }
+            if (canHaveToJSON && !c.args.empty()) {
+                if (const auto* argMem = ast::exactAs<const ast::MemberAccess*>(c.args[0].get())) {
+                    if (!argMem->optional && !argMem->isPrivate &&
+                        mod_.fieldAudit.propertyOnlyPlainObjects(
+                            argMem->property, mod_.objectLitUnclosed, mod_.objectLitFields)) {
+                        canHaveToJSON = false;
+                    }
+                }
+            }
+            if (canHaveToJSON) {
+                if (const auto* decls = mod_.methods.declarationsOf("toJSON")) {
+                    for (const uint32_t idx : *decls) {
+                        const MethodInfo& target = mod_.methods.methods()[idx];
+                        if (mod_.ctorParamTypes) {
+                            const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
+                            if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
+                                memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
+                            }
+                            if (!mod_.ctors.isClassReached(target.className)) continue;
+                        }
+                        mod_.contribute(InferMemo::Contrib::MethodReached, idx, 0, Type::never());
+                    }
+                }
+            }
+        }
+        if (member->property == "call" || member->property == "apply" || member->property == "bind") {
+            if (const auto* fnMem = ast::exactAs<const ast::MemberAccess*>(member->object.get())) {
+                if (const auto* protoMem = ast::exactAs<const ast::MemberAccess*>(fnMem->object.get())) {
+                    if (protoMem->property == "prototype") {
+                        if (const auto* clsId = ast::exactAs<const ast::Ident*>(protoMem->object.get())) {
+                            if (mod_.ctors.isClassName(clsId->name)) markClassReached(clsId->name);
+                        }
+                    }
+                }
+            }
+        }
+        if (objLitSetterRet.has_value()) return *objLitSetterRet;
+        if (hadMemberBase && isNonClassExpr(member->object.get())) return Type::dynamic();
+        return methodCall(member->property, receiver, args, spreadArgs);
+    }
+    if (objLitSetterRet.has_value() && !pinnedReturn) return *objLitSetterRet;
     // `super.m(...)`. The receiver is this method's `this` — a subclass instance
     // — but the LOOKUP starts at the enclosing class's base, which is the one
     // thing about the dispatch that is decided statically. So the contribution
@@ -709,10 +747,23 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     }
 
     const uint32_t index = calleeType.functionIndex();
-    if (index == kNoFunctionIndex) return pinnedReturn ? Type::number() : Type::dynamic();
+    if (index == kNoFunctionIndex) {
+        if (pinnedReturn) return Type::number();
+        if (calleeType.is(TypeKind::Never) || (!c.optional && calleeType.functionReturnsNever())) {
+            return Type::never();
+        }
+        if (!c.optional && calleeType.functionReturnsNumber()) return Type::number();
+        return Type::dynamic();
+    }
 
     FunctionInfo& callee = mod_.functions[index];
-    if (!callee.directCallable) return pinnedReturn ? Type::number() : Type::dynamic();
+    if (!callee.directCallable) {
+        if (pinnedReturn) return Type::number();
+        if (InferMemo* memo = mod_.rec()) memo->noteFunction(index, callee.version);
+        return callee.bodyReturn.is(TypeKind::Never) || callee.bodyReturn.is(TypeKind::Number)
+                   ? callee.bodyReturn
+                   : Type::dynamic();
+    }
 
     // This site's contribution to the callee's parameters. A missing
     // argument is `undefined`, exactly as the call would deliver it.
@@ -726,33 +777,8 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     // way.
     if (pinnedReturn) return Type::number();
     if (InferMemo* memo = mod_.rec()) memo->noteFunction(index, callee.version);
-    return callee.signature.returnType;
-}
-
-const ClassLayout* FlowAnalyzer::receiverClass(Type receiver) const {
-    if (!receiver.is(TypeKind::Object) || receiver.shapeClass() == kNoShapeClass) return nullptr;
-    const ClassLayout* cl = mod_.result->classLayouts.byShapeClass(receiver.shapeClass());
-    return cl == nullptr || cl->name.empty() ? nullptr : cl;
-}
-
-const PinKind* FlowAnalyzer::pinnedField(ShapeClassId cls, const std::string& field) const {
-    if (mod_.pins == nullptr || cls == kNoShapeClass) return nullptr;
-    const ClassLayout* layout = mod_.result->classLayouts.byShapeClass(cls);
-    // A shape class with no class layout is still nameable: `new F()` interns
-    // the constructor's name, which is what a manifest entry spells.
-    std::string name =
-        layout != nullptr ? layout->name : mod_.result->shapes.at(cls).constructorName;
-    if (name.empty()) return nullptr;
-    // Bounded rather than trusting `extends` to be acyclic: a cyclic chain is a
-    // TypeError at run time and must not be an infinite loop here.
-    for (uint32_t hop = 0; hop < kMaxExtendsHops; ++hop) {
-        if (const PinKind* pin = mod_.pins->lookup(name, field)) return pin;
-        if (layout == nullptr || layout->superName.empty()) return nullptr;
-        layout = mod_.result->classLayouts.byName(layout->superName);
-        if (layout == nullptr) return nullptr;
-        name = layout->name;
-    }
-    return nullptr;
+    return !callee.signature.returnType.is(TypeKind::Never) ? callee.signature.returnType
+                                                            : callee.bodyReturn;
 }
 
 // One `recv.name(...)`.
@@ -774,9 +800,10 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     // function a property happens to hold.
     if (!mod_.methods.isMethodName(name)) return Type::dynamic();
 
-    if (receiver.is(TypeKind::TypedArray) || receiver.is(TypeKind::Number) ||
-        receiver.is(TypeKind::String) || receiver.is(TypeKind::Bool) ||
-        receiver.is(TypeKind::Null) || receiver.is(TypeKind::Undefined) ||
+    if (receiver.is(TypeKind::Array) || receiver.is(TypeKind::TypedArray) ||
+        receiver.is(TypeKind::Number) || receiver.is(TypeKind::String) ||
+        receiver.is(TypeKind::Bool) || receiver.is(TypeKind::Null) ||
+        receiver.is(TypeKind::Undefined) ||
         (receiver.is(TypeKind::Object) &&
          (receiver.shapeClass() == kNoShapeClass ||
           mod_.result->classLayouts.byShapeClass(receiver.shapeClass()) == nullptr))) {
@@ -791,27 +818,21 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     if (cls == nullptr) {
         const auto* decls = mod_.methods.declarationsOf(name);
         if (decls == nullptr || decls->empty()) return Type::dynamic();
-
         if (spreadArgs) {
             for (const uint32_t index : *decls) {
+                const MethodInfo& target = mod_.methods.methods()[index];
+                if (mod_.ctorParamTypes) {
+                    const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
+                    if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
+                        memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
+                    }
+                    if (!mod_.ctors.isClassReached(target.className)) continue;
+                }
                 mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
                 mod_.methodPoison.add(index, "an argument list is spread at a call site");
             }
             return Type::dynamic();
         }
-
-        // Under pin optimism (flow.h `pinOptimism`): a Dynamic argument does not
-        // poison the join — the optimistic stand-in for what an offline profile
-        // would report as the site's actual class. The commonest source is an
-        // UNCALLED forwarder (three.js `multiply(m) { return
-        // this.multiplyMatrices(this, m) }`) whose own dynamic parameter
-        // otherwise reaches every hot method, and `Matrix4.multiplyMatrices` is
-        // exactly the method it costs.
-        //
-        // Deliberately NOT per-field, unlike the read path above: a census
-        // profile is what should decide it. What the flag buys is bounded at the
-        // fold (`widenMethods`) instead — see there for why skipping the
-        // contribution outright is a miscompile and what is done about it.
         auto contributeArgs = [&](uint32_t index, const MethodInfo& target) {
             mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
             for (size_t i = 0; i < target.observedParams.size(); ++i) {
@@ -819,9 +840,15 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                 contributeMethodArg(mod_, index, target, i, args);
             }
         };
-
         for (const uint32_t index : *decls) {
             MethodInfo& target = mod_.methods.methods()[index];
+            if (mod_.ctorParamTypes) {
+                const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
+                if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
+                    memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
+                }
+                if (!mod_.ctors.isClassReached(target.className)) continue;
+            }
             if (args.size() < target.observedParams.size()) {
                 bool hasDefaults = true;
                 for (size_t i = args.size(); i < target.observedParams.size(); ++i) {
@@ -885,30 +912,6 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     // primitive return type would be a claim about a VALUE, which is what
     // `Type::objectIdentityOnly` exists to keep this mechanism out of.
     return Type::dynamic();
-}
-
-void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver) {
-    if (!mod_.interprocIdent || !mod_.valueFlow || propName.empty()) return;
-    if (receiver.is(TypeKind::Never)) return;
-    if (receiver.is(TypeKind::Array) || receiver.is(TypeKind::TypedArray) ||
-        receiver.is(TypeKind::Number) || receiver.is(TypeKind::String) ||
-        receiver.is(TypeKind::Bool) || receiver.is(TypeKind::Null) ||
-        receiver.is(TypeKind::Undefined)) {
-        return;
-    }
-    const ClassLayout* cl = nullptr;
-    if (receiver.is(TypeKind::Object) && receiver.shapeClass() != kNoShapeClass) {
-        cl = mod_.result->classLayouts.byShapeClass(receiver.shapeClass());
-        if (cl == nullptr) return;
-    }
-    const auto& setters = mod_.methods.setters();
-    for (uint32_t i = 0; i < setters.size(); ++i) {
-        if (setters[i].propName != propName) continue;
-        if (cl != nullptr && !mod_.methods.areClassesRelated(setters[i].className, cl->name)) {
-            continue;
-        }
-        mod_.contribute(InferMemo::Contrib::SetterReached, i, 0, Type::never());
-    }
 }
 
 }  // namespace bronze::types

@@ -177,13 +177,19 @@ private:
     Type binary(const ast::Binary& b);
     Type call(const ast::Call& c);
     Type newExpr(const ast::NewExpr& n);
+    Type superCall(const ast::SuperCall& sc);
     ShapeClassId constructorShape(const std::string& name);
     Type objectLit(const ast::ObjectLit& o);
     // The arguments of `recv.name(...)` contributed to every method the call can
     // reach, and the type its dispatch produces. See method_ident.h.
     Type methodCall(const std::string& name, Type receiver, const std::vector<Type>& args,
                     bool spreadArgs);
-    void notePropertyWrite(const std::string& propName, Type receiver);
+    void notePropertyWrite(const std::string& propName, Type receiver,
+                           Type valType = Type::dynamic());
+    void noteStaticMethodAccess(const ast::MemberAccess& m, Type base);
+    std::optional<Type> callObjectLitSetter(const ast::Call& c, const ast::MemberAccess* member,
+                                            Type receiver, const std::vector<Type>& args,
+                                            bool spreadArgs);
 
     // One construction site's contribution to a constructor's parameters. See
     // ctor_ident.h; `constructSite` is `new <a class name>(...)` and every
@@ -191,6 +197,7 @@ private:
     // callee is a value.
     void constructSite(const std::string& className, const std::vector<Type>& args,
                        bool spreadArgs);
+    void markClassReached(const std::string& className);
     void constructUnbounded(const ast::Expr& callee, Type calleeBase,
                             const std::vector<Type>& args, bool spreadArgs);
     void contributeCtorArgs(uint32_t ctorIndex, const std::vector<Type>& args, bool spreadArgs);
@@ -221,6 +228,8 @@ private:
     FunctionFacts& facts_;
     std::string qualifiedName_;
     bool record_ = false;
+    bool suppressFnReach_ = false;
+    bool suppressObjectLitSetterReach_ = false;
 
     Type returnAccum_ = Type::never();
     uint32_t anonCounter_ = 0;

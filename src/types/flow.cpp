@@ -115,10 +115,26 @@ std::pair<uint32_t, Type> FlowAnalyzer::outerCell(const std::string& name) const
 }
 
 Type FlowAnalyzer::lookup(const std::string& name) const {
+    if (mod_.valueFlow && mod_.lazyModuleVars.count(name) != 0) {
+        if (!suppressFnReach_) {
+            if (mod_.reachedModuleVars.insert(name).second) {
+                ++mod_.persistentWrites;
+            }
+        }
+        if (!record_ && !mod_.auditSettled && mod_.walkedModuleVars.count(name) == 0) {
+            if (InferMemo* memo = mod_.rec()) {
+                memo->noteBinding(name, mod_.reachedModuleVars.count(name) != 0, Type::never());
+            }
+            return Type::never();
+        }
+    }
     if (const auto it = scope_.env.find(name); it != scope_.env.end()) return it->second;
     if (const auto it = scope_.cells.find(name); it != scope_.cells.end()) return it->second;
     if (const auto [level, t] = outerCell(name); level != 0) return t;
     if (const auto it = mod_.indexByName.find(name); it != mod_.indexByName.end()) {
+        if (!suppressFnReach_) {
+            mod_.contribute(InferMemo::Contrib::FnReached, it->second, 0, Type::never());
+        }
         return Type::function(it->second);
     }
     // The module binding, which no scope chain from here reaches: a module-level
@@ -134,9 +150,14 @@ Type FlowAnalyzer::lookup(const std::string& name) const {
         if (present) {
             const Type held = it->second;
             if (held.is(TypeKind::Object) && held.shapeClass() != kNoShapeClass) {
-                return Type::objectIdentityOnly(held.shapeClass());
+                return mod_.uniqueModuleConsts.count(name) != 0
+                           ? held
+                           : Type::objectIdentityOnly(held.shapeClass());
             }
         }
+    }
+    if ((name == "Infinity" || name == "NaN") && mod_.moduleScopeNames.count(name) == 0) {
+        return Type::number();
     }
     return Type::dynamic();
 }
@@ -161,6 +182,8 @@ bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
 
 void FlowAnalyzer::declare(const std::string& name, Type t) {
     scope_.pristineMathFns.erase(name);
+    scope_.objectLitMethodAliases.erase(name);
+    scope_.dictElemTypes.erase(name);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
     } else {
@@ -189,6 +212,8 @@ FlowAnalyzer::ScopeSave FlowAnalyzer::saveDeclarations(const std::vector<std::st
     saved.reserve(names.size());
     for (const auto& name : names) {
         scope_.pristineMathFns.erase(name);
+        scope_.objectLitMethodAliases.erase(name);
+        scope_.dictElemTypes.erase(name);
         const auto it = scope_.env.find(name);
         saved.emplace_back(name, it == scope_.env.end() ? std::optional<Type>()
                                                         : std::optional<Type>(it->second));
@@ -199,6 +224,8 @@ FlowAnalyzer::ScopeSave FlowAnalyzer::saveDeclarations(const std::vector<std::st
 void FlowAnalyzer::restoreDeclarations(const ScopeSave& saved) {
     for (const auto& entry : saved) {
         scope_.pristineMathFns.erase(entry.first);
+        scope_.objectLitMethodAliases.erase(entry.first);
+        scope_.dictElemTypes.erase(entry.first);
         if (entry.second.has_value()) {
             scope_.env[entry.first] = *entry.second;
         } else {
@@ -208,7 +235,14 @@ void FlowAnalyzer::restoreDeclarations(const ScopeSave& saved) {
 }
 
 void FlowAnalyzer::assign(const std::string& name, Type t) {
+    if (mod_.valueFlow && mod_.lazyModuleVars.count(name) != 0) {
+        if (mod_.reachedModuleVars.insert(name).second) {
+            ++mod_.persistentWrites;
+        }
+    }
     scope_.pristineMathFns.erase(name);
+    scope_.objectLitMethodAliases.erase(name);
+    scope_.dictElemTypes.erase(name);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
         return;
@@ -244,6 +278,8 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
 
 void FlowAnalyzer::widenAll() {
     scope_.pristineMathFns.clear();
+    scope_.objectLitMethodAliases.clear();
+    scope_.dictElemTypes.clear();
     for (auto& entry : scope_.env) entry.second = Type::dynamic();
     for (auto& entry : scope_.cells) entry.second = Type::dynamic();
 }
@@ -251,6 +287,8 @@ void FlowAnalyzer::widenAll() {
 void FlowAnalyzer::widenAssigned(const std::unordered_set<std::string>& assigned) {
     for (const auto& name : assigned) {
         scope_.pristineMathFns.erase(name);
+        scope_.objectLitMethodAliases.erase(name);
+        scope_.dictElemTypes.erase(name);
         if (const auto it = scope_.env.find(name); it != scope_.env.end()) {
             it->second = Type::dynamic();
         }
@@ -281,14 +319,22 @@ void FlowAnalyzer::pushMarker(const char* label, uint32_t depth) {
     facts_.statements.push_back(std::move(sf));
 }
 
+static Type normalizeForRecord(Type t) {
+    if (t.arrayElementsUndecided()) return Type::array();
+    if (t.functionReturnsNever() || t.functionReturnsNumber()) return Type::function();
+    if (t.isDynamicNumOrUndef()) return Type::dynamic();
+    return t;
+}
+
 void FlowAnalyzer::closeStmt(size_t slot, const Env& before) {
     if (slot == kNoSlot) return;
     const Env& after = visible();
     std::vector<BindingChange> changes;
     for (const auto& entry : after) {
+        const Type afterT = normalizeForRecord(entry.second);
         const auto it = before.find(entry.first);
-        if (it == before.end() || it->second != entry.second) {
-            changes.push_back(BindingChange{entry.first, entry.second});
+        if (it == before.end() || normalizeForRecord(it->second) != afterT) {
+            changes.push_back(BindingChange{entry.first, afterT});
         }
     }
     // `after` is an ordered map, so `changes` is already sorted by name.
@@ -297,7 +343,9 @@ void FlowAnalyzer::closeStmt(size_t slot, const Env& before) {
 
 void FlowAnalyzer::recordMerge(const ast::Stmt& mergePoint, const Env& env) {
     if (!record_) return;
-    mod_.result->mergeBindings[&mergePoint] = env;
+    Env norm = env;
+    for (auto& entry : norm) entry.second = normalizeForRecord(entry.second);
+    mod_.result->mergeBindings[&mergePoint] = std::move(norm);
 }
 
 void FlowAnalyzer::fail(Span span, const std::string& what) {
@@ -324,6 +372,10 @@ void FlowAnalyzer::seedHoistedVars(const std::vector<const ast::Stmt*>& body) {
         // name is one cell for the whole function, which `lookup` finds
         // without a declaration.
         if (scope_.env.count(name) != 0 || scope_.isCell(name)) continue;
+        if (scope_.moduleTopLevel && !record_ && !mod_.auditSettled && mod_.valueFlow &&
+            mod_.lazyModuleVars.count(name) != 0 && mod_.reachedModuleVars.count(name) == 0) {
+            continue;
+        }
         scope_.env[name] = Type::undefined();
     }
 }
@@ -333,7 +385,9 @@ void FlowAnalyzer::hoistFunctionDecls(const List& stmts) {
     for (const auto& s : stmts) {
         if (!s) continue;
         if (const auto* fd = ast::exactAs<const ast::FunctionDecl*>(&*s)) {
-            declare(fd->name, Type::function());
+            if (!scope_.isCell(fd->name)) {
+                scope_.env[fd->name] = Type::function();
+            }
         }
     }
 }
@@ -390,13 +444,38 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
             declarePattern(*v->pattern);
             return;
         }
-        declare(v->name, v->init ? expr(*v->init) : Type::undefined());
-        if (v->isConst && v->init != nullptr && !scope_.isCell(v->name)) {
-            if (const auto* ma = ast::exactAs<const ast::MemberAccess*>(v->init.get())) {
-                if (!ma->optional && isPristineMathBase(*ma->object) &&
-                    isMathMethodReturningNumber(ma->property)) {
-                    scope_.pristineMathFns.insert(v->name);
+        if (scope_.moduleTopLevel && mod_.valueFlow && mod_.lazyModuleVars.count(v->name) != 0) {
+            if (!record_ && !mod_.auditSettled && mod_.reachedModuleVars.count(v->name) == 0) {
+                if (InferMemo* memo = mod_.rec()) {
+                    memo->noteBinding(v->name, false, Type::never());
                 }
+                return;
+            }
+            if (mod_.walkedModuleVars.insert(v->name).second) {
+                ++mod_.persistentWrites;
+            }
+        }
+        const auto* maInit =
+            (v->isConst && v->init != nullptr) ? ast::exactAs<const ast::MemberAccess*>(v->init.get()) : nullptr;
+        const bool suppressSetter = maInit != nullptr && !maInit->optional && !maInit->isPrivate &&
+                                    !maInit->property.empty() && !scope_.isCell(v->name);
+        const bool savedSuppress = suppressObjectLitSetterReach_;
+        if (suppressSetter) suppressObjectLitSetterReach_ = true;
+        const Type initT = v->init ? expr(*v->init) : Type::undefined();
+        suppressObjectLitSetterReach_ = savedSuppress;
+        declare(v->name, initT);
+        if (v->isConst && v->init != nullptr && !scope_.isCell(v->name)) {
+            if (const auto* ol = ast::exactAs<const ast::ObjectLit*>(v->init.get());
+                ol != nullptr && ol->props.empty()) {
+                scope_.dictElemTypes[v->name] = Type::never();
+            }
+        }
+        if (maInit != nullptr && !maInit->optional && !scope_.isCell(v->name)) {
+            if (isPristineMathBase(*maInit->object) && isMathMethodReturningNumber(maInit->property)) {
+                scope_.pristineMathFns.insert(v->name);
+            } else if (!maInit->isPrivate && !maInit->property.empty() &&
+                       !mod_.methods.isMethodName(maInit->property)) {
+                scope_.objectLitMethodAliases[v->name] = maInit->property;
             }
         }
         return;
@@ -406,6 +485,24 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         return;
     }
     if (const auto* e = ast::exactAs<const ast::ExprStmt*>(&s)) {
+        if (scope_.moduleTopLevel && !record_ && !mod_.auditSettled && mod_.valueFlow) {
+            if (const auto* bin = ast::exactAs<const ast::Binary*>(e->expr.get());
+                bin != nullptr && bin->op == ast::BinaryOp::Assign) {
+                const ast::Expr* cur = bin->lhs.get();
+                while (const auto* ma = ast::exactAs<const ast::MemberAccess*>(cur)) {
+                    cur = ma->object.get();
+                }
+                if (const auto* id = ast::exactAs<const ast::Ident*>(cur);
+                    id != nullptr && cur != bin->lhs.get() &&
+                    mod_.lazyModuleVars.count(id->name) != 0 &&
+                    mod_.reachedModuleVars.count(id->name) == 0) {
+                    if (InferMemo* memo = mod_.rec()) {
+                        memo->noteBinding(id->name, false, Type::never());
+                    }
+                    return;
+                }
+            }
+        }
         expr(*e->expr);
         return;
     }
@@ -505,8 +602,17 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         // A nested declaration is a closure value, so it carries no module
         // function index and no direct call.
         declare(fd->name, Type::function());
-        analyzeNested(*fd, fd->name, fd->params, fd->body, fd->span,
-                      fd->isGenerator || fd->isAsync);
+        const Type ret = analyzeNested(*fd, fd->name, fd->params, fd->body, fd->span,
+                                       fd->isGenerator || fd->isAsync);
+        if (!fd->isGenerator && !fd->isAsync) {
+            if (ret.is(TypeKind::Never)) {
+                scope_.env[fd->name] = Type::functionReturningNever();
+                if (scope_.isCell(fd->name)) scope_.cells[fd->name] = Type::functionReturningNever();
+            } else if (ret.is(TypeKind::Number)) {
+                scope_.env[fd->name] = Type::functionReturningNumber();
+                if (scope_.isCell(fd->name)) scope_.cells[fd->name] = Type::functionReturningNumber();
+            }
+        }
         return;
     }
     // Every statement kind `statementLabel` names has a case above, so this
@@ -618,23 +724,6 @@ void FlowAnalyzer::tryStmt(const ast::TryStmt& t, uint32_t depth) {
     scope_.env = entry;
     widenAssigned(mod_.syntax.assignedNames(t));
     recordMerge(t, scope_.env);
-}
-
-void FlowAnalyzer::ifStmt(const ast::IfStmt& i, uint32_t depth) {
-    expr(*i.condition);
-    const Env entry = scope_.env;
-    if (!i.thenBody.empty()) {
-        pushMarker("then", depth + 1);
-        scopedStmtList(i.thenBody, depth + 2);
-    }
-    const Env thenEnv = scope_.env;
-    scope_.env = entry;
-    if (!i.elseBody.empty()) {
-        pushMarker("else", depth + 1);
-        scopedStmtList(i.elseBody, depth + 2);
-    }
-    scope_.env = joinEnv(thenEnv, scope_.env);
-    recordMerge(i, scope_.env);
 }
 
 // One structured loop. The header environment is the join of the loop's
@@ -772,6 +861,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     scope.thisClass = args.thisClass;
     scope.methodIndex = args.methodIndex;
     scope.ctorIndex = args.ctorIndex;
+    scope.moduleTopLevel = args.moduleTopLevel;
     // The same union lowering builds: a name assigned inside a `try` lives in
     // an environment record, and `queries.h`'s rule is that inference must
     // believe about a variable exactly what lowering decided about where it
@@ -789,6 +879,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     facts.paramNames.reserve(params.size());
     for (const auto& p : params) facts.paramNames.push_back(p.name);
     facts.signature.params = args.paramTypes;
+    for (auto& pt : facts.signature.params) pt = normalizeForRecord(pt);
 
     // The env-backed cells are one value per name over the whole function, so
     // a write late in the body has to be visible to a read early in it. That
@@ -806,6 +897,8 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
         const Env beforeCells = scope.cells;
         scope.env.clear();
         scope.pristineMathFns.clear();
+        scope.objectLitMethodAliases.clear();
+        scope.dictElemTypes.clear();
         seedParams(scope, params, args.paramTypes);
         FlowAnalyzer probe(mod, scope, facts, args.qualifiedName, /*record=*/false);
         probe.runParamDefaults(params);
@@ -840,6 +933,8 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     if (args.record) {
         scope.env.clear();
         scope.pristineMathFns.clear();
+        scope.objectLitMethodAliases.clear();
+        scope.dictElemTypes.clear();
         seedParams(scope, params, args.paramTypes);
         FlowAnalyzer recorder(mod, scope, facts, args.qualifiedName, /*record=*/true);
         recorder.runParamDefaults(params);
@@ -871,7 +966,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     // told to expect a number coerces the object it actually gets, which is a
     // ToNumber on an object and a hard error at runtime — and only for a
     // numeric return, because the other types need no coercion to be wrong.
-    const Type returnType = args.isGenerator ? Type::dynamic() : bodyReturn;
+    const Type returnType = normalizeForRecord(args.isGenerator ? Type::dynamic() : bodyReturn);
     facts.signature.returnType = returnType;
     // A closure's only queryable proof (signature specialization excludes it,
     // so its parameters stay dynamic — but what its body returns is a fact
@@ -880,7 +975,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     if (args.record && args.site != nullptr) mod.result->closureReturns[args.site] = returnType;
     // Ordered map in, sorted vector out.
     for (const auto& cell : scope.cells) {
-        facts.cells.push_back(BindingChange{cell.first, cell.second});
+        facts.cells.push_back(BindingChange{cell.first, normalizeForRecord(cell.second)});
     }
     if (slot != kNoSlot) mod.result->functions[slot] = std::move(facts);
     return FunctionOutcome{returnType, true};

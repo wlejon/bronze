@@ -41,11 +41,12 @@ bool isNeverBigInt(Type t) {
 }
 
 // The result of an operator that is numeric on both its branches: a Number
-// when neither operand can be a BigInt, and otherwise DYNAMIC — because the
-// BigInt branch produces a BigInt and the lattice has no element for it.
+// whenever at least one operand cannot be a BigInt (mixing Number and BigInt
+// throws a TypeError in 13.15.2 step 9 rather than producing a BigInt), and
+// otherwise DYNAMIC — because two BigInts produce a BigInt.
 Type numericOrDynamic(Type l, Type r) {
     if (l.is(TypeKind::Never) || r.is(TypeKind::Never)) return Type::never();
-    return isNeverBigInt(l) && isNeverBigInt(r) ? Type::number() : Type::dynamic();
+    return (isNeverBigInt(l) || isNeverBigInt(r)) ? Type::number() : Type::dynamic();
 }
 
 Type arithResult(ast::BinaryOp op, Type l, Type r) {

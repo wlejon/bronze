@@ -23,7 +23,7 @@ std::string Type::str() const {
     std::string out = typeKindName(kind_);
     if (kind_ == TypeKind::Object && payload_ != kNoPayload) {
         out += '#' + std::to_string(payload_);
-    } else if (kind_ == TypeKind::Function && payload_ != kNoPayload) {
+    } else if (kind_ == TypeKind::Function && functionIndex() != kNoFunctionIndex) {
         out += '#' + std::to_string(payload_);
     } else if (kind_ == TypeKind::TypedArray && payload_ != kNoPayload) {
         switch (static_cast<TypedArrayElem>(payload_)) {
@@ -48,6 +48,13 @@ Type join(Type a, Type b) {
     if (a == b) return a;
     if (a.is(TypeKind::Never)) return b;
     if (b.is(TypeKind::Never)) return a;
+    if (a.isDynamicNumOrUndef() || b.isDynamicNumOrUndef()) {
+        const bool aOk =
+            a.is(TypeKind::Number) || a.is(TypeKind::Undefined) || a.isDynamicNumOrUndef();
+        const bool bOk =
+            b.is(TypeKind::Number) || b.is(TypeKind::Undefined) || b.isDynamicNumOrUndef();
+        return (aOk && bOk) ? Type::dynamicNumOrUndef() : Type::dynamic();
+    }
     if (a.kind() != b.kind()) return Type::dynamic();
 
     // Same kind, different identity. Keeping the kind matters: an unproven
@@ -70,7 +77,10 @@ Type join(Type a, Type b) {
                 return Type::objectNotBuiltHere(a.shapeClass());
             }
             return Type::object();
-        case TypeKind::Function: return Type::function();
+        case TypeKind::Function:
+            if (a.functionReturnsNever()) return b;
+            if (b.functionReturnsNever()) return a;
+            return Type::function();
         case TypeKind::TypedArray: return Type::typedArray();
         // A pinned array joined with a plain one is plain: the pin is a claim
         // about every element of THAT array, and one edge that never made it
@@ -83,6 +93,18 @@ Type join(Type a, Type b) {
     }
     // Unreachable: every identity-free kind compares equal above.
     return Type::dynamic();
+}
+
+Type joinParam(Type a, Type b) {
+    if (a == b) return a;
+    if (a.is(TypeKind::Never)) return b;
+    if (b.is(TypeKind::Never)) return a;
+    const bool aNumOrUndef =
+        a.is(TypeKind::Number) || a.is(TypeKind::Undefined) || a.isDynamicNumOrUndef();
+    const bool bNumOrUndef =
+        b.is(TypeKind::Number) || b.is(TypeKind::Undefined) || b.isDynamicNumOrUndef();
+    if (aNumOrUndef && bNumOrUndef) return Type::dynamicNumOrUndef();
+    return join(a, b);
 }
 
 }  // namespace bronze::types

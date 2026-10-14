@@ -230,6 +230,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::ElemSetTyped:
             out.op = il2mir::BronzeOp::ElemSetTyped;
             out.imm_i64 = inst.immI32;
+            out.index = inst.keyIndex;
             break;
         case il::Op::MathUnary:
             out.op = il2mir::BronzeOp::MathUnary;

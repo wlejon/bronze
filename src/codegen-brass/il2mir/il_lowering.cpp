@@ -915,7 +915,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         begin_block_proofs(blk_ast.id);
 
         for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
-            if (try_lower_array_index_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter)) {
+            if (try_lower_array_index_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter) ||
+                try_lower_elem_offset_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter)) {
                 if (has_error_) return false;
                 continue;
             }

@@ -114,6 +114,12 @@ public:
     static constexpr Type function(uint32_t index = kNoFunctionIndex) {
         return Type(TypeKind::Function, index);
     }
+    static constexpr Type functionReturningNever() {
+        return Type(TypeKind::Function, kClosureReturnsNever);
+    }
+    static constexpr Type functionReturningNumber() {
+        return Type(TypeKind::Function, kClosureReturnsNumber);
+    }
     static constexpr Type typedArray(TypedArrayElem elem) {
         return Type(TypeKind::TypedArray, static_cast<uint32_t>(elem));
     }
@@ -159,7 +165,15 @@ public:
     // guessed VALUE is not checked by anything.
     constexpr bool builtHere() const { return kind_ == TypeKind::Object && builtHere_; }
     constexpr uint32_t functionIndex() const {
-        return kind_ == TypeKind::Function ? payload_ : kNoFunctionIndex;
+        return (kind_ == TypeKind::Function && payload_ < kClosureReturnsNever)
+                   ? payload_
+                   : kNoFunctionIndex;
+    }
+    constexpr bool functionReturnsNever() const {
+        return kind_ == TypeKind::Function && payload_ == kClosureReturnsNever;
+    }
+    constexpr bool functionReturnsNumber() const {
+        return kind_ == TypeKind::Function && payload_ == kClosureReturnsNumber;
     }
     // The raw payload, `kNoTypedArrayElem` unless this is a TypedArray whose
     // element kind is proven. Raw rather than the enum so a caller that
@@ -181,6 +195,12 @@ public:
                    ? (payload_ & ~kArrayElemClassTag)
                    : kNoShapeClass;
     }
+    static constexpr Type dynamicNumOrUndef() {
+        return Type(TypeKind::Dynamic, kDynamicNumOrUndef);
+    }
+    constexpr bool isDynamicNumOrUndef() const {
+        return kind_ == TypeKind::Dynamic && payload_ == kDynamicNumOrUndef;
+    }
 
     friend constexpr bool operator==(Type a, Type b) {
         return a.kind_ == b.kind_ && a.payload_ == b.payload_ &&
@@ -199,10 +219,13 @@ public:
 
 private:
     static constexpr uint32_t kNoPayload = 0xFFFFFFFFu;
+    static constexpr uint32_t kClosureReturnsNever = 0xFFFFFFFDu;
+    static constexpr uint32_t kClosureReturnsNumber = 0xFFFFFFFEu;
     // The `Array` payload marking pinned elements.
     static constexpr uint32_t kPinnedElements = 1;
     static constexpr uint32_t kArrayElemNever = 2;
     static constexpr uint32_t kArrayElemClassTag = 0x80000000u;
+    static constexpr uint32_t kDynamicNumOrUndef = 1;
     constexpr explicit Type(TypeKind k, uint32_t payload = kNoPayload,
                             bool identityOnly = false, bool builtHere = true)
         : kind_(k), payload_(payload), identityOnly_(identityOnly), builtHere_(builtHere) {}
@@ -217,5 +240,6 @@ private:
 // values of the same kind with different identities keep the kind and lose the
 // identity, which is what "Object with no class" means.
 Type join(Type a, Type b);
+Type joinParam(Type a, Type b);
 
 }  // namespace bronze::types

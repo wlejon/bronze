@@ -42,10 +42,13 @@ struct FunctionInfo {
     // converge; all-`Dynamic` and frozen otherwise.
     Signature signature;
     bool directCallable = false;
+    bool reached = false;
+    bool observedReached = false;
     // Joined over the call sites seen in the pass now running, then folded
     // into `signature` at the end of it.
     std::vector<Type> observedParams;
     Type observedReturn = Type::never();
+    Type bodyReturn = Type::never();
     // Moves whenever `signature` does: what a memoized walk that read the
     // signature compares (types/infer_memo.h).
     uint32_t version = 0;
@@ -92,7 +95,10 @@ struct Scope {
     // sites (types/ctor_ident.h) — so the walk that evaluates the default needs
     // to know whose observation to join it into.
     uint32_t ctorIndex = kNoCtor;
+    bool moduleTopLevel = false;
     std::unordered_set<std::string> pristineMathFns;
+    std::unordered_map<std::string, std::string> objectLitMethodAliases;
+    std::unordered_map<std::string, Type> dictElemTypes;
 };
 
 struct ModuleContext {
@@ -112,6 +118,7 @@ struct ModuleContext {
     // the global builtin — and the builtin-identity proofs need exactly that
     // distinction.
     std::unordered_set<std::string> moduleScopeNames;
+    std::unordered_set<std::string> uniqueModuleConsts;
     // No statement in the whole (merged) program can change what `Math`
     // means: the global is unassignable by compile error, no bare `Math`
     // escapes member-read position, no member write/update/delete goes
@@ -204,9 +211,29 @@ struct ModuleContext {
     // answered from here — a `number` would be an unguarded claim about a value,
     // and this table has no program order to justify one with.
     std::unordered_map<std::string, Type> moduleBindings;
+    std::set<std::string> lazyModuleVars;
+    std::set<std::string> reachedModuleVars;
+    std::set<std::string> walkedModuleVars;
     // `BRONZE_NO_VALUE_FLOW` turns the table off, leaving every module-scope
     // read `Dynamic` as it was.
     bool valueFlow = false;
+
+    // ---- closed object-literal array elements -------------------------------
+
+    std::map<ShapeClassId, std::map<std::string, Type>> objectLitFields;
+    std::set<ShapeClassId> objectLitUnclosed;
+    std::set<ShapeClassId> arrayElemShapeClasses;
+    std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>> objectLitMethods;
+    std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>> objectLitSetters;
+    std::map<std::pair<ShapeClassId, std::string>, std::string> objectLitModuleVars;
+    uint32_t objectLitTableVersion = 0;
+    Type objectLitFieldType(ShapeClassId cls, const std::string& field) const {
+        if (objectLitUnclosed.count(cls) != 0) return Type::dynamic();
+        const auto it = objectLitFields.find(cls);
+        if (it == objectLitFields.end()) return Type::dynamic();
+        const auto f = it->second.find(field);
+        return f == it->second.end() ? Type::dynamic() : f->second;
+    }
 
     // ---- the field-type write audit (field_audit.h) -------------------------
 

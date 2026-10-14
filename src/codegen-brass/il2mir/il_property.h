@@ -191,6 +191,21 @@ public:
     // A plain object's payload and shape word, and whether it is one; a
     // non-object reads a mapped block whose words refuse every way.
     void receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape);
+    // The base a slot is read at: base + slot_word * 8 +
+    // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
+    Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
+    // Monomorphic way-0 guard on a pre-computed receiver shape: checks that
+    // `plain` holds, `shape` matches way 0 of `site`, and its slot word is an
+    // own data slot.
+    void emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
+                              Value*& hit, Value*& slot_word);
+
+    // Helpers for batched element-offset runs (il_lowering_elem_run.cpp).
+    void emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok);
+    Value* unbox_known_number(Builder& b, Value* val, Value*& out_ok);
+    Value* box_number(Builder& b, Value* f64_val);
+    void object_payload(Builder& b, Value* obj, Value*& out_ptr, Value*& out_is_obj);
+    Value* load_typed_array_data(Builder& b, Value* ptr);
 
 private:
     // The shared test of the two mono paths: `hit`, the receiver's payload
@@ -200,9 +215,6 @@ private:
     // 1..N-1, with the matching way's slot word.
     void other_ways_hit(Builder& b, Value* plain, Value* shape, const IcSite& site, Value*& hit,
                         Value*& slot_word);
-    // The base a slot is read at: base + slot_word * 8 +
-    // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
-    Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
     SpecSiteEmitter* spec_ = nullptr;
     bool inline_sets_ = true;
     bool feedback_driven_ = false;

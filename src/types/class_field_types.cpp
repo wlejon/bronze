@@ -18,9 +18,15 @@ namespace {
 Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>& classByName,
                       const std::vector<ClassLayout>& classes,
                       const std::map<std::string, Type>* paramTypes,
-                      bool mathPristine = false) {
-    if (paramTypes != nullptr) {
-        if (const auto* id = dynamic_cast<const ast::Ident*>(&rhs)) {
+                      bool mathPristine = false,
+                      ShapeClassTable* shapes = nullptr,
+                      const std::map<std::string, Type>* localConsts = nullptr) {
+    if (const auto* id = dynamic_cast<const ast::Ident*>(&rhs)) {
+        if (localConsts != nullptr) {
+            const auto it = localConsts->find(id->name);
+            if (it != localConsts->end()) return it->second;
+        }
+        if (paramTypes != nullptr) {
             const auto it = paramTypes->find(id->name);
             if (it != paramTypes->end()) return it->second;
         }
@@ -30,6 +36,20 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
     if (dynamic_cast<const ast::BoolLit*>(&rhs)) return Type::boolean();
     if (dynamic_cast<const ast::NullLit*>(&rhs)) return Type::null();
     if (dynamic_cast<const ast::UndefinedLit*>(&rhs)) return Type::undefined();
+    if (const auto* o = dynamic_cast<const ast::ObjectLit*>(&rhs)) {
+        if (shapes == nullptr) return Type::dynamic();
+        std::vector<std::string> props;
+        for (const auto& p : o->props) {
+            if (p.keyExpr || dynamic_cast<const ast::SpreadElement*>(p.value.get()) != nullptr) {
+                return Type::dynamic();
+            }
+            if (std::find(props.begin(), props.end(), p.key) == props.end()) {
+                props.push_back(p.key);
+            }
+        }
+        const ShapeClassId cls = shapes->intern(std::string(), std::move(props));
+        return cls == kNoShapeClass ? Type::dynamic() : Type::object(cls);
+    }
     if (const auto* a = dynamic_cast<const ast::ArrayLit*>(&rhs)) {
         if (!a->elements.empty()) {
             bool canTrack = true;
@@ -40,7 +60,7 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
                     canTrack = false;
                     break;
                 }
-                const Type elT = harvestFieldType(*el, classByName, classes, paramTypes, mathPristine);
+                const Type elT = harvestFieldType(*el, classByName, classes, paramTypes, mathPristine, shapes);
                 if (elT.is(TypeKind::Never)) continue;
                 allNever = false;
                 if (elT.is(TypeKind::Object) && elT.shapeClass() != kNoShapeClass) {
@@ -65,7 +85,7 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
     if (const auto* u = dynamic_cast<const ast::Unary*>(&rhs)) {
         if (u->op == ast::UnaryOp::Negate || u->op == ast::UnaryOp::Posate ||
             u->op == ast::UnaryOp::BitNot) {
-            const Type opT = harvestFieldType(*u->operand, classByName, classes, paramTypes, mathPristine);
+            const Type opT = harvestFieldType(*u->operand, classByName, classes, paramTypes, mathPristine, shapes);
             if (opT.is(TypeKind::Number)) return Type::number();
         }
         return Type::dynamic();
@@ -77,8 +97,8 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
             b->op == ast::BinaryOp::BitOr || b->op == ast::BinaryOp::BitXor ||
             b->op == ast::BinaryOp::Shl || b->op == ast::BinaryOp::Shr ||
             b->op == ast::BinaryOp::UShr || b->op == ast::BinaryOp::Exp) {
-            const Type lhsT = harvestFieldType(*b->lhs, classByName, classes, paramTypes, mathPristine);
-            const Type rhsT = harvestFieldType(*b->rhs, classByName, classes, paramTypes, mathPristine);
+            const Type lhsT = harvestFieldType(*b->lhs, classByName, classes, paramTypes, mathPristine, shapes);
+            const Type rhsT = harvestFieldType(*b->rhs, classByName, classes, paramTypes, mathPristine, shapes);
             if (lhsT.is(TypeKind::Number) && rhsT.is(TypeKind::Number)) return Type::number();
             if (b->op != ast::BinaryOp::Add &&
                 isNeverBigInt(lhsT) && isNeverBigInt(rhsT) &&
@@ -124,8 +144,8 @@ Type harvestFieldType(const ast::Expr& rhs, const std::map<std::string, size_t>&
         }
     }
     if (const auto* t = dynamic_cast<const ast::Ternary*>(&rhs)) {
-        const Type thenT = harvestFieldType(*t->thenExpr, classByName, classes, paramTypes, mathPristine);
-        const Type elseT = harvestFieldType(*t->elseExpr, classByName, classes, paramTypes, mathPristine);
+        const Type thenT = harvestFieldType(*t->thenExpr, classByName, classes, paramTypes, mathPristine, shapes);
+        const Type elseT = harvestFieldType(*t->elseExpr, classByName, classes, paramTypes, mathPristine, shapes);
         return join(thenT, elseT);
     }
     if (const auto* n = dynamic_cast<const ast::NewExpr*>(&rhs)) {
@@ -159,10 +179,11 @@ public:
                     bool isCtor = true,
                     std::set<std::string>* emptyArrayInit = nullptr,
                     std::map<std::string, Type>* pushedElemTypes = nullptr,
-                    std::set<std::string>* sawPush = nullptr)
+                    std::set<std::string>* sawPush = nullptr,
+                    ShapeClassTable* shapes = nullptr)
         : out_(out), classByName_(classByName), classes_(classes), paramTypes_(paramTypes),
           mathPristine_(mathPristine), isCtor_(isCtor), emptyArrayInit_(emptyArrayInit),
-          pushedElemTypes_(pushedElemTypes), sawPush_(sawPush) {}
+          pushedElemTypes_(pushedElemTypes), sawPush_(sawPush), shapes_(shapes) {}
 
     void visit(const ast::FunctionExpr& n) override {
         if (n.isArrow) Walker::visit(n);
@@ -171,23 +192,54 @@ public:
     void visit(const ast::ClassDecl&) override {}
     void visit(const ast::ClassExpr&) override {}
 
+    void visit(const ast::VarDecl& n) override {
+        if (n.isConst && !n.pattern && !n.name.empty() && n.init != nullptr) {
+            localConsts_[n.name] = harvestFieldType(*n.init, classByName_, classes_, paramTypes_,
+                                                    mathPristine_, shapes_, &localConsts_);
+        }
+        Walker::visit(n);
+    }
+
     void visit(const ast::Call& n) override {
-        if (pushedElemTypes_ != nullptr && sawPush_ != nullptr && !n.optional) {
+        if (!n.optional) {
             if (const auto* calleeMem = dynamic_cast<const ast::MemberAccess*>(n.callee.get())) {
-                if (!calleeMem->optional &&
-                    (calleeMem->property == "push" || calleeMem->property == "unshift")) {
-                    if (const auto* fieldMem =
-                            dynamic_cast<const ast::MemberAccess*>(calleeMem->object.get())) {
-                        if (!fieldMem->isPrivate && !fieldMem->optional &&
-                            dynamic_cast<const ast::ThisExpr*>(fieldMem->object.get()) != nullptr) {
-                            sawPush_->insert(fieldMem->property);
-                            Type& acc = (*pushedElemTypes_)[fieldMem->property];
-                            for (const auto& arg : n.args) {
-                                if (!arg || dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) {
-                                    acc = Type::dynamic();
-                                } else {
-                                    acc = join(acc, harvestFieldType(*arg, classByName_, classes_,
-                                                                     paramTypes_, mathPristine_));
+                if (!calleeMem->optional) {
+                    if (const auto* baseId = dynamic_cast<const ast::Ident*>(calleeMem->object.get())) {
+                        if ((baseId->name == "Object" || baseId->name == "Reflect") &&
+                            n.args.size() >= 2 &&
+                            dynamic_cast<const ast::ThisExpr*>(n.args[0].get()) != nullptr) {
+                            if (calleeMem->property == "defineProperty" && n.args.size() >= 3) {
+                                if (const auto* key = dynamic_cast<const ast::StringLit*>(n.args[1].get())) {
+                                    harvestDescriptor(key->value, n.args[2].get());
+                                }
+                            } else if (calleeMem->property == "defineProperties") {
+                                if (const auto* map = dynamic_cast<const ast::ObjectLit*>(n.args[1].get())) {
+                                    for (const auto& p : map->props) {
+                                        if (!p.computed() && !p.key.empty() &&
+                                            p.accessor == ast::AccessorKind::None && p.value) {
+                                            harvestDescriptor(p.key, p.value.get());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (pushedElemTypes_ != nullptr && sawPush_ != nullptr &&
+                        (calleeMem->property == "push" || calleeMem->property == "unshift")) {
+                        if (const auto* fieldMem =
+                                dynamic_cast<const ast::MemberAccess*>(calleeMem->object.get())) {
+                            if (!fieldMem->isPrivate && !fieldMem->optional &&
+                                dynamic_cast<const ast::ThisExpr*>(fieldMem->object.get()) != nullptr) {
+                                sawPush_->insert(fieldMem->property);
+                                Type& acc = (*pushedElemTypes_)[fieldMem->property];
+                                for (const auto& arg : n.args) {
+                                    if (!arg || dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) {
+                                        acc = Type::dynamic();
+                                    } else {
+                                        acc = join(acc, harvestFieldType(*arg, classByName_, classes_,
+                                                                         paramTypes_, mathPristine_,
+                                                                         shapes_, &localConsts_));
+                                    }
                                 }
                             }
                         }
@@ -212,14 +264,16 @@ public:
                         }
                     }
                     record(m->property,
-                           harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_, mathPristine_));
+                           harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_,
+                                            mathPristine_, shapes_, &localConsts_));
                 }
             }
         } else if (ast::isAssignOp(n.op)) {
             if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.lhs.get())) {
                 if (dynamic_cast<const ast::ThisExpr*>(m->object.get()) && !m->isPrivate) {
                     if (emptyArrayInit_ != nullptr) emptyArrayInit_->erase(m->property);
-                    const Type rhsT = harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_, mathPristine_);
+                    const Type rhsT = harvestFieldType(*n.rhs, classByName_, classes_, paramTypes_,
+                                                       mathPristine_, shapes_, &localConsts_);
                     const auto it = out_.find(m->property);
                     if (it != out_.end() && it->second.is(TypeKind::Number) && rhsT.is(TypeKind::Number)) {
                         record(m->property, Type::number());
@@ -236,6 +290,21 @@ public:
     }
 
 private:
+    void harvestDescriptor(const std::string& propName, const ast::Expr* desc) {
+        const auto* lit = dynamic_cast<const ast::ObjectLit*>(desc);
+        if (lit == nullptr) return;
+        const ast::Expr* valExpr = nullptr;
+        for (const auto& p : lit->props) {
+            if (p.computed() || p.accessor != ast::AccessorKind::None || p.coverInitialized) return;
+            if (p.key == "get" || p.key == "set" || p.key.empty()) return;
+            if (p.key == "value") valExpr = p.value.get();
+        }
+        if (valExpr == nullptr) return;
+        if (emptyArrayInit_ != nullptr) emptyArrayInit_->erase(propName);
+        record(propName, harvestFieldType(*valExpr, classByName_, classes_, paramTypes_,
+                                          mathPristine_, shapes_, &localConsts_));
+    }
+
     void record(const std::string& name, Type t) {
         const auto it = out_.find(name);
         if (it == out_.end()) {
@@ -256,6 +325,8 @@ private:
     std::set<std::string>* emptyArrayInit_ = nullptr;
     std::map<std::string, Type>* pushedElemTypes_ = nullptr;
     std::set<std::string>* sawPush_ = nullptr;
+    ShapeClassTable* shapes_ = nullptr;
+    std::map<std::string, Type> localConsts_;
 };
 
 }  // namespace
@@ -284,7 +355,7 @@ void ClassLayoutTable::harvestFieldTypes(
             if (m.isStatic) continue;
             if (m.fn && m.isConstructor) {
                 FieldTypeWalker walker(classes_[i].fieldTypes, byName_, classes_, ctorParams,
-                                       mathPristine_, true, &emptyArrayInit, &pushedElemTypes, &sawPush);
+                                       mathPristine_, true, &emptyArrayInit, &pushedElemTypes, &sawPush, shapes_);
                 walker.walkList(m.fn->body);
             } else if (!m.fn && m.init && !m.name.empty()) {
                 const auto* arr = dynamic_cast<const ast::ArrayLit*>(m.init.get());
@@ -295,7 +366,7 @@ void ClassLayoutTable::harvestFieldTypes(
                     emptyArrayInit.erase(m.name);
                 }
                 classes_[i].fieldTypes[m.name] =
-                    harvestFieldType(*m.init, byName_, classes_, nullptr, mathPristine_);
+                    harvestFieldType(*m.init, byName_, classes_, nullptr, mathPristine_, shapes_);
             }
         }
         for (const auto& m : *methods) {
@@ -306,7 +377,7 @@ void ClassLayoutTable::harvestFieldTypes(
                 if (it != classMethods->end()) fnParams = &it->second;
             }
             FieldTypeWalker walker(classes_[i].fieldTypes, byName_, classes_, fnParams,
-                                   mathPristine_, false, &emptyArrayInit, &pushedElemTypes, &sawPush);
+                                   mathPristine_, false, &emptyArrayInit, &pushedElemTypes, &sawPush, shapes_);
             walker.walkList(m.fn->body);
         }
         for (const auto& prop : sawPush) {

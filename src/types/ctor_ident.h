@@ -3,6 +3,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "ast/ast.h"
@@ -99,6 +100,13 @@ struct CtorInfo {
     uint32_t version = 0;
 };
 
+struct ClassReachInfo {
+    std::string className;
+    bool reached = false;
+    bool observedReached = false;
+    uint32_t version = 0;
+};
+
 // Every named `class` in the program, the constructor each declares, and the
 // `extends` forest that decides where an argument goes when it declares none.
 class CtorTable {
@@ -109,6 +117,8 @@ public:
         return classes_.find(name) != classes_.end();
     }
     uint32_t indexOfNode(const ast::FunctionExpr* fn) const;
+    uint32_t classIndexOf(const std::string& name) const;
+    bool isClassReached(const std::string& name) const;
 
     // The constructor a `new <className>(...)` or a `super(...)` into
     // `className` positionally reaches: the class's own, or — when it declares
@@ -128,6 +138,8 @@ public:
 
     std::vector<CtorInfo>& ctors() { return ctors_; }
     const std::vector<CtorInfo>& ctors() const { return ctors_; }
+    std::vector<ClassReachInfo>& classReach() { return classReach_; }
+    const std::vector<ClassReachInfo>& classReach() const { return classReach_; }
 
     // Parameter names the field-type harvest may answer for, per class. Built
     // once from `safeParamNames` and refreshed from the signatures each round.
@@ -144,10 +156,12 @@ private:
     struct ClassNode {
         std::string superName;
         uint32_t ctorIndex = kNoCtor;
+        uint32_t classIndex = kNoCtor;
         std::vector<std::string> children;
     };
 
     std::vector<CtorInfo> ctors_;
+    std::vector<ClassReachInfo> classReach_;
     std::map<const ast::FunctionExpr*, uint32_t> byNode_;
     std::map<std::string, ClassNode> classes_;
     std::set<std::string> duplicates_;
@@ -197,5 +211,7 @@ struct CtorEscapeFacts {
 // needs types and is collected by the flow pass as it runs.
 void scanCtorEscapes(const ast::Module& module, const CtorTable& table, CtorPoison& poison,
                      CtorEscapeFacts& facts);
+
+void collectUniqueModuleConsts(const ast::Module& module, std::unordered_set<std::string>& out);
 
 }  // namespace bronze::types

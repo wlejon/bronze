@@ -70,6 +70,12 @@ struct SetterInfo {
     const ast::FunctionExpr* fn = nullptr;
     std::string className;
     std::string propName;
+    bool isStatic = false;
+    bool plainParams = true;
+    Type paramType = Type::never();
+    Type observedParam = Type::never();
+    Type returnType = Type::never();
+    Type observedReturn = Type::never();
     bool reached = false;
     bool observedReached = false;
     uint32_t version = 0;
@@ -95,6 +101,7 @@ public:
 
     bool isStaticMethodReachable(const std::string& className, const std::string& methodName) const;
     bool areClassesRelated(const std::string& a, const std::string& b) const;
+    std::string getterBackingField(const std::string& className, const std::string& propName) const;
 
     std::vector<MethodInfo>& methods() { return methods_; }
     const std::vector<MethodInfo>& methods() const { return methods_; }
@@ -118,6 +125,7 @@ private:
     std::vector<SetterInfo> setters_;
     std::map<const ast::FunctionExpr*, uint32_t> byNode_;
     std::map<const ast::FunctionExpr*, uint32_t> setterByNode_;
+    std::map<std::pair<std::string, std::string>, std::string> getterBackingField_;
     std::map<std::string, std::vector<uint32_t>> byName_;
     std::map<std::string, ClassNode> classes_;
     std::set<std::string> duplicates_;

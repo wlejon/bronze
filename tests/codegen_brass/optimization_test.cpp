@@ -711,3 +711,183 @@ TEST_CASE("Brass il2mir - IsDenseArray and constant-index PropGet/PropSet runs l
     CHECK(propSetCalls == 2);
     CHECK(writeBarriers == 0);
 }
+
+TEST_CASE("il2mir lower_elem_get_typed keeps f64 on XMM across merge") {
+    bronze::il::Module m;
+    bronze::il::Function fn;
+    fn.name = "ta_get_f64";
+    fn.params = {{"ta", bronze::il::Type::Dynamic},
+                 {"idx", bronze::il::Type::I32}};
+    fn.returnType = bronze::il::Type::F64;
+    fn.valueCount = 3;
+
+    bronze::il::Block b0;
+    b0.id = 0;
+    bronze::il::Instruction getInst;
+    getInst.op = bronze::il::Op::ElemGetTyped;
+    getInst.type = bronze::il::Type::F64;
+    getInst.result = 2;
+    getInst.operands = {0, 1};
+    getInst.immI32 = BRONZE_ABI_TA_KIND_FLOAT64;
+    b0.instructions.push_back(getInst);
+    b0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::F64, bronze::il::kNoValue, {2}, 0, 0, 0});
+    fn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> uniqueNames = {"ta_get_f64"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, uniqueNames);
+    il2mir::TranslatorOptions opts;
+    opts.enable_optimizations = false;
+    opts.verify_lowered_module = true;
+
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    REQUIRE(tr.module != nullptr);
+
+    brass::Function* mirFn = tr.module->get_function("ta_get_f64");
+    REQUIRE(mirFn != nullptr);
+    CHECK(brass::verify_function(*mirFn));
+
+    int fastBitcasts = 0;
+    bool foundF64MergeParam = false;
+    for (brass::BasicBlock* bb : mirFn->blocks()) {
+        for (brass::Value* param : bb->params()) {
+            if (param->type() == brass::Type::f64()) foundF64MergeParam = true;
+        }
+        if (bb->name().find("_load") != std::string::npos || bb->name().find("_merge") != std::string::npos) {
+            for (brass::Instruction* inst : *bb) {
+                if (inst->opcode() == brass::Opcode::bitcast_i64_f64 ||
+                    inst->opcode() == brass::Opcode::bitcast_f64_i64) {
+                    ++fastBitcasts;
+                }
+            }
+        }
+    }
+    CHECK(foundF64MergeParam);
+    CHECK(fastBitcasts == 0);
+}
+
+TEST_CASE("il2mir batches contiguous variable-offset ElemSet runs") {
+    bronze::il::Module m;
+    m.keyConstants = {"0", "1", "2"};
+
+    bronze::il::Function fn;
+    fn.name = "to_array_3";
+    fn.params = {{"te", bronze::il::Type::Dynamic},
+                 {"arr", bronze::il::Type::Dynamic},
+                 {"offset", bronze::il::Type::F64}};
+    fn.returnType = bronze::il::Type::Dynamic;
+    fn.valueCount = 13;
+
+    bronze::il::Block b0;
+    b0.id = 0;
+
+    // Step 0: %3 = box.f64 %2; %4 = prop.get %0, "0"; elem.set %1, %3, %4
+    bronze::il::Instruction box0;
+    box0.op = bronze::il::Op::Box;
+    box0.type = bronze::il::Type::Dynamic;
+    box0.result = 3;
+    box0.operands = {2};
+    box0.boxType = bronze::il::Type::F64;
+    b0.instructions.push_back(box0);
+
+    bronze::il::Instruction get0;
+    get0.op = bronze::il::Op::PropGet;
+    get0.type = bronze::il::Type::Dynamic;
+    get0.result = 4;
+    get0.operands = {0};
+    get0.keyIndex = 0;
+    b0.instructions.push_back(get0);
+
+    bronze::il::Instruction es0;
+    es0.op = bronze::il::Op::ElemSet;
+    es0.type = bronze::il::Type::Void;
+    es0.result = bronze::il::kNoValue;
+    es0.operands = {1, 3, 4};
+    b0.instructions.push_back(es0);
+
+    // Step 1: %5 = const.f64 1; %6 = add.f64 %2, %5; %7 = box.f64 %6; %8 = prop.get %0, "1"; elem.set %1, %7, %8
+    b0.instructions.push_back({bronze::il::Op::ConstF64, bronze::il::Type::F64, 5, {}, 1.0, 0, 0});
+    b0.instructions.push_back({bronze::il::Op::Add, bronze::il::Type::F64, 6, {2, 5}, 0, 0, 0});
+    bronze::il::Instruction box1;
+    box1.op = bronze::il::Op::Box;
+    box1.type = bronze::il::Type::Dynamic;
+    box1.result = 7;
+    box1.operands = {6};
+    box1.boxType = bronze::il::Type::F64;
+    b0.instructions.push_back(box1);
+
+    bronze::il::Instruction get1;
+    get1.op = bronze::il::Op::PropGet;
+    get1.type = bronze::il::Type::Dynamic;
+    get1.result = 8;
+    get1.operands = {0};
+    get1.keyIndex = 1;
+    b0.instructions.push_back(get1);
+
+    bronze::il::Instruction es1;
+    es1.op = bronze::il::Op::ElemSet;
+    es1.type = bronze::il::Type::Void;
+    es1.result = bronze::il::kNoValue;
+    es1.operands = {1, 7, 8};
+    b0.instructions.push_back(es1);
+
+    // Step 2: %9 = const.f64 2; %10 = add.f64 %2, %9; %11 = box.f64 %10; %12 = prop.get %0, "2"; elem.set %1, %11, %12
+    b0.instructions.push_back({bronze::il::Op::ConstF64, bronze::il::Type::F64, 9, {}, 2.0, 0, 0});
+    b0.instructions.push_back({bronze::il::Op::Add, bronze::il::Type::F64, 10, {2, 9}, 0, 0, 0});
+    bronze::il::Instruction box2;
+    box2.op = bronze::il::Op::Box;
+    box2.type = bronze::il::Type::Dynamic;
+    box2.result = 11;
+    box2.operands = {10};
+    box2.boxType = bronze::il::Type::F64;
+    b0.instructions.push_back(box2);
+
+    bronze::il::Instruction get2;
+    get2.op = bronze::il::Op::PropGet;
+    get2.type = bronze::il::Type::Dynamic;
+    get2.result = 12;
+    get2.operands = {0};
+    get2.keyIndex = 2;
+    b0.instructions.push_back(get2);
+
+    bronze::il::Instruction es2;
+    es2.op = bronze::il::Op::ElemSet;
+    es2.type = bronze::il::Type::Void;
+    es2.result = bronze::il::kNoValue;
+    es2.operands = {1, 11, 12};
+    b0.instructions.push_back(es2);
+
+    b0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::Dynamic, bronze::il::kNoValue, {1}, 0, 0, 0});
+    fn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> uniqueNames = {"to_array_3"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, uniqueNames);
+    il2mir::TranslatorOptions opts;
+    opts.key_constants = m.keyConstants;
+    opts.enable_optimizations = false;
+    opts.verify_lowered_module = true;
+
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    REQUIRE(tr.module != nullptr);
+
+    brass::Function* mirFn = tr.module->get_function("to_array_3");
+    REQUIRE(mirFn != nullptr);
+    CHECK(brass::verify_function(*mirFn));
+
+    bool hasRunBlock = false;
+    int writeBarriers = 0;
+    for (brass::BasicBlock* bb : mirFn->blocks()) {
+        if (bb->name().find("elem_set_run_") != std::string::npos) hasRunBlock = true;
+        for (brass::Instruction* inst : *bb) {
+            if (inst->opcode() == brass::Opcode::call && inst->symbol() == "brass_gc_write_barrier") {
+                ++writeBarriers;
+            }
+        }
+    }
+    CHECK(hasRunBlock);
+    CHECK(writeBarriers == 0);
+}
+

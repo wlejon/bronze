@@ -193,6 +193,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
     active_dense_arrays_.clear();
     dense_array_cursors_.clear();
     single_block_propset_use_.clear();
+    value_use_counts_.clear();
 
     for (const auto& p : fn_ast.params) {
         if (p.second == BronzeType::F64 || p.second == BronzeType::I32 || p.second == BronzeType::Bool) {
@@ -204,6 +205,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
         uint32_t block_id = UINT32_MAX;
         size_t inst_idx = 0;
         uint32_t use_count = 0;
+        bool is_index_key = false;
         bool all_hole_insensitive = true;
         size_t propset_use_idx = SIZE_MAX;
     };
@@ -224,6 +226,9 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
         for_each_successor(blk, [&](uint32_t succ_id) { ++pred_count[succ_id]; });
         for (size_t idx = 0; idx < blk.instructions.size(); ++idx) {
             const auto& inst = blk.instructions[idx];
+            for (uint32_t op_id : inst.operands) ++value_use_counts_[op_id];
+            for (uint32_t arg_id : inst.target.args) ++value_use_counts_[arg_id];
+            for (uint32_t arg_id : inst.else_target.args) ++value_use_counts_[arg_id];
             if (inst.result_id != UINT32_MAX) {
                 if (is_primitive_result(inst, primitive_value_ids_)) {
                     primitive_value_ids_.insert(inst.result_id);
@@ -231,7 +236,8 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                 if (inst.op == BronzeOp::PropGet && inst.static_slot == UINT32_MAX &&
                     inst.index != PropertyLoweringHelper::kNoKey && !inst.operands.empty() &&
                     bronze::il::parseIndexKey(prop_lowering_.key_tag(inst.index)).has_value()) {
-                    propget_defs.emplace(inst.result_id, PropGetDef{blk.id, idx, 0, true, SIZE_MAX});
+                    propget_defs.emplace(inst.result_id,
+                                         PropGetDef{blk.id, idx, 0, true, true, SIZE_MAX});
                 }
                 if (inst.op == BronzeOp::IsDenseArray && !inst.operands.empty() && inst.imm_i64 >= 0) {
                     dense_defs[inst.result_id] = DenseArrayProof{
@@ -252,7 +258,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                     ++def.use_count;
                     const bool same_block_after = (blk.id == def.block_id && idx > def.inst_idx);
                     const bool is_hole_safe_use =
-                        op_i == 0 &&
+                        def.is_index_key && op_i == 0 &&
                         (inst.op == BronzeOp::IsNumber ||
                          (inst.op == BronzeOp::Unbox && inst.raw_unbox && inst.result_type == BronzeType::F64));
                     if (!is_hole_safe_use) {
@@ -282,7 +288,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
             }
         }
         for (const auto& [id, def] : propget_defs) {
-            if (def.use_count > 0 && def.all_hole_insensitive) {
+            if (def.is_index_key && def.use_count > 0 && def.all_hole_insensitive) {
                 hole_insensitive_ids_.insert(id);
             }
             if (def.use_count == 1 && def.propset_use_idx != SIZE_MAX) {

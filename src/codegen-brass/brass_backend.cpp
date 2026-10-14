@@ -22,9 +22,38 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#if defined(_MSC_VER) && defined(_M_X64)
+#include <intrin.h>
+#endif
+
 namespace bronze {
 
 namespace {
+
+#if defined(__x86_64__) || defined(_M_X64)
+bool hostSupportsAvx2() noexcept {
+    static const bool supported = []() noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+        return __builtin_cpu_supports("avx2") != 0;
+#elif defined(_MSC_VER) && defined(_M_X64)
+        int cpuInfo[4] = {};
+        __cpuid(cpuInfo, 0);
+        if (cpuInfo[0] < 7) return false;
+        __cpuid(cpuInfo, 1);
+        const bool osxsave = (cpuInfo[2] & (1 << 27)) != 0;
+        const bool avx = (cpuInfo[2] & (1 << 28)) != 0;
+        if (!osxsave || !avx) return false;
+        const unsigned long long xcr0 = _xgetbv(0);
+        if ((xcr0 & 0x6ULL) != 0x6ULL) return false;
+        __cpuidex(cpuInfo, 7, 0);
+        return (cpuInfo[1] & (1 << 5)) != 0;
+#else
+        return false;
+#endif
+    }();
+    return supported;
+}
+#endif
 
 std::string sanitizeFunctionName(std::string_view name) {
     std::string s;
@@ -322,14 +351,13 @@ void BrassBackend::setOptimizationOptions(il2mir::TranslatorOptions& options, bo
     options.enable_fma = false;
     if (target_.is_aarch64()) {
         options.vector_width = 128;
-    } else if (target_ == brass::Target::host() && target_.is_x64()) {
+    } else if (target_.is_x64()) {
+        options.vector_width = 128;
 #if defined(__x86_64__) || defined(_M_X64)
-#if defined(__GNUC__) || defined(__clang__)
-        if (__builtin_cpu_supports("avx2")) {
+        if (target_ == brass::Target::host() && hostSupportsAvx2()) {
             options.enable_avx2 = true;
             options.vector_width = 256;
         }
-#endif
 #endif
     }
 }

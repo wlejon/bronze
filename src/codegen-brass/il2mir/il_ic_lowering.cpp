@@ -248,16 +248,21 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
     plain = in_process_ ? is_plain : b.build_and(is_obj, is_plain);
 }
 
-void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, const IcSite& site, Value*& hit, Value*& ptr,
-                                      Value*& slot_word) {
-    Value* plain = nullptr;
-    Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
+void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
+                                                  Value*& hit, Value*& slot_word) {
     Value* cached_shape = b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset);
     Value* shape_match = b.build_eq(shape, cached_shape);
     slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
     Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
     hit = b.build_and(plain, b.build_and(shape_match, own_data));
+}
+
+void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, const IcSite& site, Value*& hit, Value*& ptr,
+                                      Value*& slot_word) {
+    Value* plain = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, plain, ptr, shape);
+    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
 }
 
 // The base that, with slot_word * 8 + BRONZE_ABI_OBJ_SLOTS_OFFSET, addresses

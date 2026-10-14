@@ -551,7 +551,7 @@ bool FieldAudit::settle() {
         // object this compilation watched being made. A guessed identity is
         // checked by a shape guard at the sites that read it, and this audit is
         // the backstop those guards rest on, so it may not spend one of them.
-        if (recv.is(TypeKind::Object) && recv.builtHere() && refuseClass(recv.shapeClass(), why)) {
+        if (recv.is(TypeKind::Object) && !recv.identityOnly() && refuseClass(recv.shapeClass(), why)) {
             c.refuted = true;
             c.reach = Reach::Class;
             ++computedRefuted_;
@@ -673,7 +673,8 @@ bool FieldAudit::numberCleanFor(ShapeClassId cls, const std::string& name) const
     // extends the other; without an interval for either side there is nothing
     // to compare and the answer is the refusing one.
     const ClassLayout* mine = classes_ != nullptr ? classes_->byShapeClass(cls) : nullptr;
-    if (mine == nullptr || mine->familyIndex == ClassLayout::kNoFamily) return false;
+    if (mine == nullptr) return true;
+    if (mine->familyIndex == ClassLayout::kNoFamily) return false;
     for (const auto& [refused, why] : classRefusals_) {
         const ClassLayout* cl = classes_->byShapeClass(refused);
         // No layout, or a proven layout with no fields: `refuseClass` admitted
@@ -682,6 +683,86 @@ bool FieldAudit::numberCleanFor(ShapeClassId cls, const std::string& name) const
         // answered above.
         if (cl == nullptr || cl->familyIndex == ClassLayout::kNoFamily) continue;
         if (familiesMeet(*mine, *cl)) return false;
+    }
+    return true;
+}
+
+bool FieldAudit::objectLitFieldClean(ShapeClassId cls, const std::string& name) const {
+    if (!globalRefusals_.empty()) return false;
+    if (numericKeyWrite_ && couldBeNumericKey(name)) return false;
+    if (builtinOwnedName(name)) return false;
+    if (classRefusals_.count(cls) != 0) return false;
+    const auto it = names_.find(name);
+    return it == names_.end() || it->second.empty();
+}
+
+bool FieldAudit::propertyOnlyPlainObjects(
+    const std::string& name, const std::set<ShapeClassId>& unclosedObjectLits,
+    const std::map<ShapeClassId, std::map<std::string, Type>>& objectLitFields) const {
+    if (!globalRefusals_.empty() || (numericKeyWrite_ && couldBeNumericKey(name)) ||
+        builtinOwnedName(name) || names_.count(name) == 0 || names_.count("toJSON") != 0) {
+        return false;
+    }
+    if (classes_ != nullptr) {
+        for (const auto& [refused, why] : classRefusals_) {
+            (void)why;
+            if (classes_->byShapeClass(refused) != nullptr) {
+                return false;
+            }
+        }
+    }
+    for (const auto& c : computed_) {
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(c.receiver)) {
+            if (!m->optional && !m->isPrivate && m->property == name) {
+                return false;
+            }
+        }
+    }
+    for (const auto& w : writes_) {
+        if (w.name != name) continue;
+        if (w.rhs == nullptr) return false;
+        if (const auto* lit = dynamic_cast<const ast::ObjectLit*>(w.rhs)) {
+            if (lit->props.empty()) continue;
+        }
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(w.rhs)) {
+            if (!m->optional && !m->isPrivate && m->property == name) continue;
+        }
+        if (const auto* c = dynamic_cast<const ast::Call*>(w.rhs)) {
+            if (!c->optional && c->args.size() == 1) {
+                if (const auto* cm = dynamic_cast<const ast::MemberAccess*>(c->callee.get());
+                    cm != nullptr && !cm->optional && cm->property == "parse") {
+                    if (const auto* cid = dynamic_cast<const ast::Ident*>(cm->object.get());
+                        cid != nullptr && cid->name == "JSON") {
+                        continue;
+                    }
+                }
+            }
+        }
+        const Type t = typeOfExpr(w.rhs);
+        if (t.is(TypeKind::Never) || t.is(TypeKind::Number) || t.is(TypeKind::String) ||
+            t.is(TypeKind::Bool) || t.is(TypeKind::Null) || t.is(TypeKind::Undefined) ||
+            t.is(TypeKind::TypedArray)) {
+            continue;
+        }
+        if (t.is(TypeKind::Object) && !t.identityOnly() && t.shapeClass() != kNoShapeClass) {
+            if (classes_ != nullptr && classes_->byShapeClass(t.shapeClass()) != nullptr) {
+                return false;
+            }
+            if (unclosedObjectLits.count(t.shapeClass()) != 0) return false;
+            if (classRefusals_.count(t.shapeClass()) != 0) return false;
+            const auto fIt = objectLitFields.find(t.shapeClass());
+            if (fIt != objectLitFields.end()) {
+                for (const auto& [fk, fv] : fIt->second) {
+                    (void)fk;
+                    if (fv.is(TypeKind::Object) || fv.is(TypeKind::Array) ||
+                        fv.is(TypeKind::Dynamic)) {
+                        return false;
+                    }
+                }
+            }
+            continue;
+        }
+        return false;
     }
     return true;
 }

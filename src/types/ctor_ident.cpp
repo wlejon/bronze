@@ -109,6 +109,12 @@ bool isNonClassReceiver(const ast::Expr* object) {
             if (id->name == aid) return true;
         }
     }
+    if (const auto* m = dynamic_cast<const ast::MemberAccess*>(object)) {
+        if (m->property == "array" || m->property == "data" || m->property == "buffer" ||
+            m->property == "elements") {
+            return true;
+        }
+    }
     if (dynamic_cast<const ast::ArrayLit*>(object) ||
         dynamic_cast<const ast::ObjectLit*>(object) ||
         dynamic_cast<const ast::NumberLit*>(object) ||
@@ -292,56 +298,63 @@ public:
     using Walker::visit;
 
     std::set<std::string> names;
+    std::map<std::string, uint32_t> counts;
+
+    void addName(const std::string& b) {
+        if (b.empty()) return;
+        names.insert(b);
+        ++counts[b];
+    }
 
     void visit(const ast::VarDecl& n) override {
-        if (!n.name.empty()) names.insert(n.name);
+        addName(n.name);
         if (n.pattern) {
-            for (const auto& b : ast::patternBoundNames(*n.pattern)) names.insert(b);
+            for (const auto& b : ast::patternBoundNames(*n.pattern)) addName(b);
         }
         Walker::visit(n);
     }
     void visit(const ast::FunctionDecl& n) override {
-        if (!n.name.empty()) names.insert(n.name);
+        addName(n.name);
         params(n.params);
         Walker::visit(n);
     }
     void visit(const ast::FunctionExpr& n) override {
-        if (!n.name.empty()) names.insert(n.name);
+        addName(n.name);
         params(n.params);
         Walker::visit(n);
     }
     void visit(const ast::ClassDecl& n) override {
-        if (!n.name.empty()) names.insert(n.name);
+        addName(n.name);
         Walker::visit(n);
     }
     void visit(const ast::ClassExpr& n) override {
-        if (!n.name.empty()) names.insert(n.name);
+        addName(n.name);
         Walker::visit(n);
     }
     void visit(const ast::TryStmt& n) override {
         if (n.catchPattern) {
-            for (const auto& b : ast::patternBoundNames(*n.catchPattern)) names.insert(b);
+            for (const auto& b : ast::patternBoundNames(*n.catchPattern)) addName(b);
         }
         Walker::visit(n);
     }
     void visit(const ast::ForInStmt& n) override {
-        if (!n.name.empty()) names.insert(n.name);
+        addName(n.name);
         Walker::visit(n);
     }
     void visit(const ast::ForOfStmt& n) override {
-        if (!n.name.empty()) names.insert(n.name);
+        addName(n.name);
         Walker::visit(n);
     }
     void visit(const ast::ImportDecl& n) override {
-        for (const auto& s : n.specifiers) names.insert(s.local);
+        for (const auto& s : n.specifiers) addName(s.local);
     }
 
 private:
     void params(const std::vector<ast::Param>& ps) {
         for (const auto& p : ps) {
-            if (!p.name.empty()) names.insert(p.name);
+            addName(p.name);
             if (p.pattern) {
-                for (const auto& b : ast::patternBoundNames(*p.pattern)) names.insert(b);
+                for (const auto& b : ast::patternBoundNames(*p.pattern)) addName(b);
             }
         }
     }
@@ -515,6 +528,12 @@ private:
     // is not a value in circulation.
     void calleePosition(const ast::Expr& e) {
         if (dynamic_cast<const ast::Ident*>(&e) != nullptr) return;
+        if (const auto* t = dynamic_cast<const ast::Ternary*>(&e)) {
+            t->condition->accept(*this);
+            calleePosition(*t->thenExpr);
+            calleePosition(*t->elseExpr);
+            return;
+        }
         if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&e)) {
             if (classIdent(m->object.get()) != nullptr) {
                 poison(dynamic_cast<const ast::Ident*>(m->object.get())->name,
@@ -619,6 +638,8 @@ void CtorTable::build(const ast::Module& module) {
         }
         ClassNode node;
         node.superName = cls.superName;
+        node.classIndex = static_cast<uint32_t>(classReach_.size());
+        classReach_.push_back(ClassReachInfo{cls.name, false, false, 0});
         if (const ast::ClassMethod* ctor = constructorOf(*cls.methods)) {
             CtorInfo info;
             info.fn = ctor->fn.get();
@@ -658,6 +679,16 @@ void CtorTable::build(const ast::Module& module) {
 uint32_t CtorTable::indexOfNode(const ast::FunctionExpr* fn) const {
     const auto it = byNode_.find(fn);
     return it == byNode_.end() ? kNoCtor : it->second;
+}
+
+uint32_t CtorTable::classIndexOf(const std::string& name) const {
+    const auto it = classes_.find(name);
+    return it == classes_.end() ? kNoCtor : it->second.classIndex;
+}
+
+bool CtorTable::isClassReached(const std::string& name) const {
+    const uint32_t idx = classIndexOf(name);
+    return idx != kNoCtor && classReach_[idx].reached;
 }
 
 uint32_t CtorTable::targetOf(const std::string& className) const {
@@ -733,6 +764,21 @@ void scanCtorEscapes(const ast::Module& module, const CtorTable& table, CtorPois
     declared.visit(module);
     CtorEscapeScan scan(table, declared.names, poison, facts);
     scan.visit(module);
+}
+
+void collectUniqueModuleConsts(const ast::Module& module, std::unordered_set<std::string>& out) {
+    DeclaredNameScan declared;
+    declared.visit(module);
+    for (const auto& stmt : module.body) {
+        const auto* v = dynamic_cast<const ast::VarDecl*>(stmt.get());
+        if (v == nullptr || !v->isConst || v->pattern || v->name.empty() || v->init == nullptr) {
+            continue;
+        }
+        const auto it = declared.counts.find(v->name);
+        if (it != declared.counts.end() && it->second == 1) {
+            out.insert(v->name);
+        }
+    }
 }
 
 }  // namespace bronze::types

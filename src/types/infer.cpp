@@ -75,6 +75,7 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
     mod.nestedCells.clear();
     for (uint32_t i = 0; i < mod.functions.size(); ++i) {
         FunctionInfo& fn = mod.functions[i];
+        if (!record && !mod.auditSettled && mod.valueFlow && !fn.reached) continue;
         std::vector<const ast::Stmt*> body;
         body.reserve(fn.decl->body.size());
         for (const auto& s : fn.decl->body) body.push_back(s.get());
@@ -97,7 +98,10 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
         // Only a direct-callable function's return is a proof about its
         // callers; an escaping one is reached through the dynamic convention,
         // so its signature stays dynamic however clear its body is.
-        if (fn.directCallable) fn.observedReturn = join(fn.observedReturn, outcome.returnType);
+        fn.observedReturn = join(fn.observedReturn, outcome.returnType);
+        if (fn.directCallable && record && !fn.reached) {
+            fn.signature.returnType = join(fn.signature.returnType, outcome.returnType);
+        }
     }
 
     return runTopLevel(mod, split, record);
@@ -149,6 +153,38 @@ Type demoteToGuess(Type t) {
     return Type::dynamic();
 }
 
+bool foldFunctionAndClassReachability(ModuleContext& mod) {
+    bool changed = false;
+    for (auto& fn : mod.functions) {
+        bool fnChanged = false;
+        if (!fn.reached && fn.observedReached) {
+            fn.reached = true;
+            fnChanged = true;
+        }
+        if (fn.reached) {
+            const Type widenedBody = join(fn.bodyReturn, fn.observedReturn);
+            if (widenedBody != fn.bodyReturn) {
+                fn.bodyReturn = widenedBody;
+                fnChanged = true;
+            }
+        }
+        if (fnChanged) {
+            ++fn.version;
+            changed = true;
+        }
+    }
+    if (mod.ctorParamTypes) {
+        for (auto& c : mod.ctors.classReach()) {
+            if (!c.reached && c.observedReached) {
+                c.reached = true;
+                ++c.version;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
 // The same fold for class methods, whose callers are enumerated through the
 // receiver's class rather than through the callee's name (method_ident.h).
 //
@@ -158,13 +194,15 @@ Type demoteToGuess(Type t) {
 // them dynamic on every later round, and the round that discovers it is the
 // round that reports "changed".
 bool foldMethodReachability(ModuleContext& mod) {
-    if (!mod.interprocIdent) return false;
-    bool changed = false;
+    bool changed = foldFunctionAndClassReachability(mod);
+    if (!mod.interprocIdent) return changed;
     for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
         auto& m = mod.methods.methods()[i];
         bool mChanged = false;
+        const bool clsReached =
+            !mod.ctorParamTypes || !mod.valueFlow || mod.ctors.isClassReached(m.className);
         if (!m.reached &&
-            (m.observedReached || !m.plainParams || mod.methodPoison.poisons(i))) {
+            (m.observedReached || (clsReached && mod.methodPoison.poisons(i)))) {
             m.reached = true;
             mChanged = true;
         }
@@ -183,8 +221,26 @@ bool foldMethodReachability(ModuleContext& mod) {
         }
     }
     for (auto& s : mod.methods.setters()) {
+        bool sChanged = false;
         if (!s.reached && s.observedReached) {
             s.reached = true;
+            sChanged = true;
+        }
+        if (s.reached && s.isStatic && s.className.empty()) {
+            const Type widenedParam =
+                s.plainParams ? demoteToGuess(join(s.paramType, s.observedParam)) : Type::dynamic();
+            if (widenedParam != s.paramType) {
+                s.paramType = widenedParam;
+                sChanged = true;
+            }
+            const Type widenedRet =
+                s.plainParams ? demoteToGuess(join(s.returnType, s.observedReturn)) : Type::dynamic();
+            if (widenedRet != s.returnType) {
+                s.returnType = widenedRet;
+                sChanged = true;
+            }
+        }
+        if (sChanged) {
             ++s.version;
             changed = true;
         }
@@ -202,7 +258,7 @@ bool widenMethods(ModuleContext& mod) {
         changed = false;
         for (size_t p = 0; p < m.signature.params.size(); ++p) {
             Type widened =
-                speaks ? join(m.signature.params[p], m.observedParams[p]) : Type::dynamic();
+                speaks ? joinParam(m.signature.params[p], m.observedParams[p]) : Type::dynamic();
             if (speaks && p < m.sawSkippedDynamicArg.size() && m.sawSkippedDynamicArg[p]) {
                 widened = demoteToGuess(widened);
             }
@@ -233,6 +289,15 @@ bool widenMethods(ModuleContext& mod) {
         if (changed) ++m.version;
         changed = changed || changedBefore;
     }
+    for (auto& s : mod.methods.setters()) {
+        if (s.isStatic) continue;
+        const Type widened = s.plainParams ? join(s.paramType, s.observedParam) : Type::dynamic();
+        if (widened != s.paramType) {
+            s.paramType = widened;
+            ++s.version;
+            changed = true;
+        }
+    }
     return changed;
 }
 
@@ -251,7 +316,7 @@ bool widenCtors(ModuleContext& mod) {
         const bool speaks = c.plainParams && !mod.ctorPoison.poisons(c.className);
         for (size_t i = 0; i < c.signature.params.size(); ++i) {
             const Type widened =
-                speaks ? join(c.signature.params[i], c.observedParams[i]) : Type::dynamic();
+                speaks ? joinParam(c.signature.params[i], c.observedParams[i]) : Type::dynamic();
             if (widened != c.signature.params[i]) {
                 c.signature.params[i] = widened;
                 ++c.version;
@@ -316,6 +381,18 @@ bool finalizeUnreachedMethods(ModuleContext& mod) {
             changed = true;
         }
     }
+    for (auto& s : mod.methods.setters()) {
+        if ((!s.isStatic || s.className.empty()) && s.paramType.is(TypeKind::Never)) {
+            s.paramType = Type::dynamic();
+            ++s.version;
+            changed = true;
+        }
+        if (s.isStatic && s.className.empty() && s.returnType.is(TypeKind::Never)) {
+            s.returnType = Type::dynamic();
+            ++s.version;
+            changed = true;
+        }
+    }
     return changed;
 }
 
@@ -323,6 +400,7 @@ void resetObservations(ModuleContext& mod) {
     for (auto& fn : mod.functions) {
         fn.observedParams.assign(fn.signature.params.size(), Type::never());
         fn.observedReturn = Type::never();
+        fn.observedReached = false;
     }
     for (auto& m : mod.methods.methods()) {
         m.observedParams.assign(m.signature.params.size(), Type::never());
@@ -332,9 +410,14 @@ void resetObservations(ModuleContext& mod) {
     }
     for (auto& s : mod.methods.setters()) {
         s.observedReached = false;
+        s.observedParam = Type::never();
+        s.observedReturn = Type::never();
     }
     for (auto& c : mod.ctors.ctors()) {
         c.observedParams.assign(c.signature.params.size(), Type::never());
+    }
+    for (auto& cr : mod.ctors.classReach()) {
+        cr.observedReached = false;
     }
 }
 
@@ -462,6 +545,8 @@ uint32_t primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceRe
         resetObservations(mod);
         const size_t poisonBefore = mod.methodPoison.version();
         const size_t ctorPoisonBefore = mod.ctorPoison.version();
+        const size_t reachedVarsBefore = mod.reachedModuleVars.size();
+        const size_t walkedVarsBefore = mod.walkedModuleVars.size();
         const auto bindingsBefore = mod.moduleBindings;
         // The outcome is deliberately not consulted: a walk that fails has set
         // `mod.failed`, and the loop below walks the same statements and
@@ -473,6 +558,8 @@ uint32_t primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceRe
         changed = refineFieldHarvest(mod, result) || changed;
         changed = mod.methodPoison.version() != poisonBefore || changed;
         changed = mod.ctorPoison.version() != ctorPoisonBefore || changed;
+        changed = mod.reachedModuleVars.size() != reachedVarsBefore ||
+                  mod.walkedModuleVars.size() != walkedVarsBefore || changed;
         changed = mod.moduleBindings != bindingsBefore || changed;
         changed = mod.fieldAudit.settle() || changed;
         if (!changed) return rounds;
@@ -517,9 +604,18 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     for (const auto& stmt : module.body) {
         if (const auto* imp = dynamic_cast<const ast::ImportDecl*>(stmt.get())) {
             for (const auto& spec : imp->specifiers) mod.moduleScopeNames.insert(spec.local);
+        } else if (const auto* vd = dynamic_cast<const ast::VarDecl*>(stmt.get())) {
+            if (!vd->pattern && vd->name.find('.') != std::string::npos) {
+                if (const auto* ol = dynamic_cast<const ast::ObjectLit*>(vd->init.get());
+                    ol == nullptr || !ol->isModuleNamespace) {
+                    mod.lazyModuleVars.insert(vd->name);
+                }
+            }
         }
     }
     for (const auto& name : hostClaimNames) mod.moduleScopeNames.insert(name);
+    collectUniqueModuleConsts(module, mod.uniqueModuleConsts);
+    for (const auto& name : hostClaimNames) mod.uniqueModuleConsts.erase(name);
     if (!hostOverridesMath && mod.moduleScopeNames.count("Math") == 0) {
         MathTaintScan taint;
         for (const auto& stmt : module.body) {
@@ -556,15 +652,18 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     if (mod.interprocIdent) {
         mod.methods.build(module);
         scanMethodEscapes(module, mod.methods, mod.methodPoison);
-        for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
-            if (mod.methodPoison.poisons(i)) mod.methods.methods()[i].reached = true;
-        }
     }
     mod.ctorParamTypes = std::getenv("BRONZE_NO_CTOR_PARAM_TYPES") == nullptr;
     if (mod.ctorParamTypes || mod.methodParamTypes) {
         if (mod.ctorParamTypes) {
             mod.ctors.build(module);
             scanCtorEscapes(module, mod.ctors, mod.ctorPoison, mod.ctorEscapes);
+            for (auto& cr : mod.ctors.classReach()) {
+                if (mod.ctorPoison.poisons(cr.className) &&
+                    cr.className.find('.') == std::string::npos) {
+                    cr.reached = true;
+                }
+            }
         }
         // The field harvest starts from the parameter signatures, which are all
         // `Never` here. That is the bottom of the same lattice everything else
@@ -577,6 +676,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         FunctionInfo fn;
         fn.decl = decl;
         fn.name = decl->name;
+        fn.reached = decl->isExported && decl->name.find('.') == std::string::npos;
         // The whole direct-callable test. `needsEnv` does not appear because it
         // cannot fire here: a module-level declaration is a module symbol, not
         // a closure, so lowering never gives it the synthetic `__env`
@@ -627,7 +727,8 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         // consumers of the table are the very bodies this pass just walked.
         const auto bindingsBefore = mod.moduleBindings;
         if (!runPass(mod, split, /*record=*/false)) return std::nullopt;
-        bool changed = widenSignatures(mod);
+        bool changed = foldFunctionAndClassReachability(mod);
+        changed = widenSignatures(mod) || changed;
         changed = widenMethods(mod) || changed;
         changed = widenCtors(mod) || changed;
         // The harvest reads the signatures `widenCtors` just folded, and the

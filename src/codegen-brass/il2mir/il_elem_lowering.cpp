@@ -307,7 +307,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     BasicBlock* bb_load = b.append_block(prefix + "_load");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(bb_merge, Type::i64());
+    Value* result = b.add_block_param(bb_merge, Type::f64());
 
     b.position_at_end(cur);
     Value* ptr = nullptr;
@@ -330,15 +330,12 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     b.position_at_end(bb_load);
     Value* data = typed_array_data(b, ptr);
     Value* number = nullptr;
-    bool may_be_nan = false;
     switch (elem_kind) {
         case BRONZE_ABI_TA_KIND_FLOAT64:
             number = b.build_load_indexed(Type::f64(), data, idx.i64, 8);
-            may_be_nan = true;
             break;
         case BRONZE_ABI_TA_KIND_FLOAT32:
             number = b.build_fpext_f64_f32(b.build_load_indexed(Type::f32(), data, idx.i64, 4));
-            may_be_nan = true;
             break;
         case BRONZE_ABI_TA_KIND_INT32:
             number = b.build_sitofp_f64_i32(b.build_load_indexed(Type::i32(), data, idx.i64, 4));
@@ -360,14 +357,14 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
             number = b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx.i64, 1)));
             break;
     }
-    Value* boxed_num = may_be_nan ? box_f64(b, number) : b.build_bitcast_i64_f64(number);
-    b.build_br(bb_merge, {boxed_num});
+    b.build_br(bb_merge, {number});
 
     b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
+    Value* slow_val = b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)});
+    b.build_br(bb_merge, {b.build_bitcast_f64_i64(slow_val)});
 
     b.position_at_end(bb_merge);
-    return b.build_bitcast_f64_i64(result);
+    return result;
 }
 
 // The inline stores are exactly the helper's own fast path
@@ -860,6 +857,32 @@ void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);
+}
+
+void PropertyLoweringHelper::emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok) {
+    const ElemIndex idx = elem_index(b, index);
+    out_i64 = idx.i64;
+    out_ok = idx.ok;
+}
+
+Value* PropertyLoweringHelper::unbox_known_number(Builder& b, Value* val, Value*& out_ok) {
+    out_ok = nullptr;
+    if (val->type() == Type::f64()) return val;
+    if (Value* src = boxed_f64_source(val)) return src;
+    out_ok = b.build_ule(val, iconst(b, kBronzeNumberMaxBits));
+    return b.build_bitcast_f64_i64(val);
+}
+
+Value* PropertyLoweringHelper::box_number(Builder& b, Value* f64_val) {
+    return box_f64(b, f64_val);
+}
+
+void PropertyLoweringHelper::object_payload(Builder& b, Value* obj, Value*& out_ptr, Value*& out_is_obj) {
+    object_pointer(b, obj, out_ptr, out_is_obj);
+}
+
+Value* PropertyLoweringHelper::load_typed_array_data(Builder& b, Value* ptr) {
+    return typed_array_data(b, ptr);
 }
 
 } // namespace il2mir

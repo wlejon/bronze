@@ -4,9 +4,22 @@
 
 #include "ast/queries.h"
 #include "types/flow_analyzer.h"
+#include "types/operator_types.h"
 #include "types/walk.h"
 
 namespace bronze::types {
+
+void FlowAnalyzer::markClassReached(const std::string& className) {
+    if (!mod_.ctorParamTypes) return;
+    std::vector<std::string> chain;
+    mod_.ctors.ancestorsOf(className, chain);
+    for (const auto& name : chain) {
+        const uint32_t idx = mod_.ctors.classIndexOf(name);
+        if (idx != kNoCtor) {
+            mod_.contribute(InferMemo::Contrib::ClassReached, idx, 0, Type::never());
+        }
+    }
+}
 
 // One `new <a class name>(...)`, and every `super(...)` that reaches one.
 //
@@ -16,6 +29,7 @@ namespace bronze::types {
 void FlowAnalyzer::constructSite(const std::string& className, const std::vector<Type>& args,
                                  bool spreadArgs) {
     if (!mod_.ctorParamTypes) return;
+    markClassReached(className);
     const uint32_t target = mod_.ctors.targetOf(className);
     if (target != kNoCtor) contributeCtorArgs(target, args, spreadArgs);
 }
@@ -39,20 +53,74 @@ void FlowAnalyzer::constructSite(const std::string& className, const std::vector
 void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
                                       const std::vector<Type>& args, bool spreadArgs) {
     if (!mod_.ctorParamTypes) return;
+    if (const auto* t = dynamic_cast<const ast::Ternary*>(&callee)) {
+        const auto* thenId = dynamic_cast<const ast::Ident*>(t->thenExpr.get());
+        const auto* elseId = dynamic_cast<const ast::Ident*>(t->elseExpr.get());
+        if (thenId != nullptr && elseId != nullptr &&
+            mod_.ctors.isClassName(thenId->name) && mod_.ctors.isClassName(elseId->name)) {
+            constructSite(thenId->name, args, spreadArgs);
+            constructSite(elseId->name, args, spreadArgs);
+            return;
+        }
+    }
     if (const auto* m = dynamic_cast<const ast::MemberAccess*>(&callee)) {
         if (m->property == "constructor" && !m->optional) {
+            if (calleeBase.is(TypeKind::Never) || calleeBase.is(TypeKind::TypedArray) ||
+                calleeBase.is(TypeKind::Array) || calleeBase.is(TypeKind::Number) ||
+                calleeBase.is(TypeKind::String) || calleeBase.is(TypeKind::Bool)) {
+                if (record_) ++mod_.unnamedNewIgnored;
+                return;
+            }
+            if (const auto* inner = dynamic_cast<const ast::MemberAccess*>(m->object.get())) {
+                if (inner->property == "array" || inner->property == "data" ||
+                    inner->property == "buffer" || inner->property == "elements") {
+                    if (record_) ++mod_.unnamedNewIgnored;
+                    return;
+                }
+            }
             if (const ClassLayout* cls = receiverClass(calleeBase)) {
                 std::vector<uint32_t> targets;
                 mod_.ctors.subtreeOf(cls->name, targets);
-                for (const uint32_t target : targets) contributeCtorArgs(target, args, spreadArgs);
+                for (const uint32_t target : targets) {
+                    const auto& info = mod_.ctors.ctors()[target];
+                    const uint32_t classIdx = mod_.ctors.classIndexOf(info.className);
+                    if (InferMemo* memo = mod_.rec()) {
+                        memo->noteCtor(target, info.version, mod_.ctorPoison.poisons(info.className));
+                        if (classIdx != kNoCtor) {
+                            memo->noteClassReach(classIdx, mod_.ctors.classReach()[classIdx].version);
+                        }
+                    }
+                    if (!mod_.ctors.isClassReached(info.className)) continue;
+                    contributeCtorArgs(target, args, spreadArgs);
+                }
                 if (record_) ++mod_.unnamedNewSubtree;
                 return;
             }
+            if (!mod_.ctorEscapes.valueEscapes) {
+                if (record_) ++mod_.unnamedNewIgnored;
+                return;
+            }
+            if (spreadArgs) {
+                if (!record_ && !mod_.auditSettled) {
+                    mod_.ctorPoison.addAll("an argument list is spread at a `new` whose callee is a value");
+                }
+                return;
+            }
+            if (record_) ++mod_.unnamedNewAll;
+            for (uint32_t i = 0; i < mod_.ctors.ctors().size(); ++i) {
+                const auto& info = mod_.ctors.ctors()[i];
+                const uint32_t classIdx = mod_.ctors.classIndexOf(info.className);
+                if (InferMemo* memo = mod_.rec()) {
+                    memo->noteCtor(i, info.version, mod_.ctorPoison.poisons(info.className));
+                    if (classIdx != kNoCtor) {
+                        memo->noteClassReach(classIdx, mod_.ctors.classReach()[classIdx].version);
+                    }
+                }
+                if (!mod_.ctors.isClassReached(info.className)) continue;
+                contributeCtorArgs(i, args, /*spreadArgs=*/false);
+            }
+            return;
         }
-    }
-    if (!mod_.ctorEscapes.valueEscapes) {
-        if (record_) ++mod_.unnamedNewIgnored;
-        return;
     }
     if (const auto* id = dynamic_cast<const ast::Ident*>(&callee)) {
         // A top-level `function` used as a constructor — which is how three.js
@@ -73,12 +141,32 @@ void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
             return;
         }
     }
+    for (const auto& cr : mod_.ctors.classReach()) {
+        if (mod_.ctorPoison.poisons(cr.className)) {
+            markClassReached(cr.className);
+        }
+    }
+    if (!mod_.ctorEscapes.valueEscapes) {
+        if (record_) ++mod_.unnamedNewIgnored;
+        return;
+    }
     if (spreadArgs) {
-        mod_.ctorPoison.addAll("an argument list is spread at a `new` whose callee is a value");
+        if (!record_ && !mod_.auditSettled) {
+            mod_.ctorPoison.addAll("an argument list is spread at a `new` whose callee is a value");
+        }
         return;
     }
     if (record_) ++mod_.unnamedNewAll;
     for (uint32_t i = 0; i < mod_.ctors.ctors().size(); ++i) {
+        const auto& info = mod_.ctors.ctors()[i];
+        const uint32_t classIdx = mod_.ctors.classIndexOf(info.className);
+        if (InferMemo* memo = mod_.rec()) {
+            memo->noteCtor(i, info.version, mod_.ctorPoison.poisons(info.className));
+            if (classIdx != kNoCtor) {
+                memo->noteClassReach(classIdx, mod_.ctors.classReach()[classIdx].version);
+            }
+        }
+        if (!mod_.ctors.isClassReached(info.className)) continue;
         contributeCtorArgs(i, args, /*spreadArgs=*/false);
     }
 }
@@ -87,7 +175,9 @@ void FlowAnalyzer::contributeCtorArgs(uint32_t ctorIndex, const std::vector<Type
                                       bool spreadArgs) {
     CtorInfo& info = mod_.ctors.ctors()[ctorIndex];
     if (spreadArgs) {
-        mod_.ctorPoison.add(info.className, "an argument list is spread at a construction site");
+        if (!record_ && !mod_.auditSettled) {
+            mod_.ctorPoison.add(info.className, "an argument list is spread at a construction site");
+        }
         return;
     }
     for (size_t i = 0; i < info.observedParams.size(); ++i) {
@@ -163,9 +253,270 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
         if (ident->name == "Uint8ClampedArray") return Type::typedArray(TypedArrayElem::Uint8Clamped);
         if (ident->name == "Array") return Type::array();
     }
+    if (ident == nullptr) {
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.callee.get())) {
+            if (m->property == "constructor" && !m->optional) {
+                if (const ClassLayout* cl = receiverClass(calleeBase)) {
+                    return Type::objectIdentityOnly(cl->shapeClass);
+                }
+            }
+        }
+    }
     const ShapeClassId cls = ident != nullptr ? constructorShape(ident->name) : kNoShapeClass;
     if (record_ && cls != kNoShapeClass) mod_.result->siteShapes[&n] = cls;
     return Type::object(cls);
+}
+
+Type FlowAnalyzer::superCall(const ast::SuperCall& sc) {
+    std::vector<Type> args;
+    args.reserve(sc.args.size());
+    bool spreadArgs = false;
+    for (const auto& a : sc.args) {
+        if (ast::exactAs<const ast::SpreadElement*>(a.get())) spreadArgs = true;
+        args.push_back(expr(*a));
+    }
+    const bool forwarding = scope_.ctorIndex != kNoCtor &&
+                            mod_.ctors.ctors()[scope_.ctorIndex].isForwarder;
+    if (mod_.ctorParamTypes && !forwarding) {
+        const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
+        if (here != nullptr && !here->superName.empty()) {
+            constructSite(here->superName, args, spreadArgs);
+        }
+    }
+    return Type::dynamic();
+}
+
+namespace {
+
+bool collectEqUndefinedNames(const ast::Expr* e, std::vector<std::string>& out) {
+    if (e == nullptr) return false;
+    if (const auto* b = ast::exactAs<const ast::Binary*>(e)) {
+        if (b->op == ast::BinaryOp::LogicalAnd) {
+            return collectEqUndefinedNames(b->lhs.get(), out) &&
+                   collectEqUndefinedNames(b->rhs.get(), out);
+        }
+        if (b->op == ast::BinaryOp::StrictEq || b->op == ast::BinaryOp::Eq) {
+            auto isUndef = [](const ast::Expr* side) {
+                if (ast::exactAs<const ast::UndefinedLit*>(side) != nullptr) return true;
+                if (const auto* id = ast::exactAs<const ast::Ident*>(side)) {
+                    return id->name == "undefined";
+                }
+                return false;
+            };
+            if (const auto* lhsId = ast::exactAs<const ast::Ident*>(b->lhs.get());
+                lhsId != nullptr && isUndef(b->rhs.get())) {
+                out.push_back(lhsId->name);
+                return true;
+            }
+            if (const auto* rhsId = ast::exactAs<const ast::Ident*>(b->rhs.get());
+                rhsId != nullptr && isUndef(b->lhs.get())) {
+                out.push_back(rhsId->name);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::pair<std::string, std::string> extractIsTagGuard(const ast::Expr* e) {
+    if (e == nullptr) return {};
+    const ast::MemberAccess* m = ast::exactAs<const ast::MemberAccess*>(e);
+    const std::string* guardedName = nullptr;
+    if (const auto* b = ast::exactAs<const ast::Binary*>(e)) {
+        if (b->op == ast::BinaryOp::LogicalAnd) {
+            if (const auto* lhsId = ast::exactAs<const ast::Ident*>(b->lhs.get())) {
+                guardedName = &lhsId->name;
+                m = ast::exactAs<const ast::MemberAccess*>(b->rhs.get());
+            }
+        }
+    }
+    if (m == nullptr || m->optional || m->isPrivate || m->property.size() <= 2 ||
+        m->property.compare(0, 2, "is") != 0) {
+        return {};
+    }
+    const auto* objId = ast::exactAs<const ast::Ident*>(m->object.get());
+    if (objId == nullptr) return {};
+    if (guardedName != nullptr && *guardedName != objId->name) return {};
+    return {objId->name, m->property};
+}
+
+}  // namespace
+
+void FlowAnalyzer::ifStmt(const ast::IfStmt& i, uint32_t depth) {
+    expr(*i.condition);
+    const Env entry = scope_.env;
+    std::string narrowedTagVar;
+    if (!i.thenBody.empty() && mod_.interprocIdent) {
+        const auto [varName, tagProp] = extractIsTagGuard(i.condition.get());
+        if (!varName.empty() && !scope_.isCell(varName)) {
+            if (const auto it = scope_.env.find(varName);
+                it != scope_.env.end() && it->second.is(TypeKind::Dynamic)) {
+                const ClassLayout* uniqueCls = nullptr;
+                uint32_t matches = 0;
+                for (const auto& cl : mod_.result->classLayouts.all()) {
+                    const auto fIt = cl.fieldTypes.find(tagProp);
+                    if (fIt != cl.fieldTypes.end() && fIt->second.is(TypeKind::Bool)) {
+                        uniqueCls = &cl;
+                        ++matches;
+                    }
+                }
+                if (matches == 1 && uniqueCls != nullptr) {
+                    it->second = Type::objectIdentityOnly(uniqueCls->shapeClass);
+                    narrowedTagVar = varName;
+                }
+            }
+        }
+    }
+    if (!i.thenBody.empty()) {
+        pushMarker("then", depth + 1);
+        scopedStmtList(i.thenBody, depth + 2);
+    }
+    Env thenEnv = scope_.env;
+    if (!narrowedTagVar.empty()) {
+        if (const auto it = thenEnv.find(narrowedTagVar); it != thenEnv.end()) {
+            if (const auto origIt = entry.find(narrowedTagVar); origIt != entry.end()) {
+                it->second = origIt->second;
+            }
+        }
+    }
+    scope_.env = entry;
+    std::vector<std::string> undefNames;
+    std::vector<std::string> extraParamNames;
+    if (collectEqUndefinedNames(i.condition.get(), undefNames)) {
+        for (const auto& name : undefNames) {
+            if (scope_.isCell(name)) continue;
+            if (const auto it = scope_.env.find(name);
+                it != scope_.env.end() && it->second.isDynamicNumOrUndef()) {
+                it->second = Type::number();
+            }
+        }
+        if (undefNames.size() >= 2 && !i.elseBody.empty()) {
+            for (const auto& pName : facts_.paramNames) {
+                if (pName.empty() || scope_.isCell(pName)) continue;
+                if (const auto it = scope_.env.find(pName);
+                    it != scope_.env.end() && it->second.isDynamicNumOrUndef()) {
+                    it->second = Type::number();
+                    extraParamNames.push_back(pName);
+                }
+            }
+        }
+    }
+    if (!i.elseBody.empty()) {
+        pushMarker("else", depth + 1);
+        scopedStmtList(i.elseBody, depth + 2);
+    }
+    for (const auto& pName : extraParamNames) {
+        if (const auto it = scope_.env.find(pName);
+            it != scope_.env.end() && it->second.is(TypeKind::Number)) {
+            it->second = Type::dynamicNumOrUndef();
+        }
+    }
+    scope_.env = joinEnv(thenEnv, scope_.env);
+    recordMerge(i, scope_.env);
+}
+
+Type FlowAnalyzer::unary(const ast::Unary& u) {
+    const Type operand = exprForOperator(*u.operand);
+    const Type result = unaryResult(u.op, operand);
+    if (u.op == ast::UnaryOp::PreInc || u.op == ast::UnaryOp::PreDec ||
+        u.op == ast::UnaryOp::PostInc || u.op == ast::UnaryOp::PostDec) {
+        if (const auto* id = ast::exactAs<const ast::Ident*>(u.operand.get())) {
+            assign(id->name, result);
+        } else if (const auto* m = ast::exactAs<const ast::MemberAccess*>(u.operand.get())) {
+            if (!m->isPrivate) {
+                notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic(),
+                                  result);
+            }
+        }
+    }
+    return result;
+}
+
+Type FlowAnalyzer::binary(const ast::Binary& b) {
+    if (b.op == ast::BinaryOp::Assign) {
+        const Type rhs = expr(*b.rhs);
+        if (const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get())) {
+            assign(id->name, rhs);
+        } else {
+            expr(*b.lhs);
+            if (const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get())) {
+                if (!m->isPrivate) {
+                    notePropertyWrite(m->property,
+                                      lastMember_ == m ? lastMemberBase_ : Type::dynamic(), rhs);
+                    if (!m->optional) {
+                        if (const auto* clsId = ast::exactAs<const ast::Ident*>(m->object.get())) {
+                            if (mod_.ctors.isClassName(clsId->name)) {
+                                Type& slot = mod_.moduleBindings[clsId->name + "." + m->property];
+                                slot = join(slot, rhs);
+                            }
+                        }
+                    }
+                }
+            } else if (const auto* ix = ast::exactAs<const ast::IndexAccess*>(b.lhs.get())) {
+                if (const auto* arrId = ast::exactAs<const ast::Ident*>(ix->object.get())) {
+                    if (const auto dictIt = scope_.dictElemTypes.find(arrId->name);
+                        dictIt != scope_.dictElemTypes.end()) {
+                        if (rhs.is(TypeKind::Object) && !rhs.identityOnly() &&
+                            rhs.shapeClass() != kNoShapeClass &&
+                            mod_.result->classLayouts.byShapeClass(rhs.shapeClass()) == nullptr) {
+                            dictIt->second = join(dictIt->second, rhs);
+                        } else if (!rhs.is(TypeKind::Never)) {
+                            dictIt->second = Type::dynamic();
+                        }
+                    }
+                    if (scope_.env.count(arrId->name) != 0 || scope_.cells.count(arrId->name) != 0) {
+                        const Type arrT = lookup(arrId->name);
+                        if (arrT.is(TypeKind::Array) &&
+                            (arrT.arrayElemClass() != kNoShapeClass || arrT.arrayElementsUndecided())) {
+                            Type elemArr = Type::array();
+                            if (rhs.is(TypeKind::Never)) {
+                                elemArr = Type::arrayOfNever();
+                            } else if (rhs.is(TypeKind::Object) && rhs.shapeClass() != kNoShapeClass) {
+                                if (mod_.arrayElemShapeClasses.insert(rhs.shapeClass()).second) {
+                                    ++mod_.persistentWrites;
+                                }
+                                elemArr = Type::arrayOfObject(rhs.shapeClass());
+                            }
+                            const Type updated = join(arrT, elemArr);
+                            if (updated != arrT) assign(arrId->name, updated);
+                        }
+                    }
+                }
+            }
+        }
+        return rhs;
+    }
+    if (ast::isCompoundAssignOp(b.op)) {
+        const ast::BinaryOp plain = ast::compoundAssignBase(b.op);
+        const Type rhs = exprForOperator(*b.rhs);
+        const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get());
+        const Type current = id != nullptr ? lookup(id->name) : exprForOperator(*b.lhs);
+        const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get());
+        const Type receiver =
+            (m != nullptr && lastMember_ == m) ? lastMemberBase_ : Type::dynamic();
+        const Type result = compoundResult(plain, current, rhs);
+        if (m != nullptr && !m->isPrivate) {
+            notePropertyWrite(m->property, receiver, result);
+        }
+        if (id != nullptr) assign(id->name, result);
+        return result;
+    }
+    if (b.op == ast::BinaryOp::LogicalAnd || b.op == ast::BinaryOp::LogicalOr ||
+        b.op == ast::BinaryOp::NullishCoalescing) {
+        const Type l = expr(*b.lhs);
+        const Env entry = scope_.env;
+        const Type r = expr(*b.rhs);
+        scope_.env = joinEnv(entry, scope_.env);
+        return join(l, r);
+    }
+    if (b.op == ast::BinaryOp::Comma) {
+        const Type l = expr(*b.lhs);
+        const Type r = expr(*b.rhs);
+        return binaryResult(b.op, l, r);
+    }
+    const Type l = exprForOperator(*b.lhs);
+    const Type r = exprForOperator(*b.rhs);
+    return binaryResult(b.op, l, r);
 }
 
 }  // namespace bronze::types

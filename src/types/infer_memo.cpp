@@ -105,7 +105,8 @@ void InferMemo::noteOuterName(std::string_view name, uint32_t level, Type t) {
 }
 
 void InferMemo::noteBinding(std::string_view name, bool present, Type t) {
-    note(factKey(FactKind::Binding, intern(name), 0), FactValue{t, present ? 1u : 0u});
+    const uint32_t tag = t.is(TypeKind::Never) ? (present ? 2u : 0u) : (present ? 1u : 0u);
+    note(factKey(FactKind::Binding, intern(name), 0), FactValue{t, tag});
 }
 
 void InferMemo::noteField(ShapeClassId cls, std::string_view field, Type fieldType, bool clean) {
@@ -130,6 +131,14 @@ void InferMemo::noteCtor(uint32_t index, uint32_t version, bool poisoned) {
          FactValue{Type::never(), (uint64_t{version} << 1) | (poisoned ? 1u : 0u)});
 }
 
+void InferMemo::noteClassReach(uint32_t index, uint32_t version) {
+    note(factKey(FactKind::ClassReach, index, 0), FactValue{Type::never(), version});
+}
+
+void InferMemo::noteObjectLitTable(uint32_t version) {
+    note(factKey(FactKind::ObjectLitTable, 0, 0), FactValue{Type::never(), version});
+}
+
 void InferMemo::noteOuterWrite(std::string_view name, uint32_t level, Type t) {
     frames_.back().outerWrites.push_back(OuterWrite{intern(name), level, t});
 }
@@ -149,9 +158,12 @@ void InferMemo::apply(ModuleContext& mod, const Contribution& c) {
             slot = join(slot, c.t);
             break;
         }
+        case Contrib::FnReached:
+            mod.functions[c.index].observedReached = true;
+            break;
         case Contrib::MethodParam: {
             Type& slot = mod.methods.methods()[c.index].observedParams[c.param];
-            slot = join(slot, c.t);
+            slot = joinParam(slot, c.t);
             break;
         }
         case Contrib::MethodShape: {
@@ -170,14 +182,27 @@ void InferMemo::apply(ModuleContext& mod, const Contribution& c) {
         case Contrib::MethodReached:
             mod.methods.methods()[c.index].observedReached = true;
             break;
-        case Contrib::SetterReached:
-            mod.methods.setters()[c.index].observedReached = true;
-            break;
-        case Contrib::CtorParam: {
-            Type& slot = mod.ctors.ctors()[c.index].observedParams[c.param];
-            slot = join(slot, c.t);
+        case Contrib::SetterReached: {
+            auto& s = mod.methods.setters()[c.index];
+            s.observedReached = true;
+            if (!s.isStatic || s.className.empty()) {
+                s.observedParam = join(s.observedParam, c.t);
+            }
             break;
         }
+        case Contrib::SetterReturn: {
+            auto& s = mod.methods.setters()[c.index];
+            s.observedReturn = join(s.observedReturn, c.t);
+            break;
+        }
+        case Contrib::CtorParam: {
+            Type& slot = mod.ctors.ctors()[c.index].observedParams[c.param];
+            slot = joinParam(slot, c.t);
+            break;
+        }
+        case Contrib::ClassReached:
+            mod.ctors.classReach()[c.index].observedReached = true;
+            break;
     }
 }
 
@@ -196,12 +221,22 @@ InferMemo::FactValue InferMemo::current(const ModuleContext& mod, const Scope* p
             return FactValue{t, level};
         }
         case FactKind::Binding: {
+            if (!mod.auditSettled && mod.lazyModuleVars.count(names_[a]) != 0 &&
+                mod.walkedModuleVars.count(names_[a]) == 0) {
+                return FactValue{Type::never(),
+                                 mod.reachedModuleVars.count(names_[a]) != 0 ? 2u : 0u};
+            }
             const auto it = mod.moduleBindings.find(names_[a]);
             if (it == mod.moduleBindings.end()) return FactValue{Type::dynamic(), 0};
             return FactValue{it->second, 1};
         }
         case FactKind::Field: {
             const std::string& field = names_[operandB(fact.key)];
+            if (mod.result->classLayouts.byShapeClass(a) == nullptr) {
+                const bool elemClean = mod.arrayElemShapeClasses.count(a) != 0 &&
+                                       mod.fieldAudit.objectLitFieldClean(a, field);
+                return FactValue{mod.objectLitFieldType(a, field), elemClean ? 1u : 0u};
+            }
             const Type t = mod.result->classLayouts.fieldTypeOf(a, field);
             return FactValue{t, mod.fieldAudit.numberCleanFor(a, field) ? 1u : 0u};
         }
@@ -219,6 +254,10 @@ InferMemo::FactValue InferMemo::current(const ModuleContext& mod, const Scope* p
             return FactValue{Type::never(), (uint64_t{c.version} << 1) |
                                                 (mod.ctorPoison.poisons(c.className) ? 1u : 0u)};
         }
+        case FactKind::ClassReach:
+            return FactValue{Type::never(), mod.ctors.classReach()[a].version};
+        case FactKind::ObjectLitTable:
+            return FactValue{Type::never(), mod.objectLitTableVersion};
     }
     return FactValue{Type::dynamic(), ~uint64_t{0}};
 }

@@ -52,23 +52,28 @@ struct FunctionOutcome;
 class InferMemo {
 public:
     enum class FactKind : uint8_t {
-        OuterName,  // a name resolved through the enclosing functions' cells
-        Binding,    // ModuleContext::moduleBindings
-        Field,      // the harvest's type and the audit's verdict for one field
-        Function,   // a module function's signature
-        Method,     // a class method's signature and poison
-        Setter,     // a class setter's reachability version
-        Ctor,       // a constructor's signature and poison
+        OuterName,   // a name resolved through the enclosing functions' cells
+        Binding,     // ModuleContext::moduleBindings
+        Field,       // the harvest's type and the audit's verdict for one field
+        Function,    // a module function's signature
+        Method,      // a class method's signature and poison
+        Setter,      // a class setter's reachability version
+        Ctor,        // a constructor's signature and poison
+        ClassReach,  // whether a named class has been reached/constructed
+        ObjectLitTable,  // module-scope object literal method/setter/var tables
     };
     enum class Contrib : uint8_t {
         FnParam,
+        FnReached,
         MethodParam,
         MethodShape,
         MethodReturn,
         MethodSkipped,
         MethodReached,
         SetterReached,
+        SetterReturn,
         CtorParam,
+        ClassReached,
     };
 
     struct FactValue {
@@ -117,6 +122,8 @@ public:
     void noteMethod(uint32_t index, uint32_t version, bool poisoned);
     void noteSetter(uint32_t index, uint32_t version);
     void noteCtor(uint32_t index, uint32_t version, bool poisoned);
+    void noteClassReach(uint32_t index, uint32_t version);
+    void noteObjectLitTable(uint32_t version);
 
     // ---- effects -------------------------------------------------------------
 

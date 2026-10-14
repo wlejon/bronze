@@ -403,6 +403,7 @@ void Lowerer::emitTypedElemSet(Value objBoxed, Value idxF64, Value valF64, uint3
     inst.result = il::kNoValue;
     inst.operands = {objBoxed.id, idxF64.id, valF64.id};
     inst.immI32 = static_cast<int32_t>(elemKind);
+    inst.keyIndex = static_cast<uint32_t>(strictFlag());
     emitInst(ilFn, inst);
 }
 

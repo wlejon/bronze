@@ -262,7 +262,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                         folded = defInst.operands[0];
                     }
                 }
-                if (folded == il::kNoValue) {
+                if (folded == il::kNoValue && inst.rawUnbox) {
                     for (const auto& entry : unboxTable) {
                         if (entry.boxed == src && entry.type == inst.type &&
                             entry.rawUnbox == inst.rawUnbox &&
@@ -279,8 +279,10 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                     changed = true;
                     continue;
                 }
-                unboxTable.push_back(
-                    {src, inst.type, inst.rawUnbox, inst.nullishUnbox, inst.result});
+                if (inst.rawUnbox) {
+                    unboxTable.push_back(
+                        {src, inst.type, inst.rawUnbox, inst.nullishUnbox, inst.result});
+                }
                 ++i;
                 continue;
             }
@@ -529,6 +531,19 @@ bool hoistLoopInvariantProps(il::Module& module) {
                 }
             }
             if (fnTouchesReflection[f]) break;
+        }
+        if (fnTouchesReflection[f]) {
+            for (const auto& blk : fn.blocks) {
+                for (const auto& inst : blk.instructions) {
+                    if ((inst.op == il::Op::Box && inst.boxType == il::Type::Str &&
+                         inst.operands.empty()) ||
+                        inst.op == il::Op::PropSet) {
+                        if (inst.keyIndex < isAccessorKey.size()) {
+                            isAccessorKey[inst.keyIndex] = 1;
+                        }
+                    }
+                }
+            }
         }
     }
 

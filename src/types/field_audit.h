@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -37,6 +38,13 @@ public:
     // Whether a read of `name` off an instance of `cls` may spend a Number
     // claim: the name is clean AND no computed write reached this class.
     bool numberCleanFor(ShapeClassId cls, const std::string& name) const;
+    // Whether a read of `name` off an object-literal shape `cls` may spend a
+    // Number claim: no global or class-scoped refusal, not a builtin-owned or
+    // numeric-key-exposed name, and no non-numeric property write to `name`.
+    bool objectLitFieldClean(ShapeClassId cls, const std::string& name) const;
+    bool propertyOnlyPlainObjects(
+        const std::string& name, const std::set<ShapeClassId>& unclosedObjectLits,
+        const std::map<ShapeClassId, std::map<std::string, Type>>& objectLitFields) const;
     std::string refusalFor(const std::string& name) const;
 
     const std::map<std::string, uint32_t>& globalRefusals() const { return globalRefusals_; }

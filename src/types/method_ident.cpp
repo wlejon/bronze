@@ -37,10 +37,21 @@ bool isNonClassPropertyAccess(const ast::Expr* object, const std::string& proper
             "tracks", "curves", "points", "faces", "bones", "lights", "cameras",
             "materials", "geometries", "textures", "objects", "children", "parents",
             "coords", "weights", "times", "samples", "table", "map", "dict",
-            "src0", "src1", "dst0", "dst1", "e", "me", "ae", "be", "pe"
+            "src0", "src1", "dst0", "dst1", "e", "me", "ae", "be", "pe",
+            "values", "boneList"
         };
         for (const char* aid : kNonClassArrayIdents) {
             if (id->name == aid) return true;
+        }
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(object)) {
+        if (mem->property == "prototype") {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(mem->object.get())) {
+                if (id->name == "Array" || id->name == "Object" || id->name == "Function" ||
+                    id->name == "String" || id->name == "Number") {
+                    return true;
+                }
+            }
         }
     }
     if (dynamic_cast<const ast::ArrayLit*>(object) ||
@@ -218,7 +229,18 @@ public:
         if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.callee.get())) {
             if (m->property == "call" || m->property == "apply" || m->property == "bind") {
                 if (const auto* inner = dynamic_cast<const ast::MemberAccess*>(m->object.get())) {
-                    out_.addDeclarations(table_, inner->property, "reached through .call/.apply/.bind");
+                    bool isArrayPushApply = false;
+                    if (m->property == "apply" && inner->property == "push" && !n.args.empty()) {
+                        const auto* recvId = dynamic_cast<const ast::Ident*>(inner->object.get());
+                        const auto* arg0Id = dynamic_cast<const ast::Ident*>(n.args[0].get());
+                        if (recvId != nullptr && arg0Id != nullptr && recvId->name == arg0Id->name) {
+                            isArrayPushApply = true;
+                        }
+                    }
+                    if (!isArrayPushApply &&
+                        !isNonClassPropertyAccess(inner->object.get(), inner->property)) {
+                        out_.addDeclarations(table_, inner->property, "reached through .call/.apply/.bind");
+                    }
                     inner->object->accept(*this);
                     return;
                 }
@@ -244,10 +266,54 @@ public:
         n.callee->accept(*this);
     }
 
+    void visit(const ast::ClassDecl& n) override {
+        if (n.superClass) consume(*n.superClass);
+        const std::string savedClass = currentClass_;
+        for (const auto& m : n.methods) {
+            currentClass_ = m.isStatic ? std::string() : n.name;
+            if (m.keyExpr) consume(*m.keyExpr);
+            if (m.fn) Walker::visit(*m.fn);
+            if (m.init) consume(*m.init);
+        }
+        currentClass_ = savedClass;
+    }
+
+    void visit(const ast::ClassExpr& n) override {
+        if (n.superClass) consume(*n.superClass);
+        const std::string savedClass = currentClass_;
+        for (const auto& m : n.methods) {
+            currentClass_ = m.isStatic ? std::string() : n.name;
+            if (m.keyExpr) consume(*m.keyExpr);
+            if (m.fn) Walker::visit(*m.fn);
+            if (m.init) consume(*m.init);
+        }
+        currentClass_ = savedClass;
+    }
+
+    void visit(const ast::FunctionDecl& n) override {
+        const std::string savedClass = currentClass_;
+        currentClass_.clear();
+        Walker::visit(n);
+        currentClass_ = savedClass;
+    }
+
+    void visit(const ast::FunctionExpr& n) override {
+        const std::string savedClass = currentClass_;
+        if (!n.isArrow) currentClass_.clear();
+        Walker::visit(n);
+        currentClass_ = savedClass;
+    }
+
     void visit(const ast::MemberAccess& n) override {
         if (!consumed_) {
             if (table_.isMethodName(n.property) && !isNonClassPropertyAccess(n.object.get(), n.property)) {
-                out_.addDeclarations(table_, n.property, "read as a value rather than called");
+                if (dynamic_cast<const ast::ThisExpr*>(n.object.get()) != nullptr &&
+                    !currentClass_.empty()) {
+                    out_.addSubtree(table_, currentClass_, n.property,
+                                    "read as a value rather than called");
+                } else {
+                    out_.addDeclarations(table_, n.property, "read as a value rather than called");
+                }
             }
         }
         consume(*n.object);
@@ -328,6 +394,7 @@ private:
     const LiteralNameScan& names_;
     MethodPoison& out_;
     bool consumed_ = false;
+    std::string currentClass_;
 };
 
 const std::string kNoReason;
@@ -460,6 +527,28 @@ private:
     const LiteralNameScan& literalNames_;
 };
 
+class TopLevelObjectLitScan final : public Walker {
+public:
+    using Walker::visit;
+    std::vector<std::pair<std::string, const ast::FunctionExpr*>> found;
+
+    void visit(const ast::FunctionDecl&) override {}
+    void visit(const ast::FunctionExpr&) override {}
+    void visit(const ast::ClassDecl&) override {}
+    void visit(const ast::ClassExpr&) override {}
+
+    void visit(const ast::ObjectLit& n) override {
+        for (const auto& p : n.props) {
+            if (!p.keyExpr && p.accessor == ast::AccessorKind::None && !p.key.empty()) {
+                if (const auto* f = dynamic_cast<const ast::FunctionExpr*>(p.value.get())) {
+                    found.emplace_back(p.key, f);
+                }
+            }
+        }
+        Walker::visit(n);
+    }
+};
+
 void MethodTable::build(const ast::Module& module) {
     LiteralNameScan literalNames;
     literalNames.visit(module);
@@ -483,6 +572,35 @@ void MethodTable::build(const ast::Module& module) {
                 s.fn = m.fn.get();
                 s.className = cls.name;
                 s.propName = m.name;
+                s.plainParams = paramsArePlain(m.fn->params);
+                const uint32_t sIdx = static_cast<uint32_t>(setters_.size());
+                setters_.push_back(std::move(s));
+                setterByNode_[m.fn.get()] = sIdx;
+                continue;
+            }
+            if (m.fn != nullptr && !m.isStatic && !m.isStaticBlock && !m.isField &&
+                !m.isConstructor && !m.computed() && !m.name.empty() &&
+                m.accessor == ast::AccessorKind::Getter) {
+                if (m.fn->body.size() == 1) {
+                    if (const auto* ret = dynamic_cast<const ast::ReturnStmt*>(m.fn->body[0].get())) {
+                        if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(ret->value.get())) {
+                            if (!mem->isPrivate && !mem->optional &&
+                                dynamic_cast<const ast::ThisExpr*>(mem->object.get()) != nullptr) {
+                                getterBackingField_[{cls.name, m.name}] = mem->property;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if (m.fn != nullptr && m.isStatic && !m.isStaticBlock && !m.isField &&
+                !m.isConstructor && !m.computed() && !m.name.empty() &&
+                m.accessor == ast::AccessorKind::None) {
+                SetterInfo s;
+                s.fn = m.fn.get();
+                s.className = cls.name;
+                s.propName = m.name;
+                s.isStatic = true;
                 const uint32_t sIdx = static_cast<uint32_t>(setters_.size());
                 setters_.push_back(std::move(s));
                 setterByNode_[m.fn.get()] = sIdx;
@@ -494,10 +612,7 @@ void MethodTable::build(const ast::Module& module) {
             info.className = cls.name;
             info.methodName = m.name;
             info.plainParams = paramsArePlain(m.fn->params);
-            info.reached = !info.plainParams || info.methodName == "toString" ||
-                           info.methodName == "valueOf" ||
-                           (info.methodName == "toJSON" &&
-                            (memberNames_.count("toJSON") != 0 || memberNames_.count("stringify") != 0));
+            info.reached = info.methodName == "toString" || info.methodName == "valueOf";
             const size_t paramCount = m.fn->params.size();
             info.signature.params.assign(paramCount, Type::never());
             info.observedParams.assign(paramCount, Type::never());
@@ -530,6 +645,20 @@ void MethodTable::build(const ast::Module& module) {
         const auto parent = classes_.find(entry.second.superName);
         if (parent == classes_.end()) continue;
         parent->second.children.push_back(entry.first);
+    }
+
+    TopLevelObjectLitScan objScan;
+    objScan.visit(module);
+    for (const auto& [propName, fn] : objScan.found) {
+        if (setterByNode_.count(fn) != 0) continue;
+        SetterInfo s;
+        s.fn = fn;
+        s.propName = propName;
+        s.isStatic = true;
+        s.plainParams = paramsArePlain(fn->params);
+        const uint32_t sIdx = static_cast<uint32_t>(setters_.size());
+        setters_.push_back(std::move(s));
+        setterByNode_[fn] = sIdx;
     }
 }
 
@@ -590,7 +719,19 @@ bool MethodTable::areClassesRelated(const std::string& a, const std::string& b) 
 
 bool MethodTable::isStaticMethodReachable(const std::string& /*className*/,
                                           const std::string& methodName) const {
-    return anyComputedMember_ || memberNames_.count(methodName) != 0;
+    return memberNames_.count(methodName) != 0;
+}
+
+std::string MethodTable::getterBackingField(const std::string& className,
+                                            const std::string& propName) const {
+    for (std::string cur = className; !cur.empty();) {
+        const auto it = getterBackingField_.find({cur, propName});
+        if (it != getterBackingField_.end()) return it->second;
+        const auto cIt = classes_.find(cur);
+        if (cIt == classes_.end()) break;
+        cur = cIt->second.superName;
+    }
+    return std::string();
 }
 
 void MethodTable::reachableFrom(const std::string& className, const std::string& methodName,
@@ -631,6 +772,7 @@ std::map<std::string, std::map<std::string, std::map<std::string, Type>>> Method
     std::map<std::string, std::map<std::string, std::map<std::string, Type>>> out;
     for (uint32_t i = 0; i < methods_.size(); ++i) {
         const auto& m = methods_[i];
+        if (!m.reached) continue;
         std::map<std::string, Type> params;
         for (size_t p = 0; p < m.safeParamNames.size(); ++p) {
             if (m.safeParamNames[p].empty()) continue;

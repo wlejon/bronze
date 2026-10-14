@@ -227,7 +227,7 @@ TEST_CASE("an accessor refuses the field read on classes with the accessor") {
         "function read(d) { let s = d.x; for (let i = 0; i < 2; i++) s = d.x; return s; }\n"
         "console.log(read(make(1)));\n");
     const auto& r = *inferred.result;
-    CHECK(r.fieldAudit.namesClean == 1);
+    CHECK(r.fieldAudit.namesClean == 2);
     CHECK(r.fieldAudit.refusedByClass >= 1);
     CHECK(r.provenFieldReads.size() == 1);
     // The counter says how many; this says which, and by which of the four
@@ -396,3 +396,23 @@ TEST_CASE("homogeneous array element class inference propagates through push, in
     CHECK(res.provenFieldReads.size() >= 2);
 }
 
+TEST_CASE("homogeneous object-literal array elements prove numeric fields") {
+    const auto inferred = infer(
+        "function sumPoints(n) {\n"
+        "  const pts = [];\n"
+        "  for (let i = 0; i < n; i++) {\n"
+        "    pts.push({ x: i * 1.5, y: i * 2.5, z: i * 3.5 });\n"
+        "  }\n"
+        "  let s = 0;\n"
+        "  for (let i = 0; i < n; i++) {\n"
+        "    const p = pts[i];\n"
+        "    s += p.x + p.y + p.z;\n"
+        "  }\n"
+        "  return s;\n"
+        "}\n"
+        "console.log(sumPoints(10));\n");
+    const auto& res = *inferred.result;
+    CHECK(res.fieldAudit.numberFieldReads == 3);
+    CHECK(res.fieldAudit.refusedByAudit == 0);
+    CHECK(res.provenFieldReads.size() == 3);
+}

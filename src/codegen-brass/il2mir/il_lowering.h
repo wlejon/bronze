@@ -110,6 +110,10 @@ private:
                                    std::unordered_map<uint32_t, Value*>& val_map,
                                    const std::unordered_map<uint32_t, BasicBlock*>& block_map,
                                    uint32_t* cont_counter);
+    bool try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
+                                   std::unordered_map<uint32_t, Value*>& val_map,
+                                   const std::unordered_map<uint32_t, BasicBlock*>& block_map,
+                                   uint32_t* cont_counter);
     struct DenseArrayProof {
         uint32_t arr_id = UINT32_MAX;
         uint32_t max_index = 0;
@@ -133,6 +137,7 @@ private:
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
     std::unordered_map<uint32_t, DenseArrayCursor> dense_array_cursors_;
     std::unordered_map<uint32_t, uint32_t> single_block_propset_use_;
+    std::unordered_map<uint32_t, uint32_t> value_use_counts_;
     Value* coro_frame_val_ = nullptr;
     uint32_t coro_suspend_count_ = 0;
     // AST function `i`'s body, and its `__wrapper_` (a no-op for a function
