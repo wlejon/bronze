@@ -450,6 +450,14 @@ static bool isEpochActiveOnStack(const ThreadModuleState& s, uint64_t epoch) noe
     return false;
 }
 
+static bool isDynamicModuleEpoch(const ThreadModuleState& s, uint64_t epoch) noexcept {
+    if (epoch == 0) return false;
+    for (const auto& mod : s.dynamicModules) {
+        if (mod->epoch == epoch) return true;
+    }
+    return false;
+}
+
 static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
     if (!g_threadModules) return;
     ThreadModuleState& s = *g_threadModules;
@@ -470,12 +478,12 @@ static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
         }
     }
     for (auto& entry : s.functionSingletons) {
-        if (!full || isEpochActiveOnStack(s, entry.epoch)) {
+        if (!full || !isDynamicModuleEpoch(s, entry.epoch)) {
             t.visit(reinterpret_cast<uint64_t*>(&entry.value));
         }
     }
     for (const auto& span : s.moduleFnSlots) {
-        if (full && !isEpochActiveOnStack(s, span.epoch)) continue;
+        if (full && isDynamicModuleEpoch(s, span.epoch)) continue;
         for (uint64_t i = 0; i < span.count; ++i) {
             if (span.cells[i].code) {
                 t.visit(reinterpret_cast<uint64_t*>(&span.cells[i].value));
@@ -483,13 +491,13 @@ static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
         }
     }
     for (const auto& span : s.moduleValueCells) {
-        if (full && !isEpochActiveOnStack(s, span.epoch)) continue;
+        if (full && isDynamicModuleEpoch(s, span.epoch)) continue;
         for (uint64_t i = 0; i < span.count; ++i) {
             t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
         }
     }
     for (const auto& span : s.globalCacheSpans) {
-        if (full && !isEpochActiveOnStack(s, span.epoch)) continue;
+        if (full && isDynamicModuleEpoch(s, span.epoch)) continue;
         for (uint64_t i = 0; i < span.count; ++i) {
             t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
         }
