@@ -85,7 +85,7 @@ void Realm::initGlobalObject(Value customGlobal) {
         // property disagree with the name on every realm built after the
         // registration, which is one object called `Math` in a program and
         // another one in the realm beside it.
-        if (entry.first != "performance") {
+        if (!runtime::rtHostShadowsBuiltin(entry.first)) {
             if (Value builtin = Value::fromUndefined();
                 runtime::rtResolveBuiltinGlobal(entry.first, builtin)) {
                 continue;
@@ -201,10 +201,11 @@ void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value) {
     if (g_liveRealms.empty()) return;
     if (name == "globalThis") return;
     // The bare-name ladder's order, mirrored exactly (rt_state.cpp
-    // `bronze_global_get`): `performance` is the one builtin a host may shadow,
-    // and every other builtin wins over the registry — so writing one here
-    // would make `globalThis.Math` and bare `Math` two different objects.
-    if (name != "performance") {
+    // `bronze_global_get`): the builtins a host may shadow
+    // (rtHostShadowsBuiltin: `performance`, `Intl`) take the host's value, and
+    // every other builtin wins over the registry — so writing one here would
+    // make `globalThis.Math` and bare `Math` two different objects.
+    if (!runtime::rtHostShadowsBuiltin(name)) {
         if (Value builtin = Value::fromUndefined();
             runtime::rtResolveBuiltinGlobal(name, builtin)) {
             return;

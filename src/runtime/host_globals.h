@@ -33,6 +33,17 @@ void rtRegisterHostGlobal(const std::string& name, Value value);
 // `undefined`, and why this is not "return undefined for a miss".
 bool rtHostGlobalLookup(const std::string& name, Value& out);
 
+// The builtins a host's registration REPLACES rather than loses to: namespaces
+// compiled code calls into but is never optimized against, where a host may
+// carry the fuller implementation. `performance` (a browser host's clock: bro's
+// follows virtual time in headless) and `Intl` (bronze's own is a minimal
+// subset; bro registers the complete one: NumberFormat grouping, formatToParts,
+// PluralRules, RelativeTimeFormat, ...). `bronze_global_get` and the embed
+// API's `globalValue` both ask this first, so they cannot answer differently.
+inline bool rtHostShadowsBuiltin(const std::string& name) {
+    return name == "performance" || name == "Intl";
+}
+
 // ---- CreateDynamicFunction, delegated ---------------------------------------
 //
 // `new Function(src)` is out of scope for an AOT compiler and the four dynamic

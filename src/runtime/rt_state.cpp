@@ -863,7 +863,7 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
     if (keyStr == "globalThis") {
         return rtGlobalThisObject().rawBits();
     }
-    if (keyStr == "performance") {
+    if (rtHostShadowsBuiltin(keyStr)) {
         if (Value host = Value::fromUndefined(); rtHostGlobalLookup(keyStr, host)) {
             return host.rawBits();
         }
@@ -913,7 +913,7 @@ uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t c
     if (keyStr == "globalThis") {
         resolved = rtGlobalThisObject();
         cacheable = false;
-    } else if (keyStr == "performance" && rtHostGlobalLookup(keyStr, resolved)) {
+    } else if (rtHostShadowsBuiltin(keyStr) && rtHostGlobalLookup(keyStr, resolved)) {
         cacheable = true;
     } else if (rtResolveBuiltinGlobal(keyStr, resolved)) {
         cacheable = true;
