@@ -56,6 +56,12 @@ SpecFeedback::SiteRecord SpecFeedback::site(uint32_t site) const {
     return {kinds_[site], misses, fns_[site], tags_[site]};
 }
 
+std::optional<SpecKind> SpecFeedback::kind_of(uint32_t site) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (site >= kinds_.size()) return std::nullopt;
+    return kinds_[site];
+}
+
 uint32_t* SpecFeedback::counter(uint32_t site) {
     std::lock_guard<std::mutex> lock(mutex_);
     return site < misses_.size() ? &misses_[site] : nullptr;
@@ -126,6 +132,45 @@ void SpecSiteEmitter::begin_function(bool can_deopt, std::string_view name) {
     pending_.clear();
 }
 
+void SpecSiteEmitter::begin_replay(uint32_t first, uint32_t count) {
+    replaying_ = true;
+    replay_ok_ = true;
+    replay_first_ = first;
+    replay_count_ = count;
+    taken_ = 0;
+}
+
+bool SpecSiteEmitter::end_replay() {
+    replaying_ = false;
+    return replay_ok_ && taken_ == replay_count_;
+}
+
+void SpecSiteEmitter::begin_recording() {
+    taken_ = 0;
+    first_taken_ = 0;
+    consecutive_ = true;
+}
+
+uint32_t SpecSiteEmitter::take_site(SpecKind kind, std::string_view tag) {
+    if (replaying_) {
+        // A site past the first build's, or of another kind: the body is
+        // not the one built first, which end_replay reports.
+        const uint32_t i = taken_++;
+        if (i >= replay_count_) {
+            replay_ok_ = false;
+            return feedback_->add_site(kind, fn_name_, tag);
+        }
+        const uint32_t site = replay_first_ + i;
+        if (feedback_->kind_of(site) != kind) replay_ok_ = false;
+        return site;
+    }
+    const uint32_t site = feedback_->add_site(kind, fn_name_, tag);
+    if (taken_ == 0) first_taken_ = site;
+    else if (site != first_taken_ + taken_) consecutive_ = false;
+    ++taken_;
+    return site;
+}
+
 std::optional<uint32_t> SpecSiteEmitter::peek_profile(SpecKind kind, std::string_view tag) const {
     if (!profile_) return std::nullopt;
     auto it = occurrences_.find(spec_site_key({}, kind, tag));
@@ -171,7 +216,7 @@ void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, Basi
     uint32_t* count = nullptr;
     if (profile_ && !feedback_) apply_profile(b, hit, slow, kind, tag);
     if (feedback_) {
-        const uint32_t site = feedback_->add_site(kind, fn_name_, tag);
+        const uint32_t site = take_site(kind, tag);
         count = feedback_->counter(site);
         if (can_deopt_) {
             // The label names no function: the guard has no exit stub, only

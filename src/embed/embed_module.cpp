@@ -22,6 +22,7 @@
 #include "runtime/profile.h"
 #include "runtime/rt_state.h"
 #include "runtime/sampler.h"
+#include <brass/mir/module.hpp>
 
 namespace bronze {
 extern std::atomic<uint64_t> g_shapeTransitions;
@@ -106,6 +107,8 @@ size_t releaseIdleHeapMemory() {
     return heap.gc().release_unused_young();
 }
 
+size_t releaseIdleCompiledBodies() { return brass::Module::release_idle_bodies(); }
+
 uint64_t relocationEpoch() { return runtime::rtHeap().relocation_epoch(); }
 
 void bindThreadHeap() { (void)runtime::rtHeap(); }
@@ -129,6 +132,15 @@ RuntimeTelemetry getRuntimeTelemetry() {
     tel.gcFullCollections = heap.full_collection_count();
     tel.shapeTransitions = bronze::g_shapeTransitions.load(std::memory_order_relaxed);
     return tel;
+}
+
+CompiledBodyStats getCompiledBodyStats() {
+    const brass::Module::BodyStats bodies = brass::Module::body_stats();
+    CompiledBodyStats stats;
+    stats.built = bodies.built;
+    stats.released = bodies.released;
+    stats.liveBytes = bodies.live_bytes;
+    return stats;
 }
 
 }  // namespace bronze::embed

@@ -142,23 +142,45 @@ private:
     uint32_t coro_suspend_count_ = 0;
     // AST function `i`'s body, and its `__wrapper_` (a no-op for a function
     // that has none).
-    bool lower_body(size_t i, Module& mod);
+    // `target`, when given, is the Function to build into: the entry is
+    // renamed after the module is lowered (BrassBackend), so a body built
+    // again cannot find it by its lowering name.
+    bool lower_body(size_t i, Module& mod, Function* target = nullptr);
     bool lower_wrapper(size_t i, Module& mod);
     // Whether AST function `i` is built up front even with lazy bodies.
     bool must_lower_eagerly(size_t i) const;
-    // The lazy functions: AST index, and whether it is the wrapper.
+    // The bodies the module's provider builds (the lazy functions, and an
+    // entry built up front in its own arena): AST index, whether it is the
+    // wrapper, and what its first build took. brass may release a body once
+    // its code exists and ask for it again (Module::release_bodies), and
+    // the body built again must be the first one: the same speculation
+    // sites (whose ids are its guards' resume ids, and whose counters its
+    // code increments), so a deopt from code compiled off either build
+    // finds its guard. BRONZE_MIR_REBUILD_CHECK=1 also keeps each first
+    // build's text and fails a build again that differs from it.
     struct LazyBody {
         size_t index = 0;
         bool wrapper = false;
+        bool built = false;
+        uint32_t first_site = 0;
+        uint32_t sites = 0;
+        std::string first_text;
     };
     std::unordered_map<const Function*, LazyBody> lazy_bodies_;
+    // Builds `fn`'s body (entry `lazy` of lazy_bodies_), first or again.
+    bool build_provided_body(Function& fn, LazyBody& lazy);
+    // Whether the entry can live in its own arena and be released: one
+    // starting or suspending no coroutine (brass lowers those once, over the
+    // module as it starts).
+    bool entry_rebuildable(size_t i) const;
     // Per AST function: its MIR name, empty for a duplicate not defined.
     std::vector<std::string> resolved_names_;
     // What each wrapper's arity and closure-ness come from (CreateFunc
     // sites anywhere in the module).
     std::unordered_map<std::string, uint32_t> callee_param_counts_;
     std::unordered_set<std::string> closure_functions_;
-    bool lower_function(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name);
+    bool lower_function(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name,
+                        Function* target = nullptr);
     bool emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name, uint32_t declared_param_count, bool is_closure = false);
     bool lower_instruction(const BronzeInstruction& inst_ast, Builder& b, Function* fn,
                            std::unordered_map<uint32_t, Value*>& val_map,

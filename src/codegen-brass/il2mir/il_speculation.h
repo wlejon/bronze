@@ -70,6 +70,8 @@ public:
     // (il_spec_profile.h).
     uint32_t add_site(SpecKind kind, std::string_view fn = {}, std::string_view tag = {});
     uint32_t* counter(uint32_t site);
+    // Site `site`'s kind; nullopt for an id no site has.
+    std::optional<SpecKind> kind_of(uint32_t site) const;
     // Whether tier 2 should arm site `site`'s guard.
     bool should_speculate(uint32_t site) const;
     // Site `site`'s guard failed often enough that tier 2 dropped the code
@@ -117,6 +119,20 @@ public:
     // Starts a function; `can_deopt` false lowers every site as its branch.
     // `name` is its profile name (kSpecEntryName for the entry).
     void begin_function(bool can_deopt, std::string_view name = {});
+    // A body built again (brass Module::release_bodies) must be the body
+    // its code was compiled from: its sites are the ones its first build
+    // added, ids and counters alike, not new ones. Between begin_replay and
+    // end_replay the emitter hands out sites first..first+count in order
+    // instead of adding sites; end_replay says whether exactly those were
+    // taken. Outside a replay, sites_taken() counts the sites added since
+    // begin_recording, and first_site_taken() the first of them.
+    void begin_replay(uint32_t first, uint32_t count);
+    bool end_replay();
+    void begin_recording();
+    uint32_t sites_taken() const noexcept { return taken_; }
+    uint32_t first_site_taken() const noexcept { return first_taken_; }
+    // Whether the sites added since begin_recording have consecutive ids.
+    bool sites_consecutive() const noexcept { return consecutive_; }
     // Ends the current block with the site's branch to `fast` / `slow` (and
     // its guard, where the function can deopt), then leaves the builder at
     // the end of `slow`, after its miss count. `slow` must be new and empty.
@@ -146,9 +162,18 @@ private:
     // renamed cold, and a megamorphic scan's `hit` made false. False when
     // the profile does not name the site.
     bool apply_profile(Builder& b, Value*& hit, BasicBlock* slow, SpecKind kind, std::string_view tag);
+    // The next site's id: added to the feedback, or the replay's next.
+    uint32_t take_site(SpecKind kind, std::string_view tag);
     SpecFeedback* feedback_ = nullptr;
     const SpecProfile* profile_ = nullptr;
     bool can_deopt_ = false;
+    bool replaying_ = false;
+    bool replay_ok_ = true;
+    bool consecutive_ = true;
+    uint32_t replay_first_ = 0;
+    uint32_t replay_count_ = 0;
+    uint32_t taken_ = 0;
+    uint32_t first_taken_ = 0;
     std::string fn_name_;
     // Per (kind, tag): how many sites of the current function came before.
     std::unordered_map<std::string, uint32_t> occurrences_;

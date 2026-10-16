@@ -72,6 +72,21 @@ add_test(NAME oracle-tiers-arm-all-stress-3 COMMAND bronze_oracle_tests "--test-
 set_tests_properties(oracle-tiers-arm-all-stress-3 PROPERTIES LABELS "oracle;jit;tiers;deopt-stress"
                      ENVIRONMENT "BRASS_DEOPT_STRESS=3;BRONZE_SPEC_ARM_KINDS=15")
 
+# The JIT and tiers cases with every MIR body released as soon as nothing
+# reads it (BRASS_RELEASE_BODIES_STRESS, brass Module::release_bodies): each
+# compile, tier-up, OSR entry and deopt after a body's first read builds it
+# again, and BRONZE_MIR_REBUILD_CHECK fails a body built again that differs
+# from its first build (il2mir/il_lowering.h, LazyBody). The JIT cases
+# release on every eighth last read, since some deopt on every call and each
+# resume reads its guard; the tiers cases release on every read, under
+# every-third deopt stress, so guards fail into bodies built again.
+add_test(NAME oracle-jit-release-stress COMMAND bronze_oracle_tests "--test-case=Oracle JIT*")
+set_tests_properties(oracle-jit-release-stress PROPERTIES LABELS "oracle;jit;release-stress"
+                     ENVIRONMENT "BRASS_RELEASE_BODIES_STRESS=8;BRONZE_MIR_REBUILD_CHECK=1")
+add_test(NAME oracle-tiers-release-stress COMMAND bronze_oracle_tests "--test-case=Oracle tiers*")
+set_tests_properties(oracle-tiers-release-stress PROPERTIES LABELS "oracle;jit;tiers;release-stress"
+                     ENVIRONMENT "BRASS_RELEASE_BODIES_STRESS=1;BRONZE_MIR_REBUILD_CHECK=1;BRASS_DEOPT_STRESS=3")
+
 # The speculation tiers_* cases run tiered with BRONZE_SPEC_PROFILE_OUT, then built with
 # `--spec-profile` on the profile the run wrote (il2mir/il_spec_profile.h):
 # the AOT program laid out by the JIT's feedback prints the pinned bytes.
@@ -88,6 +103,7 @@ set_tests_properties(oracle-spec-profile PROPERTIES LABELS "oracle;jit;tiers;spe
 set_tests_properties(oracle oracle-jit oracle-jit-tier0 oracle-jit-tier2
                      oracle-tiers oracle-tiers-deopt-stress oracle-tiers-deopt-stress-3
                      oracle-tiers-arm-all-stress-3 oracle-spec-profile
+                     oracle-jit-release-stress oracle-tiers-release-stress
                      PROPERTIES PROCESSORS 4)
 
 # Unmodified three.js r160 (tests/oracle/threejs/README.md). Its own label

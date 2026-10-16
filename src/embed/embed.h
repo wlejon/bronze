@@ -347,6 +347,13 @@ BRONZE_EMBED_API void collectGarbage();
 // The same contract as collectGarbage: Persistents survive, raw pointers die.
 BRONZE_EMBED_API size_t releaseIdleHeapMemory();
 
+// Gone idle, the compiler's half: the MIR bodies of every program's
+// functions whose code exists (bytecode or native) are dropped. A body is
+// built again from the program's lowered IL, the same as before, when a
+// tier-up, an OSR entry or a deopt next reads it. Returns the bytes
+// released; 0 while a compile is reading the program. Any thread.
+BRONZE_EMBED_API size_t releaseIdleCompiledBodies();
+
 // The collector's relocation counter: advanced by every collection that moves
 // an object, so it changes when addresses change and not merely when
 // collections complete. This
@@ -386,6 +393,16 @@ struct RuntimeTelemetry {
     uint64_t gcFullCollections{0};
 };
 BRONZE_EMBED_API RuntimeTelemetry getRuntimeTelemetry();
+
+// Every program's MIR function bodies: built (first builds and builds again),
+// released (releaseIdleCompiledBodies), and the bytes those held now keep. It
+// walks every function, so it is for a memory report, not a frame loop.
+struct CompiledBodyStats {
+    uint64_t built{0};
+    uint64_t released{0};
+    size_t liveBytes{0};
+};
+BRONZE_EMBED_API CompiledBodyStats getCompiledBodyStats();
 
 // ---- the microtask checkpoint (embed_run.cpp) ------------------------------
 //

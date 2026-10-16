@@ -14,9 +14,9 @@
 
 namespace il2mir {
 
-bool IlLowering::lower_body(size_t i, Module& mod) {
+bool IlLowering::lower_body(size_t i, Module& mod, Function* target) {
     current_fn_idx_ = i;
-    return lower_function(current_ast_->functions[i], mod, resolved_names_[i]);
+    return lower_function(current_ast_->functions[i], mod, resolved_names_[i], target);
 }
 
 bool IlLowering::lower_wrapper(size_t i, Module& mod) {
@@ -54,6 +54,80 @@ bool IlLowering::must_lower_eagerly(size_t i) const {
     return false;
 }
 
+bool IlLowering::entry_rebuildable(size_t i) const {
+    const BronzeFunction& fn_ast = current_ast_->functions[i];
+    if (fn_ast.is_coroutine_body()) return false;
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == BronzeOp::CoroStart || inst.op == BronzeOp::CoroSuspend) return false;
+        }
+    }
+    return true;
+}
+
+namespace {
+
+bool rebuildCheckEnabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("BRONZE_MIR_REBUILD_CHECK");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+
+// The first line where two printed bodies differ, for the check's report.
+std::string firstDifference(const std::string& a, const std::string& b) {
+    size_t line_start = 0;
+    size_t i = 0;
+    while (i < a.size() && i < b.size() && a[i] == b[i]) {
+        if (a[i] == '\n') line_start = i + 1;
+        ++i;
+    }
+    auto line_at = [line_start](const std::string& s) {
+        const size_t end = s.find('\n', line_start);
+        return s.substr(line_start, end == std::string::npos ? std::string::npos : end - line_start);
+    };
+    return "first build: " + line_at(a) + "\n  built again: " + line_at(b);
+}
+
+} // namespace
+
+bool IlLowering::build_provided_body(Function& fn, LazyBody& lazy) {
+    Module& mod = *fn.parent();
+    const bool again = lazy.built;
+    if (again) spec_.begin_replay(lazy.first_site, lazy.sites);
+    else spec_.begin_recording();
+    const bool ok = lazy.wrapper ? lower_wrapper(lazy.index, mod) : lower_body(lazy.index, mod, &fn);
+    const bool sites_ok = again ? spec_.end_replay() : spec_.sites_consecutive();
+    if (!ok || has_error_) return false;
+    if (!sites_ok) {
+        std::fprintf(stderr, "il2mir: '%.*s' %s\n", static_cast<int>(fn.name().size()), fn.name().data(),
+                     again ? "built again took other speculation sites than its first build"
+                           : "took speculation sites with other bodies' between them");
+        return false;
+    }
+    if (!again) {
+        lazy.built = true;
+        lazy.first_site = spec_.first_site_taken();
+        lazy.sites = spec_.sites_taken();
+    }
+    if (rebuildCheckEnabled()) {
+        // The body, without its header line: the entry is renamed after its
+        // first build (BrassBackend).
+        std::string text = brass::to_string(fn);
+        text.erase(0, text.find('\n'));
+        if (!again) {
+            lazy.first_text = std::move(text);
+        } else if (text != lazy.first_text) {
+            std::fprintf(stderr, "il2mir: '%.*s' built again differs from its first build\n  %s\n",
+                         static_cast<int>(fn.name().size()), fn.name().data(),
+                         firstDifference(lazy.first_text, text).c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
 bool IlLowering::lower_lazy_body(Function& fn) {
     const auto it = lazy_bodies_.find(&fn);
     if (it == lazy_bodies_.end()) {
@@ -61,10 +135,7 @@ bool IlLowering::lower_lazy_body(Function& fn) {
                      static_cast<int>(fn.name().size()), fn.name().data());
         return false;
     }
-    const LazyBody lazy = it->second;
-    Module& mod = *fn.parent();
-    const bool ok = lazy.wrapper ? lower_wrapper(lazy.index, mod) : lower_body(lazy.index, mod);
-    if (!ok || has_error_) return false;
+    if (!build_provided_body(fn, it->second)) return false;
     // The module's one verification pass ran before this body existed.
     if (options_.verify_lowered_module && !verify_function(fn, diag_)) return false;
     return true;

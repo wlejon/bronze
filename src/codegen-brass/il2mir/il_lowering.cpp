@@ -611,6 +611,19 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             }
             continue;
         }
+        // The entry runs once: built in its own arena, it can be released
+        // after it has run, as a lazy body is, and the provider builds it
+        // again should a deopt or a tier-up of its loops ask.
+        if (options_.lazy_bodies && resolved_names_[i] == "main" && entry_rebuildable(i)) {
+            Function* fn = mod->get_function(resolved_names_[i]);
+            if (!fn) return nullptr;
+            fn->own_body_arena();
+            LazyBody& entry = lazy_bodies_[fn];
+            entry.index = i;
+            if (!build_provided_body(*fn, entry)) return nullptr;
+            fn->note_built();
+            continue;
+        }
         if (!lower_body(i, *mod) || !lower_wrapper(i, *mod)) return nullptr;
     }
 
@@ -678,8 +691,9 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     return mod;
 }
 
-bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name) {
-    Function* fn = mod.get_function(fn_name);
+bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const std::string& fn_name,
+                                Function* target) {
+    Function* fn = target ? target : mod.get_function(fn_name);
     if (!fn) return false;
 
     module_env_regs_.clear();
