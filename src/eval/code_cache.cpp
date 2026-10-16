@@ -203,6 +203,120 @@ bool readWholeFile(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
+// What a stored artefact was built from — a cache entry's IL, or a module
+// compiled ahead of time: every source buffer the module graph produced, by
+// digest when it was read from disk (re-read and compared on use) and by its
+// text when the linker synthesized it, and the graph's non-textual
+// dependencies (modules.h, DependencyLog). Buffer 0 is the entry, recorded by
+// digest and compared against the text the caller holds.
+struct FileRef {
+    std::string_view name;
+    bool embedded = false;
+    Digest digest;
+    std::string_view text;
+};
+
+struct Provenance {
+    std::vector<FileRef> files;
+    modules::DependencyLog deps;
+};
+
+void putProvenance(std::string& payload, const SourceSet& sources, const modules::DependencyLog& deps) {
+    const std::unordered_set<std::string_view> onDisk(deps.filesRead.begin(), deps.filesRead.end());
+    putU64(payload, sources.size());
+    for (size_t i = 0; i < sources.size(); ++i) {
+        const SourceBuffer& buf = sources.at(static_cast<uint16_t>(i));
+        putStr(payload, buf.name());
+        if (i == 0 || onDisk.count(buf.name())) {
+            const Digest d = hashBytes(buf.text());
+            putU64(payload, kFileByDigest);
+            putU64(payload, d.lo);
+            putU64(payload, d.hi);
+        } else {
+            putU64(payload, kFileEmbedded);
+            putStr(payload, buf.text());
+        }
+    }
+    putU64(payload, deps.globs.size());
+    for (const auto& g : deps.globs) {
+        putStr(payload, g.dirSpecifier);
+        putStr(payload, g.importer);
+        putStr(payload, g.namePrefix);
+        putStr(payload, g.tail);
+        putU64(payload, g.names.size());
+        for (const auto& n : g.names) putStr(payload, n);
+    }
+    putU64(payload, deps.edges.size());
+    for (const auto& e : deps.edges) {
+        putStr(payload, e.specifier);
+        putStr(payload, e.importer);
+        putStr(payload, e.target);
+    }
+}
+
+// False on a malformed record; the cursor's own state says whether it ran out.
+bool readProvenance(Cursor& c, Provenance& out) {
+    out.files.resize(c.count(24));
+    for (auto& f : out.files) {
+        f.name = c.str();
+        const uint64_t kind = c.u64();
+        if (kind == kFileEmbedded) {
+            f.embedded = true;
+            f.text = c.str();
+        } else if (kind == kFileByDigest) {
+            f.digest.lo = c.u64();
+            f.digest.hi = c.u64();
+        } else {
+            return false;
+        }
+    }
+    out.deps.globs.resize(c.count(40));
+    for (auto& g : out.deps.globs) {
+        g.dirSpecifier = c.str();
+        g.importer = c.str();
+        g.namePrefix = c.str();
+        g.tail = c.str();
+        g.names.resize(c.count(8));
+        for (auto& n : g.names) n = c.str();
+    }
+    out.deps.edges.resize(c.count(24));
+    for (auto& e : out.deps.edges) {
+        e.specifier = c.str();
+        e.importer = c.str();
+        e.target = c.str();
+    }
+    return c.ok() && !out.files.empty() && !out.files[0].embedded;
+}
+
+// Every file but the entry, re-read and compared, and the graph's resolution
+// replayed. With `out`, the texts are added to it in buffer order (the entry's
+// first, as `entryText`).
+bool verifyProvenance(const Provenance& p, std::string_view entryText,
+                      const std::vector<modules::ModuleRoot>& moduleRoots, SourceSet* out, std::string& why) {
+    if (out) out->add(std::string(p.files[0].name), std::string(entryText));
+    for (size_t i = 1; i < p.files.size(); ++i) {
+        if (p.files[i].embedded) {
+            if (out) out->add(std::string(p.files[i].name), std::string(p.files[i].text));
+            continue;
+        }
+        std::string text;
+        if (!readWholeFile(std::filesystem::path(std::string(p.files[i].name)), text)) {
+            why = "source missing: " + std::string(p.files[i].name);
+            return false;
+        }
+        if (hashBytes(text) != p.files[i].digest) {
+            why = "source changed: " + std::string(p.files[i].name);
+            return false;
+        }
+        if (out) out->add(std::string(p.files[i].name), std::move(text));
+    }
+    if (!modules::dependenciesUnchanged(p.deps, moduleRoots)) {
+        why = "module resolution changed";
+        return false;
+    }
+    return true;
+}
+
 std::filesystem::path entryFile(const std::string& dir, const Digest& key) {
     return std::filesystem::path(dir) / (key.hex() + kExt);
 }
@@ -459,6 +573,125 @@ const std::string& processKeyMaterial() {
     return material;
 }
 
+const std::string& moduleKeyMaterial() {
+    static const std::string material = [] {
+        std::string m = "module-v" + std::to_string(kVersion) + "|abi" + std::to_string(BRONZE_ABI_FINGERPRINT);
+        for (const auto& v : bronzeEnvironment()) m += "|" + v;
+        return m;
+    }();
+    return material;
+}
+
+namespace {
+constexpr uint32_t kRecordMagic = 0x315A4D42u;  // "BMZ1"
+}  // namespace
+
+bool writeModuleRecord(const std::filesystem::path& path, const Digest& key, const ModuleRecord& record,
+                       const SourceSet& sources, const modules::DependencyLog& deps, std::string& err) {
+    if (sources.empty()) {
+        err = "the program has no sources";
+        return false;
+    }
+    std::string payload;
+    putStr(payload, record.resName);
+    putStr(payload, record.entrySymbol);
+    putStr(payload, record.moduleFile);
+    putProvenance(payload, sources, deps);
+
+    std::string header;
+    putU32(header, kRecordMagic);
+    putU32(header, kVersion);
+    putU32(header, BRONZE_ABI_FINGERPRINT);
+    putU32(header, 0);
+    putU64(header, key.lo);
+    putU64(header, key.hi);
+    putU64(header, payload.size());
+    putU64(header, hashBytes(payload).lo);
+
+    std::error_code ec;
+    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
+    std::filesystem::path tmp = path;
+    tmp += ".tmp" + std::to_string(processId());
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            err = "cannot write " + tmp.string();
+            return false;
+        }
+        out.write(header.data(), static_cast<std::streamsize>(header.size()));
+        out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+        out.close();
+        if (!out) {
+            std::filesystem::remove(tmp, ec);
+            err = "cannot write " + tmp.string();
+            return false;
+        }
+    }
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::error_code rm;
+        std::filesystem::remove(tmp, rm);
+        err = "cannot replace " + path.string() + ": " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+bool readModuleRecord(const std::filesystem::path& path, const Digest& key, std::string_view entryText,
+                      const std::vector<modules::ModuleRoot>& moduleRoots, ModuleRecord& out, std::string& why) {
+    std::string bytes;
+    if (!readWholeFile(path, bytes)) {
+        why = "no module record";
+        return false;
+    }
+    Cursor h(bytes);
+    const uint32_t magic = h.u32();
+    const uint32_t version = h.u32();
+    const uint32_t abi = h.u32();
+    (void)h.u32();
+    const uint64_t keyLo = h.u64();
+    const uint64_t keyHi = h.u64();
+    const uint64_t payloadLen = h.u64();
+    const uint64_t checksum = h.u64();
+    if (!h.ok() || magic != kRecordMagic) {
+        why = "not a module record";
+        return false;
+    }
+    if (version != kVersion || abi != BRONZE_ABI_FINGERPRINT) {
+        why = "built against another bronze ABI";
+        return false;
+    }
+    if (payloadLen != bytes.size() - kHeaderSize) {
+        why = "truncated record";
+        return false;
+    }
+    const std::string_view payload = std::string_view(bytes).substr(kHeaderSize);
+    if (hashBytes(payload).lo != checksum) {
+        why = "damaged record";
+        return false;
+    }
+    // After the checksum, so a damaged file is never reported as a program
+    // whose inputs changed.
+    if (keyLo != key.lo || keyHi != key.hi) {
+        why = "compiled with other inputs (host globals, natives, module registry, environment or text)";
+        return false;
+    }
+    Cursor c(payload);
+    out.resName = std::string(c.str());
+    out.entrySymbol = std::string(c.str());
+    out.moduleFile = std::string(c.str());
+    Provenance prov;
+    if (!readProvenance(c, prov) || !c.ok() || !c.atEnd() || out.entrySymbol.empty() || out.moduleFile.empty()) {
+        why = "malformed record";
+        return false;
+    }
+    if (hashBytes(entryText) != prov.files[0].digest) {
+        why = "entry changed";
+        return false;
+    }
+    return verifyProvenance(prov, entryText, moduleRoots, nullptr, why);
+}
+
 bool load(const std::string& dir, const Digest& key, std::string_view entryText,
           const std::vector<modules::ModuleRoot>& moduleRoots, bool retainSource, Hit& out, std::string& why) {
     support::PhaseTimer timer(support::timingsEnabled(), 4);
@@ -503,48 +736,14 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
 
     Cursor c(payload);
     const std::string resName(c.str());
-    struct FileRef {
-        std::string_view name;
-        bool embedded = false;
-        Digest digest;
-        std::string_view text;
-    };
-    std::vector<FileRef> files(c.count(24));
-    for (auto& f : files) {
-        f.name = c.str();
-        const uint64_t kind = c.u64();
-        if (kind == kFileEmbedded) {
-            f.embedded = true;
-            f.text = c.str();
-        } else if (kind == kFileByDigest) {
-            f.digest.lo = c.u64();
-            f.digest.hi = c.u64();
-        } else {
-            why = "malformed entry";
-            return false;
-        }
-    }
-    modules::DependencyLog deps;
-    deps.globs.resize(c.count(40));
-    for (auto& g : deps.globs) {
-        g.dirSpecifier = c.str();
-        g.importer = c.str();
-        g.namePrefix = c.str();
-        g.tail = c.str();
-        g.names.resize(c.count(8));
-        for (auto& n : g.names) n = c.str();
-    }
-    deps.edges.resize(c.count(24));
-    for (auto& e : deps.edges) {
-        e.specifier = c.str();
-        e.importer = c.str();
-        e.target = c.str();
-    }
+    Provenance prov;
+    const bool provOk = readProvenance(c, prov);
     const std::string_view ilBytes = c.str();
-    if (!c.ok() || !c.atEnd() || files.empty() || files[0].embedded) {
+    if (!provOk || !c.ok() || !c.atEnd()) {
         why = "malformed entry";
         return false;
     }
+    const std::vector<FileRef>& files = prov.files;
 
     // Every file the graph read, re-read and compared. File 0 is the entry,
     // whose text the caller holds.
@@ -563,29 +762,8 @@ bool load(const std::string& dir, const Digest& key, std::string_view entryText,
         std::thread& t;
         ~Join() { if (t.joinable()) t.join(); }
     } join{decoder};
-    out.sources.add(std::string(files[0].name), std::string(entryText));
-    for (size_t i = 1; i < files.size(); ++i) {
-        if (files[i].embedded) {
-            out.sources.add(std::string(files[i].name), std::string(files[i].text));
-            continue;
-        }
-        std::string text;
-        if (!readWholeFile(std::filesystem::path(std::string(files[i].name)), text)) {
-            why = "source missing: " + std::string(files[i].name);
-            return false;
-        }
-        if (hashBytes(text) != files[i].digest) {
-            why = "source changed: " + std::string(files[i].name);
-            return false;
-        }
-        out.sources.add(std::string(files[i].name), std::move(text));
-    }
-    timer.mark("sources");
-    if (!modules::dependenciesUnchanged(deps, moduleRoots)) {
-        why = "module resolution changed";
-        return false;
-    }
-    timer.mark("resolution");
+    if (!verifyProvenance(prov, entryText, moduleRoots, &out.sources, why)) return false;
+    timer.mark("sources+resolution");
 
     decoder.join();
     if (!decoded) {
@@ -616,39 +794,7 @@ void store(const std::string& dir, uint64_t maxBytes, const Digest& key, const s
     if (sources.empty()) return;
     std::string payload;
     putStr(payload, resName);
-    // A buffer read from disk is recorded by digest and re-read on a hit; one
-    // the linker synthesized is not a file, and its text is stored. The entry
-    // (buffer 0) is compared against the text the caller holds.
-    const std::unordered_set<std::string_view> onDisk(deps.filesRead.begin(), deps.filesRead.end());
-    putU64(payload, sources.size());
-    for (size_t i = 0; i < sources.size(); ++i) {
-        const SourceBuffer& buf = sources.at(static_cast<uint16_t>(i));
-        putStr(payload, buf.name());
-        if (i == 0 || onDisk.count(buf.name())) {
-            const Digest d = hashBytes(buf.text());
-            putU64(payload, kFileByDigest);
-            putU64(payload, d.lo);
-            putU64(payload, d.hi);
-        } else {
-            putU64(payload, kFileEmbedded);
-            putStr(payload, buf.text());
-        }
-    }
-    putU64(payload, deps.globs.size());
-    for (const auto& g : deps.globs) {
-        putStr(payload, g.dirSpecifier);
-        putStr(payload, g.importer);
-        putStr(payload, g.namePrefix);
-        putStr(payload, g.tail);
-        putU64(payload, g.names.size());
-        for (const auto& n : g.names) putStr(payload, n);
-    }
-    putU64(payload, deps.edges.size());
-    for (const auto& e : deps.edges) {
-        putStr(payload, e.specifier);
-        putStr(payload, e.importer);
-        putStr(payload, e.target);
-    }
+    putProvenance(payload, sources, deps);
     putStr(payload, il::serializeModule(module));
 
     std::string header;

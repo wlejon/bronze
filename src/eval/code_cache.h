@@ -94,6 +94,43 @@ void store(const std::string& dir, uint64_t maxBytes, const Digest& key, const s
 // Blocks until every trim the process's stores asked for has finished.
 void waitForTrims();
 
+// ---------------------------------------------------------------------------
+// Module records: what a script compiled AHEAD OF TIME to a loadable module
+// (eval.h, buildModule) was built from, kept in a file beside the module.
+//
+// The same provenance an entry carries — the digest of every source file the
+// graph read and the graph's dependency log — under a key built like an
+// entry's, plus the program's result name, its entry symbol and the module's
+// file name (bare: the record and the module travel together). No IL: the
+// module holds the program compiled. A host asks readModuleRecord whether the
+// module is still the program a compile of the same text and options would
+// build, and compiles instead when it is not.
+// ---------------------------------------------------------------------------
+
+struct ModuleRecord {
+    std::string resName;
+    std::string entrySymbol;
+    std::string moduleFile;
+};
+
+// The process half of a module record's key: the format version, the ABI
+// fingerprint and the BRONZE_* environment. Not the compiling binary's
+// identity, as an entry's key has: a module is machine code against an ABI,
+// and outlives the build of the compiler that wrote it for exactly as long as
+// the ABI stays the same.
+const std::string& moduleKeyMaterial();
+
+// Written to a temporary file and renamed over `path`. False, with `err` set,
+// when it could not be.
+bool writeModuleRecord(const std::filesystem::path& path, const Digest& key, const ModuleRecord& record,
+                       const SourceSet& sources, const modules::DependencyLog& deps, std::string& err);
+
+// True when the record at `path` was written under `key` and every source and
+// resolution it lists is unchanged (`entryText` is the entry's text). False,
+// with `why` set, on any difference or a missing or damaged record.
+bool readModuleRecord(const std::filesystem::path& path, const Digest& key, std::string_view entryText,
+                      const std::vector<modules::ModuleRoot>& moduleRoots, ModuleRecord& out, std::string& why);
+
 // The entry's warm list (`<key>.bzw`, text): the functions a run of the
 // program first called, in order, which the next run builds Tier-0 bytecode
 // for ahead of its calls (brass::runtime::BytecodeWarmer). Stored only

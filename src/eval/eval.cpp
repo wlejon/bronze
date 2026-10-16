@@ -24,6 +24,7 @@
 #include "codegen-brass/brass_jit.h"
 #include "embed/embed.h"
 #include "eval/code_cache.h"
+#include "eval/eval_internal.h"
 #include "lex/lexer.h"
 #include "modules/modules.h"
 #include "lower/lower.h"
@@ -48,18 +49,11 @@ namespace bronze::eval {
 
 namespace {
 
-// BRONZE_TIMINGS=1: an embedded compile prints its phase times to stderr the
-// way `bronze build --timings` does (support/timings.h), so a host's slow
-// load says which phase to attack.
-bool evalTimingsEnabled() {
-    static const bool on = [] {
-        const char* v = std::getenv("BRONZE_TIMINGS");
-        const bool enabled = v && v[0] == '1';
-        if (enabled) support::setTimingsEnabled(true);
-        return enabled;
-    }();
-    return on;
-}
+using detail::CompileInputs;
+using detail::evalTimingsEnabled;
+using detail::gatherInputs;
+using detail::moduleOptionsFor;
+using detail::reportProgress;
 
 static std::vector<std::shared_ptr<BrassTieredProgram>>& retainedPrograms() {
     static auto* list = new std::vector<std::shared_ptr<BrassTieredProgram>>();
@@ -196,71 +190,6 @@ void saveWarmLists() {
     warmRecords().clear();
 }
 
-void transformEvalAst(ast::Module& astModule, const std::string& resName) {
-    if (!resName.empty() && !astModule.body.empty()) {
-        if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(astModule.body.back().get())) {
-            auto varDecl = std::make_unique<ast::VarDecl>();
-            varDecl->name = resName;
-            varDecl->isVar = true;
-            varDecl->init = std::move(exprStmt->expr);
-            astModule.body.back() = std::move(varDecl);
-        }
-    }
-
-    std::vector<ast::StmtPtr> exports;
-    for (const auto& stmt : astModule.body) {
-        if (auto* vd = dynamic_cast<ast::VarDecl*>(stmt.get())) {
-            if (vd->isVar && !vd->name.empty() && vd->name.find('.') == std::string::npos) {
-                auto globalThisIdent = std::make_unique<ast::Ident>();
-                globalThisIdent->name = "globalThis";
-                auto member = std::make_unique<ast::MemberAccess>();
-                member->object = std::move(globalThisIdent);
-                member->property = vd->name;
-                auto valIdent = std::make_unique<ast::Ident>();
-                valIdent->name = vd->name;
-                auto assign = std::make_unique<ast::Binary>();
-                assign->op = ast::BinaryOp::Assign;
-                assign->lhs = std::move(member);
-                assign->rhs = std::move(valIdent);
-                auto exportStmt = std::make_unique<ast::ExprStmt>();
-                exportStmt->expr = std::move(assign);
-                exports.push_back(std::move(exportStmt));
-            }
-        } else if (auto* fd = dynamic_cast<ast::FunctionDecl*>(stmt.get())) {
-            if (!fd->name.empty() && fd->name.find('.') == std::string::npos) {
-                auto globalThisIdent = std::make_unique<ast::Ident>();
-                globalThisIdent->name = "globalThis";
-                auto member = std::make_unique<ast::MemberAccess>();
-                member->object = std::move(globalThisIdent);
-                member->property = fd->name;
-                auto valIdent = std::make_unique<ast::Ident>();
-                valIdent->name = fd->name;
-                auto assign = std::make_unique<ast::Binary>();
-                assign->op = ast::BinaryOp::Assign;
-                assign->lhs = std::move(member);
-                assign->rhs = std::move(valIdent);
-                auto exportStmt = std::make_unique<ast::ExprStmt>();
-                exportStmt->expr = std::move(assign);
-                exports.push_back(std::move(exportStmt));
-            }
-        }
-    }
-    for (auto& exp : exports) {
-        astModule.body.push_back(std::move(exp));
-    }
-}
-
-std::string readPins(const std::string& path) {
-    if (path.empty()) return {};
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return {};
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return ss.str();
-}
-
-modules::ModuleOptions moduleOptionsFor(const EvalOptions& options);
-
 // Everything a compile reads: two compiles with the same key produce the
 // same program. Each field is length-prefixed, so no two keys run together.
 std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
@@ -294,64 +223,6 @@ std::string sharedProgramKey(const EvalOptions& options, ExecutionTier tier,
     return key;
 }
 
-// What a compile reads besides its sources, gathered once: the key of the code
-// cache and the front end both read it.
-struct CompileInputs {
-    std::vector<std::string> hostGlobals;
-    std::optional<lower::NativeManifest> nativeManifest;
-    std::string manifestJson;  // "" when the program is compiled against no natives
-    bool deferNativeBind = false;
-    std::string pinsText;
-    types::PinManifest pins;
-    ExecutionTier tier = ExecutionTier::Auto;
-};
-
-bool gatherInputs(const EvalOptions& options, CompileInputs& in, DiagnosticSink& diags) {
-    in.hostGlobals = options.hostGlobals;
-    if (in.hostGlobals.empty()) {
-        for (const auto& entry : runtime::rtHostGlobalEntries()) {
-            in.hostGlobals.push_back(entry.first);
-        }
-    }
-
-    // The natives the host registered, as the manifest the lowerer reads —
-    // the SAME text an ahead-of-time build reads from a file, parsed by the
-    // same reader, so the JIT and AOT paths cannot disagree about a
-    // registration. This thread's registry, unless the options carry one
-    // captured on the thread that will run the program. A registry the reader
-    // refuses is a host bug the registry should already have refused; it is
-    // reported, not skipped.
-    if (options.nativeManifestJson) {
-        in.manifestJson = *options.nativeManifestJson;
-        in.deferNativeBind = true;
-    } else if (!embed::hostNativeNames().empty()) {
-        in.manifestJson = embed::nativeManifestJson();
-    }
-    if (!in.manifestJson.empty()) {
-        std::string err;
-        in.nativeManifest = lower::NativeManifest::parse(in.manifestJson, "<registry>", err);
-        if (!in.nativeManifest) {
-            diags.error(Span{}, err);
-            return false;
-        }
-        for (const auto& root : in.nativeManifest->namespaceRoots()) {
-            in.hostGlobals.push_back(root);
-        }
-    }
-
-    in.pinsText = readPins(options.pinsPath);
-    if (!in.pinsText.empty()) {
-        std::string err;
-        in.pins.parse(in.pinsText, options.pinsPath, err, /*allowObserved=*/true);
-    }
-    in.tier = options.tier.value_or(defaultTier());
-    return true;
-}
-
-void reportProgress(const EvalOptions& options, const char* phase, double fraction) {
-    if (options.onProgress) options.onProgress(CompileProgress{phase, fraction});
-}
-
 // The code-cache key of a compile (code_cache.h says what goes in), or none
 // when the options ask for no cache or this binary cannot be identified.
 std::optional<cache::Digest> codeCacheKey(const EvalOptions& options, const modules::ModuleOptions& modOpts,
@@ -359,29 +230,7 @@ std::optional<cache::Digest> codeCacheKey(const EvalOptions& options, const modu
     if (options.codeCacheDir.empty()) return std::nullopt;
     const std::string& process = cache::processKeyMaterial();
     if (process.empty()) return std::nullopt;
-    cache::KeyBuilder k;
-    k.field(process);
-    k.field(options.filename);
-    k.field(options.entryResolvesAs.generic_string());
-    k.field(options.retainSource ? "src" : "nosrc");
-    k.field(options.censusOutPath);
-    k.field(modOpts.publishModules ? (modOpts.publishEntry ? "pub+entry" : "pub") : "nopub");
-    k.field("|roots");
-    for (const auto& root : modOpts.moduleRoots) {
-        k.field(root.prefix);
-        k.field(root.target.generic_string());
-    }
-    k.field("|externals");
-    std::vector<std::string> externals = modOpts.externalModules;
-    std::sort(externals.begin(), externals.end());
-    for (const auto& ext : externals) k.field(ext);
-    k.field("|globals");
-    for (const auto& g : in.hostGlobals) k.field(g);
-    k.field("|natives");
-    k.field(in.manifestJson);
-    k.field(in.pinsText);
-    k.field(entryText);
-    return k.finish();
+    return detail::programKey(process, options, modOpts, in, entryText);
 }
 
 // Where a compile that missed the cache stores what it lowered.
@@ -446,28 +295,8 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     if (in.tier != ExecutionTier::Tier2_Optimized) compileLock.unlock();
     support::PhaseTimer timer(evalTimingsEnabled(), 2);
     if (!ilModule) {
-        transformEvalAst(*astModule, resName);
-
-        auto inferred = types::inferModule(*astModule, diags,
-                                           hostGlobals.empty() ? nullptr : &hostGlobals,
-                                           in.pins.empty() ? nullptr : &in.pins);
-        if (diags.hasErrors() || !inferred) return nullptr;
-        timer.mark("infer");
-        reportProgress(options, "infer", 0.60);
-
-        auto lowered = lower::lowerModule(*astModule, diags,
-                                      inferred ? &*inferred : nullptr,
-                                      hostGlobals.empty() ? nullptr : &hostGlobals,
-                                      &sources,
-                                      /*stats=*/nullptr,
-                                      /*assumeNoBigInt=*/false,
-                                      in.pins.empty() ? nullptr : &in.pins,
-                                      options.censusOutPath,
-                                      in.nativeManifest ? &*in.nativeManifest : nullptr);
-        if (diags.hasErrors() || !lowered) return nullptr;
-        ilModule = std::make_unique<il::Module>(std::move(*lowered));
-        timer.mark("lower");
-        reportProgress(options, "lower", 0.88);
+        ilModule = detail::lowerProgram(*astModule, options, in, resName, diags, sources);
+        if (!ilModule) return nullptr;
 
         if (store) {
             cache::store(*store->dir, store->maxBytes, store->key, resName, sources, *store->deps, *ilModule);
@@ -524,30 +353,6 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
         sharedPrograms()[shareKey] = SharedProgram{program, resName};
     }
     return program;
-}
-
-// The realm's module registry, read at COMPILE time (eval.h says when a host
-// turns this on). The paths come from the realm rather than from the host,
-// because the realm is what knows which instances exist — a host would have to
-// keep a second list and the two would drift the first time a unit failed
-// halfway.
-void applyModuleRegistry(const EvalOptions& options, modules::ModuleOptions& modOpts) {
-    if (!options.moduleRegistry) return;
-    modOpts.publishModules = true;
-    modOpts.publishEntry = options.publishEntry;  // a page's module FILE entry
-    if (!options.externalModules.empty() || options.externalModulesCaptured) {
-        modOpts.externalModules = options.externalModules;
-    } else {
-        modOpts.externalModules = runtime::rtModuleRegistryPaths();
-    }
-}
-
-modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
-    modules::ModuleOptions modOpts;
-    modOpts.moduleRoots = options.moduleRoots;
-    modOpts.entryResolvesAs = options.entryResolvesAs;
-    applyModuleRegistry(options, modOpts);
-    return modOpts;
 }
 
 embed::CallResult runProgramAndCollectResult(

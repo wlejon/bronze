@@ -179,4 +179,63 @@ BRONZE_EMBED_API Value evalFunction(std::span<const std::string> params, std::st
 // Installs Bronze's native in-memory JIT evaluator as the dynamic eval and function hooks.
 BRONZE_EMBED_API void installDefaultDynamicHooks();
 
+// ---- Ahead-of-time modules --------------------------------------------------
+//
+// A script compiled to a loadable native module (DLL / .so / .dylib) instead
+// of being handed to the tiered engine: the front end, inputs and IL are
+// exactly those compileScript uses for the same text and options
+// (eval_internal.h), and brass's own image writer puts the result on disk
+// (codegen-brass/module_image.h), so building one needs no linker or
+// toolchain on the machine. The module imports the shared runtime: it is
+// loaded into a process that already runs that runtime, never on its own.
+//
+// Beside the module goes a record of what the compile read (code_cache.h,
+// module records): its key, every source file's digest and the graph's module
+// resolution. loadModule checks the record against the text and options of
+// the run at hand, so a module is used only while it is still the program
+// compileScript would build — any edit, any other host global, native or
+// registry entry, any BRONZE_* switch, another runtime ABI, and the host
+// compiles instead. Machine code that is file-backed rather than built per
+// process is the point: a host's processes share its pages clean.
+
+struct ModuleBuildResult {
+    bool success = false;
+    std::string errorMessage;
+    // Every file the module graph read from disk (generic paths): the module
+    // files a program built with moduleRegistry publishes, for a host
+    // predicting the registry a later unit will be compiled against.
+    std::vector<std::string> filesRead;
+};
+
+// Compiles `source` as compileScript would with `options`, writes the module
+// to `modulePath` and its record to `recordPath`. The record names the module
+// by its bare file name: the two belong in one directory, and move together.
+BRONZE_EMBED_API ModuleBuildResult buildModule(std::string_view source, const EvalOptions& options,
+                                               const std::string& modulePath, const std::string& recordPath);
+
+// A module whose record matched, mapped and ready to run on this thread.
+struct LoadedModule {
+    bool ok = false;
+    // When !ok: what differed from the record, or why the image is unusable.
+    std::string why;
+    std::string modulePath;
+    std::string resName;
+    void* entry = nullptr;
+};
+
+// Checks the record at `recordPath` against `source` and `options`, then maps
+// the module beside it, compares its ABI stamp with this runtime's and binds
+// its native import table from this thread's registry. Never fatal: a module
+// that is stale or unusable is reported in `why` and left unrun.
+BRONZE_EMBED_API LoadedModule loadModule(std::string_view source, const EvalOptions& options,
+                                         const std::string& recordPath);
+
+// Runs a loaded module's top level as runCompiledScript runs a compiled
+// script: one root frame, the module-load bracket when
+// `options.moduleHandleOut` is set, the microtask checkpoint, and the same
+// result (a thrown value, a top-level-await promise, or the trailing
+// expression's value). The image stays mapped for the life of the process,
+// as a JIT program's code does: closures hold raw pointers into it.
+BRONZE_EMBED_API embed::CallResult runModule(const LoadedModule& module, const EvalOptions& options);
+
 }  // namespace bronze::eval

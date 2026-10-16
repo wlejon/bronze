@@ -37,7 +37,11 @@ engine uses this to run compiled three.js apps against its DOM and WebGL.
 The app's scene graph and render loop run as machine code while the engine
 supplies the browser surface. `src/embed` is the C++ API a host uses to
 drive the compiled program, register globals, and hold GC-safe handles
-(`Persistent`, `HandleScope`, `Local<T>`).
+(`Persistent`, `HandleScope`, `Local<T>`). A host can also compile a script
+ahead of time through the embedded evaluator (`eval::buildModule`): the same
+program the JIT would run, written as a loadable module with a record of what
+it was built from, which `eval::loadModule` checks before running it, so a
+stale module falls back to the JIT instead of running.
 
 ## How it works
 

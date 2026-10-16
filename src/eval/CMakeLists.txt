@@ -1,6 +1,8 @@
 bronze_add_module(eval
     SOURCES
         eval.cpp
+        eval_front.cpp
+        aot_module.cpp
         code_cache.cpp
     DEPS
         lex
