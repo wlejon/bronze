@@ -341,6 +341,12 @@ BRONZE_EMBED_API void clearModuleRegistry();
 // by the pointer contract those functions carry.
 BRONZE_EMBED_API void collectGarbage();
 
+// Gone idle: a minor collection, then the young generation's unused pages
+// handed back to the system (the eden, all of it after the collection, and
+// the survivor space above its live objects). Returns the bytes released.
+// The same contract as collectGarbage: Persistents survive, raw pointers die.
+BRONZE_EMBED_API size_t releaseIdleHeapMemory();
+
 // The collector's relocation counter: advanced by every collection that moves
 // an object, so it changes when addresses change and not merely when
 // collections complete. This

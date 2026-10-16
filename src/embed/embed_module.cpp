@@ -99,6 +99,13 @@ void clearModuleRegistry() { runtime::rtModuleRegistryClear(); }
 
 void collectGarbage() { runtime::rtHeap().collect(); }
 
+size_t releaseIdleHeapMemory() {
+    auto& heap = runtime::rtHeap();
+    if (heap.gc().in_collection()) return 0;
+    heap.collect_minor();
+    return heap.gc().release_unused_young();
+}
+
 uint64_t relocationEpoch() { return runtime::rtHeap().relocation_epoch(); }
 
 void bindThreadHeap() { (void)runtime::rtHeap(); }
