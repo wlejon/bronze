@@ -260,8 +260,7 @@ bool rtRegisterNative(std::string_view pathView, void* fn, const NativeSpec& spe
     // host globals' namespace: the same name in both would make `f(1)` a
     // native call and `f` a host value, and the two would drift.
     if (path.find('.') == std::string::npos) {
-        Value ignored = Value::fromUndefined();
-        if (rtHostGlobalLookup(path, ignored)) {
+        if (rtHostGlobalRegistered(path)) {
             unlinkOwnClass();
             return refuse("'" + path + "' is a registered host global; a name is a native or a "
                           "host global, not both");

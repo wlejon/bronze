@@ -22,6 +22,7 @@
 #include "runtime/heap.h"
 #include "runtime/host_globals.h"
 #include "runtime/microtask.h"
+#include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
@@ -38,9 +39,53 @@ void registerGlobal(std::string_view name, Value value) {
 }
 
 bool hasHostGlobal(std::string_view name) {
-    Value ignored = Value::fromUndefined();
-    return runtime::rtHostGlobalLookup(std::string(name), ignored);
+    return runtime::rtHostGlobalRegistered(std::string(name));
 }
+
+namespace {
+
+// The accessor pair a pending lazy global shows on a realm's global object
+// (runtime/host_globals.h): reading forces the name and answers what its
+// init registered; assigning forces it and registers the assigned value.
+Value defineLazyGlobalAccessor(Value globalObject, const std::string& name) {
+    ShadowStackFrame frame;
+    Rooted<Value> glob{globalObject};
+    // Each callback copies the name first: forcing deletes the accessor, and
+    // a collection can then free the function object, and with it this
+    // closure, while the callback is still running.
+    Rooted<Value> getter{makeFunction(
+        [name](Value, std::span<const Value>) -> Value {
+            const std::string key = name;
+            Value out = Value::fromUndefined();
+            runtime::rtHostGlobalLookup(key, out);
+            return out;
+        },
+        0)};
+    Rooted<Value> setter{makeFunction(
+        [name](Value, std::span<const Value> args) -> Value {
+            const std::string key = name;
+            const Rooted<Value> v{args.empty() ? Value::fromUndefined() : args[0]};
+            runtime::rtForceLazyHostGlobal(key);
+            runtime::rtRegisterHostGlobal(key, v.get());
+            return Value::fromUndefined();
+        },
+        1)};
+    Rooted<Value> keyRoot{runtime::rtMakeString(name)};
+    ObjectHeader::defineAccessor(runtime::rtHeap(), runtime::rtArena(), glob, keyRoot, getter, setter,
+                                 /*enumerable=*/false);
+    return glob.get();
+}
+
+}  // namespace
+
+void registerLazyGlobal(std::string_view name, std::function<void()> init) {
+    runtime::rtSetLazyGlobalAccessorHook(&defineLazyGlobalAccessor);
+    runtime::rtRegisterLazyHostGlobal(std::string(name), std::move(init));
+}
+
+void forceLazyGlobal(std::string_view name) { runtime::rtForceLazyHostGlobal(std::string(name)); }
+
+void runAsLazyInit(const std::function<void()>& init) { runtime::rtRunAsLazyInit(init); }
 
 std::vector<std::string> hostGlobalNames() {
     const auto& entries = runtime::rtHostGlobalEntries();

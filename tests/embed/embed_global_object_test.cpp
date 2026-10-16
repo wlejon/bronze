@@ -147,3 +147,73 @@ TEST_CASE("a realm created later carries the whole registry, existing realms kee
 
     embed::destroyRealm(fresh);
 }
+
+TEST_CASE("a lazy host global is listed at once and built at its first read") {
+    ShadowStackFrame frame;
+    embed::Persistent glob{embed::globalValue("globalThis").value};
+    REQUIRE(embed::isObject(glob.get()));
+
+    // Two names, one init: forcing either builds both.
+    static int inits = 0;
+    inits = 0;
+    auto init = [] {
+        static bool done = false;
+        if (done) return;
+        done = true;
+        ++inits;
+        embed::registerGlobal("lazyHostA", embed::fromDouble(1.0));
+        embed::registerGlobal("lazyHostB", embed::fromDouble(2.0));
+    };
+    embed::registerLazyGlobal("lazyHostA", init);
+    embed::registerLazyGlobal("lazyHostB", init);
+
+    // Listed, and present on globalThis, without running the init.
+    CHECK(embed::hasHostGlobal("lazyHostA"));
+    const std::vector<std::string> names = embed::hostGlobalNames();
+    CHECK(listed(names, "lazyHostA"));
+    CHECK(listed(names, "lazyHostB"));
+    CHECK(inGlobal(glob.get(), "lazyHostA"));
+    CHECK(listed(globalOwnNames(), "lazyHostB"));
+    CHECK(inits == 0);
+
+    // The property read forces it.
+    CHECK(embed::toDouble(embed::getProperty(glob.get(), "lazyHostB")) == 2.0);
+    CHECK(inits == 1);
+    // The other name was registered by the same init: a value, not a second run.
+    CHECK(embed::toDouble(embed::globalValue("lazyHostA").value) == 1.0);
+    CHECK(embed::toDouble(embed::getProperty(glob.get(), "lazyHostA")) == 1.0);
+    CHECK(inits == 1);
+
+    // A realm created afterwards sees the values.
+    embed::Realm* fresh = embed::createRealm();
+    REQUIRE(fresh != nullptr);
+    embed::Persistent freshGlobal{embed::getRealmGlobal(fresh)};
+    CHECK(embed::toDouble(embed::getProperty(freshGlobal.get(), "lazyHostA")) == 1.0);
+    embed::destroyRealm(fresh);
+}
+
+TEST_CASE("a lazy host global read through a realm built while it was pending") {
+    ShadowStackFrame frame;
+    static int inits = 0;
+    embed::registerLazyGlobal("lazyHostC", [] {
+        ++inits;
+        embed::registerGlobal("lazyHostC", embed::fromUtf8("built"));
+    });
+    embed::Realm* fresh = embed::createRealm();
+    REQUIRE(fresh != nullptr);
+    embed::Persistent freshGlobal{embed::getRealmGlobal(fresh)};
+    CHECK(inGlobal(freshGlobal.get(), "lazyHostC"));
+    CHECK(inits == 0);
+    CHECK(embed::toUtf8(embed::getProperty(freshGlobal.get(), "lazyHostC")) == "built");
+    CHECK(inits == 1);
+    // The default realm's property is the value now, not the accessor.
+    embed::Persistent defGlobal{embed::globalValue("globalThis").value};
+    CHECK(embed::toUtf8(embed::getProperty(defGlobal.get(), "lazyHostC")) == "built");
+    CHECK(inits == 1);
+    embed::destroyRealm(fresh);
+
+    // An init that registers nothing leaves undefined.
+    embed::registerLazyGlobal("lazyHostEmpty", [] {});
+    CHECK(embed::globalValue("lazyHostEmpty").found);
+    CHECK(embed::isUndefined(embed::globalValue("lazyHostEmpty").value));
+}

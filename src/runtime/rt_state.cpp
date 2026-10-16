@@ -526,6 +526,9 @@ static void sweepDynamicModules() {
 // and a lookup is a read `bronze_global_get` reaches only for a name the
 // builtin ladder did not answer.
 static thread_local std::vector<std::pair<std::string, Value>> g_hostGlobals;
+// The pending inits of lazy host globals (host_globals.h), whose entries in
+// g_hostGlobals hold the hole until forced.
+static thread_local std::vector<std::pair<std::string, std::function<void()>>> g_lazyHostGlobals;
 
 static void registerThreadRootSources(Heap& heap) {
     {
@@ -566,6 +569,14 @@ void rtRegisterHostGlobal(const std::string& name, Value value) {
     // builtin until a host provides its own, and every module that read the
     // builtin cached it.
     rtInvalidateGlobalCaches();
+    // A pending lazy name registered for real: its init has nothing left to
+    // do for it (host_globals.h).
+    for (auto it = g_lazyHostGlobals.begin(); it != g_lazyHostGlobals.end(); ++it) {
+        if (it->first == name) {
+            g_lazyHostGlobals.erase(it);
+            break;
+        }
+    }
     for (auto& entry : g_hostGlobals) {
         if (entry.first == name) {
             entry.second = value;
@@ -584,12 +595,94 @@ void rtRegisterHostGlobal(const std::string& name, Value value) {
 bool rtHostGlobalLookup(const std::string& name, Value& out) {
     for (const auto& entry : g_hostGlobals) {
         if (entry.first == name) {
+            if (entry.second.isHole()) {
+                rtForceLazyHostGlobal(name);
+                // The init may have registered names, growing the vector:
+                // read the entry again.
+                for (const auto& again : g_hostGlobals) {
+                    if (again.first == name) {
+                        out = again.second.isHole() ? Value::fromUndefined() : again.second;
+                        return true;
+                    }
+                }
+                out = Value::fromUndefined();
+                return true;
+            }
             out = entry.second;
             return true;
         }
     }
     return false;
 }
+
+bool rtHostGlobalRegistered(const std::string& name) {
+    for (const auto& entry : g_hostGlobals) {
+        if (entry.first == name) return true;
+    }
+    return false;
+}
+
+void rtRegisterLazyHostGlobal(const std::string& name, std::function<void()> init) {
+    if (rtNativeBareNameRegistered(name)) {
+        fatal(("registerLazyGlobal(\"" + name +
+               "\"): the name is a registered native (embed::registerNative); a name is a "
+               "native or a host global, not both")
+                  .c_str());
+    }
+    // Already registered for real: there is nothing to defer.
+    for (const auto& entry : g_hostGlobals) {
+        if (entry.first == name && !entry.second.isHole()) return;
+    }
+    bool replaced = false;
+    for (auto& pending : g_lazyHostGlobals) {
+        if (pending.first == name) {
+            pending.second = std::move(init);
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) g_lazyHostGlobals.emplace_back(name, std::move(init));
+    if (!rtHostGlobalRegistered(name)) {
+        rtInvalidateGlobalCaches();
+        g_hostGlobals.emplace_back(name, Value::fromHole());
+        rtDefineLazyHostGlobalOnLiveRealms(name);
+    }
+}
+
+static thread_local uint32_t g_lazyInitDepth = 0;
+
+bool rtInLazyGlobalInit() { return g_lazyInitDepth != 0; }
+
+void rtForceLazyHostGlobal(const std::string& name) {
+    std::function<void()> init;
+    for (auto it = g_lazyHostGlobals.begin(); it != g_lazyHostGlobals.end(); ++it) {
+        if (it->first == name) {
+            init = std::move(it->second);
+            g_lazyHostGlobals.erase(it);
+            break;
+        }
+    }
+    if (!init) return;
+    // The name's accessor goes first, so that the init's module may assign
+    // the global as a plain data property; registered `undefined` until the
+    // init registers what it made.
+    rtRegisterHostGlobal(name, Value::fromUndefined());
+    rtRunAsLazyInit(init);
+}
+
+void rtRunAsLazyInit(const std::function<void()>& init) {
+    ++g_lazyInitDepth;
+    struct Leave {
+        ~Leave() { --g_lazyInitDepth; }
+    } leave;
+    init();
+}
+
+static LazyGlobalAccessorHook g_lazyGlobalAccessorHook = nullptr;
+
+void rtSetLazyGlobalAccessorHook(LazyGlobalAccessorHook hook) { g_lazyGlobalAccessorHook = hook; }
+
+LazyGlobalAccessorHook rtLazyGlobalAccessorHook() { return g_lazyGlobalAccessorHook; }
 
 // The host's CreateDynamicFunction, if it has one (host_globals.h says why the
 // runtime offers the seam at all). Not a root source: whatever the host closed

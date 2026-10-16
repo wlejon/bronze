@@ -91,6 +91,13 @@ void Realm::initGlobalObject(Value customGlobal) {
                 continue;
             }
         }
+        if (entry.second.isHole()) {
+            // A pending lazy name: its accessor pair, not a value.
+            if (const runtime::LazyGlobalAccessorHook hook = runtime::rtLazyGlobalAccessorHook()) {
+                globRoot.set(hook(globRoot.get(), entry.first));
+            }
+            continue;
+        }
         Rooted<Value> key{runtime::rtMakeString(entry.first)};
         Rooted<Value> val{entry.second};
         globRoot.get().asObject<ObjectHeader>()->setProp(
@@ -218,12 +225,42 @@ void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value) {
         if (!r) continue;
         Rooted<Value> glob{r->globalObject()};
         if (!glob.get().isObject()) continue;
+        // A lazy name's accessor (host_globals.h) gives way to the value:
+        // setProp will not turn an accessor into a data property.
+        {
+            // The key is read again per realm: the delete below allocates.
+            const PropertyKey pkey = runtime::rtInternPropertyKey(key.get());
+            auto* obj = glob.get().asObject<ObjectHeader>();
+            PropertyInfo own;
+            if (obj->shape && obj->shape->lookupProperty(pkey, own) && own.accessor) {
+                bronze_elem_delete(glob.get().rawBits(), key.get().rawBits(), /*strict=*/false);
+            }
+        }
         glob.get().asObject<ObjectHeader>()->setProp(runtime::rtHeap(), runtime::rtArena(), key,
                                                      val, nullptr,
                                                      /*enumerable=*/false, /*defineOwn=*/true);
         // setProp can transition the shape and the write allocates, so the
         // realm's handle is refreshed from the rooted copy rather than left
         // pointing at whatever the collector moved out from under it.
+        r->setGlobalObject(glob.get());
+    }
+}
+
+void rtDefineLazyHostGlobalOnLiveRealms(const std::string& name) {
+    const runtime::LazyGlobalAccessorHook hook = runtime::rtLazyGlobalAccessorHook();
+    if (!hook || g_liveRealms.empty() || name == "globalThis") return;
+    if (!runtime::rtHostShadowsBuiltin(name)) {
+        if (Value builtin = Value::fromUndefined();
+            runtime::rtResolveBuiltinGlobal(name, builtin)) {
+            return;
+        }
+    }
+    ShadowStackFrame frame;
+    for (Realm* r : g_liveRealms) {
+        if (!r) continue;
+        Rooted<Value> glob{r->globalObject()};
+        if (!glob.get().isObject()) continue;
+        glob.set(hook(glob.get(), name));
         r->setGlobalObject(glob.get());
     }
 }

@@ -17,6 +17,7 @@
 #include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/host_globals.h"
 #include "runtime/microtask.h"
 #include "runtime/module_registry.h"
 #include "runtime/profile.h"
@@ -85,8 +86,10 @@ void runEntry(ModuleEntry entry) {
     bronze::ShadowStackFrame root_frame;
     runtime::rtRunModuleEntry(entry);
     // A module whose top level queued a job has not finished running until the
-    // job has — runMain's checkpoint, per module.
-    runtime::rtDrainMicrotasks();
+    // job has — runMain's checkpoint, per module. Not from a lazy global's
+    // init, which runs inside the program that read the name: the queue's jobs
+    // are that program's, due at its own checkpoint.
+    if (!runtime::rtInLazyGlobalInit()) runtime::rtDrainMicrotasks();
 }
 
 // The unload seam is one call each way because the mechanism lives with the

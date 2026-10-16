@@ -81,6 +81,9 @@ void rtVisitRealmRoots(const Heap::RootVisitor& visit);
 // code) and the property would then disagree with the bare name. `performance`
 // is the one name a host may shadow, so it is the one exception.
 void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value);
+// A pending lazy host global (host_globals.h) as the accessor pair the embed
+// layer's hook builds, on every live realm's global object.
+void rtDefineLazyHostGlobalOnLiveRealms(const std::string& name);
 void rtTeardownThreadRealms();
 
 }  // namespace bronze

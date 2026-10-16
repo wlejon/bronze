@@ -441,7 +441,28 @@ BRONZE_EMBED_API void clearKeptObjects();
 // the value. The value is rooted for the life of the process.
 BRONZE_EMBED_API void registerGlobal(std::string_view name, Value value);
 
-// Is `name` in the host-global registry? The load-time half of a manifest
+// Provide `name` now and its value later: the registry lists it at once (the
+// manifest, hasHostGlobal and `typeof name` see it), and the first read of it
+// (compiled bare read, globalValue, `globalThis.name`) runs `init` on this
+// thread, which registers the real value with registerGlobal. Meant for a
+// host's wrapper module that most programs never touch: its entry can wait
+// in `init` until one does. Several names may share one init, which must
+// then be idempotent; assigning `globalThis.name` while init runs (a module
+// publishing what it built) registers the value. A module entry run from
+// init does not drain the microtask queue: those jobs belong to the program
+// mid-run. A name init leaves unregistered reads as undefined. Registering
+// a name that already has a value does nothing.
+BRONZE_EMBED_API void registerLazyGlobal(std::string_view name, std::function<void()> init);
+// Run a pending lazy global's init now (a host path that needs what it
+// builds without reading the name). A no-op once forced.
+BRONZE_EMBED_API void forceLazyGlobal(std::string_view name);
+// Run `init` the way a lazy global's init runs (module entries inside it do
+// not drain the microtask queue): for a host that defers a module behind
+// something other than a global name, such as a namespace accessor.
+BRONZE_EMBED_API void runAsLazyInit(const std::function<void()>& init);
+
+// Is `name` in the host-global registry? Pending lazy names count; asking
+// does not force one. The load-time half of a manifest
 // check: a module's `<entry>_host_globals` manifest names every global the
 // program was compiled to expect from its host, and a manifest name nobody
 // registered is a fatal at first READ, mid-run. A loader that walks the

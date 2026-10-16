@@ -33,6 +33,41 @@ void rtRegisterHostGlobal(const std::string& name, Value value);
 // `undefined`, and why this is not "return undefined for a miss".
 bool rtHostGlobalLookup(const std::string& name, Value& out);
 
+// ---- lazy host globals --------------------------------------------------------
+//
+// A name the host registers now and fills only when a program first reads it:
+// the registry lists it (so compiled programs see it on the manifest, and
+// `typeof name` answers), and the first lookup runs `init`, which registers
+// the real value through rtRegisterHostGlobal. A host's whole wrapper module
+// can wait that way until a program touches one of its names. Several names
+// may share one init; init must be idempotent, since forcing any one of them
+// runs it, and the others' pending entries are dropped as init registers them.
+//
+// On a realm's global object a pending name is an accessor whose getter forces
+// it and whose setter forces it and then registers the assigned value (a
+// module's `globalThis.X = ...` while its init runs). The accessor pair is
+// made by the hook the embed layer installs (rtSetLazyGlobalAccessorHook):
+// building a host function is the embed module's business.
+//
+// A lookup that forces a name the init did not register answers undefined.
+void rtRegisterLazyHostGlobal(const std::string& name, std::function<void()> init);
+// Run the pending init for `name`, if it still has one.
+void rtForceLazyHostGlobal(const std::string& name);
+// Whether `name` is registered, eager or pending, without forcing it.
+bool rtHostGlobalRegistered(const std::string& name);
+// Whether an init is running on this thread: a module entry run from one does
+// not drain the microtask queue, whose jobs belong to the program that
+// touched the name.
+bool rtInLazyGlobalInit();
+// Run `init` as a lazy global's init runs: for a host deferring work behind
+// something other than a global name (a namespace accessor).
+void rtRunAsLazyInit(const std::function<void()>& init);
+// Returns the global object as it is after the define, which may have moved
+// it (a slot block that grows).
+using LazyGlobalAccessorHook = Value (*)(Value globalObject, const std::string& name);
+void rtSetLazyGlobalAccessorHook(LazyGlobalAccessorHook hook);
+LazyGlobalAccessorHook rtLazyGlobalAccessorHook();
+
 // The builtins a host's registration REPLACES rather than loses to: namespaces
 // compiled code calls into but is never optimized against, where a host may
 // carry the fuller implementation. `performance` (a browser host's clock: bro's
