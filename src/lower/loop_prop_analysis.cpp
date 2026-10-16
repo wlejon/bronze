@@ -5,50 +5,134 @@
 
 namespace bronze::lower {
 
+// Can this instruction change a property some earlier read already answered?
+// Written the SAFE WAY ROUND, like `canThrow` in il/effects.cpp: the cases
+// below are the ones that write no property and run no user code (under the
+// two assumptions named below), and everything else is impure. An op the list does not name — including one added
+// tomorrow — costs a forwarding, never a stale read. The other way round,
+// `object.spread` (which defines the source's keys on its target and runs the
+// source's getters) read as pure, and `{ from: -1, ...p }.from` answered -1.
+//
+// Property READS are on the pure side, and that is the passes' standing
+// assumption rather than a fact about the op: a read of a key some module
+// accessor is defined under is a call, and the callers rule those keys out by
+// `isAccessorKey` where they consult the table.
 bool isImpureForLoopPropHoist(const il::Instruction& inst) {
     switch (inst.op) {
-        // Property / Element / Private Stores and Mutators
-        case il::Op::PropSet:
-        case il::Op::ElemSet:
-        case il::Op::ElemSetTyped:
-        case il::Op::SuperSet:
-        case il::Op::PrivateSet:
-        case il::Op::PrivateAdd:
-        case il::Op::MethodDef:
-        case il::Op::MethodDefComputed:
-        case il::Op::AccessorDef:
-        case il::Op::AccessorDefComputed:
-        case il::Op::DefineOwnAttr:
-        case il::Op::PropDelete:
-        case il::Op::ElemDelete:
-        case il::Op::ClassExtend:
-        // Environment Writes
-        case il::Op::EnvSet:
-        case il::Op::ModuleEnvSet:
-        case il::Op::EnvInitTdz:
-        case il::Op::ImmutableAssign:
-        // Calls, Construction & Dynamic Import
-        case il::Op::Call:
-        case il::Op::DynamicCall:
-        case il::Op::DynamicCallSpread:
-        case il::Op::Construct:
-        case il::Op::ConstructSpread:
-        case il::Op::MethodCall:
-        case il::Op::MethodCallSpread:
-        case il::Op::SuperCall:
-        case il::Op::SuperCallSpread:
-        case il::Op::DynamicImport:
-        // Control flow effects / Suspension
-        case il::Op::Throw:
-        case il::Op::CoroStart:
-        case il::Op::CoroSuspend:
-        case il::Op::AsyncIterOpen:
-        case il::Op::AsyncIterNext:
-        case il::Op::AsyncIterClose:
-        case il::Op::IterDelegate:
-            return true;
-        default:
+        // Constants, machine-number compares and tag tests: no call at all.
+        case il::Op::ConstF64:
+        case il::Op::ConstI32:
+        case il::Op::ConstBool:
+        case il::Op::ConstUndefined:
+        case il::Op::ConstNull:
+        case il::Op::ConstBigInt:
+        case il::Op::CmpLt:
+        case il::Op::CmpGt:
+        case il::Op::CmpLe:
+        case il::Op::CmpGe:
+        case il::Op::CmpEq:
+        case il::Op::CmpNe:
+        case il::Op::NumTruthy:
+        case il::Op::StrictEq:
+        case il::Op::IsNullish:
+        case il::Op::IsNumber:
+        case il::Op::IsDenseArray:
+        case il::Op::TypeOf:
+        case il::Op::Box:
+        case il::Op::MathUnary:
+        case il::Op::CensusRecord:
+        case il::Op::KeepAlive:
+        // Refusals: each raises or answers, and none reaches user code.
+        case il::Op::PinGuard:
+        case il::Op::PatternCheck:
+        case il::Op::PrivateMisuse:
+        // Allocation, and reads of what the frame or module already holds.
+        case il::Op::CreateObject:
+        case il::Op::CreateArray:
+        case il::Op::CreateFunction:
+        case il::Op::FunctionRef:
+        case il::Op::EnvCreate:
+        case il::Op::PrivateNew:
+        case il::Op::ModuleNamespace:
+        case il::Op::TemplateCached:
+        case il::Op::TemplateObject:
+        case il::Op::CoroMode:
+        case il::Op::GetNewTarget:
+        case il::Op::ImportMeta:
+        case il::Op::ExcTake:
+        case il::Op::EnvGet:
+        case il::Op::EnvGetTdz:
+        case il::Op::ModuleEnvGet:
+        case il::Op::GlobalGet:
+        case il::Op::ResolveName:
+        // Property reads (see above). `private.get` has no accessor step: that
+        // is resolved in lowering into a call.
+        case il::Op::PropGet:
+        case il::Op::ElemGet:
+        case il::Op::ElemGetTyped:
+        case il::Op::SuperGet:
+        case il::Op::PrivateHas:
+        case il::Op::PrivateGet:
+        // The elements of an array literal under construction: the array is
+        // not yet visible to anything that could have read it.
+        case il::Op::ArrayAppend:
+        case il::Op::ArrayAppendHole:
+        // console.log never runs user code: inspect does not call a getter.
+        case il::Op::Print:
+        case il::Op::PrintErr:
+        case il::Op::PrintSpread:
+        case il::Op::PrintSpreadErr:
+        // Clears the accumulator's bit and reads nothing.
+        case il::Op::ConcatEnd:
+        // Leaving the block: there is nothing after it in the block to be stale.
+        case il::Op::Ret:
+        case il::Op::Jump:
+        case il::Op::Branch:
+        // Coercions and protocol tests. On a boxed operand each of these can
+        // reach a hook the language calls implicitly — ToPrimitive's `valueOf`
+        // / `toString` / `Symbol.toPrimitive`, `Symbol.hasInstance`, a Proxy
+        // trap — and those hooks are ASSUMED not to write a property, the same
+        // standing assumption the reads above carry. It is an assumption and
+        // not a fact (cases/blocked/prop_reread_across_to_primitive.js), kept
+        // because the alternative is that every boxed `+` ends forwarding and
+        // hoisting on the dynamic path. What the assumption does NOT cover is
+        // an op whose own job is to run the source's getters or iterator —
+        // object spread and rest, array spread, iteration — which fall to the
+        // default below.
+        case il::Op::Add:
+        case il::Op::Sub:
+        case il::Op::Neg:
+        case il::Op::Mul:
+        case il::Op::Div:
+        case il::Op::Mod:
+        case il::Op::Pow:
+        case il::Op::BitAnd:
+        case il::Op::BitOr:
+        case il::Op::BitXor:
+        case il::Op::MathImul:
+        case il::Op::Shl:
+        case il::Op::Shr:
+        case il::Op::UShr:
+        case il::Op::BitNot:
+        case il::Op::Unbox:
+        case il::Op::ToInt32:
+        case il::Op::ToNumeric:
+        case il::Op::NumericStep:
+        case il::Op::ToStr:
+        case il::Op::ConcatBegin:
+        case il::Op::ConcatAppend:
+        case il::Op::RelLt:
+        case il::Op::RelGt:
+        case il::Op::RelLe:
+        case il::Op::RelGe:
+        case il::Op::LooseEq:
+        case il::Op::InstanceOf:
+        case il::Op::In:
+        case il::Op::ObjectKeys:
+        case il::Op::ForInKeys:
             return false;
+        default:
+            return true;
     }
 }
 
@@ -710,39 +794,15 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
             return true;
         }
 
-        case il::Op::SuperSet:
-        case il::Op::PrivateSet:
-        case il::Op::PrivateAdd:
-        case il::Op::MethodDef:
-        case il::Op::MethodDefComputed:
-        case il::Op::AccessorDef:
-        case il::Op::AccessorDefComputed:
-        case il::Op::DefineOwnAttr:
-        case il::Op::PropDelete:
-        case il::Op::ElemDelete:
-        case il::Op::ClassExtend:
-        case il::Op::EnvSet:
-        case il::Op::ModuleEnvSet:
-        case il::Op::EnvInitTdz:
-        case il::Op::ImmutableAssign:
-        case il::Op::DynamicCall:
-        case il::Op::DynamicCallSpread:
-        case il::Op::ConstructSpread:
-        case il::Op::MethodCallSpread:
-        case il::Op::SuperCall:
-        case il::Op::SuperCallSpread:
-        case il::Op::DynamicImport:
-        case il::Op::Throw:
-        case il::Op::CoroStart:
-        case il::Op::CoroSuspend:
-        case il::Op::AsyncIterOpen:
-        case il::Op::AsyncIterNext:
-        case il::Op::AsyncIterClose:
-        case il::Op::IterDelegate:
-            return true;
+        // A read of an accessor key is a call to the getter.
+        case il::Op::PropGet:
+        case il::Op::SuperGet:
+            return inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex];
 
+        // Everything without a narrower answer above: the one predicate, so a
+        // loop and a straight-line run agree about what can write a property.
         default:
-            return false;
+            return isImpureForLoopPropHoist(inst);
     }
 }
 

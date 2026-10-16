@@ -1,0 +1,4 @@
+valueOf 1 9 2
+compare 1 8 true
+template 1 2 s
+loop valueOf 123

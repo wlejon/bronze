@@ -416,6 +416,9 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                         continue;
                     }
                     table.push_back({recv, key, inst.result});
+                } else if (key < isAccessorKey.size() && isAccessorKey[key]) {
+                    // The getter is user code and can write any property.
+                    table.clear();
                 }
             }
             ++i;

@@ -378,3 +378,33 @@ TEST_CASE("static-slot intra-block CSE and store-to-load forwarding eliminate re
     CHECK(rawUnboxes == 4);
 }
 
+TEST_CASE("store-to-load forwarding does not carry a literal's store across an object spread") {
+    // `{ from: -1, ...p }` stores `from` and then the spread may redefine it,
+    // so the read after the spread must stay a read: forwarded, it answers -1
+    // whatever `p.from` is. Inferred and dynamic lowering both.
+    const char* src =
+        "function lit(p) { const P = { from: -1, ...p }; return P.from; }\n"
+        "console.log(lit({ from: 5 }));\n";
+    for (const bool infer : {true, false}) {
+        CAPTURE(infer);
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const auto optMod = infer ? inferAndLower(src, diags, buf) : parseAndLower(src, diags, buf);
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+
+        const il::Function* fn = findFunction(*optMod, "lit");
+        REQUIRE(fn != nullptr);
+        bool spreadSeen = false;
+        bool readAfterSpread = false;
+        for (const auto& blk : fn->blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == il::Op::ObjectSpread) spreadSeen = true;
+                if (spreadSeen && inst.op == il::Op::PropGet) readAfterSpread = true;
+            }
+        }
+        CHECK(spreadSeen);
+        CHECK(readAfterSpread);
+    }
+}
+
