@@ -177,6 +177,7 @@ struct Session {
 #else
     std::thread thread;
 #endif
+    std::atomic<bool> ready{false};
     std::atomic<bool> stop{false};
     uint32_t hz = 1000;
     uint32_t mask = kProfilerThreadMain;
@@ -607,6 +608,8 @@ void samplerBody(Session& s) {
     double lastModuleRefresh = 0.0;
     double lastThreadRefresh = -1e9;
     s.c.log.reserve(1 << 20);
+    s.qpcStart = qpcNow();
+    s.ready.store(true, std::memory_order_release);
     while (!s.stop.load(std::memory_order_acquire)) {
         const double relMs = 1000.0 * double(qpcNow() - s.qpcStart) / double(s.qpcFreq);
         if (relMs < nextDue) {
@@ -746,6 +749,9 @@ bool profilerStart(const ProfilerOptions& options, std::string* error) {
         if (error) *error = "could not create the sampler thread";
         return false;
     }
+    while (!s->ready.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
     g_session = s;
     return true;
 }
@@ -832,7 +838,11 @@ bool profilerStart(const ProfilerOptions& options, std::string* error) {
         return false;
     }
     s->samplerId = tid;
+    ::SetThreadPriority(s->thread, THREAD_PRIORITY_TIME_CRITICAL);
     ::ResumeThread(s->thread);
+    while (!s->ready.load(std::memory_order_acquire)) {
+        ::SwitchToThread();
+    }
     g_session = s;
     return true;
 }

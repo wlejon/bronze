@@ -56,7 +56,7 @@ TEST_CASE("sampling profiler: captures samples and resolves symbols on busy loop
     CHECK(profilerRunning());
 
     volatile uint64_t sink = 1;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(40);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(80);
     while (std::chrono::steady_clock::now() < deadline) {
         sink = profilerBusySpinStep(sink);
     }

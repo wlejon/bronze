@@ -333,6 +333,7 @@ bool resolveTimeZone(std::string_view input, std::string& canonicalOut) {
     }
 
     // 5. System IANA tzdb via C++20 `std::chrono::locate_zone`.
+#if !defined(_LIBCPP_VERSION) && defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
     try {
         const auto& tzdb = std::chrono::get_tzdb();
         for (const auto& z : tzdb.zones) {
@@ -350,11 +351,13 @@ bool resolveTimeZone(std::string_view input, std::string& canonicalOut) {
     } catch (...) {
         // Fall through if platform tzdb is unavailable.
     }
+#endif
 
     return false;
 }
 
 std::string defaultTimeZone() {
+#if !defined(_LIBCPP_VERSION) && defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
     try {
         const auto* z = std::chrono::current_zone();
         if (z) {
@@ -364,6 +367,7 @@ std::string defaultTimeZone() {
         }
     } catch (...) {
     }
+#endif
     return "UTC";
 }
 
@@ -381,6 +385,7 @@ double timeZoneOffsetMs(double tUtc, std::string_view canonicalZone) {
         return fixedOffsetMs;
     }
 
+#if !defined(_LIBCPP_VERSION) && defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
     // Clamp query instant into [-2208988800, 4102444800] (1900-01-01 .. 2100-01-01)
     // so extreme JavaScript dates (±275760) do not overflow chrono sys_seconds.
     double secs = std::floor(tUtc / kMsPerSecond);
@@ -399,6 +404,7 @@ double timeZoneOffsetMs(double tUtc, std::string_view canonicalZone) {
         }
     } catch (...) {
     }
+#endif
 
     if (const IanaZoneEntry* known = findKnownIanaZone(canonicalZone)) {
         return static_cast<double>(known->fallbackStandardOffsetMinutes) * kMsPerMinute;
