@@ -15,6 +15,7 @@
 #include <mutex>
 #include <span>
 #include <unordered_map>
+#include <vector>
 
 namespace bronze::runtime {
 
@@ -38,25 +39,22 @@ void registerCodeStackMaps(const bronze_code_range* ranges, uint32_t count) {
     Registrations& r = registrations();
     std::lock_guard<std::mutex> lock(r.mu);
     if (r.tokens.count(ranges)) return;
-    brass::ModuleStackMap maps;
+    // The encoded maps stay where they are, in the image beside the code
+    // (it outlives the registration: unregisterCodeStackMaps comes first),
+    // and each is decoded only when a collection's stack walk meets its
+    // function: most of a runtime's functions never are.
+    std::vector<brass::EncodedCodeStackMap> encoded;
+    encoded.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         const bronze_code_range& range = ranges[i];
         if (!range.stack_map || range.stack_map_size == 0 || !range.code_start) continue;
         const auto start = reinterpret_cast<uintptr_t>(range.code_start);
         // Code whose maps its loader registered already (a JIT's).
         if (brass::code_stack_maps_cover(start)) continue;
-        brass::ModuleStackMap one;
-        if (!brass::decode_stack_maps_into(std::span<const uint8_t>(range.stack_map, range.stack_map_size), one)) {
-            continue;
-        }
-        for (brass::FunctionStackMap& fn : one.functions()) {
-            fn.function_address = start;
-            fn.code_size = range.code_size;
-            maps.add_function(std::move(fn));
-        }
+        encoded.push_back({start, range.code_size, range.stack_map, range.stack_map_size});
     }
-    if (maps.empty()) return;
-    r.tokens.emplace(ranges, brass::register_code_stack_maps(maps));
+    if (encoded.empty()) return;
+    if (auto token = brass::register_encoded_code_stack_maps(encoded)) r.tokens.emplace(ranges, std::move(token));
 }
 
 void unregisterCodeStackMaps(const bronze_code_range* ranges) {
