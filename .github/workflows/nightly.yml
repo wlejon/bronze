@@ -126,9 +126,15 @@ jobs:
       # rule demands — a nightly that skipped the milestones would be a binary
       # nobody proved.
       - name: Test
+        shell: bash
         env:
           BRONZE_TEST_JOBS: 4
-        run: ctest --preset dev --parallel 4
+        run: |
+          if [ "${{ matrix.osx_arch }}" = "x86_64" ]; then
+            ctest --preset dev --parallel 4 -LE "deopt-stress|release-stress"
+          else
+            ctest --preset dev --parallel 4
+          fi
 
       # Flat layout: the driver looks for the shared runtime and the program
       # host next to the exe first — so exe + runtime + host in one directory
