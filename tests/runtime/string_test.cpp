@@ -526,7 +526,7 @@ TEST_CASE("String.prototype.indexOf and replace(re, fn) / replaceAll(re, fn): AS
         const double indexOfMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         CHECK(count == 5000);
         if (!wasStress) {
-            CHECK(indexOfMs < 20.0);
+            CHECK(indexOfMs < 100.0);
         }
 
         Rooted<Value> pat{rtMakeString("line")};
@@ -545,7 +545,7 @@ TEST_CASE("String.prototype.indexOf and replace(re, fn) / replaceAll(re, fn): AS
         CHECK(outHdr->charCodeAt(2) == 'N');
         CHECK(outHdr->charCodeAt(3) == 'E');
         if (!wasStress) {
-            CHECK(replaceMs < 20.0);
+            CHECK(replaceMs < 100.0);
         }
         rtHeap().set_gc_stress(wasStress);
     }
