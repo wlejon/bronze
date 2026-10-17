@@ -131,7 +131,7 @@ jobs:
           BRONZE_TEST_JOBS: 4
         run: |
           if [ "${{ matrix.osx_arch }}" = "x86_64" ]; then
-            ctest --preset dev --parallel 4 -LE "deopt-stress|release-stress"
+            BRONZE_TEST_JOBS=3 ctest --preset dev --parallel 4 -LE "deopt-stress|release-stress"
           else
             ctest --preset dev --parallel 4
           fi

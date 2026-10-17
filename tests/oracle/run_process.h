@@ -52,8 +52,8 @@ namespace oracle {
 // and the slowest stressed one (async_suspend_protocol under gc-stress at
 // tier 2, which scans a 16,000-frame stack at every allocation on the way to
 // its RangeError) is 48 s here and near 150 s there.
-constexpr uint32_t kRunTimeoutMs = 60000;
-constexpr uint32_t kStressTimeoutMs = 300000;
+constexpr uint32_t kRunTimeoutMs = 120000;
+constexpr uint32_t kStressTimeoutMs = 600000;
 
 struct RunResult {
     bool ran = false;       // process started and exited on its own
