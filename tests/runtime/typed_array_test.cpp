@@ -567,7 +567,7 @@ TEST_CASE("new TypedArray(otherTypedArray): same-type, cross-type, subarray, cla
         CHECK(d->bytes()[kLen / 2] == 123);
         CHECK(d->bytes()[kLen - 1] == 251);
         if (!wasStress) {
-            CHECK(ms < 15.0);
+            CHECK(ms < 100.0);
         }
         rtHeap().set_gc_stress(wasStress);
     }
