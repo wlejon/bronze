@@ -100,7 +100,7 @@ uint32_t walkStack(const ModuleRanges&, const void* context, uint64_t* pcs, uint
     const uint64_t lo = ctx.stackLo, hi = ctx.stackHi;
     // A frame record [fp] = caller's fp, [fp + 8] = return address, inside
     // the stack and 16-byte aligned.
-    auto validRecord = [&](uint64_t fp) { return fp >= lo && fp + 16 <= hi && (fp & 15) == 0; };
+    auto validRecord = [&](uint64_t fp) { return fp >= lo && fp < hi && hi - fp >= 16 && (fp & 15) == 0; };
     if (maxFrames == 0 || ctx.pc == 0 || hi == 0) return 0;
     uint32_t n = 0;
     if (sps) sps[n] = ctx.sp;
@@ -134,7 +134,9 @@ bool ModuleRanges::contains(uint64_t) const { return false; }
 uint32_t walkStack(const ModuleRanges&, const void* context, uint64_t* pcs, uint64_t* sps, uint32_t maxFrames) {
     const auto& ctx = *static_cast<const LinuxX64Context*>(context);
     const uint64_t lo = ctx.stackLo, hi = ctx.stackHi;
-    auto validRecord = [&](uint64_t fp) { return fp >= lo && fp + 16 <= hi && (fp & 7) == 0; };
+    // (hi - fp, not fp + 16: a garbage %rbp near the top of the address space,
+    // from code built without frame pointers, wrapped past `hi`.)
+    auto validRecord = [&](uint64_t fp) { return fp >= lo && fp < hi && hi - fp >= 16 && (fp & 7) == 0; };
     if (maxFrames == 0 || ctx.pc == 0 || hi == 0) return 0;
     uint32_t n = 0;
     if (sps) sps[n] = ctx.sp;
