@@ -66,7 +66,8 @@ void callBack(Rooted<Value>& fn, Rooted<Value>& iter, Rooted<Value>& value, doub
               Rooted<Value>& out) {
     closeOnThrow(iter, [&] {
         Value block[2] = {value.get(), Value::fromDouble(counter)};
-        out.set(fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, block));
+        out.set(Value(bronze_dynamic_call(fn.get().rawBits(), Value::fromUndefined().rawBits(), 2,
+                                          reinterpret_cast<const uint64_t*>(block))));
     });
 }
 
@@ -151,8 +152,9 @@ uint64_t iteratorReduce(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
         Rooted<Value> result;
         closeOnThrow(self, [&] {
             Value block[3] = {accumulator.get(), value.get(), Value::fromDouble(counter)};
-            result.set(
-                reducer.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 3, block));
+            result.set(Value(
+                bronze_dynamic_call(reducer.get().rawBits(), Value::fromUndefined().rawBits(), 3,
+                                    reinterpret_cast<const uint64_t*>(block))));
         });
         accumulator.set(result.get());
         counter += 1.0;

@@ -39,6 +39,7 @@
 #include "runtime/iterator.h"
 #include "runtime/iterator_helpers_internal.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
@@ -53,7 +54,7 @@ namespace bronze::runtime {
 namespace iterator_helpers {
 
 bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+    return rtIsCallableValue(v);
 }
 
 namespace {
@@ -84,7 +85,8 @@ Step stepIterator(Rooted<Value>& iter, Rooted<Value>& next, Rooted<Value>& out) 
     if (!isCallable(next.get())) {
         rtThrowTypeError("the iterator has no `next` method");
     }
-    Rooted<Value> result{next.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr)};
+    Rooted<Value> result{
+        Value(bronze_dynamic_call(next.get().rawBits(), iter.get().rawBits(), 0, nullptr))};
     // 7.4.4 IteratorNext step 3: a result that is not an object is a TypeError,
     // and NOT an exhausted iterator — a `next` returning `undefined` is a bug in
     // the iterator and reading `done` off `undefined` would hide it.
@@ -101,9 +103,17 @@ namespace {
 
 void closeIteratorNow(Rooted<Value>& iter) {
     Rooted<Value> ret{genericGet(iter, "return")};
-    // 7.4.11 step 4: an iterator with no `return` closes by doing nothing.
-    if (!isCallable(ret.get())) return;
-    ret.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr);
+    // 7.4.11 step 3-4: GetMethod(iterator, "return"); an iterator with no
+    // `return` (undefined or null) closes by doing nothing.
+    if (ret.get().isUndefined() || ret.get().isNull()) return;
+    if (!isCallable(ret.get())) {
+        rtThrowTypeError("iterator return is not a function");
+    }
+    Rooted<Value> res{
+        Value(bronze_dynamic_call(ret.get().rawBits(), iter.get().rawBits(), 0, nullptr))};
+    if (!res.get().isObject()) {
+        rtThrowTypeError("iterator return() result is not an object");
+    }
 }
 
 }  // namespace
@@ -152,7 +162,8 @@ void getIteratorFlattenable(Rooted<Value>& value, bool allowStringPrimitive, con
             rtThrowTypeError(std::string(member) + ": the value's Symbol.iterator is not a "
                                                    "function");
         }
-        iterOut.set(method.get().asObject<FunctionHeader>()->call(value.get(), 0, nullptr));
+        iterOut.set(
+            Value(bronze_dynamic_call(method.get().rawBits(), value.get().rawBits(), 0, nullptr)));
     }
     if (!iterOut.get().isObject()) {
         rtThrowTypeError(std::string(member) + ": the iterator is not an object");
@@ -241,7 +252,8 @@ void callWithCounter(Rooted<Value>& helper, Rooted<Value>& iter, Rooted<Value>& 
     writeSlot(helper, IteratorHelperSlot::Counter, Value::fromDouble(counter + 1.0));
     closeOnThrow(iter, [&] {
         Value block[2] = {value.get(), Value::fromDouble(counter)};
-        out.set(fn.get().asObject<FunctionHeader>()->call(Value::fromUndefined(), 2, block));
+        out.set(Value(bronze_dynamic_call(fn.get().rawBits(), Value::fromUndefined().rawBits(), 2,
+                                          reinterpret_cast<const uint64_t*>(block))));
     });
 }
 
@@ -382,8 +394,12 @@ uint64_t helperReturn(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
                    "helper")
             .rawBits();
     }
+    const uint32_t state = slotNumber(self, IteratorHelperSlot::State);
+    if (state == StateRunning) {
+        return rtThrowTypeError("this iterator helper is already running").rawBits();
+    }
     Rooted<Value> none;
-    if (slotNumber(self, IteratorHelperSlot::State) == StateDone) {
+    if (state == StateDone) {
         return iterResult(none, true).rawBits();
     }
     writeSlot(self, IteratorHelperSlot::State, Value::fromDouble(StateDone));
@@ -391,7 +407,9 @@ uint64_t helperReturn(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     // A `flatMap` abandoned mid-inner closes BOTH, innermost first, which is the
     // order the nested generator bodies of 27.1.4.1.7 would unwind in.
     Rooted<Value> inner{readSlot(self, IteratorHelperSlot::Inner)};
-    if (inner.get().isObject()) closeIterator(inner, /*suppress=*/false);
+    if (inner.get().isObject()) {
+        closeOnThrow(iter, [&] { closeIterator(inner, /*suppress=*/false); });
+    }
     closeIterator(iter, /*suppress=*/false);
     return iterResult(none, true).rawBits();
 }
@@ -416,7 +434,7 @@ uint64_t wrapNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     // The result object is passed through UNCHANGED — 27.1.3.2.1.1 is
     // `Call(next, iterated)` and nothing more, so a `next` returning extra
     // properties keeps them.
-    return next.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr).rawBits();
+    return bronze_dynamic_call(next.get().rawBits(), iter.get().rawBits(), 0, nullptr);
 }
 
 uint64_t wrapReturn(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
@@ -428,13 +446,16 @@ uint64_t wrapReturn(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> iter{readSlot(self, IteratorHelperSlot::Iterated)};
     Rooted<Value> key{rtMakeString("return")};
     Rooted<Value> ret{Value(bronze_elem_get(iter.get().rawBits(), key.get().rawBits()))};
-    // 27.1.3.2.1.2 step 5: a wrapped iterator with no `return` answers a done
-    // result rather than failing — the wrapper must not invent a method.
-    if (!isCallable(ret.get())) {
+    // 27.1.3.2.1.2 step 3-4: GetMethod(iterator, "return"); a wrapped iterator
+    // with no `return` (undefined or null) answers a done result.
+    if (ret.get().isUndefined() || ret.get().isNull()) {
         Rooted<Value> none;
         return iterResult(none, true).rawBits();
     }
-    return ret.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr).rawBits();
+    if (!isCallable(ret.get())) {
+        return rtThrowTypeError("iterator return is not a function").rawBits();
+    }
+    return bronze_dynamic_call(ret.get().rawBits(), iter.get().rawBits(), 0, nullptr);
 }
 
 // ---- the five lazy helpers (27.1.4.1) ---------------------------------------

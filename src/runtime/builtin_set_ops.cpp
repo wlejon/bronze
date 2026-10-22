@@ -122,7 +122,8 @@ bool getSetRecord(Rooted<Value>& other, const char* member, SetRecord& out) {
 // 7.4.3 GetIteratorFromMethod over the record's `keys`: call it on the object,
 // then read the `next` of whatever it returned — once, as the protocol requires.
 bool openKeys(SetRecord& rec, Rooted<Value>& iterOut, Rooted<Value>& nextOut) {
-    iterOut.set(rec.keys.get().asObject<FunctionHeader>()->call(rec.object.get(), 0, nullptr));
+    iterOut.set(
+        Value(bronze_dynamic_call(rec.keys.get().rawBits(), rec.object.get().rawBits(), 0, nullptr)));
     if (!iterOut.get().isObject()) {
         rtThrowTypeError("the `keys` method of a set-like object did not return an object");
     }
@@ -135,7 +136,9 @@ bool openKeys(SetRecord& rec, Rooted<Value>& iterOut, Rooted<Value>& nextOut) {
 // for a set-like: `Map.prototype.has` needs its own map as `this`.
 bool otherHas(SetRecord& rec, Rooted<Value>& value, bool& out) {
     Value block[1] = {value.get()};
-    Rooted<Value> result{rec.has.get().asObject<FunctionHeader>()->call(rec.object.get(), 1, block)};
+    Rooted<Value> result{Value(bronze_dynamic_call(
+        rec.has.get().rawBits(), rec.object.get().rawBits(), 1,
+        reinterpret_cast<const uint64_t*>(block)))};
     out = bronze_truthy(result.get().rawBits());
     return true;
 }
@@ -173,7 +176,7 @@ void fillLiveElements(Rooted<Value>& set, RootedBlock& block) {
     auto* map = set.get().asObject<MapHeader>();
     const uint32_t used = map->used();
     uint32_t at = 0;
-    for (uint32_t slot = 0; slot < used; ++slot) {
+    for (uint32_t slot = 0; slot < used && at < block.count(); ++slot) {
         if (!map->liveAt(slot)) continue;
         block.set(at++, map->keyAt(slot));
         // Re-derived per element: nothing here allocates, but the pointer is
@@ -261,7 +264,7 @@ uint64_t setIntersection(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
         if (step == Step::Done) break;
         if (setHas(self, value)) addTo(matched, value);
     }
-    RootedBlock block(thisSize);
+    RootedBlock block(liveCount(self));
     fillLiveElements(self, block);
     for (uint32_t i = 0; i < block.count(); ++i) {
         Rooted<Value> element{Value(block.data()[i])};
