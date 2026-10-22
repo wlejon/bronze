@@ -1,0 +1,75 @@
+#pragma once
+
+// Canonical host-class wrapper on the embed surface: one constructor function +
+// one shared prototype per thread/realm, with process-wide type-brand
+// verification and base-class lineage walks on unwrap()/isInstance().
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "embed/embed.h"
+#include "embed/embed_object_builder.h"
+
+namespace bronze::embed {
+
+class BRONZE_EMBED_API HostClass {
+public:
+    struct Slots {
+        Persistent* proto = nullptr;
+        Persistent* ctor = nullptr;
+        Persistent* instanceProto = nullptr;
+        Persistent* realmGlobal = nullptr;
+        std::string name;
+        std::vector<std::string> aliases;
+        bool isGlobal = true;
+    };
+
+    void install(const char* name, uint32_t arity, NativeFn body,
+                 const std::function<void(ObjectBuilder&)>& decorate = nullptr,
+                 bool global = true);
+
+    void init(const char* name, const std::function<void(ObjectBuilder&)>& decorate) {
+        install(name, 0, nullptr, decorate);
+    }
+
+    template <typename T>
+    Value createInstance(std::unique_ptr<T> ptr) const {
+        return make(ptr.release(), [](void* p) { delete static_cast<T*>(p); });
+    }
+
+    void alias(const char* name) const;
+    void inherit(const HostClass& base) const;
+    void setInstancePrototype(Value p);
+
+    Value make(void* data, HandleDestructor dtor,
+               Finalize when = Finalize::InSweep) const;
+
+    void setStatic(const char* name, Value v) const;
+
+    // The payload of a handle THIS class (or a subclass that inherit()ed from
+    // it) made; nullptr for anything else, including another class's handle.
+    // Allocates nothing.
+    void* unwrap(Value val) const;
+    bool isInstance(Value val) const;
+
+    Value prototype() const;
+    Value constructor() const;
+
+    // Whether install() has run on the CALLING thread's active realm.
+    bool installed() const;
+
+private:
+    mutable std::atomic<const HostClass*> base_{nullptr};
+
+    Slots& slots() const;
+    const Slots* slotsIfAny() const;
+};
+
+BRONZE_EMBED_API Value hostArrayOf(size_t count, const std::function<Value(size_t)>& make);
+
+}  // namespace bronze::embed

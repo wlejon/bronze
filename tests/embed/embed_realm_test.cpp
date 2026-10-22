@@ -205,3 +205,95 @@ TEST_CASE("destroying an active realm safely restores previous realm") {
     embed::destroyRealm(realmA);
     CHECK(embed::currentRealm() == def);
 }
+
+TEST_CASE("HostClass brand isolation, inheritance lineage, multi-realm install, and builders") {
+    static embed::HostClass classBase;
+    static embed::HostClass classDerived;
+    static embed::HostClass classOther;
+
+    struct Payload {
+        int value{0};
+    };
+
+    classBase.install("TestBase", 0, nullptr, [](embed::ObjectBuilder& proto) {
+        proto.def("getBaseVal", 0, [](embed::Value self, std::span<const embed::Value>) {
+            auto* p = static_cast<Payload*>(classBase.unwrap(self));
+            if (!p) return embed::throwTypeError("bad receiver");
+            return embed::fromDouble(p->value);
+        });
+    });
+    classDerived.install("TestDerived", 0, nullptr, [](embed::ObjectBuilder& proto) {
+        proto.def("getDerivedVal", 0, [](embed::Value self, std::span<const embed::Value>) {
+            auto* p = static_cast<Payload*>(classDerived.unwrap(self));
+            if (!p) return embed::throwTypeError("bad receiver");
+            return embed::fromDouble(p->value * 2);
+        });
+    });
+    classDerived.inherit(classBase);
+
+    classOther.install("TestOther", 0, nullptr);
+    classOther.alias("TestOtherAlias");
+    classOther.setStatic("VERSION", embed::fromDouble(3.0));
+
+    CHECK(classBase.installed());
+    CHECK(classDerived.installed());
+    CHECK(classOther.installed());
+
+    // Alias receives static property too
+    embed::GlobalValue aliasGv = embed::globalValue("TestOtherAlias");
+    CHECK(aliasGv.found);
+    CHECK(embed::toDouble(embed::getProperty(aliasGv.value, "VERSION")) == 3.0);
+
+    embed::Persistent derivedInst(classDerived.createInstance(std::make_unique<Payload>(Payload{21})));
+    embed::Persistent otherInst(classOther.createInstance(std::make_unique<Payload>(Payload{99})));
+
+    // Brand isolation: classOther handle cannot be unwrapped by classBase or classDerived
+    CHECK(classOther.isInstance(otherInst.get()));
+    CHECK(!classBase.isInstance(otherInst.get()));
+    CHECK(!classDerived.isInstance(otherInst.get()));
+    CHECK(classBase.unwrap(otherInst.get()) == nullptr);
+
+    // Inheritance lineage: classDerived handle unwraps for both classDerived and classBase
+    CHECK(classDerived.isInstance(derivedInst.get()));
+    CHECK(classBase.isInstance(derivedInst.get()));
+    CHECK(!classOther.isInstance(derivedInst.get()));
+    auto* asBase = static_cast<Payload*>(classBase.unwrap(derivedInst.get()));
+    REQUIRE(asBase != nullptr);
+    CHECK(asBase->value == 21);
+
+    // Multi-realm installed() check: entering a fresh realm sees installed() == false until re-installed
+    embed::Realm* subRealm = embed::createRealm();
+    {
+        embed::RealmScope scope(subRealm);
+        CHECK(!classBase.installed());
+        classBase.install("TestBase", 0, nullptr);
+        CHECK(classBase.installed());
+    }
+    embed::destroyRealm(subRealm);
+
+    // ObjectBuilder, ArrayBuilder, and hostArrayOf
+    embed::ObjectBuilder ob;
+    ob.set("name", "widget");
+    ob.set("count", static_cast<int32_t>(5));
+    ob.set("enabled", true);
+
+    embed::ArrayBuilder ab;
+    ab.push("alpha");
+    ab.push(static_cast<int32_t>(10));
+    ob.set("items", ab.build());
+
+    embed::Persistent built(ob.build());
+    CHECK(embed::toUtf8(embed::getProperty(built.get(), "name")) == "widget");
+    CHECK(embed::toDouble(embed::getProperty(built.get(), "count")) == 5.0);
+    CHECK(embed::toBool(embed::getProperty(built.get(), "enabled")) == true);
+
+    embed::Persistent items(embed::getProperty(built.get(), "items"));
+    CHECK(embed::toUtf8(embed::getElement(items.get(), 0)) == "alpha");
+    CHECK(embed::toDouble(embed::getElement(items.get(), 1)) == 10.0);
+
+    embed::Persistent squares(embed::hostArrayOf(4, [](size_t i) {
+        return embed::fromDouble(static_cast<double>(i * i));
+    }));
+    CHECK(embed::toDouble(embed::getElement(squares.get(), 0)) == 0.0);
+    CHECK(embed::toDouble(embed::getElement(squares.get(), 3)) == 9.0);
+}

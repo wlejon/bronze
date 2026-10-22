@@ -814,3 +814,5 @@ BRONZE_EMBED_API bool isTypedArray(Value v);
 // gets them too. Each includes embed.h itself, so either order works.
 #include "embed/embed_native.h"
 #include "embed/embed_typed_array.h"
+#include "embed/embed_object_builder.h"
+#include "embed/embed_host_class.h"

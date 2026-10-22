@@ -17,6 +17,7 @@ bronze_add_module(embed
         embed_realm.cpp
         embed_profiler.cpp
         embed_clone.cpp
+        embed_host_class.cpp
     DEPS
         runtime
         abi
