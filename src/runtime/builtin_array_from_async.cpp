@@ -104,7 +104,7 @@ void fromAsyncCloseSource(Rooted<Value>& state) {
             Rooted<Value> key{rtMakeString("return")};
             Rooted<Value> ret{Value(bronze_elem_get(iter.get().rawBits(), key.get().rawBits()))};
             if (isCallable(ret.get())) {
-                ret.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr);
+                bronze_dynamic_call(ret.get().rawBits(), iter.get().rawBits(), 0, nullptr);
             }
         },
         ignored);
@@ -162,7 +162,8 @@ void fromAsyncResume(Rooted<Value>& state) {
         Rooted<Value> next{fromAsyncSlot(state, FromAsyncSlot::NextFn)};
         Rooted<Value> result{Value::fromUndefined()};
         if (!fromAsyncStep(state, false, [&] {
-                result.set(next.get().asObject<FunctionHeader>()->call(iter.get(), 0, nullptr));
+                result.set(Value(
+                    bronze_dynamic_call(next.get().rawBits(), iter.get().rawBits(), 0, nullptr)));
             })) {
             return;
         }
@@ -327,6 +328,10 @@ uint64_t rtArrayFromAsyncBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
         if (src.get().isObject()) {
             Rooted<Value> key{rtAsyncIteratorKey()};
             asyncMethod.set(Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits())));
+            if (!asyncMethod.get().isUndefined() && !asyncMethod.get().isNull() &&
+                !isCallable(asyncMethod.get())) {
+                rtThrowTypeError("Array.fromAsync: Symbol.asyncIterator is not a function");
+            }
         }
         const bool constructed = buildsThroughThis(ctor.get());
         setFromAsyncSlot(state, FromAsyncSlot::Constructed,
@@ -334,14 +339,17 @@ uint64_t rtArrayFromAsyncBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
 
         if (isCallable(asyncMethod.get())) {
             // 3.e-h: the async iterator, and Construct(C) with no length.
-            Rooted<Value> iter{
-                asyncMethod.get().asObject<FunctionHeader>()->call(src.get(), 0, nullptr)};
+            Rooted<Value> iter{Value(
+                bronze_dynamic_call(asyncMethod.get().rawBits(), src.get().rawBits(), 0, nullptr))};
             if (!iter.get().isObject()) {
                 rtThrowTypeError("the result of Symbol.asyncIterator is not an object");
             }
             Rooted<Value> nextKey{rtMakeString("next")};
             Rooted<Value> next{
                 Value(bronze_elem_get(iter.get().rawBits(), nextKey.get().rawBits()))};
+            if (!isCallable(next.get())) {
+                rtThrowTypeError("Array.fromAsync: async iterator has no callable next method");
+            }
             Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
             setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(0));
             setFromAsyncSlot(state, FromAsyncSlot::Iterator, iter.get());
@@ -349,8 +357,11 @@ uint64_t rtArrayFromAsyncBuiltin(uint64_t, uint64_t thisBits, uint32_t argc,
             setFromAsyncSlot(state, FromAsyncSlot::Out, out.get());
             return;
         }
-        if (rtHasIteratorMethod(src)) {
-            Rooted<Value> rec{Value(bronze_iter_open(src.get().rawBits()))};
+        Rooted<Value> syncMethod{Value::fromUndefined()};
+        if (rtHasIteratorMethod(src, &syncMethod)) {
+            Rooted<Value> rec{syncMethod.get().isUndefined()
+                                  ? Value(bronze_iter_open(src.get().rawBits()))
+                                  : rtGetIteratorFromMethod(src, syncMethod)};
             Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
             setFromAsyncSlot(state, FromAsyncSlot::Mode, Value::fromDouble(1));
             setFromAsyncSlot(state, FromAsyncSlot::Iterator, rec.get());

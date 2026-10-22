@@ -275,6 +275,18 @@ Value rtOpenIterator(Value source) {
 }
 
 Value rtGetIteratorFromMethod(Rooted<Value>& source, Rooted<Value>& method) {
+    if (source.get().isObject() &&
+        source.get().asObject<HeapObjectHeader>()->flags == BRONZE_ABI_OBJ_FLAGS_PLAIN &&
+        rtIsMapOrSet(source.get())) {
+        const bool isSet = rtIsSetKind(source.get());
+        if (rtIsIntrinsicCollectionIterator(method.get(), isSet)) {
+            const uint32_t kind =
+                isSet ? IterRecordHeader::SetValues : IterRecordHeader::MapEntries;
+            Rooted<Value> recRoot{Value::fromObject(IterRecordHeader::create(rtHeap(), kind))};
+            recRoot.get().asObject<IterRecordHeader>()->target = source.get();
+            return recRoot.get();
+        }
+    }
     Rooted<Value> recRoot{
         Value::fromObject(IterRecordHeader::create(rtHeap(), IterRecordHeader::Protocol))};
     openProtocolFromMethod(recRoot, source, method);

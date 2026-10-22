@@ -162,7 +162,8 @@ bool fillFromArrayLike(Rooted<Value>& view, ElementKind kind, Rooted<Value>& sou
     // and never asks for an iterator at all: `new Float64Array({length: 2, 0:
     // 1.5, 1: 2.5})` is a two-element view, and an object with no `length` at
     // all is a length-0 one rather than an error.
-    if (!rtHasIteratorMethod(source)) {
+    Rooted<Value> iterMethod{Value::fromUndefined()};
+    if (!rtHasIteratorMethod(source, &iterMethod)) {
         const uint32_t length = rtArrayLikeLength(source);
         if (!fillFromLength(view, kind, length)) return false;
         for (uint32_t i = 0; i < length; ++i) {
@@ -176,7 +177,9 @@ bool fillFromArrayLike(Rooted<Value>& view, ElementKind kind, Rooted<Value>& sou
     }
 
     Rooted<Value> collected{Value(bronze_create_array(0))};
-    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
+    Rooted<Value> rec{iterMethod.get().isUndefined()
+                          ? Value(bronze_iter_open(source.get().rawBits()))
+                          : rtGetIteratorFromMethod(source, iterMethod)};
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
         bronze_array_append(collected.get().rawBits(), item.get().rawBits());
@@ -307,7 +310,8 @@ uint64_t rtTypedArrayFromBody(uint64_t, uint64_t thisBits, uint32_t argc, const 
     // undefined steps 9-13 read `length` and the indices instead —
     // `Uint8Array.from({ length: 2 }, fn)` is a two-element view, never an
     // "is not iterable" TypeError.
-    if (!rtHasIteratorMethod(source)) {
+    Rooted<Value> iterMethod{Value::fromUndefined()};
+    if (!rtHasIteratorMethod(source, &iterMethod)) {
         const uint32_t len = rtArrayLikeLength(source);
         Rooted<Value> out{rtTypedArrayCreateFromConstructor(ctor, len)};
         for (uint32_t i = 0; i < len; ++i) {
@@ -321,7 +325,9 @@ uint64_t rtTypedArrayFromBody(uint64_t, uint64_t thisBits, uint32_t argc, const 
     }
 
     Rooted<Value> collected{Value(bronze_create_array(0))};
-    Rooted<Value> rec{Value(bronze_iter_open(source.get().rawBits()))};
+    Rooted<Value> rec{iterMethod.get().isUndefined()
+                          ? Value(bronze_iter_open(source.get().rawBits()))
+                          : rtGetIteratorFromMethod(source, iterMethod)};
     while (bronze_iter_step(rec.get().rawBits())) {
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
         bronze_array_append(collected.get().rawBits(), item.get().rawBits());

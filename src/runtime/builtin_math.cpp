@@ -478,6 +478,8 @@ Value rtMathObject() {
         profileNameNative(reinterpret_cast<const void*>(fn.code), "Math", fn.name);
         Rooted<Value> key{rtMakeString(fn.name)};
         Rooted<Value> val{rtNativeFunction(fn.code, fn.arity, fn.name, fn.length)};
+        val.get().asObject<FunctionHeader>()->function_flags &=
+            ~(BRONZE_ABI_FN_FLAG_PROTOTYPE | BRONZE_ABI_FN_FLAG_CONSTRUCT);
         // 21.3.1: every member of the namespace is non-enumerable, which is
         // what keeps `for (const k in Math)` and `Object.keys(Math)` empty the
         // way they are in a spec engine — the default here is an ordinary

@@ -6,6 +6,7 @@
 #include "runtime/array.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
@@ -25,7 +26,7 @@ namespace bronze::runtime {
 namespace ctor_internal {
 
 inline bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
+    return rtIsCallableValue(v);
 }
 
 inline Value newEmptyArray() {
@@ -51,7 +52,7 @@ inline void appendTo(Rooted<Value>& arrRoot, Rooted<Value>& val) {
 // ArrayCreate(len). So the ordinary `Array.of(1, 2, 3)` never enters a
 // construction, and the guard is one call and one identity compare.
 inline bool buildsThroughThis(Value thisVal) {
-    return isCallable(thisVal) && !rtIsArrayConstructor(thisVal);
+    return rtIsConstructorValue(thisVal) && !rtIsArrayConstructor(thisVal);
 }
 
 // Construct(C, « len ») or Construct(C), depending on whether the caller knows

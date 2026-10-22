@@ -497,7 +497,7 @@ uint64_t rtMapGroupBy(uint64_t env, uint64_t thisBits, uint32_t argc, const uint
 // protocols first had to be told apart; `Function.prototype.apply`,
 // `Reflect.apply` and the typed-array constructors ask the same question, and
 // ask it here so four callers cannot disagree about `{length: 2}`.
-bool rtHasIteratorMethod(Rooted<Value>& src);
+bool rtHasIteratorMethod(Rooted<Value>& src, Rooted<Value>* methodOut = nullptr);
 uint32_t rtArrayLikeLength(Rooted<Value>& src);
 Value rtArrayLikeElement(Rooted<Value>& src, uint32_t index);
 

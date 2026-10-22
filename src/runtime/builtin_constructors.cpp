@@ -158,32 +158,18 @@ uint64_t arrayFrom(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     Rooted<Value> ctor{Value(thisBits)};
     const bool constructed = buildsThroughThis(ctor.get());
 
-    // Step 4: `GetMethod(items, @@iterator)`. For a PROXY source that is one
-    // `get` trap, observable exactly once — so the method is fetched here and
-    // the iterator opened FROM it (7.4.3), where every other source lets
-    // `bronze_iter_open` do its own lookup.
-    Rooted<Value> proxyMethod{Value::fromUndefined()};
-    bool iterable = rtHasIteratorMethod(src);
-    if (!iterable && src.get().isObject() &&
-        src.get().asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
-        Rooted<Value> key{rtIteratorKey()};
-        proxyMethod.set(rtProxyGet(src.get(), key.get(), src.get()));
-        if (!proxyMethod.get().isNull() && !proxyMethod.get().isUndefined()) {
-            if (!rtIsCallableValue(proxyMethod.get())) {
-                return rtThrowTypeError("Array.from: Symbol.iterator is not a function").rawBits();
-            }
-            iterable = true;
-        }
-    }
-
-    if (iterable) {
+    // Step 4: `GetMethod(items, @@iterator)` — evaluated once, and opened
+    // through `rtGetIteratorFromMethod` when a callable method was read so
+    // an accessor or Proxy `get` trap never runs a second time.
+    Rooted<Value> iterMethod{Value::fromUndefined()};
+    if (rtHasIteratorMethod(src, &iterMethod)) {
         // Step 5.b constructs with NO argument on this path, because the count
         // is not known until the iterator is exhausted — which is the one place
         // the two halves of this member differ in what they hand the base.
         Rooted<Value> out{constructed ? constructThrough(ctor, nullptr) : newEmptyArray()};
-        Rooted<Value> rec{proxyMethod.get().isUndefined()
+        Rooted<Value> rec{iterMethod.get().isUndefined()
                               ? Value(bronze_iter_open(src.get().rawBits()))
-                              : rtGetIteratorFromMethod(src, proxyMethod)};
+                              : rtGetIteratorFromMethod(src, iterMethod)};
         uint32_t i = 0;
         // The mapper is user code, and so is the define on a constructed
         // result: step 6.e.viii closes the iterator when either throws.
@@ -525,15 +511,27 @@ Value ctorObject(const CtorEntry& entry) {
 // theirs on their prototype like any ordinary object), because the answer
 // decides between the iterator path and the array-like one and getting it
 // wrong turns `Array.from(userIterable)` into an empty array.
-bool rtHasIteratorMethod(Rooted<Value>& src) {
+bool rtHasIteratorMethod(Rooted<Value>& src, Rooted<Value>* methodOut) {
     if (src.get().isString()) return true;
     if (!src.get().isObject()) return false;
     const uint16_t flags = src.get().asObject<HeapObjectHeader>()->flags;
-    if (flags == HeapKind::Array || flags == TypedArrayHeader::kFlags) return true;
-    if (flags != BRONZE_ABI_OBJ_FLAGS_PLAIN) return false;
+    if (flags == HeapKind::Array &&
+        !src.get().asObject<ArrayHeader>()->properties.isObject()) {
+        return true;
+    }
+    if (flags == TypedArrayHeader::kFlags &&
+        rtTypedArrayIteratorPristine(src.get().asObject<TypedArrayHeader>())) {
+        return true;
+    }
     Rooted<Value> key{rtIteratorKey()};
-    const Value method = src.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
-    return isCallable(method);
+    Rooted<Value> method{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
+    if (method.get().isUndefined() || method.get().isNull()) return false;
+    if (!isCallable(method.get())) {
+        rtThrowTypeError("Symbol.iterator is not a function");
+        return false;
+    }
+    if (methodOut) methodOut->set(method.get());
+    return true;
 }
 
 // 7.3.18 LengthOfArrayLike: ToLength of the `length` property. A missing
