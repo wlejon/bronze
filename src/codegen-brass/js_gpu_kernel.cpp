@@ -313,7 +313,7 @@ GpuCompileResult compileJsGpuKernelSource(
         il::ValueId pid = static_cast<il::ValueId>(firstParam + i);
         if (isBufferParam[i]) {
             paramTypes.push_back(brass::Type::ptr());
-        } else if (!mustBeFloat.count(pid) &&
+        } else if (!res.hasScalarReturn && !mustBeFloat.count(pid) &&
                    (usedAsIndexOrInt.count(pid) || isIntParamName(fn.params[pid].name))) {
             paramTypes.push_back(brass::Type::i32());
         } else {

@@ -27,3 +27,26 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/discovery_stdlib_test.cpp")
     add_test(NAME discovery-stdlib COMMAND bronze_discovery_stdlib_tests)
     set_tests_properties(discovery-stdlib PROPERTIES LABELS "discovery;check")
 endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/discovery_systems_test.cpp")
+    add_executable(bronze_discovery_systems_tests discovery_systems_test.cpp)
+    target_link_libraries(bronze_discovery_systems_tests PRIVATE bronze::check bronze::lex bronze::parse doctest::doctest)
+    target_compile_options(bronze_discovery_systems_tests PRIVATE ${_disc_warnings})
+    add_test(NAME discovery-systems COMMAND bronze_discovery_systems_tests)
+    set_tests_properties(discovery-systems PROPERTIES LABELS "discovery;check")
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/discovery_physics_shader_test.cpp")
+    add_executable(bronze_discovery_physics_shader_tests discovery_physics_shader_test.cpp)
+    target_link_libraries(bronze_discovery_physics_shader_tests PRIVATE
+        bronze::codegen_brass
+        bronze::runtime
+        bronze::check
+        bronze::lex
+        bronze::parse
+        doctest::doctest
+    )
+    target_compile_options(bronze_discovery_physics_shader_tests PRIVATE ${_disc_warnings})
+    add_test(NAME discovery-physics-shader COMMAND bronze_discovery_physics_shader_tests)
+    set_tests_properties(discovery-physics-shader PROPERTIES LABELS "discovery;check")
+endif()

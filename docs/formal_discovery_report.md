@@ -8,6 +8,8 @@ This report documents the findings, counterexample witnesses, formal equivalence
 2. **Open-Source 3D Math, Geometry & Graphics (`#122`)**: `three.js` r160 (`MathUtils`, `Color`, `Vector3`, `Quaternion`, `Triangle`, `Box3`), `gl-matrix`, `earcut`, and `rbush`.
 3. **Open-Source Codecs, Compression & Hashing (`#123`)**: Mozilla `source-map` Base64-VLQ, Protobuf ZigZag/Varint32, RFC 4648 Base64, UTF-8 scalar codecs, Morton Z-order curves, MurmurHash3, xxHash32, and FNV-1a.
 4. **Open-Source Micro-Libraries & Branch Synthesis (`#124`)**: `date-fns` / Howard Hinnant civil calendar algorithms, `semver` ordering, `color-convert` RGB/HSL conversions, and financial basis-point rounding.
+5. **PRNG Bijectivity ($2^{32}$), IEEE-754 Float16 ($2^{16}$), IPv4/CIDR `/0` Shift Traps & Web Audio DSP (`#126`)**: Murmur3 `fmix32` / `SplitMix32` / `xorshift32` $2^{32}$ bijectivity & absorbing zero-state proofs, Perlin/Simplex negative world-coordinate OOB, Box-Muller `u1 === 0` singularity, exhaustive 65,536-pattern `DataUtils.toHalfFloat` / `fromHalfFloat` verification, IPv4 `/0` CIDR 5-bit shift count wrapping, G.711 $\mu$-law & IMA ADPCM codecs, and RBJ Audio EQ Cookbook Biquad Jury stability proofs.
+6. **Spring/Bezier Physics Singularities & Cross-Language CPU-JS $\leftrightarrow$ GPU-GLSL/SPIR-V Parity Proofs (`#127`)**: harmonic oscillator critical-damping (`zeta === 1.0`) `0/0` `NaN` & overdamped `sqrt` domain errors, `bezier-easing` flat-tangent Newton-Raphson `getSlope(t) === 0` division-by-zero, Kay-Kajiya Ray-AABB slab `0/0` `NaN`, GLSL `mod`/`fract` vs JS `%`/`trunc` negative coordinate tearing, and 0-ULP CPU-JS $\leftrightarrow$ Vulkan SPIR-V 1.5 / NVIDIA PTX `sm_80` formal equivalence proofs.
 
 Across the `broworkshop` production libraries (`lib/kit/`, `lib/arcade/`, `lib/bot-aim.js`), the audit uncovered and fixed **14 real latent edge-case bugs and multiplayer lockstep determinism hazards** across 11 modules without breaking a single existing test.
 
@@ -150,6 +152,37 @@ Alongside the production ecosystem audit (`#125`), the Bronze formal verificatio
   - Verified strict weak ordering (irreflexivity, asymmetry, transitivity) on bounded numeric SemVer triples, and refuted bitwise `(a - b) | 0` comparator overflow when numeric prerelease identifiers exceed $2^{31} - 1$ (e.g. timestamp build identifiers).
 - **Color-Space `0/0` `NaN` Poisoning & Financial Basis-Point Rounding**:
   - Refuted unguarded `rgbToHsl(r, g, b)` dividing `(g - b) / (max - min) = 0 / 0 = NaN` on achromatic grays (`r === g === b`), and exposed IEEE-754 binary64 halfway rounding drift (`Math.round(1.005 * 100) === 100` because `1.005 * 100 = 100.49999999999999`).
+
+### 3.4 PRNG Bijectivity ($2^{32}$), IEEE-754 Float16 ($2^{16}$), IPv4/CIDR `/0` Shift Traps & Web Audio DSP (`#126`)
+
+- **PRNG & Hash Finalizer $2^{32}$ Bijectivity (`fmix32`, `SplitMix32`, `xorshift32`)**:
+  - Proven via `proveRoundTripSource` across all $2^{32}$ 32-bit states that the Murmur3 / SplitMix32 avalanching xorshift stages (`x ^ (x >>> 16)` and `x ^ (x >>> 13)`) and Marsaglia's `xorshift32(x)` (`x ^= x << 13; x ^= x >>> 17; x ^= x << 5`) have exact bitvector inverses over $\mathbb{Z}_{2^{32}}$, and that `x === 0` is the unique absorbing fixed point of `xorshift32` (`SolveOutcome::Unsat`).
+  - Synthesized concrete state collisions `(witA !== witB)` when an even multiplier constant is used, and demonstrated IEEE-754 `double` precision loss in `(x * 0x85ebca6b) | 0` vs `Math.imul(x, 0x85ebca6b)` when the product exceeds $2^{53} - 1$.
+  - Refuted Perlin/Simplex `perm[xi % 256]` negative coordinate OOB (`xi = -1 -> -1`) vs `perm[xi & 255]` (proven bounded in `[0, 255]` across all $2^{32}$ ints), and caught Box-Muller `Math.sqrt(-2 * Math.log(u1))` domain breakdown at `u1 <= 0`.
+- **Exhaustive $2^{16}$ IEEE-754 Float16 $\leftrightarrow$ Float32 Verification**:
+  - Verified all 65,536 16-bit half-float bit patterns (`61,440` normal, `2,046` subnormal, `2` signed zeros, `2` infinities, `2,046` NaNs) for round-trip identity and strict monotonicity.
+  - Proven normal-range binary16 $\leftrightarrow$ binary32 exponent/mantissa re-biasing via `BVSolver`, and refuted the bitwise-OR mantissa rounding carry bug `(exp16 << 10) | (0x03FF + 1)` vs `(exp16 << 10) + (0x03FF + 1)` when `exp16` is odd.
+- **IPv4 / CIDR `/0` 5-Bit Shift Count Masking Bug & Signed Octet Comparison**:
+  - Refuted `(~0 << (32 - prefixLen)) >>> 0` over `prefixLen in [0, 32]`: `BVSolver` synthesizes `prefixLen = 0` where `(32 - 0) & 31 === 0`, turning a `/0` mask (`0.0.0.0`) into `0xFFFFFFFF` (`255.255.255.255`, `/32`), and proves the guarded `prefixLen === 0 ? 0 : ((~0 << (32 - prefixLen)) >>> 0)` fix across `[0, 32]`.
+  - Refuted signed 32-bit IPv4 range comparisons on addresses with first octet $\ge 128$ (`128.0.0.0`..`255.255.255.255` negative in signed int32).
+- **Web Audio DSP — G.711 $\mu$-Law, IMA ADPCM & RBJ Biquad Stability**:
+  - Verified all 256 G.711 $\mu$-law codewords for antisymmetry, round-trip identity, and strict segment/mantissa monotonicity via `BVSolver`.
+  - Proven IMA ADPCM `[0, 88]` step-index clamping vs `stepTable[89]` overflow (`counterexampleInput >= 81`).
+  - Detected RBJ Audio EQ Cookbook `Q === 0` division-by-zero in `alpha = sin(w0) / (2 * Q)` and proved Jury pole-radius stability (`-a0 < a2 < a0` where `a0 = 1 + alpha, a2 = 1 - alpha`) for all `alpha > 0`.
+
+### 3.5 Spring/Bezier Physics Singularities & Cross-Language CPU-JS $\leftrightarrow$ GPU-GLSL/SPIR-V Parity Proofs (`#127`)
+
+- **Harmonic Oscillator Spring Solver Singularities**:
+  - Exposed both the critical-damping `0 / 0 = NaN` singularity at `zeta === 1.0` (`omega_d = omega0 * sqrt(1 - zeta^2) === 0`) and the overdamped `Math.sqrt(1 - zeta^2) = NaN` domain error (`zeta > 1.0`) in unbranched underdamped spring solvers.
+  - Verified the 3-regime branched spring solver (underdamped `zeta < 1 - eps`, critically damped Taylor limit `(1 + omega0 * t) * exp(-omega0 * t)`, overdamped hyperbolic regime) passes `bronze check` with 0 findings, achieves 100% branch synthesis via `bronze synth-tests`, and maintains $C^0$ continuity across `zeta = 1`.
+  - Proven via `BVSolver` that explicit Euler spring stepping strictly amplifies mechanical energy $E_1 = (1 + (\omega_0 \Delta t)^2) E_0 > E_0$ for all non-zero states.
+- **Cubic-Bezier Easing Flat-Tangent Singularity & Ray-AABB Slab `0/0` `NaN`**:
+  - Caught unguarded division by `currentSlope = getSlope(guessT, mX1, mX2)` in `bezier-easing` Newton-Raphson root finding when `mX1 === 0` and `guessT === 0` (`currentSlope === 0`), and proved bisection midpoint fallback stays bounded in `[aA, aB]`.
+  - Caught Kay-Kajiya Ray-AABB slab intersection `(boxMinX - rayOrigX) / rayDirX = 0 / 0 = NaN` when an axis-parallel ray (`rayDirX === 0`) originates on a box face (`rayOrigX === boxMinX`), and verified the axis-parallel slab guard.
+- **Cross-Language CPU-JS $\leftrightarrow$ GPU-GLSL/SPIR-V Parity Proofs**:
+  - Refuted naive JS `x % 16` against GLSL `mod(x, 16) = x - 16 * floor(x / 16)` on negative coordinates (`x < 0`), and proved across `[-100000, 100000]` that Euclidean modulo `((x % 16) + 16) % 16` is bit-identical to GLSL `mod(x, 16)`.
+  - Refuted naive JS `x - Math.trunc(x)` against GLSL `fract(x) = x - Math.floor(x)` on negative Q24.8 coordinates, and proved `x - (x & ~255) === (x & 255)` across all $2^{32}$ coordinates.
+  - Proven 0-ULP CPU-JIT $\leftrightarrow$ Vulkan SPIR-V 1.5 & NVIDIA PTX `sm_80` equivalence (`cpuGpuProvenEquivalent`, `spirvEquivalence.is_equivalent()`, `maxCpuGpuUlpDiff == 0.0f`) on 3D SDF capsule smooth-union (`sdfCapsuleSmoothUnion`), PBR Schlick-GGX direct lighting (`pbrDirectLighting`), and GPU compute symplectic spring integration (`stepDampedSprings`).
 
 ---
 
