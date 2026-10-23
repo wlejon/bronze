@@ -15,6 +15,8 @@ struct LoopOptStats;
 struct FmaOptStats;
 struct ParallelLoopStats;
 struct RangeAnalysisStats;
+struct SmtGuardElimStats;
+struct SuperoptStats;
 } // namespace brass
 
 namespace il2mir {
@@ -120,6 +122,11 @@ struct TranslatorOptions {
     bool enable_bce = true;
     bool dump_range_stats = false;
     RangeAnalysisStats* range_stats_collector = nullptr;
+    bool enable_smt_guard_elim = true;
+    bool enable_superopt = true;
+    bool dump_smt_opt_stats = false;
+    brass::SmtGuardElimStats* smt_guard_stats_collector = nullptr;
+    brass::SuperoptStats* superopt_stats_collector = nullptr;
     bool enable_speculative_inlining = false;
     bool dump_tfv_stats = false;
     std::vector<std::string> key_constants;

@@ -679,7 +679,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             }
             return true;
         };
-        if (!run_pass_pipeline(*mod, pass_pipeline_options(options_), hooks)) {
+        if (!run_bronze_optimization_pipeline(*mod, options_, hooks)) {
             return nullptr;
         }
         if (options_.verify_lowered_module && !verify_module(*mod, diag_)) {

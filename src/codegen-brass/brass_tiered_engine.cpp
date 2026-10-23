@@ -4,6 +4,7 @@
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/brass_symbol_registration.h"
 #include "codegen-brass/brass_tiered_image.h"
+#include "codegen-brass/il2mir/il_pipeline.h"
 #include "codegen-brass/il2mir/il_spec_profile.h"
 #include "codegen-brass/il2mir/il_speculation.h"
 #include "embed/embed.h"
@@ -324,9 +325,15 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         // Tier-up and OSR code run the optimizer the whole-program tier runs,
         // one function (or one loop's entry) at a time.
         pipeline.set_tier2_passes(backend.tierUpPasses());
+        pipeline.set_tier2_front_pass([spec](brass::Module& copy) {
+            if (spec) {
+                il2mir::apply_tier2_speculation(copy, *spec);
+            }
+            if (const char* smt = std::getenv("BRONZE_JIT_SMT_OPT"); smt && std::string_view(smt) == "1") {
+                il2mir::run_smt_optimizations(copy);
+            }
+        });
         if (spec) {
-            pipeline.set_tier2_front_pass(
-                [spec](brass::Module& copy) { il2mir::apply_tier2_speculation(copy, *spec); });
             // A guard's resume id is its site number, program-wide.
             pipeline.set_invalidation_observer(
                 [spec](std::string_view, uint32_t resume_id) { spec->mark_failed(resume_id); });
