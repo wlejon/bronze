@@ -1,4 +1,5 @@
 #include "cli/driver_helpers.h"
+#include "cli/driver.h"
 
 #include <cstdio>
 #include <fstream>
@@ -134,6 +135,114 @@ bool parseTargetName(const std::string& name, brass::Target& out, std::string& e
     err += " (a Darwin one may add a minimum version, aarch64-macos13.0; iOS is aarch64-ios[<version>]"
            " or <arch>-ios[<version>]-simulator)\n";
     return false;
+}
+
+int dispatchProveEquivArgs(int argc, char** argv) {
+    std::string oldPath;
+    std::string newPath;
+    std::string fnFilter;
+    std::string importMapPath;
+    std::vector<modules::ModuleRoot> moduleRoots;
+    bool jsonOutput = false;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--json") {
+            jsonOutput = true;
+        } else if (arg == "--fn") {
+            if (i + 1 < argc) {
+                fnFilter = argv[++i];
+            } else {
+                return fail("error: missing argument for --fn\n");
+            }
+        } else if (arg.rfind("--fn=", 0) == 0) {
+            fnFilter = arg.substr(5);
+            if (fnFilter.empty()) return fail("error: missing argument for --fn\n");
+        } else if (arg == "--module-root") {
+            if (i + 1 < argc) {
+                std::string val = argv[++i];
+                size_t eq = val.find('=');
+                if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+            } else {
+                return fail("error: missing argument for --module-root\n");
+            }
+        } else if (arg.rfind("--module-root=", 0) == 0) {
+            std::string val = arg.substr(14);
+            size_t eq = val.find('=');
+            if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+            moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+        } else if (arg == "--import-map") {
+            if (i + 1 < argc) {
+                importMapPath = argv[++i];
+            } else {
+                return fail("error: missing argument for --import-map\n");
+            }
+        } else if (arg.rfind("--import-map=", 0) == 0) {
+            importMapPath = arg.substr(13);
+            if (importMapPath.empty()) return fail("error: missing argument for --import-map\n");
+        } else if (oldPath.empty()) {
+            oldPath = arg;
+        } else if (newPath.empty()) {
+            newPath = arg;
+        } else {
+            return fail("error: unexpected argument " + arg + "\n");
+        }
+    }
+    if (oldPath.empty() || newPath.empty()) {
+        return fail("error: usage: bronze prove-equiv <old.js> <new.js> [--fn <name>] [--json]\n");
+    }
+    return runProveEquivCmd(oldPath, newPath, fnFilter, jsonOutput, nullptr, moduleRoots, importMapPath);
+}
+
+int dispatchSynthTestsArgs(int argc, char** argv) {
+    std::string inputPath;
+    std::string outputPath;
+    std::string importMapPath;
+    std::vector<modules::ModuleRoot> moduleRoots;
+    bool jsonOutput = false;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--json") {
+            jsonOutput = true;
+        } else if (arg == "-o") {
+            if (i + 1 < argc) {
+                outputPath = argv[++i];
+            } else {
+                return fail("error: missing argument for -o\n");
+            }
+        } else if (arg == "--module-root") {
+            if (i + 1 < argc) {
+                std::string val = argv[++i];
+                size_t eq = val.find('=');
+                if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+                moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+            } else {
+                return fail("error: missing argument for --module-root\n");
+            }
+        } else if (arg.rfind("--module-root=", 0) == 0) {
+            std::string val = arg.substr(14);
+            size_t eq = val.find('=');
+            if (eq == std::string::npos) return fail("error: --module-root requires <prefix>=<path>\n");
+            moduleRoots.push_back({val.substr(0, eq), val.substr(eq + 1)});
+        } else if (arg == "--import-map") {
+            if (i + 1 < argc) {
+                importMapPath = argv[++i];
+            } else {
+                return fail("error: missing argument for --import-map\n");
+            }
+        } else if (arg.rfind("--import-map=", 0) == 0) {
+            importMapPath = arg.substr(13);
+            if (importMapPath.empty()) return fail("error: missing argument for --import-map\n");
+        } else if (inputPath.empty()) {
+            inputPath = arg;
+        } else {
+            return fail("error: unexpected argument " + arg + "\n");
+        }
+    }
+    if (inputPath.empty()) {
+        return fail("error: usage: bronze synth-tests <file.js> [-o <out.js>] [--json]\n");
+    }
+    return runSynthTestsCmd(inputPath, outputPath, jsonOutput, nullptr, moduleRoots, importMapPath);
 }
 
 }  // namespace bronze::cli

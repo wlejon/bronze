@@ -23,5 +23,7 @@ bool hasHostBoundary(const std::string& hostGlobalsPath, bool emitObj, bool emit
 // which *machoVersion receives (zero fields: brass's defaults).
 bool parseTargetName(const std::string& name, brass::Target& out, std::string& err,
                      brass::object::MachOBuildVersion* machoVersion = nullptr);
+int dispatchProveEquivArgs(int argc, char** argv);
+int dispatchSynthTestsArgs(int argc, char** argv);
 
 }  // namespace bronze::cli

@@ -14,7 +14,10 @@
 #include <vector>
 
 #include "ast/dump.h"
+#include "check/deterministic_check.h"
+#include "check/prove_equiv.h"
 #include "check/static_checker.h"
+#include "check/synth_tests.h"
 #include "cli/driver_helpers.h"
 #include "cli/link.h"
 #include "cli/run.h"
@@ -108,8 +111,39 @@ int runTypes(const std::string& sourcePath, std::string* outString,
 
 int runCheck(const std::string& sourcePath, std::string* outString,
              const std::vector<modules::ModuleRoot>& moduleRoots,
-             const std::string& importMapPath) {
+             const std::string& importMapPath,
+             bool deterministic) {
+    if (deterministic) {
+        return check::runDeterministicCheckFile(sourcePath, outString, moduleRoots, importMapPath);
+    }
     return check::runCheckFile(sourcePath, outString, moduleRoots, importMapPath);
+}
+
+int runProveEquivCmd(const std::string& oldPath, const std::string& newPath,
+                     const std::string& fnFilter, bool jsonOutput,
+                     std::string* outString,
+                     const std::vector<modules::ModuleRoot>& moduleRoots,
+                     const std::string& importMapPath) {
+    if (outString) {
+        std::ostringstream out, err;
+        int rc = check::runProveEquiv(oldPath, newPath, fnFilter, jsonOutput, out, err, moduleRoots, importMapPath);
+        *outString = out.str() + err.str();
+        return rc;
+    }
+    return check::runProveEquiv(oldPath, newPath, fnFilter, jsonOutput, std::cout, std::cerr, moduleRoots, importMapPath);
+}
+
+int runSynthTestsCmd(const std::string& inputPath, const std::string& outputPath,
+                     bool jsonOutput, std::string* outString,
+                     const std::vector<modules::ModuleRoot>& moduleRoots,
+                     const std::string& importMapPath) {
+    if (outString) {
+        std::ostringstream out, err;
+        int rc = check::runSynthTests(inputPath, outputPath, jsonOutput, out, err, moduleRoots, importMapPath);
+        *outString = out.str() + err.str();
+        return rc;
+    }
+    return check::runSynthTests(inputPath, outputPath, jsonOutput, std::cout, std::cerr, moduleRoots, importMapPath);
 }
 
 int runIl(const std::string& sourcePath, std::string* outString, bool infer,
@@ -610,14 +644,20 @@ int runDriver(int argc, char** argv) {
         return 0;
     }
 
+    if (command == "prove-equiv") return dispatchProveEquivArgs(argc, argv);
+    if (command == "synth-tests") return dispatchSynthTestsArgs(argc, argv);
+
     if (command == "types" || command == "check") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
         std::string importMapPath;
         std::vector<modules::ModuleRoot> moduleRoots;
+        bool deterministic = false;
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
-            if (arg == "--module-root") {
+            if (arg == "--deterministic" && command == "check") {
+                deterministic = true;
+            } else if (arg == "--module-root") {
                 if (i + 1 < argc) {
                     std::string val = argv[++i];
                     size_t eq = val.find('=');
@@ -648,7 +688,7 @@ int runDriver(int argc, char** argv) {
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
         if (command == "check") {
-            return runCheck(sourcePath, nullptr, moduleRoots, importMapPath);
+            return runCheck(sourcePath, nullptr, moduleRoots, importMapPath, deterministic);
         }
         return runTypes(sourcePath, nullptr, moduleRoots, importMapPath);
     }

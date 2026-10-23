@@ -13,7 +13,19 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
 
 int runCheck(const std::string& sourcePath, std::string* outString = nullptr,
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
-             const std::string& importMapPath = {});
+             const std::string& importMapPath = {},
+             bool deterministic = false);
+
+int runProveEquivCmd(const std::string& oldPath, const std::string& newPath,
+                     const std::string& fnFilter = {}, bool jsonOutput = false,
+                     std::string* outString = nullptr,
+                     const std::vector<modules::ModuleRoot>& moduleRoots = {},
+                     const std::string& importMapPath = {});
+
+int runSynthTestsCmd(const std::string& inputPath, const std::string& outputPath = {},
+                     bool jsonOutput = false, std::string* outString = nullptr,
+                     const std::vector<modules::ModuleRoot>& moduleRoots = {},
+                     const std::string& importMapPath = {});
 
 // `infer == false` skips inference entirely and lowers with the uniform dynamic
 // convention everywhere, reproducing the pre-inference calling convention
