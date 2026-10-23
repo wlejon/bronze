@@ -64,7 +64,16 @@ public:
     bool installed() const;
 
 private:
+    // (Private, never touched by a client: MSVC's C4251 about its export
+    // does not apply.)
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4251)
+#endif
     mutable std::atomic<const HostClass*> base_{nullptr};
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
     Slots& slots() const;
     const Slots* slotsIfAny() const;
