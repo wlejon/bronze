@@ -50,6 +50,9 @@ AbstractVal joinVal(const AbstractVal& a, const AbstractVal& b) {
             out.exactLength = a.exactLength;
         }
     }
+    out.isPlainObject = a.isPlainObject && b.isPlainObject;
+    out.impliedNonNullKeys =
+        !a.impliedNonNullKeys.empty() ? a.impliedNonNullKeys : b.impliedNonNullKeys;
     return out;
 }
 
@@ -64,6 +67,41 @@ EnvMap joinEnv(const EnvMap& a, const EnvMap& b) {
         }
     }
     return out;
+}
+
+void mergeLoopEnv(EnvMap& env,
+                  const EnvMap& bodyEnv,
+                  const std::vector<ast::StmtPtr>& loopBody) {
+    std::unordered_set<std::string> loopAssigned;
+    collectClosureAssignedNames(loopBody, true, loopAssigned);
+    for (const auto& [k, vb] : bodyEnv) {
+        auto it = env.find(k);
+        if (it == env.end()) {
+            env.emplace(k, vb);
+        } else {
+            NullState preLoopNull = it->second.nullState;
+            it->second = joinVal(it->second, vb);
+            if (((preLoopNull == NullState::DefinitelyNull ||
+                  preLoopNull == NullState::DefinitelyUndefined) &&
+                 vb.nullState != preLoopNull) ||
+                loopAssigned.count(k) > 0) {
+                it->second.nullState = NullState::Unknown;
+                it->second.nullOrigin.clear();
+            }
+        }
+    }
+    for (const auto& k : loopAssigned) {
+        auto it = env.find(k);
+        if (it != env.end() && it->second.isNullishOrMaybe()) {
+            it->second.nullState = NullState::Unknown;
+            it->second.nullOrigin.clear();
+        }
+    }
+}
+
+bool isExplicitNaNSentinel(const AbstractVal& val) {
+    return val.nanOrigin == "'NaN'" || val.nanOrigin == "'Number.NaN'" ||
+           val.nanOrigin == "NaN literal";
 }
 
 bool isTypedArrayCtorName(const std::string& name) {
@@ -286,9 +324,34 @@ EnvMap narrowForCondition(const EnvMap& env, const ast::Expr* cond, bool whenTru
     EnvMap out = env;
     if (!cond) return out;
 
+    auto markKeyNonNullish = [&](const std::string& key) {
+        if (key.empty()) return;
+        out[key].nullState = NullState::DefinitelyNonNullish;
+        out[key].nullOrigin.clear();
+        auto it = env.find(key);
+        if (it != env.end()) {
+            for (const auto& imp : it->second.impliedNonNullKeys) {
+                out[imp].nullState = NullState::DefinitelyNonNullish;
+                out[imp].nullOrigin.clear();
+            }
+        }
+    };
+
     if (const auto* un = ast::exactAs<const ast::Unary*>(cond)) {
         if (un->op == ast::UnaryOp::Not) {
             return narrowForCondition(env, un->operand.get(), !whenTrue);
+        }
+    }
+
+    if (whenTrue) {
+        if (const auto* call = ast::exactAs<const ast::Call*>(cond)) {
+            if (!call->optional && call->args.size() == 1 && call->args[0] && call->callee) {
+                if (const auto* mem = ast::exactAs<const ast::MemberAccess*>(call->callee.get())) {
+                    if (mem->property == "contains") {
+                        markKeyNonNullish(exprEnvKey(*call->args[0]));
+                    }
+                }
+            }
         }
     }
 
@@ -343,8 +406,7 @@ EnvMap narrowForCondition(const EnvMap& env, const ast::Expr* cond, bool whenTru
                     bool meansNullish = (isEq && whenTrue) || (isNe && !whenTrue);
                     auto& slot = out[key];
                     if (!meansNullish) {
-                        slot.nullState = NullState::DefinitelyNonNullish;
-                        slot.nullOrigin.clear();
+                        markKeyNonNullish(key);
                     } else if (isLoose) {
                         slot.nullState = NullState::MaybeNullish;
                     } else if (rhsNull) {
@@ -364,14 +426,19 @@ EnvMap narrowForCondition(const EnvMap& env, const ast::Expr* cond, bool whenTru
                     if (!k.empty()) {
                         bool eqBranch = (isEq && whenTrue) || (isNe && !whenTrue);
                         if (s->value == "undefined") {
-                            out[k].nullState = eqBranch ? NullState::DefinitelyUndefined
-                                                        : NullState::DefinitelyNonNullish;
+                            if (eqBranch) {
+                                out[k].nullState = NullState::DefinitelyUndefined;
+                            } else {
+                                markKeyNonNullish(k);
+                            }
                         } else if (eqBranch &&
-                                   (s->value == "object" || s->value == "function" ||
-                                    s->value == "string" || s->value == "number" ||
-                                    s->value == "boolean")) {
+                                   (s->value == "function" || s->value == "string" ||
+                                    s->value == "number" || s->value == "boolean" ||
+                                    s->value == "symbol" || s->value == "bigint")) {
+                            markKeyNonNullish(k);
+                        } else if (eqBranch && s->value == "object") {
                             if (out[k].nullState == NullState::DefinitelyUndefined) {
-                                out[k].nullState = NullState::DefinitelyNonNullish;
+                                markKeyNonNullish(k);
                             }
                         }
                     }
@@ -382,8 +449,17 @@ EnvMap narrowForCondition(const EnvMap& env, const ast::Expr* cond, bool whenTru
         }
 
         if (bin->lhs && bin->rhs) {
+            if (whenTrue && bin->op == ast::BinaryOp::InstanceOf) {
+                markKeyNonNullish(exprEnvKey(*bin->lhs));
+            }
             if (const auto* lhsId = ast::exactAs<const ast::Ident*>(bin->lhs.get())) {
                 auto& slot = out[lhsId->name];
+                if (whenTrue && (bin->op == ast::BinaryOp::Less ||
+                                 bin->op == ast::BinaryOp::LessEqual)) {
+                    if (const auto* rhsId = ast::exactAs<const ast::Ident*>(bin->rhs.get())) {
+                        markKeyNonNullish(rhsId->name);
+                    }
+                }
                 if (const auto* mem = ast::exactAs<const ast::MemberAccess*>(bin->rhs.get())) {
                     if (mem->property == "length" && mem->object) {
                         std::string arrKey = exprEnvKey(*mem->object);
@@ -463,11 +539,83 @@ EnvMap narrowForCondition(const EnvMap& env, const ast::Expr* cond, bool whenTru
     std::string key = exprEnvKey(*cond);
     if (!key.empty()) {
         if (whenTrue) {
-            out[key].nullState = NullState::DefinitelyNonNullish;
-            out[key].nullOrigin.clear();
+            markKeyNonNullish(key);
         }
     }
     return out;
+}
+
+namespace {
+
+bool isFalsyLiteralExpr(const ast::Expr* expr) {
+    if (!expr) return false;
+    if (ast::exactAs<const ast::NullLit*>(expr) ||
+        ast::exactAs<const ast::UndefinedLit*>(expr)) {
+        return true;
+    }
+    if (const auto* id = ast::exactAs<const ast::Ident*>(expr)) {
+        return id->name == "undefined";
+    }
+    if (const auto* b = ast::exactAs<const ast::BoolLit*>(expr)) {
+        return !b->value;
+    }
+    if (const auto* n = ast::exactAs<const ast::NumberLit*>(expr)) {
+        return n->value == 0.0 || std::isnan(n->value);
+    }
+    return false;
+}
+
+void appendUniqueKey(std::vector<std::string>& vec, const std::string& key) {
+    if (key.empty()) return;
+    if (std::find(vec.begin(), vec.end(), key) == vec.end()) {
+        vec.push_back(key);
+    }
+}
+
+}  // namespace
+
+void recordCorrelatedNonNull(EnvMap& env,
+                             const std::string& targetKey,
+                             const ast::Expr* initExpr,
+                             AbstractVal& initVal) {
+    if (!initExpr) return;
+
+    EnvMap trueEnv = narrowForCondition(env, initExpr, true);
+    for (const auto& [k, v] : trueEnv) {
+        if (k != targetKey && v.nullState == NullState::DefinitelyNonNullish) {
+            auto origIt = env.find(k);
+            if (origIt != env.end() && origIt->second.nullState != NullState::DefinitelyNonNullish) {
+                appendUniqueKey(initVal.impliedNonNullKeys, k);
+                for (const auto& imp : origIt->second.impliedNonNullKeys) {
+                    appendUniqueKey(initVal.impliedNonNullKeys, imp);
+                }
+            }
+        }
+    }
+
+    if (const auto* tern = ast::exactAs<const ast::Ternary*>(initExpr)) {
+        if (isFalsyLiteralExpr(tern->elseExpr.get()) && tern->condition) {
+            EnvMap condTrue = narrowForCondition(env, tern->condition.get(), true);
+            for (const auto& [k, v] : condTrue) {
+                if (k != targetKey && v.nullState == NullState::DefinitelyNonNullish) {
+                    appendUniqueKey(initVal.impliedNonNullKeys, k);
+                    auto origIt = env.find(k);
+                    if (origIt != env.end()) {
+                        for (const auto& imp : origIt->second.impliedNonNullKeys) {
+                            appendUniqueKey(initVal.impliedNonNullKeys, imp);
+                        }
+                    }
+                }
+            }
+        }
+        if (!targetKey.empty() && tern->condition && tern->thenExpr &&
+            !isFalsyLiteralExpr(tern->thenExpr.get())) {
+            std::string condKey = exprEnvKey(*tern->condition);
+            if (!condKey.empty()) {
+                appendUniqueKey(env[condKey].impliedNonNullKeys, targetKey);
+            }
+        }
+    }
 }
 
 }  // namespace bronze::check::detail

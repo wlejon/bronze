@@ -208,4 +208,59 @@ TEST_CASE("static checker: NaN poisoning hazard detection") {
         )");
         CHECK(taStoreReport.nanPoisonCount == 1);
     }
+
+    SUBCASE("explicit NaN sentinel store into Float TypedArray is allowed") {
+        auto sentinelReport = runStaticCheck(R"(
+            const ta = new Float64Array(2);
+            ta[0] = NaN;
+            ta[1] = Number.NaN;
+        )");
+        CHECK(sentinelReport.empty());
+    }
+}
+
+TEST_CASE("static checker: correlated guards, DOM contains, and plain object keys") {
+    SUBCASE("correlated boolean and ternary guards narrow underlying nullable bindings") {
+        auto report = runStaticCheck(R"(
+            function checkBluetooth(b, getState) {
+                const st = b ? getState() : null;
+                const adapter = st && st.defaultAdapter;
+                if (!adapter) return [];
+                return st.devices;
+            }
+            function traceLengths(lastTrace) {
+                const dur = lastTrace ? lastTrace.durations : null;
+                const L = dur ? dur.length : 0;
+                let total = 0;
+                for (let i = 0; i < L; i++) total += dur[i];
+                return total;
+            }
+        )");
+        CHECK(report.empty());
+    }
+
+    SUBCASE("Node.contains(document.activeElement) and typeof string narrow nullable values") {
+        auto report = runStaticCheck(R"(
+            function blurIfInside(host, rawCwd) {
+                if (host.contains(document.activeElement)) {
+                    document.activeElement.blur();
+                }
+                let cwd = rawCwd || null;
+                if (typeof cwd === "string" && cwd.startsWith("~/")) {
+                    return cwd.slice(2);
+                }
+                return "";
+            }
+        )");
+        CHECK(report.empty());
+    }
+
+    SUBCASE("plain object map allows negative numeric keys without out-of-bounds warning") {
+        auto report = runStaticCheck(R"(
+            const f0ByA = {};
+            f0ByA[-1] = 220;
+            const v = f0ByA[-1];
+        )");
+        CHECK(report.empty());
+    }
 }

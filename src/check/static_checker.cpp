@@ -20,23 +20,23 @@ using detail::describeNullState;
 using detail::EnvMap;
 using detail::exprEnvKey;
 using detail::isArrayMutatingMethod;
+using detail::isExplicitNaNSentinel;
 using detail::isTypedArrayCtorName;
 using detail::joinEnv;
 using detail::joinVal;
+using detail::mergeLoopEnv;
 using detail::narrowForCondition;
 using detail::NullState;
+using detail::recordCorrelatedNonNull;
 using detail::shortExprName;
 using detail::stmtListTerminates;
 using detail::stmtTerminates;
 
 const char* bugKindTag(BugKind kind) {
     switch (kind) {
-        case BugKind::NullDeref:
-            return "null-deref";
-        case BugKind::OutOfBounds:
-            return "out-of-bounds";
-        case BugKind::NaNPoison:
-            return "nan-poison";
+        case BugKind::NullDeref: return "null-deref";
+        case BugKind::OutOfBounds: return "out-of-bounds";
+        case BugKind::NaNPoison: return "nan-poison";
     }
     return "check";
 }
@@ -47,8 +47,12 @@ class StaticAnalyzer {
 public:
     StaticAnalyzer(const types::InferenceResult* inferred,
                    const il::Module* ilMod,
-                   DiagnosticSink* diags)
-        : inferred_(inferred), ilMod_(ilMod), diags_(diags) {}
+                   DiagnosticSink* diags,
+                   bool strictDomNullability)
+        : inferred_(inferred),
+          ilMod_(ilMod),
+          diags_(diags),
+          strictDomNullability_(strictDomNullability) {}
 
     CheckReport run(const ast::Module& mod) {
         detail::collectClosureAssignedNames(mod.body, false, closureAssigned_);
@@ -61,6 +65,7 @@ private:
     const types::InferenceResult* inferred_ = nullptr;
     const il::Module* ilMod_ = nullptr;
     DiagnosticSink* diags_ = nullptr;
+    bool strictDomNullability_ = true;
     CheckReport report_;
     std::unordered_set<std::string> closureAssigned_;
     std::unordered_set<uint64_t> emittedKeys_;
@@ -116,15 +121,12 @@ private:
                 if (std::isfinite(num->value) && std::floor(num->value) == num->value &&
                     num->value >= -9007199254740992.0 && num->value <= 9007199254740992.0) {
                     res.hasIntBounds = true;
-                    res.minInt = static_cast<int64_t>(num->value);
-                    res.maxInt = res.minInt;
+                    res.minInt = res.maxInt = static_cast<int64_t>(num->value);
                 }
             }
             return res;
         }
-
-        if (ast::exactAs<const ast::StringLit*>(expr) ||
-            ast::exactAs<const ast::TemplateLit*>(expr)) {
+        if (ast::exactAs<const ast::StringLit*>(expr) || ast::exactAs<const ast::TemplateLit*>(expr)) {
             if (const auto* tpl = ast::exactAs<const ast::TemplateLit*>(expr)) {
                 for (const auto& e : tpl->exprs) evalExpr(e.get(), env);
             }
@@ -132,15 +134,11 @@ private:
             res.isString = true;
             return res;
         }
-
-        if (ast::exactAs<const ast::BoolLit*>(expr) ||
-            ast::exactAs<const ast::BigIntLit*>(expr) ||
-            ast::exactAs<const ast::RegExpLit*>(expr) ||
-            ast::exactAs<const ast::ThisExpr*>(expr)) {
+        if (ast::exactAs<const ast::BoolLit*>(expr) || ast::exactAs<const ast::BigIntLit*>(expr) ||
+            ast::exactAs<const ast::RegExpLit*>(expr) || ast::exactAs<const ast::ThisExpr*>(expr)) {
             res.nullState = NullState::DefinitelyNonNullish;
             return res;
         }
-
         if (ast::exactAs<const ast::NullLit*>(expr)) {
             res.nullState = NullState::DefinitelyNull;
             res.nullOrigin = "null literal";
@@ -159,15 +157,13 @@ private:
             }
             if (id->name == "NaN") {
                 res.nullState = NullState::DefinitelyNonNullish;
-                res.isNumber = true;
-                res.isDefinitelyNaN = true;
+                res.isNumber = res.isDefinitelyNaN = true;
                 res.nanOrigin = "'NaN'";
                 return res;
             }
             if (id->name == "Infinity") {
                 res.nullState = NullState::DefinitelyNonNullish;
-                res.isNumber = true;
-                res.hasConstNum = true;
+                res.isNumber = res.hasConstNum = true;
                 res.constNum = INFINITY;
                 return res;
             }
@@ -198,6 +194,7 @@ private:
                 evalExpr(p.value.get(), env);
             }
             res.nullState = NullState::DefinitelyNonNullish;
+            res.isPlainObject = true;
             return res;
         }
         if (const auto* fn = ast::exactAs<const ast::FunctionExpr*>(expr)) {
@@ -343,8 +340,9 @@ private:
 
             types::HostNullability propNull = types::classifyHostPropertyNullability(
                 *mem, [](const std::string&) { return false; });
-            if (propNull == types::HostNullability::MaybeNullish ||
-                propNull == types::HostNullability::AlwaysNullish) {
+            if (strictDomNullability_ &&
+                (propNull == types::HostNullability::MaybeNullish ||
+                 propNull == types::HostNullability::AlwaysNullish)) {
                 res.nullState = NullState::MaybeNullish;
                 res.nullOrigin = types::describeHostNullabilitySource(*mem);
                 return res;
@@ -389,7 +387,13 @@ private:
             EnvMap elseEnv = narrowForCondition(env, tern->condition.get(), false);
             AbstractVal tv = evalExpr(tern->thenExpr.get(), thenEnv);
             AbstractVal ev = evalExpr(tern->elseExpr.get(), elseEnv);
-            return joinVal(tv, ev);
+            AbstractVal joined = joinVal(tv, ev);
+            if (tern->condition && closureAssigned_.count(exprEnvKey(*tern->condition)) > 0 &&
+                ev.nullState == NullState::DefinitelyNull) {
+                joined.nullState = tv.nullState;
+                joined.nullOrigin = tv.nullOrigin;
+            }
+            return joined;
         }
 
         if (const auto* bin = ast::exactAs<const ast::Binary*>(expr)) {
@@ -434,7 +438,8 @@ private:
             }
         }
         if (idxVal.hasIntBounds && idxVal.maxInt < 0) {
-            if (objVal.isContainer || ast::exactAs<const ast::Unary*>(&idxExpr) != nullptr) {
+            if (!objVal.isPlainObject &&
+                (objVal.isContainer || ast::exactAs<const ast::Unary*>(&idxExpr) != nullptr)) {
                 reportFinding(BugKind::OutOfBounds, span,
                               "negative index " + std::to_string(idxVal.maxInt) +
                                   " is out of bounds for '" + arrName + "'");
@@ -535,8 +540,9 @@ private:
 
         types::HostNullability hostNull = types::classifyHostCallNullability(
             call, [](const std::string&) { return false; });
-        if (hostNull == types::HostNullability::MaybeNullish ||
-            hostNull == types::HostNullability::AlwaysNullish) {
+        if (strictDomNullability_ &&
+            (hostNull == types::HostNullability::MaybeNullish ||
+             hostNull == types::HostNullability::AlwaysNullish)) {
             res.nullState = NullState::MaybeNullish;
             res.nullOrigin = types::describeHostNullabilitySource(call);
             return res;
@@ -570,7 +576,7 @@ private:
                 rv.nullState == NullState::DefinitelyNonNullish) {
                 res.nullState = NullState::DefinitelyNonNullish;
                 res.nullOrigin.clear();
-            } else {
+            } else if (!rv.isNullishOrMaybe()) {
                 res.nullState = rv.nullState;
                 res.nullOrigin = rv.nullOrigin;
             }
@@ -589,7 +595,7 @@ private:
                     if (idx->object && idx->index) {
                         checkIndexBounds(objVal, idxVal, *idx->object, *idx->index, idx->span, true);
                     }
-                    if (objVal.isTypedArray && bin.rhs) {
+                    if (objVal.isTypedArray && bin.rhs && !isExplicitNaNSentinel(rv)) {
                         checkNumericOperandForNaN(
                             rv, *bin.rhs, bin.span,
                             "TypedArray element store '" + shortExprName(*bin.lhs) + "'");
@@ -609,11 +615,19 @@ private:
                     }
                     std::string key = exprEnvKey(*mem);
                     if (!key.empty()) {
+                        recordCorrelatedNonNull(env, key, bin.rhs.get(), rv);
                         env[key] = rv;
                     }
                 } else {
                     std::string key = exprEnvKey(*bin.lhs);
                     if (!key.empty()) {
+                        recordCorrelatedNonNull(env, key, bin.rhs.get(), rv);
+                        if (closureAssigned_.count(key) > 0 &&
+                            (rv.nullState == NullState::DefinitelyNull ||
+                             rv.nullState == NullState::DefinitelyUndefined)) {
+                            rv.nullState = NullState::Unknown;
+                            rv.nullOrigin.clear();
+                        }
                         env[key] = rv;
                     }
                 }
@@ -765,7 +779,13 @@ private:
             if (vd->init) {
                 AbstractVal iv = evalExpr(vd->init.get(), env);
                 if (!vd->name.empty()) {
+                    recordCorrelatedNonNull(env, vd->name, vd->init.get(), iv);
                     if (closureAssigned_.count(vd->name) > 0) {
+                        if (iv.nullState == NullState::DefinitelyNull ||
+                            iv.nullState == NullState::DefinitelyUndefined) {
+                            iv.nullState = NullState::Unknown;
+                            iv.nullOrigin.clear();
+                        }
                         iv.hasConstNum = false;
                         iv.hasIntBounds = false;
                         iv.hasExactLength = false;
@@ -784,20 +804,19 @@ private:
         }
         if (const auto* es = ast::exactAs<const ast::ExprStmt*>(&stmt)) {
             evalExpr(es->expr.get(), env);
+            if (const auto* call = ast::exactAs<const ast::Call*>(es->expr.get())) {
+                if (!call->args.empty() && call->callee) {
+                    std::string cn = shortExprName(*call->callee);
+                    if (cn == "assert" || cn == "check" || cn.ends_with(".assert") || cn.ends_with(".check")) {
+                        env = narrowForCondition(env, call->args[0].get(), true);
+                    }
+                }
+            }
             return;
         }
-        if (const auto* rs = ast::exactAs<const ast::ReturnStmt*>(&stmt)) {
-            evalExpr(rs->value.get(), env);
-            return;
-        }
-        if (const auto* ts = ast::exactAs<const ast::ThrowStmt*>(&stmt)) {
-            evalExpr(ts->value.get(), env);
-            return;
-        }
-        if (const auto* bs = ast::exactAs<const ast::BlockStmt*>(&stmt)) {
-            checkStmtList(bs->stmts, env);
-            return;
-        }
+        if (const auto* rs = ast::exactAs<const ast::ReturnStmt*>(&stmt)) { evalExpr(rs->value.get(), env); return; }
+        if (const auto* ts = ast::exactAs<const ast::ThrowStmt*>(&stmt)) { evalExpr(ts->value.get(), env); return; }
+        if (const auto* bs = ast::exactAs<const ast::BlockStmt*>(&stmt)) { checkStmtList(bs->stmts, env); return; }
         if (const auto* ifs = ast::exactAs<const ast::IfStmt*>(&stmt)) {
             evalExpr(ifs->condition.get(), env);
             EnvMap thenEnv = narrowForCondition(env, ifs->condition.get(), true);
@@ -825,34 +844,32 @@ private:
             }
             checkStmtList(fs->body, bodyEnv);
             evalExpr(fs->update.get(), bodyEnv);
-            env = joinEnv(env, bodyEnv);
+            mergeLoopEnv(env, bodyEnv, fs->body);
             return;
         }
         if (const auto* ws = ast::exactAs<const ast::WhileStmt*>(&stmt)) {
             evalExpr(ws->condition.get(), env);
             EnvMap bodyEnv = narrowForCondition(env, ws->condition.get(), true);
             checkStmtList(ws->body, bodyEnv);
-            env = joinEnv(env, bodyEnv);
+            mergeLoopEnv(env, bodyEnv, ws->body);
             return;
         }
         if (const auto* dws = ast::exactAs<const ast::DoWhileStmt*>(&stmt)) {
             EnvMap bodyEnv = env;
             checkStmtList(dws->body, bodyEnv);
             evalExpr(dws->condition.get(), bodyEnv);
-            env = joinEnv(env, bodyEnv);
+            mergeLoopEnv(env, bodyEnv, dws->body);
             return;
         }
         if (const auto* fis = ast::exactAs<const ast::ForInStmt*>(&stmt)) {
             evalExpr(fis->object.get(), env);
             EnvMap bodyEnv = env;
             if (!fis->name.empty()) {
-                AbstractVal kv;
-                kv.nullState = NullState::DefinitelyNonNullish;
-                kv.isString = true;
-                bodyEnv[fis->name] = kv;
+                bodyEnv[fis->name].nullState = NullState::DefinitelyNonNullish;
+                bodyEnv[fis->name].isString = true;
             }
             checkStmtList(fis->body, bodyEnv);
-            env = joinEnv(env, bodyEnv);
+            mergeLoopEnv(env, bodyEnv, fis->body);
             return;
         }
         if (const auto* fos = ast::exactAs<const ast::ForOfStmt*>(&stmt)) {
@@ -861,7 +878,7 @@ private:
             EnvMap bodyEnv = env;
             if (!fos->name.empty()) bodyEnv[fos->name] = AbstractVal{};
             checkStmtList(fos->body, bodyEnv);
-            env = joinEnv(env, bodyEnv);
+            mergeLoopEnv(env, bodyEnv, fos->body);
             return;
         }
         if (const auto* ts = ast::exactAs<const ast::TryStmt*>(&stmt)) {
@@ -936,16 +953,12 @@ std::string CheckReport::render(const SourceSet& sources) const {
     return out.str();
 }
 
-CheckReport checkModule(const ast::Module& astMod,
-                        const types::InferenceResult* inferred,
-                        const il::Module* ilMod,
-                        DiagnosticSink* diags) {
-    StaticAnalyzer analyzer(inferred, ilMod, diags);
-    return analyzer.run(astMod);
+CheckReport checkModule(const ast::Module& astMod, const types::InferenceResult* inferred,
+                        const il::Module* ilMod, DiagnosticSink* diags, bool strictDomNullability) {
+    return StaticAnalyzer(inferred, ilMod, diags, strictDomNullability).run(astMod);
 }
 
-int runCheckFile(const std::string& sourcePath,
-                 std::string* outString,
+int runCheckFile(const std::string& sourcePath, std::string* outString,
                  const std::vector<modules::ModuleRoot>& moduleRoots,
                  const std::string& importMapPath) {
     SourceSet sources;
@@ -954,11 +967,8 @@ int runCheckFile(const std::string& sourcePath,
         sourcePath, sources, parseDiags, {moduleRoots, importMapPath});
     if (!astMod || parseDiags.hasErrors()) {
         std::string rendered = parseDiags.render(sources);
-        if (outString) {
-            *outString = rendered;
-        } else {
-            std::cerr << rendered;
-        }
+        if (outString) *outString = rendered;
+        else std::cerr << rendered;
         return 1;
     }
 
@@ -971,7 +981,7 @@ int runCheckFile(const std::string& sourcePath,
     }
 
     CheckReport report = checkModule(
-        *astMod, inferred ? &*inferred : nullptr, ilMod ? &*ilMod : nullptr, nullptr);
+        *astMod, inferred ? &*inferred : nullptr, ilMod ? &*ilMod : nullptr, nullptr, false);
     std::ostringstream out;
     out << report.render(sources);
     out << "bronze check: " << report.findings.size() << " finding(s) ("
@@ -979,11 +989,8 @@ int runCheckFile(const std::string& sourcePath,
         << report.outOfBoundsCount << " out-of-bounds, "
         << report.nanPoisonCount << " nan-poison)\n";
 
-    if (outString) {
-        *outString = out.str();
-    } else {
-        std::cout << out.str();
-    }
+    if (outString) *outString = out.str();
+    else std::cout << out.str();
     return report.empty() ? 0 : 1;
 }
 

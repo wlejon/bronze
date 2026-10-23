@@ -44,7 +44,8 @@ struct CheckReport {
 CheckReport checkModule(const ast::Module& astMod,
                         const types::InferenceResult* inferred = nullptr,
                         const il::Module* ilMod = nullptr,
-                        DiagnosticSink* diags = nullptr);
+                        DiagnosticSink* diags = nullptr,
+                        bool strictDomNullability = true);
 
 // Convenience entry point used by `bronze check <file>`: links the module graph
 // from `sourcePath`, runs inference and static bug checking, prints findings to

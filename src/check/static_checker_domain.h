@@ -41,8 +41,12 @@ struct AbstractVal {
     // Known container length for Array literals and TypedArrays.
     bool isContainer = false;
     bool isTypedArray = false;
+    bool isPlainObject = false;
     bool hasExactLength = false;
     int64_t exactLength = 0;
+
+    // Keys in EnvMap guaranteed to be non-nullish whenever this value is truthy.
+    std::vector<std::string> impliedNonNullKeys;
 
     bool isNullishOrMaybe() const {
         return nullState == NullState::DefinitelyNull ||
@@ -55,6 +59,14 @@ using EnvMap = std::unordered_map<std::string, AbstractVal>;
 
 AbstractVal joinVal(const AbstractVal& a, const AbstractVal& b);
 EnvMap joinEnv(const EnvMap& a, const EnvMap& b);
+void mergeLoopEnv(EnvMap& env,
+                  const EnvMap& bodyEnv,
+                  const std::vector<ast::StmtPtr>& loopBody);
+void recordCorrelatedNonNull(EnvMap& env,
+                             const std::string& targetKey,
+                             const ast::Expr* initExpr,
+                             AbstractVal& initVal);
+bool isExplicitNaNSentinel(const AbstractVal& val);
 
 bool isTypedArrayCtorName(const std::string& name);
 bool isArrayMutatingMethod(const std::string& prop);
