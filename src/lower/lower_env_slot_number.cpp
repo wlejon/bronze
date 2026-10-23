@@ -292,7 +292,8 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
         if (provenNumber(e) || pristineMathCall(e)) return true;
         if (dynamic_cast<const ast::NumberLit*>(&e) != nullptr) return true;
         if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
-            return live->count(id->name) != 0 || provenNestedParams.count(id->name) != 0;
+            return live->count(id->name) != 0 ||
+                   (depth < 8 && provenNestedParams.count(id->name) != 0);
         }
         if (const auto* un = dynamic_cast<const ast::Unary*>(&e)) {
             switch (un->op) {
