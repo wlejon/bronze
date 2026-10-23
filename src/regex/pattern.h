@@ -109,6 +109,8 @@ struct Node {
 
 // A compiled pattern: the tree, the flags it was compiled with, and the group
 // bookkeeping `exec` needs to build a match array.
+class RegexJitPlan;
+
 class Pattern {
 public:
     NodePtr root;
@@ -120,6 +122,8 @@ public:
     // True when any group has a name, which is what decides whether a match
     // array's `groups` is an object or `undefined` (22.2.7.2 step 8).
     bool hasNamedGroups = false;
+    // Optional native DFA JIT plan compiled via brass GrammarBuilder & run_mir_superopt.
+    std::shared_ptr<const RegexJitPlan> jitPlan;
 };
 
 }  // namespace bronze::regex

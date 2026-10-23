@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "regex/pattern.h"
+#include "regex/regex_jit.h"
 #include "regex/unicode.h"
 
 namespace bronze::regex {
@@ -647,6 +648,12 @@ private:
 ExecStatus matchAt(const Pattern& pattern, UnitsView input, size_t at, MatchResult& out,
                    std::string& error) {
     if (at > input.size()) return ExecStatus::NoMatch;
+    if (pattern.jitPlan && pattern.jitPlan->isSupported()) {
+        ExecStatus jitStatus = ExecStatus::NoMatch;
+        if (pattern.jitPlan->tryMatchAt(input, at, out, jitStatus)) {
+            return jitStatus;
+        }
+    }
     Matcher matcher(pattern, input);
     return matcher.run(at, out, error);
 }
@@ -654,6 +661,12 @@ ExecStatus matchAt(const Pattern& pattern, UnitsView input, size_t at, MatchResu
 ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchResult& out,
                   std::string& error) {
     if (from > input.size()) return ExecStatus::NoMatch;
+    if (pattern.jitPlan && pattern.jitPlan->isSupported()) {
+        ExecStatus jitStatus = ExecStatus::NoMatch;
+        if (pattern.jitPlan->trySearch(input, from, out, jitStatus)) {
+            return jitStatus;
+        }
+    }
     Matcher matcher(pattern, input);
     // The scan is the spec's own: 22.2.7.2 step 12 advances the start index by
     // AdvanceStringIndex and tries again, which is why a pattern anchored with

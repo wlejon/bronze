@@ -20,6 +20,7 @@
 
 #include "regex/parser_internal.h"
 #include "regex/pattern.h"
+#include "regex/regex_jit.h"
 #include "regex/unicode.h"
 
 namespace bronze::regex {
@@ -744,6 +745,7 @@ PatternPtr compile(UnitsView source, const Flags& flags, std::string& error) {
     pattern->hasNamedGroups =
         std::any_of(groups.names.begin(), groups.names.end(),
                     [](const std::string& n) { return !n.empty(); });
+    pattern->jitPlan = RegexJitPlan::tryCompile(*pattern);
     return pattern;
 }
 
