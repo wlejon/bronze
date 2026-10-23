@@ -19,10 +19,12 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     if (offsetNum < 0) {
         return rtThrowRangeError("offset is out of bounds").rawBits();
     }
+    if (!requireTypedArray(self.get(), "set")) return Value::fromUndefined().rawBits();
     const uint32_t targetLength = lengthOf(self.get());
     const auto offset = static_cast<uint64_t>(offsetNum);
 
     if (isTypedArray(source.get())) {
+        if (!requireTypedArray(source.get(), "set")) return Value::fromUndefined().rawBits();
         const uint32_t srcLength = lengthOf(source.get());
         if (offset + srcLength > targetLength) {
             return rtThrowRangeError("offset is out of bounds").rawBits();
@@ -103,7 +105,9 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     for (; i < srcLength; ++i) {
         Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
         const double v = rtToNumber(elem.get());
-        self.get().asObject<TypedArrayHeader>()->set(static_cast<uint32_t>(offset) + i, v);
+        auto* live = self.get().asObject<TypedArrayHeader>();
+        const uint32_t at = static_cast<uint32_t>(offset) + i;
+        if (at < live->length) live->set(at, v);
     }
     return Value::fromUndefined().rawBits();
 }
@@ -265,10 +269,13 @@ uint64_t taCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     relativeArg(args[1], len, from, 0);
     relativeArg(args[2], len, final, len);
 
-    const uint32_t count = final > from ? std::min(final - from, len - to) : 0;
+    uint32_t count = final > from ? std::min(final - from, len - to) : 0;
     if (count == 0) return self.get().rawBits();
 
+    if (!requireTypedArray(self.get(), "copyWithin")) return Value::fromUndefined().rawBits();
     auto* view = self.get().asObject<TypedArrayHeader>();
+    if (from >= view->length || to >= view->length) return self.get().rawBits();
+    count = std::min({count, view->length - from, view->length - to});
     const size_t bpe = view->bytesPerElement();
     uint8_t* dst = view->bytes() + static_cast<size_t>(to) * bpe;
     const uint8_t* src = view->bytes() + static_cast<size_t>(from) * bpe;
@@ -404,6 +411,7 @@ uint64_t taJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv
     const bool isSigned = big && kindOf(self.get()) == ElementKind::BigInt64;
     for (uint32_t i = 0; i < len; ++i) {
         if (i > 0) out += sep;
+        if (i >= lengthOf(self.get())) continue;
         if (big) {
             out += rtBigIntDecimalOfRawBits64(bitsOf(self.get(), i), isSigned);
         } else {

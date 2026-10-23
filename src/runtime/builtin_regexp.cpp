@@ -135,7 +135,7 @@ uint64_t regexpConstructor(uint64_t, uint64_t thisBits, uint32_t argc, const uin
     Rooted<Value> pattern{args[0]};
     Rooted<Value> flagsArg{args[1]};
     const bool constructing = rtIsNativeConstructReceiver(receiver.get()) && isRegExp(receiver.get());
-    const bool patternIsRegExp = isRegExp(pattern.get());
+    const bool patternIsRegExp = isInitializedRegExp(pattern.get());
 
     // Step 2: a plain call with a RegExp whose `constructor` is this very
     // function, and no flags, answers the pattern unchanged.

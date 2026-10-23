@@ -199,10 +199,15 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
     transformEvalAst(astModule, resName);
     const std::vector<std::string>& hostGlobals = in.hostGlobals;
 
-    auto inferred = types::inferModule(astModule, diags,
-                                       hostGlobals.empty() ? nullptr : &hostGlobals,
-                                       in.pins.empty() ? nullptr : &in.pins);
-    if (diags.hasErrors() || !inferred) return nullptr;
+    const char* noInferEnv = std::getenv("BRONZE_NO_INFER");
+    const bool noInfer = noInferEnv && noInferEnv[0] == '1';
+    std::optional<types::InferenceResult> inferred;
+    if (!noInfer) {
+        inferred = types::inferModule(astModule, diags,
+                                      hostGlobals.empty() ? nullptr : &hostGlobals,
+                                      in.pins.empty() ? nullptr : &in.pins);
+        if (diags.hasErrors() || !inferred) return nullptr;
+    }
     timer.mark("infer");
     reportProgress(options, "infer", 0.60);
 

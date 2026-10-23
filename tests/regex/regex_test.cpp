@@ -454,3 +454,21 @@ TEST_CASE("empty alternatives and empty repeats terminate") {
     // than ending the loop — so this consumes the whole input.
     CHECK(firstMatch(*compileOk("(|a)*"), "aa") == "aa");
 }
+
+TEST_CASE("open bracket inside non-v character class does not nest pre-scan") {
+    auto p = compileOk("[[](a)");
+    CHECK(regex::captureCount(*p) == 1);
+    CHECK(firstMatch(*p, "[a") == "[a");
+}
+
+TEST_CASE("deeply nested groups and classes fail cleanly without stack overflow") {
+    std::string deepGroups(300, '(');
+    deepGroups += "a";
+    deepGroups += std::string(300, ')');
+    CHECK(compileError(deepGroups).find("nested too deeply") != std::string::npos);
+
+    std::string deepClasses(300, '[');
+    deepClasses += "a";
+    deepClasses += std::string(300, ']');
+    CHECK(compileError(deepClasses, "v").find("nested too deeply") != std::string::npos);
+}

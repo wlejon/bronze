@@ -230,6 +230,7 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr);
 // `replace` builds one result string from many matches, and going through the
 // match array per match would allocate an array per match).
 const regex::Pattern& rtRegExpPattern(Value re);
+std::shared_ptr<const regex::Pattern> rtRegExpPatternShared(Value re);
 Value rtRegExpBuildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
                               const regex::MatchResult& match);
 // `lastIndex` (22.2.4.1), the own data property the header carries. The

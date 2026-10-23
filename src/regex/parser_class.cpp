@@ -214,6 +214,13 @@ void sortLongestFirst(std::vector<ClassString>& list) {
 // are the same two productions, and the early error below is written twice in
 // the specification for exactly that reason.
 bool PatternParser::readNestedClass(ClassSetValue& out) {
+    if (depth_ >= kMaxDepth) {
+        return refuse("regular expression is nested too deeply");
+    }
+    struct DepthGuard {
+        uint32_t& d;
+        ~DepthGuard() { --d; }
+    } guard{++depth_};
     out = ClassSetValue{};
     ++pos_;  // '['
     const bool negated = eat('^');

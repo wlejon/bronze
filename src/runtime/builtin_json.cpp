@@ -20,6 +20,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -32,9 +33,7 @@ namespace bronze::runtime {
 
 namespace {
 
-bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-}
+bool isCallable(Value v) { return rtIsCallableValue(v); }
 
 Value stringFromUnits16(const json::Units& units) {
     std::vector<uint16_t> copy(units.begin(), units.end());
@@ -202,18 +201,18 @@ uint64_t jsonRawJSON(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 
 uint64_t jsonIsRawJSON(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value val = args[0];
-    if (!val.isObject()) return Value::fromBool(false).rawBits();
-    auto* hdr = val.asObject<HeapObjectHeader>();
+    Rooted<Value> val{args[0]};
+    if (!val.get().isObject()) return Value::fromBool(false).rawBits();
+    auto* hdr = val.get().asObject<HeapObjectHeader>();
     if (hdr->flags != HeapKind::Plain) return Value::fromBool(false).rawBits();
 
-    auto* obj = val.asObject<ObjectHeader>();
+    Rooted<Value> tagKey{rtMakeString("__isRawJSON__")};
+    auto* obj = val.get().asObject<ObjectHeader>();
     if (!obj->shape) return Value::fromBool(false).rawBits();
     Value proto = obj->shape->prototypeValue();
     if (!proto.isNull()) return Value::fromBool(false).rawBits();
 
     PropertyInfo info;
-    Rooted<Value> tagKey{rtMakeString("__isRawJSON__")};
     if (!obj->shape->lookupProperty(PropertyKey::forString(tagKey.get().asString<StringHeader>()), info)) {
         return Value::fromBool(false).rawBits();
     }

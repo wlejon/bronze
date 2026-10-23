@@ -252,7 +252,10 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     uint32_t end = args.count() > 2 && !args[2].isUndefined()
                        ? relativeIndex(toInteger(rtToNumber(args[2])), len)
                        : len;
-    if (isArray(self.get())) {
+    if (isArray(self.get()) && self.get().asObject<ArrayHeader>()->length == len &&
+        self.get().asObject<ArrayHeader>()->head_offset + len <=
+            self.get().asObject<ArrayHeader>()->capacity &&
+        (len == 0 || self.get().asObject<ArrayHeader>()->elementsData() != nullptr)) {
         if (start < end && !requireWritableElements(self.get(), "fill")) {
             return Value::fromUndefined().rawBits();
         }
@@ -289,11 +292,16 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         return rtThrowTypeError("Array.prototype.splice: length exceeds maximum").rawBits();
     }
 
-    if (isArray(self.get())) {
+    Rooted<Value> removed{rtArraySpeciesCreate(self, 0)};
+
+    if (isArray(self.get()) && isArray(removed.get()) &&
+        self.get().asObject<ArrayHeader>()->length == len &&
+        self.get().asObject<ArrayHeader>()->head_offset + len <=
+            self.get().asObject<ArrayHeader>()->capacity &&
+        (len == 0 || self.get().asObject<ArrayHeader>()->elementsData() != nullptr)) {
         const uint32_t newLen = len - deleteCount + insertCount;
         const uint32_t moveCount = len - start - deleteCount;
 
-        Rooted<Value> removed{rtArraySpeciesCreate(self, 0)};
         for (uint32_t i = 0; i < deleteCount; ++i) {
             if (!hasIndex(self.get(), start + i)) {
                 appendHole(removed);
@@ -341,7 +349,6 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     }
 
     // Generic splice path:
-    Rooted<Value> removed{rtArraySpeciesCreate(self, 0)};
     for (uint32_t i = 0; i < deleteCount; ++i) {
         uint32_t from = start + i;
         if (rtArrayLikeHasElement(self, from)) {
@@ -401,7 +408,10 @@ uint64_t arrayCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     uint32_t count = final > from ? std::min(final - from, len - to) : 0;
     if (count == 0) return self.get().rawBits();
 
-    if (isArray(self.get())) {
+    if (isArray(self.get()) && self.get().asObject<ArrayHeader>()->length == len &&
+        self.get().asObject<ArrayHeader>()->head_offset + len <=
+            self.get().asObject<ArrayHeader>()->capacity &&
+        self.get().asObject<ArrayHeader>()->elementsData() != nullptr) {
         if (!requireWritableElements(self.get(), "copyWithin")) {
             return Value::fromUndefined().rawBits();
         }

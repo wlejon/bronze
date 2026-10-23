@@ -284,8 +284,9 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
     Rooted<Value> replacement{replacerIsFunction ? replaceValue.get()
                                                  : rtValueToString(replaceValue.get())};
 
-    const regex::Pattern& pattern = rtRegExpPattern(re.get());
-    const regex::Flags& flags = regex::patternFlags(pattern);
+    std::shared_ptr<const regex::Pattern> patternPtr = rtRegExpPatternShared(re.get());
+    const regex::Pattern& pattern = *patternPtr;
+    const regex::Flags flags = regex::patternFlags(pattern);
     // Step 4: `global` decides between "every match" and "the first", and it is
     // the whole difference between `"aa".replace(/a/g, ...)` and
     // `"aa".replace(/a/, ...)`.
@@ -350,7 +351,8 @@ Value rtRegExpReplace(Rooted<Value>& re, Rooted<Value>& str, Rooted<Value>& repl
 
 Value rtRegExpSplit(Rooted<Value>& re, Rooted<Value>& str, Value limitArg) {
     const Units input = unitsOf(str.get());
-    const regex::Pattern& pattern = rtRegExpPattern(re.get());
+    std::shared_ptr<const regex::Pattern> patternPtr = rtRegExpPatternShared(re.get());
+    const regex::Pattern& pattern = *patternPtr;
     const regex::Units haystack = toRegexUnits(input);
     const uint32_t groups = regex::captureCount(pattern);
 

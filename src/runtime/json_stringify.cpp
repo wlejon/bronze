@@ -370,7 +370,30 @@ bool serializeProperty(State& state, const Units& key, Rooted<Value>& holder, Un
             // collection IS an own enumerable key and does appear, which is
             // why the object serializer is the whole answer rather than a
             // literal `{}`.
-            case BRONZE_ABI_OBJ_FLAGS_PLAIN:
+            case BRONZE_ABI_OBJ_FLAGS_PLAIN: {
+                auto* obj = v.asObject<ObjectHeader>();
+                if (obj->shape && obj->shape->prototypeValue().isNull()) {
+                    Rooted<Value> tagKey{rtMakeString("__isRawJSON__")};
+                    Rooted<Value> rawKey{rtMakeString("rawJSON")};
+                    auto* liveObj = value.get().asObject<ObjectHeader>();
+                    PropertyInfo tagInfo;
+                    PropertyInfo rawInfo;
+                    if (liveObj->shape->lookupProperty(
+                            PropertyKey::forString(tagKey.get().asString<StringHeader>()),
+                            tagInfo) &&
+                        liveObj->shape->lookupProperty(
+                            PropertyKey::forString(rawKey.get().asString<StringHeader>()),
+                            rawInfo)) {
+                        Value rawVal = liveObj->getSlot(rawInfo.slot);
+                        if (rawVal.isString()) {
+                            Units rawUnits = rtStringUnits(rawVal.asString<StringHeader>());
+                            out.insert(out.end(), rawUnits.begin(), rawUnits.end());
+                            return true;
+                        }
+                    }
+                }
+                return serializeObject(state, value, out);
+            }
             case ModuleNamespaceHeader::kFlags:
             case TypedArrayHeader::kFlags:
             case ArrayBufferHeader::kFlags:
@@ -416,6 +439,9 @@ Value rtJsonStringify(Value value, Value replacer, Value space) {
         const uint32_t count = replacerRoot.get().asObject<ArrayHeader>()->length;
         for (uint32_t i = 0; i < count; ++i) {
             Rooted<Value> item{replacerRoot.get().asObject<ArrayHeader>()->getElem(i)};
+            if (Value prim; rtWrapperPrimitive(item.get(), prim) && !prim.isBool()) {
+                item.set(prim);
+            }
             if (!item.get().isString() && !isNumberLike(item.get())) continue;
             Rooted<Value> asString{rtValueToString(item.get())};
             Units key = rtStringUnits(asString.get().asString<StringHeader>());
@@ -427,12 +453,19 @@ Value rtJsonStringify(Value value, Value replacer, Value space) {
         }
     }
 
-    // 25.5.2.1 steps 6 and 7: a number gives that many spaces, capped at ten;
-    // a string gives its first ten code units; anything else gives none.
+    // 25.5.2.1 steps 5, 6 and 7: unwrap a Number or String wrapper first; a
+    // number gives that many spaces, clamped to [0, 10]; a string gives its
+    // first ten code units; anything else gives none.
+    if (Value prim; rtWrapperPrimitive(spaceRoot.get(), prim) && !prim.isBool()) {
+        spaceRoot.set(prim);
+    }
     if (isNumberLike(spaceRoot.get())) {
-        double n = numberOf(spaceRoot.get());
-        if (std::isnan(n)) n = 0;
-        if (n > 10) n = 10;
+        double n = std::trunc(numberOf(spaceRoot.get()));
+        if (!std::isfinite(n)) {
+            n = n > 0 ? 10.0 : 0.0;
+        }
+        if (n < 1.0) n = 0.0;
+        if (n > 10.0) n = 10.0;
         for (int i = 0; i < static_cast<int>(n); ++i) state.gap.push_back(u' ');
     } else if (spaceRoot.get().isString()) {
         Units text = rtStringUnits(spaceRoot.get().asString<StringHeader>());

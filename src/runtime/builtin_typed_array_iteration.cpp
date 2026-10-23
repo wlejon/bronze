@@ -119,8 +119,9 @@ uint64_t taIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     relativeArg(args[1], len, from, 0);
     if (!args[0].isNumber()) return Value::fromDouble(-1.0).rawBits();
     const double needle = args[0].asNumber();
+    const uint32_t liveLen = std::min(len, lengthOf(self.get()));
 
-    for (uint32_t i = from; i < len; ++i) {
+    for (uint32_t i = from; i < liveLen; ++i) {
         if (elemOf(self.get(), i) == needle) return Value::fromDouble(i).rawBits();
     }
     return Value::fromDouble(-1.0).rawBits();
@@ -149,6 +150,7 @@ uint64_t taLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     const double needle = big ? 0.0 : args[0].asNumber();
 
     for (int64_t i = static_cast<int64_t>(k); i >= 0; --i) {
+        if (static_cast<uint32_t>(i) >= lengthOf(self.get())) continue;
         if (big) {
             // The un-converted needle and the strict compare, exactly as
             // indexOf above says.
@@ -189,10 +191,13 @@ uint64_t taIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
     const uint32_t len = lengthOf(self.get());
     uint32_t from = 0;
     relativeArg(args[1], len, from, 0);
-    if (!args[0].isNumber()) return Value::fromBool(false).rawBits();
+    const uint32_t liveLen = std::min(len, lengthOf(self.get()));
+    if (!args[0].isNumber()) {
+        return Value::fromBool(args[0].isUndefined() && from < len && liveLen < len).rawBits();
+    }
     const double needle = args[0].asNumber();
 
-    for (uint32_t i = from; i < len; ++i) {
+    for (uint32_t i = from; i < liveLen; ++i) {
         const double v = elemOf(self.get(), i);
         if (std::isnan(needle) && std::isnan(v)) return Value::fromBool(true).rawBits();
         if (v == needle) return Value::fromBool(true).rawBits();

@@ -542,6 +542,8 @@ uint64_t stringConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
     return stringFromUnits(out).rawBits();
 }
 
+constexpr double kMaxStringLength = 134217727.0;
+
 uint64_t stringRepeat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "repeat");
@@ -554,9 +556,14 @@ uint64_t stringRepeat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         const size_t len = formatJsNumber(n, buf);
         return rtThrowRangeError("Invalid count value: " + std::string(buf, len)).rawBits();
     }
+    if (n == 0.0 || self.empty()) return rtMakeString("").rawBits();
+    if (n * static_cast<double>(self.size()) > kMaxStringLength) {
+        return rtThrowRangeError("Invalid string length").rawBits();
+    }
     Units out;
-    out.reserve(self.size() * static_cast<size_t>(n));
-    for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
+    const auto count = static_cast<uint32_t>(n);
+    out.reserve(self.size() * static_cast<size_t>(count));
+    for (uint32_t i = 0; i < count; ++i) {
         out.insert(out.end(), self.begin(), self.end());
     }
     return stringFromUnits(out).rawBits();
@@ -585,9 +592,13 @@ uint64_t stringPadImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     if (target <= static_cast<double>(self.size())) return stringFromUnits(self).rawBits();
     Units filler = args.count() > 1 && !args[1].isUndefined() ? argUnits(args[1]) : Units{' '};
     if (filler.empty()) return stringFromUnits(self).rawBits();
+    if (target > kMaxStringLength) {
+        return rtThrowRangeError("Invalid string length").rawBits();
+    }
 
     Units pad;
-    while (pad.size() + self.size() < static_cast<size_t>(target)) {
+    const auto targetLen = static_cast<size_t>(target);
+    while (pad.size() + self.size() < targetLen) {
         pad.push_back(filler[pad.size() % filler.size()]);
     }
     Units out;

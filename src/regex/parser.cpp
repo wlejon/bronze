@@ -34,7 +34,7 @@ namespace bronze::regex {
 // A `v`-mode class may NEST, so the bracket depth is counted rather than
 // flagged: `[[a]]` closes at the second `]` and a pre-scan that stopped at the
 // first would read the rest of the class as pattern text.
-GroupInfo prescanGroups(UnitsView src) {
+GroupInfo prescanGroups(UnitsView src, bool unicodeSets) {
     GroupInfo info;
     uint32_t classDepth = 0;
     for (size_t i = 0; i < src.size(); ++i) {
@@ -44,7 +44,7 @@ GroupInfo prescanGroups(UnitsView src) {
             continue;
         }
         if (classDepth != 0) {
-            if (c == '[') ++classDepth;
+            if (c == '[' && unicodeSets) ++classDepth;
             if (c == ']') --classDepth;
             continue;
         }
@@ -94,6 +94,13 @@ NodePtr PatternParser::parse(std::string& error) {
 // ---- Disjunction / Alternative / Term ---------------------------------------
 
 NodePtr PatternParser::parseDisjunction() {
+    if (depth_ >= kMaxDepth) {
+        return fail("regular expression is nested too deeply");
+    }
+    struct DepthGuard {
+        uint32_t& d;
+        ~DepthGuard() { --d; }
+    } guard{++depth_};
     NodePtr alt = parseAlternative();
     if (!alt) return nullptr;
     if (peek() != '|') return alt;
@@ -715,7 +722,7 @@ bool parseFlags(std::string_view text, Flags& out, std::string& error) {
 void PatternDeleter::operator()(Pattern* pattern) const noexcept { delete pattern; }
 
 PatternPtr compile(UnitsView source, const Flags& flags, std::string& error) {
-    const GroupInfo groups = prescanGroups(source);
+    const GroupInfo groups = prescanGroups(source, flags.unicodeSets);
     PatternParser parser(source, flags, groups);
     NodePtr root = parser.parse(error);
     if (!root) return nullptr;

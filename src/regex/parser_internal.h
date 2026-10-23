@@ -141,10 +141,12 @@ struct GroupInfo {
     std::vector<std::string> names;  // one per group, empty when unnamed
 };
 
-GroupInfo prescanGroups(UnitsView src);
+GroupInfo prescanGroups(UnitsView src, bool unicodeSets = false);
 
 class PatternParser {
 public:
+    static constexpr uint32_t kMaxDepth = 256;
+
     PatternParser(UnitsView src, const Flags& flags, const GroupInfo& groups)
         : src_(src), flags_(flags), groups_(groups) {}
 
@@ -158,6 +160,7 @@ private:
     const GroupInfo& groups_;
     size_t pos_ = 0;
     uint32_t captureCounter_ = 0;
+    uint32_t depth_ = 0;
     std::string error_;
 
     bool atEnd() const { return pos_ >= src_.size(); }

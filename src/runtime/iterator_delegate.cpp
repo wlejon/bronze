@@ -32,6 +32,7 @@
 #include "runtime/heap.h"
 #include "runtime/iterator.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
@@ -39,9 +40,7 @@
 namespace bronze::runtime {
 namespace {
 
-bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-}
+bool isCallable(Value v) { return rtIsCallableValue(v); }
 
 // 7.4.1 CreateIterResultObject, in the spec's field order — `value` then
 // `done`, which is the order `Object.keys` of one reports.
@@ -86,8 +85,8 @@ Value requireResultObject(Value result) {
 // argument array is not, and does not need to be — `FunctionHeader::call`
 // publishes it as the callee's argument frame, which is a root source.
 Value callWithReceived(Rooted<Value>& method, Rooted<Value>& receiver, Rooted<Value>& sent) {
-    Value args[1] = {sent.get()};
-    Value result = method.get().asObject<FunctionHeader>()->call(receiver.get(), 1, args);
+    uint64_t args[1] = {sent.get().rawBits()};
+    Value result(bronze_dynamic_call(method.get().rawBits(), receiver.get().rawBits(), 1, args));
     return requireResultObject(result);
 }
 

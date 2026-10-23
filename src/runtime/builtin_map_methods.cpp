@@ -22,6 +22,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/map.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
@@ -107,8 +108,7 @@ uint64_t collectionForEach(uint64_t thisBits, uint32_t argc, const uint64_t* arg
         return Value::fromUndefined().rawBits();
     }
     Rooted<Value> cb{args[0]};
-    if (!cb.get().isObject() ||
-        cb.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function) {
+    if (!rtIsCallableValue(cb.get())) {
         return rtThrowTypeError(std::string(isSet ? "Set" : "Map") +
                                 ".prototype.forEach needs a function argument")
             .rawBits();
@@ -119,8 +119,9 @@ uint64_t collectionForEach(uint64_t thisBits, uint32_t argc, const uint64_t* arg
     for (uint32_t at = 0; at < self.get().asObject<MapHeader>()->used(); ++at) {
         auto* map = self.get().asObject<MapHeader>();
         if (!map->liveAt(at)) continue;
-        Value block[3] = {isSet ? map->keyAt(at) : map->valueAt(at), map->keyAt(at), self.get()};
-        cb.get().asObject<FunctionHeader>()->call(thisArg.get(), 3, block);
+        uint64_t block[3] = {(isSet ? map->keyAt(at) : map->valueAt(at)).rawBits(),
+                             map->keyAt(at).rawBits(), self.get().rawBits()};
+        bronze_dynamic_call(cb.get().rawBits(), thisArg.get().rawBits(), 3, block);
     }
     return Value::fromUndefined().rawBits();
 }

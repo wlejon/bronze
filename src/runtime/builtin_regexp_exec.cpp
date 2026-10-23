@@ -55,7 +55,7 @@ public:
 
     struct Entry {
         std::string key;
-        regex::PatternPtr pattern;
+        std::shared_ptr<const regex::Pattern> pattern;
         uint32_t prev{kInvalid};
         uint32_t next{kInvalid};
         uint64_t id{0};
@@ -204,14 +204,14 @@ bool isRegExp(Value v) {
     return v.isObject() && v.asObject<HeapObjectHeader>()->flags == RegExpHeader::kFlags;
 }
 
-const regex::Pattern& programOf(Value re) {
+std::shared_ptr<const regex::Pattern> programSharedOf(Value re) {
     auto* header = re.asObject<RegExpHeader>();
     uint64_t id = static_cast<uint64_t>(header->programIndex.asNumber());
     uint32_t slot = static_cast<uint32_t>(id & 0xFFFF);
     auto& cache = regExpCache();
     if (cache.isValid(slot, id)) {
         cache.touch(slot);
-        return *cache.entry(slot).pattern;
+        return cache.entry(slot).pattern;
     }
 
     // Cache miss or slot was evicted: recover using source and flagsText.
@@ -222,7 +222,7 @@ const regex::Pattern& programOf(Value re) {
     uint32_t existing = cache.lookup(key);
     if (existing != RegExpCache::kInvalid) {
         header->programIndex = Value::fromDouble(static_cast<double>(cache.entryId(existing)));
-        return *cache.entry(existing).pattern;
+        return cache.entry(existing).pattern;
     }
 
     regex::Flags flags;
@@ -237,8 +237,10 @@ const regex::Pattern& programOf(Value re) {
     }
     uint32_t newSlot = cache.insert(key, std::move(pattern));
     header->programIndex = Value::fromDouble(static_cast<double>(cache.entryId(newSlot)));
-    return *cache.entry(newSlot).pattern;
+    return cache.entry(newSlot).pattern;
 }
+
+const regex::Pattern& programOf(Value re) { return *programSharedOf(re); }
 
 // 22.2.6.10 EscapeRegExpPattern. `source` is the text a LITERAL of this
 // pattern would carry, so it must be a pattern that can sit between two
@@ -466,7 +468,9 @@ Value rtAllocateRegExp(Shape* shape) {
     return Value::fromObject(obj);
 }
 
-bool rtIsRegExp(Value v) { return isRegExp(v); }
+bool rtIsRegExp(Value v) {
+    return isRegExp(v) && v.asObject<RegExpHeader>()->programIndex.isNumber();
+}
 
 Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
     if (!isRegExp(re.get()) || !re.get().asObject<RegExpHeader>()->programIndex.isNumber()) {
@@ -486,7 +490,8 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
         from = lastIndexOf(re, ok);
         if (!ok) return Value::fromUndefined();
     }
-    const regex::Pattern& pattern = programOf(re.get());
+    std::shared_ptr<const regex::Pattern> patternPtr = programSharedOf(re.get());
+    const regex::Pattern& pattern = *patternPtr;
     const regex::Flags& flags = regex::patternFlags(pattern);
     const std::vector<uint16_t> raw = rtStringUnits(inputStr.get().asString<StringHeader>());
     const regex::Units input(raw.begin(), raw.end());
@@ -512,6 +517,10 @@ Value rtRegExpExec(Rooted<Value>& re, Rooted<Value>& inputStr) {
 }
 
 const regex::Pattern& rtRegExpPattern(Value re) { return programOf(re); }
+
+std::shared_ptr<const regex::Pattern> rtRegExpPatternShared(Value re) {
+    return programSharedOf(re);
+}
 
 Value rtRegExpBuildMatchArray(const regex::Pattern& pattern, Rooted<Value>& inputStr,
                               const regex::MatchResult& match) {

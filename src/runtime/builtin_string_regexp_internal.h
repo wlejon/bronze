@@ -25,6 +25,7 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
@@ -92,9 +93,7 @@ inline Value stringOfSlice(const Units& units, size_t from, size_t to) {
     return stringOfSpan(units.data() + from, to - from);
 }
 
-inline bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-}
+inline bool isCallable(Value v) { return rtIsCallableValue(v); }
 
 // One match, reduced to what a replacement needs. Holding the pieces rather
 // than a match array is what lets `replace` with a `g` pattern run over a long

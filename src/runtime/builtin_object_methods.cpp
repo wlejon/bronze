@@ -165,8 +165,10 @@ uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
                                                   Value::fromDouble(0.0).rawBits()))};
             Rooted<Value> v{Value(bronze_elem_get(pair.get().rawBits(),
                                                   Value::fromDouble(1.0).rawBits()))};
-            bronze_elem_set(out.get().rawBits(), k.get().rawBits(), v.get().rawBits(),
-                            /*strict=*/false);
+            Rooted<Value> propKey{rtToPropertyKey(k)};
+            out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), propKey, v,
+                                                        /*ic=*/nullptr, /*enumerable=*/true,
+                                                        /*defineOwn=*/true);
         }
     });
     return out.get().rawBits();

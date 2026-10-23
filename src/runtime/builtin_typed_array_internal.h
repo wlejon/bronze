@@ -15,6 +15,7 @@
 #include "runtime/iterator.h"
 #include "runtime/number_format.h"
 #include "runtime/object.h"
+#include "runtime/proxy.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
@@ -104,14 +105,18 @@ inline bool requireTypedArray(Value v, const char* method) {
 }
 
 inline uint32_t lengthOf(Value v) { return v.asObject<TypedArrayHeader>()->length; }
-inline double elemOf(Value v, uint32_t i) { return v.asObject<TypedArrayHeader>()->get(i); }
+inline double elemOf(Value v, uint32_t i) {
+    const auto* view = v.asObject<TypedArrayHeader>();
+    return i < view->length ? view->get(i) : 0.0;
+}
 inline ElementKind kindOf(Value v) { return v.asObject<TypedArrayHeader>()->elementKind(); }
 inline bool isBigIntView(Value v) { return isBigIntElementKind(kindOf(v)); }
 // The stored eight bytes of a BigInt view's element — the raw form the methods
 // stage, sort and copy, because a BigInt VALUE allocates and their loops hold
 // staged buffers the collector cannot see.
 inline uint64_t bitsOf(Value v, uint32_t i) {
-    return v.asObject<TypedArrayHeader>()->rawBits64(i);
+    const auto* view = v.asObject<TypedArrayHeader>();
+    return i < view->length ? view->rawBits64(i) : 0;
 }
 
 inline double toInteger(double d) {
@@ -145,9 +150,7 @@ inline Value newViewLike(Value model, uint32_t length) {
     return rtNewTypedArray(kind, length);
 }
 
-inline bool isCallable(Value v) {
-    return v.isObject() && v.asObject<HeapObjectHeader>()->flags == HeapKind::Function;
-}
+inline bool isCallable(Value v) { return rtIsCallableValue(v); }
 
 inline bool requireCallable(Value v, const char* method) {
     if (isCallable(v)) return true;
