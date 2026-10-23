@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ast/dump.h"
+#include "check/static_checker.h"
 #include "cli/driver_helpers.h"
 #include "cli/link.h"
 #include "cli/run.h"
@@ -103,6 +104,12 @@ int runTypes(const std::string& sourcePath, std::string* outString,
         std::fputs(printed.c_str(), stdout);
     }
     return 0;
+}
+
+int runCheck(const std::string& sourcePath, std::string* outString,
+             const std::vector<modules::ModuleRoot>& moduleRoots,
+             const std::string& importMapPath) {
+    return check::runCheckFile(sourcePath, outString, moduleRoots, importMapPath);
 }
 
 int runIl(const std::string& sourcePath, std::string* outString, bool infer,
@@ -603,7 +610,7 @@ int runDriver(int argc, char** argv) {
         return 0;
     }
 
-    if (command == "types") {
+    if (command == "types" || command == "check") {
         if (argc < 3) return fail("error: missing <file>\n");
         std::string sourcePath;
         std::string importMapPath;
@@ -640,6 +647,9 @@ int runDriver(int argc, char** argv) {
             }
         }
         if (sourcePath.empty()) return fail("error: missing <file>\n");
+        if (command == "check") {
+            return runCheck(sourcePath, nullptr, moduleRoots, importMapPath);
+        }
         return runTypes(sourcePath, nullptr, moduleRoots, importMapPath);
     }
 

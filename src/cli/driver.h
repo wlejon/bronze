@@ -11,6 +11,10 @@ int runTypes(const std::string& sourcePath, std::string* outString = nullptr,
              const std::vector<modules::ModuleRoot>& moduleRoots = {},
              const std::string& importMapPath = {});
 
+int runCheck(const std::string& sourcePath, std::string* outString = nullptr,
+             const std::vector<modules::ModuleRoot>& moduleRoots = {},
+             const std::string& importMapPath = {});
+
 // `infer == false` skips inference entirely and lowers with the uniform dynamic
 // convention everywhere, reproducing the pre-inference calling convention
 // exactly (lower.h says what it does NOT reproduce). It is the bisection seam

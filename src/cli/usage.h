@@ -14,6 +14,8 @@ constexpr const char* kUsage =
     "  bronze lex <file>                   Tokenize and print one token per line\n"
     "  bronze parse <file>                 Parse and print the canonical AST dump\n"
     "  bronze types <file>                 Infer types and print the canonical type dump\n"
+    "  bronze check <file>                 Static symbolic bug-finding check (null-deref,\n"
+    "                                      out-of-bounds, nan-poison)\n"
     "  bronze il <file>                    Lower to IL and print canonical IL dump\n"
     "  bronze build <file> -o <output>     Compile JS source to a native program: the\n"
     "                                      executable, the compiled module beside it\n"
