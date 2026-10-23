@@ -352,6 +352,9 @@ std::optional<Lowerer::Value> Lowerer::lowerCoercingOperand(const ast::Expr& e,
         return emitNullishUnbox(*val, ilFn);
     }
     if (val && val->type == il::Type::Dynamic) {
+        if (provenNumber(e)) {
+            return unboxValueIfNeeded(*val, il::Type::F64, ilFn);
+        }
         if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&e)) {
             if (mem->property == "length") {
                 return unboxValueIfNeeded(*val, il::Type::F64, ilFn);

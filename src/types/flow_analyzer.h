@@ -175,6 +175,8 @@ private:
     Type exprKind(const ast::Expr& e);
     Type unary(const ast::Unary& u);
     Type binary(const ast::Binary& b);
+    Type ternary(const ast::Ternary& t);
+    void noteVarInit(const std::string& name, const ast::Expr& init, bool isConst);
     Type call(const ast::Call& c);
     Type newExpr(const ast::NewExpr& n);
     Type superCall(const ast::SuperCall& sc);

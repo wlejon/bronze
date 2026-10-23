@@ -549,7 +549,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             bool rhsReaches = !currentBlockIsTerminated(ilFn);
             size_t rhsEndBlockIdx = currentBlockIdx_;
 
-            il::Type joinType = (curVal.type == rhsStored.type) ? curVal.type : il::Type::Dynamic;
+            il::Type joinType = (curVal.type == rhsStored.type)
+                                    ? curVal.type
+                                    : (provenNumber(*bin) ? il::Type::F64 : il::Type::Dynamic);
             il::ValueId resParamId = ilFn.valueCount++;
             ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
             ExprJoin join = makeExprJoin(stateEntry, stateRhs, bJoin, ilFn);
@@ -594,6 +596,11 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             setCurrentBlock(bJoin);
             restoreVarStates(stateEntry);
             bindExprJoinParams(join);
+            if (isLocal && !varBindings_[bindingIdx].inEnv && !varBindings_[bindingIdx].isConst &&
+                joinType == il::Type::F64) {
+                varBindings_[bindingIdx].valueId = resParamId;
+                varBindings_[bindingIdx].type = il::Type::F64;
+            }
             return Value{resParamId, joinType};
         }
 

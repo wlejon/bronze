@@ -13,6 +13,7 @@
 #include "types/ctor_ident.h"
 #include "types/env.h"
 #include "types/field_audit.h"
+#include "types/host_contracts.h"
 #include "types/infer_memo.h"
 #include "types/method_ident.h"
 #include "types/pins.h"
@@ -99,6 +100,20 @@ struct Scope {
     std::unordered_set<std::string> pristineMathFns;
     std::unordered_map<std::string, std::string> objectLitMethodAliases;
     std::unordered_map<std::string, Type> dictElemTypes;
+    std::unordered_map<std::string, HostObjectKind> hostObjectBindings;
+
+    void eraseSideTables(const std::string& name) {
+        pristineMathFns.erase(name);
+        objectLitMethodAliases.erase(name);
+        dictElemTypes.erase(name);
+        hostObjectBindings.erase(name);
+    }
+    void clearSideTables() {
+        pristineMathFns.clear();
+        objectLitMethodAliases.clear();
+        dictElemTypes.clear();
+        hostObjectBindings.clear();
+    }
 };
 
 struct ModuleContext {

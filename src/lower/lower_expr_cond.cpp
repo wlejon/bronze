@@ -109,6 +109,8 @@ std::optional<Lowerer::Value> Lowerer::lowerTernary(const ast::Ternary* tern,
     il::Type joinType = il::Type::Dynamic;
     if (thenValOpt->type == elseValOpt->type) {
         joinType = thenValOpt->type;
+    } else if (provenNumber(*tern)) {
+        joinType = il::Type::F64;
     }
 
     il::Instruction brInst;
@@ -166,7 +168,10 @@ std::optional<Lowerer::Value> Lowerer::lowerLogical(const ast::Binary* bin, il::
     bool rhsReaches = !currentBlockIsTerminated(ilFn);
     size_t rhsEndBlockIdx = currentBlockIdx_;
 
-    il::Type joinType = (lhsVal.type == il::Type::F64 && rhsVal.type == il::Type::F64) ? il::Type::F64 : il::Type::Dynamic;
+    il::Type joinType =
+        ((lhsVal.type == il::Type::F64 && rhsVal.type == il::Type::F64) || provenNumber(*bin))
+            ? il::Type::F64
+            : il::Type::Dynamic;
 
     il::ValueId resParamId = ilFn.valueCount++;
     ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
@@ -245,7 +250,7 @@ std::optional<Lowerer::Value> Lowerer::lowerNullish(const ast::Binary* bin, il::
     bool rhsReaches = !currentBlockIsTerminated(ilFn);
     size_t rhsEndBlockIdx = currentBlockIdx_;
 
-    il::Type joinType = il::Type::Dynamic;
+    il::Type joinType = provenNumber(*bin) ? il::Type::F64 : il::Type::Dynamic;
 
     il::ValueId resParamId = ilFn.valueCount++;
     ilFn.blocks[bJoin].params.push_back({resParamId, joinType});
@@ -253,7 +258,9 @@ std::optional<Lowerer::Value> Lowerer::lowerNullish(const ast::Binary* bin, il::
 
     // Skip-edge coercions must dominate the entry branch.
     setCurrentBlock(entryBlockIdx);
-    std::vector<il::ValueId> skipArgs{lhsVal.id};
+    Value lhsConv = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(lhsVal, ilFn)
+                                                    : unboxValueIfNeeded(lhsVal, joinType, ilFn);
+    std::vector<il::ValueId> skipArgs{lhsConv.id};
     appendExprJoinArgs(skipArgs, join, stateLhs, ilFn);
 
     il::Instruction brInst;
@@ -267,7 +274,8 @@ std::optional<Lowerer::Value> Lowerer::lowerNullish(const ast::Binary* bin, il::
 
     if (rhsReaches) {
         setCurrentBlock(rhsEndBlockIdx);
-        Value rhsConv = boxValueIfNeeded(rhsVal, ilFn);
+        Value rhsConv = (joinType == il::Type::Dynamic) ? boxValueIfNeeded(rhsVal, ilFn)
+                                                        : unboxValueIfNeeded(rhsVal, joinType, ilFn);
         std::vector<il::ValueId> args{rhsConv.id};
         appendExprJoinArgs(args, join, stateRhs, ilFn);
         il::Instruction jmpInst;

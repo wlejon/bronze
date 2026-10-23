@@ -181,9 +181,7 @@ bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
 }
 
 void FlowAnalyzer::declare(const std::string& name, Type t) {
-    scope_.pristineMathFns.erase(name);
-    scope_.objectLitMethodAliases.erase(name);
-    scope_.dictElemTypes.erase(name);
+    scope_.eraseSideTables(name);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
     } else {
@@ -211,9 +209,7 @@ FlowAnalyzer::ScopeSave FlowAnalyzer::saveDeclarations(const std::vector<std::st
     ScopeSave saved;
     saved.reserve(names.size());
     for (const auto& name : names) {
-        scope_.pristineMathFns.erase(name);
-        scope_.objectLitMethodAliases.erase(name);
-        scope_.dictElemTypes.erase(name);
+        scope_.eraseSideTables(name);
         const auto it = scope_.env.find(name);
         saved.emplace_back(name, it == scope_.env.end() ? std::optional<Type>()
                                                         : std::optional<Type>(it->second));
@@ -223,9 +219,7 @@ FlowAnalyzer::ScopeSave FlowAnalyzer::saveDeclarations(const std::vector<std::st
 
 void FlowAnalyzer::restoreDeclarations(const ScopeSave& saved) {
     for (const auto& entry : saved) {
-        scope_.pristineMathFns.erase(entry.first);
-        scope_.objectLitMethodAliases.erase(entry.first);
-        scope_.dictElemTypes.erase(entry.first);
+        scope_.eraseSideTables(entry.first);
         if (entry.second.has_value()) {
             scope_.env[entry.first] = *entry.second;
         } else {
@@ -240,9 +234,7 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
             ++mod_.persistentWrites;
         }
     }
-    scope_.pristineMathFns.erase(name);
-    scope_.objectLitMethodAliases.erase(name);
-    scope_.dictElemTypes.erase(name);
+    scope_.eraseSideTables(name);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
         return;
@@ -277,18 +269,14 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
 }
 
 void FlowAnalyzer::widenAll() {
-    scope_.pristineMathFns.clear();
-    scope_.objectLitMethodAliases.clear();
-    scope_.dictElemTypes.clear();
+    scope_.clearSideTables();
     for (auto& entry : scope_.env) entry.second = Type::dynamic();
     for (auto& entry : scope_.cells) entry.second = Type::dynamic();
 }
 
 void FlowAnalyzer::widenAssigned(const std::unordered_set<std::string>& assigned) {
     for (const auto& name : assigned) {
-        scope_.pristineMathFns.erase(name);
-        scope_.objectLitMethodAliases.erase(name);
-        scope_.dictElemTypes.erase(name);
+        scope_.eraseSideTables(name);
         if (const auto it = scope_.env.find(name); it != scope_.env.end()) {
             it->second = Type::dynamic();
         }
@@ -464,19 +452,8 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         const Type initT = v->init ? expr(*v->init) : Type::undefined();
         suppressObjectLitSetterReach_ = savedSuppress;
         declare(v->name, initT);
-        if (v->isConst && v->init != nullptr && !scope_.isCell(v->name)) {
-            if (const auto* ol = ast::exactAs<const ast::ObjectLit*>(v->init.get());
-                ol != nullptr && ol->props.empty()) {
-                scope_.dictElemTypes[v->name] = Type::never();
-            }
-        }
-        if (maInit != nullptr && !maInit->optional && !scope_.isCell(v->name)) {
-            if (isPristineMathBase(*maInit->object) && isMathMethodReturningNumber(maInit->property)) {
-                scope_.pristineMathFns.insert(v->name);
-            } else if (!maInit->isPrivate && !maInit->property.empty() &&
-                       !mod_.methods.isMethodName(maInit->property)) {
-                scope_.objectLitMethodAliases[v->name] = maInit->property;
-            }
+        if (v->init != nullptr && !scope_.isCell(v->name)) {
+            noteVarInit(v->name, *v->init, v->isConst);
         }
         return;
     }
@@ -896,9 +873,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     for (uint32_t iter = 0; iter <= kMaxFlowIterations; ++iter) {
         const Env beforeCells = scope.cells;
         scope.env.clear();
-        scope.pristineMathFns.clear();
-        scope.objectLitMethodAliases.clear();
-        scope.dictElemTypes.clear();
+        scope.clearSideTables();
         seedParams(scope, params, args.paramTypes);
         FlowAnalyzer probe(mod, scope, facts, args.qualifiedName, /*record=*/false);
         probe.runParamDefaults(params);
@@ -932,9 +907,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     Type bodyReturn = probeReturn;
     if (args.record) {
         scope.env.clear();
-        scope.pristineMathFns.clear();
-        scope.objectLitMethodAliases.clear();
-        scope.dictElemTypes.clear();
+        scope.clearSideTables();
         seedParams(scope, params, args.paramTypes);
         FlowAnalyzer recorder(mod, scope, facts, args.qualifiedName, /*record=*/true);
         recorder.runParamDefaults(params);

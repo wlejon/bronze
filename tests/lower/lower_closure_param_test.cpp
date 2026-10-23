@@ -219,3 +219,30 @@ TEST_CASE("a pinned RETURN does not cost the same function its parameter's f64 s
     REQUIRE(mod.has_value());
     CHECK(header(il::print(*mod), "run") == "func run(%0: f64) -> f64 {");
 }
+
+TEST_CASE("coupled closure parameter and captured accumulator slot converge to f64") {
+    const auto il = lowerToText(
+        "function makeCounter() {\n"
+        "  let total = 0;\n"
+        "  function add(dx) { total = total + dx; }\n"
+        "  add(1);\n"
+        "  add(total + 2);\n"
+        "  return total;\n"
+        "}\n"
+        "console.log(makeCounter());\n");
+    CHECK(header(il, "add").find("f64") != std::string::npos);
+    CHECK(il.find(", raw") != std::string::npos);
+}
+
+TEST_CASE("path-guarded ternary, nullish coalescing, and host numeric APIs lower to f64") {
+    const auto il = lowerToText(
+        "function compute(x, el) {\n"
+        "  const safeX = typeof x === 'number' ? x : 0;\n"
+        "  const rect = el.getBoundingClientRect();\n"
+        "  const area = rect.width * rect.height;\n"
+        "  const now = performance.now();\n"
+        "  return safeX + area + now;\n"
+        "}\n"
+        "console.log(compute(5, { getBoundingClientRect() { return { width: 2, height: 3 }; } }));\n");
+    CHECK(header(il, "compute").find("-> f64") != std::string::npos);
+}

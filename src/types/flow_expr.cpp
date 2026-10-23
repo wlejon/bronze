@@ -180,16 +180,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
     }
     if (const auto* u = ast::exactAs<const ast::Unary*>(&e)) return unary(*u);
     if (const auto* b = ast::exactAs<const ast::Binary*>(&e)) return binary(*b);
-    if (const auto* t = ast::exactAs<const ast::Ternary*>(&e)) {
-        expr(*t->condition);
-        const Env entry = scope_.env;
-        const Type a = expr(*t->thenExpr);
-        const Env thenEnv = scope_.env;
-        scope_.env = entry;
-        const Type b = expr(*t->elseExpr);
-        scope_.env = joinEnv(thenEnv, scope_.env);
-        return join(a, b);
-    }
+    if (const auto* t = ast::exactAs<const ast::Ternary*>(&e)) return ternary(*t);
     if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&e)) {
         const bool suppressHere = suppressObjectLitSetterReach_;
         suppressObjectLitSetterReach_ = false;
@@ -224,6 +215,18 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         if (!m->optional && isPristineMathBase(*m->object) &&
             isMathValueProperty(m->property)) {
             return Type::number();
+        }
+        if (!m->optional && !m->isPrivate) {
+            const Type hostPropT = classifyHostMemberReadType(
+                *m,
+                [this](const std::string& id) { return resolvesToUserBinding(id); },
+                [this](const std::string& id) {
+                    const auto it = scope_.hostObjectBindings.find(id);
+                    return it != scope_.hostObjectBindings.end() ? it->second
+                                                                 : HostObjectKind::None;
+                },
+                mod_.mathPristine);
+            if (!hostPropT.is(TypeKind::Dynamic)) return hostPropT;
         }
         // A field of a class the layout analysis modelled: the type joined over
         // every `this.<name> = ...` the class body writes. This is what carries
@@ -597,6 +600,11 @@ Type FlowAnalyzer::call(const ast::Call& c) {
             if (!scope_.isCell(id->name) && scope_.pristineMathFns.count(id->name) != 0) {
                 return Type::number();
             }
+        }
+        if (isHostCallReturningNumber(
+                c, [this](const std::string& id) { return resolvesToUserBinding(id); },
+                mod_.mathPristine)) {
+            return Type::number();
         }
     }
 

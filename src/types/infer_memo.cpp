@@ -155,7 +155,7 @@ void InferMemo::apply(ModuleContext& mod, const Contribution& c) {
     switch (c.kind) {
         case Contrib::FnParam: {
             Type& slot = mod.functions[c.index].observedParams[c.param];
-            slot = join(slot, c.t);
+            slot = joinParam(slot, c.t);
             break;
         }
         case Contrib::FnReached:

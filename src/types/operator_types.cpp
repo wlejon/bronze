@@ -1,4 +1,5 @@
 #include "types/operator_types.h"
+#include "types/relational_prover.h"
 
 namespace bronze::types {
 
@@ -136,8 +137,9 @@ Type binaryResult(ast::BinaryOp op, Type l, Type r) {
 }
 
 Type compoundResult(ast::BinaryOp plainOp, Type current, Type rhs) {
-    if (plainOp == ast::BinaryOp::LogicalAnd || plainOp == ast::BinaryOp::LogicalOr ||
-        plainOp == ast::BinaryOp::NullishCoalescing) {
+    if (plainOp == ast::BinaryOp::LogicalOr) return logicalOrResult(current, rhs);
+    if (plainOp == ast::BinaryOp::NullishCoalescing) return nullishCoalescingResult(current, rhs);
+    if (plainOp == ast::BinaryOp::LogicalAnd) {
         return join(current, rhs);
     }
     return isAlwaysNumericOp(plainOp) ? numericOrDynamic(current, rhs)

@@ -263,6 +263,25 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
         if (declInit.contains(name)) structural.insert(name);
     }
 
+    // Collect non-colliding parameter names of nested FunctionDecls that
+    // `planClosureParamNumbers` already proved F64 for this body.
+    std::unordered_set<std::string> provenNestedParams;
+    std::unordered_set<std::string> disqualifiedNestedParams;
+    if (!provenClosureParams_.empty()) {
+        for (const auto& [fnDecl, provenVec] : provenClosureParams_.back()) {
+            for (size_t k = 0; k < fnDecl->params.size() && k < provenVec.size(); ++k) {
+                const std::string& pName = fnDecl->params[k].name;
+                if (pName.empty() || candidates.count(pName) != 0) continue;
+                if (provenVec[k] && disqualifiedNestedParams.count(pName) == 0) {
+                    provenNestedParams.insert(pName);
+                } else {
+                    provenNestedParams.erase(pName);
+                    disqualifiedNestedParams.insert(pName);
+                }
+            }
+        }
+    }
+
     // Is `e` a Number given that every name in `live` holds one? The `live`
     // reference is read at call time, which is what makes this a fixpoint step
     // rather than a snapshot.
@@ -270,10 +289,10 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
     std::function<bool(const ast::Expr&, int)> numericUnder = [&](const ast::Expr& e,
                                                                  int depth) -> bool {
         if (depth <= 0) return false;
-        if (provenNumber(e)) return true;
+        if (provenNumber(e) || pristineMathCall(e)) return true;
         if (dynamic_cast<const ast::NumberLit*>(&e) != nullptr) return true;
         if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
-            return live->count(id->name) != 0;
+            return live->count(id->name) != 0 || provenNestedParams.count(id->name) != 0;
         }
         if (const auto* un = dynamic_cast<const ast::Unary*>(&e)) {
             switch (un->op) {
@@ -300,7 +319,9 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
             // the rest of the arithmetic and bitwise family needs both sides
             // too, because one BigInt operand is either a BigInt result or a
             // TypeError and neither is this claim.
-            if (bin->op == ast::BinaryOp::Add || alwaysCoercingBinary(bin->op)) {
+            if (bin->op == ast::BinaryOp::Add || alwaysCoercingBinary(bin->op) ||
+                bin->op == ast::BinaryOp::NullishCoalescing ||
+                bin->op == ast::BinaryOp::LogicalOr) {
                 return numericUnder(*bin->lhs, depth - 1) && numericUnder(*bin->rhs, depth - 1);
             }
             return false;

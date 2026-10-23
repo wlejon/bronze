@@ -4,7 +4,9 @@
 
 #include "ast/queries.h"
 #include "types/flow_analyzer.h"
+#include "types/math_builtins.h"
 #include "types/operator_types.h"
+#include "types/relational_prover.h"
 #include "types/walk.h"
 
 namespace bronze::types {
@@ -345,6 +347,16 @@ std::pair<std::string, std::string> extractIsTagGuard(const ast::Expr* e) {
 void FlowAnalyzer::ifStmt(const ast::IfStmt& i, uint32_t depth) {
     expr(*i.condition);
     const Env entry = scope_.env;
+    const auto hostBindingsEntry = scope_.hostObjectBindings;
+    const ConditionRefinements condRefs = extractConditionRefinements(
+        i.condition.get(),
+        [this](const std::string& name) { return lookup(name); },
+        [this](const std::string& name) { return resolvesToUserBinding(name); },
+        mod_.mathPristine);
+    const bool thenTerminates = stmtListDefinitelyTerminates(i.thenBody);
+    const bool elseTerminates =
+        !i.elseBody.empty() && stmtListDefinitelyTerminates(i.elseBody);
+
     std::string narrowedTagVar;
     if (!i.thenBody.empty() && mod_.interprocIdent) {
         const auto [varName, tagProp] = extractIsTagGuard(i.condition.get());
@@ -367,11 +379,14 @@ void FlowAnalyzer::ifStmt(const ast::IfStmt& i, uint32_t depth) {
             }
         }
     }
+    applyConditionRefinements(scope_.env, condRefs.whenTrue,
+                              [this](const std::string& name) { return scope_.isCell(name); });
     if (!i.thenBody.empty()) {
         pushMarker("then", depth + 1);
         scopedStmtList(i.thenBody, depth + 2);
     }
     Env thenEnv = scope_.env;
+    const auto hostBindingsThen = scope_.hostObjectBindings;
     if (!narrowedTagVar.empty()) {
         if (const auto it = thenEnv.find(narrowedTagVar); it != thenEnv.end()) {
             if (const auto origIt = entry.find(narrowedTagVar); origIt != entry.end()) {
@@ -380,6 +395,9 @@ void FlowAnalyzer::ifStmt(const ast::IfStmt& i, uint32_t depth) {
         }
     }
     scope_.env = entry;
+    scope_.hostObjectBindings = hostBindingsEntry;
+    applyConditionRefinements(scope_.env, condRefs.whenFalse,
+                              [this](const std::string& name) { return scope_.isCell(name); });
     std::vector<std::string> undefNames;
     std::vector<std::string> extraParamNames;
     if (collectEqUndefinedNames(i.condition.get(), undefNames)) {
@@ -411,8 +429,94 @@ void FlowAnalyzer::ifStmt(const ast::IfStmt& i, uint32_t depth) {
             it->second = Type::dynamicNumOrUndef();
         }
     }
+    if (thenTerminates && !elseTerminates) {
+        for (const auto& [name, _] : condRefs.whenFalse) {
+            if (const auto elseIt = scope_.env.find(name); elseIt != scope_.env.end()) {
+                if (const auto thenIt = thenEnv.find(name); thenIt != thenEnv.end()) {
+                    thenIt->second = elseIt->second;
+                }
+            }
+        }
+    } else if (elseTerminates && !thenTerminates) {
+        for (const auto& [name, _] : condRefs.whenTrue) {
+            if (const auto thenIt = thenEnv.find(name); thenIt != thenEnv.end()) {
+                if (const auto elseIt = scope_.env.find(name); elseIt != scope_.env.end()) {
+                    elseIt->second = thenIt->second;
+                }
+            }
+        }
+    }
+    for (auto it = scope_.hostObjectBindings.begin(); it != scope_.hostObjectBindings.end();) {
+        const auto thenIt = hostBindingsThen.find(it->first);
+        if (thenIt == hostBindingsThen.end() || thenIt->second != it->second) {
+            it = scope_.hostObjectBindings.erase(it);
+        } else {
+            ++it;
+        }
+    }
     scope_.env = joinEnv(thenEnv, scope_.env);
     recordMerge(i, scope_.env);
+}
+
+Type FlowAnalyzer::ternary(const ast::Ternary& t) {
+    expr(*t.condition);
+    const Env entry = scope_.env;
+    const ConditionRefinements condRefs = extractConditionRefinements(
+        t.condition.get(),
+        [this](const std::string& name) { return lookup(name); },
+        [this](const std::string& name) { return resolvesToUserBinding(name); },
+        mod_.mathPristine);
+    const auto savedTrue = applyConditionRefinements(
+        scope_.env, condRefs.whenTrue,
+        [this](const std::string& name) { return scope_.isCell(name); });
+    const Type a = expr(*t.thenExpr);
+    for (const auto& [name, origT] : savedTrue) {
+        if (const auto it = scope_.env.find(name);
+            it != scope_.env.end() && condRefs.whenTrue.at(name) == it->second) {
+            it->second = origT;
+        }
+    }
+    const Env thenEnv = scope_.env;
+    scope_.env = entry;
+    const auto savedFalse = applyConditionRefinements(
+        scope_.env, condRefs.whenFalse,
+        [this](const std::string& name) { return scope_.isCell(name); });
+    const Type b = expr(*t.elseExpr);
+    for (const auto& [name, origT] : savedFalse) {
+        if (const auto it = scope_.env.find(name);
+            it != scope_.env.end() && condRefs.whenFalse.at(name) == it->second) {
+            it->second = origT;
+        }
+    }
+    scope_.env = joinEnv(thenEnv, scope_.env);
+    return join(a, b);
+}
+
+void FlowAnalyzer::noteVarInit(const std::string& name, const ast::Expr& init, bool isConst) {
+    if (scope_.isCell(name)) return;
+    if (isConst) {
+        if (const auto* ol = ast::exactAs<const ast::ObjectLit*>(&init);
+            ol != nullptr && ol->props.empty()) {
+            scope_.dictElemTypes[name] = Type::never();
+        }
+        if (const auto* maInit = ast::exactAs<const ast::MemberAccess*>(&init);
+            maInit != nullptr && !maInit->optional) {
+            if (isPristineMathBase(*maInit->object) &&
+                isMathMethodReturningNumber(maInit->property)) {
+                scope_.pristineMathFns.insert(name);
+            } else if (!maInit->isPrivate && !maInit->property.empty() &&
+                       !mod_.methods.isMethodName(maInit->property)) {
+                scope_.objectLitMethodAliases[name] = maInit->property;
+            }
+        }
+    }
+    if (const auto* callInit = ast::exactAs<const ast::Call*>(&init)) {
+        const HostObjectKind kind = classifyHostCallReturnedObject(
+            *callInit, [this](const std::string& id) { return resolvesToUserBinding(id); });
+        if (kind != HostObjectKind::None) {
+            scope_.hostObjectBindings[name] = kind;
+        }
+    }
 }
 
 Type FlowAnalyzer::unary(const ast::Unary& u) {
@@ -437,6 +541,7 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
         const Type rhs = expr(*b.rhs);
         if (const auto* id = ast::exactAs<const ast::Ident*>(b.lhs.get())) {
             assign(id->name, rhs);
+            noteVarInit(id->name, *b.rhs, /*isConst=*/false);
         } else {
             expr(*b.lhs);
             if (const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get())) {
@@ -507,6 +612,8 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
         const Env entry = scope_.env;
         const Type r = expr(*b.rhs);
         scope_.env = joinEnv(entry, scope_.env);
+        if (b.op == ast::BinaryOp::NullishCoalescing) return nullishCoalescingResult(l, r);
+        if (b.op == ast::BinaryOp::LogicalOr) return logicalOrResult(l, r);
         return join(l, r);
     }
     if (b.op == ast::BinaryOp::Comma) {

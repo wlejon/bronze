@@ -303,10 +303,20 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     }
     if (bin->op == ast::BinaryOp::Eq || bin->op == ast::BinaryOp::StrictEq ||
         bin->op == ast::BinaryOp::Ne || bin->op == ast::BinaryOp::StrictNe) {
+        if ((lhs.type == il::Type::F64 || provenNumber(*bin->lhs)) &&
+            (rhs.type == il::Type::F64 || provenNumber(*bin->rhs))) {
+            lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
+            rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
+        }
         return lowerEquality(bin->op, lhs, rhs, ilFn);
     }
     if (bin->op == ast::BinaryOp::Less || bin->op == ast::BinaryOp::Greater ||
         bin->op == ast::BinaryOp::LessEqual || bin->op == ast::BinaryOp::GreaterEqual) {
+        if ((lhs.type == il::Type::F64 || provenNumber(*bin->lhs)) &&
+            (rhs.type == il::Type::F64 || provenNumber(*bin->rhs))) {
+            lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
+            rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
+        }
         return lowerRelational(bin->op, lhs, rhs, ilFn);
     }
 

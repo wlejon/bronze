@@ -116,7 +116,7 @@ bool widenSignatures(ModuleContext& mod) {
         if (!fn.directCallable) continue;
         bool moved = false;
         for (size_t p = 0; p < fn.signature.params.size(); ++p) {
-            const Type widened = join(fn.signature.params[p], fn.observedParams[p]);
+            const Type widened = joinParam(fn.signature.params[p], fn.observedParams[p]);
             if (widened != fn.signature.params[p]) {
                 fn.signature.params[p] = widened;
                 moved = true;
@@ -890,7 +890,12 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     result.moduleDirectCallable.reserve(mod.functions.size());
     result.moduleFunctionSlot.assign(mod.functions.size(), kNoFunctionIndex);
     for (const auto& fn : mod.functions) {
-        result.moduleSignatures.push_back(fn.signature);
+        Signature sig = fn.signature;
+        for (auto& pt : sig.params) {
+            if (pt.isDynamicNumOrUndef()) pt = Type::dynamic();
+        }
+        if (sig.returnType.isDynamicNumOrUndef()) sig.returnType = Type::dynamic();
+        result.moduleSignatures.push_back(std::move(sig));
         result.moduleDirectCallable.push_back(fn.directCallable);
     }
     result.moduleFunctionIndex = std::map<std::string, uint32_t>(mod.indexByName.begin(), mod.indexByName.end());

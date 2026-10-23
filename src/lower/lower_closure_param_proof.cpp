@@ -4,7 +4,9 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -158,6 +160,13 @@ void Lowerer::planClosureParamNumbers(const std::vector<ast::Param>& params,
         }
     }
 
+    struct CandidateFn {
+        const ast::FunctionDecl* decl = nullptr;
+        std::vector<const ast::Call*> sites;
+        std::vector<bool> proven;
+    };
+    std::vector<CandidateFn> candidateFns;
+
     for (const auto& stmt : stmts) {
         const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt.get());
         if (fnDecl == nullptr || fnDecl->isGenerator || fnDecl->isAsync) continue;
@@ -179,15 +188,172 @@ void Lowerer::planClosureParamNumbers(const std::vector<ast::Param>& params,
         }
         if (scan.escaped || scan.spread || scan.sites.empty()) continue;
 
-        std::vector<bool> proven(fnDecl->params.size(), true);
-        for (const ast::Call* site : scan.sites) {
-            for (size_t k = 0; k < proven.size(); ++k) {
-                if (k >= site->args.size() || !provenNumber(*site->args[k])) proven[k] = false;
+        candidateFns.push_back(CandidateFn{
+            fnDecl, std::move(scan.sites), std::vector<bool>(fnDecl->params.size(), true)});
+    }
+    if (candidateFns.empty()) return;
+
+    // Coupled greatest fixpoint over top-level lexical bindings in `stmts` and
+    // candidate closure parameters, so a helper `add(dx)` that updates a
+    // captured accumulator `total = total + dx` and is called as `add(total + 1)`
+    // proves both `dx` and `total` numeric simultaneously.
+    std::unordered_set<std::string> varCandidates;
+    std::unordered_map<std::string, const ast::Expr*> varInits;
+    std::unordered_set<const ast::VarDecl*> ownDecls;
+    for (const auto& stmt : stmts) {
+        const auto* vd = dynamic_cast<const ast::VarDecl*>(stmt.get());
+        if (vd == nullptr || vd->pattern || vd->name.empty() || vd->isVar || vd->init == nullptr) {
+            continue;
+        }
+        varCandidates.insert(vd->name);
+        varInits[vd->name] = vd->init.get();
+        ownDecls.insert(vd);
+    }
+    for (const auto& p : params) {
+        if (!p.pattern && !p.name.empty()) {
+            varCandidates.erase(p.name);
+            varInits.erase(p.name);
+        }
+    }
+
+    class CoupledWriteScan final : public ast::detail::IdentVisitor {
+    public:
+        CoupledWriteScan(const std::unordered_set<std::string>& vars,
+                         const std::unordered_set<const ast::VarDecl*>& own)
+            : vars_(vars), own_(own) {}
+        std::unordered_set<std::string> disqualified;
+        std::unordered_map<std::string, std::vector<std::pair<const ast::FunctionDecl*, const ast::Expr*>>> writes;
+        const ast::FunctionDecl* currentFn = nullptr;
+
+        void visit(const ast::VarDecl& v) override {
+            if (own_.count(&v) == 0) {
+                if (v.pattern) {
+                    for (const auto& n : ast::patternBoundNames(*v.pattern)) disqualified.insert(n);
+                } else {
+                    disqualified.insert(v.name);
+                }
+            }
+            ast::detail::IdentVisitor::visit(v);
+        }
+        void visit(const ast::FunctionDecl& f) override {
+            disqualified.insert(f.name);
+            for (const auto& p : f.params) {
+                if (!p.pattern && !p.name.empty()) disqualified.insert(p.name);
+            }
+            const ast::FunctionDecl* saved = currentFn;
+            currentFn = &f;
+            ast::detail::IdentVisitor::visit(f);
+            currentFn = saved;
+        }
+        void visit(const ast::FunctionExpr& f) override {
+            disqualified.insert(f.name);
+            for (const auto& p : f.params) {
+                if (!p.pattern && !p.name.empty()) disqualified.insert(p.name);
+            }
+            ast::detail::IdentVisitor::visit(f);
+        }
+        void visit(const ast::Binary& b) override {
+            if (ast::isAssignOp(b.op)) {
+                if (const auto* target = dynamic_cast<const ast::Ident*>(b.lhs.get());
+                    target != nullptr && vars_.count(target->name) != 0) {
+                    writes[target->name].emplace_back(currentFn, b.rhs.get());
+                }
+            }
+            ast::detail::IdentVisitor::visit(b);
+        }
+    private:
+        const std::unordered_set<std::string>& vars_;
+        const std::unordered_set<const ast::VarDecl*>& own_;
+    };
+
+    CoupledWriteScan writeScan(varCandidates, ownDecls);
+    for (const auto& s : stmts) {
+        if (s) s->accept(writeScan);
+    }
+    for (const auto& d : writeScan.disqualified) varCandidates.erase(d);
+
+    std::function<bool(const ast::Expr&, const ast::FunctionDecl*, int)> numericUnder =
+        [&](const ast::Expr& e, const ast::FunctionDecl* inFn, int depth) -> bool {
+        if (depth <= 0) return false;
+        if (provenNumber(e) || pristineMathCall(e)) return true;
+        if (dynamic_cast<const ast::NumberLit*>(&e) != nullptr) return true;
+        if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+            if (inFn != nullptr) {
+                for (const auto& cf : candidateFns) {
+                    if (cf.decl != inFn) continue;
+                    for (size_t k = 0; k < inFn->params.size(); ++k) {
+                        if (inFn->params[k].name == id->name) return cf.proven[k];
+                    }
+                }
+            }
+            return varCandidates.count(id->name) != 0;
+        }
+        if (const auto* un = dynamic_cast<const ast::Unary*>(&e)) {
+            if (un->op == ast::UnaryOp::Posate) return true;
+            if (un->op == ast::UnaryOp::Negate || un->op == ast::UnaryOp::BitNot ||
+                un->op == ast::UnaryOp::PreInc || un->op == ast::UnaryOp::PreDec ||
+                un->op == ast::UnaryOp::PostInc || un->op == ast::UnaryOp::PostDec) {
+                return numericUnder(*un->operand, inFn, depth - 1);
+            }
+            return false;
+        }
+        if (const auto* bin = dynamic_cast<const ast::Binary*>(&e)) {
+            if (ast::isAssignOp(bin->op)) return false;
+            if (bin->op == ast::BinaryOp::Add || alwaysCoercingBinary(bin->op) ||
+                bin->op == ast::BinaryOp::NullishCoalescing ||
+                bin->op == ast::BinaryOp::LogicalOr) {
+                return numericUnder(*bin->lhs, inFn, depth - 1) &&
+                       numericUnder(*bin->rhs, inFn, depth - 1);
+            }
+            return false;
+        }
+        if (const auto* tern = dynamic_cast<const ast::Ternary*>(&e)) {
+            return numericUnder(*tern->thenExpr, inFn, depth - 1) &&
+                   numericUnder(*tern->elseExpr, inFn, depth - 1);
+        }
+        return false;
+    };
+
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto it = varCandidates.begin(); it != varCandidates.end();) {
+            const auto initIt = varInits.find(*it);
+            bool ok = (initIt == varInits.end()) || numericUnder(*initIt->second, nullptr, 8);
+            if (ok) {
+                if (const auto wIt = writeScan.writes.find(*it); wIt != writeScan.writes.end()) {
+                    for (const auto& [fnCtx, rhs] : wIt->second) {
+                        if (!numericUnder(*rhs, fnCtx, 8)) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (ok) {
+                ++it;
+            } else {
+                it = varCandidates.erase(it);
+                changed = true;
             }
         }
+        for (auto& cf : candidateFns) {
+            for (size_t k = 0; k < cf.proven.size(); ++k) {
+                if (!cf.proven[k]) continue;
+                for (const ast::Call* site : cf.sites) {
+                    if (k >= site->args.size() || !numericUnder(*site->args[k], nullptr, 8)) {
+                        cf.proven[k] = false;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    for (auto& cf : candidateFns) {
         bool any = false;
-        for (const bool p : proven) any = any || p;
-        if (any) provenClosureParams_.back().emplace(fnDecl, std::move(proven));
+        for (const bool p : cf.proven) any = any || p;
+        if (any) provenClosureParams_.back().emplace(cf.decl, std::move(cf.proven));
     }
 }
 
