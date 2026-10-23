@@ -15,7 +15,7 @@ namespace il2mir {
 
 namespace {
 
-constexpr size_t kMaxSmtOptBlocksPerFunction = 64;
+constexpr size_t kMaxSmtOptBlocksPerFunction = 32;
 
 bool smt_opt_disabled_by_env() noexcept {
     const char* v = std::getenv("BRONZE_NO_SMT_OPT");
@@ -188,8 +188,8 @@ brass::Pipeline bronze_optimization_pipeline(const TranslatorOptions& options) {
                 return false;
             }
             brass::SmtGuardElimOptions opts;
-            opts.max_sat_conflicts = 2500;
-            opts.max_slice_depth = 12;
+            opts.max_sat_conflicts = 400;
+            opts.max_slice_depth = 8;
             opts.stats = stats_ptr;
             const bool changed = brass::run_smt_guard_elimination(fn, *fn.parent(), opts);
             if (changed) reconcile_guard_certs(fn);
@@ -225,8 +225,8 @@ brass::Pipeline bronze_optimization_pipeline(const TranslatorOptions& options) {
                     return false;
                 }
                 brass::SuperoptOptions opts;
-                opts.max_window_depth = 4;
-                opts.max_sat_conflicts = 1000;
+                opts.max_window_depth = 3;
+                opts.max_sat_conflicts = 300;
                 opts.stats = stats_ptr;
                 const bool changed = brass::run_mir_superopt(fn, *fn.parent(), opts);
                 if (changed) reconcile_guard_certs(fn);
@@ -292,15 +292,15 @@ bool run_smt_optimizations(
         bool fn_changed = false;
         if (options.enable_smt_guard_elim) {
             brass::SmtGuardElimOptions g_opts;
-            g_opts.max_sat_conflicts = 2500;
-            g_opts.max_slice_depth = 12;
+            g_opts.max_sat_conflicts = 400;
+            g_opts.max_slice_depth = 8;
             g_opts.stats = g_ptr;
             fn_changed |= brass::run_smt_guard_elimination(*fn, mod, g_opts);
         }
         if (options.enable_superopt) {
             brass::SuperoptOptions s_opts;
-            s_opts.max_window_depth = 4;
-            s_opts.max_sat_conflicts = 1000;
+            s_opts.max_window_depth = 3;
+            s_opts.max_sat_conflicts = 300;
             s_opts.stats = s_ptr;
             fn_changed |= brass::run_mir_superopt(*fn, mod, s_opts);
         }
