@@ -16,6 +16,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
@@ -187,6 +188,10 @@ Value elemGetAtHostBoundary(uint64_t objBits, uint64_t keyBits) {
 }  // namespace
 
 Value getProperty(Value obj, std::string_view key) {
+    if (obj.isObject() && obj.asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+        key == "length") {
+        return Value::fromDouble(obj.asObject<ArrayHeader>()->length);
+    }
     ShadowStackFrame frame;
     Rooted<Value> self{obj};
     // Receiver rooted before the key string is allocated — setProperty's
@@ -196,6 +201,10 @@ Value getProperty(Value obj, std::string_view key) {
 }
 
 Value getElement(Value obj, uint32_t index) {
+    if (obj.isObject() && index <= 4294967294u &&
+        obj.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        return obj.asObject<ArrayHeader>()->getElem(index);
+    }
     ShadowStackFrame frame;
     Rooted<Value> self{obj};
     return elemGetAtHostBoundary(self.get().rawBits(),
@@ -249,6 +258,9 @@ Value fromUtf8(std::string_view utf8) {
 // A frame, because ToNumber of an OBJECT is 7.1.4 step 1: ToPrimitive, which
 // calls the host's own JS and allocates. A primitive still costs nothing.
 double toDouble(Value v) {
+    if (v.isNumber()) {
+        return v.asNumber();
+    }
     if (v.isBigInt()) {
         return runtime::rtBigIntToNumber(v);
     }
