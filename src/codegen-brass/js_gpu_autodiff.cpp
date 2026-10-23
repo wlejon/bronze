@@ -908,7 +908,7 @@ GpuAutodiffResult compileJsGpuAutodiffSource(
             proverOpts.local_size_z = opts.localSizeZ;
             res.memorySafety = brass::verify::verify_gpu_memory_safety(*mirFn, proverOpts);
             res.barrierUniformity = brass::verify::verify_gpu_barrier_uniformity(*mirFn, proverOpts);
-            res.shaderSafetyReport = prove_spirv_shader_safety(spvMod);
+            res.shaderSafetyReport = bronze::prove_spirv_shader_safety(spvMod);
             bool allDivsSafe = true;
             for (const auto& d : res.shaderSafetyReport.divisions) {
                 if (!d.proven_safe) { allDivsSafe = false; break; }
