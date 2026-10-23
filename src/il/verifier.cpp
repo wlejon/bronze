@@ -1,4 +1,5 @@
 #include "il/verifier.h"
+#include "il/verifier_proofs.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -607,7 +608,8 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
         }
     }
 
-    return verifyConcatChain(fn, diags);
+    if (!verifyConcatChain(fn, diags)) return false;
+    return verifyFunctionProofs(fn, nullptr, diags);
 }
 
 bool verify(const Module& module, DiagnosticSink& diags) {
@@ -790,7 +792,7 @@ bool verify(const Module& module, DiagnosticSink& diags) {
             }
         }
     }
-    return true;
+    return verifyModuleProofs(module, diags);
 }
 
 }  // namespace bronze::il
