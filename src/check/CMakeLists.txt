@@ -2,6 +2,7 @@ bronze_add_module(check
     SOURCES
         static_checker.cpp
         static_checker_domain.cpp
+        applet_cert.cpp
         prove_equiv.cpp
         deterministic_check.cpp
         synth_tests.cpp
@@ -9,6 +10,7 @@ bronze_add_module(check
     TEST_SOURCES
         ../../tests/check/static_checker_test.cpp
         ../../tests/check/prover_tools_test.cpp
+        ../../tests/check/applet_cert_test.cpp
     TEST_DEPS lex parse
 )
 

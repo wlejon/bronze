@@ -26,6 +26,7 @@ add_library(bronze_codegen_brass STATIC
     brass_tiered_engine.cpp
     brass_tiered_image.cpp
     il_to_brass_ast.cpp
+    js_gpu_kernel.cpp
     module_image.cpp
     # il2mir: the bronze IL → brass MIR translator.
     il2mir/il_alloc_lowering.cpp
@@ -79,9 +80,14 @@ target_include_directories(bronze_codegen_brass PUBLIC
     $<TARGET_PROPERTY:bronze_runtime,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(bronze_codegen_brass PUBLIC
     bronze::abi
+    bronze::ast
     bronze::codegen
     bronze::il
+    bronze::lex
+    bronze::lower
+    bronze::parse
     bronze::support
+    bronze::types
     ${BRASS_LIB}
     Threads::Threads
     ${PLATFORM_LIBS}
@@ -117,6 +123,7 @@ if(BRONZE_BUILD_TESTS)
         ../../tests/codegen_brass/debug_test.cpp
         ../../tests/codegen_brass/gc_write_barrier_test.cpp
         ../../tests/codegen_brass/smt_superopt_test.cpp
+        ../../tests/codegen_brass/js_gpu_kernel_test.cpp
     )
     target_link_libraries(bronze_codegen_brass_tests PRIVATE
         bronze::codegen_brass

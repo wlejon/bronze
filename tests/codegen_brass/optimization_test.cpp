@@ -229,8 +229,9 @@ TEST_CASE("Brass MIR - Affine Loop Auto-Parallelization Execution") {
 
     // Verify JIT execution
     brass::codegen::JitExecutionEngine jit(brass::Target::host());
-    jit.register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(&brass_parallel_for));
-    jit.register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(&brass_parallel_for));
+    using ParallelForC = void (*)(uint64_t, uint64_t, brass::runtime::ParallelKernelFn, void*, brass::runtime::ReductionKind, void*);
+    jit.register_external_symbol("brass_parallel_for", reinterpret_cast<void*>(static_cast<ParallelForC>(&::brass_parallel_for)));
+    jit.register_external_symbol("brass_parallel_for_chunks", reinterpret_cast<void*>(static_cast<ParallelForC>(&::brass_parallel_for)));
     jit.register_external_symbol("brass_set_parallel_workers", reinterpret_cast<void*>(&brass_set_parallel_workers));
     jit.register_external_symbol("brass_get_parallel_workers", reinterpret_cast<void*>(&brass_get_parallel_workers));
     jit.register_external_symbol("brass_parallel_reduce_i64", reinterpret_cast<void*>(&brass_parallel_reduce_i64));

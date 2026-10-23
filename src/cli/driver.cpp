@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ast/dump.h"
+#include "check/applet_cert.h"
 #include "check/deterministic_check.h"
 #include "check/prove_equiv.h"
 #include "check/static_checker.h"
@@ -25,6 +26,7 @@
 #include "codegen/backend.h"
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/il2mir/il_spec_profile.h"
+#include "codegen-brass/js_gpu_kernel.h"
 #include "il/il.h"
 #include "il/print.h"
 #include "lex/lexer.h"
@@ -646,6 +648,8 @@ int runDriver(int argc, char** argv) {
 
     if (command == "prove-equiv") return dispatchProveEquivArgs(argc, argv);
     if (command == "synth-tests") return dispatchSynthTestsArgs(argc, argv);
+    if (command == "gpu-compile") return runGpuCompileCli(argc, argv);
+    if (command == "verify-applet") return check::runVerifyAppletCli(argc, argv);
 
     if (command == "types" || command == "check") {
         if (argc < 3) return fail("error: missing <file>\n");
@@ -806,12 +810,15 @@ int runDriver(int argc, char** argv) {
         std::string targetName;
         bool emitDebugInfo = false;
         bool publishModules = false;
+        bool verifiedApplet = false;
         std::string specProfilePath;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "-g" || arg == "--debug") {
                 emitDebugInfo = true;
+            } else if (arg == "--verified-applet") {
+                verifiedApplet = true;
             } else if (arg == "--no-infer") {
                 infer = false;
             } else if (arg == "--target") {
@@ -929,11 +936,18 @@ int runDriver(int argc, char** argv) {
         }
 
         if (sourcePath.empty()) return fail("error: missing <file>\n");
-        return runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
-                        hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
-                        emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
-                        censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
-                        targetName, publishModules, emitDebugInfo, specProfilePath);
+        int rc = runBuild(sourcePath, outputPath, nullptr, infer, timings, emitObj,
+                          hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
+                          emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
+                          censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
+                          targetName, publishModules, emitDebugInfo, specProfilePath);
+        if (rc == 0 && verifiedApplet) {
+            check::AppletCertOptions certOpts;
+            certOpts.soPath = outputPath;
+            auto certRes = check::verifyAndEmitAppletCert(sourcePath, certOpts);
+            if (!certRes.verified) return fail(certRes.errorMessage);
+        }
+        return rc;
     }
 
     return fail(kUsage);
