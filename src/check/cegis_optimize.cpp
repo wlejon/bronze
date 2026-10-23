@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "check/cegis_superopt.h"
 #include "check/prove_equiv.h"
 #include "check/solve_fn.h"
 
@@ -223,6 +224,25 @@ OptimizeResult optimizeJsFunction(std::string_view refSource, const OptimizeOpti
                         std::move(patched));
                 }
             }
+        }
+    }
+
+    // If no template candidate matched, invoke the enumerative CEGIS superoptimizer (#142).
+    if (opts.candidates.empty() && !opts.proposeCandidate) {
+        CegisSuperoptOptions sopts;
+        sopts.domainMin = opts.domainMin;
+        sopts.domainMax = opts.domainMax;
+        auto sres = superoptimizeJsFunction(result.referenceSource, sopts);
+        if (sres.verified && sres.optimized) {
+            result.verified = true;
+            result.optimized = true;
+            result.optimizedSource = sres.optimizedSource;
+            result.roundsUsed = round + sres.stats.smtQueries;
+            for (const auto& c : sres.counterexamples) {
+                result.counterexampleHistory.push_back(c);
+            }
+            result.summary = sres.summary;
+            return result;
         }
     }
 

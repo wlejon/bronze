@@ -10,6 +10,9 @@ bronze_add_module(check
         synth_tests.cpp
         solve_fn.cpp
         cegis_optimize.cpp
+        cegis_superopt.cpp
+        js_source_rewriter.cpp
+        auto_kernel_rewriter.cpp
         fuzz_fn.cpp
         prove_fn.cpp
         layout_solver.cpp
@@ -19,6 +22,7 @@ bronze_add_module(check
         ../../tests/check/prover_tools_test.cpp
         ../../tests/check/applet_cert_test.cpp
         ../../tests/check/symbolic_runtime_test.cpp
+        ../../tests/check/verified_rewriter_test.cpp
     TEST_DEPS lex parse
 )
 

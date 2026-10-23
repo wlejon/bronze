@@ -15,7 +15,9 @@
 
 #include "ast/dump.h"
 #include "check/applet_cert.h"
+#include "check/auto_kernel_rewriter.h"
 #include "check/deterministic_check.h"
+#include "check/js_source_rewriter.h"
 #include "check/prove_equiv.h"
 #include "check/static_checker.h"
 #include "check/synth_tests.h"
@@ -650,6 +652,8 @@ int runDriver(int argc, char** argv) {
     if (command == "synth-tests") return dispatchSynthTestsArgs(argc, argv);
     if (command == "gpu-compile") return runGpuCompileCli(argc, argv);
     if (command == "verify-applet") return check::runVerifyAppletCli(argc, argv);
+    if (command == "optimize") return check::runOptimizeCli(argc, argv);
+    if (command == "auto-kernel") return check::runAutoKernelCli(argc, argv);
 
     if (command == "types" || command == "check") {
         if (argc < 3) return fail("error: missing <file>\n");
