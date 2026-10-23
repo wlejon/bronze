@@ -42,6 +42,18 @@ AbstractVal joinVal(const AbstractVal& a, const AbstractVal& b) {
         out.minInt = std::min(a.minInt, b.minInt);
         out.maxInt = std::max(a.maxInt, b.maxInt);
     }
+    if (a.hasNumBounds && b.hasNumBounds) {
+        out.hasNumBounds = true;
+        out.minNum = std::min(a.minNum, b.minNum);
+        out.maxNum = std::max(a.maxNum, b.maxNum);
+    }
+    out.isNonZero = a.provablyNonZero() && b.provablyNonZero();
+    out.isNonNegative = a.provablyNonNegative() && b.provablyNonNegative();
+    out.isStrictlyPositive = a.provablyStrictlyPositive() && b.provablyStrictlyPositive();
+    out.isClampedUnit = a.provablyInUnitInterval() && b.provablyInUnitInterval();
+    out.isByteClamped = a.provablyByteRange() && b.provablyByteRange();
+    out.isPotentiallyNegativeDiff = a.isPotentiallyNegativeDiff || b.isPotentiallyNegativeDiff;
+    out.isVectorNormExpr = a.isVectorNormExpr || b.isVectorNormExpr;
     if (a.isContainer && b.isContainer) {
         out.isContainer = true;
         out.isTypedArray = a.isTypedArray && b.isTypedArray;
@@ -446,11 +458,200 @@ EnvMap narrowForCondition(const EnvMap& env, const ast::Expr* cond, bool whenTru
             };
             matchTypeof(bin->lhs.get(), bin->rhs.get());
             matchTypeof(bin->rhs.get(), bin->lhs.get());
+
+            // Numeric equality / disequality narrowing (`x !== 0`, `min === max`)
+            bool meansNotEqual = (isNe && whenTrue) || (isEq && !whenTrue);
+            bool meansEqual = (isEq && whenTrue) || (isNe && !whenTrue);
+            auto extractConstNum = [&](const ast::Expr* e, double& outVal) -> bool {
+                if (const auto* n = ast::exactAs<const ast::NumberLit*>(e)) {
+                    outVal = n->value;
+                    return std::isfinite(outVal);
+                }
+                if (const auto* u = ast::exactAs<const ast::Unary*>(e)) {
+                    if (u->op == ast::UnaryOp::Negate && u->operand) {
+                        if (const auto* n = ast::exactAs<const ast::NumberLit*>(u->operand.get())) {
+                            outVal = -n->value;
+                            return std::isfinite(outVal);
+                        }
+                    }
+                }
+                std::string k = exprEnvKey(*e);
+                if (!k.empty()) {
+                    auto it = env.find(k);
+                    if (it != env.end() && it->second.hasConstNum && std::isfinite(it->second.constNum)) {
+                        outVal = it->second.constNum;
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            double cVal = 0.0;
+            std::string lhsKey = exprEnvKey(*bin->lhs);
+            std::string rhsKey = exprEnvKey(*bin->rhs);
+            if (!lhsKey.empty() && extractConstNum(bin->rhs.get(), cVal)) {
+                if (meansNotEqual && cVal == 0.0) {
+                    out[lhsKey].isNonZero = true;
+                    if (out[lhsKey].provablyNonNegative()) out[lhsKey].isStrictlyPositive = true;
+                } else if (meansEqual) {
+                    out[lhsKey].hasConstNum = true;
+                    out[lhsKey].constNum = cVal;
+                    out[lhsKey].hasNumBounds = true;
+                    out[lhsKey].minNum = out[lhsKey].maxNum = cVal;
+                    out[lhsKey].isNonZero = (cVal != 0.0);
+                }
+            } else if (!rhsKey.empty() && extractConstNum(bin->lhs.get(), cVal)) {
+                if (meansNotEqual && cVal == 0.0) {
+                    out[rhsKey].isNonZero = true;
+                    if (out[rhsKey].provablyNonNegative()) out[rhsKey].isStrictlyPositive = true;
+                } else if (meansEqual) {
+                    out[rhsKey].hasConstNum = true;
+                    out[rhsKey].constNum = cVal;
+                    out[rhsKey].hasNumBounds = true;
+                    out[rhsKey].minNum = out[rhsKey].maxNum = cVal;
+                    out[rhsKey].isNonZero = (cVal != 0.0);
+                }
+            } else if (!lhsKey.empty() && !rhsKey.empty() && meansNotEqual) {
+                out["__neq__:" + lhsKey + ":" + rhsKey].isNonZero = true;
+                out["__neq__:" + rhsKey + ":" + lhsKey].isNonZero = true;
+            }
         }
 
         if (bin->lhs && bin->rhs) {
             if (whenTrue && bin->op == ast::BinaryOp::InstanceOf) {
                 markKeyNonNullish(exprEnvKey(*bin->lhs));
+            }
+
+            // Relational numeric interval & disequality narrowing (`x < c`, `x >= eps`, `x <= min`, `Math.abs(x) < eps`)
+            bool isRel = (bin->op == ast::BinaryOp::Less || bin->op == ast::BinaryOp::LessEqual ||
+                          bin->op == ast::BinaryOp::Greater || bin->op == ast::BinaryOp::GreaterEqual);
+            if (isRel) {
+                ast::BinaryOp effOp = bin->op;
+                if (!whenTrue) {
+                    switch (bin->op) {
+                        case ast::BinaryOp::Less: effOp = ast::BinaryOp::GreaterEqual; break;
+                        case ast::BinaryOp::LessEqual: effOp = ast::BinaryOp::Greater; break;
+                        case ast::BinaryOp::Greater: effOp = ast::BinaryOp::LessEqual; break;
+                        case ast::BinaryOp::GreaterEqual: effOp = ast::BinaryOp::Less; break;
+                        default: break;
+                    }
+                }
+                auto extractBound = [&](const ast::Expr* e, double& outVal) -> bool {
+                    if (const auto* n = ast::exactAs<const ast::NumberLit*>(e)) {
+                        outVal = n->value;
+                        return std::isfinite(outVal);
+                    }
+                    if (const auto* u = ast::exactAs<const ast::Unary*>(e)) {
+                        if (u->op == ast::UnaryOp::Negate && u->operand) {
+                            if (const auto* n = ast::exactAs<const ast::NumberLit*>(u->operand.get())) {
+                                outVal = -n->value;
+                                return std::isfinite(outVal);
+                            }
+                        }
+                    }
+                    if (const auto* m = ast::exactAs<const ast::MemberAccess*>(e)) {
+                        if (m->property == "EPSILON") {
+                            outVal = 2.220446049250313e-16;
+                            return true;
+                        }
+                    }
+                    std::string k = exprEnvKey(*e);
+                    if (!k.empty()) {
+                        if (k == "EPSILON" || k == " EPS") {
+                            outVal = 1e-6;
+                            return true;
+                        }
+                        auto it = env.find(k);
+                        if (it != env.end() && it->second.hasConstNum && std::isfinite(it->second.constNum)) {
+                            outVal = it->second.constNum;
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+
+                auto applyVarBound = [&](const std::string& k, ast::BinaryOp op, double c) {
+                    auto& slot = out[k];
+                    if (!slot.hasNumBounds) {
+                        slot.hasNumBounds = true;
+                        slot.minNum = -INFINITY;
+                        slot.maxNum = INFINITY;
+                    }
+                    if (op == ast::BinaryOp::Less || op == ast::BinaryOp::LessEqual) {
+                        slot.maxNum = std::min(slot.maxNum, c);
+                        if (c < 0.0 || (op == ast::BinaryOp::Less && c <= 0.0)) {
+                            slot.isNonZero = true;
+                        }
+                    } else {
+                        slot.minNum = std::max(slot.minNum, c);
+                        if (c >= 0.0) slot.isNonNegative = true;
+                        if (c > 0.0 || (op == ast::BinaryOp::Greater && c >= 0.0)) {
+                            slot.isNonZero = true;
+                            slot.isStrictlyPositive = true;
+                            slot.isNonNegative = true;
+                        }
+                    }
+                    if (slot.minNum >= -1.0 && slot.maxNum <= 1.0) slot.isClampedUnit = true;
+                    if (slot.minNum >= 0.0 && slot.maxNum <= 255.0) slot.isByteClamped = true;
+                };
+
+                std::string lk = exprEnvKey(*bin->lhs);
+                std::string rk = exprEnvKey(*bin->rhs);
+                double boundVal = 0.0;
+                if (!lk.empty() && extractBound(bin->rhs.get(), boundVal)) {
+                    applyVarBound(lk, effOp, boundVal);
+                } else if (!rk.empty() && extractBound(bin->lhs.get(), boundVal)) {
+                    ast::BinaryOp flipped = effOp;
+                    if (effOp == ast::BinaryOp::Less) flipped = ast::BinaryOp::Greater;
+                    else if (effOp == ast::BinaryOp::LessEqual) flipped = ast::BinaryOp::GreaterEqual;
+                    else if (effOp == ast::BinaryOp::Greater) flipped = ast::BinaryOp::Less;
+                    else if (effOp == ast::BinaryOp::GreaterEqual) flipped = ast::BinaryOp::LessEqual;
+                    applyVarBound(rk, flipped, boundVal);
+                } else if (const auto* call = ast::exactAs<const ast::Call*>(bin->lhs.get())) {
+                    if (call->args.size() == 1 && call->args[0] && call->callee) {
+                        if (const auto* m = ast::exactAs<const ast::MemberAccess*>(call->callee.get())) {
+                            if (m->property == "abs" && extractBound(bin->rhs.get(), boundVal)) {
+                                std::string argK = exprEnvKey(*call->args[0]);
+                                if (!argK.empty()) {
+                                    if ((effOp == ast::BinaryOp::Greater || effOp == ast::BinaryOp::GreaterEqual) &&
+                                        boundVal > 0.0) {
+                                        out[argK].isNonZero = true;
+                                    } else if ((effOp == ast::BinaryOp::Less || effOp == ast::BinaryOp::LessEqual) &&
+                                               boundVal <= 1.0) {
+                                        out[argK].isClampedUnit = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!lk.empty() && !rk.empty() &&
+                    (effOp == ast::BinaryOp::Less || effOp == ast::BinaryOp::Greater)) {
+                    out["__neq__:" + lk + ":" + rk].isNonZero = true;
+                    out["__neq__:" + rk + ":" + lk].isNonZero = true;
+                    std::string ltKey = (effOp == ast::BinaryOp::Less) ? ("__lt__:" + lk + ":" + rk)
+                                                                       : ("__lt__:" + rk + ":" + lk);
+                    out[ltKey].isNonZero = true;
+                    // Transitivity: if min < x and x < max, then min != max (`max - min` is non-zero)
+                    std::string mid = (effOp == ast::BinaryOp::Less) ? rk : lk;
+                    std::string lo = (effOp == ast::BinaryOp::Less) ? lk : rk;
+                    for (const auto& [ek, ev] : env) {
+                        if (!ev.isNonZero) continue;
+                        std::string prefix1 = "__lt__:" + mid + ":";
+                        if (ek.rfind(prefix1, 0) == 0) {
+                            std::string hi = ek.substr(prefix1.size());
+                            out["__neq__:" + lo + ":" + hi].isNonZero = true;
+                            out["__neq__:" + hi + ":" + lo].isNonZero = true;
+                        }
+                        std::string suffix2 = ":" + lo;
+                        if (ek.rfind("__lt__:", 0) == 0 && ek.size() > 7 + suffix2.size() &&
+                            ek.compare(ek.size() - suffix2.size(), suffix2.size(), suffix2) == 0) {
+                            std::string llo = ek.substr(7, ek.size() - 7 - suffix2.size());
+                            out["__neq__:" + llo + ":" + mid].isNonZero = true;
+                            out["__neq__:" + mid + ":" + llo].isNonZero = true;
+                        }
+                    }
+                }
             }
             if (const auto* lhsId = ast::exactAs<const ast::Ident*>(bin->lhs.get())) {
                 auto& slot = out[lhsId->name];
@@ -540,6 +741,8 @@ EnvMap narrowForCondition(const EnvMap& env, const ast::Expr* cond, bool whenTru
     if (!key.empty()) {
         if (whenTrue) {
             markKeyNonNullish(key);
+            out[key].isNonZero = true;
+            if (out[key].provablyNonNegative()) out[key].isStrictlyPositive = true;
         }
     }
     return out;

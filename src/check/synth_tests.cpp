@@ -29,8 +29,8 @@ using brass::verify::BVNodeId;
 using brass::verify::BVOp;
 using brass::verify::SolveOutcome;
 
-constexpr uint32_t kMaxPathDepth = 32;
-constexpr size_t kMaxSynthesizedPathsPerFn = 32;
+constexpr uint32_t kMaxPathDepth = 48;
+constexpr size_t kMaxSynthesizedPathsPerFn = 64;
 
 struct PathSymState {
     std::unordered_map<il::ValueId, BVNodeId> values;
@@ -152,6 +152,17 @@ private:
         return ctx_.make_binary(BVOp::Ne, toBV64(node), zero64_);
     }
 
+    BVNodeId makeClz32(BVNodeId x64) {
+        BVNodeId x32 = ctx_.make_extract(toBV64(x64), 31, 0);
+        BVNodeId res = ctx_.make_const(32, 64);
+        for (uint32_t bit = 0; bit < 32; ++bit) {
+            BVNodeId b = ctx_.make_extract(x32, bit, bit);
+            BVNodeId lz = ctx_.make_const(31 - bit, 64);
+            res = ctx_.make_ite(b, lz, res);
+        }
+        return res;
+    }
+
     bool solveCondition(BVNodeId cond1,
                         std::vector<int64_t>& outArgs,
                         std::vector<uint64_t>& outModel) {
@@ -162,7 +173,8 @@ private:
         if (outModel.size() < numParams_) outModel.resize(numParams_, 0);
 
         static constexpr int32_t kSmallCandidates[] = {
-            0, 1, -1, 2, -2, 3, -3, 5, -5, 7, 8, 10, -10, 11, 16, 42, 60, 100, -100
+            1, 2, 3, 4, -1, 7, 8, 10, 42, 60, 100, 400, 1900, 2000, 2023, 2024,
+            2100, 2400, 0, -2, -3, -5, -10, 11, 16, -100, 255, 256, 1073741825
         };
         if (numParams_ >= 1 && numParams_ <= 2) {
             bool foundSmall = false;
@@ -187,6 +199,22 @@ private:
                         }
                     }
                 }
+            }
+        } else if (numParams_ > 2) {
+            static constexpr int32_t kCoordCandidates[] = {
+                0, 1, 2, 3, 4, -1, 5, 7, 10, 42, 60, 100, 400, 1900, 2000, 2024
+            };
+            for (uint32_t p = 0; p < numParams_; ++p) {
+                uint64_t orig = outModel[p];
+                bool simplified = false;
+                for (int32_t c : kCoordCandidates) {
+                    outModel[p] = static_cast<uint64_t>(static_cast<uint32_t>(c));
+                    if (ctx_.eval_concrete(cond1, outModel) != 0) {
+                        simplified = true;
+                        break;
+                    }
+                }
+                if (!simplified) outModel[p] = orig;
             }
         }
 
@@ -311,20 +339,21 @@ private:
                     break;
                 }
                 case Op::Add:
-                    state.values[inst.result] = ctx_.make_binary(
-                        BVOp::Add, toBV64(getVal(state, inst.operands[0])),
-                        toBV64(getVal(state, inst.operands[1])));
-                    break;
                 case Op::Sub:
-                    state.values[inst.result] = ctx_.make_binary(
-                        BVOp::Sub, toBV64(getVal(state, inst.operands[0])),
-                        toBV64(getVal(state, inst.operands[1])));
-                    break;
                 case Op::Mul:
+                case Op::BitAnd:
+                case Op::BitOr:
+                case Op::BitXor: {
+                    BVOp bop = (inst.op == Op::Add)      ? BVOp::Add
+                               : (inst.op == Op::Sub)    ? BVOp::Sub
+                               : (inst.op == Op::Mul)    ? BVOp::Mul
+                               : (inst.op == Op::BitAnd) ? BVOp::And
+                               : (inst.op == Op::BitOr)  ? BVOp::Or
+                                                         : BVOp::Xor;
                     state.values[inst.result] = ctx_.make_binary(
-                        BVOp::Mul, toBV64(getVal(state, inst.operands[0])),
-                        toBV64(getVal(state, inst.operands[1])));
+                        bop, toBV64(getVal(state, inst.operands[0])), toBV64(getVal(state, inst.operands[1])));
                     break;
+                }
                 case Op::Div:
                 case Op::Mod: {
                     BVNodeId a = toBV64(getVal(state, inst.operands[0]));
@@ -353,81 +382,157 @@ private:
                 case Op::Neg:
                     state.values[inst.result] = ctx_.make_unary(BVOp::Neg, toBV64(getVal(state, inst.operands[0])));
                     break;
-                case Op::BitAnd:
-                    state.values[inst.result] = ctx_.make_binary(
-                        BVOp::And, toBV64(getVal(state, inst.operands[0])),
-                        toBV64(getVal(state, inst.operands[1])));
-                    break;
-                case Op::BitOr:
-                    state.values[inst.result] = ctx_.make_binary(
-                        BVOp::Or, toBV64(getVal(state, inst.operands[0])),
-                        toBV64(getVal(state, inst.operands[1])));
-                    break;
-                case Op::BitXor:
-                    state.values[inst.result] = ctx_.make_binary(
-                        BVOp::Xor, toBV64(getVal(state, inst.operands[0])),
-                        toBV64(getVal(state, inst.operands[1])));
-                    break;
                 case Op::BitNot:
                     state.values[inst.result] = ctx_.make_unary(BVOp::Not, toBV64(getVal(state, inst.operands[0])));
                     break;
                 case Op::Shl: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    BVNodeId sh = ctx_.make_binary(BVOp::And, b, ctx_.make_const(31, 64));
-                    state.values[inst.result] = ctx_.make_binary(BVOp::Shl, a, sh);
+                    BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
+                    BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
+                    BVNodeId sh32 = ctx_.make_binary(BVOp::And, b32, ctx_.make_const(31, 32));
+                    BVNodeId r32 = ctx_.make_binary(BVOp::Shl, a32, sh32);
+                    BVNodeId r64 = ctx_.make_sext(r32, 32);
+                    if (ctx_.nodes()[b32].op != BVOp::Const) {
+                        BVNodeId posA = ctx_.make_binary(BVOp::Slt, ctx_.make_const(0, 32), a32);
+                        BVNodeId negR = ctx_.make_binary(BVOp::Slt, r64, zero64_);
+                        tryEmitHazardReproducer(
+                            pathCond, ctx_.make_binary(BVOp::And, posA, negR), blockId, pathTrace,
+                            "signed 32-bit shift overflow into sign bit (produces negative int32)");
+                    }
+                    state.values[inst.result] = r64;
                     break;
                 }
-                case Op::Shr: {
-                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
-                    BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    BVNodeId sh = ctx_.make_binary(BVOp::And, b, ctx_.make_const(31, 64));
-                    state.values[inst.result] = ctx_.make_binary(BVOp::AShr, a, sh);
-                    break;
-                }
+                case Op::Shr:
                 case Op::UShr: {
                     BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[0])), 31, 0);
                     BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
                     BVNodeId sh32 = ctx_.make_binary(BVOp::And, b32, ctx_.make_const(31, 32));
-                    state.values[inst.result] = ctx_.make_zext(ctx_.make_binary(BVOp::LShr, a32, sh32), 32);
+                    state.values[inst.result] = (inst.op == Op::Shr)
+                                                    ? ctx_.make_sext(ctx_.make_binary(BVOp::AShr, a32, sh32), 32)
+                                                    : ctx_.make_zext(ctx_.make_binary(BVOp::LShr, a32, sh32), 32);
+                    break;
+                }
+                case Op::MathUnary: {
+                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
+                    auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
+                    if (kind == il::MathUnaryFn::Abs) {
+                        BVNodeId isNeg = ctx_.make_binary(BVOp::Slt, a, zero64_);
+                        state.values[inst.result] = ctx_.make_ite(isNeg, ctx_.make_unary(BVOp::Neg, a), a);
+                    } else if (kind == il::MathUnaryFn::Sqrt) {
+                        tryEmitHazardReproducer(pathCond, ctx_.make_binary(BVOp::Slt, a, zero64_),
+                                                blockId, pathTrace, "Math.sqrt domain error (arg < 0 -> NaN)");
+                        state.values[inst.result] = a;
+                    } else {
+                        state.values[inst.result] = a;
+                    }
+                    break;
+                }
+                case Op::GlobalGet: {
+                    if (inst.keyIndex < mod_.keyConstants.size()) {
+                        state.globalRefs[inst.result] = mod_.keyConstants[inst.keyIndex];
+                    }
+                    state.values[inst.result] = zero64_;
+                    break;
+                }
+                case Op::MethodCall: {
+                    if (!inst.operands.empty() && inst.keyIndex < mod_.keyConstants.size()) {
+                        auto recvIt = state.globalRefs.find(inst.operands[0]);
+                        const std::string& method = mod_.keyConstants[inst.keyIndex];
+                        if (recvIt != state.globalRefs.end() && recvIt->second == "Math") {
+                            if (method == "abs" && inst.operands.size() >= 2) {
+                                BVNodeId a = toBV64(getVal(state, inst.operands[1]));
+                                BVNodeId isNeg = ctx_.make_binary(BVOp::Slt, a, zero64_);
+                                state.values[inst.result] = ctx_.make_ite(isNeg, ctx_.make_unary(BVOp::Neg, a), a);
+                                break;
+                            }
+                            if ((method == "min" || method == "max") && inst.operands.size() >= 3) {
+                                BVNodeId acc = toBV64(getVal(state, inst.operands[1]));
+                                for (size_t k = 2; k < inst.operands.size(); ++k) {
+                                    BVNodeId rhs = toBV64(getVal(state, inst.operands[k]));
+                                    BVNodeId takeRhs = (method == "min") ? ctx_.make_binary(BVOp::Slt, rhs, acc)
+                                                                         : ctx_.make_binary(BVOp::Slt, acc, rhs);
+                                    acc = ctx_.make_ite(takeRhs, rhs, acc);
+                                }
+                                state.values[inst.result] = acc;
+                                break;
+                            }
+                            if (method == "imul" && inst.operands.size() >= 3) {
+                                BVNodeId a32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[1])), 31, 0);
+                                BVNodeId b32 = ctx_.make_extract(toBV64(getVal(state, inst.operands[2])), 31, 0);
+                                state.values[inst.result] = ctx_.make_sext(ctx_.make_binary(BVOp::Mul, a32, b32), 32);
+                                break;
+                            }
+                            if (method == "clz32" && inst.operands.size() >= 2) {
+                                state.values[inst.result] = makeClz32(getVal(state, inst.operands[1]));
+                                break;
+                            }
+                            if (method == "sign" && inst.operands.size() >= 2) {
+                                BVNodeId a = toBV64(getVal(state, inst.operands[1]));
+                                BVNodeId isNeg = ctx_.make_binary(BVOp::Slt, a, zero64_);
+                                BVNodeId isPos = ctx_.make_binary(BVOp::Slt, zero64_, a);
+                                state.values[inst.result] =
+                                    ctx_.make_ite(isNeg, allOnes64_, ctx_.make_ite(isPos, one64_, zero64_));
+                                break;
+                            }
+                            if ((method == "sqrt") && inst.operands.size() >= 2) {
+                                BVNodeId a = toBV64(getVal(state, inst.operands[1]));
+                                tryEmitHazardReproducer(pathCond, ctx_.make_binary(BVOp::Slt, a, zero64_),
+                                                        blockId, pathTrace, "Math.sqrt domain error (arg < 0 -> NaN)");
+                                state.values[inst.result] = a;
+                                break;
+                            }
+                            if ((method == "log" || method == "log2" || method == "log10") &&
+                                inst.operands.size() >= 2) {
+                                BVNodeId a = toBV64(getVal(state, inst.operands[1]));
+                                tryEmitHazardReproducer(
+                                    pathCond, ctx_.make_binary(BVOp::Sle, a, zero64_), blockId, pathTrace,
+                                    "Math." + method + " domain error (arg <= 0 -> -Infinity/NaN)");
+                                state.values[inst.result] = a;
+                                break;
+                            }
+                            if ((method == "acos" || method == "asin") && inst.operands.size() >= 2) {
+                                BVNodeId a = toBV64(getVal(state, inst.operands[1]));
+                                BVNodeId ltNeg1 = ctx_.make_binary(BVOp::Slt, a, allOnes64_);
+                                BVNodeId gtPos1 = ctx_.make_binary(BVOp::Slt, one64_, a);
+                                tryEmitHazardReproducer(
+                                    pathCond, ctx_.make_binary(BVOp::Or, ltNeg1, gtPos1), blockId, pathTrace,
+                                    "Math." + method + " domain error (|arg| > 1 -> NaN)");
+                                state.values[inst.result] = zero64_;
+                                break;
+                            }
+                            if (inst.operands.size() >= 2) {
+                                state.values[inst.result] = toBV64(getVal(state, inst.operands[1]));
+                                break;
+                            }
+                        }
+                    }
+                    if (inst.result != il::kNoValue) state.values[inst.result] = zero64_;
                     break;
                 }
                 case Op::CmpEq:
                 case Op::StrictEq:
                 case Op::LooseEq:
-                    state.values[inst.result] = toBV64(
-                        ctx_.make_binary(BVOp::Eq, toBV64(getVal(state, inst.operands[0])),
-                                         toBV64(getVal(state, inst.operands[1]))));
-                    break;
                 case Op::CmpNe:
-                    state.values[inst.result] = toBV64(
-                        ctx_.make_binary(BVOp::Ne, toBV64(getVal(state, inst.operands[0])),
-                                         toBV64(getVal(state, inst.operands[1]))));
-                    break;
                 case Op::CmpLt:
                 case Op::RelLt:
-                    state.values[inst.result] = toBV64(
-                        ctx_.make_binary(BVOp::Slt, toBV64(getVal(state, inst.operands[0])),
-                                         toBV64(getVal(state, inst.operands[1]))));
-                    break;
                 case Op::CmpLe:
                 case Op::RelLe:
-                    state.values[inst.result] = toBV64(
-                        ctx_.make_binary(BVOp::Sle, toBV64(getVal(state, inst.operands[0])),
-                                         toBV64(getVal(state, inst.operands[1]))));
-                    break;
                 case Op::CmpGt:
                 case Op::RelGt:
-                    state.values[inst.result] = toBV64(
-                        ctx_.make_binary(BVOp::Slt, toBV64(getVal(state, inst.operands[1])),
-                                         toBV64(getVal(state, inst.operands[0]))));
-                    break;
                 case Op::CmpGe:
-                case Op::RelGe:
-                    state.values[inst.result] = toBV64(
-                        ctx_.make_binary(BVOp::Sle, toBV64(getVal(state, inst.operands[1])),
-                                         toBV64(getVal(state, inst.operands[0]))));
+                case Op::RelGe: {
+                    BVNodeId a = toBV64(getVal(state, inst.operands[0]));
+                    BVNodeId b = toBV64(getVal(state, inst.operands[1]));
+                    bool swap = (inst.op == Op::CmpGt || inst.op == Op::RelGt ||
+                                 inst.op == Op::CmpGe || inst.op == Op::RelGe);
+                    BVOp cop = (inst.op == Op::CmpNe)                                    ? BVOp::Ne
+                               : (inst.op == Op::CmpLt || inst.op == Op::RelLt ||
+                                  inst.op == Op::CmpGt || inst.op == Op::RelGt)          ? BVOp::Slt
+                               : (inst.op == Op::CmpLe || inst.op == Op::RelLe ||
+                                  inst.op == Op::CmpGe || inst.op == Op::RelGe)          ? BVOp::Sle
+                                                                                         : BVOp::Eq;
+                    state.values[inst.result] = toBV64(ctx_.make_binary(cop, swap ? b : a, swap ? a : b));
                     break;
+                }
                 case Op::EnvSet:
                     if (inst.operands.size() >= 2) {
                         uint64_t key = (static_cast<uint64_t>(inst.envDepth) << 32) | inst.envIndex;
@@ -489,24 +594,38 @@ private:
                     return;
                 }
                 case Op::Ret: {
-                    std::vector<int64_t> args;
-                    std::vector<uint64_t> model;
-                    if (!solveCondition(pathCond, args, model)) return;
-
                     BVNodeId retNode = inst.operands.empty() ? zero64_ : toBV64(getVal(state, inst.operands[0]));
-                    int64_t expectedRet = static_cast<int64_t>(ctx_.eval_concrete(retNode, model));
+                    auto emitRetCase = [&](BVNodeId cond, const std::string& suffix) -> bool {
+                        std::vector<int64_t> args;
+                        std::vector<uint64_t> model;
+                        if (!solveCondition(cond, args, model)) return false;
+                        int64_t expectedRet = static_cast<int64_t>(ctx_.eval_concrete(retNode, model));
+                        SynthesizedTestCase tc;
+                        tc.functionName = fn_.name;
+                        tc.paramNames = paramNames_;
+                        tc.args = std::move(args);
+                        tc.expectedReturn = expectedRet;
+                        tc.hasExpectedReturn = !inst.operands.empty();
+                        tc.kind = SynthTestKind::BranchCoverage;
+                        tc.targetBlockId = blockId;
+                        tc.pathDescription = pathTrace + suffix;
+                        report_.tests.push_back(std::move(tc));
+                        ++synthesizedCount_;
+                        return true;
+                    };
 
-                    SynthesizedTestCase tc;
-                    tc.functionName = fn_.name;
-                    tc.paramNames = paramNames_;
-                    tc.args = std::move(args);
-                    tc.expectedReturn = expectedRet;
-                    tc.hasExpectedReturn = !inst.operands.empty();
-                    tc.kind = SynthTestKind::BranchCoverage;
-                    tc.targetBlockId = blockId;
-                    tc.pathDescription = pathTrace;
-                    report_.tests.push_back(std::move(tc));
-                    ++synthesizedCount_;
+                    if (!inst.operands.empty() &&
+                        ctx_.nodes()[retNode].op != BVOp::Const &&
+                        ctx_.interval(retNode).umax <= 1) {
+                        BVNodeId retBit = toBool1(retNode);
+                        BVNodeId tCond = ctx_.make_binary(BVOp::And, pathCond, retBit);
+                        BVNodeId fCond = ctx_.make_binary(BVOp::And, pathCond, ctx_.make_unary(BVOp::Not, retBit));
+                        bool any = false;
+                        if (emitRetCase(tCond, "[ret=1]")) any = true;
+                        if (emitRetCase(fCond, "[ret=0]")) any = true;
+                        if (any) return;
+                    }
+                    emitRetCase(pathCond, "");
                     return;
                 }
                 default:

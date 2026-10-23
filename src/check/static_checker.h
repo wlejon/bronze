@@ -31,11 +31,20 @@ struct CheckReport {
     uint32_t nullDerefCount = 0;
     uint32_t outOfBoundsCount = 0;
     uint32_t nanPoisonCount = 0;
+    uint32_t domainErrorCount = 0;
+    uint32_t shiftOverflowCount = 0;
+    uint32_t divByZeroCount = 0;
 
     bool empty() const { return findings.empty(); }
     std::string render(const SourceSet& sources) const;
     std::string render(const SourceBuffer& buffer) const;
 };
+
+// Convenience helper for running static analysis directly on an in-memory JS
+// source snippet.
+CheckReport checkSource(std::string_view src,
+                        bool strictDomNullability = true,
+                        std::string* errorOut = nullptr);
 
 // Runs path-sensitive symbolic abstract interpretation over `astMod` (using
 // host API nullability contracts, inferred types, and lowered IL when provided)

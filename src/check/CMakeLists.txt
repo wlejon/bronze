@@ -1,9 +1,11 @@
 bronze_add_module(check
     SOURCES
         static_checker.cpp
+        static_checker_math.cpp
         static_checker_domain.cpp
         applet_cert.cpp
         prove_equiv.cpp
+        prove_equiv_bitwise.cpp
         deterministic_check.cpp
         synth_tests.cpp
     DEPS ast il lower modules support types

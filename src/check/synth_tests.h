@@ -55,6 +55,11 @@ SynthTestsReport synthesizeModuleTests(const il::Module& mod,
 SynthTestsReport synthesizeSourceTests(std::string_view src,
                                        std::string* errorOut = nullptr);
 
+inline SynthTestsReport synthesizeTestsForSource(std::string_view src,
+                                                 std::string* errorOut = nullptr) {
+    return synthesizeSourceTests(src, errorOut);
+}
+
 // CLI entry point for `bronze synth-tests <file.js> [-o <out.js>] [--json]`.
 // Returns 0 on success and 1 on load/parse error or file write error.
 int runSynthTests(const std::string& inputPath,
