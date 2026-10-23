@@ -13,20 +13,53 @@
 
 namespace bronze::gpu_detail {
 
+inline bool isGpuGraphicsOrImageBuiltin(std::string_view name) {
+    return name == "vertex_index" || name == "instance_index" ||
+           name == "frag_coord_x" || name == "frag_coord_y" ||
+           name == "frag_coord_z" || name == "frag_coord_w" ||
+           name == "stage_input_f32" || name == "stage_output_f32" ||
+           name == "stage_output_vec4" || name == "set_vertex_position" ||
+           name == "set_frag_color" ||
+           name == "image2d_load" || name == "image2d_store" ||
+           name == "image3d_load" || name == "image3d_store" ||
+           name == "sampler2d_lod" || name == "sampler3d_lod";
+}
+
+inline bool isGpuShaderMathBuiltin(std::string_view name) {
+    return name == "clamp" || name == "mix" || name == "smoothstep" ||
+           name == "step" || name == "fract" || name == "sign" ||
+           name == "tanh" || name == "sin" || name == "cos" ||
+           name == "sqrt" || name == "abs" || name == "floor" ||
+           name == "ceil" || name == "min" || name == "max";
+}
+
+inline bool isGpuFloatReturningBuiltin(std::string_view name) {
+    return isGpuShaderMathBuiltin(name) ||
+           name == "frag_coord_x" || name == "frag_coord_y" ||
+           name == "frag_coord_z" || name == "frag_coord_w" ||
+           name == "stage_input_f32" ||
+           name == "image2d_load" || name == "image3d_load" ||
+           name == "sampler2d_lod" || name == "sampler3d_lod";
+}
+
 inline bool isGpuBuiltinName(std::string_view name) {
     return name == "tid_x" || name == "tid_y" || name == "tid_z" ||
            name == "ctaid_x" || name == "ctaid_y" || name == "ctaid_z" ||
            name == "ntid_x" || name == "ntid_y" || name == "ntid_z" ||
            name == "nctaid_x" || name == "nctaid_y" || name == "nctaid_z" ||
            name == "global_tid_x" || name == "lane_id" || name == "warp_id" ||
-           name == "sync" || name == "bar_sync";
+           name == "sync" || name == "bar_sync" ||
+           isGpuGraphicsOrImageBuiltin(name) ||
+           isGpuShaderMathBuiltin(name);
 }
 
 inline bool isAllowedMathMethod(std::string_view name) {
     return name == "sin" || name == "cos" || name == "sqrt" || name == "abs" ||
            name == "floor" || name == "ceil" || name == "round" || name == "trunc" ||
            name == "exp" || name == "log" || name == "min" || name == "max" ||
-           name == "pow" || name == "atan2" || name == "imul" || name == "fround";
+           name == "pow" || name == "atan2" || name == "imul" || name == "fround" ||
+           name == "clamp" || name == "mix" || name == "smoothstep" ||
+           name == "step" || name == "fract" || name == "sign" || name == "tanh";
 }
 
 inline bool isAllowedMathConst(std::string_view name, float* outVal = nullptr) {
@@ -229,7 +262,10 @@ inline const ast::FunctionDecl* findTargetKernelDecl(const ast::Module& mod,
         uint32_t endPos = std::min<uint32_t>(fnDecl->span.begin, static_cast<uint32_t>(sourceText.size()));
         uint32_t startPos = endPos > 200 ? endPos - 200 : 0;
         std::string_view window(sourceText.data() + startPos, endPos - startPos);
-        if (window.find("@kernel") != std::string_view::npos) return fnDecl;
+        if (window.find("@kernel") != std::string_view::npos ||
+            window.find("@shader") != std::string_view::npos) {
+            return fnDecl;
+        }
     }
     return requestedName.empty() ? firstFn : nullptr;
 }
@@ -358,11 +394,30 @@ inline il::Function normalizeGpuIlFunction(const il::Function& orig) {
         }
     }
 
+    std::unordered_set<il::ValueId> undefIds;
+    il::ValueId maxValueId = static_cast<il::ValueId>(fn.params.size());
+    for (const auto& blk : fn.blocks) {
+        for (const auto& p : blk.params) maxValueId = std::max(maxValueId, p.id);
+        for (const auto& inst : blk.instructions) {
+            if (inst.result != il::kNoValue) maxValueId = std::max(maxValueId, inst.result);
+            if (inst.op == il::Op::ConstUndefined || inst.op == il::Op::ConstNull) {
+                undefIds.insert(inst.result);
+            }
+        }
+    }
+
     std::vector<size_t> retBlocks;
+    bool anyValuedRet = false;
+    il::ValueId fallbackUndefId = il::kNoValue;
     for (size_t i = 0; i < fn.blocks.size(); ++i) {
         if (!fn.blocks[i].instructions.empty() &&
             fn.blocks[i].instructions.back().op == il::Op::Ret) {
             retBlocks.push_back(i);
+            const auto& rinst = fn.blocks[i].instructions.back();
+            if (!rinst.operands.empty()) {
+                if (undefIds.count(rinst.operands[0])) fallbackUndefId = rinst.operands[0];
+                else anyValuedRet = true;
+            }
         }
     }
     if (retBlocks.size() > 1) {
@@ -372,13 +427,23 @@ inline il::Function normalizeGpuIlFunction(const il::Function& orig) {
         il::Instruction retInst;
         retInst.op = il::Op::Ret;
         retInst.type = il::Type::Void;
+        il::ValueId retParamId = il::kNoValue;
+        if (anyValuedRet) {
+            retParamId = ++maxValueId;
+            exitBlk.params.push_back(il::BlockParam{retParamId, il::Type::Dynamic});
+            retInst.operands.push_back(retParamId);
+        }
         exitBlk.instructions.push_back(retInst);
         for (size_t bi : retBlocks) {
             auto& term = fn.blocks[bi].instructions.back();
+            il::ValueId rv = !term.operands.empty() ? term.operands[0] : fallbackUndefId;
             term.op = il::Op::Jump;
             term.operands.clear();
             term.target.block = exitId;
             term.target.args.clear();
+            if (anyValuedRet && rv != il::kNoValue) {
+                term.target.args.push_back(rv);
+            }
         }
         fn.blocks.push_back(std::move(exitBlk));
     }

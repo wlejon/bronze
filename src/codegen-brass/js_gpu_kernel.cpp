@@ -80,10 +80,19 @@ GpuCompileResult compileJsGpuKernelSource(
     }
 
     // 2. Lower to Bronze IL
+    res.stage = opts.stage;
     std::vector<std::string> gpuHostGlobals = {
         "tid_x", "tid_y", "tid_z", "ctaid_x", "ctaid_y", "ctaid_z",
         "ntid_x", "ntid_y", "ntid_z", "nctaid_x", "nctaid_y", "nctaid_z",
-        "global_tid_x", "lane_id", "warp_id", "sync", "bar_sync"
+        "global_tid_x", "lane_id", "warp_id", "sync", "bar_sync",
+        "vertex_index", "instance_index",
+        "frag_coord_x", "frag_coord_y", "frag_coord_z", "frag_coord_w",
+        "stage_input_f32", "stage_output_f32", "stage_output_vec4",
+        "set_vertex_position", "set_frag_color",
+        "image2d_load", "image2d_store", "image3d_load", "image3d_store",
+        "sampler2d_lod", "sampler3d_lod",
+        "clamp", "mix", "smoothstep", "step", "fract", "sign", "tanh",
+        "sin", "cos", "sqrt", "abs", "floor", "ceil", "min", "max"
     };
     SourceSet sources;
     sources.add(sourcePath, sourceText);
@@ -119,6 +128,7 @@ GpuCompileResult compileJsGpuKernelSource(
     std::unordered_map<il::ValueId, std::string> globalNames;
     std::unordered_map<il::ValueId, double> constF64Map;
     std::unordered_map<il::ValueId, int32_t> constI32Map;
+    std::unordered_set<il::ValueId> undefSet;
 
     for (const auto& blk : fn.blocks) {
         for (const auto& inst : blk.instructions) {
@@ -133,6 +143,8 @@ GpuCompileResult compileJsGpuKernelSource(
                 constF64Map[inst.result] = inst.immF64;
             } else if (inst.op == il::Op::ConstI32 || inst.op == il::Op::ConstBool) {
                 constI32Map[inst.result] = inst.immI32;
+            } else if (inst.op == il::Op::ConstUndefined || inst.op == il::Op::ConstNull) {
+                undefSet.insert(inst.result);
             }
         }
     }
@@ -195,7 +207,31 @@ GpuCompileResult compileJsGpuKernelSource(
                 usedAsIndexOrInt.insert(inst.result);
                 for (il::ValueId op : inst.operands) usedAsIndexOrInt.insert(originOf(op));
             } else if (inst.op == il::Op::DynamicCall && !inst.operands.empty()) {
-                usedAsIndexOrInt.insert(inst.result);
+                il::ValueId cid = originOf(inst.operands[0]);
+                std::string cname = globalNames.count(cid) ? globalNames[cid] : "";
+                if (isGpuFloatReturningBuiltin(cname)) {
+                    mustBeFloat.insert(inst.result);
+                    if (isGpuShaderMathBuiltin(cname)) {
+                        for (size_t k = 1; k < inst.operands.size(); ++k) {
+                            mustBeFloat.insert(originOf(inst.operands[k]));
+                        }
+                    }
+                } else if (cname == "set_vertex_position" || cname == "set_frag_color" ||
+                           cname == "stage_output_vec4" || cname == "stage_output_f32") {
+                    size_t flStart = (cname == "set_vertex_position") ? 1 : (cname == "stage_output_f32" ? 3 : 2);
+                    for (size_t k = flStart; k < inst.operands.size(); ++k) {
+                        mustBeFloat.insert(originOf(inst.operands[k]));
+                    }
+                } else {
+                    usedAsIndexOrInt.insert(inst.result);
+                }
+            } else if (inst.op == il::Op::Ret && !inst.operands.empty()) {
+                il::ValueId ro = originOf(inst.operands[0]);
+                if (!undefSet.count(ro) && !undefSet.count(inst.operands[0])) {
+                    res.hasScalarReturn = true;
+                    mustBeFloat.insert(ro);
+                    mustBeFloat.insert(inst.operands[0]);
+                }
             }
         }
     }
@@ -284,6 +320,10 @@ GpuCompileResult compileJsGpuKernelSource(
             paramTypes.push_back(brass::Type::f32());
         }
     }
+    res.scalarParamCount = static_cast<uint32_t>(numParams);
+    if (res.hasScalarReturn) {
+        paramTypes.push_back(brass::Type::ptr());
+    }
 
     brass::Function* mirFn = mirMod.create_function(fn.name, brass::Type::void_type(), paramTypes);
     brass::Builder b(*mirFn);
@@ -292,12 +332,16 @@ GpuCompileResult compileJsGpuKernelSource(
 
     std::unordered_map<il::ValueId, brass::Value*> valMap;
     std::vector<brass::BasicBlock*> mirBlocks(fn.blocks.size(), nullptr);
+    brass::Value* retOutPtr = nullptr;
     for (size_t bi = 0; bi < fn.blocks.size(); ++bi) {
         if (bi == 0) {
             mirBlocks[0] = b.append_block("entry");
             for (size_t i = 0; i < numParams; ++i) {
                 valMap[static_cast<il::ValueId>(firstParam + i)] =
                     b.add_block_param(mirBlocks[0], paramTypes[i]);
+            }
+            if (res.hasScalarReturn) {
+                retOutPtr = b.add_block_param(mirBlocks[0], brass::Type::ptr());
             }
         } else {
             mirBlocks[bi] = b.append_block("bb" + std::to_string(bi));
@@ -369,6 +413,37 @@ GpuCompileResult compileJsGpuKernelSource(
             return i32Idx;
         }
         return b.build_and(i32Idx, kb.const_i32(0x3fffffff));
+    };
+
+    bool usesSpirvOnlyIntrinsics = (opts.stage != brass::target::SpirvStage::Compute);
+    auto constU32FromVal = [&](il::ValueId id) -> uint32_t {
+        il::ValueId orig = originOf(id);
+        if (constI32Map.count(orig)) return static_cast<uint32_t>(std::max(0, constI32Map[orig]));
+        if (constF64Map.count(orig)) return static_cast<uint32_t>(std::max(0.0, constF64Map[orig]));
+        return 0u;
+    };
+    auto emitShaderMath = [&](const std::string& key, brass::Value* a0, brass::Value* a1, brass::Value* a2) -> brass::Value* {
+        if (key == "sin") return kb.sin_approx(a0);
+        if (key == "cos") return kb.cos_approx(a0);
+        if (key == "sqrt") return b.build_sqrt(a0);
+        if (key == "abs") return kb.fabs(a0);
+        if (key == "floor") return b.build_floor(a0);
+        if (key == "ceil") return b.build_ceil(a0);
+        if (key == "round") return b.build_round(a0);
+        if (key == "trunc") return b.build_sitofp_f32_i32(b.build_fptosi_i32_f32(a0));
+        if (key == "exp") return kb.exp_fast(a0);
+        if (key == "log") return kb.log_fast(a0);
+        if (key == "min") return kb.fmin(a0, a1);
+        if (key == "max") return kb.fmax(a0, a1);
+        if (key == "pow") return kb.exp_fast(kb.mul(a1, kb.log_fast(a0)));
+        if (key == "clamp") { usesSpirvOnlyIntrinsics = true; return kb.clamp_f32(a0, a1, a2); }
+        if (key == "mix") { usesSpirvOnlyIntrinsics = true; return kb.mix_f32(a0, a1, a2); }
+        if (key == "smoothstep") { usesSpirvOnlyIntrinsics = true; return kb.smoothstep_f32(a0, a1, a2); }
+        if (key == "step") { usesSpirvOnlyIntrinsics = true; return kb.step_f32(a0, a1); }
+        if (key == "tanh") { usesSpirvOnlyIntrinsics = true; return kb.tanh_approx(a0); }
+        if (key == "fract") { usesSpirvOnlyIntrinsics = true; return b.build_call("ptx_fract", brass::Type::f32(), {a0}); }
+        if (key == "sign") { usesSpirvOnlyIntrinsics = true; return b.build_call("ptx_sign", brass::Type::f32(), {a0}); }
+        return nullptr;
     };
 
     for (size_t bi = 0; bi < fn.blocks.size(); ++bi) {
@@ -599,20 +674,12 @@ GpuCompileResult compileJsGpuKernelSource(
                 brass::Value* a1 = inst.operands.size() >= 3
                                        ? asF32(getVal(inst.operands[2], brass::Type::f32()))
                                        : kb.const_f32(0.0f);
-                if (key == "sin") valMap[inst.result] = b.build_call("ptx_sin", brass::Type::f32(), {a0});
-                else if (key == "cos") valMap[inst.result] = b.build_call("ptx_cos", brass::Type::f32(), {a0});
-                else if (key == "sqrt") valMap[inst.result] = b.build_sqrt(a0);
-                else if (key == "abs") valMap[inst.result] = kb.fabs(a0);
-                else if (key == "floor") valMap[inst.result] = b.build_floor(a0);
-                else if (key == "ceil") valMap[inst.result] = b.build_ceil(a0);
-                else if (key == "round") valMap[inst.result] = b.build_round(a0);
-                else if (key == "trunc") valMap[inst.result] = b.build_sitofp_f32_i32(b.build_fptosi_i32_f32(a0));
-                else if (key == "exp") valMap[inst.result] = kb.exp_fast(a0);
-                else if (key == "log") valMap[inst.result] = kb.log_fast(a0);
-                else if (key == "min") valMap[inst.result] = kb.fmin(a0, a1);
-                else if (key == "max") valMap[inst.result] = kb.fmax(a0, a1);
-                else if (key == "pow") valMap[inst.result] = kb.exp_fast(kb.mul(a1, kb.log_fast(a0)));
-                else if (key == "atan2") {
+                brass::Value* a2 = inst.operands.size() >= 4
+                                       ? asF32(getVal(inst.operands[3], brass::Type::f32()))
+                                       : kb.const_f32(0.0f);
+                if (brass::Value* mres = emitShaderMath(key, a0, a1, a2)) {
+                    valMap[inst.result] = mres;
+                } else if (key == "atan2") {
                     brass::Value* ay = kb.fabs(a0);
                     brass::Value* ax = kb.fabs(a1);
                     brass::Value* mn = kb.fmin(ax, ay);
@@ -647,6 +714,17 @@ GpuCompileResult compileJsGpuKernelSource(
             case il::Op::DynamicCall: {
                 il::ValueId calleeId = !inst.operands.empty() ? originOf(inst.operands[0]) : il::kNoValue;
                 std::string name = globalNames.count(calleeId) ? globalNames[calleeId] : "";
+                auto flArg = [&](size_t idx, float defVal = 0.0f) -> brass::Value* {
+                    return idx < inst.operands.size() ? asF32(getVal(inst.operands[idx], brass::Type::f32()))
+                                                      : kb.const_f32(defVal);
+                };
+                auto intArg = [&](size_t idx) -> brass::Value* {
+                    return idx < inst.operands.size() ? asI32(getVal(inst.operands[idx], brass::Type::i32()))
+                                                      : kb.const_i32(0);
+                };
+                auto u32ConstArg = [&](size_t idx) -> uint32_t {
+                    return idx < inst.operands.size() ? constU32FromVal(inst.operands[idx]) : 0u;
+                };
                 if (name == "tid_x") valMap[inst.result] = kb.tid_x();
                 else if (name == "tid_y") valMap[inst.result] = kb.tid_y();
                 else if (name == "tid_z") valMap[inst.result] = kb.tid_z();
@@ -665,6 +743,61 @@ GpuCompileResult compileJsGpuKernelSource(
                 else if (name == "sync" || name == "bar_sync") {
                     kb.sync();
                     valMap[inst.result] = kb.const_i32(0);
+                } else if (isGpuShaderMathBuiltin(name)) {
+                    valMap[inst.result] = emitShaderMath(name, flArg(1), flArg(2), flArg(3));
+                } else if (name == "vertex_index") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.vertex_index();
+                } else if (name == "instance_index") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.instance_index();
+                } else if (name == "frag_coord_x") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.frag_coord_x();
+                } else if (name == "frag_coord_y") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.frag_coord_y();
+                } else if (name == "frag_coord_z") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.frag_coord_z();
+                } else if (name == "frag_coord_w") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.frag_coord_w();
+                } else if (name == "stage_input_f32") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.stage_input_f32(u32ConstArg(1), u32ConstArg(2));
+                } else if (name == "stage_output_f32") {
+                    usesSpirvOnlyIntrinsics = true;
+                    kb.stage_output_f32(u32ConstArg(1), u32ConstArg(2), flArg(3));
+                    valMap[inst.result] = kb.const_i32(0);
+                } else if (name == "set_frag_color" || name == "stage_output_vec4") {
+                    usesSpirvOnlyIntrinsics = true;
+                    kb.stage_output_vec4(u32ConstArg(1), flArg(2), flArg(3), flArg(4), flArg(5, 1.0f));
+                    valMap[inst.result] = kb.const_i32(0);
+                } else if (name == "set_vertex_position") {
+                    usesSpirvOnlyIntrinsics = true;
+                    kb.set_vertex_position(flArg(1), flArg(2), flArg(3), flArg(4, 1.0f));
+                    valMap[inst.result] = kb.const_i32(0);
+                } else if (name == "image2d_load") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.image2d_load_r32f(u32ConstArg(1), u32ConstArg(2), intArg(3), intArg(4));
+                } else if (name == "image2d_store") {
+                    usesSpirvOnlyIntrinsics = true;
+                    kb.image2d_store_r32f(u32ConstArg(1), u32ConstArg(2), intArg(3), intArg(4), flArg(5));
+                    valMap[inst.result] = kb.const_i32(0);
+                } else if (name == "image3d_load") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.image3d_load_r32f(u32ConstArg(1), u32ConstArg(2), intArg(3), intArg(4), intArg(5));
+                } else if (name == "image3d_store") {
+                    usesSpirvOnlyIntrinsics = true;
+                    kb.image3d_store_r32f(u32ConstArg(1), u32ConstArg(2), intArg(3), intArg(4), intArg(5), flArg(6));
+                    valMap[inst.result] = kb.const_i32(0);
+                } else if (name == "sampler2d_lod") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.sampler2d_lod_r32f(u32ConstArg(1), u32ConstArg(2), flArg(3), flArg(4), flArg(5, 0.0f));
+                } else if (name == "sampler3d_lod") {
+                    usesSpirvOnlyIntrinsics = true;
+                    valMap[inst.result] = kb.sampler3d_lod_r32f(u32ConstArg(1), u32ConstArg(2), flArg(3), flArg(4), flArg(5), flArg(6, 0.0f));
                 }
                 break;
             }
@@ -700,6 +833,10 @@ GpuCompileResult compileJsGpuKernelSource(
             }
 
             case il::Op::Ret:
+                if (res.hasScalarReturn && retOutPtr && !inst.operands.empty()) {
+                    brass::Value* rv = asF32(getVal(inst.operands[0], brass::Type::f32()));
+                    kb.store_f32(retOutPtr, rv, 0);
+                }
                 b.build_ret_void();
                 break;
 
@@ -717,10 +854,11 @@ GpuCompileResult compileJsGpuKernelSource(
         brass::eliminate_dead_code(*mirFn);
     }
 
-    // 6. Emit and verify Vulkan SPIR-V 1.5 and CUDA PTX
+    // 6. Emit and verify Vulkan SPIR-V 1.5 (and CUDA PTX for pure compute kernels)
     try {
         brass::target::SpirvOptions spvOpts;
         spvOpts.spirv_version = opts.spirvVersion;
+        spvOpts.stage = opts.stage;
         spvOpts.local_size_x = opts.localSizeX;
         spvOpts.local_size_y = opts.localSizeY;
         spvOpts.local_size_z = opts.localSizeZ;
@@ -728,6 +866,14 @@ GpuCompileResult compileJsGpuKernelSource(
         brass::spirv::Module spvMod(spvOpts.spirv_version);
         brass::spirv::SpirvISel spvIsel(spvMod, spvOpts);
         spvIsel.lower(*mirFn);
+
+        if (opts.enableRelaxedPrecision) {
+            brass::spirv::SpirvRelaxedPrecisionOptions rpOpts;
+            rpOpts.max_abs_fp16 = opts.maxAbsFp16;
+            rpOpts.assume_stage_inputs_unit_range = opts.assumeStageInputsUnitRange;
+            res.relaxedPrecisionReport = brass::spirv::promote_relaxed_precision(spvMod, rpOpts);
+        }
+
         res.spirvDiagnostics = brass::spirv::verify(spvMod);
         if (!res.spirvDiagnostics.empty()) {
             res.errorMessage = "SPIR-V verification failed:\n" +
@@ -738,32 +884,46 @@ GpuCompileResult compileJsGpuKernelSource(
         res.spirvWords = brass::spirv::write(spvMod);
         res.spirvDisassembly = brass::spirv::dump(spvMod);
 
-        brass::target::PtxOptions ptxOpts;
-        ptxOpts.sm_arch = "sm_" + std::to_string(opts.ptxSmVersion);
-        brass::ptx::PtxISel ptxIsel;
-        brass::ptx::Function ptxFn = ptxIsel.lower(*mirFn);
-        if (ptxOpts.cleanup) brass::ptx::cleanup(ptxFn);
-        res.ptxDiagnostics = brass::ptx::verify(ptxFn);
-        if (!res.ptxDiagnostics.empty()) {
-            res.errorMessage = "PTX verification failed:\n" +
-                               brass::ptx::format_diagnostics(res.ptxDiagnostics);
-            res.diagnostics.push_back(res.errorMessage);
-            return res;
-        }
-        res.ptxAssembly = brass::ptx::print(ptxFn, ptxOpts);
+        if (!usesSpirvOnlyIntrinsics) {
+            brass::target::PtxOptions ptxOpts;
+            ptxOpts.sm_arch = "sm_" + std::to_string(opts.ptxSmVersion);
+            brass::ptx::PtxISel ptxIsel;
+            brass::ptx::Function ptxFn = ptxIsel.lower(*mirFn);
+            if (ptxOpts.cleanup) brass::ptx::cleanup(ptxFn);
+            res.ptxDiagnostics = brass::ptx::verify(ptxFn);
+            if (!res.ptxDiagnostics.empty()) {
+                res.errorMessage = "PTX verification failed:\n" +
+                                   brass::ptx::format_diagnostics(res.ptxDiagnostics);
+                res.diagnostics.push_back(res.errorMessage);
+                return res;
+            }
+            res.ptxAssembly = brass::ptx::print(ptxFn, ptxOpts);
 
-        // 7. Cross-backend SMT equivalence & GPU memory/barrier safety verification (#95, #96)
-        if (opts.verifyEquivalence) {
+            if (opts.verifyEquivalence) {
+                std::string equivErr;
+                res.equivalence = brass::verify::verify_spirv_ptx_equivalence(
+                    *mirFn, spvMod, ptxFn, &equivErr);
+                res.spirvEquivalence = res.equivalence;
+                res.cpuGpuProvenEquivalent = res.equivalence.is_equivalent();
+                if (!res.equivalence.is_equivalent()) {
+                    res.errorMessage = "Cross-backend SPIR-V/PTX equivalence check failed: " + equivErr;
+                    res.diagnostics.push_back(res.errorMessage);
+                    return res;
+                }
+            }
+        } else if (opts.verifyEquivalence) {
             std::string equivErr;
-            res.equivalence = brass::verify::verify_spirv_ptx_equivalence(
-                *mirFn, spvMod, ptxFn, &equivErr);
-            if (!res.equivalence.is_equivalent()) {
-                res.errorMessage = "Cross-backend SPIR-V/PTX equivalence check failed: " + equivErr;
+            res.spirvEquivalence = brass::verify::verify_spirv_equivalence(*mirFn, spvMod, &equivErr);
+            res.equivalence = res.spirvEquivalence;
+            res.cpuGpuProvenEquivalent = res.spirvEquivalence.is_equivalent();
+            if (!res.spirvEquivalence.is_equivalent()) {
+                res.errorMessage = "Single-source MIR/SPIR-V equivalence check failed: " + equivErr;
                 res.diagnostics.push_back(res.errorMessage);
                 return res;
             }
         }
-        if (opts.verifySafety) {
+
+        if (opts.verifySafety && opts.stage == brass::target::SpirvStage::Compute) {
             brass::verify::GpuProverOptions proverOpts;
             proverOpts.local_size_x = opts.localSizeX;
             proverOpts.local_size_y = opts.localSizeY;
@@ -778,6 +938,10 @@ GpuCompileResult compileJsGpuKernelSource(
                 return res;
             }
         }
+
+        if (!compileSingleSourceCpuAndVerify(*mirFn, spvMod, opts, res)) {
+            return res;
+        }
     } catch (const std::exception& ex) {
         res.errorMessage = std::string("error: GPU codegen failed: ") + ex.what() + "\n";
         res.diagnostics.push_back(res.errorMessage);
@@ -786,69 +950,6 @@ GpuCompileResult compileJsGpuKernelSource(
 
     res.ok = true;
     return res;
-}
-
-GpuCompileResult compileJsGpuKernelFile(
-    const std::string& sourcePath,
-    const GpuCompileOptions& opts) {
-    std::ifstream in(sourcePath, std::ios::binary);
-    if (!in) {
-        GpuCompileResult res;
-        res.errorMessage = "error: cannot read " + sourcePath + "\n";
-        res.diagnostics.push_back(res.errorMessage);
-        return res;
-    }
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return compileJsGpuKernelSource(ss.str(), sourcePath, opts);
-}
-
-int runGpuCompileCli(int argc, char** argv, std::string* errOut) {
-    auto reportErr = [&](const std::string& msg) {
-        if (errOut) *errOut = msg;
-        else std::fputs(msg.c_str(), stderr);
-        return 1;
-    };
-
-    std::string sourcePath;
-    std::string spirvOutPath;
-    std::string ptxOutPath;
-    GpuCompileOptions opts;
-
-    for (int i = 2; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--kernel" && i + 1 < argc) opts.kernelName = argv[++i];
-        else if (arg.rfind("--kernel=", 0) == 0) opts.kernelName = arg.substr(9);
-        else if (arg == "--spirv-out" && i + 1 < argc) spirvOutPath = argv[++i];
-        else if (arg.rfind("--spirv-out=", 0) == 0) spirvOutPath = arg.substr(12);
-        else if (arg == "--ptx-out" && i + 1 < argc) ptxOutPath = argv[++i];
-        else if (arg.rfind("--ptx-out=", 0) == 0) ptxOutPath = arg.substr(10);
-        else if (arg == "--sm" && i + 1 < argc) opts.ptxSmVersion = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
-        else if (arg.rfind("--sm=", 0) == 0) opts.ptxSmVersion = static_cast<uint32_t>(std::strtoul(arg.substr(5).c_str(), nullptr, 10));
-        else if (sourcePath.empty()) sourcePath = arg;
-        else return reportErr("error: unexpected argument " + arg + "\n");
-    }
-
-    if (sourcePath.empty()) return reportErr("error: missing <file.js> for gpu-compile\n");
-
-    GpuCompileResult res = compileJsGpuKernelFile(sourcePath, opts);
-    if (!res.ok) return reportErr(res.errorMessage);
-
-    if (!spirvOutPath.empty()) {
-        std::ofstream out(spirvOutPath, std::ios::binary);
-        if (!out) return reportErr("error: cannot write SPIR-V output " + spirvOutPath + "\n");
-        out.write(reinterpret_cast<const char*>(res.spirvWords.data()),
-                  static_cast<std::streamsize>(res.spirvWords.size() * sizeof(uint32_t)));
-    }
-    if (!ptxOutPath.empty()) {
-        std::ofstream out(ptxOutPath, std::ios::binary);
-        if (!out) return reportErr("error: cannot write PTX output " + ptxOutPath + "\n");
-        out.write(res.ptxAssembly.data(), static_cast<std::streamsize>(res.ptxAssembly.size()));
-    }
-    if (spirvOutPath.empty() && ptxOutPath.empty()) {
-        std::fputs(res.ptxAssembly.c_str(), stdout);
-    }
-    return 0;
 }
 
 }  // namespace bronze

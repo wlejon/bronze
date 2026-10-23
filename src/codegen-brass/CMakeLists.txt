@@ -27,6 +27,7 @@ add_library(bronze_codegen_brass STATIC
     brass_tiered_image.cpp
     il_to_brass_ast.cpp
     js_gpu_kernel.cpp
+    js_gpu_single_source.cpp
     module_image.cpp
     # il2mir: the bronze IL → brass MIR translator.
     il2mir/il_alloc_lowering.cpp

@@ -184,3 +184,109 @@ TEST_CASE("js_gpu_kernel: CLI subcommand bronze gpu-compile writes .spv and .ptx
     std::error_code ec;
     fs::remove_all(tmpDir, ec);
 }
+
+TEST_CASE("js_gpu_kernel: single-source @shader terrainHeight(x, z) compiles to CPU JIT & Vulkan SPIR-V with 0 ULP parity and SMT equivalence") {
+    const std::string src = R"(
+// @shader
+function terrainHeight(x, z) {
+    let sx = Math.sin(x * 0.125) * 12.0;
+    let cz = Math.cos(z * 0.125) * 12.0;
+    let ridge = clamp(Math.abs(sx - cz) * 0.25, 0.0, 6.0);
+    let blend = smoothstep(-12.0, 12.0, sx + cz);
+    return mix(sx + cz, ridge, blend);
+}
+)";
+    bronze::JsGpuCompileOptions opts;
+    opts.enableRelaxedPrecision = true;
+    auto res = bronze::compileJsGpuKernelSource(src, "terrain.js", opts);
+    INFO(res.errorMessage);
+    REQUIRE(res.ok);
+    CHECK(res.kernelName == "terrainHeight");
+    CHECK(res.hasScalarReturn);
+    CHECK(res.spirvDiagnostics.empty());
+    CHECK(res.cpuGpuProvenEquivalent);
+    CHECK(res.spirvEquivalence.is_equivalent());
+    CHECK(res.memorySafety.is_safe());
+    CHECK(res.singleSourceParityVerified);
+    CHECK(res.paritySampleCount >= 49);
+    CHECK(res.maxCpuGpuUlpDiff == 0.0f);
+    CHECK(res.relaxedPrecisionReport.promoted_count > 0);
+    REQUIRE_FALSE(res.relaxedPrecisionReport.promoted_ids.empty());
+    CHECK(res.spirvDisassembly.find(
+              "OpDecorate %" + std::to_string(res.relaxedPrecisionReport.promoted_ids[0]) + " 0") !=
+          std::string::npos);
+
+    for (float x : {-24.0f, -7.5f, 0.0f, 4.25f, 19.0f}) {
+        for (float z : {-18.0f, -3.25f, 0.0f, 8.5f, 22.0f}) {
+            float cpuH = res.evalCpu2D(x, z);
+            float gpuH = res.evalSpirv2D(x, z);
+            CHECK(cpuH == gpuH);
+        }
+    }
+}
+
+TEST_CASE("js_gpu_kernel: @shader Vertex & Fragment stages with enableRelaxedPrecision emit verified SPIR-V with RelaxedPrecision decorations") {
+    SUBCASE("Vertex shader stage with RelaxedPrecision") {
+        const std::string vsSrc = R"(
+// @shader
+function terrainVertex(time) {
+    let vid = vertex_index();
+    let px = stage_input_f32(0, 0);
+    let pz = stage_input_f32(0, 1);
+    let wave = Math.sin(px * 2.0 + time) * 0.25 + Math.cos(pz * 2.0 + time) * 0.25;
+    let h = clamp(wave, -0.5, 0.5);
+    let shade = smoothstep(-0.5, 0.5, h);
+    stage_output_f32(0, 0, shade);
+    set_vertex_position(px, h, pz, 1.0);
+}
+)";
+        bronze::JsGpuCompileOptions opts;
+        opts.stage = brass::target::SpirvStage::Vertex;
+        opts.enableRelaxedPrecision = true;
+        auto res = bronze::compileJsGpuKernelSource(vsSrc, "terrain_vs.js", opts);
+        INFO(res.errorMessage);
+        REQUIRE(res.ok);
+        CHECK(res.stage == brass::target::SpirvStage::Vertex);
+        CHECK(res.spirvDiagnostics.empty());
+        CHECK(res.cpuGpuProvenEquivalent);
+        CHECK(res.spirvEquivalence.is_equivalent());
+        CHECK(res.relaxedPrecisionReport.promoted_count > 0);
+        REQUIRE_FALSE(res.relaxedPrecisionReport.promoted_ids.empty());
+        CHECK(res.spirvDisassembly.find("OpEntryPoint Vertex") != std::string::npos);
+        CHECK(res.spirvDisassembly.find(
+                  "OpDecorate %" + std::to_string(res.relaxedPrecisionReport.promoted_ids[0]) + " 0") !=
+              std::string::npos);
+    }
+
+    SUBCASE("Fragment shader stage with RelaxedPrecision") {
+        const std::string fsSrc = R"(
+// @shader
+function terrainFragment(sunDirY) {
+    let nx = stage_input_f32(0, 0);
+    let ny = stage_input_f32(0, 1);
+    let ndotl = clamp(ny * clamp(sunDirY, 0.0, 1.0) + nx * 0.25, 0.0, 1.0);
+    let rim = smoothstep(0.0, 1.0, 1.0 - ndotl);
+    let r = mix(0.15, 0.85, ndotl);
+    let g = mix(0.25, 0.90, ndotl);
+    let b = clamp(mix(0.35, 0.75, ndotl) + rim * 0.1, 0.0, 1.0);
+    set_frag_color(0, r, g, b, 1.0);
+}
+)";
+        bronze::JsGpuCompileOptions opts;
+        opts.stage = brass::target::SpirvStage::Fragment;
+        opts.enableRelaxedPrecision = true;
+        auto res = bronze::compileJsGpuKernelSource(fsSrc, "terrain_fs.js", opts);
+        INFO(res.errorMessage);
+        REQUIRE(res.ok);
+        CHECK(res.stage == brass::target::SpirvStage::Fragment);
+        CHECK(res.spirvDiagnostics.empty());
+        CHECK(res.cpuGpuProvenEquivalent);
+        CHECK(res.spirvEquivalence.is_equivalent());
+        CHECK(res.relaxedPrecisionReport.promoted_count >= 4);
+        REQUIRE_FALSE(res.relaxedPrecisionReport.promoted_ids.empty());
+        CHECK(res.spirvDisassembly.find("OpEntryPoint Fragment") != std::string::npos);
+        CHECK(res.spirvDisassembly.find(
+                  "OpDecorate %" + std::to_string(res.relaxedPrecisionReport.promoted_ids[0]) + " 0") !=
+              std::string::npos);
+    }
+}
