@@ -245,7 +245,7 @@ float GpuCompileResult::evalSpirv(const std::vector<float>& args) const {
                 vals[inst.result] = getU32(inst.operands[0].value) ^ getU32(inst.operands[1].value);
                 break;
             case spv::OpNot:
-                vals[inst.result] = ~getU32(inst.operands[0].value);
+                vals[inst.result] = getU32(inst.operands[0].value) ^ 0xFFFFFFFFu;
                 break;
             case spv::OpLogicalNot:
                 vals[inst.result] = getU32(inst.operands[0].value) == 0 ? 1u : 0u;

@@ -66,8 +66,8 @@ public:
         allOnes64_ = ctx_.make_const(~uint64_t{0}, 64);
         true1_ = ctx_.make_const(1, 1);
 
-        numParams_ = fn_.callerParamCount();
-        uint32_t firstSrc = fn_.firstSourceParam();
+        numParams_ = static_cast<uint32_t>(fn_.callerParamCount());
+        uint32_t firstSrc = static_cast<uint32_t>(fn_.firstSourceParam());
         for (uint32_t i = 0; i < numParams_; ++i) {
             std::string pname;
             if ((firstSrc + i) < fn_.params.size()) {
@@ -105,7 +105,7 @@ public:
         report_.totalBlocks += static_cast<uint32_t>(reachable.size());
 
         PathSymState initState;
-        uint32_t firstSrc = fn_.firstSourceParam();
+        uint32_t firstSrc = static_cast<uint32_t>(fn_.firstSourceParam());
         for (uint32_t i = 0; i < firstSrc; ++i) {
             initState.values[i] = zero64_;
         }

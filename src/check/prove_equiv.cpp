@@ -76,11 +76,11 @@ public:
         }
 
         SymState initState;
-        uint32_t firstSrc = fn.firstSourceParam();
+        uint32_t firstSrc = static_cast<uint32_t>(fn.firstSourceParam());
         for (uint32_t i = 0; i < firstSrc; ++i) {
             initState.values[i] = zero64_;
         }
-        uint32_t srcCount = fn.callerParamCount();
+        uint32_t srcCount = static_cast<uint32_t>(fn.callerParamCount());
         for (uint32_t i = 0; i < srcCount; ++i) {
             BVNodeId arg = (i < argNodes.size()) ? argNodes[i] : zero64_;
             initState.values[firstSrc + i] = arg;
@@ -531,7 +531,7 @@ bool tryBuildStraightLineMir(const il::Function& fn,
     if (fn.blocks.size() != 1) return false;
     outFn = mod.create_function(fn.name, brass::Type::i64());
     brass::Builder mb(*outFn);
-    uint32_t firstSrc = fn.firstSourceParam();
+    uint32_t firstSrc = static_cast<uint32_t>(fn.firstSourceParam());
     std::unordered_map<il::ValueId, brass::Value*> vmap;
     for (uint32_t i = 0; i < numParams; ++i) {
         brass::Value* p = mb.add_param(brass::Type::i64());
@@ -615,8 +615,8 @@ FunctionEquivResult compareFunctionPair(const il::Module& oldMod,
     FunctionEquivResult res;
     res.name = canonicalFuncName(oldFn.name);
 
-    uint32_t oldParams = oldFn.callerParamCount();
-    uint32_t newParams = newFn.callerParamCount();
+    uint32_t oldParams = static_cast<uint32_t>(oldFn.callerParamCount());
+    uint32_t newParams = static_cast<uint32_t>(newFn.callerParamCount());
     uint32_t numParams = std::max(oldParams, newParams);
 
     for (uint32_t i = 0; i < numParams; ++i) {
