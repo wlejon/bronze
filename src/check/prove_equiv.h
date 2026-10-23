@@ -10,6 +10,11 @@
 #include "il/il.h"
 #include "modules/resolve.h"
 
+namespace brass::verify {
+class BVContext;
+using BVNodeId = uint32_t;
+}  // namespace brass::verify
+
 namespace bronze::check {
 
 enum class EquivStatus : uint8_t {
@@ -67,6 +72,16 @@ bool lowerSingleSourceForEquiv(std::string_view src,
                                std::string_view virtualName,
                                il::Module& outMod,
                                std::string* errorOut = nullptr);
+
+// Symbolically lowers `fn` in `mod` into `ctx` for `argNodes` and returns its
+// symbolic return expression node in `outRetNode`.
+bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
+                            const il::Module& mod,
+                            const il::Function& fn,
+                            const std::vector<brass::verify::BVNodeId>& argNodes,
+                            bool strictJs32Bitwise,
+                            brass::verify::BVNodeId* outRetNode,
+                            std::string* outReason = nullptr);
 
 // Symbolically compares a single pair of IL functions via Brass bitvector SMT.
 FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,

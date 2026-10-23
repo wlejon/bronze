@@ -8,11 +8,17 @@ bronze_add_module(check
         prove_equiv_bitwise.cpp
         deterministic_check.cpp
         synth_tests.cpp
+        solve_fn.cpp
+        cegis_optimize.cpp
+        fuzz_fn.cpp
+        prove_fn.cpp
+        layout_solver.cpp
     DEPS ast il lower modules support types
     TEST_SOURCES
         ../../tests/check/static_checker_test.cpp
         ../../tests/check/prover_tools_test.cpp
         ../../tests/check/applet_cert_test.cpp
+        ../../tests/check/symbolic_runtime_test.cpp
     TEST_DEPS lex parse
 )
 

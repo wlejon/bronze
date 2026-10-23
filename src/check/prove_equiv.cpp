@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <verify/bv_solver.hpp>
+
 #include "lex/lexer.h"
 #include "lower/lower.h"
 #include "modules/modules.h"
@@ -245,6 +247,149 @@ ProveEquivReport proveSourceEquiv(std::string_view oldSrc,
         return {};
     }
     return proveModuleEquiv(oldMod, newMod, fnFilter);
+}
+
+EquivReport proveSourceEquivalent(std::string_view oldSrc, std::string_view newSrc,
+                                  std::string_view fnFilter, int32_t domainMin,
+                                  int32_t domainMax, std::string* errorOut) {
+    EquivReport rep;
+    rep.domainMin = domainMin;
+    rep.domainMax = domainMax;
+    il::Module oldMod, newMod;
+    if (!lowerSingleSourceForEquiv(oldSrc, "old.js", oldMod, errorOut) ||
+        !lowerSingleSourceForEquiv(newSrc, "new.js", newMod, errorOut)) {
+        rep.status = EquivStatus::Unknown;
+        rep.detail = errorOut ? *errorOut : "failed to lower source";
+        return rep;
+    }
+    const il::Function* oldFn = nullptr;
+    const il::Function* newFn = nullptr;
+    for (const auto& f : oldMod.functions) {
+        if (!f.isExternal && !f.isEntryPoint && f.name != "main" &&
+            (fnFilter.empty() || functionMatchesName(f, fnFilter))) {
+            oldFn = &f;
+            break;
+        }
+    }
+    for (const auto& f : newMod.functions) {
+        if (!f.isExternal && !f.isEntryPoint && f.name != "main" &&
+            (fnFilter.empty() || functionMatchesName(f, fnFilter))) {
+            newFn = &f;
+            break;
+        }
+    }
+    if (!oldFn || !newFn) {
+        rep.status = EquivStatus::Unknown;
+        rep.detail = "target function not found";
+        return rep;
+    }
+    FunctionEquivResult fnRes = compareIlFunctionPair(oldMod, *oldFn, newMod, *newFn, true, domainMin, domainMax);
+    rep.status = fnRes.status;
+    rep.fnName = fnRes.name;
+    rep.detail = fnRes.detail;
+    if (!fnRes.counterexampleArgs.empty()) {
+        rep.counterexampleInput = fnRes.counterexampleArgs[0];
+        rep.counterexampleArgs = fnRes.counterexampleArgs;
+    }
+    rep.expectedOutput = fnRes.oldReturnValue;
+    rep.actualOutput = fnRes.newReturnValue;
+    rep.functions.push_back(std::move(fnRes));
+    return rep;
+}
+
+EquivReport proveRoundTripSource(std::string_view source, std::string_view encodeFnName,
+                                 std::string_view decodeFnName, int32_t domainMin,
+                                 int32_t domainMax, std::string* errorOut) {
+    using brass::verify::BVContext;
+    using brass::verify::BVNodeId;
+    using brass::verify::BVOp;
+    using brass::verify::SolveOutcome;
+
+    EquivReport rep;
+    rep.fnName = std::string(decodeFnName) + "(" + std::string(encodeFnName) + "(x))";
+    rep.domainMin = domainMin;
+    rep.domainMax = domainMax;
+    il::Module mod;
+    if (!lowerSingleSourceForEquiv(source, "roundtrip.js", mod, errorOut)) {
+        rep.status = EquivStatus::Unknown;
+        rep.detail = errorOut ? *errorOut : "failed to lower source";
+        return rep;
+    }
+    const il::Function* encFn = nullptr;
+    const il::Function* decFn = nullptr;
+    for (const auto& f : mod.functions) {
+        if (f.isExternal) continue;
+        if (!encFn && functionMatchesName(f, encodeFnName)) encFn = &f;
+        if (!decFn && functionMatchesName(f, decodeFnName)) decFn = &f;
+    }
+    if (!encFn || !decFn) {
+        rep.status = EquivStatus::Unknown;
+        rep.detail = !encFn ? "encode function not found" : "decode function not found";
+        return rep;
+    }
+    BVContext ctx;
+    BVNodeId raw32 = ctx.make_var("x", 32);
+    BVNodeId xNode = ctx.make_sext(raw32, 32);
+    BVNodeId encRet = 0, decRet = 0;
+    std::string reason;
+    if (!evalIlFunctionSymbolic(ctx, mod, *encFn, {xNode}, true, &encRet, &reason)) {
+        rep.status = EquivStatus::Unknown;
+        rep.detail = "encode function not symbolically decidable: " + reason;
+        return rep;
+    }
+    if (!evalIlFunctionSymbolic(ctx, mod, *decFn, {encRet}, true, &decRet, &reason)) {
+        rep.status = EquivStatus::Unknown;
+        rep.detail = "decode function not symbolically decidable: " + reason;
+        return rep;
+    }
+    BVNodeId badCond = ctx.make_binary(BVOp::Ne, decRet, xNode);
+    if (domainMin > INT32_MIN) {
+        BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
+        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, xNode, minNode));
+    }
+    if (domainMax < INT32_MAX) {
+        BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
+        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, xNode, maxNode));
+    }
+    SolveOutcome satRes = brass::verify::solve_nonzero(ctx, badCond);
+    if (satRes.status == SolveOutcome::Unsat) {
+        rep.status = EquivStatus::ProvenEquivalent;
+        rep.detail = "proven decode(encode(x)) === x across all symbolic inputs in domain";
+        FunctionEquivResult fnRes{rep.fnName, {"x"}, EquivStatus::ProvenEquivalent, {}, 0, 0, rep.detail};
+        rep.functions.push_back(std::move(fnRes));
+        return rep;
+    }
+    if (satRes.status == SolveOutcome::Sat) {
+        rep.status = EquivStatus::RefutedWithCounterexample;
+        std::vector<uint64_t> bestModel = satRes.model.empty() ? std::vector<uint64_t>{0} : satRes.model;
+        static constexpr int32_t kBoundaryCandidates[] = {
+            0, 1, -1, 2, -2, 63, 64, 127, 128, -128, 255, 256,
+            1073741823, 1073741824, -1073741823, -1073741824, INT32_MAX, INT32_MIN
+        };
+        for (int32_t c : kBoundaryCandidates) {
+            if (c < domainMin || c > domainMax) continue;
+            std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c))};
+            if (ctx.eval_concrete(badCond, cand) != 0) {
+                bestModel = std::move(cand);
+                break;
+            }
+        }
+        int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(bestModel[0]));
+        bestModel[0] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
+        rep.counterexampleInput = static_cast<int64_t>(signed32);
+        rep.counterexampleArgs = {rep.counterexampleInput};
+        rep.expectedOutput = rep.counterexampleInput;
+        rep.encodedIntermediate = static_cast<int64_t>(ctx.eval_concrete(encRet, bestModel));
+        rep.actualOutput = static_cast<int64_t>(ctx.eval_concrete(decRet, bestModel));
+        rep.detail = "refuted round-trip: found input x where decode(encode(x)) !== x";
+        FunctionEquivResult fnRes{rep.fnName, {"x"}, EquivStatus::RefutedWithCounterexample,
+                                  rep.counterexampleArgs, rep.expectedOutput, rep.actualOutput, rep.detail};
+        rep.functions.push_back(std::move(fnRes));
+        return rep;
+    }
+    rep.status = EquivStatus::Unknown;
+    rep.detail = "solver returned UNKNOWN on round-trip condition";
+    return rep;
 }
 
 int runProveEquiv(const std::string& oldPath,

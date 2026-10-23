@@ -358,7 +358,7 @@ private:
                 case Op::Mod: {
                     BVNodeId a = toBV64(getVal(state, inst.operands[0]));
                     BVNodeId b = toBV64(getVal(state, inst.operands[1]));
-                    if (ctx_.nodes()[b].op != BVOp::Const) {
+                    if (ctx_.nodes()[b].op != BVOp::Const || ctx_.nodes()[b].imm == 0) {
                         BVNodeId isZeroDiv = ctx_.make_binary(BVOp::Eq, b, zero64_);
                         tryEmitHazardReproducer(pathCond, isZeroDiv, blockId, pathTrace,
                                                 inst.op == Op::Div

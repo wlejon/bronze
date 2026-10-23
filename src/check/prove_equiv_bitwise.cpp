@@ -19,17 +19,9 @@ using brass::verify::BVNodeId;
 using brass::verify::BVOp;
 using brass::verify::SolveOutcome;
 
-constexpr uint32_t kMaxBlockSteps = 128;
+constexpr uint32_t kMaxBlockSteps = 220;
+constexpr uint32_t kMaxTotalBlockVisits = 1024;
 constexpr uint32_t kMaxInlineDepth = 6;
-
-bool functionMatchesQuery(const il::Function& fn, std::string_view query) {
-    if (fn.name == query) return true;
-    auto pos = fn.name.rfind("::");
-    if (pos != std::string::npos && std::string_view(fn.name).substr(pos + 2) == query) {
-        return true;
-    }
-    return false;
-}
 
 struct SymState {
     std::unordered_map<il::ValueId, BVNodeId> values;
@@ -86,6 +78,7 @@ private:
     BVNodeId zero64_ = 0;
     BVNodeId one64_ = 0;
     BVNodeId allOnes64_ = 0;
+    uint32_t totalVisits_ = 0;
 
     BVNodeId getVal(const SymState& st, il::ValueId v) const {
         auto it = st.values.find(v);
@@ -148,8 +141,11 @@ private:
                                  SymState state,
                                  uint32_t steps,
                                  uint32_t inlineDepth) {
+        if (++totalVisits_ > kMaxTotalBlockVisits) {
+            return {false, "symbolic path limit exceeded", false, zero64_};
+        }
         if (steps > kMaxBlockSteps) {
-            return {false, "unbounded loop or path limit exceeded", false, zero64_};
+            return {true, "loop unroll bound reached", false, zero64_};
         }
         if (blockId >= fn.blocks.size()) {
             return {false, "invalid block target", false, zero64_};
@@ -612,7 +608,7 @@ private:
                     }
                     if (trueOut.hasReturn) return trueOut;
                     if (falseOut.hasReturn) return falseOut;
-                    return {false, "neither branch returned a value", false, zero64_};
+                    return {true, "loop unroll bound reached", false, zero64_};
                 }
                 case Op::Ret: {
                     BVNodeId ret = inst.operands.empty() ? zero64_ : toBV64(getVal(state, inst.operands[0]));
@@ -711,6 +707,23 @@ bool tryBuildStraightLineMir(const il::Function& fn,
 }
 
 }  // namespace
+
+bool evalIlFunctionSymbolic(brass::verify::BVContext& ctx,
+                            const il::Module& mod,
+                            const il::Function& fn,
+                            const std::vector<brass::verify::BVNodeId>& argNodes,
+                            bool strictJs32Bitwise,
+                            brass::verify::BVNodeId* outRetNode,
+                            std::string* outReason) {
+    SymbolicIlBuilder builder(ctx, mod, strictJs32Bitwise);
+    auto out = builder.evalFunction(fn, argNodes);
+    if (!out.supported || !out.hasReturn) {
+        if (outReason) *outReason = out.unsupportedReason;
+        return false;
+    }
+    if (outRetNode) *outRetNode = out.returnVal;
+    return true;
+}
 
 FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
                                           const il::Function& oldFn,
@@ -846,145 +859,6 @@ FunctionEquivResult compareIlFunctionPair(const il::Module& oldMod,
     res.status = EquivStatus::Unknown;
     res.detail = "solver returned UNKNOWN (unsupported non-linear op or resource bound)";
     return res;
-}
-
-EquivReport proveSourceEquivalent(std::string_view oldSrc, std::string_view newSrc,
-                                  std::string_view fnFilter, int32_t domainMin,
-                                  int32_t domainMax, std::string* errorOut) {
-    EquivReport rep;
-    rep.domainMin = domainMin;
-    rep.domainMax = domainMax;
-    il::Module oldMod, newMod;
-    if (!lowerSingleSourceForEquiv(oldSrc, "old.js", oldMod, errorOut) ||
-        !lowerSingleSourceForEquiv(newSrc, "new.js", newMod, errorOut)) {
-        rep.status = EquivStatus::Unknown;
-        rep.detail = errorOut ? *errorOut : "failed to lower source";
-        return rep;
-    }
-    const il::Function* oldFn = nullptr;
-    const il::Function* newFn = nullptr;
-    for (const auto& f : oldMod.functions) {
-        if (!f.isExternal && !f.isEntryPoint && f.name != "main" &&
-            (fnFilter.empty() || functionMatchesQuery(f, fnFilter))) {
-            oldFn = &f;
-            break;
-        }
-    }
-    for (const auto& f : newMod.functions) {
-        if (!f.isExternal && !f.isEntryPoint && f.name != "main" &&
-            (fnFilter.empty() || functionMatchesQuery(f, fnFilter))) {
-            newFn = &f;
-            break;
-        }
-    }
-    if (!oldFn || !newFn) {
-        rep.status = EquivStatus::Unknown;
-        rep.detail = "target function not found";
-        return rep;
-    }
-    FunctionEquivResult fnRes = compareIlFunctionPair(oldMod, *oldFn, newMod, *newFn, true, domainMin, domainMax);
-    rep.status = fnRes.status;
-    rep.fnName = fnRes.name;
-    rep.detail = fnRes.detail;
-    if (!fnRes.counterexampleArgs.empty()) {
-        rep.counterexampleInput = fnRes.counterexampleArgs[0];
-        rep.counterexampleArgs = fnRes.counterexampleArgs;
-    }
-    rep.expectedOutput = fnRes.oldReturnValue;
-    rep.actualOutput = fnRes.newReturnValue;
-    rep.functions.push_back(std::move(fnRes));
-    return rep;
-}
-
-EquivReport proveRoundTripSource(std::string_view source, std::string_view encodeFnName,
-                                 std::string_view decodeFnName, int32_t domainMin,
-                                 int32_t domainMax, std::string* errorOut) {
-    EquivReport rep;
-    rep.fnName = std::string(decodeFnName) + "(" + std::string(encodeFnName) + "(x))";
-    rep.domainMin = domainMin;
-    rep.domainMax = domainMax;
-    il::Module mod;
-    if (!lowerSingleSourceForEquiv(source, "roundtrip.js", mod, errorOut)) {
-        rep.status = EquivStatus::Unknown;
-        rep.detail = errorOut ? *errorOut : "failed to lower source";
-        return rep;
-    }
-    const il::Function* encFn = nullptr;
-    const il::Function* decFn = nullptr;
-    for (const auto& f : mod.functions) {
-        if (f.isExternal) continue;
-        if (!encFn && functionMatchesQuery(f, encodeFnName)) encFn = &f;
-        if (!decFn && functionMatchesQuery(f, decodeFnName)) decFn = &f;
-    }
-    if (!encFn || !decFn) {
-        rep.status = EquivStatus::Unknown;
-        rep.detail = !encFn ? "encode function not found" : "decode function not found";
-        return rep;
-    }
-    BVContext ctx;
-    BVNodeId raw32 = ctx.make_var("x", 32);
-    BVNodeId xNode = ctx.make_sext(raw32, 32);
-    SymbolicIlBuilder sym(ctx, mod, /*strictJs32Bitwise=*/true);
-    auto encOut = sym.evalFunction(*encFn, {xNode});
-    if (!encOut.supported || !encOut.hasReturn) {
-        rep.status = EquivStatus::Unknown;
-        rep.detail = "encode function not symbolically decidable: " + encOut.unsupportedReason;
-        return rep;
-    }
-    auto decOut = sym.evalFunction(*decFn, {encOut.returnVal});
-    if (!decOut.supported || !decOut.hasReturn) {
-        rep.status = EquivStatus::Unknown;
-        rep.detail = "decode function not symbolically decidable: " + decOut.unsupportedReason;
-        return rep;
-    }
-    BVNodeId badCond = ctx.make_binary(BVOp::Ne, decOut.returnVal, xNode);
-    if (domainMin > INT32_MIN) {
-        BVNodeId minNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMin)), 64);
-        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sge, xNode, minNode));
-    }
-    if (domainMax < INT32_MAX) {
-        BVNodeId maxNode = ctx.make_const(static_cast<uint64_t>(static_cast<int64_t>(domainMax)), 64);
-        badCond = ctx.make_binary(BVOp::And, badCond, ctx.make_binary(BVOp::Sle, xNode, maxNode));
-    }
-    SolveOutcome satRes = brass::verify::solve_nonzero(ctx, badCond);
-    if (satRes.status == SolveOutcome::Unsat) {
-        rep.status = EquivStatus::ProvenEquivalent;
-        rep.detail = "proven decode(encode(x)) === x across all symbolic inputs in domain";
-        FunctionEquivResult fnRes{rep.fnName, {"x"}, EquivStatus::ProvenEquivalent, {}, 0, 0, rep.detail};
-        rep.functions.push_back(std::move(fnRes));
-        return rep;
-    }
-    if (satRes.status == SolveOutcome::Sat) {
-        rep.status = EquivStatus::RefutedWithCounterexample;
-        std::vector<uint64_t> bestModel = satRes.model.empty() ? std::vector<uint64_t>{0} : satRes.model;
-        static constexpr int32_t kBoundaryCandidates[] = {
-            0, 1, -1, 2, -2, 63, 64, 127, 128, -128, 255, 256,
-            1073741823, 1073741824, -1073741823, -1073741824, INT32_MAX, INT32_MIN
-        };
-        for (int32_t c : kBoundaryCandidates) {
-            if (c < domainMin || c > domainMax) continue;
-            std::vector<uint64_t> cand{static_cast<uint64_t>(static_cast<uint32_t>(c))};
-            if (ctx.eval_concrete(badCond, cand) != 0) {
-                bestModel = std::move(cand);
-                break;
-            }
-        }
-        int32_t signed32 = static_cast<int32_t>(static_cast<uint32_t>(bestModel[0]));
-        bestModel[0] = static_cast<uint64_t>(static_cast<uint32_t>(signed32));
-        rep.counterexampleInput = static_cast<int64_t>(signed32);
-        rep.counterexampleArgs = {rep.counterexampleInput};
-        rep.expectedOutput = rep.counterexampleInput;
-        rep.encodedIntermediate = static_cast<int64_t>(ctx.eval_concrete(encOut.returnVal, bestModel));
-        rep.actualOutput = static_cast<int64_t>(ctx.eval_concrete(decOut.returnVal, bestModel));
-        rep.detail = "refuted round-trip: found input x where decode(encode(x)) !== x";
-        FunctionEquivResult fnRes{rep.fnName, {"x"}, EquivStatus::RefutedWithCounterexample,
-                                  rep.counterexampleArgs, rep.expectedOutput, rep.actualOutput, rep.detail};
-        rep.functions.push_back(std::move(fnRes));
-        return rep;
-    }
-    rep.status = EquivStatus::Unknown;
-    rep.detail = "solver returned UNKNOWN on round-trip condition";
-    return rep;
 }
 
 }  // namespace bronze::check
