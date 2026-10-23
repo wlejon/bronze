@@ -132,6 +132,7 @@ private:
     std::unordered_set<uint32_t> run_once_blocks_;
     std::unordered_set<uint32_t> fresh_objects_;
     std::unordered_set<uint32_t> hole_insensitive_ids_;
+    std::unordered_set<uint32_t> unrooted_hole_insensitive_ids_;
     std::unordered_set<uint32_t> primitive_value_ids_;
     std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;

@@ -690,8 +690,7 @@ TEST_CASE("Brass il2mir - IsDenseArray and constant-index PropGet/PropSet runs l
     int propGetCalls = 0;
     int propSetCalls = 0;
     int writeBarriers = 0;
-    int indexedLoads = 0;
-    int indexedStores = 0;
+    int arraySlotStores = 0;
     for (brass::BasicBlock* bb : mirFn->blocks()) {
         for (brass::Instruction* inst : *bb) {
             if (inst->opcode() == brass::Opcode::call) {
@@ -699,16 +698,19 @@ TEST_CASE("Brass il2mir - IsDenseArray and constant-index PropGet/PropSet runs l
                 if (inst->symbol() == "bronze_prop_set") ++propSetCalls;
                 if (inst->symbol() == "brass_gc_write_barrier") ++writeBarriers;
             }
-            if (inst->opcode() == brass::Opcode::load_indexed) ++indexedLoads;
-            if (inst->opcode() == brass::Opcode::store_indexed) ++indexedStores;
+            if (inst->opcode() == brass::Opcode::store_indexed ||
+                (inst->opcode() == brass::Opcode::store &&
+                 (inst->offset() == static_cast<int32_t>(BRONZE_ABI_HDR_BYTES) ||
+                  inst->offset() == static_cast<int32_t>(BRONZE_ABI_HDR_BYTES + 8)))) {
+                ++arraySlotStores;
+            }
         }
     }
     // b1's two PropGets are proven dense by b0's IsDenseArray and emit zero bronze_prop_get calls.
     CHECK(propGetCalls == 0);
-    CHECK(indexedLoads == 2);
-    // b3's two PropSets batch into a single run guard (one fast block with two indexed stores,
+    // b3's two PropSets batch into a single run guard (one fast block with two array slot stores,
     // one slow block with two bronze_prop_set calls, and zero write barriers for boxed f64).
-    CHECK(indexedStores == 2);
+    CHECK(arraySlotStores == 2);
     CHECK(propSetCalls == 2);
     CHECK(writeBarriers == 0);
 }

@@ -92,7 +92,7 @@ public:
     // not an f64 slot), stores the value there, inline or overflow, with the
     // write barrier for a reference. Requires a real site.
     void lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,
-                             const IcSite& site);
+                             const IcSite& site, bool val_is_primitive = false);
 
     // Tier 2's expansion of a kPolyScanHelper call: the scan inline, as
     // straight-line code at the builder's position. `hit` is whether a way

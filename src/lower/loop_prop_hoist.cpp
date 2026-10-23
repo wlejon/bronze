@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "lower/guard_region_cfg.h"
+#include "lower/inline_small.h"
 #include "lower/loop_prop_analysis.h"
 
 namespace bronze::lower {
@@ -15,7 +16,11 @@ bool hoistInFunction(il::Function& fn, const std::vector<uint8_t>& isAccessorKey
                      const il::Module& module,
                      std::vector<std::optional<SafeConstructorInfo>>& ctorCache,
                      const std::vector<FunctionEffects>& funcEffects,
-                     uint32_t lengthKeyIndex) {
+                     uint32_t lengthKeyIndex,
+                     const DirectMethodTable* directMethods,
+                     bool protoPatchFree,
+                     const std::vector<uint8_t>& isMutatedMethodKey,
+                     const std::vector<std::vector<uint32_t>>& closedKeyTargets) {
     if (fn.blocks.empty()) return false;
 
     bool fnChanged = false;
@@ -102,7 +107,11 @@ bool hoistInFunction(il::Function& fn, const std::vector<uint8_t>& isAccessorKey
                 for (size_t i = 0; i < blk.instructions.size();) {
                     auto& inst = blk.instructions[i];
                     if (inst.op == il::Op::PropGet) {
-                        if (inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex]) {
+                        const bool isAcc = inst.keyIndex < isAccessorKey.size() &&
+                                           isAccessorKey[inst.keyIndex] &&
+                                           !(protoPatchFree &&
+                                             inst.staticSlot != il::Instruction::kNoStaticSlot);
+                        if (isAcc) {
                             ++i;
                             continue;
                         }
@@ -150,7 +159,8 @@ bool hoistInFunction(il::Function& fn, const std::vector<uint8_t>& isAccessorKey
                                 for (const auto& loopInst : fn.blocks[lb].instructions) {
                                     if (canMutateProperty(recv, inst.keyIndex, loopInst, fn, defs, inLoop,
                                                           module, ctorCache, isAccessorKey, funcEffects,
-                                                          lengthKeyIndex)) {
+                                                          lengthKeyIndex, directMethods, protoPatchFree,
+                                                          &isMutatedMethodKey, &closedKeyTargets)) {
                                         canMutate = true;
                                         break;
                                     }
@@ -211,7 +221,12 @@ bool hoistInFunction(il::Function& fn, const std::vector<uint8_t>& isAccessorKey
 bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& isAccessorKey,
                                 const il::Module& module,
                                 std::vector<std::optional<SafeConstructorInfo>>& ctorCache,
-                                uint32_t lengthKeyIndex) {
+                                uint32_t lengthKeyIndex,
+                                const DirectMethodTable* directMethods,
+                                bool protoPatchFree,
+                                const std::vector<uint8_t>& isMutatedMethodKey,
+                                const std::vector<std::vector<uint32_t>>& closedKeyTargets,
+                                const std::vector<FunctionEffects>& funcEffects) {
     struct PropCell {
         il::ValueId recv;
         uint32_t keyIndex;
@@ -310,7 +325,11 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
             }
 
             if (inst.op == il::Op::PropSet) {
-                if (inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex]) {
+                const bool isAcc = inst.keyIndex < isAccessorKey.size() &&
+                                   isAccessorKey[inst.keyIndex] &&
+                                   !(protoPatchFree &&
+                                     inst.staticSlot != il::Instruction::kNoStaticSlot);
+                if (isAcc) {
                     table.clear();
                 } else if (inst.keyIndex == lengthKeyIndex) {
                     table.clear();
@@ -376,10 +395,107 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                 continue;
             }
 
+            if ((inst.op == il::Op::ElemSet || inst.op == il::Op::ElemSetTyped) &&
+                inst.operands.size() >= 2) {
+                const il::ValueId idxVal = inst.operands[1];
+                bool isNumericIdx = false;
+                if (idxVal < defs.size() && defs[idxVal].block != il::kNoBlock) {
+                    const auto& defBlk = fn.blocks[defs[idxVal].block];
+                    if (defs[idxVal].index < defBlk.instructions.size()) {
+                        const auto& di = defBlk.instructions[defs[idxVal].index];
+                        if (di.type == il::Type::I32 || di.type == il::Type::F64 ||
+                            di.op == il::Op::ConstI32 || di.op == il::Op::ConstF64 ||
+                            (di.op == il::Op::Box &&
+                             (di.boxType == il::Type::I32 || di.boxType == il::Type::F64))) {
+                            isNumericIdx = true;
+                        }
+                    } else {
+                        for (const auto& bp : defBlk.params) {
+                            if (bp.id == idxVal &&
+                                (bp.type == il::Type::I32 || bp.type == il::Type::F64)) {
+                                isNumericIdx = true;
+                                break;
+                            }
+                        }
+                    }
+                } else if (idxVal < fn.params.size() &&
+                           (fn.params[idxVal].type == il::Type::I32 ||
+                            fn.params[idxVal].type == il::Type::F64)) {
+                    isNumericIdx = true;
+                }
+                if (isNumericIdx) {
+                    for (size_t t = 0; t < table.size();) {
+                        if (table[t].keyIndex == lengthKeyIndex) {
+                            table.erase(table.begin() + t);
+                        } else {
+                            ++t;
+                        }
+                    }
+                    ++i;
+                    continue;
+                }
+            }
+
             if (inst.op == il::Op::MethodCall && !inst.operands.empty() &&
                 isMathObject(inst.operands[0], fn, defs, module)) {
                 ++i;
                 continue;
+            }
+
+            if (inst.op == il::Op::Call || inst.op == il::Op::MethodCall ||
+                inst.op == il::Op::DynamicCall) {
+                std::vector<uint32_t> targets;
+                if (inst.op == il::Op::MethodCall) {
+                    if (isSealedDirectMethodCall(inst, module, directMethods, protoPatchFree,
+                                                 isMutatedMethodKey)) {
+                        targets.push_back(inst.directTarget);
+                    } else if (protoPatchFree && inst.keyIndex < closedKeyTargets.size()) {
+                        targets = closedKeyTargets[inst.keyIndex];
+                    }
+                } else {
+                    const uint32_t c = findCalleeIndex(inst, fn, defs, module);
+                    if (c != UINT32_MAX && c < funcEffects.size()) {
+                        targets.push_back(c);
+                    } else if (!inst.operands.empty() && inst.operands[0] < defs.size() &&
+                               defs[inst.operands[0]].block != il::kNoBlock &&
+                               defs[inst.operands[0]].index <
+                                   fn.blocks[defs[inst.operands[0]].block].instructions.size()) {
+                        const auto& di = fn.blocks[defs[inst.operands[0]].block]
+                                             .instructions[defs[inst.operands[0]].index];
+                        if (di.op == il::Op::PropGet) {
+                            if (!di.operands.empty() &&
+                                isMathObject(di.operands[0], fn, defs, module)) {
+                                ++i;
+                                continue;
+                            }
+                            if (protoPatchFree && di.keyIndex < closedKeyTargets.size()) {
+                                targets = closedKeyTargets[di.keyIndex];
+                            }
+                        }
+                    }
+                }
+                bool allResolved = !targets.empty();
+                for (uint32_t tgt : targets) {
+                    if (tgt >= funcEffects.size() || funcEffects[tgt].hasUnresolvedCalls) {
+                        allResolved = false;
+                        break;
+                    }
+                }
+                if (allResolved) {
+                    for (uint32_t tgt : targets) {
+                        const auto& eff = funcEffects[tgt];
+                        for (size_t t = 0; t < table.size();) {
+                            if ((eff.mutatesLength && table[t].keyIndex == lengthKeyIndex) ||
+                                eff.writes(table[t].keyIndex)) {
+                                table.erase(table.begin() + t);
+                            } else {
+                                ++t;
+                            }
+                        }
+                    }
+                    ++i;
+                    continue;
+                }
             }
 
             if (isImpureForLoopPropHoist(inst)) {
@@ -393,7 +509,10 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                 const uint32_t key = inst.keyIndex;
                 const bool isArrIdx = (key < module.keyConstants.size() &&
                                        isArrayIndexKey(module.keyConstants[key]));
-                if (!isArrIdx && key < isAccessorKey.size() && !isAccessorKey[key]) {
+                const bool isAcc = key < isAccessorKey.size() && isAccessorKey[key] &&
+                                   !(protoPatchFree &&
+                                     inst.staticSlot != il::Instruction::kNoStaticSlot);
+                if (!isArrIdx && !isAcc) {
                     const bool hasStaticSlot =
                         inst.staticSlot != il::Instruction::kNoStaticSlot;
                     if (!hasStaticSlot &&
@@ -416,7 +535,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                         continue;
                     }
                     table.push_back({recv, key, inst.result});
-                } else if (key < isAccessorKey.size() && isAccessorKey[key]) {
+                } else if (isAcc) {
                     // The getter is user code and can write any property.
                     table.clear();
                 }
@@ -479,7 +598,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
 
 }  // namespace
 
-bool hoistLoopInvariantProps(il::Module& module) {
+bool hoistLoopInvariantProps(il::Module& module, const DirectMethodTable* directMethods) {
     std::vector<uint8_t> isAccessorKey(module.keyConstants.size(), 0);
     std::vector<uint8_t> isReflectionKey(module.keyConstants.size(), 0);
     uint32_t lengthKeyIndex = UINT32_MAX;
@@ -551,8 +670,13 @@ bool hoistLoopInvariantProps(il::Module& module) {
     }
 
     std::vector<std::optional<SafeConstructorInfo>> ctorCache(module.functions.size());
+    const bool protoPatchFree = isModulePrototypePatchFree(module);
+    const std::vector<uint8_t> isMutatedMethodKey = computeMutatedMethodKeyMask(module);
+    const std::vector<std::vector<uint32_t>> closedKeyTargets =
+        protoPatchFree ? computeClosedKeyTargets(module)
+                       : std::vector<std::vector<uint32_t>>{};
     const std::vector<FunctionEffects> funcEffects =
-        computeModuleEffects(module, isAccessorKey, ctorCache, lengthKeyIndex);
+        computeModuleEffects(module, isAccessorKey, ctorCache, lengthKeyIndex, directMethods);
 
     // Propagate reflection touch across direct callees
     bool refChanged = true;
@@ -577,11 +701,15 @@ bool hoistLoopInvariantProps(il::Module& module) {
         for (size_t f = 0; f < module.functions.size(); ++f) {
             if (fnTouchesReflection[f]) continue;
             il::Function& fn = module.functions[f];
-            if (eliminateRedundantPropGets(fn, isAccessorKey, module, ctorCache, lengthKeyIndex)) {
+            if (eliminateRedundantPropGets(fn, isAccessorKey, module, ctorCache, lengthKeyIndex,
+                                           directMethods, protoPatchFree, isMutatedMethodKey,
+                                           closedKeyTargets, funcEffects)) {
                 keepGoing = true;
                 anyChanged = true;
             }
-            if (hoistInFunction(fn, isAccessorKey, module, ctorCache, funcEffects, lengthKeyIndex)) {
+            if (hoistInFunction(fn, isAccessorKey, module, ctorCache, funcEffects, lengthKeyIndex,
+                                directMethods, protoPatchFree, isMutatedMethodKey,
+                                closedKeyTargets)) {
                 keepGoing = true;
                 anyChanged = true;
             }

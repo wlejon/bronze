@@ -19,14 +19,62 @@ void DirectMethodTable::recordClassMethod(const std::string& className,
                                           const std::string& superName,
                                           const std::string& method, uint32_t fnIndex) {
     if (className.empty() || method.empty()) return;
-    classMethods_[className][method] = fnIndex;
-    recordClassSuper(className, superName);
+    auto& methods = classMethods_[className];
+    const auto existing = methods.find(method);
+    if (existing != methods.end() && existing->second != fnIndex) {
+        ambiguousClasses_.insert(className);
+    }
+    methods[method] = fnIndex;
+    if (!superName.empty()) {
+        const auto existingSuper = classSuper_.find(className);
+        if (existingSuper != classSuper_.end() && existingSuper->second != superName) {
+            ambiguousClasses_.insert(className);
+        }
+        classSuper_[className] = superName;
+    }
 }
 
 void DirectMethodTable::recordClassSuper(const std::string& className,
                                          const std::string& superName) {
-    if (className.empty() || superName.empty()) return;
+    if (className.empty()) return;
+    if (!declaredClasses_.insert(className).second) {
+        ambiguousClasses_.insert(className);
+    }
+    if (superName.empty()) return;
+    const auto existing = classSuper_.find(className);
+    if (existing != classSuper_.end() && existing->second != superName) {
+        ambiguousClasses_.insert(className);
+    }
     classSuper_[className] = superName;
+}
+
+bool DirectMethodTable::isMethodSealedOnSubclasses(uint32_t icIndex) const {
+    const auto site = sites_.find(icIndex);
+    if (site == sites_.end() || site->second.receiverClass.empty()) return false;
+    const std::string& recvClass = site->second.receiverClass;
+    const std::string& method = site->second.method;
+
+    std::string cls = recvClass;
+    for (size_t hops = 0; hops < 64 && !cls.empty(); ++hops) {
+        if (ambiguousClasses_.count(cls) != 0) return false;
+        const auto up = classSuper_.find(cls);
+        if (up == classSuper_.end()) break;
+        cls = up->second;
+    }
+
+    for (const auto& [subCls, methods] : classMethods_) {
+        if (subCls == recvClass) continue;
+        if (methods.find(method) == methods.end()) continue;
+        if (ambiguousClasses_.count(subCls) != 0) return false;
+        std::string cur = subCls;
+        for (size_t hops = 0; hops < 64 && !cur.empty(); ++hops) {
+            const auto up = classSuper_.find(cur);
+            if (up == classSuper_.end()) break;
+            cur = up->second;
+            if (cur == recvClass || ambiguousClasses_.count(cur) != 0) return false;
+        }
+    }
+    return true;
 }
 
 void DirectMethodTable::resolve(il::Module& ilModule) const {

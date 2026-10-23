@@ -176,6 +176,28 @@ bool is_primitive_result(const BronzeInstruction& inst, const std::unordered_set
             }
             return inst.box_type != BronzeType::Str && !inst.operands.empty() &&
                    prim_ids.count(inst.operands[0]) != 0;
+        case BronzeOp::Unbox:
+            return inst.result_type != BronzeType::Str;
+        case BronzeOp::Add:
+            return inst.operands.size() >= 2 &&
+                   prim_ids.count(inst.operands[0]) != 0 &&
+                   prim_ids.count(inst.operands[1]) != 0;
+        default:
+            return false;
+    }
+}
+
+bool is_known_unrooted_primitive_inst(const BronzeInstruction& inst) {
+    switch (inst.op) {
+        case BronzeOp::ConstF64:
+        case BronzeOp::ConstI32:
+        case BronzeOp::ConstBool:
+        case BronzeOp::ConstUndefined:
+        case BronzeOp::ConstNull:
+            return true;
+        case BronzeOp::Box:
+            return inst.box_type == BronzeType::F64 || inst.box_type == BronzeType::I32 ||
+                   inst.box_type == BronzeType::Bool;
         default:
             return false;
     }
@@ -188,7 +210,9 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
     run_once_blocks_.clear();
     fresh_objects_.clear();
     hole_insensitive_ids_.clear();
+    unrooted_hole_insensitive_ids_.clear();
     primitive_value_ids_.clear();
+    current_fn_dynamic_ids_.clear();
     block_dense_proofs_.clear();
     active_dense_arrays_.clear();
     dense_array_cursors_.clear();
@@ -207,17 +231,20 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
         uint32_t use_count = 0;
         bool is_index_key = false;
         bool all_hole_insensitive = true;
+        bool passed_to_block_param = false;
         size_t propset_use_idx = SIZE_MAX;
     };
     std::unordered_map<uint32_t, PropGetDef> propget_defs;
     std::unordered_map<uint32_t, DenseArrayProof> dense_defs;
     std::unordered_map<uint32_t, uint32_t> pred_count;
+    std::unordered_map<uint32_t, const BronzeBlock*> block_by_id;
 
     if (!fn_ast.blocks.empty()) {
         pred_count[fn_ast.blocks[0].id] = 1;
     }
 
     for (const auto& blk : fn_ast.blocks) {
+        block_by_id[blk.id] = &blk;
         for (const auto& p : blk.params) {
             if (p.second == BronzeType::F64 || p.second == BronzeType::I32 || p.second == BronzeType::Bool) {
                 primitive_value_ids_.insert(p.first);
@@ -237,7 +264,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                     inst.index != PropertyLoweringHelper::kNoKey && !inst.operands.empty() &&
                     bronze::il::parseIndexKey(prop_lowering_.key_tag(inst.index)).has_value()) {
                     propget_defs.emplace(inst.result_id,
-                                         PropGetDef{blk.id, idx, 0, true, true, SIZE_MAX});
+                                         PropGetDef{blk.id, idx, 0, true, true, false, SIZE_MAX});
                 }
                 if (inst.op == BronzeOp::IsDenseArray && !inst.operands.empty() && inst.imm_i64 >= 0) {
                     dense_defs[inst.result_id] = DenseArrayProof{
@@ -247,7 +274,122 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
         }
     }
 
+    // Fixed-point propagation of known primitive values across instructions and block params.
+    for (int iter = 0; iter < 4; ++iter) {
+        bool changed = false;
+        std::unordered_map<uint32_t, std::pair<uint32_t, bool>> param_prim;
+        for (const auto& blk : fn_ast.blocks) {
+            for (const auto& p : blk.params) {
+                if (primitive_value_ids_.count(p.first) == 0) {
+                    param_prim[p.first] = {0, true};
+                }
+            }
+        }
+        for (const auto& blk : fn_ast.blocks) {
+            auto check_target = [&](const BronzeBlockTarget& tgt) {
+                if (tgt.args.empty()) return;
+                const auto bit = block_by_id.find(tgt.block_id);
+                if (bit == block_by_id.end()) return;
+                const BronzeBlock& dst = *bit->second;
+                const size_t n = std::min(tgt.args.size(), dst.params.size());
+                for (size_t i = 0; i < n; ++i) {
+                    auto pit = param_prim.find(dst.params[i].first);
+                    if (pit == param_prim.end()) continue;
+                    ++pit->second.first;
+                    if (primitive_value_ids_.count(tgt.args[i]) == 0) {
+                        pit->second.second = false;
+                    }
+                }
+            };
+            for (const auto& inst : blk.instructions) {
+                if (inst.result_id != UINT32_MAX && primitive_value_ids_.count(inst.result_id) == 0 &&
+                    is_primitive_result(inst, primitive_value_ids_)) {
+                    primitive_value_ids_.insert(inst.result_id);
+                    changed = true;
+                }
+                if (inst.op == BronzeOp::Jump) {
+                    check_target(inst.target);
+                } else if (inst.op == BronzeOp::Branch) {
+                    check_target(inst.target);
+                    check_target(inst.else_target);
+                }
+            }
+        }
+        for (const auto& [pid, state] : param_prim) {
+            if (state.first > 0 && state.second) {
+                primitive_value_ids_.insert(pid);
+                changed = true;
+            }
+        }
+        if (!changed) break;
+    }
+
     if (!propget_defs.empty()) {
+        // Identify block parameters whose uses are all hole-safe (`IsNumber` or `Unbox` to F64/I32/Bool).
+        // `rtToNumber(Value::fromHole())` produces `quiet_NaN()`, identical to `rtToNumber(Value::fromUndefined())`,
+        // and `bronzeHeapConfig()` ignores `Tag::Hole` (`0xFFF9`) just like `Tag::Undefined` (`0xFFF6`).
+        std::unordered_map<uint32_t, std::pair<uint32_t, bool>> block_param_hole_safe;
+        for (const auto& blk : fn_ast.blocks) {
+            for (const auto& p : blk.params) {
+                block_param_hole_safe[p.first] = {0, true};
+            }
+        }
+        if (!block_param_hole_safe.empty()) {
+            for (const auto& blk : fn_ast.blocks) {
+                for (const auto& inst : blk.instructions) {
+                    for (size_t op_i = 0; op_i < inst.operands.size(); ++op_i) {
+                        auto pit = block_param_hole_safe.find(inst.operands[op_i]);
+                        if (pit == block_param_hole_safe.end()) continue;
+                        ++pit->second.first;
+                        const bool safe =
+                            op_i == 0 &&
+                            (inst.op == BronzeOp::IsNumber ||
+                             (inst.op == BronzeOp::Unbox &&
+                              (inst.result_type == BronzeType::F64 || inst.result_type == BronzeType::I32 ||
+                               inst.result_type == BronzeType::Bool)));
+                        if (!safe) pit->second.second = false;
+                    }
+                    for (uint32_t arg_id : inst.target.args) {
+                        if (auto pit = block_param_hole_safe.find(arg_id); pit != block_param_hole_safe.end()) {
+                            ++pit->second.first;
+                            pit->second.second = false;
+                        }
+                    }
+                    for (uint32_t arg_id : inst.else_target.args) {
+                        if (auto pit = block_param_hole_safe.find(arg_id); pit != block_param_hole_safe.end()) {
+                            ++pit->second.first;
+                            pit->second.second = false;
+                        }
+                    }
+                }
+            }
+        }
+        std::unordered_set<uint32_t> hole_safe_param_ids;
+        for (const auto& [pid, state] : block_param_hole_safe) {
+            if (state.first > 0 && state.second) {
+                hole_safe_param_ids.insert(pid);
+            }
+        }
+
+        auto check_target_args = [&](const BronzeBlockTarget& tgt) {
+            const auto bit = block_by_id.find(tgt.block_id);
+            const BronzeBlock* dst = (bit != block_by_id.end()) ? bit->second : nullptr;
+            for (size_t i = 0; i < tgt.args.size(); ++i) {
+                auto it = propget_defs.find(tgt.args[i]);
+                if (it == propget_defs.end()) continue;
+                PropGetDef& def = it->second;
+                ++def.use_count;
+                def.passed_to_block_param = true;
+                def.propset_use_idx = SIZE_MAX;
+                const bool dst_param_safe =
+                    def.is_index_key && dst && i < dst->params.size() &&
+                    hole_safe_param_ids.count(dst->params[i].first) != 0;
+                if (!dst_param_safe) {
+                    def.all_hole_insensitive = false;
+                }
+            }
+        };
+
         for (const auto& blk : fn_ast.blocks) {
             for (size_t idx = 0; idx < blk.instructions.size(); ++idx) {
                 const auto& inst = blk.instructions[idx];
@@ -260,7 +402,9 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                     const bool is_hole_safe_use =
                         def.is_index_key && op_i == 0 &&
                         (inst.op == BronzeOp::IsNumber ||
-                         (inst.op == BronzeOp::Unbox && inst.raw_unbox && inst.result_type == BronzeType::F64));
+                         (inst.op == BronzeOp::Unbox &&
+                          (inst.result_type == BronzeType::F64 || inst.result_type == BronzeType::I32 ||
+                           inst.result_type == BronzeType::Bool)));
                     if (!is_hole_safe_use) {
                         def.all_hole_insensitive = false;
                     }
@@ -271,28 +415,40 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
                         def.propset_use_idx = SIZE_MAX;
                     }
                 }
-                for (uint32_t arg_id : inst.target.args) {
-                    if (auto it = propget_defs.find(arg_id); it != propget_defs.end()) {
-                        ++it->second.use_count;
-                        it->second.all_hole_insensitive = false;
-                        it->second.propset_use_idx = SIZE_MAX;
-                    }
-                }
-                for (uint32_t arg_id : inst.else_target.args) {
-                    if (auto it = propget_defs.find(arg_id); it != propget_defs.end()) {
-                        ++it->second.use_count;
-                        it->second.all_hole_insensitive = false;
-                        it->second.propset_use_idx = SIZE_MAX;
-                    }
+                if (inst.op == BronzeOp::Jump) {
+                    check_target_args(inst.target);
+                } else if (inst.op == BronzeOp::Branch) {
+                    check_target_args(inst.target);
+                    check_target_args(inst.else_target);
                 }
             }
         }
         for (const auto& [id, def] : propget_defs) {
             if (def.is_index_key && def.use_count > 0 && def.all_hole_insensitive) {
                 hole_insensitive_ids_.insert(id);
+                if (!def.passed_to_block_param) {
+                    unrooted_hole_insensitive_ids_.insert(id);
+                }
             }
             if (def.use_count == 1 && def.propset_use_idx != SIZE_MAX) {
                 single_block_propset_use_[id] = static_cast<uint32_t>(def.propset_use_idx);
+            }
+        }
+    }
+
+    auto is_dynamic = [](BronzeType t) { return t == BronzeType::Dynamic || t == BronzeType::Unknown; };
+    for (const auto& p : fn_ast.params) {
+        if (is_dynamic(p.second)) current_fn_dynamic_ids_.insert(p.first);
+    }
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& p : blk.params) {
+            if (is_dynamic(p.second)) current_fn_dynamic_ids_.insert(p.first);
+        }
+        for (const auto& inst : blk.instructions) {
+            if (inst.result_id != UINT32_MAX && is_dynamic(inst.result_type) &&
+                unrooted_hole_insensitive_ids_.count(inst.result_id) == 0 &&
+                !is_known_unrooted_primitive_inst(inst)) {
+                current_fn_dynamic_ids_.insert(inst.result_id);
             }
         }
     }
@@ -474,7 +630,8 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     const bool first_is_get =
         first.op == BronzeOp::PropGet && !first.operands.empty() && first.result_id != UINT32_MAX &&
         parse_prop_index(first, first_idx);
-    if (!first_is_set && !first_is_get) return false;
+    const bool first_is_scalar = is_pure_scalar_inst(first);
+    if (!first_is_set && !first_is_get && !first_is_scalar) return false;
 
     auto apply_loc = [&](const BronzeInstruction& inst) {
         if (current_file_id_ != 0 && inst.line > 0) {
@@ -485,34 +642,57 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         }
     };
 
-    // Pure contiguous PropGet run on the same receiver (e.g. `ae[0..15]`, `be[0..15]`)
-    // when the receiver is not already proven dense and the first PropGet is not a
-    // single-use store source.
+    // Contiguous PropGet runs across one or more receivers (e.g. `ae[0..15]` + `be[0..15]`)
+    // when not already proven dense and not a single-use store source.
     if (first_is_get && single_block_propset_use_.count(first.result_id) == 0 &&
         !is_proven_dense_array(first.operands[0], first_idx)) {
-        const uint32_t recv_id = first.operands[0];
-        uint32_t max_idx = first_idx;
-        size_t run_end = inst_idx + 1;
+        struct RecvGroup { uint32_t recv_id; uint32_t max_idx; size_t count; Value* block = nullptr; Value* head = nullptr; };
+        std::vector<RecvGroup> groups;
+        size_t run_end = inst_idx;
         while (run_end < blk_ast.instructions.size()) {
             const BronzeInstruction& inst = blk_ast.instructions[run_end];
             uint32_t elem_idx = 0;
-            if (inst.op == BronzeOp::PropGet && !inst.operands.empty() && inst.operands[0] == recv_id &&
-                inst.result_id != UINT32_MAX && single_block_propset_use_.count(inst.result_id) == 0 &&
-                parse_prop_index(inst, elem_idx)) {
-                max_idx = std::max(max_idx, elem_idx);
-                ++run_end;
+            if (inst.op != BronzeOp::PropGet || inst.operands.empty() || inst.result_id == UINT32_MAX ||
+                single_block_propset_use_.count(inst.result_id) != 0 || !parse_prop_index(inst, elem_idx) ||
+                is_proven_dense_array(inst.operands[0], elem_idx)) {
+                break;
+            }
+            const uint32_t rid = inst.operands[0];
+            if (!groups.empty() && groups.back().recv_id == rid) {
+                groups.back().max_idx = std::max(groups.back().max_idx, elem_idx);
+                ++groups.back().count;
+            } else if (groups.empty() || groups.back().count >= 2) {
+                groups.push_back(RecvGroup{rid, elem_idx, 1});
             } else {
                 break;
             }
+            ++run_end;
+        }
+        if (!groups.empty() && groups.back().count < 2) {
+            run_end -= groups.back().count;
+            groups.pop_back();
         }
         const size_t get_count = run_end - inst_idx;
         if (get_count >= 2) {
             apply_loc(first);
-            Value* obj = ensure_type(get_val_by_id(recv_id, b, val_map), Type::i64(), b);
-            Value* ok = nullptr;
-            Value* block = nullptr;
-            Value* head = nullptr;
-            prop_lowering_.emit_dense_array_guard(b, obj, max_idx, /*writable=*/false, ok, block, head);
+            Value* all_ok = nullptr;
+            std::unordered_map<uint32_t, std::pair<Value*, Value*>> recv_cursors;
+            for (RecvGroup& g : groups) {
+                if (auto it = recv_cursors.find(g.recv_id); it != recv_cursors.end()) {
+                    g.block = it->second.first;
+                    g.head = it->second.second;
+                    continue;
+                }
+                Value* obj = ensure_type(get_val_by_id(g.recv_id, b, val_map), Type::i64(), b);
+                uint32_t max_for_recv = g.max_idx;
+                for (const RecvGroup& o : groups) {
+                    if (o.recv_id == g.recv_id) max_for_recv = std::max(max_for_recv, o.max_idx);
+                }
+                Value* ok = nullptr;
+                prop_lowering_.emit_dense_array_guard(b, obj, max_for_recv, /*writable=*/false, ok, g.block, g.head);
+                all_ok = all_ok ? b.build_and(all_ok, ok) : ok;
+                recv_cursors[g.recv_id] = {g.block, g.head};
+            }
 
             BasicBlock* guard_bb = b.current_block();
             const std::string prefix = "prop_idx_get_run_" + std::to_string(fn->next_block_id());
@@ -529,7 +709,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             }
 
             b.position_at_end(guard_bb);
-            b.build_br_if(ok, bb_fast, bb_slow);
+            b.build_br_if(all_ok, bb_fast, bb_slow);
 
             b.position_at_end(bb_fast);
             std::vector<Value*> fast_args;
@@ -539,6 +719,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 uint32_t elem_idx = 0;
                 parse_prop_index(inst, elem_idx);
                 apply_loc(inst);
+                const auto [block, head] = recv_cursors[inst.operands[0]];
                 const bool check_hole = !is_hole_insensitive(inst.result_id);
                 Value* v = prop_lowering_.load_proven_dense_array_elem(b, block, head, elem_idx, check_hole);
                 fast_args.push_back(ensure_type(v, merge_params[j - inst_idx]->type(), b));
@@ -551,7 +732,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             for (size_t j = inst_idx; j < run_end; ++j) {
                 const BronzeInstruction& inst = blk_ast.instructions[j];
                 apply_loc(inst);
-                Value* recv = ensure_type(get_val_by_id(recv_id, b, val_map), Type::i64(), b);
+                Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, val_map), Type::i64(), b);
                 const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
                 Value* v = prop_lowering_.lower_prop_get(b, recv, inst.index,
                                                          site ? prop_lowering_.site_ptr(b, site) : nullptr);
@@ -642,11 +823,27 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         return false;
     }
 
-    // 1. Lower pure scalar computations in the current block so their SSA values
-    // dominate both the fast and slow arms (and any uses after the merge).
+    // Identify pure scalar instructions whose results are used exclusively inside [inst_idx, committed_end).
+    // Lowering those inside bb_fast and bb_slow (instead of hoisting all of them into guard_bb) keeps
+    // their SSA values local to bb_fast (which has zero calls) and avoids live-across-call spills.
+    std::unordered_map<uint32_t, uint32_t> uses_in_run;
+    for (size_t j = inst_idx; j < committed_end; ++j) {
+        for (uint32_t op_id : blk_ast.instructions[j].operands) ++uses_in_run[op_id];
+    }
+    auto is_run_local_scalar = [&](const BronzeInstruction& inst) {
+        if (inst.op == BronzeOp::PropGet || inst.op == BronzeOp::PropSet || inst.result_id == UINT32_MAX) {
+            return false;
+        }
+        if (inst.result_id == set_recv_id || inst.result_id == committed_get_recv_id) return false;
+        const auto vit = value_use_counts_.find(inst.result_id);
+        const auto rit = uses_in_run.find(inst.result_id);
+        return vit != value_use_counts_.end() && rit != uses_in_run.end() && vit->second == rit->second;
+    };
+
+    // 1. Lower only non-local pure scalar computations in the current block before the guard.
     for (size_t j = inst_idx; j < committed_end; ++j) {
         const BronzeInstruction& inst = blk_ast.instructions[j];
-        if (inst.op == BronzeOp::PropGet || inst.op == BronzeOp::PropSet) continue;
+        if (inst.op == BronzeOp::PropGet || inst.op == BronzeOp::PropSet || is_run_local_scalar(inst)) continue;
         apply_loc(inst);
         if (!lower_instruction(inst, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, cont_counter)) {
             return false;
@@ -690,7 +887,9 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     b.position_at_end(guard_bb);
     b.build_br_if(all_ok, bb_fast, bb_slow);
 
-    // 3. Fast path: straight-line indexed loads and stores.
+    std::unordered_map<uint32_t, Value*> slow_val_map = val_map;
+
+    // 3. Fast path: straight-line indexed loads, run-local scalars, and stores.
     b.position_at_end(bb_fast);
     std::unordered_map<uint32_t, Value*> fast_get_vals;
     std::vector<Value*> non_prim_vals;
@@ -716,6 +915,11 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, elem_idx, val);
             if (!is_primitive_value(val_id) && !prop_lowering_.is_known_non_ref(val)) {
                 non_prim_vals.push_back(val);
+            }
+        } else if (is_run_local_scalar(inst)) {
+            apply_loc(inst);
+            if (!lower_instruction(inst, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, cont_counter)) {
+                return false;
             }
         }
     }
@@ -744,25 +948,30 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         const BronzeInstruction& inst = blk_ast.instructions[j];
         if (inst.op == BronzeOp::PropGet) {
             apply_loc(inst);
-            Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, val_map), Type::i64(), b);
+            Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, slow_val_map), Type::i64(), b);
             const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
             Value* slow_val = prop_lowering_.lower_prop_get(b, recv, inst.index,
                                                             site ? prop_lowering_.site_ptr(b, site) : nullptr);
             slow_get_vals[inst.result_id] = ensure_type(slow_val, Type::tagged(), b);
         } else if (inst.op == BronzeOp::PropSet) {
             apply_loc(inst);
-            Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, val_map), Type::i64(), b);
+            Value* recv = ensure_type(get_val_by_id(inst.operands[0], b, slow_val_map), Type::i64(), b);
             const uint32_t val_id = inst.operands[1];
             Value* val = nullptr;
             if (const auto it = slow_get_vals.find(val_id); it != slow_get_vals.end()) {
                 val = ensure_type(it->second, Type::i64(), b);
             } else {
-                val = ensure_type(get_val_by_id(val_id, b, val_map), Type::i64(), b);
+                val = ensure_type(get_val_by_id(val_id, b, slow_val_map), Type::i64(), b);
             }
             const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
             const uint32_t strict = static_cast<uint32_t>(inst.imm_i64);
             prop_lowering_.lower_prop_set(b, recv, inst.index, val, strict,
                                           site ? prop_lowering_.site_ptr(b, site) : nullptr);
+        } else if (is_run_local_scalar(inst)) {
+            apply_loc(inst);
+            if (!lower_instruction(inst, b, fn, slow_val_map, block_map, blk_ast.handler_id, blk_ast.id, cont_counter)) {
+                return false;
+            }
         }
     }
     b.build_br(bb_merge);

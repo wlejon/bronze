@@ -146,7 +146,8 @@ bool lower_property_instruction(
             if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
                 prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
                 !lowering->run_once() && !lowering->is_fresh_object(inst_ast.operands[0])) {
-                prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site);
+                const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
+                prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site, val_prim);
                 return true;
             }
             prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,

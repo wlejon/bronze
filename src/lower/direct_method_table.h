@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "il/il.h"
 
@@ -52,6 +53,11 @@ public:
     // it cannot resolve is the site it already was.
     void resolve(il::Module& ilModule) const;
 
+    // Returns true when `icIndex` is a recorded method-call site with a known
+    // non-ambiguous receiver class hierarchy and no strict subclass in the
+    // module overrides the method.
+    bool isMethodSealedOnSubclasses(uint32_t icIndex) const;
+
 private:
     struct Site {
         std::string receiverClass;
@@ -60,6 +66,8 @@ private:
     std::unordered_map<uint32_t, Site> sites_;
     std::unordered_map<std::string, std::unordered_map<std::string, uint32_t>> classMethods_;
     std::unordered_map<std::string, std::string> classSuper_;
+    std::unordered_set<std::string> declaredClasses_;
+    std::unordered_set<std::string> ambiguousClasses_;
 };
 
 }  // namespace bronze::lower

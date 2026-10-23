@@ -705,24 +705,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     begin_hoisting(nullptr);
     analyze_function(fn_ast);
 
-    // Every dynamic value is a tagged SSA value (lower_abi_type): the stack
-    // maps of every tier describe it, so bronze's collector finds and
-    // updates a live Value whichever engine runs the function.
-    auto is_dynamic = [](BronzeType t) { return t == BronzeType::Dynamic || t == BronzeType::Unknown; };
-    for (const auto& p : fn_ast.params) {
-        if (is_dynamic(p.second)) current_fn_dynamic_ids_.insert(p.first);
-    }
-    for (const auto& blk : fn_ast.blocks) {
-        for (const auto& p : blk.params) {
-            if (is_dynamic(p.second)) current_fn_dynamic_ids_.insert(p.first);
-        }
-        for (const auto& inst : blk.instructions) {
-            if (inst.result_id != UINT32_MAX && is_dynamic(inst.result_type) &&
-                !is_hole_insensitive(inst.result_id)) {
-                current_fn_dynamic_ids_.insert(inst.result_id);
-            }
-        }
-    }
     // The argv block a call stages its arguments in when the helper takes
     // `const uint64_t* argv` (a dynamic method call, and any call past the
     // fixed-arity helpers): one alloca.tagged of the widest such call's

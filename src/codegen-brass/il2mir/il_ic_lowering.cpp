@@ -299,13 +299,14 @@ void PropertyLoweringHelper::expand_poly_scan(Builder& b, Instruction* call, Val
 }
 
 void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val,
-                                                 uint32_t imm, const IcSite& site) {
+                                                 uint32_t imm, const IcSite& site, bool val_is_primitive) {
     const bool compact = small_forms_ && in_process_ && spec_ && spec_->has_feedback();
+    const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
     const std::string prefix = "ic_set_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_fast = b.append_block(prefix + "_hit");
-    BasicBlock* bb_barrier = b.append_block(prefix + "_barrier");
+    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_barrier") : nullptr;
     BasicBlock* bb_slow = b.append_block(prefix + "_miss");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
@@ -337,14 +338,19 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     // own address as every C++ slot store gives it (HeapValue).
     b.position_at_end(bb_fast);
     Value* base = slot_base(b, ptr, slot_word);
-    Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
-                                   b.build_iconst_i64(kBronzeObjSlotsOffset));
-    b.build_store(Type::i64(), slot_addr, 0, val);
-    Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
-    b.build_br_if(is_ref, bb_barrier, bb_merge);
-    b.position_at_end(bb_barrier);
-    b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
-    b.build_br(bb_merge);
+    if (need_barrier) {
+        Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
+                                       b.build_iconst_i64(kBronzeObjSlotsOffset));
+        b.build_store(Type::i64(), slot_addr, 0, val);
+        Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+        b.build_br_if(is_ref, bb_barrier, bb_merge);
+        b.position_at_end(bb_barrier);
+        b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+        b.build_br(bb_merge);
+    } else {
+        b.build_store_indexed(Type::i64(), base, slot_word, 8, kBronzeObjSlotsOffset, val);
+        b.build_br(bb_merge);
+    }
 
     b.position_at_end(bb_merge);
 }

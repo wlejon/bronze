@@ -663,11 +663,16 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
 
 void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
     Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
-    out_block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-    out_head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    out_block = b.build_add(block, b.build_shl(head, iconst(b, 3)));
+    out_head = nullptr;
 }
 
 Value* PropertyLoweringHelper::dense_array_slot_addr(Builder& b, Value* block, Value* head, uint32_t index) {
+    if (!head) {
+        return b.build_add(block, iconst(b, kBronzeHdrBytes + static_cast<uint64_t>(index) * 8));
+    }
     Value* slot = index == 0 ? head : b.build_add(head, iconst(b, index));
     return b.build_add(b.build_add(block, b.build_shl(slot, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
 }
@@ -675,7 +680,14 @@ Value* PropertyLoweringHelper::dense_array_slot_addr(Builder& b, Value* block, V
 Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
                                                             bool check_hole) {
     Value* elem = nullptr;
-    if (index <= kMaxInlineDispIndex) {
+    if (!head) {
+        if (index <= kMaxInlineDispIndex) {
+            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+            elem = b.build_load(Type::i64(), block, disp);
+        } else {
+            elem = b.build_load_indexed(Type::i64(), block, iconst(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes));
+        }
+    } else if (index <= kMaxInlineDispIndex) {
         const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
         elem = b.build_load_indexed(Type::i64(), block, head, 8, disp);
     } else {
@@ -691,7 +703,14 @@ Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* b
 
 void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
                                                            Value* val) {
-    if (index <= kMaxInlineDispIndex) {
+    if (!head) {
+        if (index <= kMaxInlineDispIndex) {
+            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+            b.build_store(Type::i64(), block, disp, val);
+        } else {
+            b.build_store_indexed(Type::i64(), block, iconst(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val);
+        }
+    } else if (index <= kMaxInlineDispIndex) {
         const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
         b.build_store_indexed(Type::i64(), block, head, 8, disp, val);
     } else {
@@ -701,22 +720,47 @@ void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* bl
 }
 
 bool PropertyLoweringHelper::is_known_non_ref(Value* val) const {
-    if (!val) return false;
-    if (boxed_f64_source(val) != nullptr) return true;
-    const Instruction* def = val->defining_instruction();
-    if (def && def->opcode() == Opcode::bitcast_i64_tagged && def->operand_count() >= 1) {
-        const Instruction* inner = def->operand(0)->defining_instruction();
-        if (inner && inner->opcode() == Opcode::bitcast_tagged_i64 && inner->operand_count() >= 1) {
-            def = inner->operand(0)->defining_instruction();
+    auto check = [&](auto& self, Value* v, int depth) -> bool {
+        if (!v || depth > 4) return false;
+        if (boxed_f64_source(v) != nullptr) return true;
+        const Instruction* def = v->defining_instruction();
+        while (def && (def->opcode() == Opcode::bitcast_i64_tagged || def->opcode() == Opcode::bitcast_tagged_i64) &&
+               def->operand_count() >= 1) {
+            v = def->operand(0);
+            if (boxed_f64_source(v) != nullptr) return true;
+            def = v->defining_instruction();
         }
-    }
-    if (!def) return false;
-    if (def->opcode() == Opcode::iconst_i64) {
-        const uint64_t imm = static_cast<uint64_t>(def->imm_i64());
-        return imm <= kBronzeNumberMaxBits || imm == kUndefinedTag || imm == kNullTag ||
-               imm == kBoolTag || imm == (kBoolTag | 1);
-    }
-    return def->opcode() == Opcode::bitcast_i64_f64;
+        if (!def) return false;
+        if (def->opcode() == Opcode::iconst_i64) {
+            const uint64_t imm = static_cast<uint64_t>(def->imm_i64());
+            return imm <= kBronzeNumberMaxBits || imm == kUndefinedTag || imm == kNullTag ||
+                   imm == kBoolTag || imm == (kBoolTag | 1) || (imm & kTagMask) == kInt32Tag;
+        }
+        if (def->opcode() == Opcode::bitcast_i64_f64) return true;
+        if (def->opcode() == Opcode::select && def->operand_count() >= 3) {
+            return self(self, def->operand(1), depth + 1) && self(self, def->operand(2), depth + 1);
+        }
+        if (def->opcode() == Opcode::or_ && def->operand_count() == 2) {
+            for (int side = 0; side < 2; ++side) {
+                const Instruction* tag_def = def->operand(side)->defining_instruction();
+                if (!tag_def || tag_def->opcode() != Opcode::iconst_i64) continue;
+                const uint64_t tag = static_cast<uint64_t>(tag_def->imm_i64());
+                if (tag != kInt32Tag && tag != kBoolTag) continue;
+                const Instruction* pay_def = def->operand(1 - side)->defining_instruction();
+                if (!pay_def) continue;
+                if (pay_def->opcode() == Opcode::zext_i64) return true;
+                if (pay_def->opcode() == Opcode::and_ && pay_def->operand_count() == 2) {
+                    const Instruction* mask_def = pay_def->operand(1)->defining_instruction();
+                    if (mask_def && mask_def->opcode() == Opcode::iconst_i64 &&
+                        static_cast<uint64_t>(mask_def->imm_i64()) <= 0xFFFFFFFFULL) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+    return check(check, val, 0);
 }
 
 void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint32_t max_index, bool writable,
@@ -727,8 +771,10 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
         Value* is_array = is_obj_val ? b.build_and(is_obj_val, hdr_ok) : hdr_ok;
         Value* elems = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
         Value* has_elems = b.build_eq(b.build_and(elems, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-        block = b.build_and(elems, iconst(b, kPayloadMask));
-        head = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        Value* raw_block = b.build_and(elems, iconst(b, kPayloadMask));
+        Value* raw_head = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+        block = b.build_add(raw_block, b.build_shl(raw_head, iconst(b, 3)));
+        head = nullptr;
         if (!writable) {
             Value* len = b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
             Value* in_bounds = b.build_ult(b.build_iconst_i32(static_cast<int32_t>(max_index)), len);
@@ -736,7 +782,7 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
         } else {
             Value* len = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
             Value* cap = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_CAPACITY_OFFSET));
-            Value* max_slot = max_index == 0 ? head : b.build_add(head, iconst(b, max_index));
+            Value* max_slot = max_index == 0 ? raw_head : b.build_add(raw_head, iconst(b, max_index));
             Value* in_bounds = b.build_and(b.build_ult(iconst(b, max_index), len), b.build_ult(max_slot, cap));
             Value* props = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_PROPS_OFFSET);
             Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
@@ -762,20 +808,20 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     out_ok = b.add_block_param(bb_merge, Type::i32());
     out_block = b.add_block_param(bb_merge, Type::i64());
-    out_head = b.add_block_param(bb_merge, Type::i64());
+    out_head = nullptr;
 
     b.position_at_end(cur);
     Value* ptr = nullptr;
     Value* is_obj = nullptr;
     object_pointer(b, obj, ptr, is_obj);
-    b.build_br_if(is_obj, bb_arr, {}, bb_merge, {b.build_iconst_i32(0), iconst(b, 0), iconst(b, 0)});
+    b.build_br_if(is_obj, bb_arr, {}, bb_merge, {b.build_iconst_i32(0), iconst(b, 0)});
 
     b.position_at_end(bb_arr);
     Value* ok = nullptr;
     Value* block = nullptr;
     Value* head = nullptr;
     emit_header_checks(ptr, nullptr, ok, block, head);
-    b.build_br(bb_merge, {ok, block, head});
+    b.build_br(bb_merge, {ok, block});
 
     b.position_at_end(bb_merge);
 }

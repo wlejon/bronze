@@ -11,6 +11,8 @@
 
 namespace bronze::lower {
 
+class DirectMethodTable;
+
 struct SafeConstructorInfo {
     bool isSafe = false;
     std::vector<std::pair<uint32_t, uint32_t>> propArgMap;
@@ -65,7 +67,8 @@ std::vector<FunctionEffects> computeModuleEffects(
     const il::Module& module,
     const std::vector<uint8_t>& isAccessorKey,
     std::vector<std::optional<SafeConstructorInfo>>& ctorCache,
-    uint32_t lengthKeyIndex);
+    uint32_t lengthKeyIndex,
+    const DirectMethodTable* directMethods = nullptr);
 
 bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
                        const il::Instruction& inst, const il::Function& fn,
@@ -75,6 +78,10 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
                        std::vector<std::optional<SafeConstructorInfo>>& ctorCache,
                        const std::vector<uint8_t>& isAccessorKey,
                        const std::vector<FunctionEffects>& funcEffects,
-                       uint32_t lengthKeyIndex);
+                       uint32_t lengthKeyIndex,
+                       const DirectMethodTable* directMethods = nullptr,
+                       bool protoPatchFree = false,
+                       const std::vector<uint8_t>* isMutatedMethodKey = nullptr,
+                       const std::vector<std::vector<uint32_t>>* closedKeyTargets = nullptr);
 
 }  // namespace bronze::lower
