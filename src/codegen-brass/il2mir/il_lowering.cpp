@@ -2,6 +2,7 @@
 #include "il_lowering_coro.h"
 #include "il_lowering_calls.h"
 #include "il_abi.h"
+#include "il_bridge_verifier.h"
 #include "il_pipeline.h"
 #include <brass/mir/coro_transform.hpp>
 #include <brass/mir/verifier.hpp>
@@ -9,7 +10,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
 
 namespace il2mir {
 
@@ -135,7 +135,7 @@ Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
         Value* bits = b.build_bitcast_i64_f64(val);
         Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
         Value* is_nan = b.build_ugt(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x7FF0000000000000ULL)));
-        return b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(0x7FF8000000000000ULL)), bits);
+        return b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
     }
     if (src_type == Type::i64() && target_type == Type::f64()) {
         return b.build_bitcast_f64_i64(val);
@@ -246,7 +246,7 @@ static bool instructions_are_identical(const BronzeInstruction& a, const BronzeI
     if (a.operands != b.operands) return false;
     if (std::memcmp(&a.imm_f64, &b.imm_f64, sizeof(double)) != 0) return false;
     if (a.imm_i64 != b.imm_i64 || a.imm_bool != b.imm_bool) return false;
-    if (a.box_type != b.box_type || a.raw_unbox != b.raw_unbox) return false;
+    if (a.box_type != b.box_type || a.raw_unbox != b.raw_unbox || a.nullish_unbox != b.nullish_unbox) return false;
     if (a.callee_name != b.callee_name || a.string_literal != b.string_literal) return false;
     if (a.depth != b.depth || a.index != b.index || a.param_count != b.param_count) return false;
     if (a.static_slot != b.static_slot || a.ic_index != b.ic_index || a.is_mono != b.is_mono || a.is_fn_recv != b.is_fn_recv) return false;
@@ -655,7 +655,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     ltimer.mark("data syms");
 
     // 3. Verify module
-    if (options_.verify_lowered_module && !verify_module(*mod, diag_)) {
+    if (options_.verify_lowered_module && !verify_bridge_module(*mod, diag_)) {
         return nullptr;
     }
     ltimer.mark("verify");

@@ -544,7 +544,7 @@ bool lower_ops_instruction(
 
         case BronzeOp::IsNumber: {
             Value* src = lowering->ensure_type(get_opd(0), Type::i64(), b);
-            Value* limit = b.build_iconst_i64(static_cast<int64_t>(0xFFF0000000000000ULL));
+            Value* limit = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
             res_val = b.build_ule(src, limit);
             return true;
         }

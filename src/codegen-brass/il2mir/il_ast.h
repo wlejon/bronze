@@ -180,6 +180,7 @@ struct BronzeInstruction {
     bool imm_bool = false;
     BronzeType box_type = BronzeType::Unknown;
     bool raw_unbox = false;
+    bool nullish_unbox = false;
     std::string callee_name;
     std::string string_literal;
 

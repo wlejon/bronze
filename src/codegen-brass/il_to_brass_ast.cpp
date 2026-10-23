@@ -187,6 +187,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::Unbox:
             out.op = il2mir::BronzeOp::Unbox;
             out.raw_unbox = inst.rawUnbox;
+            out.nullish_unbox = inst.nullishUnbox;
             break;
 
         // --- Properties & Elements ---

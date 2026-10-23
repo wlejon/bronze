@@ -29,6 +29,7 @@ add_library(bronze_codegen_brass STATIC
     module_image.cpp
     # il2mir: the bronze IL → brass MIR translator.
     il2mir/il_alloc_lowering.cpp
+    il2mir/il_bridge_verifier.cpp
     il2mir/il_elem_lowering.cpp
     il2mir/il_ic_lowering.cpp
     il2mir/il_ic_stub.cpp
@@ -110,6 +111,7 @@ endif()
 if(BRONZE_BUILD_TESTS)
     add_executable(bronze_codegen_brass_tests
         ../../tests/codegen_brass/codegen_brass_test.cpp
+        ../../tests/codegen_brass/bridge_equivalence_test.cpp
         ../../tests/codegen_brass/tiered_engine_test.cpp
         ../../tests/codegen_brass/optimization_test.cpp
         ../../tests/codegen_brass/debug_test.cpp

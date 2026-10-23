@@ -282,11 +282,11 @@ bool IlLowering::lower_instruction(
                 BasicBlock* ok_bb = b.append_block("b" + std::to_string(block_id) + "_pin_ok" + std::to_string(cid));
 
                 b.position_at_end(cur_bb);
-                Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(0xFFF0000000000000ULL)));
+                Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
                 Value* is_ok = is_num;
                 if (kind == 1) { // NumberOrNullish
-                    Value* is_null = b.build_eq(bits, b.build_iconst_i64(static_cast<int64_t>(0xFFF5000000000000ULL)));
-                    Value* is_undef = b.build_eq(bits, b.build_iconst_i64(static_cast<int64_t>(0xFFF6000000000000ULL)));
+                    Value* is_null = b.build_eq(bits, b.build_iconst_i64(static_cast<int64_t>(kNullTag)));
+                    Value* is_undef = b.build_eq(bits, b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
                     Value* is_nullish = b.build_or(is_null, is_undef);
                     is_ok = b.build_or(is_num, is_nullish);
                 }
@@ -483,7 +483,7 @@ bool IlLowering::lower_instruction(
                     Value* bits = b.build_bitcast_i64_f64(f_val);
                     Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
                     Value* is_nan = b.build_ugt(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x7FF0000000000000ULL)));
-                    res_val = b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(0x7FF8000000000000ULL)), bits);
+                    res_val = b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
                 }
             } else if (inst_ast.box_type == BronzeType::I32) {
                 Value* i_val = ensure_type(op0, Type::i32(), b);
@@ -512,6 +512,15 @@ bool IlLowering::lower_instruction(
                 Value* i_val = ensure_type(op0, Type::i64(), b);
                 if (inst_ast.raw_unbox) {
                     res_val = b.build_bitcast_f64_i64(i_val);
+                } else if (inst_ast.nullish_unbox) {
+                    Value* is_num = b.build_ule(i_val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+                    Value* is_null = b.build_eq(i_val, b.build_iconst_i64(static_cast<int64_t>(kNullTag)));
+                    Value* nullish_bits = b.build_select(
+                        is_null,
+                        b.build_iconst_i64(0),
+                        b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)));
+                    Value* f64_bits = b.build_select(is_num, i_val, nullish_bits);
+                    res_val = b.build_bitcast_f64_i64(f64_bits);
                 } else {
                     res_val = b.build_call("bronze_unbox_f64", Type::f64(), {i_val});
                 }

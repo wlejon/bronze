@@ -167,7 +167,7 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
                 BasicBlock* bad_bb = b.append_block("w_pin_bad_" + std::to_string(p));
                 BasicBlock* ok_bb = b.append_block("w_pin_ok_" + std::to_string(p));
                 b.position_at_end(cur_bb);
-                Value* is_num = b.build_ule(raw_i64, b.build_iconst_i64(static_cast<int64_t>(0xFFF0000000000000ULL)));
+                Value* is_num = b.build_ule(raw_i64, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
                 b.build_br_if(is_num, ok_bb, bad_bb);
 
                 b.position_at_end(bad_bb);
