@@ -50,6 +50,7 @@ void checkDifferentialEquivalence(
         if (jit_status == regex::ExecStatus::Match) {
             CHECK(jit_res.start() == interp_res.start());
             CHECK(jit_res.end() == interp_res.end());
+            CHECK(jit_res.captures == interp_res.captures);
         }
     }
 
@@ -68,6 +69,7 @@ void checkDifferentialEquivalence(
         if (jit_status == regex::ExecStatus::Match) {
             CHECK(jit_res.start() == interp_res.start());
             CHECK(jit_res.end() == interp_res.end());
+            CHECK(jit_res.captures == interp_res.captures);
         }
     }
 }
@@ -164,8 +166,11 @@ TEST_CASE("brass regex DFA JIT: differential equivalence across patterns and ran
         {"^hello[0-9]*", "", true},
         {"(?:foo|bar){1,3}baz?", "", true},
         {"[a-z]+", "u", true},
+        {"(a+)b", "", true},
+        {"([a-z]+)_([0-9]+)", "", true},
+        {"(foo|bar){1,3}(baz)?", "i", true},
+        {"^hello([0-9]*)", "", true},
         // Patterns that must cleanly fall back to the backtracking interpreter:
-        {"(a+)b", "", false},
         {"(a)\\1", "", false},
         {"a(?=b)", "", false},
         {"(?<=a)b", "", false},

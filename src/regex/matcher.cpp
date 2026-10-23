@@ -651,7 +651,9 @@ ExecStatus matchAt(const Pattern& pattern, UnitsView input, size_t at, MatchResu
     if (pattern.jitPlan && pattern.jitPlan->isSupported()) {
         ExecStatus jitStatus = ExecStatus::NoMatch;
         if (pattern.jitPlan->tryMatchAt(input, at, out, jitStatus)) {
-            return jitStatus;
+            if (jitStatus != ExecStatus::Match || !pattern.jitPlan->requiresCaptureExtraction()) {
+                return jitStatus;
+            }
         }
     }
     Matcher matcher(pattern, input);
@@ -664,7 +666,11 @@ ExecStatus search(const Pattern& pattern, UnitsView input, size_t from, MatchRes
     if (pattern.jitPlan && pattern.jitPlan->isSupported()) {
         ExecStatus jitStatus = ExecStatus::NoMatch;
         if (pattern.jitPlan->trySearch(input, from, out, jitStatus)) {
-            return jitStatus;
+            if (jitStatus != ExecStatus::Match || !pattern.jitPlan->requiresCaptureExtraction()) {
+                return jitStatus;
+            }
+            Matcher matcher(pattern, input);
+            return matcher.run(static_cast<size_t>(out.start()), out, error);
         }
     }
     Matcher matcher(pattern, input);

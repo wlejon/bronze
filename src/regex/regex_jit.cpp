@@ -221,7 +221,7 @@ private:
                 return emitByteSet(computeAsciiMask(node, flags_), next);
             }
             case NodeKind::Group: {
-                if (node.captureIndex != 0 || node.children.empty()) return kInvalid;
+                if (node.children.empty()) return kInvalid;
                 return compileNode(*node.children[0], next);
             }
             case NodeKind::Sequence: {
@@ -246,7 +246,7 @@ private:
                 return cur;
             }
             case NodeKind::Repeat: {
-                if (node.captureCount != 0 || node.children.empty()) return kInvalid;
+                if (node.children.empty()) return kInvalid;
                 const Node& atom = *node.children[0];
                 // Reject repetitions over nullable atoms so empty-match loop semantics stay in interpreter.
                 if (canMatchEmpty(atom)) return kInvalid;
@@ -869,8 +869,7 @@ void RegexJitPlan::optimizeMirModule(
 }
 
 std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
-    // Only compile patterns without capture groups (capture 0 is the whole match and is handled).
-    if (pattern.groupCount != 0 || !pattern.root) {
+    if (!pattern.root) {
         return nullptr;
     }
 
@@ -881,6 +880,7 @@ std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
     }
 
     auto plan = std::make_unique<RegexJitPlan>();
+    plan->requires_capture_extraction_ = (pattern.groupCount > 0);
     plan->anchors_at_start_ = anchors_at_start;
     plan->stats_.nfa_states = static_cast<uint32_t>(nfa_compiler.insts().size());
 

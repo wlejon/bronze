@@ -84,6 +84,7 @@ public:
     RegexJitPlan() = default;
 
     bool isSupported() const noexcept { return supported_; }
+    bool requiresCaptureExtraction() const noexcept { return requires_capture_extraction_; }
     bool anchorsAtStart() const noexcept { return anchors_at_start_; }
     int32_t startState() const noexcept { return start_state_; }
     int32_t numDfaStates() const noexcept { return num_dfa_states_; }
@@ -121,6 +122,7 @@ public:
 
 private:
     bool supported_ = false;
+    bool requires_capture_extraction_ = false;
     bool anchors_at_start_ = false;
     int32_t start_state_ = 0;
     int32_t num_dfa_states_ = 0;
