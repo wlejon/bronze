@@ -343,3 +343,25 @@ TEST_CASE("live_supervisor (#149): autonomous multi-generation superoptimization
         CHECK(evo.kernelSource.find("@kernel") != std::string::npos);
     }
 }
+
+TEST_CASE("proof_to_codegen (#152): TypedArray integral-index & in-bounds proofs unlock zero-check IL/MIR lowering") {
+    std::string src = R"(
+        function typedDot() {
+            const a = new Float64Array(4);
+            let sum = 0;
+            for (let i = 0; i < a.length; i++) {
+                a[i] = i + 1;
+                sum += a[i];
+            }
+            return sum;
+        }
+    )";
+    ProofCertificateReport cert = bronze::check::proveJsFunction(src);
+    CHECK(cert.verified);
+    CHECK(cert.proofsValid);
+    CHECK(cert.hazardFree);
+    CHECK(cert.deterministic);
+    // Both ElemSetTyped and ElemGetTyped carry receiver proof + integral-index proof + in-bounds proof (6 guards).
+    CHECK(cert.provenGuards >= 6);
+}
+

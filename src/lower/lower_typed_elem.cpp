@@ -28,6 +28,7 @@
 // back to the ordinary `elem.set` rather than being coerced here (ToNumber of
 // an object can run user code; the helper owns that).
 
+#include <cmath>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -200,6 +201,186 @@ private:
     std::function<bool(const ast::Expr&)> isNumeric_;
 };
 
+bool isSafeIntegerLiteral(const ast::Expr& e, int64_t* outVal = nullptr) {
+    if (const auto* n = dynamic_cast<const ast::NumberLit*>(&e)) {
+        if (!std::isfinite(n->value) || std::floor(n->value) != n->value ||
+            n->value < -2147483648.0 || n->value > 2147483647.0) {
+            return false;
+        }
+        if (outVal) *outVal = static_cast<int64_t>(n->value);
+        return true;
+    }
+    if (const auto* u = dynamic_cast<const ast::Unary*>(&e)) {
+        if ((u->op == ast::UnaryOp::Negate || u->op == ast::UnaryOp::Posate) && u->operand) {
+            int64_t inner = 0;
+            if (!isSafeIntegerLiteral(*u->operand, &inner)) return false;
+            if (u->op == ast::UnaryOp::Negate) {
+                if (inner == 0) return false; // -0
+                inner = -inner;
+            }
+            if (outVal) *outVal = inner;
+            return true;
+        }
+    }
+    return false;
+}
+
+class EnclosingForFinder final : public ast::detail::IdentVisitor {
+public:
+    using ast::detail::IdentVisitor::visit;
+    explicit EnclosingForFinder(const ast::IndexAccess& target) : target_(&target) {}
+
+    std::vector<const ast::ForStmt*> enclosing;
+
+    void visit(const ast::IndexAccess& ia) override {
+        if (&ia == target_) enclosing = stack_;
+        ast::detail::IdentVisitor::visit(ia);
+    }
+    void visit(const ast::ForStmt& f) override {
+        for (const auto& s : f.init) s->accept(*this);
+        if (f.condition) f.condition->accept(*this);
+        if (f.update) f.update->accept(*this);
+        stack_.push_back(&f);
+        for (const auto& s : f.body) s->accept(*this);
+        stack_.pop_back();
+    }
+    void visit(const ast::FunctionDecl&) override {}
+    void visit(const ast::FunctionExpr&) override {}
+
+private:
+    const ast::IndexAccess* target_;
+    std::vector<const ast::ForStmt*> stack_;
+};
+
+class LoopBodySafetyScan final : public ast::detail::IdentVisitor {
+public:
+    using ast::detail::IdentVisitor::visit;
+    LoopBodySafetyScan(const std::string& ivName, const std::string& arrName)
+        : ivName_(ivName), arrName_(arrName) {}
+
+    bool ivMutatedOrShadowed = false;
+    bool arrMutatedOrShadowed = false;
+    bool hasBufferHazard = false;
+
+    void checkBoundName(const std::string& n) {
+        if (n == ivName_) ivMutatedOrShadowed = true;
+        if (!arrName_.empty() && n == arrName_) arrMutatedOrShadowed = true;
+    }
+
+    void visit(const ast::VarDecl& v) override {
+        if (v.pattern) {
+            for (const auto& n : ast::patternBoundNames(*v.pattern)) checkBoundName(n);
+        } else {
+            checkBoundName(v.name);
+        }
+        ast::detail::IdentVisitor::visit(v);
+    }
+    void visit(const ast::FunctionDecl& f) override { checkBoundName(f.name); }
+    void visit(const ast::ClassDecl& c) override { checkBoundName(c.name); hasBufferHazard = true; }
+    void visit(const ast::Unary& u) override {
+        if (u.op == ast::UnaryOp::PreInc || u.op == ast::UnaryOp::PostInc ||
+            u.op == ast::UnaryOp::PreDec || u.op == ast::UnaryOp::PostDec ||
+            u.op == ast::UnaryOp::Delete) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(u.operand.get())) checkBoundName(id->name);
+            if (u.op == ast::UnaryOp::Delete) hasBufferHazard = true;
+        }
+        ast::detail::IdentVisitor::visit(u);
+    }
+    void visit(const ast::Binary& b) override {
+        if (ast::isAssignOp(b.op)) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(b.lhs.get())) checkBoundName(id->name);
+            else if (!dynamic_cast<const ast::IndexAccess*>(b.lhs.get())) hasBufferHazard = true;
+        }
+        ast::detail::IdentVisitor::visit(b);
+    }
+    void visit(const ast::DestructuringAssign& d) override {
+        if (d.pattern) for (const auto& n : ast::patternBoundNames(*d.pattern)) checkBoundName(n);
+        hasBufferHazard = true;
+        ast::detail::IdentVisitor::visit(d);
+    }
+    void visit(const ast::ForInStmt& f) override {
+        if (f.pattern) for (const auto& n : ast::patternBoundNames(*f.pattern)) checkBoundName(n);
+        hasBufferHazard = true;
+        ast::detail::IdentVisitor::visit(f);
+    }
+    void visit(const ast::ForOfStmt& f) override {
+        if (f.pattern) for (const auto& n : ast::patternBoundNames(*f.pattern)) checkBoundName(n);
+        hasBufferHazard = true;
+        ast::detail::IdentVisitor::visit(f);
+    }
+    void visit(const ast::Call&) override { hasBufferHazard = true; }
+    void visit(const ast::NewExpr&) override { hasBufferHazard = true; }
+    void visit(const ast::YieldExpr&) override { hasBufferHazard = true; }
+    void visit(const ast::TaggedTemplate&) override { hasBufferHazard = true; }
+    void visit(const ast::SuperCall&) override { hasBufferHazard = true; }
+    void visit(const ast::MemberAccess& m) override {
+        if (const auto* id = dynamic_cast<const ast::Ident*>(m.object.get())) {
+            if (!arrName_.empty() && id->name == arrName_ && m.property == "length" && !m.optional) return;
+        }
+        hasBufferHazard = true;
+        ast::detail::IdentVisitor::visit(m);
+    }
+
+private:
+    std::string ivName_;
+    std::string arrName_;
+};
+
+bool analyzeForInductionVar(const ast::ForStmt& f, const std::string& name,
+                            std::string* outBoundedArrayName = nullptr) {
+    if (f.init.size() != 1 || f.condition == nullptr || f.update == nullptr) return false;
+    const auto* vd = dynamic_cast<const ast::VarDecl*>(f.init[0].get());
+    if (vd == nullptr || vd->isVar || vd->isConst || vd->pattern != nullptr ||
+        vd->name != name || vd->init == nullptr) return false;
+    int64_t initVal = 0;
+    if (!isSafeIntegerLiteral(*vd->init, &initVal)) return false;
+
+    int64_t stepVal = 0;
+    if (const auto* u = dynamic_cast<const ast::Unary*>(f.update.get())) {
+        const auto* id = dynamic_cast<const ast::Ident*>(u->operand.get());
+        if (id == nullptr || id->name != name) return false;
+        if (u->op == ast::UnaryOp::PreInc || u->op == ast::UnaryOp::PostInc) stepVal = 1;
+        else if (u->op == ast::UnaryOp::PreDec || u->op == ast::UnaryOp::PostDec) stepVal = -1;
+        else return false;
+    } else if (const auto* b = dynamic_cast<const ast::Binary*>(f.update.get())) {
+        const auto* id = dynamic_cast<const ast::Ident*>(b->lhs.get());
+        if (id == nullptr || id->name != name) return false;
+        if (b->op == ast::BinaryOp::PlusAssign && isSafeIntegerLiteral(*b->rhs, &stepVal)) {}
+        else if (b->op == ast::BinaryOp::MinusAssign && isSafeIntegerLiteral(*b->rhs, &stepVal)) stepVal = -stepVal;
+        else return false;
+    } else return false;
+
+    const auto* cond = dynamic_cast<const ast::Binary*>(f.condition.get());
+    if (cond == nullptr) return false;
+    const auto* lhsId = dynamic_cast<const ast::Ident*>(cond->lhs.get());
+    const auto* rhsId = dynamic_cast<const ast::Ident*>(cond->rhs.get());
+    const bool lhsMatches = (lhsId != nullptr && lhsId->name == name);
+    const bool rhsMatches = (rhsId != nullptr && rhsId->name == name);
+    if (!lhsMatches && !rhsMatches) return false;
+    if (cond->op != ast::BinaryOp::Less && cond->op != ast::BinaryOp::LessEqual &&
+        cond->op != ast::BinaryOp::Greater && cond->op != ast::BinaryOp::GreaterEqual) return false;
+
+    std::string candidateArr;
+    if (lhsMatches && cond->op == ast::BinaryOp::Less && initVal >= 0 && stepVal == 1) {
+        if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(cond->rhs.get())) {
+            if (!mem->optional && mem->property == "length") {
+                if (const auto* arrId = dynamic_cast<const ast::Ident*>(mem->object.get())) {
+                    candidateArr = arrId->name;
+                }
+            }
+        }
+    }
+
+    LoopBodySafetyScan scan(name, candidateArr);
+    for (const auto& s : f.body) s->accept(scan);
+    if (scan.ivMutatedOrShadowed) return false;
+    if (outBoundedArrayName != nullptr && !candidateArr.empty() &&
+        !scan.arrMutatedOrShadowed && !scan.hasBufferHazard) {
+        *outBoundedArrayName = candidateArr;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool Lowerer::typedElemSeamDisabled() {
@@ -238,6 +419,91 @@ std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e, bool co
     // for that. A proven number's canonical-index rule is checked inline.
     if (!provenNumber(*ia->index)) return std::nullopt;
     return raw;
+}
+
+bool Lowerer::provenIntegralIndexExpr(const ast::Expr& e, const ast::IndexAccess& site,
+                                      int depth) const {
+    if (depth <= 0) return false;
+    if (isSafeIntegerLiteral(e)) return true;
+    if (const auto* u = dynamic_cast<const ast::Unary*>(&e)) {
+        return u->op == ast::UnaryOp::BitNot;
+    }
+    if (const auto* b = dynamic_cast<const ast::Binary*>(&e)) {
+        switch (b->op) {
+            case ast::BinaryOp::BitAnd:
+            case ast::BinaryOp::BitOr:
+            case ast::BinaryOp::BitXor:
+            case ast::BinaryOp::Shl:
+            case ast::BinaryOp::Shr:
+            case ast::BinaryOp::UShr:
+                return true;
+            case ast::BinaryOp::Add:
+            case ast::BinaryOp::Sub:
+            case ast::BinaryOp::Mul: {
+                int64_t lit = 0;
+                if (isSafeIntegerLiteral(*b->rhs, &lit) && std::abs(lit) <= 65536) {
+                    return provenIntegralIndexExpr(*b->lhs, site, depth - 1);
+                }
+                if (isSafeIntegerLiteral(*b->lhs, &lit) && std::abs(lit) <= 65536) {
+                    return provenIntegralIndexExpr(*b->rhs, site, depth - 1);
+                }
+                return false;
+            }
+            default:
+                return false;
+        }
+    }
+    if (const auto* call = dynamic_cast<const ast::Call*>(&e)) {
+        if (pristineMathCall(e)) {
+            if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call->callee.get())) {
+                if (mem->property == "imul" || mem->property == "clz32") return true;
+            }
+        }
+        return false;
+    }
+    if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+        if (currentBodyStmts_ == nullptr || memoryNames_.count(id->name) != 0) return false;
+        EnclosingForFinder forFinder(site);
+        for (const auto& s : *currentBodyStmts_) s->accept(forFinder);
+        for (const ast::ForStmt* f : forFinder.enclosing) {
+            if (analyzeForInductionVar(*f, id->name)) return true;
+        }
+        DeclFinder finder(id->name);
+        for (const auto& s : *currentBodyStmts_) s->accept(finder);
+        if (finder.count == 1 && finder.decl != nullptr && finder.decl->isConst &&
+            finder.decl->init != nullptr) {
+            return provenIntegralIndexExpr(*finder.decl->init, site, depth - 1);
+        }
+    }
+    return false;
+}
+
+uint32_t Lowerer::typedElemProofFlags(const ast::IndexAccess& idx, uint32_t elemKind) const {
+    if (typedElemDisabled_ || currentBodyStmts_ == nullptr) return 0;
+    uint32_t flags = 0;
+    if (provenIntegralIndexExpr(*idx.index, idx, 4)) {
+        flags |= static_cast<uint32_t>(il::kElemFlagProvenIntegralIndex);
+    }
+    const uint32_t rawKind = elemKind & static_cast<uint32_t>(il::kElemKindMask);
+    if (rawKind <= 11 && (flags & static_cast<uint32_t>(il::kElemFlagProvenIntegralIndex)) != 0) {
+        const auto* recvId = dynamic_cast<const ast::Ident*>(idx.object.get());
+        const auto* idxId = dynamic_cast<const ast::Ident*>(idx.index.get());
+        if (recvId != nullptr && idxId != nullptr &&
+            memoryNames_.count(recvId->name) == 0 &&
+            memoryNames_.count(idxId->name) == 0) {
+            EnclosingForFinder forFinder(idx);
+            for (const auto& s : *currentBodyStmts_) s->accept(forFinder);
+            for (const ast::ForStmt* f : forFinder.enclosing) {
+                std::string boundedArr;
+                if (analyzeForInductionVar(*f, idxId->name, &boundedArr) &&
+                    boundedArr == recvId->name) {
+                    flags |= static_cast<uint32_t>(il::kElemFlagProvenInBounds);
+                    break;
+                }
+            }
+        }
+    }
+    return flags;
 }
 
 // Is `e` guaranteed to hold a NUMBER when it holds anything — i.e. can the
@@ -375,11 +641,12 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemRead(const ast::IndexAccess
     // Proven number, so this unbox is exact — same licence lowerVarDecl uses.
     Value idxF64 = unboxValueIfNeeded(*idxVal, il::Type::F64, ilFn);
 
+    const uint32_t fullKind = elemKind | typedElemProofFlags(idx, elemKind);
     if (cachedTypedElemGet_.has_value() &&
         cachedTypedElemGet_->blockIdx == currentBlockIdx_ &&
         cachedTypedElemGet_->objId == objBoxed.id &&
         cachedTypedElemGet_->idxId == idxF64.id &&
-        cachedTypedElemGet_->elemKind == elemKind) {
+        cachedTypedElemGet_->elemKind == fullKind) {
         return cachedTypedElemGet_->val;
     }
 
@@ -390,11 +657,11 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemRead(const ast::IndexAccess
     inst.type = il::Type::F64;
     inst.result = res;
     inst.operands = {objBoxed.id, idxF64.id};
-    inst.immI32 = static_cast<int32_t>(elemKind);
+    inst.immI32 = static_cast<int32_t>(fullKind);
     emitInst(ilFn, inst);
     Value val{res, il::Type::F64};
     cachedTypedElemGet_ =
-        CachedTypedElemGet{currentBlockIdx_, objBoxed.id, idxF64.id, elemKind, val};
+        CachedTypedElemGet{currentBlockIdx_, objBoxed.id, idxF64.id, fullKind, val};
     return val;
 }
 
@@ -434,6 +701,7 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
     if (!idxVal) return std::nullopt;
     Value idxF64 = unboxValueIfNeeded(*idxVal, il::Type::F64, ilFn);
 
+    const uint32_t fullKind = elemKind | typedElemProofFlags(idxAccess, elemKind);
     std::optional<Value> curVal;
     if (compound) {
         recordElementOp(idxAccess.span.file, true, "");
@@ -443,7 +711,7 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
         getInst.type = il::Type::F64;
         getInst.result = cur;
         getInst.operands = {objBoxed.id, idxF64.id};
-        getInst.immI32 = static_cast<int32_t>(elemKind);
+        getInst.immI32 = static_cast<int32_t>(fullKind);
         emitInst(ilFn, getInst);
         curVal = Value{cur, il::Type::F64};
     }
@@ -491,7 +759,7 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
         stored.type == il::Type::Bool) {
         Value storedF64 = unboxValueIfNeeded(stored, il::Type::F64, ilFn);
         recordElementOp(idxAccess.span.file, true, "");
-        emitTypedElemSet(objBoxed, idxF64, storedF64, elemKind, ilFn);
+        emitTypedElemSet(objBoxed, idxF64, storedF64, fullKind, ilFn);
         return stored;
     }
 
@@ -508,7 +776,7 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
     if (guarded && stored.type == il::Type::Dynamic) {
         Value storedF64 = emitRawUnbox(stored, ilFn);
         recordElementOp(idxAccess.span.file, true, "");
-        emitTypedElemSet(objBoxed, idxF64, storedF64, elemKind, ilFn);
+        emitTypedElemSet(objBoxed, idxF64, storedF64, fullKind, ilFn);
         return stored;
     }
 

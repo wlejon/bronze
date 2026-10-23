@@ -75,7 +75,7 @@ Value* boxed_index(Builder& b, Value* index) {
     return index;
 }
 
-ElemIndex elem_index(Builder& b, Value* index) {
+ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
     ElemIndex r;
     if (index->type() == Type::i32()) {
         r.i64 = b.build_sext_i64(index);
@@ -96,6 +96,10 @@ ElemIndex elem_index(Builder& b, Value* index) {
     // Integral when the round trip is exact (the compare is ordered: NaN
     // fails it; -0 reads as index 0, as ToPropertyKey makes it "0").
     r.i64 = b.build_fptosi_i64(f);
+    if (proven_integral) {
+        r.ok = is_number ? is_number : b.build_iconst_i32(1);
+        return r;
+    }
     Value* exact = b.build_eq(b.build_sitofp_f64_i64(r.i64), f);
     r.ok = is_number ? b.build_and(is_number, exact) : exact;
     return r;
@@ -253,6 +257,9 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         return b.build_bitcast_f64_i64(b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)}));
     }
 
+    const bool proven_integral = (elem_kind & (1LL << 16)) != 0;
+    const bool proven_in_bounds = (elem_kind & (1LL << 17)) != 0;
+    elem_kind &= 0xFFFF;
     constexpr int64_t kElemKindPlainArrayF64 = 100;
     if (elem_kind == kElemKindPlainArrayF64) {
         BasicBlock* cur = b.current_block();
@@ -269,7 +276,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         Value* ptr = nullptr;
         Value* is_obj = nullptr;
         object_pointer(b, obj, ptr, is_obj);
-        const ElemIndex idx = elem_index(b, index);
+        const ElemIndex idx = elem_index(b, index, proven_integral);
         b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
         b.position_at_end(bb_obj);
@@ -313,7 +320,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     Value* ptr = nullptr;
     Value* is_obj = nullptr;
     object_pointer(b, obj, ptr, is_obj);
-    const ElemIndex idx = elem_index(b, index);
+    const ElemIndex idx = elem_index(b, index, proven_integral);
     b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
     b.position_at_end(bb_obj);
@@ -321,11 +328,12 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
 
     b.position_at_end(bb_ta);
-    Value* ta_length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
     Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    Value* in_bounds = b.build_ult(idx.i64, ta_length);
     Value* kind_ok = b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
-    b.build_br_if(b.build_and(in_bounds, kind_ok), bb_load, bb_slow);
+    Value* ok = proven_in_bounds
+                    ? kind_ok
+                    : b.build_and(b.build_ult(idx.i64, b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET))), kind_ok);
+    b.build_br_if(ok, bb_load, bb_slow);
 
     b.position_at_end(bb_load);
     Value* data = typed_array_data(b, ptr);
@@ -529,6 +537,9 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         return;
     }
 
+    const bool proven_integral = (elem_kind & (1LL << 16)) != 0;
+    const bool proven_in_bounds = (elem_kind & (1LL << 17)) != 0;
+    elem_kind &= 0xFFFF;
     constexpr int64_t kElemKindPlainArrayF64 = 100;
     if (elem_kind == kElemKindPlainArrayF64) {
         BasicBlock* cur = b.current_block();
@@ -544,7 +555,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         Value* ptr = nullptr;
         Value* is_obj = nullptr;
         object_pointer(b, obj, ptr, is_obj);
-        const ElemIndex idx = elem_index(b, index);
+        const ElemIndex idx = elem_index(b, index, proven_integral);
         b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
         b.position_at_end(bb_obj);
@@ -594,7 +605,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     Value* ptr = nullptr;
     Value* is_obj = nullptr;
     object_pointer(b, obj, ptr, is_obj);
-    const ElemIndex idx = elem_index(b, index);
+    const ElemIndex idx = elem_index(b, index, proven_integral);
     b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
 
     b.position_at_end(bb_obj);
@@ -602,10 +613,11 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
 
     b.position_at_end(bb_ta);
-    Value* ta_length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
     Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    Value* ok = b.build_and(b.build_ult(idx.i64, ta_length),
-                            b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind))));
+    Value* kind_ok = b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
+    Value* ok = proven_in_bounds
+                    ? kind_ok
+                    : b.build_and(b.build_ult(idx.i64, b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET))), kind_ok);
     Value* whole = nullptr;
     if (elem_kind == BRONZE_ABI_TA_KIND_UINT8CLAMPED) {
         Value* c_abs = b.build_and(b.build_bitcast_i64_f64(val_f64), iconst(b, 0x7FFFFFFFFFFFFFFFULL));

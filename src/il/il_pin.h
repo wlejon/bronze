@@ -50,4 +50,16 @@ enum class PinBarrier : uint8_t {
 // outside the types::TypedArrayElem range so nothing sound can collide with it.
 inline constexpr int32_t kElemKindPlainArrayF64 = 100;
 
+// Bit-flags packed into the upper 16 bits of `ElemGetTyped` / `ElemSetTyped`
+// `immI32` alongside the low-16-bit element kind (`immI32 & kElemKindMask`):
+//   - `kElemFlagProvenIntegralIndex`: the index operand is statically proven
+//     to be a finite safe integer, licensing the backend to skip the
+//     `sitofp(fptosi(idx)) == idx` round-trip check.
+//   - `kElemFlagProvenInBounds`: the index operand is statically proven to
+//     satisfy `0 <= idx < view.length` on an unmutated TypedArray view,
+//     licensing the backend to skip the unsigned bounds check.
+inline constexpr int32_t kElemKindMask = 0xFFFF;
+inline constexpr int32_t kElemFlagProvenIntegralIndex = 1 << 16;
+inline constexpr int32_t kElemFlagProvenInBounds = 1 << 17;
+
 }  // namespace bronze::il

@@ -207,6 +207,7 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         if (!indexVal) return std::nullopt;
         Value idxF64 = unboxValueIfNeeded(*indexVal, il::Type::F64, ilFn);
 
+        const uint32_t fullKind = *elemKind | typedElemProofFlags(idxAccess, *elemKind);
         recordElementOp(idxAccess.span.file, true, "");
         il::ValueId cur = ilFn.valueCount++;
         il::Instruction getInst;
@@ -214,14 +215,14 @@ std::optional<Lowerer::Value> Lowerer::lowerIndexUpdate(const ast::IndexAccess& 
         getInst.type = il::Type::F64;
         getInst.result = cur;
         getInst.operands = {objBoxed.id, idxF64.id};
-        getInst.immI32 = static_cast<int32_t>(*elemKind);
+        getInst.immI32 = static_cast<int32_t>(fullKind);
         emitInst(ilFn, getInst);
 
         Value numOld{cur, il::Type::F64};
         Value newVal = emitUpdateStep(numOld, op, ilFn);
         const types::Type recv = inferredType(*idxAccess.object);
         emitPinnedElementBarrier(*elemKind, newVal, ilFn, recv.arrayElementsPinned());
-        emitTypedElemSet(objBoxed, idxF64, newVal, *elemKind, ilFn);
+        emitTypedElemSet(objBoxed, idxF64, newVal, fullKind, ilFn);
         return isPrefix(op) ? newVal : numOld;
     }
     auto objVal = lowerExpr(*idxAccess.object, ilFn);

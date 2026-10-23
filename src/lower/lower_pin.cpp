@@ -120,7 +120,11 @@ const types::PinKind* Lowerer::pinnedFieldAt(const ast::Expr& receiver, const st
 
 bool Lowerer::emitPinnedElementBarrier(uint32_t elemKind, Value val, il::Function& ilFn,
                                        bool pinned) {
-    if (!pinned || elemKind != static_cast<uint32_t>(il::kElemKindPlainArrayF64)) return false;
+    if (!pinned ||
+        (elemKind & static_cast<uint32_t>(il::kElemKindMask)) !=
+            static_cast<uint32_t>(il::kElemKindPlainArrayF64)) {
+        return false;
+    }
     // The NUMERIC half of `numeric-elements`, held one element at a time.
     //
     // The pin text names the kind rather than a (class, field) pair, and that

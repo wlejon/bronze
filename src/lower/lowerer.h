@@ -146,6 +146,8 @@ private:
     // --- lower_typed_elem.cpp: proven typed-array element access ---
     static bool typedElemSeamDisabled();
     std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e, bool coercing = false) const;
+    uint32_t typedElemProofFlags(const ast::IndexAccess& idx, uint32_t elemKind) const;
+    bool provenIntegralIndexExpr(const ast::Expr& e, const ast::IndexAccess& site, int depth) const;
     bool provenArrayOrTypedArray(const ast::Expr& e) const;
     bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
     bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;

@@ -93,7 +93,11 @@ bool isValidPinBarrier(int32_t raw) {
 }
 
 bool isValidTypedElemKind(int32_t kind) {
-    return (kind >= 0 && kind <= 11) || kind == kElemKindPlainArrayF64;
+    constexpr int32_t kAllowedMask =
+        kElemKindMask | kElemFlagProvenIntegralIndex | kElemFlagProvenInBounds;
+    if ((kind & ~kAllowedMask) != 0) return false;
+    const int32_t raw = kind & kElemKindMask;
+    return (raw >= 0 && raw <= 11) || raw == kElemKindPlainArrayF64;
 }
 
 std::vector<BlockId> computeDominators(const Function& fn, std::vector<uint32_t>& rpoIndexOut) {

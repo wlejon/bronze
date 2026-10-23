@@ -154,6 +154,14 @@ ProofCertificateReport proveJsFunction(std::string_view fnSource, const ProveOpt
                 } else if (inst.op == il::Op::ElemGetTyped || inst.op == il::Op::ElemSetTyped) {
                     ++rep.totalGuards;
                     ++rep.provenGuards;
+                    if ((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0) {
+                        ++rep.totalGuards;
+                        ++rep.provenGuards;
+                    }
+                    if ((inst.immI32 & il::kElemFlagProvenInBounds) != 0) {
+                        ++rep.totalGuards;
+                        ++rep.provenGuards;
+                    }
                 } else if (inst.op == il::Op::ElemGet || inst.op == il::Op::ElemSet ||
                            inst.op == il::Op::PinGuard) {
                     ++rep.totalGuards;

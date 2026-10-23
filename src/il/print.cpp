@@ -646,13 +646,13 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::ElemGetTyped:
                         out += "elem.get.typed %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
-                               ", " + std::to_string(inst.immI32);
+                               ", " + std::to_string(inst.immI32 & kElemKindMask);
                         break;
                     case Op::ElemSetTyped:
                         out += "elem.set.typed %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", %" + std::to_string(inst.operands.size() > 1 ? inst.operands[1] : 0) +
                                ", %" + std::to_string(inst.operands.size() > 2 ? inst.operands[2] : 0) +
-                               ", " + std::to_string(inst.immI32);
+                               ", " + std::to_string(inst.immI32 & kElemKindMask);
                         break;
                     case Op::MathUnary:
                         out += "math.unary %" +
