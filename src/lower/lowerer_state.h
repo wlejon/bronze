@@ -199,6 +199,15 @@ struct CoroContext {
 // statement list, so a frame holds one entry per function.
 using ProvenParamPlan = std::unordered_map<const ast::FunctionDecl*, std::vector<bool>>;
 
+struct FnParamFacts {
+    std::unordered_map<std::string, int64_t> constIntParams;
+    std::unordered_map<std::string, std::pair<int64_t, int64_t>> intParamBounds;
+    std::unordered_map<std::string, int64_t> minTypedArrayLenParams;
+    std::unordered_map<std::string, int64_t> maxTypedArrayLenParams;
+    std::unordered_map<std::string, int64_t> exactTypedArrayLenParams;
+};
+using FnParamFactsPlan = std::unordered_map<const ast::FunctionDecl*, FnParamFacts>;
+
 // One loop variable and the type every block parameter standing for it takes —
 // header, exit, and the update/condition join alike, because the analysis
 // proves one type covering all of them.

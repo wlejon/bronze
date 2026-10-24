@@ -134,7 +134,7 @@ Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1,
 // int32_convertible accepts, else inline bit-extraction for f64 (zero calls,
 // so live XMM values in enclosing loops are never spilled across a call) or
 // the helper for boxed values.
-Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
+Value* lower_to_int32(Builder& b, Value* v, bool is_f64, bool raw_unbox = false) {
     BasicBlock* cur = b.current_block();
     if (is_f64 && v && v->is_instruction()) {
         const brass::Instruction* def = v->defining_instruction();
@@ -158,6 +158,9 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
                     static_cast<int32_t>(static_cast<int64_t>(def->imm_f64())));
             }
         }
+    }
+    if (is_f64 && raw_unbox) {
+        return inline_to_int32(b, v);
     }
     const std::string prefix = "toi32_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* fast = b.append_block(prefix + "_fast");
@@ -476,7 +479,7 @@ bool lower_ops_instruction(
             if (op0->type() == Type::i32()) {
                 res_val = op0;
             } else if (op0->type() == Type::f64()) {
-                res_val = lower_to_int32(b, op0, /*is_f64=*/true);
+                res_val = lower_to_int32(b, op0, /*is_f64=*/true, inst_ast.raw_unbox);
             } else {
                 Value* d = lowering->ensure_type(op0, Type::i64(), b);
                 res_val = lower_to_int32(b, d, /*is_f64=*/false);

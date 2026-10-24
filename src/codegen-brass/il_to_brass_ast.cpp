@@ -125,7 +125,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::NumericStep;
             out.imm_i64 = (inst.immI32 > 0) ? 1 : -1;
             break;
-        case il::Op::ToInt32: out.op = il2mir::BronzeOp::ToInt32; break;
+        case il::Op::ToInt32:
+            out.op = il2mir::BronzeOp::ToInt32;
+            out.raw_unbox = inst.rawUnbox;
+            break;
 
         // --- Bitwise Operations ---
         case il::Op::BitAnd: out.op = il2mir::BronzeOp::BitAnd; break;
@@ -549,8 +552,10 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
         bfn.is_deterministic_fp = fn.isDeterministicFp();
 
         bfn.params.reserve(fn.params.size());
+        bfn.param_const_ints.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {
             bfn.params.push_back({static_cast<uint32_t>(p), mapType(fn.params[p].type)});
+            bfn.param_const_ints.push_back(fn.params[p].knownConstInt);
         }
 
         if (fn.blocks.empty()) return bfn;

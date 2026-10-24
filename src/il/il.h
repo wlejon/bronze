@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -308,6 +309,7 @@ struct Param {
     // The key-constant index of the manifest line this pin came from, valid
     // only when `pinned`.
     uint32_t pinKeyIndex = 0;
+    std::optional<int64_t> knownConstInt;
 };
 
 struct Function {

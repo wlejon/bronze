@@ -148,6 +148,9 @@ private:
     std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e, bool coercing = false) const;
     uint32_t typedElemProofFlags(const ast::IndexAccess& idx, uint32_t elemKind) const;
     bool provenIntegralIndexExpr(const ast::Expr& e, const ast::IndexAccess& site, int depth) const;
+    std::optional<std::pair<int64_t, int64_t>> evalIndexInterval(
+        const ast::Expr& e, const ast::Node& site, int depth,
+        std::string* outBoundedArrayName = nullptr) const;
     bool provenArrayOrTypedArray(const ast::Expr& e) const;
     bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
     bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;
@@ -172,6 +175,12 @@ private:
     bool unboxedFieldsDisabled_ = false;
     static bool unboxedFieldSeamDisabled();
     std::vector<ProvenParamPlan> provenClosureParams_;
+    std::vector<FnParamFactsPlan> fnParamFactsStack_;
+    const FnParamFacts* currentFnParamFacts_ = nullptr;
+    bool moduleBufferDetachFree_ = true;
+    void initModuleBufferDetachFree();
+    void planFunctionParamFacts(const std::vector<ast::Param>& params,
+                                const std::vector<ast::StmtPtr>& stmts);
     bool numericArithDisabled_ = false;
     static bool numericArithSeamDisabled();
     bool provenFieldRead(const ast::Expr& e) const;
@@ -577,8 +586,9 @@ private:
                                        il::Function& ilFn);
     std::optional<Value> lowerRelational(ast::BinaryOp op, Value lhs, Value rhs,
                                          il::Function& ilFn);
-    Value emitToInt32(Value val, il::Function& ilFn);
-    Value emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn);
+    Value emitToInt32(Value val, il::Function& ilFn, bool provenSafeInt = false);
+    Value emitBitwise(il::Op op, Value lhs, Value rhs, il::Function& ilFn,
+                      bool lhsSafeInt = false, bool rhsSafeInt = false);
     Value emitPow(Value lhs, Value rhs, il::Function& ilFn);
     Value emitLogicalNot(Value boolVal, il::Function& ilFn);
     static std::optional<il::Op> bitwiseOpFor(ast::BinaryOp op);

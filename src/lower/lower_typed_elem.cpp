@@ -119,8 +119,8 @@ public:
     }
     void visit(const ast::FunctionDecl& f) override {
         if (f.name == target_) ++count;
-        ast::detail::IdentVisitor::visit(f);
     }
+    void visit(const ast::FunctionExpr&) override {}
     void visit(const ast::ClassDecl& c) override {
         if (c.name == target_) ++count;
         ast::detail::IdentVisitor::visit(c);
@@ -273,6 +273,10 @@ bool Lowerer::definitelyNumericOperand(const ast::Expr& e, int depth) const {
     }
     if (const auto* ident = dynamic_cast<const ast::Ident*>(&e)) {
         if (assumedNumericIdents_.count(ident->name) != 0) return true;
+        if (currentFnParamFacts_ != nullptr &&
+            currentFnParamFacts_->intParamBounds.count(ident->name) != 0) {
+            return true;
+        }
         if (currentBodyStmts_ == nullptr) return false;
         // One declaration, a const or let, in this function, initialiser itself
         // definitely numeric. Anything ambiguous — a second declaration

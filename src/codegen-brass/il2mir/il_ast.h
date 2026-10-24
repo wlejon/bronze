@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <optional>
 
 // il2mir: bronze's IL → brass MIR translator. bronze::il::Module is
 // flattened into this AST (il_to_brass_ast.cpp), then lowered to a
@@ -216,6 +217,7 @@ struct BronzeBlock {
 struct BronzeFunction {
     std::string name;
     std::vector<std::pair<uint32_t, BronzeType>> params;
+    std::vector<std::optional<int64_t>> param_const_ints;
     BronzeType return_type = BronzeType::Void;
     bool is_exported = false;
     // A coroutine body's BRONZE_ABI_CORO_* kind, or -1: the function runs on

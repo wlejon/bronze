@@ -35,6 +35,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     bool oldUserFn = inUserFunction_;
     inUserFunction_ = true;
     provenClosureParams_.emplace_back();
+    fnParamFactsStack_.emplace_back();
     // A generator or async function lowers as the COROUTINE BODY it is, whole
     // and in one piece, and is then split into that body and the stub the
     // function's callers reach (lower_generator.cpp).
@@ -50,6 +51,7 @@ bool Lowerer::lowerFunctionBody(const std::vector<ast::Param>& params,
     bool ok = lowerBodyWithPlan(params, body, ilFn, isGenerator);
     if (ok && coro_) splitCoroutineBody(ilFn, coro_->kind);
     coro_ = std::move(outerCoro);
+    fnParamFactsStack_.pop_back();
     provenClosureParams_.pop_back();
     inUserFunction_ = oldUserFn;
     return ok;
@@ -68,6 +70,7 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     // `function f() {}` statement is build `f`'s IL skeleton — parameter types
     // and all — and the whole point of the plan is to be part of it.
     planClosureParamNumbers(params, body);
+    planFunctionParamFacts(params, body);
     ilFn.blocks.push_back(il::Block{.id = 0});
     ilFn.isStrict = strictCode_;
     ilFn.isGenerator = isGenerator;
@@ -310,8 +313,18 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
 // proof BEFORE the body is lowered, because the IL return type is part of the
 // calling convention.
 bool Lowerer::lowerFunctionBody(const ast::FunctionDecl& fnDecl, il::Function& ilFn) {
-    return lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn, fnDecl.isGenerator,
-                             fnDecl.isAsync);
+    const FnParamFacts* outerFacts = currentFnParamFacts_;
+    currentFnParamFacts_ = nullptr;
+    if (!fnParamFactsStack_.empty()) {
+        const auto it = fnParamFactsStack_.front().find(&fnDecl);
+        if (it != fnParamFactsStack_.front().end()) {
+            currentFnParamFacts_ = &it->second;
+        }
+    }
+    const bool ok =
+        lowerFunctionBody(fnDecl.params, fnDecl.body, ilFn, fnDecl.isGenerator, fnDecl.isAsync);
+    currentFnParamFacts_ = outerFacts;
+    return ok;
 }
 
 }  // namespace bronze::lower

@@ -258,6 +258,14 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // lowerFunctionBody points it at the nested body, so the outer pointer
     // comes back with everything else here.
     const auto* outerBodyStmts = currentBodyStmts_;
+    const FnParamFacts* outerFnParamFacts = currentFnParamFacts_;
+    currentFnParamFacts_ = nullptr;
+    if (siteFnDecl != nullptr && !fnParamFactsStack_.empty()) {
+        const auto it = fnParamFactsStack_.back().find(siteFnDecl);
+        if (it != fnParamFactsStack_.back().end()) {
+            currentFnParamFacts_ = &it->second;
+        }
+    }
 
     // A `FunctionDecl` site is always the ordinary form — there is no syntax
     // for a declaration that is a method or an arrow — so only the expression
@@ -311,6 +319,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     functionEnvScope_ = outerEnvScope;
     functionVarNames_ = std::move(outerVarNames);
     currentBodyStmts_ = outerBodyStmts;
+    currentFnParamFacts_ = outerFnParamFacts;
     if (!bodyOk) {
         if (envScopes_.size() > outerEnvDepth) envScopes_.resize(outerEnvDepth);
         return std::nullopt;

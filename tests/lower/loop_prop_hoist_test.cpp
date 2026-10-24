@@ -586,7 +586,101 @@ TEST_CASE("typed element update out[a[i] & 255]++ and affine matmul indices lowe
         CHECK(typedGets >= 3);
         CHECK(typedSets >= 1);
     }
+
+    // Parameterized blur/mat/scalar inside an IIFE prove integral-index, in-bounds,
+    // knownConstInt parameter facts, and raw ToInt32 bitwise conversions.
+    {
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const auto optMod = inferAndLower(
+            "(function() {\n"
+            "  const W = 512, H = 512;\n"
+            "  const src = new Float32Array(W * H);\n"
+            "  const dst = new Float32Array(W * H);\n"
+            "  function blur(s, d, w, h) {\n"
+            "    for (let y = 1; y < h - 1; y++) {\n"
+            "      const row = y * w;\n"
+            "      for (let x = 1; x < w - 1; x++) {\n"
+            "        const i = row + x;\n"
+            "        d[i] = (s[i - w] + s[i - 1] + s[i] + s[i + 1] + s[i + w]) * 0.2;\n"
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "  const N = 192;\n"
+            "  const ma = new Float64Array(N * N);\n"
+            "  const mb = new Float64Array(N * N);\n"
+            "  const mc = new Float64Array(N * N);\n"
+            "  function mat(a, b, c, n) {\n"
+            "    for (let i = 0; i < n; i++) {\n"
+            "      for (let k = 0; k < n; k++) {\n"
+            "        const aik = a[i * n + k];\n"
+            "        for (let j = 0; j < n; j++) {\n"
+            "          c[i * n + j] += aik * b[k * n + j];\n"
+            "        }\n"
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "  function scalar(x, y) {\n"
+            "    let acc = 0;\n"
+            "    for (let i = 0; i < x.length; i++) {\n"
+            "      const u = (x[i] ^ y[i]) + (x[i] & y[i]);\n"
+            "      acc = (acc + (u >>> 3)) | 0;\n"
+            "    }\n"
+            "    return acc;\n"
+            "  }\n"
+            "  const sx = new Int32Array(4096);\n"
+            "  const sy = new Int32Array(4096);\n"
+            "  blur(src, dst, W, H);\n"
+            "  mat(ma, mb, mc, N);\n"
+            "  console.log(dst[0], mc[0], scalar(sx, sy));\n"
+            "})();\n",
+            diags, buf);
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+
+        bool foundBlur = false;
+        bool foundMat = false;
+        bool foundScalar = false;
+        for (const auto& fn : optMod->functions) {
+            if (fn.displayName == "blur") {
+                foundBlur = true;
+                for (const auto& blk : fn.blocks) {
+                    for (const auto& inst : blk.instructions) {
+                        if (inst.op == il::Op::ElemGetTyped || inst.op == il::Op::ElemSetTyped) {
+                            CHECK((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0);
+                            CHECK((inst.immI32 & il::kElemFlagProvenInBounds) != 0);
+                        }
+                    }
+                }
+            } else if (fn.displayName == "mat") {
+                foundMat = true;
+                for (const auto& blk : fn.blocks) {
+                    for (const auto& inst : blk.instructions) {
+                        if (inst.op == il::Op::ElemGetTyped || inst.op == il::Op::ElemSetTyped) {
+                            CHECK((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0);
+                            CHECK((inst.immI32 & il::kElemFlagProvenInBounds) != 0);
+                        }
+                    }
+                }
+            } else if (fn.displayName == "scalar") {
+                foundScalar = true;
+                size_t rawToInt32 = 0;
+                for (const auto& blk : fn.blocks) {
+                    for (const auto& inst : blk.instructions) {
+                        if (inst.op == il::Op::ToInt32 && inst.rawUnbox) {
+                            ++rawToInt32;
+                        }
+                    }
+                }
+                CHECK(rawToInt32 >= 2);
+            }
+        }
+        CHECK(foundBlur);
+        CHECK(foundMat);
+        CHECK(foundScalar);
+    }
 }
+
 
 
 

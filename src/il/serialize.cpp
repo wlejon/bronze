@@ -63,6 +63,7 @@ struct ParamMirror {
     Type type;
     bool pinned;
     uint32_t pinKeyIndex;
+    std::optional<int64_t> knownConstInt;
 };
 static_assert(sizeof(Param) == sizeof(ParamMirror),
               "il::Param changed: update il/serialize.cpp and bump kFormatVersion");
@@ -460,8 +461,9 @@ void writeFunction(Writer& w, const Function& fn) {
     for (const auto& p : fn.params) {
         w.str(p.name);
         w.u8(static_cast<uint8_t>(p.type));
-        w.u8(p.pinned ? 1 : 0);
+        w.u8((p.pinned ? 1u : 0u) | (p.knownConstInt.has_value() ? 2u : 0u));
         w.var(p.pinKeyIndex);
+        if (p.knownConstInt.has_value()) w.svar(*p.knownConstInt);
     }
     w.u8(static_cast<uint8_t>(fn.returnType));
     w.var(fn.returnPinKeyIndex);
@@ -496,8 +498,10 @@ void readFunction(Reader& r, Function& fn) {
     for (auto& p : fn.params) {
         p.name = r.str();
         p.type = r.type();
-        p.pinned = r.u8() != 0;
+        const uint8_t pflags = r.u8();
+        p.pinned = (pflags & 1u) != 0;
         p.pinKeyIndex = r.u32();
+        if (pflags & 2u) p.knownConstInt = r.i32();
     }
     fn.returnType = r.type();
     fn.returnPinKeyIndex = r.u32();

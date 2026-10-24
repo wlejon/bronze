@@ -47,10 +47,14 @@ Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
         numericArithSeamDisabled() || !assumeNoBigInt ||
         bigIntMayReach(astModule, hostGlobals ? *hostGlobals
                                               : std::vector<std::string>{});
+    initModuleBufferDetachFree();
 }
 
 std::optional<il::Module> Lowerer::lower() {
     ilModule_.name = astModule_.name;
+    fnParamFactsStack_.clear();
+    fnParamFactsStack_.emplace_back();
+    planFunctionParamFacts({}, astModule_.body);
 
     std::vector<const ast::Stmt*> topLevelStmts;
     for (const auto& stmtPtr : astModule_.body) {
@@ -164,6 +168,23 @@ std::optional<il::Module> Lowerer::lower() {
             // Last, because a pin is a promise about a convention every proof
             // and every convention statement above has already had its say on.
             if (!applySignaturePins(fnDecl->params, fnDecl->span, fn)) return std::nullopt;
+            if (!fnParamFactsStack_.empty()) {
+                const auto factsIt = fnParamFactsStack_.back().find(fnDecl);
+                if (factsIt != fnParamFactsStack_.back().end()) {
+                    const size_t base = fn.firstSourceParam();
+                    for (size_t i = 0;
+                         i < fnDecl->params.size() && i + base < fn.params.size(); ++i) {
+                        if (fn.params[i + base].type == il::Type::F64 &&
+                            !fn.params[i + base].pinned) {
+                            const auto cIt =
+                                factsIt->second.constIntParams.find(fnDecl->params[i].name);
+                            if (cIt != factsIt->second.constIntParams.end()) {
+                                fn.params[i + base].knownConstInt = cIt->second;
+                            }
+                        }
+                    }
+                }
+            }
             fn.sourceFile = fnDecl->span.file;
             fn.sourceBegin = fnDecl->span.begin;
             fn.sourceEnd = fnDecl->span.end;

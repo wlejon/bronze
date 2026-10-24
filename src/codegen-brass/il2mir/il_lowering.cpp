@@ -256,7 +256,8 @@ static bool instructions_are_identical(const BronzeInstruction& a, const BronzeI
 }
 
 static bool functions_are_identical(const BronzeFunction& a, const BronzeFunction& b) {
-    if (a.params != b.params || a.return_type != b.return_type || a.is_exported != b.is_exported) return false;
+    if (a.params != b.params || a.param_const_ints != b.param_const_ints ||
+        a.return_type != b.return_type || a.is_exported != b.is_exported) return false;
     if (a.blocks.size() != b.blocks.size()) return false;
     for (size_t i = 0; i < a.blocks.size(); ++i) {
         const auto& ba = a.blocks[i];
@@ -888,6 +889,15 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         }
         // Everything the body shares is computed here, where it dominates
         // every block, and only once something first asks for it.
+        if (!fn_ast.is_coroutine_body()) {
+            for (size_t i = 0; i < fn_ast.params.size() && i < fn_ast.param_const_ints.size(); ++i) {
+                if (fn_ast.param_const_ints[i].has_value() &&
+                    fn_ast.params[i].second == BronzeType::F64) {
+                    val_map[fn_ast.params[i].first] =
+                        b.build_fconst_f64(static_cast<double>(*fn_ast.param_const_ints[i]));
+                }
+            }
+        }
         begin_hoisting(b.current_block());
     }
 

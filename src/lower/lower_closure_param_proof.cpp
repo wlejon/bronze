@@ -2,9 +2,13 @@
 // are Numbers at every call, the one walk of the enclosing scope that decides
 // it, and the point at which the answer reaches the declaration's IL skeleton.
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -28,34 +32,74 @@ bool Lowerer::closureParamProofDisabled() {
 
 namespace {
 
+struct ScopeFrame {
+    const std::vector<ast::StmtPtr>* stmts = nullptr;
+    const std::vector<ast::Param>* params = nullptr;
+};
+
+struct CallSiteWithScopes {
+    const ast::Call* call = nullptr;
+    std::vector<ScopeFrame> scopes;
+};
+
+std::string matchGlobalThisFnExport(const ast::Stmt& stmt) {
+    if (const auto* blk = dynamic_cast<const ast::BlockStmt*>(&stmt)) {
+        if (blk->stmts.size() == 1 && blk->stmts[0]) {
+            return matchGlobalThisFnExport(*blk->stmts[0]);
+        }
+        return {};
+    }
+    const auto* exprStmt = dynamic_cast<const ast::ExprStmt*>(&stmt);
+    if (!exprStmt || !exprStmt->expr) return {};
+    const auto* bin = dynamic_cast<const ast::Binary*>(exprStmt->expr.get());
+    if (!bin || bin->op != ast::BinaryOp::Assign) return {};
+    const auto* member = dynamic_cast<const ast::MemberAccess*>(bin->lhs.get());
+    if (!member || member->optional || member->isPrivate || member->property.empty()) return {};
+    const auto* base = dynamic_cast<const ast::Ident*>(member->object.get());
+    if (!base || base->name != "globalThis") return {};
+    const auto* rhs = dynamic_cast<const ast::Ident*>(bin->rhs.get());
+    if (!rhs || rhs->name != member->property) return {};
+    return member->property;
+}
+
+bool isKnownTypedArrayCtorName(const std::string& name) {
+    return name == "Float64Array" || name == "Float32Array" || name == "Int32Array" ||
+           name == "Uint32Array" || name == "Int16Array" || name == "Uint16Array" ||
+           name == "Int8Array" || name == "Uint8Array" || name == "Uint8ClampedArray";
+}
+
+class ModuleDetachHazardScan final : public ast::detail::IdentVisitor {
+public:
+    using ast::detail::IdentVisitor::visit;
+    bool hazard = false;
+
+    void visit(const ast::Ident& i) override {
+        if (i.name == "eval" || i.name == "postMessage" || i.name == "structuredClone" ||
+            i.name == "ArrayBuffer" || i.name == "SharedArrayBuffer") {
+            hazard = true;
+        }
+    }
+    void visit(const ast::MemberAccess& m) override {
+        if (m.property == "transfer" || m.property == "transferToFixedLength" ||
+            m.property == "resize" || m.property == "grow" || m.property == "detach") {
+            hazard = true;
+        }
+        ast::detail::IdentVisitor::visit(m);
+    }
+};
+
 // Every mention of one name under a function body, split into the two things a
 // mention can be: the CALLEE of an ordinary call — whose argument list is then
 // evidence about the parameters — and anything else at all, which is the
 // function value leaving through a door this analysis cannot follow.
-//
-// Built on `ast::detail::IdentVisitor` and not beside it, because the walk that
-// decides "is this every mention?" must be THE walk that finds mentions:
-// a form this one forgot to descend into is not a missed optimization, it is an
-// unsound proof. Two overrides, and both are removals:
-//
-//   - `Call`: a callee that is exactly the bare name is recorded as a site and
-//     NOT as an escape; the callee of anything else, and every argument, walk
-//     normally. `?.()` is a site too — it either calls with these arguments or
-//     does not call at all. `f(...xs)` is refused outright, because a spread
-//     breaks the one-argument-per-parameter correspondence the claim IS.
-//   - `FunctionDecl`: the declaration's own name is a binding, not a mention.
-//     The base class records it (it is a name an enclosing scope must put in a
-//     record), which would make every function an escape of itself.
-//
-// A `VarDecl` of the name still counts as a mention, and so as an escape. That
-// is deliberately blunt and in the safe direction: a redeclaration means the
-// name does not denote one binding throughout, and modelling shadowing here
-// would be a scope resolver, not a proof.
 class CalleeOnlyScan final : public ast::detail::IdentVisitor {
 public:
-    explicit CalleeOnlyScan(std::string name) : name_(std::move(name)) {}
+    explicit CalleeOnlyScan(std::string name, const ast::FunctionDecl* targetDecl = nullptr)
+        : name_(std::move(name)), targetDecl_(targetDecl) {}
 
     std::vector<const ast::Call*> sites;
+    std::vector<CallSiteWithScopes> scopedSites;
+    std::vector<ScopeFrame> scopeStack;
     bool escaped = false;
     bool spread = false;
 
@@ -66,17 +110,94 @@ public:
                 if (dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) spread = true;
             }
             sites.push_back(&c);
+            scopedSites.push_back(CallSiteWithScopes{&c, scopeStack});
         } else {
             c.callee->accept(*this);
         }
         for (const auto& arg : c.args) arg->accept(*this);
     }
 
-    void visit(const ast::FunctionDecl& f) override {
-        ast::detail::visitParamExprs(f.params, *this);
+    void visit(const ast::BlockStmt& b) override {
+        scopeStack.push_back(ScopeFrame{&b.stmts, nullptr});
+        for (const auto& s : b.stmts) {
+            if (s) s->accept(*this);
+        }
+        scopeStack.pop_back();
+    }
+
+    void visit(const ast::ForStmt& f) override {
+        for (const auto& s : f.init) {
+            if (s) s->accept(*this);
+        }
+        if (f.condition) f.condition->accept(*this);
+        if (f.update) f.update->accept(*this);
+        scopeStack.push_back(ScopeFrame{&f.body, nullptr});
         for (const auto& s : f.body) {
             if (s) s->accept(*this);
         }
+        scopeStack.pop_back();
+    }
+
+    void visit(const ast::WhileStmt& w) override {
+        if (w.condition) w.condition->accept(*this);
+        scopeStack.push_back(ScopeFrame{&w.body, nullptr});
+        for (const auto& s : w.body) {
+            if (s) s->accept(*this);
+        }
+        scopeStack.pop_back();
+    }
+
+    void visit(const ast::DoWhileStmt& d) override {
+        scopeStack.push_back(ScopeFrame{&d.body, nullptr});
+        for (const auto& s : d.body) {
+            if (s) s->accept(*this);
+        }
+        scopeStack.pop_back();
+        if (d.condition) d.condition->accept(*this);
+    }
+
+    void visit(const ast::IfStmt& i) override {
+        if (i.condition) i.condition->accept(*this);
+        scopeStack.push_back(ScopeFrame{&i.thenBody, nullptr});
+        for (const auto& s : i.thenBody) {
+            if (s) s->accept(*this);
+        }
+        scopeStack.pop_back();
+        if (!i.elseBody.empty()) {
+            scopeStack.push_back(ScopeFrame{&i.elseBody, nullptr});
+            for (const auto& s : i.elseBody) {
+                if (s) s->accept(*this);
+            }
+            scopeStack.pop_back();
+        }
+    }
+
+    void visit(const ast::FunctionDecl& f) override {
+        if (targetDecl_ != nullptr && &f != targetDecl_ && f.name == name_) {
+            escaped = true;
+        }
+        for (const auto& p : f.params) {
+            if (!p.pattern && p.name == name_) escaped = true;
+        }
+        ast::detail::visitParamExprs(f.params, *this);
+        scopeStack.push_back(ScopeFrame{&f.body, &f.params});
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+        scopeStack.pop_back();
+    }
+
+    void visit(const ast::FunctionExpr& f) override {
+        if (f.name == name_) escaped = true;
+        for (const auto& p : f.params) {
+            if (!p.pattern && p.name == name_) escaped = true;
+        }
+        ast::detail::visitParamExprs(f.params, *this);
+        scopeStack.push_back(ScopeFrame{&f.body, &f.params});
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+        scopeStack.pop_back();
     }
 
     void visit(const ast::Ident& i) override {
@@ -91,9 +212,311 @@ public:
 
 private:
     std::string name_;
+    const ast::FunctionDecl* targetDecl_ = nullptr;
 };
 
+struct ConstLookupResult {
+    const ast::Expr* init = nullptr;
+    std::vector<ScopeFrame> scopes;
+};
+
+ConstLookupResult findConstInitInScopes(const std::string& name,
+                                        const std::vector<ScopeFrame>& scopes) {
+    if (name.empty()) return {};
+    for (size_t idx = scopes.size(); idx > 0; --idx) {
+        const ScopeFrame& frame = scopes[idx - 1];
+        if (frame.params != nullptr) {
+            for (const auto& p : *frame.params) {
+                if (p.pattern) {
+                    for (const auto& n : ast::patternBoundNames(*p.pattern)) {
+                        if (n == name) return {};
+                    }
+                } else if (p.name == name) {
+                    return {};
+                }
+            }
+        }
+        const auto* stmts = frame.stmts;
+        if (stmts == nullptr) continue;
+        int matchCount = 0;
+        const ast::VarDecl* matchedDecl = nullptr;
+        for (const auto& s : *stmts) {
+            if (!s) continue;
+            if (const auto* vd = dynamic_cast<const ast::VarDecl*>(s.get())) {
+                if (vd->pattern) {
+                    for (const auto& n : ast::patternBoundNames(*vd->pattern)) {
+                        if (n == name) ++matchCount;
+                    }
+                } else if (vd->name == name) {
+                    ++matchCount;
+                    matchedDecl = vd;
+                }
+            } else if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(s.get())) {
+                if (fd->name == name) ++matchCount;
+            } else if (const auto* cd = dynamic_cast<const ast::ClassDecl*>(s.get())) {
+                if (cd->name == name) ++matchCount;
+            }
+        }
+        if (matchCount > 0) {
+            if (matchCount == 1 && matchedDecl != nullptr && matchedDecl->isConst &&
+                !matchedDecl->isVar && matchedDecl->init != nullptr) {
+                std::vector<ScopeFrame> declScopes(
+                    scopes.begin(), scopes.begin() + static_cast<std::ptrdiff_t>(idx));
+                return ConstLookupResult{matchedDecl->init.get(), std::move(declScopes)};
+            }
+            return {};
+        }
+    }
+    return {};
+}
+
+std::optional<int64_t> evalConstIntInScopes(const ast::Expr& e,
+                                            const std::vector<ScopeFrame>& scopes, int depth) {
+    if (depth <= 0) return std::nullopt;
+    if (const auto* n = dynamic_cast<const ast::NumberLit*>(&e)) {
+        if (!std::isfinite(n->value) || std::floor(n->value) != n->value ||
+            (n->value == 0.0 && std::signbit(n->value)) ||
+            n->value < -2147483648.0 || n->value > 2147483647.0) {
+            return std::nullopt;
+        }
+        return static_cast<int64_t>(n->value);
+    }
+    if (const auto* u = dynamic_cast<const ast::Unary*>(&e)) {
+        if (!u->operand) return std::nullopt;
+        auto inner = evalConstIntInScopes(*u->operand, scopes, depth - 1);
+        if (!inner) return std::nullopt;
+        if (u->op == ast::UnaryOp::Posate) return *inner;
+        if (u->op == ast::UnaryOp::Negate) {
+            if (*inner == 0 || *inner == -2147483648LL) return std::nullopt;
+            return -*inner;
+        }
+        if (u->op == ast::UnaryOp::BitNot) {
+            return static_cast<int64_t>(~static_cast<int32_t>(*inner));
+        }
+        return std::nullopt;
+    }
+    if (const auto* b = dynamic_cast<const ast::Binary*>(&e)) {
+        if (!b->lhs || !b->rhs) return std::nullopt;
+        auto l = evalConstIntInScopes(*b->lhs, scopes, depth - 1);
+        auto r = evalConstIntInScopes(*b->rhs, scopes, depth - 1);
+        if (!l || !r) return std::nullopt;
+        switch (b->op) {
+            case ast::BinaryOp::Add: {
+                const int64_t v = *l + *r;
+                if (v < -2147483648LL || v > 2147483647LL) return std::nullopt;
+                return v;
+            }
+            case ast::BinaryOp::Sub: {
+                const int64_t v = *l - *r;
+                if (v < -2147483648LL || v > 2147483647LL) return std::nullopt;
+                return v;
+            }
+            case ast::BinaryOp::Mul: {
+                if ((*l == 0 && *r < 0) || (*r == 0 && *l < 0)) return std::nullopt;
+                const int64_t v = *l * *r;
+                if (v < -2147483648LL || v > 2147483647LL) return std::nullopt;
+                return v;
+            }
+            case ast::BinaryOp::BitAnd:
+                return static_cast<int64_t>(static_cast<int32_t>(*l) & static_cast<int32_t>(*r));
+            case ast::BinaryOp::BitOr:
+                return static_cast<int64_t>(static_cast<int32_t>(*l) | static_cast<int32_t>(*r));
+            case ast::BinaryOp::BitXor:
+                return static_cast<int64_t>(static_cast<int32_t>(*l) ^ static_cast<int32_t>(*r));
+            case ast::BinaryOp::Shl:
+                return static_cast<int64_t>(static_cast<int32_t>(
+                    static_cast<uint32_t>(static_cast<int32_t>(*l))
+                    << (static_cast<uint32_t>(static_cast<int32_t>(*r)) & 31u)));
+            case ast::BinaryOp::Shr:
+                return static_cast<int64_t>(
+                    static_cast<int32_t>(*l) >>
+                    (static_cast<uint32_t>(static_cast<int32_t>(*r)) & 31u));
+            case ast::BinaryOp::UShr: {
+                const uint32_t uval =
+                    static_cast<uint32_t>(static_cast<int32_t>(*l)) >>
+                    (static_cast<uint32_t>(static_cast<int32_t>(*r)) & 31u);
+                if (uval > 2147483647u) return std::nullopt;
+                return static_cast<int64_t>(uval);
+            }
+            default:
+                return std::nullopt;
+        }
+    }
+    if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+        auto found = findConstInitInScopes(id->name, scopes);
+        if (!found.init) return std::nullopt;
+        return evalConstIntInScopes(*found.init, found.scopes, depth - 1);
+    }
+    return std::nullopt;
+}
+
+std::optional<int64_t> evalTypedArrayConstLenInScopes(
+    const ast::Expr& e, const std::vector<ScopeFrame>& scopes,
+    const std::unordered_set<std::string>& rebound,
+    const std::unordered_set<std::string>& hostGlobals, int depth) {
+    if (depth <= 0) return std::nullopt;
+    if (const auto* ne = dynamic_cast<const ast::NewExpr*>(&e)) {
+        if (!ne->callee || ne->args.size() != 1 || !ne->args[0]) return std::nullopt;
+        if (dynamic_cast<const ast::SpreadElement*>(ne->args[0].get()) != nullptr) {
+            return std::nullopt;
+        }
+        const auto* ctorId = dynamic_cast<const ast::Ident*>(ne->callee.get());
+        if (!ctorId || !isKnownTypedArrayCtorName(ctorId->name)) return std::nullopt;
+        if (rebound.contains(ctorId->name) || hostGlobals.contains(ctorId->name)) {
+            return std::nullopt;
+        }
+        auto len = evalConstIntInScopes(*ne->args[0], scopes, 8);
+        if (!len || *len < 0 || *len > 2147483647LL) return std::nullopt;
+        return *len;
+    }
+    if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+        auto found = findConstInitInScopes(id->name, scopes);
+        if (!found.init) return std::nullopt;
+        return evalTypedArrayConstLenInScopes(*found.init, found.scopes, rebound, hostGlobals,
+                                              depth - 1);
+    }
+    return std::nullopt;
+}
+
 }  // namespace
+
+void Lowerer::initModuleBufferDetachFree() {
+    moduleBufferDetachFree_ = true;
+    ModuleDetachHazardScan scan;
+    for (const auto& s : astModule_.body) {
+        if (s) s->accept(scan);
+        if (scan.hazard) {
+            moduleBufferDetachFree_ = false;
+            return;
+        }
+    }
+}
+
+void Lowerer::planFunctionParamFacts(const std::vector<ast::Param>& params,
+                                     const std::vector<ast::StmtPtr>& stmts) {
+    if (closureParamProofDisabled() || fnParamFactsStack_.empty()) return;
+
+    const bool isTopLevel = (&stmts == &astModule_.body);
+    if (isTopLevel && inference_ == nullptr) return;
+
+    bool anyDeclaration = false;
+    for (const auto& stmt : stmts) {
+        const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt.get());
+        if (fnDecl != nullptr && !fnDecl->isGenerator && !fnDecl->isAsync &&
+            !fnDecl->params.empty()) {
+            anyDeclaration = true;
+            break;
+        }
+    }
+    if (!anyDeclaration) return;
+
+    std::unordered_set<std::string> rebound = ast::getDeeplyReboundNames(astModule_.body);
+    if (!isTopLevel) {
+        for (auto& name : ast::getDeeplyReboundNames(stmts)) rebound.insert(std::move(name));
+    }
+    for (const auto& p : params) {
+        if (!p.pattern && !p.name.empty()) rebound.insert(p.name);
+        if (!p.defaultValue) continue;
+        for (auto& name : ast::getDeeplyReboundNames(*p.defaultValue)) {
+            rebound.insert(std::move(name));
+        }
+    }
+
+    uint32_t moduleFnIndex = 0;
+    for (const auto& stmt : stmts) {
+        const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt.get());
+        if (fnDecl == nullptr) continue;
+        const uint32_t thisFnIdx = moduleFnIndex++;
+        if (fnDecl->isGenerator || fnDecl->isAsync || fnDecl->isExported) continue;
+        if (fnDecl->name.empty() || fnDecl->params.empty()) continue;
+        if (isTopLevel && !inference_->isDirectCallable(thisFnIdx)) continue;
+        if (rebound.contains(fnDecl->name)) continue;
+
+        bool shapeFits = true;
+        for (const auto& p : fnDecl->params) {
+            if (p.defaultValue || p.isRest || p.pattern || p.name.empty()) shapeFits = false;
+        }
+        if (!shapeFits) continue;
+
+        CalleeOnlyScan scan(fnDecl->name, fnDecl);
+        if (!isTopLevel) scan.scopeStack.push_back(ScopeFrame{&astModule_.body, nullptr});
+        scan.scopeStack.push_back(ScopeFrame{&stmts, isTopLevel ? nullptr : &params});
+        for (const auto& s : stmts) {
+            if (!s) continue;
+            if (isTopLevel && matchGlobalThisFnExport(*s) == fnDecl->name) continue;
+            s->accept(scan);
+        }
+        for (const auto& p : params) {
+            if (p.defaultValue) p.defaultValue->accept(scan);
+            if (p.pattern) ast::detail::visitPatternExprs(p.pattern.get(), scan);
+        }
+        scan.scopeStack.pop_back();
+        if (!isTopLevel) scan.scopeStack.pop_back();
+
+        if (scan.escaped || scan.spread || scan.scopedSites.empty()) continue;
+
+        FnParamFacts facts;
+        const std::unordered_set<std::string> bodyAssigned = ast::getAssignedNames(fnDecl->body);
+        for (size_t k = 0; k < fnDecl->params.size(); ++k) {
+            const std::string& pName = fnDecl->params[k].name;
+            if (bodyAssigned.contains(pName)) continue;
+
+            bool allInt = true;
+            int64_t minInt = std::numeric_limits<int64_t>::max();
+            int64_t maxInt = std::numeric_limits<int64_t>::min();
+            for (const auto& site : scan.scopedSites) {
+                if (k >= site.call->args.size() || !site.call->args[k]) {
+                    allInt = false;
+                    break;
+                }
+                auto v = evalConstIntInScopes(*site.call->args[k], site.scopes, 8);
+                if (!v) {
+                    allInt = false;
+                    break;
+                }
+                minInt = std::min(minInt, *v);
+                maxInt = std::max(maxInt, *v);
+            }
+            if (allInt && minInt <= maxInt) {
+                facts.intParamBounds[pName] = {minInt, maxInt};
+                if (minInt == maxInt) {
+                    facts.constIntParams[pName] = minInt;
+                }
+            }
+
+            if (moduleBufferDetachFree_ && !typedElemDisabled_) {
+                bool allTa = true;
+                int64_t minLen = std::numeric_limits<int64_t>::max();
+                int64_t maxLen = std::numeric_limits<int64_t>::min();
+                for (const auto& site : scan.scopedSites) {
+                    if (k >= site.call->args.size() || !site.call->args[k]) {
+                        allTa = false;
+                        break;
+                    }
+                    auto len = evalTypedArrayConstLenInScopes(
+                        *site.call->args[k], site.scopes, rebound, hostGlobals_, 4);
+                    if (!len) {
+                        allTa = false;
+                        break;
+                    }
+                    minLen = std::min(minLen, *len);
+                    maxLen = std::max(maxLen, *len);
+                }
+                if (allTa && minLen <= maxLen) {
+                    facts.minTypedArrayLenParams[pName] = minLen;
+                    facts.maxTypedArrayLenParams[pName] = maxLen;
+                    if (minLen == maxLen) {
+                        facts.exactTypedArrayLenParams[pName] = minLen;
+                    }
+                }
+            }
+        }
+        if (!facts.constIntParams.empty() || !facts.intParamBounds.empty() ||
+            !facts.minTypedArrayLenParams.empty()) {
+            fnParamFactsStack_.back().emplace(fnDecl, std::move(facts));
+        }
+    }
+}
 
 // THE PARAMETER PROOF FOR A CLOSURE, and the general form of what `param
 // f(x): number` does in a manifest by hand.
@@ -366,18 +789,33 @@ void Lowerer::applyProvenClosureParams(const ast::Node& site,
     // declaration is a member of: the enclosing body is mid-lowering, and every
     // body nested inside it has closed its own frame again. The module top level
     // is not lowered through `lowerFunctionBody` and so opens no frame at all.
-    if (provenClosureParams_.empty()) return;
-    const auto& plan = provenClosureParams_.back();
-    const auto it = plan.find(decl);
-    if (it == plan.end()) return;
     const size_t base = fn.firstSourceParam();
-    for (size_t i = 0; i < params.size() && i < it->second.size() && i + base < fn.params.size();
-         ++i) {
-        // Only ever Dynamic to F64. A `--pins` entry that already said the same
-        // thing has run just above; the proof and the promise agree, and
-        // neither can be reached by a slot the other typed differently.
-        if (it->second[i] && fn.params[i + base].type == il::Type::Dynamic) {
-            fn.params[i + base].type = il::Type::F64;
+    if (!provenClosureParams_.empty()) {
+        const auto& plan = provenClosureParams_.back();
+        const auto it = plan.find(decl);
+        if (it != plan.end()) {
+            for (size_t i = 0;
+                 i < params.size() && i < it->second.size() && i + base < fn.params.size(); ++i) {
+                // Only ever Dynamic to F64. A `--pins` entry that already said the same
+                // thing has run just above; the proof and the promise agree, and
+                // neither can be reached by a slot the other typed differently.
+                if (it->second[i] && fn.params[i + base].type == il::Type::Dynamic) {
+                    fn.params[i + base].type = il::Type::F64;
+                }
+            }
+        }
+    }
+    if (!fnParamFactsStack_.empty()) {
+        const auto factsIt = fnParamFactsStack_.back().find(decl);
+        if (factsIt != fnParamFactsStack_.back().end()) {
+            for (size_t i = 0; i < params.size() && i + base < fn.params.size(); ++i) {
+                if (fn.params[i + base].type == il::Type::F64 && !fn.params[i + base].pinned) {
+                    const auto cIt = factsIt->second.constIntParams.find(params[i].name);
+                    if (cIt != factsIt->second.constIntParams.end()) {
+                        fn.params[i + base].knownConstInt = cIt->second;
+                    }
+                }
+            }
         }
     }
 }
