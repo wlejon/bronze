@@ -101,10 +101,18 @@ ExprPtr Parser::matchSymbolIteratorKey() {
 
 bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     fn.isGenerator = true;
+    if (check(TokenKind::Less) && !parseTypeParams()) return false;
     if (!expect(TokenKind::LParen, "'(' after a generator name")) return false;
     if (!parseParams(fn.params)) return false;
     if (!expect(TokenKind::RParen, "')' after generator parameters")) return false;
     if (match(TokenKind::Colon)) fn.returnType = parseTypeAnnotation();
+
+    if (!check(TokenKind::LBrace)) {
+        if (consumeSemicolon("generator overload signature")) {
+            lastFunctionWasOverload_ = true;
+        }
+        return false;
+    }
 
     // A parameter list is NOT part of the generator body: 15.5.1 forbids
     // `yield` in one, and the flag is raised only over the braces.

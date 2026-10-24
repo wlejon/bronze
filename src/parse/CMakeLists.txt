@@ -10,6 +10,8 @@ bronze_add_module(parse
         parser_pattern.cpp
         parser_module.cpp
         parser_strict.cpp
+        parser_type.cpp
+        parser_ts.cpp
     # `support` is a direct dependency (parser.h includes
     # support/diagnostics.h), not one inherited through ast.
     # `regex` is a dependency of the PARSER and not of lowering, because a
@@ -28,4 +30,5 @@ bronze_add_module(parse
                  ../../tests/parse/parser_stmt_test.cpp
                  ../../tests/parse/parser_strict_test.cpp
                  ../../tests/parse/parser_class_test.cpp
+                 ../../tests/parse/parser_ts_test.cpp
 )

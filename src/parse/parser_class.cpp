@@ -16,7 +16,9 @@
 // token pre-scan below: it is not an optimisation, it is the only order in
 // which the rule can be checked in one pass.
 
+#include <algorithm>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "parse/parser.h"
@@ -234,13 +236,29 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         if (match(TokenKind::Semicolon)) continue;  // a stray `;` between members is legal
 
         ClassMethod member;
-        // `static` is not a reserved word: it names a member when something
-        // follows it, and is an ordinary method/field name in `static() {}` or `static = 1`.
-        if (check(TokenKind::Identifier) && peek().text == "static" &&
-            peek(1).kind != TokenKind::LParen && peek(1).kind != TokenKind::Assign &&
-            peek(1).kind != TokenKind::Semicolon && peek(1).kind != TokenKind::RBrace) {
+        bool isDeclareMember = false;
+        bool isAbstractMember = false;
+        while (check(TokenKind::Identifier)) {
+            const std::string_view w = peek().text;
+            if (w == "static" && peek(1).kind == TokenKind::LBrace) {
+                advance();
+                member.isStatic = true;
+                break;
+            }
+            const bool isModWord =
+                (w == "static" || w == "public" || w == "private" || w == "protected" ||
+                 w == "readonly" || w == "override" || w == "abstract" || w == "declare");
+            if (!isModWord) break;
+            const TokenKind k1 = peek(1).kind;
+            if (k1 == TokenKind::LParen || k1 == TokenKind::Less || k1 == TokenKind::Colon ||
+                k1 == TokenKind::Question || k1 == TokenKind::Bang || k1 == TokenKind::Assign ||
+                k1 == TokenKind::Semicolon || k1 == TokenKind::RBrace) {
+                break;
+            }
             advance();
-            member.isStatic = true;
+            if (w == "static") member.isStatic = true;
+            else if (w == "declare") isDeclareMember = true;
+            else if (w == "abstract") isAbstractMember = true;
         }
         inStaticElement_ = member.isStatic;
         // `static { ... }` — a ClassStaticBlockDefinition (15.7). Its body is
@@ -305,7 +323,9 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                                         ? (member.isStatic ? "static.computed" : "computed")
                                         : member.name;
             fn->name = name.empty() ? sym : (name + "." + sym);
+            lastFunctionWasOverload_ = false;
             if (!parseGeneratorTail(*fn)) {
+                if (lastFunctionWasOverload_) continue;
                 ok = false;
                 break;
             }
@@ -314,6 +334,27 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             continue;
         }
         if (check(TokenKind::LBracket)) {
+            // Check for TypeScript index signature: `[key: string]: ValueType;`
+            if (isIdentifierName(peek(1).kind) && peek(2).kind == TokenKind::Colon) {
+                advance();  // '['
+                advance();  // key name
+                advance();  // ':'
+                if (parseTypeAnnotation().empty()) {
+                    ok = false;
+                    break;
+                }
+                if (!expect(TokenKind::RBracket, "']' after index signature parameter") ||
+                    !expect(TokenKind::Colon, "':' after index signature")) {
+                    ok = false;
+                    break;
+                }
+                if (parseTypeAnnotation().empty()) {
+                    ok = false;
+                    break;
+                }
+                match(TokenKind::Semicolon);
+                continue;
+            }
             const Span keySpan = peek().span;
             advance();  // '['
             member.keyExpr = parseAssign();
@@ -323,16 +364,21 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                 break;
             }
             member.name.clear();
-            if (check(TokenKind::LParen)) {
+            if (check(TokenKind::LParen) || check(TokenKind::Less)) {
                 auto fn = std::make_unique<FunctionExpr>();
                 fn->span.begin = keySpan.begin;
                 fn->kind = ast::FunctionKind::Method;
                 const std::string sym = member.isStatic ? "static.computed" : "computed";
                 fn->name = name.empty() ? sym : (name + "." + sym);
-                advance();  // '('
+                if (check(TokenKind::Less) && !parseTypeParams()) return false;
+                if (!expect(TokenKind::LParen, "'(' after computed method name")) return false;
                 if (!parseParams(fn->params)) return false;
                 if (!expect(TokenKind::RParen, "')' after parameters")) return false;
                 if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+                if (!check(TokenKind::LBrace)) {
+                    if (!consumeSemicolon("computed method signature")) return false;
+                    continue;
+                }
                 {
                     GeneratorScopeGuard guard(*this);
                     fn->body = parseFunctionBody(fn->strict);
@@ -346,6 +392,15 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             }
             // Computed field: `[expr] = val;` or `[expr];`
             member.isField = true;
+            match(TokenKind::Question);
+            match(TokenKind::Bang);
+            if (match(TokenKind::Colon)) {
+                if (parseTypeAnnotation().empty()) {
+                    ok = false;
+                    break;
+                }
+                member.hasTypeAnnotation = true;
+            }
             if (match(TokenKind::Assign)) {
                 member.init = parseAssign();
                 if (!member.init) {
@@ -354,7 +409,9 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                 }
             }
             match(TokenKind::Semicolon);
-            methods.push_back(std::move(member));
+            if (!isDeclareMember && !isAbstractMember) {
+                methods.push_back(std::move(member));
+            }
             continue;
         }
         // `async` is contextual as well, and a ClassElementName on the SAME
@@ -400,9 +457,11 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                                             ? (member.isStatic ? "static.computed" : "computed")
                                             : member.name;
                 const std::string fnName = name.empty() ? sym : (name + "." + sym);
+                lastFunctionWasOverload_ = false;
                 auto fn = parseAsyncMethodTail(fnName, asyncKwSpan, /*clearSuper=*/false,
                                                /*isGenerator=*/true);
                 if (!fn) {
+                    if (lastFunctionWasOverload_) continue;
                     ok = false;
                     break;
                 }
@@ -438,9 +497,11 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                                         ? (member.isStatic ? "static.computed" : "computed")
                                         : member.name;
             const std::string fnName = name.empty() ? sym : (name + "." + sym);
+            lastFunctionWasOverload_ = false;
             auto fn = parseAsyncMethodTail(fnName, asyncSpan,
                                            /*clearSuper=*/false);
             if (!fn) {
+                if (lastFunctionWasOverload_) continue;
                 ok = false;
                 break;
             }
@@ -451,7 +512,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         // `get`/`set` are contextual here too: `get() {}` is a method named
         // `get`, and only a following name makes this an accessor.
         if (check(TokenKind::Identifier) && (peek().text == "get" || peek().text == "set") &&
-            (peek(1).kind == TokenKind::Identifier || peek(1).kind == TokenKind::StringLiteral ||
+            (isIdentifierName(peek(1).kind) || peek(1).kind == TokenKind::StringLiteral ||
              peek(1).kind == TokenKind::PrivateName || peek(1).kind == TokenKind::LBracket)) {
             const ast::AccessorKind kind =
                 peek().text == "get" ? ast::AccessorKind::Getter : ast::AccessorKind::Setter;
@@ -487,9 +548,19 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             ok = false;
             break;
         }
-        if (!check(TokenKind::LParen)) {
-            // Field: `name = val;` or `name;`
+        // Optional `?` on a method or field (`foo?(): void` or `x?: number`)
+        const bool hadQuestion = match(TokenKind::Question);
+        if (!check(TokenKind::LParen) && !check(TokenKind::Less)) {
+            // Field: `name?: Type = val;` or `name!: Type;` or `name;`
             member.isField = true;
+            if (!hadQuestion) match(TokenKind::Bang);
+            if (match(TokenKind::Colon)) {
+                if (parseTypeAnnotation().empty()) {
+                    ok = false;
+                    break;
+                }
+                member.hasTypeAnnotation = true;
+            }
             if (match(TokenKind::Assign)) {
                 member.init = parseAssign();
                 if (!member.init) {
@@ -498,7 +569,9 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                 }
             }
             match(TokenKind::Semicolon);
-            methods.push_back(std::move(member));
+            if (!isDeclareMember && !isAbstractMember) {
+                methods.push_back(std::move(member));
+            }
             continue;
         }
         member.isConstructor = !member.isStatic && member.name == "constructor";
@@ -511,16 +584,59 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         fn->kind = member.isConstructor ? ast::FunctionKind::ClassConstructor
                                         : ast::FunctionKind::Method;
         fn->name = name.empty() ? member.name : (name + "." + member.name);
-        advance();  // '('
+        if (check(TokenKind::Less) && !parseTypeParams()) return false;
+        if (!expect(TokenKind::LParen, "'(' after method name")) return false;
         if (!parseParams(fn->params)) return false;
         if (!expect(TokenKind::RParen, "')' after parameters")) return false;
         if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+        if (!check(TokenKind::LBrace)) {
+            if (!consumeSemicolon("method overload or abstract signature")) {
+                ok = false;
+                break;
+            }
+            continue;
+        }
         {
             GeneratorScopeGuard guard(*this);
             fn->body = parseFunctionBody(fn->strict);
         }
         if (!checkStrictParams(fn->params, fn->strict)) return false;
         if (diags_.hasErrors()) return false;
+        if (member.isConstructor) {
+            size_t insertIdx = 0;
+            if (!fn->body.empty()) {
+                if (const auto* es = dynamic_cast<const ExprStmt*>(fn->body[0].get())) {
+                    if (dynamic_cast<const SuperCall*>(es->expr.get()) != nullptr) {
+                        insertIdx = 1;
+                    }
+                }
+            }
+            for (const auto& p : fn->params) {
+                if (!p.isParameterProperty || p.name.empty()) continue;
+                auto lhs = std::make_unique<MemberAccess>();
+                lhs->span = p.span;
+                auto thisExpr = std::make_unique<ThisExpr>();
+                thisExpr->span = p.span;
+                lhs->object = std::move(thisExpr);
+                lhs->property = p.name;
+
+                auto rhs = std::make_unique<Ident>();
+                rhs->span = p.span;
+                rhs->name = p.name;
+
+                auto assign = std::make_unique<Binary>();
+                assign->span = p.span;
+                assign->op = BinaryOp::Assign;
+                assign->lhs = std::move(lhs);
+                assign->rhs = std::move(rhs);
+
+                auto stmt = std::make_unique<ExprStmt>();
+                stmt->span = p.span;
+                stmt->expr = std::move(assign);
+                fn->body.insert(fn->body.begin() + static_cast<std::ptrdiff_t>(insertIdx++),
+                                std::move(stmt));
+            }
+        }
         fn->span.end = previous().span.end;
         member.fn = std::move(fn);
         methods.push_back(std::move(member));
@@ -581,6 +697,37 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         }
         methods.insert(methods.begin(), std::move(ctor));
     }
+
+    // If a TypeScript field declaration has a type annotation and no initializer
+    // (`x: number;`), and the constructor body already assigns `this.x = ...`,
+    // omit the uninitialized field entry so FieldAudit and ClassLayoutTable
+    // observe only the typed constructor initialization rather than an initial
+    // `undefined` write.
+    std::unordered_set<std::string> ctorAssignedFields;
+    for (const auto& m : methods) {
+        if (!m.isConstructor || !m.fn) continue;
+        for (const auto& st : m.fn->body) {
+            const auto* es = dynamic_cast<const ExprStmt*>(st.get());
+            if (!es) continue;
+            const auto* bin = dynamic_cast<const Binary*>(es->expr.get());
+            if (!bin || bin->op != BinaryOp::Assign) continue;
+            const auto* mem = dynamic_cast<const MemberAccess*>(bin->lhs.get());
+            if (!mem || mem->isPrivate) continue;
+            if (dynamic_cast<const ThisExpr*>(mem->object.get()) != nullptr) {
+                ctorAssignedFields.insert(mem->property);
+            }
+        }
+    }
+    if (!ctorAssignedFields.empty()) {
+        methods.erase(
+            std::remove_if(methods.begin(), methods.end(),
+                           [&](const ClassMethod& m) {
+                               return m.isField && !m.isStatic && !m.init &&
+                                      m.hasTypeAnnotation && !m.isPrivate() &&
+                                      ctorAssignedFields.count(m.name) != 0;
+                           }),
+            methods.end());
+    }
     return true;
 }
 
@@ -602,12 +749,24 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         if (!nameTok) return nullptr;
         if (!checkStrictBindingName(nameTok->text, nameTok->span, "class name")) return nullptr;
         cls->name = std::string(nameTok->text);
+        recordDeclaredType(cls->name);
     }
 
-    if (match(TokenKind::KwExtends)) {
-        cls->superClass = parseUnaryPostfix();
-        if (!cls->superClass) return nullptr;
-        cls->superName = superExpressionName(cls->superClass.get());
+    if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+
+    while (match(TokenKind::KwExtends) ||
+           (check(TokenKind::Identifier) && peek().text == "implements")) {
+        if (previous().kind == TokenKind::KwExtends) {
+            cls->superClass = parseUnaryPostfix();
+            if (!cls->superClass) return nullptr;
+            cls->superName = superExpressionName(cls->superClass.get());
+            if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+        } else {
+            advance();  // 'implements'
+            do {
+                if (parseTypeAnnotation().empty()) return nullptr;
+            } while (match(TokenKind::Comma));
+        }
     }
 
     if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span)) return nullptr;
@@ -627,10 +786,21 @@ ast::ExprPtr Parser::parseClassExpr() {
         cls->name = std::string(nameTok.text);
     }
 
-    if (match(TokenKind::KwExtends)) {
-        cls->superClass = parseUnaryPostfix();
-        if (!cls->superClass) return nullptr;
-        cls->superName = superExpressionName(cls->superClass.get());
+    if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+
+    while (match(TokenKind::KwExtends) ||
+           (check(TokenKind::Identifier) && peek().text == "implements")) {
+        if (previous().kind == TokenKind::KwExtends) {
+            cls->superClass = parseUnaryPostfix();
+            if (!cls->superClass) return nullptr;
+            cls->superName = superExpressionName(cls->superClass.get());
+            if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+        } else {
+            advance();  // 'implements'
+            do {
+                if (parseTypeAnnotation().empty()) return nullptr;
+            } while (match(TokenKind::Comma));
+        }
     }
 
     if (!parseClassBodyCommon(cls->name, cls->superClass.get(), cls->superName, cls->methods, cls->span)) return nullptr;

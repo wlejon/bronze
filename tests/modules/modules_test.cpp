@@ -842,4 +842,31 @@ TEST_CASE("a template import() bounded by a module extension is still globbed") 
     CHECK_FALSE(contains(r.dump, "README"));
 }
 
+TEST_CASE("TypeScript .js->.ts, .mjs->.mts, and explicit .ts/.mts resolution") {
+    Sandbox box("ts_resolve");
+    box.write("math.ts",
+              "export interface Vec2 { x: number; y: number; }\n"
+              "export type Scalar = number;\n"
+              "export function dot(a: Vec2, b: Vec2): Scalar { return a.x * b.x + a.y * b.y; }\n");
+    box.write("esm_util.mts",
+              "export const SCALE: number = 2;\n");
+    box.write("pkg/index.ts",
+              "export const PKG_VERSION: number = 1;\n");
+    const std::string entry = box.write(
+        "main.ts",
+        "import { Vec2, type Scalar, dot } from './math.js';\n"
+        "import { SCALE } from './esm_util.mjs';\n"
+        "import { PKG_VERSION } from './pkg/index.ts';\n"
+        "const v: Vec2 = { x: 3, y: 4 };\n"
+        "const res: Scalar = dot(v, v) * SCALE + PKG_VERSION;\n"
+        "console.log(res);\n");
+
+    Loaded r = load(entry);
+    REQUIRE_MESSAGE(r.ok, r.errors);
+    CHECK(contains(r.dump, "(function mod1.dot"));
+    CHECK(contains(r.dump, "(const mod2.SCALE"));
+    CHECK(contains(r.dump, "(const mod3.PKG_VERSION"));
+}
+
+
 

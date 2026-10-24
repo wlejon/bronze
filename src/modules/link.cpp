@@ -471,6 +471,12 @@ bool Linker::run(ast::Module& out) {
         for (const auto& picker : info_[id].dynPickers) {
             if (!synthesizePicker(id, picker, out.body)) return false;
         }
+        for (const auto& dt : file.ast->declaredTypes) {
+            out.declaredTypes.insert(dt);
+        }
+        for (const auto& ta : file.ast->typeAliases) {
+            out.typeAliases.emplace(ta.first, ta.second);
+        }
         for (auto& stmt : file.ast->body) {
             if (dynamic_cast<const ast::ImportDecl*>(stmt.get())) continue;
             if (dynamic_cast<const ast::ExportNamesDecl*>(stmt.get())) continue;

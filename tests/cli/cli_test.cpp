@@ -498,3 +498,69 @@ TEST_CASE("CLI driver --target writes a module for another machine and refuses a
     std::filesystem::remove(soPath, ec);
     std::filesystem::remove(jsPath, ec);
 }
+
+TEST_CASE("CLI driver compiles and runs multi-module TypeScript (.ts / .mts) natively") {
+    std::filesystem::path dir = bronze_test::tempDir() / "test_ts_e2e";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+
+    std::filesystem::path typesPath = dir / "shapes.ts";
+    std::filesystem::path helperPath = dir / "helper.mts";
+    std::filesystem::path mainPath = dir / "main.ts";
+    std::filesystem::path exePath = dir / "ts_app.exe";
+
+    writeTestFile(typesPath,
+                  "export interface Shape<T = number> {\n"
+                  "  area(): T;\n"
+                  "}\n"
+                  "export type Metric = number;\n"
+                  "export enum Mode { Fast = 2, Accurate = Fast << 1, Label = 'ACC' }\n"
+                  "export namespace MathNS {\n"
+                  "  export const OFFSET: number = 5;\n"
+                  "  export function boost(x: number): number { return x + OFFSET; }\n"
+                  "}\n");
+
+    writeTestFile(helperPath,
+                  "export function identity<T>(val: T): T;\n"
+                  "export function identity(val: any): any {\n"
+                  "  return val;\n"
+                  "}\n");
+
+    writeTestFile(mainPath,
+                  "import { Shape, type Metric, Mode, MathNS } from './shapes.js';\n"
+                  "import { identity } from './helper.mjs';\n"
+                  "declare const UNUSED_HOST_GLOBAL: string;\n"
+                  "abstract class BaseShape {\n"
+                  "  abstract area(): number;\n"
+                  "}\n"
+                  "class Rect extends BaseShape implements Shape<Metric> {\n"
+                  "  readonly tag!: string;\n"
+                  "  constructor(public w: number, private readonly h: number = 3) {\n"
+                  "    super();\n"
+                  "  }\n"
+                  "  override area(this: Rect): Metric {\n"
+                  "    return (this.w * this.h) as Metric;\n"
+                  "  }\n"
+                  "}\n"
+                  "const scale = <T extends number>(x: T, factor?: number): number => {\n"
+                  "  return x * (factor ?? 1);\n"
+                  "};\n"
+                  "const r = new Rect(4, 5);\n"
+                  "const a = identity<number>(r.area()!) satisfies number;\n"
+                  "const total = scale<number>(a, Mode.Fast) + MathNS.boost(Mode.Accurate);\n"
+                  "console.log(total, Mode[2], Mode.Label);\n");
+
+    std::string errOutput;
+    int status = bronze::cli::runBuild(mainPath.string(), exePath.string(), &errOutput);
+    REQUIRE_MESSAGE(status == 0, errOutput);
+    REQUIRE(std::filesystem::exists(exePath));
+
+    std::string runOutput = runAndCaptureOutput(exePath);
+    // r.area() = 20; scale(20, 2) = 40; MathNS.boost(4) = 9; total = 49
+    CHECK(runOutput == "49 Fast ACC\n");
+
+    removeProgram(exePath, ec);
+    std::filesystem::remove_all(dir, ec);
+}
+

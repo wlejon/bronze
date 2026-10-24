@@ -331,24 +331,53 @@ PatternPtr Parser::patternFromLiteral(ExprPtr expr) {
 // a pattern's length is unbounded, so the header cannot use fixed lookahead.
 size_t Parser::skipBindingTarget(size_t at) const {
     const TokenKind first = peek(at).kind;
-    if (first != TokenKind::LBracket && first != TokenKind::LBrace) {
-        // A plain name, optionally annotated. The annotation is one token.
-        size_t next = at + 1;
-        if (peek(next).kind == TokenKind::Colon) next += 2;
-        return next;
-    }
-    size_t depth = 0;
-    for (size_t i = at;; ++i) {
-        const TokenKind kind = peek(i).kind;
-        if (kind == TokenKind::EndOfFile) return i;
-        if (kind == TokenKind::LBracket || kind == TokenKind::LBrace ||
-            kind == TokenKind::LParen) {
-            ++depth;
-        } else if (kind == TokenKind::RBracket || kind == TokenKind::RBrace ||
-                   kind == TokenKind::RParen) {
-            if (--depth == 0) return i + 1;
+    size_t next = at + 1;
+    if (first == TokenKind::LBracket || first == TokenKind::LBrace) {
+        size_t depth = 0;
+        for (size_t i = at;; ++i) {
+            const TokenKind kind = peek(i).kind;
+            if (kind == TokenKind::EndOfFile) return i;
+            if (kind == TokenKind::LBracket || kind == TokenKind::LBrace ||
+                kind == TokenKind::LParen) {
+                ++depth;
+            } else if (kind == TokenKind::RBracket || kind == TokenKind::RBrace ||
+                       kind == TokenKind::RParen) {
+                if (--depth == 0) {
+                    next = i + 1;
+                    break;
+                }
+            }
         }
     }
+    if (peek(next).kind == TokenKind::Colon) {
+        auto* self = const_cast<Parser*>(this);
+        const size_t savedPos = self->pos_;
+        const size_t savedEditCount = self->tokenEditsLog_.size();
+        const size_t savedDiagCount = self->diags_.size();
+        const size_t savedDeclaredCount = self->declaredTypesUndo_.size();
+        self->pos_ = savedPos + next + 1;
+        ++self->speculativeDepth_;
+        const std::string ann = self->parseTypeAnnotation();
+        const size_t endOffset = self->pos_ - savedPos;
+        --self->speculativeDepth_;
+        while (self->tokenEditsLog_.size() > savedEditCount) {
+            const auto& entry = self->tokenEditsLog_.back();
+            self->tokens_[entry.first] = entry.second;
+            self->tokenEditsLog_.pop_back();
+        }
+        while (self->declaredTypesUndo_.size() > savedDeclaredCount) {
+            if (self->currentModule_) {
+                self->currentModule_->declaredTypes.erase(self->declaredTypesUndo_.back());
+            }
+            self->declaredTypesUndo_.pop_back();
+        }
+        const bool ok = !ann.empty() && self->diags_.size() == savedDiagCount;
+        self->diags_.truncate(savedDiagCount);
+        self->pos_ = savedPos;
+        if (ok) return endOffset;
+        return next + 2;
+    }
+    return next;
 }
 
 }  // namespace bronze

@@ -108,6 +108,13 @@ private:
     // declared inside strict code is strict" means. Nothing later can ask the
     // question, which is why the answer is written onto the AST nodes here.
     bool strict_ = false;
+    ast::Module* currentModule_ = nullptr;
+    bool inConditionalThen_ = false;
+    bool lastFunctionWasOverload_ = false;
+    size_t namespaceOrdinal_ = 0;
+    size_t speculativeDepth_ = 0;
+    std::vector<std::pair<size_t, Token>> tokenEditsLog_;
+    std::vector<std::string> declaredTypesUndo_;
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -480,7 +487,24 @@ private:
     ast::StmtPtr parseForAssignmentHead(const Token& kw, bool isAwait);
     std::vector<ast::StmtPtr> parseBlock();
     std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
-    std::string parseTypeAnnotation();
+    std::string parseTypeAnnotation(bool inArrowReturn = false);
+    bool parseTypeParams();
+    bool matchTypeGreater();
+    bool expectTypeGreater(const char* what);
+    bool tryConsumeTypeArgsForCall();
+    void recordDeclaredType(const std::string& name);
+    void recordTypeAlias(const std::string& name, const std::string& rhs);
+    bool isTypeAliasDeclStart() const;
+    bool isInterfaceDeclStart() const;
+    bool isEnumDeclStart() const;
+    bool isNamespaceDeclStart() const;
+    bool isDeclareStmtStart() const;
+    bool isAbstractClassDeclStart() const;
+    bool parseTypeAliasDecl();
+    bool parseInterfaceDecl();
+    bool parseEnumDecl(std::vector<ast::StmtPtr>& out, std::string* outName = nullptr);
+    bool parseNamespaceDecl(std::vector<ast::StmtPtr>& out, std::string* outName = nullptr);
+    bool parseDeclareStmt();
     // The characters a string literal denotes, escapes resolved (see the
     // definition: the lexer finds the literal's end, the parser decides what
     // it means).

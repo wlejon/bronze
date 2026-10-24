@@ -30,6 +30,8 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
         fn->name = std::string(name->text);
     }
 
+    if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+
     // `function* g() {}` takes the same route a generator METHOD does: a
     // FunctionExpr is filled in and its pieces moved across, because a
     // declaration and an expression differ in where the value lands and in
@@ -54,6 +56,13 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
     if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
     if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
 
+    if (!check(TokenKind::LBrace)) {
+        if (consumeSemicolon("function overload signature")) {
+            lastFunctionWasOverload_ = true;
+        }
+        return nullptr;
+    }
+
     {
         GeneratorScopeGuard guard(*this);
         fn->body = parseFunctionBody(fn->strict);
@@ -63,29 +72,9 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
     fn->span.end = previous().span.end;
     return fn;
 }
-// `x => ...` and `(a, b) => ...`. Deciding between an arrow's parameter
-// list and a parenthesized expression needs unbounded lookahead in general,
-// so this scans forward for the `)` that matches the `(` and asks what
-// follows it. Cheaper than parse-and-backtrack, and it cannot half-consume
-// the input on a wrong guess.
+// `x => ...`, `(a, b) => ...`, and `<T>(a: T): R => ...`.
 bool Parser::looksLikeArrow() const {
-    if ((check(TokenKind::Identifier) || check(TokenKind::KwOf)) && peek(1).kind == TokenKind::Arrow) return true;
-    if (!check(TokenKind::LParen)) return false;
-    size_t depth = 0;
-    for (size_t i = 0;; ++i) {
-        const TokenKind kind = peek(i).kind;
-        if (kind == TokenKind::EndOfFile) return false;
-        if (kind == TokenKind::LParen) ++depth;
-        else if (kind == TokenKind::RParen) {
-            if (--depth == 0) {
-                // A return-type annotation sits between the `)` and the
-                // `=>`; the annotation itself is one token today.
-                if (peek(i + 1).kind == TokenKind::Arrow) return true;
-                return peek(i + 1).kind == TokenKind::Colon &&
-                       peek(i + 3).kind == TokenKind::Arrow;
-            }
-        }
-    }
+    return looksLikeArrowFrom(0);
 }
 
 ExprPtr Parser::parseArrowFunction() {
@@ -93,6 +82,8 @@ ExprPtr Parser::parseArrowFunction() {
     fn->isArrow = true;
     fn->kind = ast::FunctionKind::Arrow;
     fn->span.begin = peek().span.begin;
+
+    if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
 
     if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         Param p;
@@ -102,7 +93,7 @@ ExprPtr Parser::parseArrowFunction() {
         if (!expect(TokenKind::LParen, "'(' before arrow parameters")) return nullptr;
         if (!parseParams(fn->params)) return nullptr;
         if (!expect(TokenKind::RParen, "')' after arrow parameters")) return nullptr;
-        if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+        if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation(/*inArrowReturn=*/true);
     }
     if (!expect(TokenKind::Arrow, "'=>' after arrow parameters")) return nullptr;
 
@@ -139,13 +130,38 @@ ExprPtr Parser::parseArrowFunction() {
 // default; or a rest parameter, which takes what is left and so must be last
 // and can have neither a default nor a pattern.
 bool Parser::parseParams(std::vector<ast::Param>& out) {
+    bool isFirst = true;
     while (!check(TokenKind::RParen)) {
         if (check(TokenKind::EndOfFile)) {
             error("unterminated parameter list");
             return false;
         }
+        // TypeScript `this: SomeType` first parameter is erased at runtime.
+        if (isFirst && check(TokenKind::KwThis) && peek(1).kind == TokenKind::Colon) {
+            isFirst = false;
+            advance();  // 'this'
+            advance();  // ':'
+            if (parseTypeAnnotation().empty()) return false;
+            if (!match(TokenKind::Comma)) break;
+            continue;
+        }
+        isFirst = false;
+
         Param p;
         p.span.begin = peek().span.begin;
+
+        // Constructor parameter property modifiers: `public`, `private`, `protected`, `readonly`, `override`
+        while (check(TokenKind::Identifier) &&
+               (peek().text == "public" || peek().text == "private" ||
+                peek().text == "protected" || peek().text == "readonly" ||
+                peek().text == "override") &&
+               peek(1).kind != TokenKind::Colon && peek(1).kind != TokenKind::Question &&
+               peek(1).kind != TokenKind::Assign && peek(1).kind != TokenKind::Comma &&
+               peek(1).kind != TokenKind::RParen) {
+            advance();
+            p.isParameterProperty = true;
+        }
+
         const bool isRest = match(TokenKind::Ellipsis);
         p.isRest = isRest;
 
@@ -166,7 +182,15 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
             p.name = std::string(param->text);
         }
 
-        if (match(TokenKind::Colon)) p.typeAnnotation = parseTypeAnnotation();
+        if (match(TokenKind::Question)) {
+            p.isOptional = true;
+        }
+        if (match(TokenKind::Colon)) {
+            p.typeAnnotation = parseTypeAnnotation();
+            if (p.isOptional && !p.typeAnnotation.empty()) {
+                p.typeAnnotation += " | undefined";
+            }
+        }
         if (check(TokenKind::Assign)) {
             if (isRest) {
                 error("a rest parameter may not have a default value");
@@ -294,6 +318,7 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
     fn->span.begin = nameSpan.begin;
     fn->name = name;
     fn->kind = ast::FunctionKind::Method;
+    if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
     if (!expect(TokenKind::LParen, "'(' after a method name")) return nullptr;
     if (!parseParams(fn->params)) return nullptr;
     if (!expect(TokenKind::RParen, "')' after method parameters")) return nullptr;
@@ -406,6 +431,8 @@ ExprPtr Parser::parseFunctionExpr() {
         if (!checkStrictBindingName(nameTok.text, nameTok.span, "function name")) return nullptr;
         fn->name = std::string(nameTok.text);
     }
+
+    if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
 
     FunctionSuperScopeGuard superGuard(*this);
     GeneratorScopeGuard guard(*this);

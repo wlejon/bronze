@@ -70,6 +70,7 @@ bool Parser::consumeSemicolon(const char* what) {
 std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) {
     auto mod = std::make_unique<Module>();
     mod->name = std::move(name);
+    currentModule_ = mod.get();
     // 11.2.2 first, because it is not a property of the text: module code is
     // strict whether or not it says so, and the caller is the only thing that
     // knows this file is module code.
@@ -85,6 +86,7 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
         atModuleTopLevel_ = true;
         if (!parseStatement(mod->body)) break;
     }
+    currentModule_ = nullptr;
     if (diags_.hasErrors()) return nullptr;
     if (!check(TokenKind::EndOfFile)) {
         error("unconsumed input after last declaration");
@@ -157,7 +159,10 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
         // it — which makes sloppy code's answer the strict one rather than a
         // legacy one. It is a divergence in a legacy annex, not a construct
         // bronze cannot compile, so it is stated here and not diagnosed.
-        return one(out, parseFunctionDecl(/*isExported=*/false));
+        lastFunctionWasOverload_ = false;
+        auto fn = parseFunctionDecl(/*isExported=*/false);
+        if (!fn) return lastFunctionWasOverload_;
+        return one(out, std::move(fn));
     }
     // `async function f() {}` — a HoistableDeclaration like the plain form
     // above and scoped by the same rule. The newline test inside
@@ -165,7 +170,19 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     // is the expression statement `async;` and then a declaration, so it
     // falls through to the expression path below on purpose.
     if (asyncModifiesFunction()) {
-        return one(out, parseAsyncFunctionDecl(/*isExported=*/false));
+        lastFunctionWasOverload_ = false;
+        auto fn = parseAsyncFunctionDecl(/*isExported=*/false);
+        if (!fn) return lastFunctionWasOverload_;
+        return one(out, std::move(fn));
+    }
+    if (isDeclareStmtStart()) return parseDeclareStmt();
+    if (isTypeAliasDeclStart()) return parseTypeAliasDecl();
+    if (isInterfaceDeclStart()) return parseInterfaceDecl();
+    if (isEnumDeclStart()) return parseEnumDecl(out);
+    if (isNamespaceDeclStart()) return parseNamespaceDecl(out);
+    if (isAbstractClassDeclStart()) {
+        advance();  // 'abstract'
+        return one(out, parseClass());
     }
     if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
         return parseVarDecl(out);
@@ -223,10 +240,6 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     stmt->expr = std::move(expr);
     return one(out, std::move(stmt));
 }
-std::string Parser::parseTypeAnnotation() {
-    const Token* t = expect(TokenKind::Identifier, "type name");
-    return t ? std::string(t->text) : std::string();
-}
 
 std::vector<StmtPtr> Parser::parseBlock() {
     std::vector<StmtPtr> body;
@@ -278,6 +291,7 @@ bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
             decl->name = std::string(name->text);
         }
 
+        if (!isPattern) match(TokenKind::Bang);  // definite assignment assertion `let x!: T`
         if (match(TokenKind::Colon)) decl->typeAnnotation = parseTypeAnnotation();
         if (match(TokenKind::Assign)) {
             decl->init = parseAssign();
@@ -808,6 +822,7 @@ StmtPtr Parser::parseTry() {
                 }
                 stmt->catchName = std::string(name->text);
             }
+            if (match(TokenKind::Colon)) parseTypeAnnotation();
             if (!expect(TokenKind::RParen, "')' after a catch parameter")) return nullptr;
         }
         if (!check(TokenKind::LBrace)) {

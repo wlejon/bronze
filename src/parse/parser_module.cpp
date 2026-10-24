@@ -95,7 +95,62 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
         return true;
     }
 
+    // TypeScript `import type ... from "..."`:
+    // Distinguish `import type from "./x"` (default import named `type`) from
+    // `import type Foo from "./x"`, `import type { A } from "./x"`, `import type * as ns from "./x"`.
+    if (isContextual(peek(), "type") && !peek(1).newlineBefore &&
+        !isContextual(peek(1), "from") && peek(1).kind != TokenKind::Comma) {
+        advance();  // 'type'
+        if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
+            const Token& nameTok = advance();
+            if (check(TokenKind::Assign)) {
+                error("unsupported construct: 'import x = require(...)' (TypeScript import "
+                      "assignment); bronze reads ES module syntax only");
+                return false;
+            }
+            recordDeclaredType(std::string(nameTok.text));
+        } else if (check(TokenKind::Star)) {
+            advance();
+            if (!isContextual(peek(), "as")) {
+                error("expected 'as' after '*' in an import clause");
+                return false;
+            }
+            advance();
+            const Token* nameTok =
+                expect(TokenKind::Identifier, "a namespace binding name after 'as'");
+            if (!nameTok) return false;
+            recordDeclaredType(std::string(nameTok->text));
+        } else if (check(TokenKind::LBrace)) {
+            advance();
+            while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) &&
+                   !diags_.hasErrors()) {
+                const Token* importedTok = expectPropertyName("an imported name");
+                if (!importedTok) return false;
+                std::string localName(importedTok->text);
+                if (isContextual(peek(), "as")) {
+                    advance();
+                    const Token* localTok =
+                        expect(TokenKind::Identifier, "a binding name after 'as'");
+                    if (!localTok) return false;
+                    localName = std::string(localTok->text);
+                }
+                recordDeclaredType(localName);
+                if (!match(TokenKind::Comma)) break;
+            }
+            if (!expect(TokenKind::RBrace, "'}' to close an import clause")) return false;
+        } else {
+            error("expected a binding, '{' or '*' after 'import type'");
+            return false;
+        }
+        std::string dummySpec;
+        Span dummySpan;
+        if (!parseFromClause(dummySpec, dummySpan)) return false;
+        if (!consumeSemicolon("an import declaration")) return false;
+        return true;
+    }
+
     bool expectFrom = false;
+    bool skippedInlineTypeSpec = false;
 
     // ImportedDefaultBinding, which may be followed by `, { ... }` or
     // `, * as ns`.
@@ -111,6 +166,7 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
         spec.imported = "default";
         spec.local = std::string(nameTok.text);
         spec.span = nameTok.span;
+        recordDeclaredType(spec.local);
         decl->specifiers.push_back(std::move(spec));
         expectFrom = true;
         if (match(TokenKind::Comma)) expectFrom = false;
@@ -129,10 +185,20 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
         spec.isNamespace = true;
         spec.local = std::string(nameTok->text);
         spec.span = star.span;
+        recordDeclaredType(spec.local);
         decl->specifiers.push_back(std::move(spec));
     } else if (check(TokenKind::LBrace)) {
         advance();
         while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+            // Check for inline `type` modifier: `import { type Foo, type Bar as Baz, val }`
+            const bool isInlineType =
+                isContextual(peek(), "type") && !peek(1).newlineBefore &&
+                isIdentifierName(peek(1).kind) &&
+                !(isContextual(peek(1), "as") && !isContextual(peek(2), "as"));
+            if (isInlineType) {
+                advance();  // 'type'
+                skippedInlineTypeSpec = true;
+            }
             // The imported name is an IdentifierName — `import { default as d }`
             // and `import { delete as del }` are both legal — while the local
             // binding is an Identifier, because it is a binding.
@@ -153,7 +219,10 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
                       "'import { default as d }'");
                 return false;
             }
-            decl->specifiers.push_back(std::move(spec));
+            recordDeclaredType(spec.local);
+            if (!isInlineType) {
+                decl->specifiers.push_back(std::move(spec));
+            }
             if (!match(TokenKind::Comma)) break;
         }
         if (!expect(TokenKind::RBrace, "'}' to close an import clause")) return false;
@@ -165,6 +234,9 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
     if (!parseFromClause(decl->specifier, decl->specifierSpan)) return false;
     if (!consumeSemicolon("an import declaration")) return false;
     decl->span.end = peek().span.begin;
+    if (skippedInlineTypeSpec && decl->specifiers.empty()) {
+        return true;
+    }
     out.push_back(std::move(decl));
     return true;
 }
@@ -179,6 +251,50 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
               "ES module syntax only");
         return false;
     }
+
+    // TypeScript `export type * from './x'` or `export type { ... } [from './x']`
+    if (isContextual(peek(), "type") && !peek(1).newlineBefore &&
+        (peek(1).kind == TokenKind::Star || peek(1).kind == TokenKind::LBrace)) {
+        advance();  // 'type'
+        if (match(TokenKind::Star)) {
+            if (isContextual(peek(), "as")) {
+                advance();
+                const Token* aliasTok = expectPropertyName("an export name after 'as'");
+                if (!aliasTok) return false;
+                recordDeclaredType(std::string(aliasTok->text));
+            }
+            std::string dummySpec;
+            Span dummySpan;
+            if (!parseFromClause(dummySpec, dummySpan)) return false;
+            return consumeSemicolon("an export type declaration");
+        }
+        advance();  // '{'
+        while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+            const Token* localTok = expectPropertyName("an exported type name");
+            if (!localTok) return false;
+            std::string expName(localTok->text);
+            if (isContextual(peek(), "as")) {
+                advance();
+                const Token* asTok = expectPropertyName("an export name after 'as'");
+                if (!asTok) return false;
+                expName = std::string(asTok->text);
+            }
+            recordDeclaredType(expName);
+            if (!match(TokenKind::Comma)) break;
+        }
+        if (!expect(TokenKind::RBrace, "'}' to close an export type clause")) return false;
+        if (isContextual(peek(), "from")) {
+            std::string dummySpec;
+            Span dummySpan;
+            if (!parseFromClause(dummySpec, dummySpan)) return false;
+        }
+        return consumeSemicolon("an export type declaration");
+    }
+
+    // TypeScript `export type Name = ...`, `export interface Name ...`, `export declare ...`
+    if (isTypeAliasDeclStart()) return parseTypeAliasDecl();
+    if (isInterfaceDeclStart()) return parseInterfaceDecl();
+    if (isDeclareStmtStart()) return parseDeclareStmt();
 
     // `export * from './x'` and `export * as ns from './x'`. Which names the
     // first form contributes is a question about the OTHER module, so the
@@ -203,7 +319,16 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
     // `export { a, b as c }` and `export { a } from './x'`.
     if (check(TokenKind::LBrace)) {
         advance();
+        bool skippedInlineType = false;
         while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
+            const bool isInlineType =
+                isContextual(peek(), "type") && !peek(1).newlineBefore &&
+                isIdentifierName(peek(1).kind) &&
+                !(isContextual(peek(1), "as") && !isContextual(peek(2), "as"));
+            if (isInlineType) {
+                advance();  // 'type'
+                skippedInlineType = true;
+            }
             const Token* localTok = expectPropertyName("an exported name");
             if (!localTok) return false;
             ExportSpecifier spec;
@@ -216,7 +341,11 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
                 if (!asTok) return false;
                 spec.exported = std::string(asTok->text);
             }
-            names->specifiers.push_back(std::move(spec));
+            if (isInlineType) {
+                recordDeclaredType(spec.exported);
+            } else {
+                names->specifiers.push_back(std::move(spec));
+            }
             if (!match(TokenKind::Comma)) break;
         }
         if (!expect(TokenKind::RBrace, "'}' to close an export clause")) return false;
@@ -226,6 +355,9 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
         }
         if (!consumeSemicolon("an export declaration")) return false;
         names->span.end = peek().span.begin;
+        if (skippedInlineType && names->specifiers.empty()) {
+            return true;
+        }
         out.push_back(std::move(names));
         return true;
     }
@@ -238,23 +370,29 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
     // everything downstream identifies a function by its name.
     if (check(TokenKind::KwDefault)) {
         const Token& defTok = advance();
+        if (check(TokenKind::Identifier) && peek().text == "interface" && !peek(1).newlineBefore) {
+            return parseInterfaceDecl();
+        }
         ExportSpecifier spec;
         spec.exported = "default";
         spec.span = defTok.span;
 
         if (check(TokenKind::KwFunction)) {
+            lastFunctionWasOverload_ = false;
             auto fn = parseFunctionDecl(/*isExported=*/true, "default");
-            if (!fn) return false;
+            if (!fn) return lastFunctionWasOverload_;
             spec.local = static_cast<const FunctionDecl*>(fn.get())->name;
             out.push_back(std::move(fn));
         } else if (asyncModifiesFunction()) {
             // `export default async function () {}` — 16.2.3.7 admits the
             // async hoistable form exactly where it admits the plain one.
+            lastFunctionWasOverload_ = false;
             auto fn = parseAsyncFunctionDecl(/*isExported=*/true, "default");
-            if (!fn) return false;
+            if (!fn) return lastFunctionWasOverload_;
             spec.local = static_cast<const FunctionDecl*>(fn.get())->name;
             out.push_back(std::move(fn));
-        } else if (check(TokenKind::KwClass)) {
+        } else if (check(TokenKind::KwClass) || isAbstractClassDeclStart()) {
+            if (isAbstractClassDeclStart()) advance();  // 'abstract'
             auto cls = parseClass("default");
             if (!cls) return false;
             spec.local = static_cast<const ClassDecl*>(cls.get())->name;
@@ -286,17 +424,25 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
     // exports two.
     const size_t firstDecl = out.size();
     if (check(TokenKind::KwFunction)) {
+        lastFunctionWasOverload_ = false;
         auto fn = parseFunctionDecl(/*isExported=*/true);
-        if (!fn) return false;
+        if (!fn) return lastFunctionWasOverload_;
         out.push_back(std::move(fn));
     } else if (asyncModifiesFunction()) {
+        lastFunctionWasOverload_ = false;
         auto fn = parseAsyncFunctionDecl(/*isExported=*/true);
-        if (!fn) return false;
+        if (!fn) return lastFunctionWasOverload_;
         out.push_back(std::move(fn));
-    } else if (check(TokenKind::KwClass)) {
+    } else if (check(TokenKind::KwClass) || isAbstractClassDeclStart()) {
+        if (isAbstractClassDeclStart()) advance();  // 'abstract'
         auto cls = parseClass();
         if (!cls) return false;
         out.push_back(std::move(cls));
+    } else if (isEnumDeclStart()) {
+        if (!parseEnumDecl(out)) return false;
+    } else if (isNamespaceDeclStart()) {
+        if (!parseNamespaceDecl(out)) return false;
+        if (out.size() == firstDecl) return true;  // type-only namespace
     } else if (check(TokenKind::KwConst) || check(TokenKind::KwLet) || check(TokenKind::KwVar)) {
         if (!parseVarDecl(out)) return false;
     } else {

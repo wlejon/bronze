@@ -49,41 +49,29 @@ bool Parser::asyncModifiesArrow() const {
         !peek(2).newlineBefore) {
         return true;
     }
-    // `async (a, b) => …`: the same scan the plain arrow decision runs,
-    // started one token in.
-    return peek(1).kind == TokenKind::LParen && looksLikeArrowFrom(1);
-}
-
-// looksLikeArrow's scan with a starting offset: find the `)` matching the
-// `(` at `offset` and ask what follows it. One copy of the loop, so the
-// plain and async decisions cannot disagree about what closes a group.
-bool Parser::looksLikeArrowFrom(size_t offset) const {
-    if (peek(offset).kind != TokenKind::LParen) return false;
-    size_t depth = 0;
-    for (size_t i = offset;; ++i) {
-        const TokenKind kind = peek(i).kind;
-        if (kind == TokenKind::EndOfFile) return false;
-        if (kind == TokenKind::LParen) ++depth;
-        else if (kind == TokenKind::RParen) {
-            if (--depth == 0) {
-                if (peek(i + 1).kind == TokenKind::Arrow) return true;
-                return peek(i + 1).kind == TokenKind::Colon &&
-                       peek(i + 3).kind == TokenKind::Arrow;
-            }
-        }
-    }
+    // `async (a, b) => …` or `async <T>(a: T) => …`
+    return (peek(1).kind == TokenKind::LParen || peek(1).kind == TokenKind::Less) &&
+           looksLikeArrowFrom(1);
 }
 
 // The parameter list and body every async form shares, with the cursor on
-// the '('. The parameter list is NOT part of the async body: 15.8.1 forbids
+// the '(' (or '<'). The parameter list is NOT part of the async body: 15.8.1 forbids
 // `await` in one, and the flag is raised only over the braces — the same
 // split parseGeneratorTail makes for `yield`.
 bool Parser::parseAsyncFnTail(ast::FunctionExpr& fn) {
     fn.isAsync = true;
+    if (check(TokenKind::Less) && !parseTypeParams()) return false;
     if (!expect(TokenKind::LParen, "'(' after an async function name")) return false;
     if (!parseParams(fn.params)) return false;
     if (!expect(TokenKind::RParen, "')' after async function parameters")) return false;
     if (match(TokenKind::Colon)) fn.returnType = parseTypeAnnotation();
+
+    if (!check(TokenKind::LBrace)) {
+        if (consumeSemicolon("async function overload signature")) {
+            lastFunctionWasOverload_ = true;
+        }
+        return false;
+    }
 
     const bool savedAsync = inAsyncBody_;
     const bool savedGen = inGeneratorBody_;
@@ -171,6 +159,8 @@ ExprPtr Parser::parseAsyncArrow() {
     fn->isAsync = true;
     fn->span.begin = asyncKw.span.begin;
 
+    if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+
     if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
         Param p;
         p.name = std::string(advance().text);
@@ -179,7 +169,7 @@ ExprPtr Parser::parseAsyncArrow() {
         if (!expect(TokenKind::LParen, "'(' before arrow parameters")) return nullptr;
         if (!parseParams(fn->params)) return nullptr;
         if (!expect(TokenKind::RParen, "')' after arrow parameters")) return nullptr;
-        if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
+        if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation(/*inArrowReturn=*/true);
     }
     if (!expect(TokenKind::Arrow, "'=>' after arrow parameters")) return nullptr;
 

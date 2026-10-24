@@ -556,7 +556,8 @@ ExprPtr Parser::parseObjectLit() {
             }
             const bool namedMethod = (isIdentifierName(peek(1).kind) ||
                                       peek(1).kind == TokenKind::StringLiteral) &&
-                                     peek(2).kind == TokenKind::LParen;
+                                     (peek(2).kind == TokenKind::LParen ||
+                                      peek(2).kind == TokenKind::Less);
             if (namedMethod) {
                 const Span asyncKwSpan = advance().span;  // `async`
                 const Token& nameTok = advance();
@@ -588,7 +589,7 @@ ExprPtr Parser::parseObjectLit() {
             prop.keyExpr = parseAssign();
             if (!prop.keyExpr) return nullptr;
             if (!expect(TokenKind::RBracket, "']' after a computed property key")) return nullptr;
-            if (check(TokenKind::LParen)) {
+            if (check(TokenKind::LParen) || check(TokenKind::Less)) {
                 auto method = parseMethodTail(methodName("computed"), openBracket.span, homeName, &objectUsesSuper);
                 if (!method) return nullptr;
                 prop.isMethod = true;
@@ -626,7 +627,7 @@ ExprPtr Parser::parseObjectLit() {
                 if (!match(TokenKind::Comma)) break;
                 continue;
             }
-            if (check(TokenKind::LParen)) {
+            if (check(TokenKind::LParen) || check(TokenKind::Less)) {
                 // `{ m() {} }` — MethodDefinition shorthand (13.2.5, 15.4).
                 // The property it defines is indistinguishable from
                 // `m: function () {}`: enumerable, writable, and holding an

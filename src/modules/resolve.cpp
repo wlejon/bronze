@@ -148,6 +148,27 @@ std::filesystem::path underRoot(const ModuleRoot& root, const std::string& speci
     return ec ? candidate : resolved;
 }
 
+// TypeScript ESM convention: `import "./foo.js"` resolves to `./foo.ts` (and
+// `.mjs` to `.mts`) when the `.js`/`.mjs` file does not exist on disk and the
+// corresponding `.ts`/`.mts` file does.
+void fallbackJsToTs(std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(path, ec)) return;
+    const std::string ext = path.extension().generic_string();
+    std::filesystem::path alt = path;
+    if (ext == ".js") {
+        alt.replace_extension(".ts");
+    } else if (ext == ".mjs") {
+        alt.replace_extension(".mts");
+    } else {
+        return;
+    }
+    if (std::filesystem::is_regular_file(alt, ec)) {
+        const std::filesystem::path canon = std::filesystem::weakly_canonical(alt, ec);
+        path = ec ? alt : canon;
+    }
+}
+
 }  // namespace
 
 // The DIRECTORY a specifier prefix names. Used only by the template-literal
@@ -192,6 +213,7 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
     const ModuleRoot* bestRoot = longestMatchingRoot(specifier, moduleRoots);
     if (bestRoot) {
         std::filesystem::path resolved = underRoot(*bestRoot, specifier);
+        fallbackJsToTs(resolved);
         if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from root \"" +
                                                bestRoot->prefix + "\"",
                                  span, diags)) {
@@ -218,6 +240,7 @@ bool resolveSpecifier(const std::string& specifier, const std::filesystem::path&
     // "a file imported twice is instantiated once" is a property of this key.
     std::filesystem::path resolved = std::filesystem::weakly_canonical(candidate, ec);
     if (ec) resolved = candidate;
+    fallbackJsToTs(resolved);
 
     if (!requireExistingFile(resolved, "module specifier \"" + specifier + "\" from " +
                                            importerPath.string(),

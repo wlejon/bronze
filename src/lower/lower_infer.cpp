@@ -20,39 +20,6 @@
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
-namespace {
-
-// The lattice element an annotation names — the ONLY meaning an annotation has.
-// A claim to be checked against a proof, never an IL type on its own.
-//
-// Both TypeScript's spellings and bronze's own IL names are accepted: a
-// policy whose premise is "annotations are untrusted TS hints" cannot reject
-// `x: string` while accepting `x: str`. Text bronze does not recognise is a
-// named hard error; see `checkAnnotation` for why that is not the hint policy
-// contradicting itself.
-std::optional<types::Type> annotationClaim(const std::string& ann) {
-    // TS spelling first in each line, bronze's IL name after it.
-    if (ann == "number" || ann == "f64" || ann == "i32") return types::Type::number();
-    if (ann == "boolean" || ann == "bool") return types::Type::boolean();
-    if (ann == "string" || ann == "str") return types::Type::string();
-    // TS `void` is "returns nothing", which is bronze's Undefined.
-    if (ann == "undefined" || ann == "void") return types::Type::undefined();
-    if (ann == "null") return types::Type::null();
-    if (ann == "object") return types::Type::object();
-    if (ann == "never") return types::Type::never();
-    // The top type under three names. It claims nothing, so nothing can
-    // disagree with it (see `checkAnnotation`).
-    if (ann == "any" || ann == "unknown" || ann == "dynamic") return types::Type::dynamic();
-    return std::nullopt;
-}
-
-// Every spelling above, for the error that rejects anything else — the fix
-// for `x: Widget` is not discoverable otherwise.
-constexpr const char* kReadableAnnotations =
-    "any, bool, boolean, dynamic, f64, i32, never, null, number, object, str, string, "
-    "undefined, unknown, void";
-
-}  // namespace
 
 // The IL type a proven `types::Type` licenses.
 //
@@ -295,75 +262,6 @@ types::Type Lowerer::provenReturnType(uint32_t moduleFnIndex) const {
 types::Type Lowerer::provenClosureReturn(const ast::Node& site) const {
     if (inference_ == nullptr) return types::Type::dynamic();
     return inference_->closureReturnAt(inferenceNode(site));
-}
-
-// A TS annotation is an untrusted optimization hint.
-//
-// Note what it does NOT do: it does not return a type. The caller has already
-// chosen its IL type from what inference proved; this only decides whether to
-// say something about the annotation.
-//
-//   - the proof agrees      -> silence. The typed path the caller took is
-//                              taken because of the PROOF; the annotation was
-//                              free information that happened to be right.
-//   - nothing was proven    -> "is not provable; ignoring".
-//   - something else proven -> "contradicts inferred".
-//
-// Both of the latter leave the value on the uniform dynamic convention. That is
-// what closes the live unsoundness: believing the annotation maps `f(x:
-// number)` reached with a string onto an f64 parameter and unboxes the string —
-// a coercion the source never wrote, where JS says `"a" + 1` is `"a1"`.
-//
-// Warnings, never errors: wild JS with wrong annotations must still compile. A
-// `--strict-hints` that promotes them is future work and deliberately not here.
-//
-// With `--no-infer` nothing is provable, so every annotation would warn and say
-// only which switch is on. Those warnings are suppressed by exactly the
-// `inference_ == nullptr` test that *defines* the mode, so the suppression
-// cannot reach the normal one. The hard error below is NOT suppressed:
-// unreadable text is a fact about the source, and a bisection seam must not
-// accept a file the normal mode rejects.
-bool Lowerer::checkAnnotation(const std::string& ann, Span span, const std::string& name,
-                              types::Type proven) {
-    if (ann.empty()) return true;
-    const auto claim = annotationClaim(ann);
-    if (!claim) {
-        // Kept a hard error, not turned into another discarded hint. The
-        // hint policy is about TRUST — an annotation never types anything —
-        // not about readability, and text bronze cannot read is not an
-        // over-optimistic hint but a construct it has no lattice element for
-        // (a nominal type, a generic, an interface). The house rule is that
-        // such a construct is diagnosed by name; ignoring it silently is the
-        // quiet no-op the rules forbid. The vocabulary is listed so the fix
-        // is visible from the message.
-        diags_.error(span, "unsupported type annotation: " + ann +
-                               " (bronze reads: " + kReadableAnnotations + ")");
-        return false;
-    }
-    // `any`/`unknown`/`dynamic` claims nothing about the value, so no proof
-    // can disagree with it and there is nothing to discard.
-    if (claim->is(types::TypeKind::Dynamic)) return true;
-    // By KIND, not by whole type: an annotation can never carry an identity
-    // (there is no source syntax for a shape class), so `object` agreeing
-    // with a proven `object#3` is agreement, and comparing the payloads
-    // would report "annotation 'object' contradicts inferred object".
-    if (claim->kind() == proven.kind()) return true;
-    if (inference_ == nullptr) return true;
-
-    // The kind name, not `Type::str()`: a shape class id (`object#3`) is a
-    // compile-time identity with no meaning in the source the user wrote.
-    const std::string observed = types::typeKindName(proven.kind());
-    // `Never` is "no value ever arrives here" (a direct-callable function
-    // with no call sites), which is an absence of evidence rather than
-    // evidence against — so it is not provable, not a contradiction.
-    if (proven.is(types::TypeKind::Dynamic) || proven.is(types::TypeKind::Never)) {
-        diags_.warning(span, "annotation '" + ann + "' on '" + name +
-                                 "' is not provable; ignoring (inferred: " + observed + ")");
-    } else {
-        diags_.warning(span, "annotation '" + ann + "' on '" + name +
-                                 "' contradicts inferred " + observed);
-    }
-    return true;
 }
 
 // Give a module-level function's IL skeleton the parameter and return types

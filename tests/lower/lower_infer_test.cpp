@@ -306,3 +306,25 @@ TEST_CASE("a function returning two types returns dynamic, not its first return'
     CHECK(printed.find("func f(%0: dynamic) -> dynamic") != std::string::npos);
     CHECK(printed.find("unbox.f64") == std::string::npos);
 }
+
+TEST_CASE("TypeScript complex annotations are checked without unknown-type warnings") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    const auto optMod = inferAndLower(
+        "type Numeric = number;\n"
+        "interface Box { value: Numeric; }\n"
+        "function compute(a: Numeric, b: readonly number[], c: Float64Array, d?: string | null): Numeric {\n"
+        "  return a + b.length + c.length;\n"
+        "}\n"
+        "const arr: number[] = [1, 2, 3];\n"
+        "const ta: Float64Array = new Float64Array(4);\n"
+        "const box: Box = { value: compute(10, arr, ta) };\n"
+        "console.log(box.value);\n",
+        diags, buf);
+
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(optMod.has_value());
+    const std::string rendered = diags.render(buf);
+    CHECK(rendered.find("unknown type annotation") == std::string::npos);
+}
+

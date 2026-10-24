@@ -4,6 +4,8 @@
 #include <string>
 #include <type_traits>
 #include <typeinfo>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "support/source.h"
@@ -488,6 +490,8 @@ struct Param {
     PatternPtr pattern;
     // `...rest` — always the last parameter, and always a real array.
     bool isRest = false;
+    bool isOptional = false;
+    bool isParameterProperty = false;
     Span span;
 };
 
@@ -735,6 +739,7 @@ struct ClassMethod {
     bool isStatic = false;
     bool isConstructor = false;
     bool isField = false;
+    bool hasTypeAnnotation = false;
     // `static { ... }` (ECMA-262 15.7, ClassStaticBlockDefinition). The block's
     // statements live in `fn`, which is a function in every way that matters
     // here — it has a body, it is evaluated once, and its `this` is the
@@ -846,6 +851,8 @@ struct Module final : Node {
     // one that declares an `import` or an `export` — which 16.2.1.6 makes
     // strict whether or not anything said so.
     bool strict = false;
+    std::unordered_set<std::string> declaredTypes;
+    std::unordered_map<std::string, std::string> typeAliases;
     void accept(Visitor& v) const override;
 };
 

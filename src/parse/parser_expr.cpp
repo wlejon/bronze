@@ -201,7 +201,10 @@ ExprPtr Parser::parseConditional() {
     auto ternary = std::make_unique<Ternary>();
     ternary->span.begin = expr->span.begin;
     ternary->condition = std::move(expr);
+    const bool savedInThen = inConditionalThen_;
+    inConditionalThen_ = true;
     ternary->thenExpr = parseAssign();
+    inConditionalThen_ = savedInThen;
     if (!ternary->thenExpr) return nullptr;
     if (!expect(TokenKind::Colon, "':' in ternary expression")) return nullptr;
     ternary->elseExpr = parseAssign();
@@ -215,6 +218,18 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
     if (!lhs) return nullptr;
     bool lhsIsUnary = lastOperandIsUnary_;
     for (;;) {
+        if (minPrecedence <= kPrecRelational && check(TokenKind::Identifier) && !atLineBreak() &&
+            (peek().text == "as" || peek().text == "satisfies")) {
+            const std::string_view kw = advance().text;
+            if (kw == "as" && match(TokenKind::KwConst)) {
+                // `expr as const`
+            } else {
+                if (parseTypeAnnotation().empty()) return nullptr;
+            }
+            lhs->span.end = previous().span.end;
+            lhsIsUnary = false;
+            continue;
+        }
         const OpInfo* info = binaryOpInfo(peek().kind);
         if (!info || info->precedence < minPrecedence) return lhs;
         if (info->op == BinaryOp::Exp && lhsIsUnary) {
@@ -304,6 +319,16 @@ ExprPtr Parser::parseUnaryPrefix() {
         auto ne = parseNew();
         lastOperandIsUnary_ = false;
         return ne;
+    }
+    if (check(TokenKind::Less)) {
+        // TypeScript prefix type assertion `<Type>expr` (generic arrow
+        // functions `<T>(x) => ...` were already matched at `parseAssign()`).
+        advance();
+        if (!match(TokenKind::KwConst)) {
+            if (parseTypeAnnotation().empty()) return nullptr;
+        }
+        if (!expectTypeGreater("'>' after type assertion")) return nullptr;
+        return parseUnaryPrefix();
     }
     if (check(TokenKind::KwDelete)) {
         // A *UnaryExpression* operand, like every other prefix operator — but
@@ -475,6 +500,9 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             // is the ordinary one with `optional` set: what differs is when the
             // link runs, not what it computes.
             advance();
+            if (check(TokenKind::Less)) {
+                tryConsumeTypeArgsForCall();
+            }
             if (check(TokenKind::LBracket)) {
                 advance();
                 auto indexExpr = parseExpr();
@@ -520,6 +548,12 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             expr = std::move(mem);
         } else if (check(TokenKind::Dot) || check(TokenKind::LBracket)) {
             if (!parseMemberLink(expr)) return nullptr;
+        } else if (check(TokenKind::Bang) && !atLineBreak()) {
+            // TypeScript postfix non-null assertion `expr!`
+            advance();
+            expr->span.end = previous().span.end;
+        } else if (check(TokenKind::Less) && !atLineBreak() && tryConsumeTypeArgsForCall()) {
+            continue;
         } else if (check(TokenKind::LParen)) {
             advance();
             auto call = std::make_unique<Call>();
@@ -616,6 +650,14 @@ ExprPtr Parser::parseNewCallee() {
         if (check(TokenKind::Dot) || check(TokenKind::LBracket)) {
             if (!parseMemberLink(expr)) return nullptr;
             continue;
+        }
+        if (check(TokenKind::Bang) && !atLineBreak()) {
+            advance();
+            expr->span.end = previous().span.end;
+            continue;
+        }
+        if (check(TokenKind::Less) && !atLineBreak() && tryConsumeTypeArgsForCall()) {
+            return expr;
         }
         if (check(TokenKind::QuestionDot)) {
             // ECMA-262 13.3 has no OptionalExpression under `new`, precisely
@@ -754,7 +796,10 @@ ExprPtr Parser::parsePrimary() {
         }
         case TokenKind::LParen: {
             advance();
+            const bool savedInThen = inConditionalThen_;
+            inConditionalThen_ = false;
             auto inner = parseExpr();
+            inConditionalThen_ = savedInThen;
             if (!inner) return nullptr;
             if (!expect(TokenKind::RParen, "')'")) return nullptr;
             // The parentheses are not a node — they change nothing about

@@ -32,6 +32,10 @@ public:
         return false;
     }
     const std::vector<Diagnostic>& all() const { return diags_; }
+    size_t size() const { return diags_.size(); }
+    void truncate(size_t n) {
+        if (n < diags_.size()) diags_.resize(n);
+    }
 
     // Renders "name:line:col: severity: message" lines against a buffer.
     std::string render(const SourceBuffer& buffer) const;
