@@ -1,6 +1,7 @@
 #include "il_lowering_ops.h"
 #include "il_lowering.h"
 #include "il_abi.h"
+#include <cmath>
 
 namespace il2mir {
 
@@ -130,9 +131,34 @@ Value* lower_dynamic_relational(Builder& b, BronzeOp op, Value* op0, Value* op1,
 }
 
 // ToInt32 of the Value or double `v` (`is_f64`): inline for a Number
-// int32_convertible accepts, else the helper.
+// int32_convertible accepts, else inline bit-extraction for f64 (zero calls,
+// so live XMM values in enclosing loops are never spilled across a call) or
+// the helper for boxed values.
 Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
     BasicBlock* cur = b.current_block();
+    if (is_f64 && v && v->is_instruction()) {
+        const brass::Instruction* def = v->defining_instruction();
+        if (def) {
+            if (def->opcode() == brass::Opcode::sitofp_f64_i32 && def->operand_count() == 1) {
+                return def->operand(0);
+            }
+            if (def->opcode() == brass::Opcode::sitofp_f64_i64 && def->operand_count() == 1) {
+                Value* z = def->operand(0);
+                if (z && z->is_instruction()) {
+                    const brass::Instruction* zdef = z->defining_instruction();
+                    if (zdef && zdef->opcode() == brass::Opcode::zext_i64 &&
+                        zdef->operand_count() == 1 && zdef->operand(0)->type() == Type::i32()) {
+                        return zdef->operand(0);
+                    }
+                }
+            }
+            if (def->opcode() == brass::Opcode::fconst_f64 && std::isfinite(def->imm_f64()) &&
+                std::fabs(def->imm_f64()) <= 2147483647.0) {
+                return b.build_iconst_i32(
+                    static_cast<int32_t>(static_cast<int64_t>(def->imm_f64())));
+            }
+        }
+    }
     const std::string prefix = "toi32_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* fast = b.append_block(prefix + "_fast");
     BasicBlock* slow = b.append_block(prefix + "_slow");
@@ -144,7 +170,27 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64) {
     b.build_br_if(int32_convertible(b, bits), fast, slow);
 
     b.position_at_end(slow);
-    b.build_br(merge, {b.build_call(is_f64 ? "bronze_to_int32_f64" : "bronze_to_int32", Type::i32(), {v})});
+    if (is_f64) {
+        // ECMA-262 7.1.6 for |v| >= 2^63, NaN, or ±Inf:
+        // For 2^63 <= |v| < 2^84 (0x43E0000000000000 <= abs_bits < 0x4530000000000000),
+        // the low 32 bits of the integer magnitude are (mant << ((exp - 1075) & 63)).
+        // For |v| >= 2^84, NaN, or ±Inf (abs_bits >= 0x4530000000000000), ToInt32 is 0.
+        Value* abs_bits = b.build_and(bits, b.build_iconst_i64(0x7FFFFFFFFFFFFFFFULL));
+        Value* in_range = b.build_ult(abs_bits, b.build_iconst_i64(0x4530000000000000ULL));
+        Value* mant = b.build_or(b.build_and(abs_bits, b.build_iconst_i64(0x000FFFFFFFFFFFFFULL)),
+                                 b.build_iconst_i64(0x0010000000000000ULL));
+        Value* exp = b.build_lshr(abs_bits, b.build_iconst_i64(52));
+        Value* shift = b.build_and(b.build_sub(exp, b.build_iconst_i64(1075)),
+                                   b.build_iconst_i64(63));
+        Value* mag = b.build_shl(mant, shift);
+        Value* neg = b.build_sub(b.build_iconst_i64(0), mag);
+        Value* is_neg = b.build_slt(v, b.build_fconst_f64(0.0));
+        Value* signed_val = b.build_select(is_neg, neg, mag);
+        Value* slow_i64 = b.build_select(in_range, signed_val, b.build_iconst_i64(0));
+        b.build_br(merge, {b.build_trunc_i32(slow_i64)});
+    } else {
+        b.build_br(merge, {b.build_call("bronze_to_int32", Type::i32(), {v})});
+    }
 
     b.position_at_end(fast);
     b.build_br(merge, {inline_to_int32(b, is_f64 ? v : b.build_bitcast_f64_i64(v))});
@@ -444,7 +490,22 @@ bool lower_ops_instruction(
                 res_val = lowering->ensure_type(op0, Type::f64(), b);
             } else {
                 Value* lhs = lowering->ensure_type(op0, Type::i64(), b);
-                res_val = b.build_call("bronze_to_numeric", Type::i64(), {lhs});
+                if (lowering->run_once()) {
+                    res_val = b.build_call("bronze_to_numeric", Type::i64(), {lhs});
+                } else {
+                    BasicBlock* cur = b.current_block();
+                    const std::string pfx = "tonum_" + std::to_string(cur->parent()->next_block_id());
+                    BasicBlock* slow = b.append_block(pfx + "_slow");
+                    BasicBlock* merge = b.append_block(pfx + "_merge");
+                    Value* result = b.add_block_param(merge, Type::i64());
+                    b.position_at_end(cur);
+                    Value* is_num = b.build_ule(lhs, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+                    b.build_br_if(is_num, merge, {lhs}, slow, {});
+                    b.position_at_end(slow);
+                    b.build_br(merge, {b.build_call("bronze_to_numeric", Type::i64(), {lhs})});
+                    b.position_at_end(merge);
+                    res_val = result;
+                }
             }
             return true;
         }
@@ -453,7 +514,27 @@ bool lower_ops_instruction(
             if (!op0) return false;
             Value* lhs = lowering->ensure_type(op0, Type::i64(), b);
             Value* is_inc = b.build_iconst_i32(inst_ast.imm_i64 >= 0 ? 1 : 0);
-            res_val = b.build_call("bronze_numeric_step", Type::i64(), {lhs, is_inc});
+            if (lowering->run_once()) {
+                res_val = b.build_call("bronze_numeric_step", Type::i64(), {lhs, is_inc});
+            } else {
+                BasicBlock* cur = b.current_block();
+                const std::string pfx = "numstep_" + std::to_string(cur->parent()->next_block_id());
+                BasicBlock* fast = b.append_block(pfx + "_fast");
+                BasicBlock* slow = b.append_block(pfx + "_slow");
+                BasicBlock* merge = b.append_block(pfx + "_merge");
+                Value* result = b.add_block_param(merge, Type::i64());
+                b.position_at_end(cur);
+                Value* is_num = b.build_ule(lhs, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+                b.build_br_if(is_num, fast, slow);
+                b.position_at_end(slow);
+                b.build_br(merge, {b.build_call("bronze_numeric_step", Type::i64(), {lhs, is_inc})});
+                b.position_at_end(fast);
+                Value* delta = b.build_fconst_f64(inst_ast.imm_i64 >= 0 ? 1.0 : -1.0);
+                Value* sum = b.build_fadd(b.build_bitcast_f64_i64(lhs), delta);
+                b.build_br(merge, {lowering->prop_lowering().box_number(b, sum)});
+                b.position_at_end(merge);
+                res_val = result;
+            }
             return true;
         }
 

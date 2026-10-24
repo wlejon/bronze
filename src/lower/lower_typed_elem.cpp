@@ -222,7 +222,9 @@ std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e, bool co
     if (ia == nullptr || ia->optional) return std::nullopt;
     const types::Type recv = inferredType(*ia->object);
     if (recv.is(types::TypeKind::Array)) {
-        if (!provenNumber(*ia->index)) return std::nullopt;
+        if (!provenNumber(*ia->index) && !definitelyNumericOperand(*ia->index, 8)) {
+            return std::nullopt;
+        }
         if (recv.arrayElementsPinned()) {
             return static_cast<uint32_t>(il::kElemKindPlainArrayF64);
         }
@@ -237,7 +239,9 @@ std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e, bool co
     // The index must be a PROVEN number: a boxed index of any other type goes
     // through ToPropertyKey, which can run user code, and the op has no edge
     // for that. A proven number's canonical-index rule is checked inline.
-    if (!provenNumber(*ia->index)) return std::nullopt;
+    if (!provenNumber(*ia->index) && !definitelyNumericOperand(*ia->index, 8)) {
+        return std::nullopt;
+    }
     return raw;
 }
 

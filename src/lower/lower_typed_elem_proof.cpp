@@ -82,10 +82,19 @@ public:
     explicit EnclosingForFinder(const ast::IndexAccess& target) : target_(&target) {}
 
     std::vector<const ast::ForStmt*> enclosing;
+    std::vector<const ast::BlockStmt*> enclosingBlocks;
 
     void visit(const ast::IndexAccess& ia) override {
-        if (&ia == target_) enclosing = stack_;
+        if (&ia == target_) {
+            enclosing = stack_;
+            enclosingBlocks = blockStack_;
+        }
         ast::detail::IdentVisitor::visit(ia);
+    }
+    void visit(const ast::BlockStmt& b) override {
+        blockStack_.push_back(&b);
+        for (const auto& s : b.stmts) s->accept(*this);
+        blockStack_.pop_back();
     }
     void visit(const ast::ForStmt& f) override {
         for (const auto& s : f.init) s->accept(*this);
@@ -101,6 +110,7 @@ public:
 private:
     const ast::IndexAccess* target_;
     std::vector<const ast::ForStmt*> stack_;
+    std::vector<const ast::BlockStmt*> blockStack_;
 };
 
 class LoopBodySafetyScan final : public ast::detail::IdentVisitor {
@@ -325,6 +335,21 @@ bool sameReceiverValue(il::ValueId a, il::ValueId b, const il::Function& fn,
     return unwrapBoxValue(a, fn, defs) == unwrapBoxValue(b, fn, defs);
 }
 
+bool isKnownTypedReceiver(il::ValueId a, il::ValueId recv, const il::Function& fn,
+                          const std::vector<DefSite>& defs) {
+    if (sameReceiverValue(a, recv, fn, defs)) return true;
+    const il::ValueId root = unwrapBoxValue(a, fn, defs);
+    for (const il::Block& blk : fn.blocks) {
+        for (const il::Instruction& inst : blk.instructions) {
+            if ((inst.op == il::Op::ElemGetTyped || inst.op == il::Op::ElemSetTyped) &&
+                !inst.operands.empty() && unwrapBoxValue(inst.operands[0], fn, defs) == root) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool isProvablyPrimitiveOrLengthRead(il::ValueId val, il::ValueId recv,
                                      uint32_t lengthKeyIndex, const il::Function& fn,
                                      const std::vector<DefSite>& defs,
@@ -443,7 +468,7 @@ bool isProvablyPrimitiveOrLengthRead(il::ValueId val, il::ValueId recv,
                 return false;
             }
             return recv != il::kNoValue && !inst.operands.empty() &&
-                   sameReceiverValue(inst.operands[0], recv, fn, defs);
+                   isKnownTypedReceiver(inst.operands[0], recv, fn, defs);
 
         default:
             return false;
@@ -508,14 +533,15 @@ bool isSafeInstForInBoundsLoop(const il::Instruction& inst, il::ValueId recv,
 
         case il::Op::ToInt32:
             return inst.boxType == il::Type::F64 || inst.boxType == il::Type::I32 ||
-                   inst.boxType == il::Type::Bool;
+                inst.boxType == il::Type::Bool;
 
         case il::Op::PropGet:
             if (!protoPatchFree || inst.keyIndex != lengthKeyIndex) return false;
             if (lengthKeyIndex < isAccessorKey.size() && isAccessorKey[lengthKeyIndex]) {
                 return false;
             }
-            return !inst.operands.empty() && sameReceiverValue(inst.operands[0], recv, fn, defs);
+            return !inst.operands.empty() &&
+                   isKnownTypedReceiver(inst.operands[0], recv, fn, defs);
 
         case il::Op::Unbox:
             if (inst.rawUnbox || inst.nullishUnbox) return true;
@@ -526,6 +552,49 @@ bool isSafeInstForInBoundsLoop(const il::Instruction& inst, il::ValueId recv,
         default:
             return false;
     }
+}
+
+const ast::VarDecl* findUniqueConstDecl(
+    const std::string& name, const ast::IndexAccess* site,
+    const std::vector<std::unique_ptr<ast::Stmt>>* bodyStmts) {
+    if (bodyStmts == nullptr) return nullptr;
+    if (site != nullptr) {
+        EnclosingForFinder forFinder(*site);
+        for (const auto& s : *bodyStmts) s->accept(forFinder);
+        for (auto it = forFinder.enclosingBlocks.rbegin(); it != forFinder.enclosingBlocks.rend();
+             ++it) {
+            const ast::BlockStmt* blk = *it;
+            ConstDeclFinder finder(name);
+            for (const auto& s : blk->stmts) s->accept(finder);
+            if (finder.count == 1 && finder.decl != nullptr && finder.decl->isConst &&
+                finder.decl->init != nullptr) {
+                for (const auto& s : blk->stmts) {
+                    if (s.get() == finder.decl) return finder.decl;
+                }
+            }
+        }
+    }
+    ConstDeclFinder finder(name);
+    for (const auto& s : *bodyStmts) s->accept(finder);
+    if (finder.count == 1 && finder.decl != nullptr && finder.decl->isConst &&
+        finder.decl->init != nullptr) {
+        return finder.decl;
+    }
+    return nullptr;
+}
+
+bool resolveSafeIntegerOrConst(const ast::Expr& e,
+                               const std::vector<std::unique_ptr<ast::Stmt>>* bodyStmts,
+                               const std::unordered_set<std::string>& memoryNames,
+                               int64_t* outVal = nullptr,
+                               const ast::IndexAccess* site = nullptr) {
+    if (isSafeIntegerLiteral(e, outVal)) return true;
+    const auto* id = dynamic_cast<const ast::Ident*>(&e);
+    if (id == nullptr || bodyStmts == nullptr || memoryNames.count(id->name) != 0) return false;
+    if (const ast::VarDecl* decl = findUniqueConstDecl(id->name, site, bodyStmts)) {
+        return isSafeIntegerLiteral(*decl->init, outVal);
+    }
+    return false;
 }
 
 }  // namespace
@@ -548,13 +617,19 @@ bool Lowerer::provenIntegralIndexExpr(const ast::Expr& e, const ast::IndexAccess
                 return true;
             case ast::BinaryOp::Add:
             case ast::BinaryOp::Sub:
+                return provenIntegralIndexExpr(*b->lhs, site, depth - 1) &&
+                       provenIntegralIndexExpr(*b->rhs, site, depth - 1);
             case ast::BinaryOp::Mul: {
                 int64_t lit = 0;
-                if (isSafeIntegerLiteral(*b->rhs, &lit) && std::abs(lit) <= 65536) {
-                    return provenIntegralIndexExpr(*b->lhs, site, depth - 1);
+                if (resolveSafeIntegerOrConst(*b->rhs, currentBodyStmts_, memoryNames_, &lit,
+                                              &site) &&
+                    std::abs(lit) <= 65536) {
+                    return provenIntegralIndexExpr(*b->lhs, site, 1);
                 }
-                if (isSafeIntegerLiteral(*b->lhs, &lit) && std::abs(lit) <= 65536) {
-                    return provenIntegralIndexExpr(*b->rhs, site, depth - 1);
+                if (resolveSafeIntegerOrConst(*b->lhs, currentBodyStmts_, memoryNames_, &lit,
+                                              &site) &&
+                    std::abs(lit) <= 65536) {
+                    return provenIntegralIndexExpr(*b->rhs, site, 1);
                 }
                 return false;
             }
@@ -577,11 +652,8 @@ bool Lowerer::provenIntegralIndexExpr(const ast::Expr& e, const ast::IndexAccess
         for (const ast::ForStmt* f : forFinder.enclosing) {
             if (analyzeForInductionVar(*f, id->name)) return true;
         }
-        ConstDeclFinder finder(id->name);
-        for (const auto& s : *currentBodyStmts_) s->accept(finder);
-        if (finder.count == 1 && finder.decl != nullptr && finder.decl->isConst &&
-            finder.decl->init != nullptr) {
-            return provenIntegralIndexExpr(*finder.decl->init, site, depth - 1);
+        if (const ast::VarDecl* decl = findUniqueConstDecl(id->name, &site, currentBodyStmts_)) {
+            return provenIntegralIndexExpr(*decl->init, site, depth - 1);
         }
     }
     return false;
@@ -597,6 +669,33 @@ uint32_t Lowerer::typedElemProofFlags(const ast::IndexAccess& idx, uint32_t elem
     if (rawKind <= 11 && (flags & static_cast<uint32_t>(il::kElemFlagProvenIntegralIndex)) != 0) {
         const auto* recvId = dynamic_cast<const ast::Ident*>(idx.object.get());
         const auto* idxId = dynamic_cast<const ast::Ident*>(idx.index.get());
+        if (recvId != nullptr && memoryNames_.count(recvId->name) == 0) {
+            if (const auto* bin = dynamic_cast<const ast::Binary*>(idx.index.get());
+                bin != nullptr && bin->op == ast::BinaryOp::BitAnd) {
+                int64_t mask = -1;
+                if (!resolveSafeIntegerOrConst(*bin->rhs, currentBodyStmts_, memoryNames_, &mask,
+                                               &idx) ||
+                    mask < 0) {
+                    mask = -1;
+                    resolveSafeIntegerOrConst(*bin->lhs, currentBodyStmts_, memoryNames_, &mask,
+                                              &idx);
+                }
+                if (mask >= 0) {
+                    if (const ast::VarDecl* decl =
+                            findUniqueConstDecl(recvId->name, &idx, currentBodyStmts_)) {
+                        if (const auto* ne = dynamic_cast<const ast::NewExpr*>(decl->init.get());
+                            ne != nullptr && ne->args.size() == 1) {
+                            int64_t len = 0;
+                            if (resolveSafeIntegerOrConst(*ne->args[0], currentBodyStmts_,
+                                                          memoryNames_, &len, &idx) &&
+                                mask < len) {
+                                flags |= static_cast<uint32_t>(il::kElemFlagProvenInBounds);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (recvId != nullptr && idxId != nullptr &&
             memoryNames_.count(recvId->name) == 0 &&
             memoryNames_.count(idxId->name) == 0) {
@@ -775,14 +874,22 @@ void sanitizeLoopInBoundsProofs(il::Module& module) {
 
                     for (const LoopDesc& ld : loops) {
                         if (b >= ld.inLoop.size() || !ld.inLoop[b]) continue;
-                        bool isHeaderParam = false;
+                        bool isBoundedIdx = false;
                         for (const auto& bp : fn.blocks[ld.header].params) {
                             if (bp.id == idxRoot) {
-                                isHeaderParam = true;
+                                isBoundedIdx = true;
                                 break;
                             }
                         }
-                        if (!isHeaderParam) continue;
+                        if (!isBoundedIdx && idxRoot < defs.size() &&
+                            defs[idxRoot].block != il::kNoBlock) {
+                            const auto& iBlk = fn.blocks[defs[idxRoot].block];
+                            if (defs[idxRoot].index < iBlk.instructions.size() &&
+                                iBlk.instructions[defs[idxRoot].index].op == il::Op::BitAnd) {
+                                isBoundedIdx = true;
+                            }
+                        }
+                        if (!isBoundedIdx) continue;
 
                         const il::ValueId recvRoot = unwrapBoxValue(recv, fn, defs);
                         if (recvRoot < defs.size() && defs[recvRoot].block != il::kNoBlock &&

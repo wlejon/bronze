@@ -19,6 +19,7 @@ void IlLowering::begin_hoisting(BasicBlock* block) {
     // An empty block: the values go in front of whatever it gets later.
     hoist_at_head_ = block && !hoist_after_;
     for (Value*& v : hoisted_) v = nullptr;
+    ta_cursors_.clear();
 }
 
 Value* IlLowering::hoisted(Builder& b, Hoist kind) {

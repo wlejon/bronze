@@ -339,7 +339,8 @@ Lowerer::Value Lowerer::emitCompoundCombine(Value cur, Value rhs, ast::BinaryOp 
     // BOXED operand keeps its box and the instruction becomes the dynamic
     // form, whose helper owns ToNumeric, the BigInt algorithm and the mixing
     // TypeError. Only two proven-numeric operands may be unboxed.
-    if (cur.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+    if ((cur.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
+        numericArithDisabled_) {
         Value l = boxValueIfNeeded(cur, ilFn);
         Value r = boxValueIfNeeded(rhs, ilFn);
         il::ValueId res = ilFn.valueCount++;

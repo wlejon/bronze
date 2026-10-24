@@ -568,7 +568,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                 if (inst.op == il::Op::CreateObject || inst.op == il::Op::CreateArray ||
                     (changed && inst.op == il::Op::Box && inst.boxType == il::Type::F64)) {
                     canPrune = true;
-                } else if (inst.op == il::Op::Construct) {
+                } else if (inst.op == il::Op::Construct && module.censusOutPath.empty()) {
                     const uint32_t calleeIdx = findCalleeIndex(inst, fn, defs, module);
                     if (calleeIdx != UINT32_MAX && calleeIdx < ctorCache.size()) {
                         if (!ctorCache[calleeIdx].has_value()) {

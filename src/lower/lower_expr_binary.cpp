@@ -9,6 +9,7 @@
 // ARE (a double, an int32, a boxed value) and only then which instruction it
 // is.
 
+#include <cmath>
 #include <optional>
 #include <string>
 #include <vector>
@@ -23,6 +24,19 @@ namespace bronze::lower {
 // `(a | 0) & 3` from converting twice.
 Lowerer::Value Lowerer::emitToInt32(Value val, il::Function& ilFn) {
     if (val.type == il::Type::I32) return val;
+    if (val.type == il::Type::F64 && currentBlockIdx_ < ilFn.blocks.size()) {
+        auto& insts = ilFn.blocks[currentBlockIdx_].instructions;
+        if (!insts.empty() && insts.back().result == val.id &&
+            insts.back().op == il::Op::ConstF64 && std::isfinite(insts.back().immF64) &&
+            std::floor(insts.back().immF64) == insts.back().immF64 &&
+            std::fabs(insts.back().immF64) <= 2147483647.0) {
+            const int32_t imm = static_cast<int32_t>(static_cast<int64_t>(insts.back().immF64));
+            insts.back().op = il::Op::ConstI32;
+            insts.back().type = il::Type::I32;
+            insts.back().immI32 = imm;
+            return Value{val.id, il::Type::I32};
+        }
+    }
     il::ValueId res = ilFn.valueCount++;
     il::Instruction inst;
     inst.op = il::Op::ToInt32;
@@ -50,7 +64,8 @@ Lowerer::Value Lowerer::emitBitwise(il::Op op, Value lhs, Value rhs, il::Functio
     // ToInt32 is the NUMBER half of 13.15.3 only: on two BigInts these
     // operators are defined over the whole values, and converting first would
     // silently truncate `(1n << 64n) & mask` to 32 bits.
-    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+    if ((lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
+        numericArithDisabled_) {
         Value lb = boxValueIfNeeded(lhs, ilFn);
         Value rb = boxValueIfNeeded(rhs, ilFn);
         il::ValueId dres = ilFn.valueCount++;
@@ -92,7 +107,8 @@ std::optional<il::Op> Lowerer::bitwiseOpFor(ast::BinaryOp op) {
 // `a ** b`: ToNumber on both operands, then the one exponentiation
 // algorithm the runtime owns (rt_operator.cpp), which `Math.pow` shares.
 Lowerer::Value Lowerer::emitPow(Value lhs, Value rhs, il::Function& ilFn) {
-    if (lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) {
+    if ((lhs.type == il::Type::Dynamic || rhs.type == il::Type::Dynamic) &&
+        numericArithDisabled_) {
         Value lb = boxValueIfNeeded(lhs, ilFn);
         Value rb = boxValueIfNeeded(rhs, ilFn);
         il::ValueId dres = ilFn.valueCount++;

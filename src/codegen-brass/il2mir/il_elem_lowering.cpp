@@ -8,6 +8,8 @@
 #include "il_abi.h"
 #include "il_property.h"
 #include <brass/mir/function.hpp>
+#include <cmath>
+#include <cstdlib>
 #include <string>
 
 namespace il2mir {
@@ -93,6 +95,35 @@ ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
         is_number = b.build_ule(index, iconst(b, kBronzeNumberMaxBits));
         f = b.build_bitcast_f64_i64(index);
     }
+    if (f && f->is_instruction()) {
+        const Instruction* fdef = f->defining_instruction();
+        if (fdef) {
+            if (fdef->opcode() == Opcode::sitofp_f64_i32 && fdef->operand_count() == 1) {
+                r.i64 = b.build_sext_i64(fdef->operand(0));
+                r.ok = is_number ? is_number : b.build_iconst_i32(1);
+                return r;
+            }
+            if (fdef->opcode() == Opcode::sitofp_f64_i64 && fdef->operand_count() == 1) {
+                Value* z = fdef->operand(0);
+                if (z && z->is_instruction()) {
+                    const Instruction* zdef = z->defining_instruction();
+                    if (zdef && zdef->opcode() == Opcode::zext_i64 && zdef->operand_count() == 1 &&
+                        zdef->operand(0)->type() == Type::i32()) {
+                        r.i64 = z;
+                        r.ok = is_number ? is_number : b.build_iconst_i32(1);
+                        return r;
+                    }
+                }
+            }
+            if (fdef->opcode() == Opcode::fconst_f64 && std::isfinite(fdef->imm_f64()) &&
+                std::floor(fdef->imm_f64()) == fdef->imm_f64() &&
+                std::fabs(fdef->imm_f64()) <= 2147483647.0) {
+                r.i64 = iconst(b, static_cast<uint64_t>(static_cast<int64_t>(fdef->imm_f64())));
+                r.ok = is_number ? is_number : b.build_iconst_i32(1);
+                return r;
+            }
+        }
+    }
     // Integral when the round trip is exact (the compare is ordered: NaN
     // fails it; -0 reads as index 0, as ToPropertyKey makes it "0").
     r.i64 = b.build_fptosi_i64(f);
@@ -135,6 +166,102 @@ Value* load_u16(Builder& b, Value* data, Value* idx) {
 Value* sign_extend(Builder& b, Value* v, int bits) {
     Value* shift = iconst(b, static_cast<uint64_t>(64 - bits));
     return b.build_ashr(b.build_shl(v, shift), shift);
+}
+
+Value* load_typed_array_elem(Builder& b, Value* data, Value* idx_i64, int64_t elem_kind) {
+    switch (elem_kind) {
+        case BRONZE_ABI_TA_KIND_FLOAT64:
+            return b.build_load_indexed(Type::f64(), data, idx_i64, 8);
+        case BRONZE_ABI_TA_KIND_FLOAT32:
+            return b.build_fpext_f64_f32(b.build_load_indexed(Type::f32(), data, idx_i64, 4));
+        case BRONZE_ABI_TA_KIND_INT32:
+            return b.build_sitofp_f64_i32(b.build_load_indexed(Type::i32(), data, idx_i64, 4));
+        case BRONZE_ABI_TA_KIND_UINT32:
+            return b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i32(), data, idx_i64, 4)));
+        case BRONZE_ABI_TA_KIND_INT16:
+            return b.build_sitofp_f64_i64(sign_extend(b, load_u16(b, data, idx_i64), 16));
+        case BRONZE_ABI_TA_KIND_UINT16:
+            return b.build_sitofp_f64_i64(load_u16(b, data, idx_i64));
+        case BRONZE_ABI_TA_KIND_INT8:
+            return b.build_sitofp_f64_i64(
+                sign_extend(b, b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx_i64, 1)), 8));
+        default: // UINT8, UINT8CLAMPED
+            return b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx_i64, 1)));
+    }
+}
+
+Value* extract_i32_from_sitofp(Value* v) {
+    if (!v || !v->is_instruction()) return nullptr;
+    const Instruction* def = v->defining_instruction();
+    if (!def) return nullptr;
+    if (def->opcode() == Opcode::sitofp_f64_i32 && def->operand_count() == 1) {
+        return def->operand(0);
+    }
+    if (def->opcode() == Opcode::sitofp_f64_i64 && def->operand_count() == 1) {
+        Value* z = def->operand(0);
+        if (z && z->is_instruction()) {
+            const Instruction* zdef = z->defining_instruction();
+            if (zdef && zdef->opcode() == Opcode::zext_i64 && zdef->operand_count() == 1 &&
+                zdef->operand(0)->type() == Type::i32()) {
+                return zdef->operand(0);
+            }
+        }
+    }
+    return nullptr;
+}
+
+Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
+    if (Value* x = extract_i32_from_sitofp(v)) return x;
+    if (v && v->is_instruction()) {
+        const Instruction* def = v->defining_instruction();
+        if (def) {
+            if (def->opcode() == Opcode::fconst_f64 && std::isfinite(def->imm_f64()) &&
+                std::fabs(def->imm_f64()) <= 4294967295.0) {
+                return b.build_iconst_i32(static_cast<int32_t>(static_cast<int64_t>(def->imm_f64())));
+            }
+            if ((def->opcode() == Opcode::add || def->opcode() == Opcode::sub) &&
+                def->operand_count() == 2) {
+                for (int side = 0; side < 2; ++side) {
+                    if (side == 1 && def->opcode() == Opcode::sub) break;
+                    Value* lhs_i32 = extract_i32_from_sitofp(def->operand(side));
+                    const Instruction* rdef =
+                        def->operand(1 - side) ? def->operand(1 - side)->defining_instruction() : nullptr;
+                    if (lhs_i32 && rdef && rdef->opcode() == Opcode::fconst_f64 &&
+                        std::isfinite(rdef->imm_f64()) &&
+                        std::floor(rdef->imm_f64()) == rdef->imm_f64() &&
+                        std::fabs(rdef->imm_f64()) <= 2147483648.0) {
+                        Value* rhs_i32 = b.build_iconst_i32(
+                            static_cast<int32_t>(static_cast<uint32_t>(static_cast<int64_t>(rdef->imm_f64()))));
+                        return def->opcode() == Opcode::add ? b.build_add(lhs_i32, rhs_i32)
+                                                            : b.build_sub(lhs_i32, rhs_i32);
+                    }
+                }
+            }
+        }
+    }
+    BasicBlock* cur = b.current_block();
+    const std::string pfx = "ta_toi32_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(pfx + "_fast");
+    BasicBlock* slow = b.append_block(pfx + "_slow");
+    BasicBlock* merge = b.append_block(pfx + "_merge");
+    Value* res = b.add_block_param(merge, Type::i32());
+    b.position_at_end(cur);
+    Value* bits = b.build_bitcast_i64_f64(v);
+    Value* abs_bits = b.build_and(bits, iconst(b, 0x7FFFFFFFFFFFFFFFULL));
+    b.build_br_if(b.build_ult(abs_bits, iconst(b, 0x43E0000000000000ULL)), fast, slow);
+    b.position_at_end(slow);
+    Value* in_range = b.build_ult(abs_bits, iconst(b, 0x4530000000000000ULL));
+    Value* mant = b.build_or(b.build_and(abs_bits, iconst(b, 0x000FFFFFFFFFFFFFULL)),
+                             iconst(b, 0x0010000000000000ULL));
+    Value* shift = b.build_and(b.build_sub(b.build_lshr(abs_bits, iconst(b, 52)), iconst(b, 1075)),
+                               iconst(b, 63));
+    Value* mag = b.build_shl(mant, shift);
+    Value* signed_val = b.build_select(b.build_slt(v, b.build_fconst_f64(0.0)), b.build_sub(iconst(b, 0), mag), mag);
+    b.build_br(merge, {b.build_trunc_i32(b.build_select(in_range, signed_val, iconst(b, 0)))});
+    b.position_at_end(fast);
+    b.build_br(merge, {b.build_trunc_i32(b.build_fptosi_i64(v))});
+    b.position_at_end(merge);
+    return res;
 }
 
 } // namespace
@@ -223,24 +350,21 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
                     SwitchCase(BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_u8)});
 
     b.position_at_end(bb_f64);
-    b.build_br(bb_box, {b.build_load_indexed(Type::f64(), data, idx.i64, 8)});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_FLOAT64)});
     b.position_at_end(bb_f32);
-    b.build_br(bb_box, {b.build_fpext_f64_f32(b.build_load_indexed(Type::f32(), data, idx.i64, 4))});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_FLOAT32)});
     b.position_at_end(bb_i32);
-    b.build_br(bb_box, {b.build_sitofp_f64_i32(b.build_load_indexed(Type::i32(), data, idx.i64, 4))});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT32)});
     b.position_at_end(bb_u32);
-    b.build_br(bb_box,
-               {b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i32(), data, idx.i64, 4)))});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT32)});
     b.position_at_end(bb_i16);
-    b.build_br(bb_box, {b.build_sitofp_f64_i64(sign_extend(b, load_u16(b, data, idx.i64), 16))});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT16)});
     b.position_at_end(bb_u16);
-    b.build_br(bb_box, {b.build_sitofp_f64_i64(load_u16(b, data, idx.i64))});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT16)});
     b.position_at_end(bb_i8);
-    b.build_br(bb_box, {b.build_sitofp_f64_i64(
-                           sign_extend(b, b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx.i64, 1)), 8))});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_INT8)});
     b.position_at_end(bb_u8);
-    b.build_br(bb_box,
-               {b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx.i64, 1)))});
+    b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT8)});
 
     b.position_at_end(bb_box);
     b.build_br(bb_merge, {box_f64(b, number)});
@@ -252,7 +376,8 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     return result;
 }
 
-Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Value* index, int64_t elem_kind) {
+Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Value* index, int64_t elem_kind,
+                                                    Value* preloaded_data, Value* preloaded_length) {
     if (!enable_inlined_fastpaths_) {
         return b.build_bitcast_f64_i64(b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)}));
     }
@@ -302,76 +427,47 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         return b.build_bitcast_f64_i64(result);
     }
 
-    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
+    static const bool unsound_pins = [] {
+        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
+        return env && env[0] && env[0] != '0';
+    }();
+    if (unsound_pins || elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
         return b.build_bitcast_f64_i64(lower_elem_get(b, obj, index));
+    }
+
+    const bool known_num_idx =
+        index->type() == Type::i32() || index->type() == Type::f64() || boxed_f64_source(index) != nullptr;
+    const ElemIndex idx = elem_index(b, index, proven_integral);
+    if (proven_in_bounds && proven_integral && known_num_idx) {
+        Value* data = preloaded_data ? preloaded_data
+                                     : typed_array_data(b, b.build_and(obj, iconst(b, kPayloadMask)));
+        return load_typed_array_elem(b, data, idx.i64, elem_kind);
     }
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
     const std::string prefix = "elem_get_ta_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
     BasicBlock* bb_load = b.append_block(prefix + "_load");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::f64());
 
     b.position_at_end(cur);
-    Value* ptr = nullptr;
-    Value* is_obj = nullptr;
-    object_pointer(b, obj, ptr, is_obj);
-    const ElemIndex idx = elem_index(b, index, proven_integral);
-    b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
-
-    b.position_at_end(bb_obj);
-    Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
-
-    b.position_at_end(bb_ta);
-    Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    Value* kind_ok = b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
-    Value* ok = proven_in_bounds
-                    ? kind_ok
-                    : b.build_and(b.build_ult(idx.i64, b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET))), kind_ok);
-    b.build_br_if(ok, bb_load, bb_slow);
+    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ta_len = preloaded_length
+                        ? preloaded_length
+                        : b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    Value* in_bounds = b.build_ult(idx.i64, ta_len);
+    Value* ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
+    Value* nan_f64 = b.build_bitcast_f64_i64(iconst(b, BRONZE_ABI_CANONICAL_NAN_BITS));
+    b.build_br_if(ok, bb_load, {}, bb_merge, {nan_f64});
 
     b.position_at_end(bb_load);
-    Value* data = typed_array_data(b, ptr);
-    Value* number = nullptr;
-    switch (elem_kind) {
-        case BRONZE_ABI_TA_KIND_FLOAT64:
-            number = b.build_load_indexed(Type::f64(), data, idx.i64, 8);
-            break;
-        case BRONZE_ABI_TA_KIND_FLOAT32:
-            number = b.build_fpext_f64_f32(b.build_load_indexed(Type::f32(), data, idx.i64, 4));
-            break;
-        case BRONZE_ABI_TA_KIND_INT32:
-            number = b.build_sitofp_f64_i32(b.build_load_indexed(Type::i32(), data, idx.i64, 4));
-            break;
-        case BRONZE_ABI_TA_KIND_UINT32:
-            number = b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i32(), data, idx.i64, 4)));
-            break;
-        case BRONZE_ABI_TA_KIND_INT16:
-            number = b.build_sitofp_f64_i64(sign_extend(b, load_u16(b, data, idx.i64), 16));
-            break;
-        case BRONZE_ABI_TA_KIND_UINT16:
-            number = b.build_sitofp_f64_i64(load_u16(b, data, idx.i64));
-            break;
-        case BRONZE_ABI_TA_KIND_INT8:
-            number = b.build_sitofp_f64_i64(
-                sign_extend(b, b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx.i64, 1)), 8));
-            break;
-        default: // UINT8, UINT8CLAMPED
-            number = b.build_sitofp_f64_i64(b.build_zext_i64(b.build_load_indexed(Type::i8(), data, idx.i64, 1)));
-            break;
-    }
-    b.build_br(bb_merge, {number});
-
-    b.position_at_end(bb_slow);
-    Value* slow_val = b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)});
-    b.build_br(bb_merge, {b.build_bitcast_f64_i64(slow_val)});
+    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
+    Value* loaded_val = load_typed_array_elem(b, data, idx.i64, elem_kind);
+    b.build_br(bb_merge, {loaded_val});
 
     b.position_at_end(bb_merge);
+    last_ta_get_ = {bb_merge, bb_load, result, loaded_val, data, idx.i64, obj, index, elem_kind};
     return result;
 }
 
@@ -529,7 +625,8 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
 }
 
 void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value* index, Value* val_f64,
-                                                  int64_t elem_kind, uint32_t strict) {
+                                                  int64_t elem_kind, uint32_t strict, Value* preloaded_data,
+                                                  Value* preloaded_length) {
     Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
     if (!enable_inlined_fastpaths_) {
         b.build_call("bronze_elem_set", Type::void_type(),
@@ -587,148 +684,129 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         return;
     }
 
-    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
+    static const bool unsound_pins = [] {
+        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
+        return env && env[0] && env[0] != '0';
+    }();
+    if (unsound_pins || elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
         lower_elem_set(b, obj, index, box_f64(b, val_f64), strict);
+        return;
+    }
+
+    const LastTypedGet prev_get = last_ta_get_;
+    last_ta_get_ = {};
+    auto emit_typed_store = [&](Value* data, Value* idx_i64) {
+        switch (elem_kind) {
+            case BRONZE_ABI_TA_KIND_FLOAT64:
+                b.build_store_indexed(Type::f64(), data, idx_i64, 8, val_f64);
+                break;
+            case BRONZE_ABI_TA_KIND_FLOAT32:
+                b.build_store_indexed(Type::f32(), data, idx_i64, 4, b.build_fptrunc_f32_f64(val_f64));
+                break;
+            case BRONZE_ABI_TA_KIND_INT32:
+            case BRONZE_ABI_TA_KIND_UINT32:
+                b.build_store_indexed(Type::i32(), data, idx_i64, 4, narrow_f64_to_i32_callfree(b, val_f64));
+                break;
+            case BRONZE_ABI_TA_KIND_INT16:
+            case BRONZE_ABI_TA_KIND_UINT16: {
+                Value* i32 = narrow_f64_to_i32_callfree(b, val_f64);
+                b.build_store_indexed(Type::i8(), data, idx_i64, 2, 0, b.build_trunc_i8(i32));
+                b.build_store_indexed(Type::i8(), data, idx_i64, 2, 1,
+                                      b.build_trunc_i8(b.build_lshr(i32, b.build_iconst_i32(8))));
+                break;
+            }
+            case BRONZE_ABI_TA_KIND_INT8:
+            case BRONZE_ABI_TA_KIND_UINT8:
+                b.build_store_indexed(Type::i8(), data, idx_i64, 1,
+                                      b.build_trunc_i8(narrow_f64_to_i32_callfree(b, val_f64)));
+                break;
+            default: { // UINT8CLAMPED: half-to-even rounding in [0, 255]
+                Value* is_nan = b.build_ne(val_f64, val_f64);
+                Value* le_zero = b.build_or(is_nan, b.build_sle(val_f64, b.build_fconst_f64(0.0)));
+                Value* ge_255 = b.build_sge(val_f64, b.build_fconst_f64(255.0));
+                Value* trunc_i64 = b.build_fptosi_i64(val_f64);
+                Value* floor_f64 = b.build_sitofp_f64_i64(trunc_i64);
+                Value* diff = b.build_sub(val_f64, floor_f64);
+                Value* gt_half = b.build_sgt(diff, b.build_fconst_f64(0.5));
+                Value* eq_half = b.build_eq(diff, b.build_fconst_f64(0.5));
+                Value* is_odd = b.build_ne(b.build_and(trunc_i64, iconst(b, 1)), iconst(b, 0));
+                Value* round_up = b.build_or(gt_half, b.build_and(eq_half, is_odd));
+                Value* rounded = b.build_add(trunc_i64, b.build_zext_i64(round_up));
+                Value* clamped = b.build_select(le_zero, iconst(b, 0),
+                                                b.build_select(ge_255, iconst(b, 255), rounded));
+                b.build_store_indexed(Type::i8(), data, idx_i64, 1, b.build_trunc_i8(clamped));
+                break;
+            }
+        }
+    };
+
+    if (b.current_block() == prev_get.merge_bb && prev_get.load_bb && prev_get.load_bb->tail() &&
+        obj == prev_get.obj && index == prev_get.index && elem_kind == prev_get.elem_kind &&
+        (elem_kind == BRONZE_ABI_TA_KIND_FLOAT64 || elem_kind == BRONZE_ABI_TA_KIND_FLOAT32 ||
+         extract_i32_from_sitofp(prev_get.loaded_val) != nullptr) &&
+        val_f64 && val_f64->is_instruction()) {
+        const Instruction* vdef = val_f64->defining_instruction();
+        const Instruction* rdef = (vdef && vdef->operand_count() == 2 && vdef->operand(1))
+                                      ? vdef->operand(1)->defining_instruction()
+                                      : nullptr;
+        if (vdef && vdef->parent() == prev_get.merge_bb &&
+            (vdef->opcode() == Opcode::add || vdef->opcode() == Opcode::sub) &&
+            vdef->operand(0) == prev_get.result && rdef && rdef->opcode() == Opcode::fconst_f64 &&
+            std::isfinite(rdef->imm_f64()) && std::floor(rdef->imm_f64()) == rdef->imm_f64() &&
+            std::fabs(rdef->imm_f64()) <= 2147483648.0) {
+            bool pure_merge = true;
+            for (const Instruction* it = prev_get.merge_bb->head(); it; it = it->next()) {
+                if (it->opcode() != Opcode::fconst_f64 && it->opcode() != Opcode::add &&
+                    it->opcode() != Opcode::sub && it->opcode() != Opcode::iconst_i32 &&
+                    it->opcode() != Opcode::iconst_i64) {
+                    pure_merge = false;
+                    break;
+                }
+            }
+            if (pure_merge) {
+                BasicBlock* resume = b.current_block();
+                b.position_before(prev_get.load_bb->tail());
+                Value* c = b.build_fconst_f64(rdef->imm_f64());
+                val_f64 = vdef->opcode() == Opcode::add ? b.build_add(prev_get.loaded_val, c)
+                                                        : b.build_sub(prev_get.loaded_val, c);
+                emit_typed_store(prev_get.data, prev_get.idx_i64);
+                b.position_at_end(resume);
+                return;
+            }
+        }
+    }
+
+    const bool known_num_idx =
+        index->type() == Type::i32() || index->type() == Type::f64() || boxed_f64_source(index) != nullptr;
+    const ElemIndex idx = elem_index(b, index, proven_integral);
+    if (proven_in_bounds && proven_integral && known_num_idx) {
+        Value* data = preloaded_data ? preloaded_data
+                                     : typed_array_data(b, b.build_and(obj, iconst(b, kPayloadMask)));
+        emit_typed_store(data, idx.i64);
         return;
     }
 
     BasicBlock* cur = b.current_block();
     Function* fn = cur->parent();
     const std::string prefix = "elem_set_ta_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
     BasicBlock* bb_store = b.append_block(prefix + "_store");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
     b.position_at_end(cur);
-    Value* ptr = nullptr;
-    Value* is_obj = nullptr;
-    object_pointer(b, obj, ptr, is_obj);
-    const ElemIndex idx = elem_index(b, index, proven_integral);
-    b.build_br_if(b.build_and(is_obj, idx.ok), bb_obj, bb_slow);
-
-    b.position_at_end(bb_obj);
-    Value* header_low = b.build_load(Type::i32(), ptr, 0);
-    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
-
-    b.position_at_end(bb_ta);
-    Value* kind = b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET);
-    Value* kind_ok = b.build_eq(kind, b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
-    Value* ok = proven_in_bounds
-                    ? kind_ok
-                    : b.build_and(b.build_ult(idx.i64, b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET))), kind_ok);
-    Value* whole = nullptr;
-    if (elem_kind == BRONZE_ABI_TA_KIND_UINT8CLAMPED) {
-        Value* c_abs = b.build_and(b.build_bitcast_i64_f64(val_f64), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
-        whole = b.build_fptosi_i64(val_f64);
-        Value* c_exact = b.build_eq(b.build_sitofp_f64_i64(whole), val_f64);
-        Value* c_ok = b.build_and(b.build_ult(c_abs, iconst(b, 0x43E0000000000000ULL)), c_exact);
-        ok = b.build_and(ok, c_ok);
-    } else if (elem_kind != BRONZE_ABI_TA_KIND_FLOAT64 && elem_kind != BRONZE_ABI_TA_KIND_FLOAT32) {
-        Value* abs_bits = b.build_and(b.build_bitcast_i64_f64(val_f64), iconst(b, 0x7FFFFFFFFFFFFFFFULL));
-        ok = b.build_and(ok, b.build_ult(abs_bits, iconst(b, 0x43E0000000000000ULL)));
-    }
-    b.build_br_if(ok, bb_store, bb_slow);
+    Value* ptr = (preloaded_data && preloaded_length) ? nullptr : b.build_and(obj, iconst(b, kPayloadMask));
+    Value* ta_len = preloaded_length
+                        ? preloaded_length
+                        : b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    Value* in_bounds = b.build_ult(idx.i64, ta_len);
+    Value* ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
+    b.build_br_if(ok, bb_store, bb_merge);
 
     b.position_at_end(bb_store);
-    Value* data = typed_array_data(b, ptr);
-    switch (elem_kind) {
-        case BRONZE_ABI_TA_KIND_FLOAT64:
-            b.build_store_indexed(Type::f64(), data, idx.i64, 8, val_f64);
-            break;
-        case BRONZE_ABI_TA_KIND_FLOAT32:
-            b.build_store_indexed(Type::f32(), data, idx.i64, 4, b.build_fptrunc_f32_f64(val_f64));
-            break;
-        case BRONZE_ABI_TA_KIND_INT32:
-        case BRONZE_ABI_TA_KIND_UINT32:
-            whole = b.build_fptosi_i64(val_f64);
-            b.build_store_indexed(Type::i32(), data, idx.i64, 4, b.build_trunc_i32(whole));
-            break;
-        case BRONZE_ABI_TA_KIND_INT16:
-        case BRONZE_ABI_TA_KIND_UINT16:
-            whole = b.build_fptosi_i64(val_f64);
-            b.build_store_indexed(Type::i8(), data, idx.i64, 2, 0, b.build_trunc_i8(whole));
-            b.build_store_indexed(Type::i8(), data, idx.i64, 2, 1, b.build_trunc_i8(b.build_lshr(whole, iconst(b, 8))));
-            break;
-        case BRONZE_ABI_TA_KIND_INT8:
-        case BRONZE_ABI_TA_KIND_UINT8:
-            whole = b.build_fptosi_i64(val_f64);
-            b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(whole));
-            break;
-        default: { // UINT8CLAMPED
-            Value* lo = b.build_select(b.build_slt(whole, iconst(b, 0)), iconst(b, 0), whole);
-            Value* clamped = b.build_select(b.build_sgt(lo, iconst(b, 255)), iconst(b, 255), lo);
-            b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(clamped));
-            break;
-        }
-    }
-    b.build_br(bb_merge);
-
-    b.position_at_end(bb_slow);
-    b.build_call("bronze_elem_set", Type::void_type(),
-                 {obj, boxed_index(b, index), box_f64(b, val_f64), strict_val});
+    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
+    emit_typed_store(data, idx.i64);
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);
-}
-
-void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
-    Value* ptr = b.build_and(obj, iconst(b, kPayloadMask));
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
-    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
-    out_block = b.build_add(block, b.build_shl(head, iconst(b, 3)));
-    out_head = nullptr;
-}
-
-Value* PropertyLoweringHelper::dense_array_slot_addr(Builder& b, Value* block, Value* head, uint32_t index) {
-    if (!head) {
-        return b.build_add(block, iconst(b, kBronzeHdrBytes + static_cast<uint64_t>(index) * 8));
-    }
-    Value* slot = index == 0 ? head : b.build_add(head, iconst(b, index));
-    return b.build_add(b.build_add(block, b.build_shl(slot, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
-}
-
-Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
-                                                            bool check_hole) {
-    Value* elem = nullptr;
-    if (!head) {
-        if (index <= kMaxInlineDispIndex) {
-            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-            elem = b.build_load(Type::i64(), block, disp);
-        } else {
-            elem = b.build_load_indexed(Type::i64(), block, iconst(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes));
-        }
-    } else if (index <= kMaxInlineDispIndex) {
-        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-        elem = b.build_load_indexed(Type::i64(), block, head, 8, disp);
-    } else {
-        Value* slot = b.build_add(head, iconst(b, index));
-        elem = b.build_load_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
-    }
-    if (check_hole) {
-        Value* is_hole = b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS));
-        elem = b.build_select(is_hole, iconst(b, kUndefinedTag), elem);
-    }
-    return elem;
-}
-
-void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
-                                                           Value* val) {
-    if (!head) {
-        if (index <= kMaxInlineDispIndex) {
-            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-            b.build_store(Type::i64(), block, disp, val);
-        } else {
-            b.build_store_indexed(Type::i64(), block, iconst(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val);
-        }
-    } else if (index <= kMaxInlineDispIndex) {
-        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-        b.build_store_indexed(Type::i64(), block, head, 8, disp, val);
-    } else {
-        Value* slot = b.build_add(head, iconst(b, index));
-        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
-    }
 }
 
 bool PropertyLoweringHelper::is_known_non_ref(Value* val) const {
@@ -844,77 +922,6 @@ Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint
     Value* head = nullptr;
     emit_dense_array_guard(b, obj, max_index, /*writable=*/false, ok, block, head);
     return ok;
-}
-
-Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint32_t key_index,
-                                                    uint32_t elem_index, const IcSite& site,
-                                                    bool check_hole) {
-    Value* ok = nullptr;
-    Value* block = nullptr;
-    Value* head = nullptr;
-    emit_dense_array_guard(b, obj, elem_index, /*writable=*/false, ok, block, head);
-    BasicBlock* guard_bb = b.current_block();
-
-    Function* fn = guard_bb->parent();
-    const std::string prefix = "prop_idx_get_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(bb_merge, Type::i64());
-
-    b.position_at_end(guard_bb);
-    b.build_br_if(ok, bb_fast, bb_slow);
-
-    b.position_at_end(bb_fast);
-    Value* fast_val = load_proven_dense_array_elem(b, block, head, elem_index, check_hole);
-    b.build_br(bb_merge, {fast_val});
-
-    b.position_at_end(bb_slow);
-    Value* slow_val = lower_prop_get(b, obj, key_index, site ? site_ptr(b, site) : nullptr);
-    b.build_br(bb_merge, {slow_val});
-
-    b.position_at_end(bb_merge);
-    return result;
-}
-
-void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index,
-                                                  uint32_t elem_index, Value* val, uint32_t strict,
-                                                  const IcSite& site, bool val_is_primitive) {
-    Value* ok = nullptr;
-    Value* block = nullptr;
-    Value* head = nullptr;
-    emit_dense_array_guard(b, obj, elem_index, /*writable=*/true, ok, block, head);
-    BasicBlock* guard_bb = b.current_block();
-
-    const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
-    Function* fn = guard_bb->parent();
-    const std::string prefix = "prop_idx_set_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_barrier") : nullptr;
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-
-    b.position_at_end(guard_bb);
-    b.build_br_if(ok, bb_fast, bb_slow);
-
-    b.position_at_end(bb_fast);
-    store_proven_dense_array_elem(b, block, head, elem_index, val);
-    if (need_barrier) {
-        Value* is_ref = b.build_ugt(val, iconst(b, kBronzeNumberMaxBits));
-        b.build_br_if(is_ref, bb_barrier, bb_merge);
-        b.position_at_end(bb_barrier);
-        Value* slot_addr = dense_array_slot_addr(b, block, head, elem_index);
-        b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
-        b.build_br(bb_merge);
-    } else {
-        b.build_br(bb_merge);
-    }
-
-    b.position_at_end(bb_slow);
-    lower_prop_set(b, obj, key_index, val, strict, site ? site_ptr(b, site) : nullptr);
-    b.build_br(bb_merge);
-
-    b.position_at_end(bb_merge);
 }
 
 void PropertyLoweringHelper::emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok) {

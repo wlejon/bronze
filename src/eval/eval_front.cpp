@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "ast/query_walk.h"
 #include "embed/embed.h"
 #include "lower/lower.h"
 #include "runtime/host_globals.h"
@@ -19,7 +20,19 @@ namespace bronze::eval::detail {
 
 namespace {
 
-void transformEvalAst(ast::Module& astModule, const std::string& resName) {
+class DirectCalleeVisitor final : public ast::detail::IdentVisitor {
+public:
+    std::unordered_set<std::string> called;
+    void visit(const ast::Call& c) override {
+        if (const auto* id = dynamic_cast<const ast::Ident*>(c.callee.get())) {
+            called.insert(id->name);
+        }
+        ast::detail::IdentVisitor::visit(c);
+    }
+};
+
+std::vector<ast::FunctionDecl*> prepareEvalAstForInference(ast::Module& astModule,
+                                                           const std::string& resName) {
     if (!resName.empty() && !astModule.body.empty()) {
         if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(astModule.body.back().get())) {
             auto varDecl = std::make_unique<ast::VarDecl>();
@@ -30,6 +43,29 @@ void transformEvalAst(ast::Module& astModule, const std::string& resName) {
         }
     }
 
+    DirectCalleeVisitor callees;
+    for (const auto& stmt : astModule.body) {
+        if (stmt) stmt->accept(callees);
+    }
+    std::vector<ast::FunctionDecl*> temporarilyExported;
+    for (const auto& stmt : astModule.body) {
+        if (auto* fd = dynamic_cast<ast::FunctionDecl*>(stmt.get())) {
+            if (!fd->isExported && !fd->name.empty() &&
+                fd->name.find('.') == std::string::npos &&
+                callees.called.count(fd->name) == 0) {
+                fd->isExported = true;
+                temporarilyExported.push_back(fd);
+            }
+        }
+    }
+    return temporarilyExported;
+}
+
+void exportEvalDeclarations(ast::Module& astModule,
+                            const std::vector<ast::FunctionDecl*>& temporarilyExported) {
+    for (auto* fd : temporarilyExported) {
+        fd->isExported = false;
+    }
     std::vector<ast::StmtPtr> exports;
     for (const auto& stmt : astModule.body) {
         if (auto* vd = dynamic_cast<ast::VarDecl*>(stmt.get())) {
@@ -196,7 +232,7 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                          const CompileInputs& in, const std::string& resName,
                                          DiagnosticSink& diags, SourceSet& sources) {
     support::PhaseTimer timer(evalTimingsEnabled(), 2);
-    transformEvalAst(astModule, resName);
+    auto temporarilyExported = prepareEvalAstForInference(astModule, resName);
     const std::vector<std::string>& hostGlobals = in.hostGlobals;
 
     const char* noInferEnv = std::getenv("BRONZE_NO_INFER");
@@ -208,6 +244,7 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                       in.pins.empty() ? nullptr : &in.pins);
         if (diags.hasErrors() || !inferred) return nullptr;
     }
+    exportEvalDeclarations(astModule, temporarilyExported);
     timer.mark("infer");
     reportProgress(options, "infer", 0.60);
 

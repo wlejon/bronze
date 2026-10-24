@@ -36,7 +36,7 @@ bool isPrefix(ast::UnaryOp op) {
 // BOXED one keeps its box: ToNumeric answers with a Number *or a BigInt*, and
 // `unbox.f64` is ToNumber, which refuses the second.
 Lowerer::Value Lowerer::emitUpdateOld(Value oldVal, il::Function& ilFn) {
-    if (oldVal.type != il::Type::Dynamic) {
+    if (oldVal.type != il::Type::Dynamic || !numericArithDisabled_) {
         return unboxValueIfNeeded(oldVal, il::Type::F64, ilFn);
     }
     il::ValueId res = ilFn.valueCount++;

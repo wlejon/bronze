@@ -325,6 +325,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::GlobalGet:
             // A cached read: calls the per-key thunk that queries the module's cache slot.
             out.op = il2mir::BronzeOp::Call;
+            out.index = inst.keyIndex;
             out.callee_name = globalReadThunkName(inst.keyIndex);
             break;
         case il::Op::ResolveName:

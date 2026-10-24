@@ -137,7 +137,9 @@ public:
         Builder& b,
         Value* obj,
         Value* index,
-        int64_t elem_kind
+        int64_t elem_kind,
+        Value* preloaded_data = nullptr,
+        Value* preloaded_length = nullptr
     );
 
     void lower_elem_set(
@@ -154,7 +156,9 @@ public:
         Value* index,
         Value* val_f64,
         int64_t elem_kind,
-        uint32_t strict
+        uint32_t strict,
+        Value* preloaded_data = nullptr,
+        Value* preloaded_length = nullptr
     );
 
     // The helper calls alone, for code that runs once.
@@ -227,6 +231,17 @@ private:
     uint32_t ic_site_count_ = 0;
     std::function<Value*(Builder&)> module_delta_fn_;
     std::function<Value*(Builder&)> table_base_fn_;
+    struct LastTypedGet {
+        BasicBlock* merge_bb = nullptr;
+        BasicBlock* load_bb = nullptr;
+        Value* result = nullptr;
+        Value* loaded_val = nullptr;
+        Value* data = nullptr;
+        Value* idx_i64 = nullptr;
+        Value* obj = nullptr;
+        Value* index = nullptr;
+        int64_t elem_kind = -1;
+    } last_ta_get_;
 };
 
 } // namespace il2mir

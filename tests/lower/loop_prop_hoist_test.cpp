@@ -504,4 +504,89 @@ TEST_CASE("TypedArray in-bounds proof and length hoisting are disabled across co
     }
 }
 
+TEST_CASE("typed element update out[a[i] & 255]++ and affine matmul indices lower to proven ElemGetTyped/ElemSetTyped (#154)") {
+    {
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const auto optMod = inferAndLower(
+            "function hist(a) {\n"
+            "  const out = new Int32Array(256);\n"
+            "  for (let i = 0; i < a.length; i++) {\n"
+            "    out[a[i] & 255]++;\n"
+            "  }\n"
+            "  return out;\n"
+            "}\n"
+            "console.log(hist(new Uint8Array(4096)));\n",
+            diags, buf);
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+        const il::Function* fn = findFunction(*optMod, "hist");
+        REQUIRE(fn != nullptr);
+        CHECK(blockHasPropGet(fn->blocks[0]));
+        size_t typedGets = 0;
+        size_t typedSets = 0;
+        for (const auto& blk : fn->blocks) {
+            for (const auto& inst : blk.instructions) {
+                CHECK(inst.op != il::Op::ElemGet);
+                CHECK(inst.op != il::Op::ElemSet);
+                CHECK(inst.op != il::Op::NumericStep);
+                if (inst.op == il::Op::ElemGetTyped) {
+                    ++typedGets;
+                    CHECK((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0);
+                    CHECK((inst.immI32 & il::kElemFlagProvenInBounds) != 0);
+                } else if (inst.op == il::Op::ElemSetTyped) {
+                    ++typedSets;
+                    CHECK((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0);
+                    CHECK((inst.immI32 & il::kElemFlagProvenInBounds) != 0);
+                }
+            }
+        }
+        CHECK(typedGets >= 2);
+        CHECK(typedSets >= 1);
+    }
+
+    {
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const auto optMod = inferAndLower(
+            "function matmul() {\n"
+            "  const n = 192;\n"
+            "  const a = new Float64Array(n * n);\n"
+            "  const b = new Float64Array(n * n);\n"
+            "  const c = new Float64Array(n * n);\n"
+            "  for (let i = 0; i < n; i++) {\n"
+            "    for (let k = 0; k < n; k++) {\n"
+            "      const aik = a[i * n + k];\n"
+            "      for (let j = 0; j < n; j++) {\n"
+            "        c[i * n + j] += aik * b[k * n + j];\n"
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "  return c;\n"
+            "}\n"
+            "console.log(matmul());\n",
+            diags, buf);
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+        const il::Function* fn = findFunction(*optMod, "matmul");
+        REQUIRE(fn != nullptr);
+        size_t typedGets = 0;
+        size_t typedSets = 0;
+        for (const auto& blk : fn->blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == il::Op::ElemGetTyped) {
+                    ++typedGets;
+                    CHECK((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0);
+                } else if (inst.op == il::Op::ElemSetTyped) {
+                    ++typedSets;
+                    CHECK((inst.immI32 & il::kElemFlagProvenIntegralIndex) != 0);
+                }
+            }
+        }
+        CHECK(typedGets >= 3);
+        CHECK(typedSets >= 1);
+    }
+}
+
+
 

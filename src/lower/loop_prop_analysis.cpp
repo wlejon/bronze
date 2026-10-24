@@ -313,18 +313,14 @@ bool isProvablyNonNullishImpl(il::ValueId val, const il::Function& fn,
                                 for (const auto& u : b2.instructions) {
                                     for (il::ValueId op : u.operands) {
                                         if (op != inst.result) continue;
-                                        if (u.op != il::Op::EnvSet || u.operands.size() < 2 ||
-                                            u.operands[1] != inst.result) {
-                                            return false;
-                                        }
+                                        const bool isEnv = u.op == il::Op::EnvSet && u.operands.size() >= 2 && u.operands[1] == inst.result;
+                                        const bool isProp = callerFn.isEntryPoint && u.op == il::Op::PropSet && u.operands.size() >= 2 && u.operands[1] == inst.result;
+                                        if (!isEnv && !isProp) return false;
                                         for (const auto& f3 : module.functions) {
                                             for (const auto& b3 : f3.blocks) {
                                                 for (const auto& i3 : b3.instructions) {
-                                                    if ((i3.op == il::Op::EnvGet ||
-                                                         i3.op == il::Op::EnvGetTdz) &&
-                                                        i3.envIndex == u.envIndex) {
-                                                        return false;
-                                                    }
+                                                    if (isEnv && (i3.op == il::Op::EnvGet || i3.op == il::Op::EnvGetTdz) && i3.envIndex == u.envIndex) return false;
+                                                    if (isProp && (i3.op == il::Op::PropGet || i3.op == il::Op::MethodCall || i3.op == il::Op::GlobalGet) && i3.keyIndex == u.keyIndex) return false;
                                                 }
                                             }
                                         }
@@ -920,6 +916,10 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
 
             if (isArrayMutatingMethod(methodName)) {
                 if (keyIndex != lengthKeyIndex) return false;
+                if (methodName == "fill" && inst.operands.size() == 2 &&
+                    isProvablyNumericIndex(inst.operands[1], fn, defs)) {
+                    return false;
+                }
                 if (methodName == "transfer" || methodName == "transferToFixedLength" ||
                     methodName == "resize") {
                     return true;

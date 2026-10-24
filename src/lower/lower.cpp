@@ -271,6 +271,7 @@ std::optional<il::Module> Lowerer::lower() {
         entryEnvValue_ = il::kNoValue;
         immutableEnvCache_.clear();
         cachedTypedElemGet_.reset();
+        currentBodyStmts_ = &astModule_.body;
         assignedNames_.clear();
         for (const auto* s : topLevelStmts) {
             if (s) for (auto& n : ast::getAssignedNames(*s)) assignedNames_.insert(std::move(n));

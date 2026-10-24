@@ -5,8 +5,459 @@
 #include "il/key.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
+#include <cstdlib>
+#include <unordered_set>
 
 namespace il2mir {
+
+namespace {
+
+bool is_buffer_safe_function(const BronzeFunction& fn_ast,
+                             const PropertyLoweringHelper& prop_lowering,
+                             const IlLowering& lowering,
+                             std::unordered_set<uint32_t>& out_ta_receivers,
+                             std::unordered_set<uint32_t>& out_construct_ta_ids) {
+    if (fn_ast.blocks.size() <= 1 || fn_ast.is_coroutine_body()) return false;
+    std::unordered_set<uint32_t> safe_unbox_ids;
+    for (const auto& p : fn_ast.params) {
+        if (lowering.is_primitive_value(p.first)) safe_unbox_ids.insert(p.first);
+    }
+    for (const auto& blk : fn_ast.blocks) {
+        if (blk.handler_id != UINT32_MAX) return false;
+        for (const auto& bp : blk.params) {
+            if (lowering.is_primitive_value(bp.first)) safe_unbox_ids.insert(bp.first);
+        }
+        for (const auto& inst : blk.instructions) {
+            if (inst.result_id != UINT32_MAX && lowering.is_primitive_value(inst.result_id)) {
+                safe_unbox_ids.insert(inst.result_id);
+            }
+            if (inst.op == BronzeOp::PropGet && prop_lowering.key_tag(inst.index) == "length" &&
+                inst.result_id != UINT32_MAX) {
+                safe_unbox_ids.insert(inst.result_id);
+            }
+            if ((inst.op == BronzeOp::ElemGetTyped || inst.op == BronzeOp::ElemSetTyped) &&
+                !inst.operands.empty()) {
+                const int64_t k = inst.imm_i64 & 0xFFFF;
+                if (k >= BRONZE_ABI_TA_KIND_INT8 && k <= BRONZE_ABI_TA_KIND_FLOAT64) {
+                    out_ta_receivers.insert(inst.operands[0]);
+                }
+                if (inst.op == BronzeOp::ElemGetTyped && inst.result_id != UINT32_MAX) {
+                    safe_unbox_ids.insert(inst.result_id);
+                }
+            }
+        }
+    }
+    if (out_ta_receivers.empty()) return false;
+
+    for (size_t b_idx = 0; b_idx < fn_ast.blocks.size(); ++b_idx) {
+        for (const auto& inst : fn_ast.blocks[b_idx].instructions) {
+            switch (inst.op) {
+                case BronzeOp::ConstI32:
+                case BronzeOp::ConstF64:
+                case BronzeOp::ConstBool:
+                case BronzeOp::ConstNull:
+                case BronzeOp::ConstUndefined:
+                case BronzeOp::IsNumber:
+                case BronzeOp::IsNullish:
+                case BronzeOp::IsDenseArray:
+                case BronzeOp::NumTruthy:
+                case BronzeOp::Box:
+                case BronzeOp::Jump:
+                case BronzeOp::Branch:
+                case BronzeOp::Ret:
+                case BronzeOp::CensusRecord:
+                case BronzeOp::KeepAlive:
+                case BronzeOp::PinGuard:
+                case BronzeOp::GlobalGet:
+                case BronzeOp::EnvGet:
+                case BronzeOp::EnvGetTdz:
+                case BronzeOp::ModuleEnvGet:
+                case BronzeOp::CmpLt:
+                case BronzeOp::CmpLe:
+                case BronzeOp::CmpGt:
+                case BronzeOp::CmpGe:
+                case BronzeOp::CmpEq:
+                case BronzeOp::CmpNe:
+                    break;
+                case BronzeOp::ElemGetTyped:
+                case BronzeOp::ElemSetTyped: {
+                    const int64_t k = inst.imm_i64 & 0xFFFF;
+                    if (k < BRONZE_ABI_TA_KIND_INT8 || k > BRONZE_ABI_TA_KIND_FLOAT64) return false;
+                    break;
+                }
+                case BronzeOp::Add:
+                case BronzeOp::Sub:
+                case BronzeOp::Mul:
+                case BronzeOp::Div:
+                case BronzeOp::Mod:
+                case BronzeOp::Pow:
+                case BronzeOp::Neg:
+                case BronzeOp::BitAnd:
+                case BronzeOp::BitOr:
+                case BronzeOp::BitXor:
+                case BronzeOp::BitNot:
+                case BronzeOp::Shl:
+                case BronzeOp::Shr:
+                case BronzeOp::UShr:
+                case BronzeOp::MathImul:
+                case BronzeOp::MathUnary:
+                    if (inst.result_type != BronzeType::F64 && inst.result_type != BronzeType::I32) {
+                        return false;
+                    }
+                    break;
+                case BronzeOp::ToInt32:
+                case BronzeOp::Unbox:
+                    if (inst.raw_unbox || inst.nullish_unbox) break;
+                    if (inst.operands.empty() || safe_unbox_ids.count(inst.operands[0]) == 0) {
+                        return false;
+                    }
+                    break;
+                case BronzeOp::PropGet:
+                    if (prop_lowering.key_tag(inst.index) != "length") return false;
+                    break;
+                case BronzeOp::Call:
+                    if (inst.callee_name.rfind("__bronze_global_read_k", 0) != 0) return false;
+                    break;
+                case BronzeOp::Construct:
+                    if (inst.operands.size() != 2 || safe_unbox_ids.count(inst.operands[1]) == 0) {
+                        return false;
+                    }
+                    if (inst.result_id != UINT32_MAX) out_construct_ta_ids.insert(inst.result_id);
+                    break;
+                case BronzeOp::MethodCall:
+                    if (prop_lowering.key_tag(inst.index) != "fill" || inst.operands.size() != 2 ||
+                        safe_unbox_ids.count(inst.operands[1]) == 0) {
+                        return false;
+                    }
+                    break;
+                default:
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool is_non_escaping_constructed_ta(const BronzeFunction& fn_ast,
+                                    uint32_t obj_id,
+                                    const PropertyLoweringHelper& prop_lowering,
+                                    const IlLowering& lowering) {
+    if (fn_ast.is_coroutine_body()) return false;
+    std::unordered_set<uint32_t> ta_ctor_globals;
+    bool found_construct = false;
+    std::unordered_set<uint32_t> aliases = {obj_id};
+    for (const auto& blk : fn_ast.blocks) {
+        if (blk.handler_id != UINT32_MAX) return false;
+        for (const auto& inst : blk.instructions) {
+            if ((inst.op == BronzeOp::GlobalGet ||
+                 (inst.op == BronzeOp::Call &&
+                  inst.callee_name.rfind("__bronze_global_read_k", 0) == 0)) &&
+                inst.result_id != UINT32_MAX) {
+                const std::string_view g = prop_lowering.key_tag(inst.index);
+                if (g == "Int8Array" || g == "Uint8Array" || g == "Uint8ClampedArray" ||
+                    g == "Int16Array" || g == "Uint16Array" || g == "Int32Array" ||
+                    g == "Uint32Array" || g == "Float32Array" || g == "Float64Array") {
+                    ta_ctor_globals.insert(inst.result_id);
+                }
+            }
+            if (inst.result_id == obj_id) {
+                if (inst.op != BronzeOp::Construct || inst.operands.size() != 2 ||
+                    ta_ctor_globals.count(inst.operands[0]) == 0 ||
+                    !lowering.is_primitive_value(inst.operands[1])) {
+                    return false;
+                }
+                found_construct = true;
+            }
+            if (inst.op == BronzeOp::Box && !inst.operands.empty() &&
+                aliases.count(inst.operands[0]) != 0 && inst.result_id != UINT32_MAX) {
+                aliases.insert(inst.result_id);
+            }
+        }
+    }
+    if (!found_construct) return false;
+
+    bool has_typed_elem = false;
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& inst : blk.instructions) {
+            for (uint32_t arg : inst.target.args) {
+                if (aliases.count(arg) != 0) return false;
+            }
+            for (uint32_t arg : inst.else_target.args) {
+                if (aliases.count(arg) != 0) return false;
+            }
+            bool uses_alias = false;
+            for (uint32_t op : inst.operands) {
+                if (aliases.count(op) != 0) {
+                    uses_alias = true;
+                    break;
+                }
+            }
+            if (!uses_alias) continue;
+            switch (inst.op) {
+                case BronzeOp::Box:
+                case BronzeOp::KeepAlive:
+                case BronzeOp::CensusRecord:
+                case BronzeOp::PinGuard:
+                    break;
+                case BronzeOp::PropGet:
+                    if (inst.operands.size() != 1 || aliases.count(inst.operands[0]) == 0 ||
+                        prop_lowering.key_tag(inst.index) != "length") {
+                        return false;
+                    }
+                    break;
+                case BronzeOp::ElemGetTyped:
+                case BronzeOp::ElemSetTyped: {
+                    const int64_t k = inst.imm_i64 & 0xFFFF;
+                    if (k < BRONZE_ABI_TA_KIND_INT8 || k > BRONZE_ABI_TA_KIND_FLOAT64 ||
+                        aliases.count(inst.operands[0]) == 0) {
+                        return false;
+                    }
+                    for (size_t i = 1; i < inst.operands.size(); ++i) {
+                        if (aliases.count(inst.operands[i]) != 0) return false;
+                    }
+                    has_typed_elem = true;
+                    break;
+                }
+                case BronzeOp::ElemGet:
+                case BronzeOp::ElemSet:
+                    if (aliases.count(inst.operands[0]) == 0 || inst.operands.size() < 2 ||
+                        !lowering.is_primitive_value(inst.operands[1])) {
+                        return false;
+                    }
+                    for (size_t i = 1; i < inst.operands.size(); ++i) {
+                        if (aliases.count(inst.operands[i]) != 0) return false;
+                    }
+                    break;
+                case BronzeOp::MethodCall:
+                    if (inst.operands.size() != 2 || aliases.count(inst.operands[0]) == 0 ||
+                        prop_lowering.key_tag(inst.index) != "fill" ||
+                        !lowering.is_primitive_value(inst.operands[1])) {
+                        return false;
+                    }
+                    break;
+                default:
+                    return false;
+            }
+        }
+    }
+    return has_typed_elem;
+}
+
+bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
+                             const std::unordered_map<uint32_t, Value*>& val_map,
+                             Value*& out_data, Value*& out_len) {
+    out_data = nullptr;
+    out_len = nullptr;
+    static const bool unsound_pins = [] {
+        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
+        return env && env[0] && env[0] != '0';
+    }();
+    if (!lowering || unsound_pins || !lowering->prop_lowering().enable_inlined_fastpaths()) {
+        return false;
+    }
+    auto& cursors = lowering->ta_cursors();
+    if (auto it = cursors.find(obj_id); it != cursors.end()) {
+        out_data = it->second.first;
+        out_len = it->second.second;
+        return out_data != nullptr && out_len != nullptr;
+    }
+    const BronzeFunction* fn_ast = lowering->current_fn_ast();
+    if (!fn_ast) return false;
+    auto vit = val_map.find(obj_id);
+    if (vit == val_map.end() || !vit->second) return false;
+    Value* raw_obj = vit->second;
+
+    std::unordered_set<uint32_t> ta_receivers;
+    std::unordered_set<uint32_t> construct_ta_ids;
+    const bool fn_safe =
+        is_buffer_safe_function(*fn_ast, lowering->prop_lowering(), *lowering, ta_receivers,
+                                construct_ta_ids) &&
+        ta_receivers.count(obj_id) != 0;
+    bool is_fn_param = false;
+    if (fn_safe) {
+        for (const auto& p : fn_ast->params) {
+            if (p.first == obj_id) {
+                is_fn_param = true;
+                break;
+            }
+        }
+    }
+    const bool is_construct =
+        raw_obj->is_instruction() &&
+        ((fn_safe && construct_ta_ids.count(obj_id) != 0) ||
+         is_non_escaping_constructed_ta(*fn_ast, obj_id, lowering->prop_lowering(), *lowering));
+    if (!is_fn_param && !is_construct) return false;
+
+    BasicBlock* resume_bb = b.current_block();
+    const DebugLoc saved_loc = b.current_loc();
+    bool repositioned = false;
+    if (is_fn_param) {
+        BasicBlock* target_bb = lowering->entry_hoist_block();
+        if (!target_bb) return false;
+        if (target_bb != resume_bb) {
+            if (!target_bb->tail()) return false;
+            b.clear_current_loc();
+            b.position_before(target_bb->tail());
+            repositioned = true;
+        }
+    } else {
+        Instruction* def_inst = raw_obj->defining_instruction();
+        if (!def_inst || !def_inst->parent()) return false;
+        if (def_inst->next() != nullptr) {
+            b.clear_current_loc();
+            b.position_after(def_inst);
+            repositioned = true;
+        }
+    }
+
+    Value* obj_i64 = lowering->ensure_type(raw_obj, Type::i64(), b);
+    Value* ptr = b.build_and(obj_i64, b.build_iconst_i64(0x0000FFFFFFFFFFFFLL));
+    out_data = lowering->prop_lowering().load_typed_array_data(b, ptr);
+    out_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+
+    if (repositioned) {
+        b.position_at_end(resume_bb);
+        b.set_current_loc(saved_loc);
+    }
+    cursors[obj_id] = {out_data, out_len};
+    return true;
+}
+
+constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
+constexpr uint64_t kMaxInlineDispIndex = (uint64_t{INT32_MAX} - kBronzeHdrBytes) / 8;
+
+Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
+
+} // namespace
+
+void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
+    Value* ptr = b.build_and(obj, iconst64(b, kPayloadMask));
+    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst64(b, kPayloadMask));
+    Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
+    out_block = b.build_add(block, b.build_shl(head, iconst64(b, 3)));
+    out_head = nullptr;
+}
+
+Value* PropertyLoweringHelper::dense_array_slot_addr(Builder& b, Value* block, Value* head, uint32_t index) {
+    if (!head) {
+        return b.build_add(block, iconst64(b, kBronzeHdrBytes + static_cast<uint64_t>(index) * 8));
+    }
+    Value* slot = index == 0 ? head : b.build_add(head, iconst64(b, index));
+    return b.build_add(b.build_add(block, b.build_shl(slot, iconst64(b, 3))), iconst64(b, kBronzeHdrBytes));
+}
+
+Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
+                                                            bool check_hole) {
+    Value* elem = nullptr;
+    if (!head) {
+        if (index <= kMaxInlineDispIndex) {
+            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+            elem = b.build_load(Type::i64(), block, disp);
+        } else {
+            elem = b.build_load_indexed(Type::i64(), block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes));
+        }
+    } else if (index <= kMaxInlineDispIndex) {
+        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+        elem = b.build_load_indexed(Type::i64(), block, head, 8, disp);
+    } else {
+        Value* slot = b.build_add(head, iconst64(b, index));
+        elem = b.build_load_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
+    }
+    if (check_hole) {
+        Value* is_hole = b.build_eq(elem, iconst64(b, BRONZE_ABI_HOLE_BITS));
+        elem = b.build_select(is_hole, iconst64(b, kUndefinedTag), elem);
+    }
+    return elem;
+}
+
+void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
+                                                           Value* val) {
+    if (!head) {
+        if (index <= kMaxInlineDispIndex) {
+            const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+            b.build_store(Type::i64(), block, disp, val);
+        } else {
+            b.build_store_indexed(Type::i64(), block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val);
+        }
+    } else if (index <= kMaxInlineDispIndex) {
+        const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
+        b.build_store_indexed(Type::i64(), block, head, 8, disp, val);
+    } else {
+        Value* slot = b.build_add(head, iconst64(b, index));
+        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
+    }
+}
+
+Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint32_t key_index,
+                                                    uint32_t elem_index, const IcSite& site,
+                                                    bool check_hole) {
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_dense_array_guard(b, obj, elem_index, /*writable=*/false, ok, block, head);
+    BasicBlock* guard_bb = b.current_block();
+
+    Function* fn = guard_bb->parent();
+    const std::string prefix = "prop_idx_get_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i64());
+
+    b.position_at_end(guard_bb);
+    b.build_br_if(ok, bb_fast, bb_slow);
+
+    b.position_at_end(bb_fast);
+    Value* fast_val = load_proven_dense_array_elem(b, block, head, elem_index, check_hole);
+    b.build_br(bb_merge, {fast_val});
+
+    b.position_at_end(bb_slow);
+    Value* slow_val = lower_prop_get(b, obj, key_index, site ? site_ptr(b, site) : nullptr);
+    b.build_br(bb_merge, {slow_val});
+
+    b.position_at_end(bb_merge);
+    return result;
+}
+
+void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index,
+                                                  uint32_t elem_index, Value* val, uint32_t strict,
+                                                  const IcSite& site, bool val_is_primitive) {
+    Value* ok = nullptr;
+    Value* block = nullptr;
+    Value* head = nullptr;
+    emit_dense_array_guard(b, obj, elem_index, /*writable=*/true, ok, block, head);
+    BasicBlock* guard_bb = b.current_block();
+
+    const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
+    Function* fn = guard_bb->parent();
+    const std::string prefix = "prop_idx_set_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_barrier") : nullptr;
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+
+    b.position_at_end(guard_bb);
+    b.build_br_if(ok, bb_fast, bb_slow);
+
+    b.position_at_end(bb_fast);
+    store_proven_dense_array_elem(b, block, head, elem_index, val);
+    if (need_barrier) {
+        Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NUMBER_MAX_BITS)));
+        b.build_br_if(is_ref, bb_barrier, bb_merge);
+        b.position_at_end(bb_barrier);
+        Value* slot_addr = dense_array_slot_addr(b, block, head, elem_index);
+        b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+        b.build_br(bb_merge);
+    } else {
+        b.build_br(bb_merge);
+    }
+
+    b.position_at_end(bb_slow);
+    lower_prop_set(b, obj, key_index, val, strict, site ? site_ptr(b, site) : nullptr);
+    b.build_br(bb_merge);
+
+    b.position_at_end(bb_merge);
+}
 
 // The inline-cache paths: il_ic_lowering.cpp. lower_elem_get /
 // lower_elem_set: il_elem_lowering.cpp.
@@ -69,6 +520,14 @@ bool lower_property_instruction(
 
     switch (inst_ast.op) {
         case BronzeOp::PropGet: {
+            if (!inst_ast.operands.empty() && prop_lowering.key_tag(inst_ast.index) == "length") {
+                Value* ta_data = nullptr;
+                Value* ta_len = nullptr;
+                if (get_preloaded_ta_cursor(lowering, inst_ast.operands[0], b, val_map, ta_data, ta_len)) {
+                    res_val = prop_lowering.box_number(b, b.build_sitofp_f64_i64(ta_len));
+                    return true;
+                }
+            }
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
             if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {
@@ -217,16 +676,24 @@ bool lower_property_instruction(
         }
 
         case BronzeOp::ElemGetTyped: {
-            Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
             if (lowering->run_once()) {
+                Value* obj_val = ensure_type(get_opd(0), Type::i64());
                 res_val = prop_lowering.lower_elem_get_call(b, obj_val, idx_val);
                 if (inst_ast.result_type == BronzeType::F64) {
                     res_val = ensure_type(res_val, Type::f64());
                 }
             } else {
-                res_val = prop_lowering.lower_elem_get_typed(b, obj_val, idx_val, inst_ast.imm_i64);
+                Value* ta_data = nullptr;
+                Value* ta_len = nullptr;
+                if (!inst_ast.operands.empty()) {
+                    get_preloaded_ta_cursor(lowering, inst_ast.operands[0], b, val_map, ta_data, ta_len);
+                }
+                const bool proven_in_bounds = (inst_ast.imm_i64 & (1LL << 17)) != 0;
+                const bool need_obj = !ta_data || (!ta_len && !proven_in_bounds);
+                Value* obj_val = need_obj ? ensure_type(get_opd(0), Type::i64()) : nullptr;
+                res_val = prop_lowering.lower_elem_get_typed(b, obj_val, idx_val, inst_ast.imm_i64, ta_data, ta_len);
                 if (inst_ast.result_type != BronzeType::F64) {
                     res_val = ensure_type(res_val, Type::i64());
                 }
@@ -248,17 +715,25 @@ bool lower_property_instruction(
         }
 
         case BronzeOp::ElemSetTyped: {
-            Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* idx_val = get_opd(1);
             if (!idx_val) return false;
             Value* raw_val = get_opd(2);
             if (!raw_val) return false;
             if (lowering->run_once()) {
+                Value* obj_val = ensure_type(get_opd(0), Type::i64());
                 prop_lowering.lower_elem_set_call(b, obj_val, idx_val, ensure_type(raw_val, Type::i64()),
                                                   inst_ast.index);
             } else {
+                Value* ta_data = nullptr;
+                Value* ta_len = nullptr;
+                if (!inst_ast.operands.empty()) {
+                    get_preloaded_ta_cursor(lowering, inst_ast.operands[0], b, val_map, ta_data, ta_len);
+                }
+                const bool proven_in_bounds = (inst_ast.imm_i64 & (1LL << 17)) != 0;
+                const bool need_obj = !ta_data || (!ta_len && !proven_in_bounds);
+                Value* obj_val = need_obj ? ensure_type(get_opd(0), Type::i64()) : nullptr;
                 prop_lowering.lower_elem_set_typed(b, obj_val, idx_val, ensure_type(raw_val, Type::f64()),
-                                                   inst_ast.imm_i64, inst_ast.index);
+                                                   inst_ast.imm_i64, inst_ast.index, ta_data, ta_len);
             }
             return true;
         }

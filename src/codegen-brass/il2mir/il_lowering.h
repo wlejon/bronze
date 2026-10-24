@@ -51,6 +51,13 @@ public:
     SpecSiteEmitter& spec() { return spec_; }
     const TranslatorOptions& options() const { return options_; }
     const BronzeModuleAST* current_ast() const { return current_ast_; }
+    const BronzeFunction* current_fn_ast() const {
+        return (current_ast_ && current_fn_idx_ < current_ast_->functions.size())
+                   ? &current_ast_->functions[current_fn_idx_]
+                   : nullptr;
+    }
+    BasicBlock* entry_hoist_block() const { return hoist_block_; }
+    std::unordered_map<uint32_t, std::pair<Value*, Value*>>& ta_cursors() { return ta_cursors_; }
     DiagnosticReporter* diag() const { return diag_; }
     void set_diag(DiagnosticReporter* diag) { diag_ = diag; }
     void set_has_error(bool e) { has_error_ = e; }
@@ -137,6 +144,7 @@ private:
     std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
     std::unordered_map<uint32_t, DenseArrayCursor> dense_array_cursors_;
+    std::unordered_map<uint32_t, std::pair<Value*, Value*>> ta_cursors_;
     std::unordered_map<uint32_t, uint32_t> single_block_propset_use_;
     std::unordered_map<uint32_t, uint32_t> value_use_counts_;
     Value* coro_frame_val_ = nullptr;
