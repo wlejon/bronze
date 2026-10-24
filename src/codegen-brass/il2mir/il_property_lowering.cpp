@@ -138,111 +138,6 @@ bool is_buffer_safe_function(const BronzeFunction& fn_ast,
     return true;
 }
 
-bool is_non_escaping_constructed_ta(const BronzeFunction& fn_ast,
-                                    uint32_t obj_id,
-                                    const PropertyLoweringHelper& prop_lowering,
-                                    const IlLowering& lowering) {
-    if (fn_ast.is_coroutine_body()) return false;
-    std::unordered_set<uint32_t> ta_ctor_globals;
-    bool found_construct = false;
-    std::unordered_set<uint32_t> aliases = {obj_id};
-    for (const auto& blk : fn_ast.blocks) {
-        if (blk.handler_id != UINT32_MAX) return false;
-        for (const auto& inst : blk.instructions) {
-            if ((inst.op == BronzeOp::GlobalGet ||
-                 (inst.op == BronzeOp::Call &&
-                  inst.callee_name.rfind("__bronze_global_read_k", 0) == 0)) &&
-                inst.result_id != UINT32_MAX) {
-                const std::string_view g = prop_lowering.key_tag(inst.index);
-                if (g == "Int8Array" || g == "Uint8Array" || g == "Uint8ClampedArray" ||
-                    g == "Int16Array" || g == "Uint16Array" || g == "Int32Array" ||
-                    g == "Uint32Array" || g == "Float32Array" || g == "Float64Array") {
-                    ta_ctor_globals.insert(inst.result_id);
-                }
-            }
-            if (inst.result_id == obj_id) {
-                if (inst.op != BronzeOp::Construct || inst.operands.size() != 2 ||
-                    ta_ctor_globals.count(inst.operands[0]) == 0 ||
-                    !lowering.is_primitive_value(inst.operands[1])) {
-                    return false;
-                }
-                found_construct = true;
-            }
-            if (inst.op == BronzeOp::Box && !inst.operands.empty() &&
-                aliases.count(inst.operands[0]) != 0 && inst.result_id != UINT32_MAX) {
-                aliases.insert(inst.result_id);
-            }
-        }
-    }
-    if (!found_construct) return false;
-
-    bool has_typed_elem = false;
-    for (const auto& blk : fn_ast.blocks) {
-        for (const auto& inst : blk.instructions) {
-            for (uint32_t arg : inst.target.args) {
-                if (aliases.count(arg) != 0) return false;
-            }
-            for (uint32_t arg : inst.else_target.args) {
-                if (aliases.count(arg) != 0) return false;
-            }
-            bool uses_alias = false;
-            for (uint32_t op : inst.operands) {
-                if (aliases.count(op) != 0) {
-                    uses_alias = true;
-                    break;
-                }
-            }
-            if (!uses_alias) continue;
-            switch (inst.op) {
-                case BronzeOp::Box:
-                case BronzeOp::KeepAlive:
-                case BronzeOp::CensusRecord:
-                case BronzeOp::PinGuard:
-                    break;
-                case BronzeOp::PropGet:
-                    if (inst.operands.size() != 1 || aliases.count(inst.operands[0]) == 0 ||
-                        prop_lowering.key_tag(inst.index) != "length") {
-                        return false;
-                    }
-                    break;
-                case BronzeOp::ElemGetTyped:
-                case BronzeOp::ElemSetTyped: {
-                    const int64_t k = inst.imm_i64 & 0xFFFF;
-                    if (k < BRONZE_ABI_TA_KIND_INT8 || k > BRONZE_ABI_TA_KIND_FLOAT64 ||
-                        aliases.count(inst.operands[0]) == 0) {
-                        return false;
-                    }
-                    for (size_t i = 1; i < inst.operands.size(); ++i) {
-                        if (aliases.count(inst.operands[i]) != 0) return false;
-                    }
-                    has_typed_elem = true;
-                    break;
-                }
-                case BronzeOp::ElemGet:
-                case BronzeOp::ElemSet:
-                    if (aliases.count(inst.operands[0]) == 0 || inst.operands.size() < 2 ||
-                        !lowering.is_primitive_value(inst.operands[1])) {
-                        return false;
-                    }
-                    for (size_t i = 1; i < inst.operands.size(); ++i) {
-                        if (aliases.count(inst.operands[i]) != 0) return false;
-                    }
-                    break;
-                case BronzeOp::MethodCall:
-                    if (inst.operands.size() != 2 || aliases.count(inst.operands[0]) == 0 ||
-                        prop_lowering.key_tag(inst.index) != "fill" ||
-                        !lowering.is_primitive_value(inst.operands[1])) {
-                        return false;
-                    }
-                    break;
-                default:
-                    return false;
-            }
-        }
-    }
-    return has_typed_elem;
-}
-
 bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
                              const std::unordered_map<uint32_t, Value*>& val_map,
                              Value*& out_data, Value*& out_len) {
@@ -282,10 +177,16 @@ bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
             }
         }
     }
+    // A cursor is a raw pointer into the array's storage, held across the
+    // whole function, and a collection moves that storage: so it is taken only
+    // where nothing after it can collect. A buffer-safe function allocates
+    // nowhere but in its typed-array constructions, so the parameter's cursor
+    // needs none of them and a constructed array's needs to be the only one
+    // (another `new` after it, or a string built in the loop that reads it,
+    // left every read and write going to the storage's old address).
+    if (construct_ta_ids.size() > (construct_ta_ids.count(obj_id) != 0 ? 1u : 0u)) return false;
     const bool is_construct =
-        raw_obj->is_instruction() &&
-        ((fn_safe && construct_ta_ids.count(obj_id) != 0) ||
-         is_non_escaping_constructed_ta(*fn_ast, obj_id, lowering->prop_lowering(), *lowering));
+        raw_obj->is_instruction() && fn_safe && construct_ta_ids.count(obj_id) != 0;
     if (!is_fn_param && !is_construct) return false;
 
     BasicBlock* resume_bb = b.current_block();
