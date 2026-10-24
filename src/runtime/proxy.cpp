@@ -223,6 +223,15 @@ uint64_t rtProxyRevocable(uint64_t, uint64_t, uint32_t argc, const uint64_t* arg
     return out.get().rawBits();
 }
 
+void rtProxyTrapKey(Rooted<Value>& key) {
+    if (key.get().isString() || key.get().isSymbol()) return;
+    // rtToPropertyKey only runs step 1's ToPrimitive and leaves any other
+    // primitive as it is (the element paths want the number); a trap wants
+    // step 2's string.
+    Rooted<Value> prim{rtToPropertyKey(key)};
+    key = prim.get().isSymbol() || prim.get().isString() ? prim.get() : rtToStringValue(prim);
+}
+
 Value rtProxyGet(Value proxyVal, Value keyVal, Value receiver) {
     Rooted<Value> proxyRoot{proxyVal};
     Rooted<Value> keyRoot{keyVal};
@@ -241,6 +250,7 @@ Value rtProxyGet(Value proxyVal, Value keyVal, Value receiver) {
         return rtProxyAdaptArrayMember(targetRoot, keyRoot, forwarded);
     }
     Rooted<Value> trapRoot{trap};
+    rtProxyTrapKey(keyRoot);
     const uint64_t args[3] = {targetRoot.get().rawBits(), keyRoot.get().rawBits(),
                               receiverRoot.get().rawBits()};
     Rooted<Value> result{Value(bronze_dynamic_call(trapRoot.get().rawBits(),
@@ -287,6 +297,7 @@ bool rtProxySet(Value proxyVal, Value keyVal, Value val, bool strict, Value rece
         return true;
     }
     Rooted<Value> trapRoot{trap};
+    rtProxyTrapKey(keyRoot);
     const uint64_t args[4] = {targetRoot.get().rawBits(), keyRoot.get().rawBits(),
                               valRoot.get().rawBits(), receiverRoot.get().rawBits()};
     const uint64_t result = bronze_dynamic_call(trapRoot.get().rawBits(),
@@ -314,6 +325,7 @@ bool rtProxyHas(Value proxyVal, Value keyVal) {
         return bronze_has_property(keyRoot.get().rawBits(), targetRoot.get().rawBits());
     }
     Rooted<Value> trapRoot{trap};
+    rtProxyTrapKey(keyRoot);
     const uint64_t args[2] = {targetRoot.get().rawBits(), keyRoot.get().rawBits()};
     const bool answer = bronze_truthy(bronze_dynamic_call(trapRoot.get().rawBits(),
                                                           handlerRoot.get().rawBits(), 2, args));
@@ -332,6 +344,7 @@ bool rtProxyDelete(Value proxyVal, Value keyVal, bool strict) {
         return bronze_elem_delete(targetRoot.get().rawBits(), keyRoot.get().rawBits(), strict);
     }
     Rooted<Value> trapRoot{trap};
+    rtProxyTrapKey(keyRoot);
     const uint64_t args[2] = {targetRoot.get().rawBits(), keyRoot.get().rawBits()};
     const uint64_t result = bronze_dynamic_call(trapRoot.get().rawBits(),
                                                 handlerRoot.get().rawBits(), 2, args);
@@ -401,6 +414,7 @@ ProxyOwnProperty rtProxyGetOwnPropertyTrapped(Value proxyVal, Value keyVal,
     Value trap = trapOf(handlerRoot, "getOwnPropertyDescriptor");
     if (trap.isUndefined()) return ProxyOwnProperty::Forwarded;
     Rooted<Value> trapRoot{trap};
+    rtProxyTrapKey(keyRoot);
     const uint64_t args[2] = {targetRoot.get().rawBits(), keyRoot.get().rawBits()};
     Rooted<Value> desc{Value(bronze_dynamic_call(trapRoot.get().rawBits(),
                                                  handlerRoot.get().rawBits(), 2, args))};

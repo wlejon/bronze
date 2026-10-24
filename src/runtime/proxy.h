@@ -68,6 +68,12 @@ bool rtIsCallableValue(Value v);
 // constructor when it was created.
 bool rtIsConstructorValue(Value v);
 
+// The key a trap is handed: what ToPropertyKey (7.1.19) made of it, a string or
+// a symbol. Element paths carry an index as a number to the proxy (the
+// forwarded read or write takes it as one), so every trap call converts here;
+// `p[i] = v` with i = 1 hands the `set` trap "1", not 1.
+void rtProxyTrapKey(Rooted<Value>& key);
+
 // [[Get]] (10.5.8): the `get` trap if the handler has one, else the target's
 // own read through the ordinary funnel.
 //

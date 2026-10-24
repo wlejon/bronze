@@ -156,6 +156,7 @@ bool rtProxyDefineOwnProperty(Value proxyVal, Value keyVal, Value descVal, bool 
         return rtObjectDefineOwnProperty(3, call, throwOnRefusal);
     }
     Rooted<Value> trapRoot{trap};
+    rtProxyTrapKey(keyRoot);
     const uint64_t args[3] = {targetRoot.get().rawBits(), keyRoot.get().rawBits(),
                               descRoot.get().rawBits()};
     const uint64_t result = bronze_dynamic_call(trapRoot.get().rawBits(),

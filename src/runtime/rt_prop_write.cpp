@@ -694,6 +694,12 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
                              " (setting a symbol-keyed property)");
             return;
         }
+        // A proxy's set trap takes a symbol like any key; the holder search
+        // below knows only objects with a shape.
+        if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            rtProxySet(objVal, Value(idxBits), Value(valBits), strict);
+            return;
+        }
         Rooted<Value> recv{objVal};
         // Rooted BEFORE the side-object build below, which allocates. The key
         // needs no root — a symbol lives in the arena and never moves — but the

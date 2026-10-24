@@ -1,0 +1,16 @@
+set string 1
+set string 2
+get string 1
+has string 1
+delete string 1
+set string 0
+delete string 0
+define string 2
+gopd string 2
+get string 0
+set string 1
+get string 1
+set string 2
+set symbol Symbol(s)
+set string 2.5
+set string 0
