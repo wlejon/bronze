@@ -39,6 +39,7 @@ constexpr size_t kNoMatch = SIZE_MAX;
 // (IdentVisitor), that records where each site sits and every declaration.
 class SiteWalker final : public detail::IdentVisitor {
 public:
+    using detail::IdentVisitor::visit;
     SiteWalker(ParsedJs::Facts& facts,
                std::vector<const Call*>& calls,
                std::vector<const Binary*>& binaries,
