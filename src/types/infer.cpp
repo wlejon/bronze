@@ -130,6 +130,23 @@ bool widenSignatures(ModuleContext& mod) {
         if (moved) ++fn.version;
         changed = moved || changed;
     }
+    for (auto& nf : mod.nestedFns) {
+        bool moved = false;
+        for (size_t p = 0; p < nf.signature.params.size(); ++p) {
+            const Type widened = joinParam(nf.signature.params[p], nf.observedParams[p]);
+            if (widened != nf.signature.params[p]) {
+                nf.signature.params[p] = widened;
+                moved = true;
+            }
+        }
+        const Type widenedReturn = join(nf.signature.returnType, nf.observedReturn);
+        if (widenedReturn != nf.signature.returnType) {
+            nf.signature.returnType = widenedReturn;
+            moved = true;
+        }
+        if (moved) ++nf.version;
+        changed = moved || changed;
+    }
     return changed;
 }
 
@@ -170,6 +187,14 @@ bool foldFunctionAndClassReachability(ModuleContext& mod) {
         }
         if (fnChanged) {
             ++fn.version;
+            changed = true;
+        }
+    }
+    for (auto& nf : mod.nestedFns) {
+        const Type widenedBody = join(nf.bodyReturn, nf.observedReturn);
+        if (widenedBody != nf.bodyReturn) {
+            nf.bodyReturn = widenedBody;
+            ++nf.version;
             changed = true;
         }
     }
@@ -362,8 +387,25 @@ bool refineFieldHarvest(ModuleContext& mod, InferenceResult& result) {
 // on the first round EVERY parameter is `Never`, and doing it there would hand
 // the whole program the dynamic answer before a single call site had been read.
 bool finalizeUnreachedMethods(ModuleContext& mod) {
-    if (!mod.interprocIdent) return false;
     bool changed = false;
+    for (auto& nf : mod.nestedFns) {
+        bool moved = false;
+        for (auto& param : nf.signature.params) {
+            if (param.is(TypeKind::Never)) {
+                param = Type::dynamic();
+                moved = true;
+            }
+        }
+        if (nf.signature.returnType.is(TypeKind::Never)) {
+            nf.signature.returnType = Type::dynamic();
+            moved = true;
+        }
+        if (moved) {
+            ++nf.version;
+            changed = true;
+        }
+    }
+    if (!mod.interprocIdent) return changed;
     for (auto& m : mod.methods.methods()) {
         if (!m.reached) {
             m.unreached = true;
@@ -401,6 +443,10 @@ void resetObservations(ModuleContext& mod) {
         fn.observedParams.assign(fn.signature.params.size(), Type::never());
         fn.observedReturn = Type::never();
         fn.observedReached = false;
+    }
+    for (auto& nf : mod.nestedFns) {
+        nf.observedParams.assign(nf.signature.params.size(), Type::never());
+        nf.observedReturn = Type::never();
     }
     for (auto& m : mod.methods.methods()) {
         m.observedParams.assign(m.signature.params.size(), Type::never());
@@ -703,6 +749,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         // so inference never invents a second diagnostic for it.
         mod.indexByName.emplace(decl->name, i);
     }
+    buildNestedFnTable(module, mod);
 
     // The incremental rounds (types/infer_memo.h): on unless switched off, and
     // under BRONZE_INFER_CHECK every replay is walked as well and compared.

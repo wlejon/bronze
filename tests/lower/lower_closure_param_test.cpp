@@ -246,3 +246,39 @@ TEST_CASE("path-guarded ternary, nullish coalescing, and host numeric APIs lower
         "console.log(compute(5, { getBoundingClientRect() { return { width: 2, height: 3 }; } }));\n");
     CHECK(header(il, "compute").find("-> f64") != std::string::npos);
 }
+
+TEST_CASE("non-escaping nested functions inside an IIFE specialize TypedArray parameters across closure calls") {
+    const auto il = lowerToText(
+        "(function() {\n"
+        "  function sum(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s; }\n"
+        "  function hist(a, out) { for (let i = 0; i < a.length; i++) out[a[i] & 255]++; }\n"
+        "  const F = new Float64Array(16);\n"
+        "  const UB = new Uint32Array(16);\n"
+        "  const O = new Int32Array(256);\n"
+        "  function run(fn) { return fn(); }\n"
+        "  const total = run(() => { hist(UB, O); return sum(F); });\n"
+        "  console.log(total);\n"
+        "})();\n");
+    CHECK(il.find("elem.get.typed %1") != std::string::npos);
+    CHECK(il.find("elem.set.typed %2") != std::string::npos);
+}
+
+TEST_CASE("classic-script globalThis prologue for replaceable host global keeps direct-called function specialized") {
+    const auto il = lowerToText(
+        "{globalThis.blur = blur;}\n"
+        "function blur(src, dst, w, h) {\n"
+        "  for (let y = 1; y < h - 1; y++)\n"
+        "    for (let x = 1; x < w - 1; x++) {\n"
+        "      const i = y * w + x;\n"
+        "      dst[i] = (src[i - 1] + src[i + 1] + src[i - w] + src[i + w] + 4 * src[i]) * 0.125;\n"
+        "    }\n"
+        "}\n"
+        "const BA = new Float32Array(64), BB = new Float32Array(64);\n"
+        "const r = {};\n"
+        "blur(BA, BB, 8, 8);\n"
+        "r.blur = BB[9];\n"
+        "console.log(r.blur);\n");
+    CHECK(header(il, "blur") == "func blur(%0: dynamic, %1: dynamic, %2: f64, %3: f64) -> void {");
+    CHECK(il.find("elem.get.typed") != std::string::npos);
+    CHECK(il.find("elem.set.typed") != std::string::npos);
+}

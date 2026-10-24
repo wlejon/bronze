@@ -6,7 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "ast/assigned.h"
 #include "ast/queries.h"
+#include "ast/query_walk.h"
 #include "types/flow_analyzer.h"
 #include "types/walk.h"
 
@@ -172,6 +174,19 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
 
     std::vector<Type> paramTypes(params.size(), Type::dynamic());
     uint32_t staticSetterIdx = kNoMethod;
+    uint32_t nestedFnIdx = kNoFunctionIndex;
+    if (const auto* fd = dynamic_cast<const ast::FunctionDecl*>(&site)) {
+        if (const auto it = mod_.nestedFnByDecl.find(fd); it != mod_.nestedFnByDecl.end()) {
+            nestedFnIdx = it->second;
+            const NestedFnInfo& info = mod_.nestedFns[nestedFnIdx];
+            if (InferMemo* memo = mod_.rec()) {
+                memo->noteNestedFn(nestedFnIdx, info.version);
+            }
+            for (size_t i = 0; i < paramTypes.size() && i < info.signature.params.size(); ++i) {
+                paramTypes[i] = info.signature.params[i];
+            }
+        }
+    }
     if (ctorIndex != kNoCtor) {
         paramTypes = ctorParamTypes(ctorIndex, params.size());
     } else if (methodIndex != kNoMethod) {
@@ -237,6 +252,9 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     args.ctorIndex = ctorIndex;
     args.moduleTopLevel = false;
     const Type ret = analyzeFunction(mod_, args).returnType;
+    if (nestedFnIdx != kNoFunctionIndex) {
+        mod_.contribute(InferMemo::Contrib::NestedFnReturn, nestedFnIdx, 0, ret);
+    }
     if (staticSetterIdx != kNoMethod) {
         Type setterRet = Type::dynamic();
         if (ret.is(TypeKind::Never)) {
@@ -601,6 +619,169 @@ const PinKind* FlowAnalyzer::pinnedField(ShapeClassId cls, const std::string& fi
         name = layout->name;
     }
     return nullptr;
+}
+
+namespace {
+
+class NestedCalleeScan final : public ast::detail::IdentVisitor {
+public:
+    explicit NestedCalleeScan(const ast::FunctionDecl* target)
+        : target_(target), name_(target->name) {}
+
+    std::vector<const ast::Call*> sites;
+    bool escaped = false;
+    bool spread = false;
+
+    void mention(const std::string& name) override {
+        if (name == name_) escaped = true;
+    }
+
+    void visit(const ast::Call& c) override {
+        const auto* id = dynamic_cast<const ast::Ident*>(c.callee.get());
+        if (id != nullptr && id->name == name_) {
+            if (c.optional) escaped = true;
+            for (const auto& arg : c.args) {
+                if (dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) spread = true;
+            }
+            sites.push_back(&c);
+        } else {
+            c.callee->accept(*this);
+        }
+        for (const auto& arg : c.args) arg->accept(*this);
+    }
+
+    void visit(const ast::FunctionDecl& f) override {
+        if (&f != target_ && f.name == name_) escaped = true;
+        for (const auto& p : f.params) {
+            if (p.name == name_) escaped = true;
+            if (p.pattern) {
+                for (const auto& bn : ast::patternBoundNames(*p.pattern)) {
+                    if (bn == name_) escaped = true;
+                }
+            }
+        }
+        ast::detail::visitParamExprs(f.params, *this);
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+    }
+
+    void visit(const ast::FunctionExpr& f) override {
+        if (f.name == name_) escaped = true;
+        for (const auto& p : f.params) {
+            if (p.name == name_) escaped = true;
+            if (p.pattern) {
+                for (const auto& bn : ast::patternBoundNames(*p.pattern)) {
+                    if (bn == name_) escaped = true;
+                }
+            }
+        }
+        ast::detail::visitParamExprs(f.params, *this);
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+    }
+
+    void visit(const ast::ClassExpr& c) override {
+        if (c.name == name_) escaped = true;
+        ast::detail::IdentVisitor::visit(c);
+    }
+
+private:
+    const ast::FunctionDecl* target_ = nullptr;
+    std::string name_;
+};
+
+void scanNestedFunctionScope(const std::vector<ast::Param>& params,
+                             const std::vector<ast::StmtPtr>& stmts, ModuleContext& mod) {
+    bool anyDecl = false;
+    std::unordered_map<std::string, uint32_t> declCounts;
+    for (const auto& stmt : stmts) {
+        if (const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt.get())) {
+            if (!fnDecl->name.empty()) {
+                ++declCounts[fnDecl->name];
+                if (!fnDecl->isGenerator && !fnDecl->isAsync) anyDecl = true;
+            }
+        }
+    }
+    if (!anyDecl) return;
+
+    std::unordered_set<std::string> rebound = ast::getDeeplyAssignedNames(stmts);
+    for (const auto& p : params) {
+        if (!p.name.empty()) rebound.insert(p.name);
+        if (p.pattern) {
+            for (const auto& bn : ast::patternBoundNames(*p.pattern)) rebound.insert(bn);
+        }
+        if (p.defaultValue) {
+            for (auto& name : ast::getDeeplyAssignedNames(*p.defaultValue)) {
+                rebound.insert(std::move(name));
+            }
+        }
+    }
+
+    for (const auto& stmt : stmts) {
+        const auto* fnDecl = dynamic_cast<const ast::FunctionDecl*>(stmt.get());
+        if (fnDecl == nullptr || fnDecl->isGenerator || fnDecl->isAsync || fnDecl->name.empty()) {
+            continue;
+        }
+        if (declCounts[fnDecl->name] != 1 || rebound.count(fnDecl->name) != 0) continue;
+        bool shapeFits = true;
+        for (const auto& p : fnDecl->params) {
+            if (p.defaultValue || p.isRest || p.pattern || p.name.empty() ||
+                p.name == fnDecl->name) {
+                shapeFits = false;
+                break;
+            }
+        }
+        if (!shapeFits) continue;
+
+        NestedCalleeScan scan(fnDecl);
+        for (const auto& s : stmts) {
+            if (s) s->accept(scan);
+        }
+        for (const auto& p : params) {
+            if (p.defaultValue) p.defaultValue->accept(scan);
+            if (p.pattern) ast::detail::visitPatternExprs(p.pattern.get(), scan);
+        }
+        if (scan.escaped || scan.spread || scan.sites.empty()) continue;
+
+        const auto idx = static_cast<uint32_t>(mod.nestedFns.size());
+        NestedFnInfo info;
+        info.decl = fnDecl;
+        info.signature.params.assign(fnDecl->params.size(), Type::never());
+        info.signature.returnType = Type::never();
+        info.observedParams.assign(fnDecl->params.size(), Type::never());
+        mod.nestedFnByDecl.emplace(fnDecl, idx);
+        for (const ast::Call* site : scan.sites) {
+            mod.nestedFnByCall.emplace(site, idx);
+        }
+        mod.nestedFns.push_back(std::move(info));
+    }
+}
+
+class NestedFnTableBuilder final : public Walker {
+public:
+    explicit NestedFnTableBuilder(ModuleContext& mod) : mod_(mod) {}
+
+    void visit(const ast::FunctionDecl& n) override {
+        scanNestedFunctionScope(n.params, n.body, mod_);
+        Walker::visit(n);
+    }
+
+    void visit(const ast::FunctionExpr& n) override {
+        scanNestedFunctionScope(n.params, n.body, mod_);
+        Walker::visit(n);
+    }
+
+private:
+    ModuleContext& mod_;
+};
+
+}  // namespace
+
+void buildNestedFnTable(const ast::Module& module, ModuleContext& mod) {
+    NestedFnTableBuilder builder(mod);
+    builder.walkList(module.body);
 }
 
 }  // namespace bronze::types

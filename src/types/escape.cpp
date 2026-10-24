@@ -5,6 +5,55 @@
 namespace bronze::types {
 namespace {
 
+std::string matchGlobalThisFnExport(const ast::Stmt& stmt) {
+    const auto* exprStmt = dynamic_cast<const ast::ExprStmt*>(&stmt);
+    if (!exprStmt || !exprStmt->expr) return {};
+    const auto* bin = dynamic_cast<const ast::Binary*>(exprStmt->expr.get());
+    if (!bin || bin->op != ast::BinaryOp::Assign) return {};
+    const auto* member = dynamic_cast<const ast::MemberAccess*>(bin->lhs.get());
+    if (!member || member->optional || member->isPrivate || member->property.empty()) return {};
+    const auto* base = dynamic_cast<const ast::Ident*>(member->object.get());
+    if (!base || base->name != "globalThis") return {};
+    const auto* rhs = dynamic_cast<const ast::Ident*>(bin->rhs.get());
+    if (!rhs || rhs->name != member->property) return {};
+    return member->property;
+}
+
+class GlobalExportSafetyScan final : public Walker {
+public:
+    std::set<std::string> directlyCalled;
+    std::set<std::string> globalMemberProps;
+    bool globalObjectEscaped = false;
+
+    void visit(const ast::Ident& n) override {
+        if (isGlobalObjectName(n.name)) globalObjectEscaped = true;
+    }
+
+    void visit(const ast::Call& n) override {
+        if (!n.optional) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(n.callee.get())) {
+                directlyCalled.insert(id->name);
+            }
+        }
+        Walker::visit(n);
+    }
+
+    void visit(const ast::MemberAccess& n) override {
+        if (const auto* id = dynamic_cast<const ast::Ident*>(n.object.get())) {
+            if (isGlobalObjectName(id->name)) {
+                globalMemberProps.insert(n.property);
+                return;
+            }
+        }
+        Walker::visit(n);
+    }
+
+private:
+    static bool isGlobalObjectName(const std::string& name) {
+        return name == "globalThis" || name == "window" || name == "self";
+    }
+};
+
 class EscapeWalker final : public Walker {
 public:
     std::set<std::string> escaping;
@@ -46,6 +95,37 @@ public:
 }  // namespace
 
 std::set<std::string> escapingNames(const ast::Module& module) {
+    std::set<std::string> topLevelFns;
+    for (const auto& stmt : module.body) {
+        if (const auto* fn = dynamic_cast<const ast::FunctionDecl*>(stmt.get())) {
+            if (!fn->isExported && !fn->name.empty()) topLevelFns.insert(fn->name);
+        }
+    }
+
+    GlobalExportSafetyScan safety;
+    for (const auto& stmt : module.body) {
+        if (!stmt) continue;
+        const std::string exported = matchGlobalThisFnExport(*stmt);
+        if (!exported.empty() && topLevelFns.count(exported) != 0) continue;
+        if (const auto* blk = dynamic_cast<const ast::BlockStmt*>(stmt.get())) {
+            for (const auto& sub : blk->stmts) {
+                if (!sub) continue;
+                const std::string subExp = matchGlobalThisFnExport(*sub);
+                if (!subExp.empty() && topLevelFns.count(subExp) != 0) continue;
+                sub->accept(safety);
+            }
+            continue;
+        }
+        stmt->accept(safety);
+    }
+
+    auto isSafeGlobalExport = [&](const ast::Stmt& s) {
+        const std::string fn = matchGlobalThisFnExport(s);
+        return !fn.empty() && topLevelFns.count(fn) != 0 &&
+               safety.directlyCalled.count(fn) != 0 &&
+               safety.globalMemberProps.count(fn) == 0 && !safety.globalObjectEscaped;
+    };
+
     EscapeWalker w;
     for (const auto& stmt : module.body) {
         if (!stmt) continue;
@@ -63,6 +143,12 @@ std::set<std::string> escapingNames(const ast::Module& module) {
             if (fn->isExported) w.escaping.insert(fn->name);
             for (const auto& p : fn->params) w.escaping.insert(p.name);
             w.walkList(fn->body);
+        } else if (isSafeGlobalExport(*stmt)) {
+            continue;
+        } else if (const auto* blk = dynamic_cast<const ast::BlockStmt*>(stmt.get())) {
+            for (const auto& sub : blk->stmts) {
+                if (sub && !isSafeGlobalExport(*sub)) sub->accept(w);
+            }
         } else {
             stmt->accept(w);
         }

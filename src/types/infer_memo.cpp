@@ -139,6 +139,10 @@ void InferMemo::noteObjectLitTable(uint32_t version) {
     note(factKey(FactKind::ObjectLitTable, 0, 0), FactValue{Type::never(), version});
 }
 
+void InferMemo::noteNestedFn(uint32_t index, uint32_t version) {
+    note(factKey(FactKind::NestedFn, index, 0), FactValue{Type::never(), version});
+}
+
 void InferMemo::noteOuterWrite(std::string_view name, uint32_t level, Type t) {
     frames_.back().outerWrites.push_back(OuterWrite{intern(name), level, t});
 }
@@ -203,6 +207,16 @@ void InferMemo::apply(ModuleContext& mod, const Contribution& c) {
         case Contrib::ClassReached:
             mod.ctors.classReach()[c.index].observedReached = true;
             break;
+        case Contrib::NestedFnParam: {
+            Type& slot = mod.nestedFns[c.index].observedParams[c.param];
+            slot = joinParam(slot, c.t);
+            break;
+        }
+        case Contrib::NestedFnReturn: {
+            Type& slot = mod.nestedFns[c.index].observedReturn;
+            slot = join(slot, c.t);
+            break;
+        }
     }
 }
 
@@ -258,6 +272,8 @@ InferMemo::FactValue InferMemo::current(const ModuleContext& mod, const Scope* p
             return FactValue{Type::never(), mod.ctors.classReach()[a].version};
         case FactKind::ObjectLitTable:
             return FactValue{Type::never(), mod.objectLitTableVersion};
+        case FactKind::NestedFn:
+            return FactValue{Type::never(), mod.nestedFns[a].version};
     }
     return FactValue{Type::dynamic(), ~uint64_t{0}};
 }

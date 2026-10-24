@@ -289,12 +289,12 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
     std::function<bool(const ast::Expr&, int)> numericUnder = [&](const ast::Expr& e,
                                                                  int depth) -> bool {
         if (depth <= 0) return false;
+        if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
+            if (live->count(id->name) != 0) return true;
+            if (provenNestedParams.count(id->name) != 0) return depth < 8;
+        }
         if (provenNumber(e) || pristineMathCall(e)) return true;
         if (dynamic_cast<const ast::NumberLit*>(&e) != nullptr) return true;
-        if (const auto* id = dynamic_cast<const ast::Ident*>(&e)) {
-            return live->count(id->name) != 0 ||
-                   (depth < 8 && provenNestedParams.count(id->name) != 0);
-        }
         if (const auto* un = dynamic_cast<const ast::Unary*>(&e)) {
             switch (un->op) {
                 // ToNumber, unconditionally: 13.5.4 throws for a BigInt rather

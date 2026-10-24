@@ -754,6 +754,19 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         return methodCall(sup->property, Type::object(base->shapeClass), args, spreadArgs);
     }
 
+    if (const auto it = mod_.nestedFnByCall.find(&c); it != mod_.nestedFnByCall.end()) {
+        const uint32_t nIdx = it->second;
+        const NestedFnInfo& callee = mod_.nestedFns[nIdx];
+        for (size_t i = 0; i < callee.observedParams.size(); ++i) {
+            const Type at = i < args.size() ? args[i] : Type::undefined();
+            mod_.contribute(InferMemo::Contrib::NestedFnParam, nIdx, static_cast<uint32_t>(i), at);
+        }
+        if (pinnedReturn) return Type::number();
+        if (InferMemo* memo = mod_.rec()) memo->noteNestedFn(nIdx, callee.version);
+        if (!callee.signature.returnType.is(TypeKind::Never)) return callee.signature.returnType;
+        if (!callee.bodyReturn.is(TypeKind::Never)) return callee.bodyReturn;
+    }
+
     const uint32_t index = calleeType.functionIndex();
     if (index == kNoFunctionIndex) {
         if (pinnedReturn) return Type::number();

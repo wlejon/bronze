@@ -61,6 +61,7 @@ public:
         Ctor,        // a constructor's signature and poison
         ClassReach,  // whether a named class has been reached/constructed
         ObjectLitTable,  // module-scope object literal method/setter/var tables
+        NestedFn,    // a non-escaping nested function declaration's signature
     };
     enum class Contrib : uint8_t {
         FnParam,
@@ -74,6 +75,8 @@ public:
         SetterReturn,
         CtorParam,
         ClassReached,
+        NestedFnParam,
+        NestedFnReturn,
     };
 
     struct FactValue {
@@ -124,6 +127,7 @@ public:
     void noteCtor(uint32_t index, uint32_t version, bool poisoned);
     void noteClassReach(uint32_t index, uint32_t version);
     void noteObjectLitTable(uint32_t version);
+    void noteNestedFn(uint32_t index, uint32_t version);
 
     // ---- effects -------------------------------------------------------------
 

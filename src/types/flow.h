@@ -55,6 +55,18 @@ struct FunctionInfo {
     uint32_t version = 0;
 };
 
+// One non-escaping nested function declaration (`function f() {}` inside an
+// enclosing function/IIFE) whose callers within its lexical scope are
+// completely enumerable.
+struct NestedFnInfo {
+    const ast::FunctionDecl* decl = nullptr;
+    Signature signature;
+    std::vector<Type> observedParams;
+    Type observedReturn = Type::never();
+    Type bodyReturn = Type::never();
+    uint32_t version = 0;
+};
+
 // One function's binding state, chained through `parent` for closures.
 //
 // A closure resolves outer names against the enclosing scope's `cells` and
@@ -121,6 +133,9 @@ struct ModuleContext {
     // This and the two name tables below are looked up by every identifier
     // read of every round, and never walked in order.
     std::unordered_map<std::string, uint32_t> indexByName;
+    std::vector<NestedFnInfo> nestedFns;
+    std::unordered_map<const ast::FunctionDecl*, uint32_t> nestedFnByDecl;
+    std::unordered_map<const ast::Call*, uint32_t> nestedFnByCall;
     InferenceResult* result = nullptr;
     DiagnosticSink* diags = nullptr;
     // Shape class per constructor, computed once from its `this.x = ...`
@@ -335,5 +350,7 @@ FunctionOutcome analyzeFunction(ModuleContext& mod, const FunctionAnalysisArgs& 
 // in only one are dropped (they are block-scoped declarations that did not
 // survive the merge).
 Env joinEnv(const Env& a, const Env& b);
+
+void buildNestedFnTable(const ast::Module& module, ModuleContext& mod);
 
 }  // namespace bronze::types
