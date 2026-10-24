@@ -10,6 +10,7 @@
 #include "ast/queries.h"
 #include "lower/guard_region.h"
 #include "lower/inline_small.h"
+#include "lower/loop_prop_analysis.h"
 #include "lower/loop_prop_hoist.h"
 #include "lower/lowerer.h"
 #include "support/timings.h"
@@ -386,6 +387,7 @@ std::optional<il::Module> Lowerer::lower() {
     // is the single funnel both `runIl` and `runBuild` come through.
     {
         inlineSmallFunctions(ilModule_, &directMethods_);
+        sanitizeLoopInBoundsProofs(ilModule_);
         hoistLoopInvariantProps(ilModule_, &directMethods_);
         GuardRegionStats stats;
         applyGuardedRegions(ilModule_, &stats);

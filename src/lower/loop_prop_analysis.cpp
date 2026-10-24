@@ -555,7 +555,8 @@ bool isProvablyNonNullish(il::ValueId val, const il::Function& fn,
 bool isArrayMutatingMethod(const std::string& name) {
     return name == "push" || name == "pop" || name == "shift" ||
            name == "unshift" || name == "splice" || name == "reverse" ||
-           name == "sort" || name == "fill" || name == "copyWithin";
+           name == "sort" || name == "fill" || name == "copyWithin" ||
+           name == "transfer" || name == "transferToFixedLength" || name == "resize";
 }
 
 bool isArrayReadOnlyMethod(const std::string& name) {
@@ -689,7 +690,9 @@ std::vector<FunctionEffects> computeModuleEffects(
                         effects[f].mutatesLength = true;
                     }
                 } else if (inst.op == il::Op::ElemSetTyped) {
-                    effects[f].mutatesLength = true;
+                    if ((inst.immI32 & il::kElemKindMask) == il::kElemKindPlainArrayF64) {
+                        effects[f].mutatesLength = true;
+                    }
                 } else if (inst.op == il::Op::ElemSet) {
                     effects[f].mutatesLength = true;
                     if (inst.operands.size() < 2 ||
@@ -761,6 +764,9 @@ std::vector<FunctionEffects> computeModuleEffects(
                     // Pure or aborts execution without mutating existing properties
                 } else if (isImpureForLoopPropHoist(inst)) {
                     effects[f].hasUnresolvedCalls = true;
+                } else if (canMutateLengthViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
+                                                      isAccessorKey, protoPatchFree)) {
+                    effects[f].mutatesLength = true;
                 }
             }
         }
@@ -838,10 +844,15 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
                                !(protoPatchFree &&
                                  inst.staticSlot != il::Instruction::kNoStaticSlot);
             if (isAcc) return true;
-            if (keyIndex == lengthKeyIndex &&
-                inst.keyIndex < module.keyConstants.size() &&
-                isArrayIndexKey(module.keyConstants[inst.keyIndex])) {
-                return !isFreshLocalObject(inst.operands[0], fn, defs, inLoop);
+            if (keyIndex == lengthKeyIndex) {
+                if (inst.staticSlot == il::Instruction::kNoStaticSlot &&
+                    !isKnownPlainObject(inst.operands[0], fn, defs, module, ctorCache)) {
+                    return true;
+                }
+                if (inst.keyIndex < module.keyConstants.size() &&
+                    isArrayIndexKey(module.keyConstants[inst.keyIndex])) {
+                    return !isFreshLocalObject(inst.operands[0], fn, defs, inLoop);
+                }
             }
             if (inst.keyIndex != keyIndex) return false;
             return !isFreshLocalObject(inst.operands[0], fn, defs, inLoop);
@@ -850,16 +861,19 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
         case il::Op::ElemSetTyped: {
             if (inst.operands.empty()) return true;
             if (keyIndex != lengthKeyIndex) return false;
+            if ((inst.immI32 & il::kElemKindMask) != il::kElemKindPlainArrayF64) {
+                return false;
+            }
             return !isFreshLocalObject(inst.operands[0], fn, defs, inLoop);
         }
 
         case il::Op::ElemSet: {
             if (inst.operands.size() < 2) return true;
+            if (keyIndex == lengthKeyIndex) return true;
             if (!isProvablyNumericIndex(inst.operands[1], fn, defs)) {
                 return !isFreshLocalObject(inst.operands[0], fn, defs, inLoop);
             }
-            if (keyIndex != lengthKeyIndex) return false;
-            return !isFreshLocalObject(inst.operands[0], fn, defs, inLoop);
+            return false;
         }
 
         case il::Op::Construct:
@@ -906,6 +920,10 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
 
             if (isArrayMutatingMethod(methodName)) {
                 if (keyIndex != lengthKeyIndex) return false;
+                if (methodName == "transfer" || methodName == "transferToFixedLength" ||
+                    methodName == "resize") {
+                    return true;
+                }
                 if (target == recv) return true;
                 if (isFreshLocalObject(target, fn, defs, inLoop)) return false;
                 if (isFreshLocalObject(target, fn, defs, /*inLoop=*/{})) {
@@ -945,13 +963,30 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
             if (protoPatchFree && inst.staticSlot != il::Instruction::kNoStaticSlot) {
                 return false;
             }
-            return inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex];
+            if (inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex]) {
+                return true;
+            }
+            if (keyIndex == lengthKeyIndex &&
+                (inst.operands.empty() || inst.operands[0] != recv ||
+                 inst.keyIndex != lengthKeyIndex)) {
+                if (inst.operands.empty() ||
+                    (!isKnownPlainObject(inst.operands[0], fn, defs, module, ctorCache) &&
+                     !isMathObject(inst.operands[0], fn, defs, module))) {
+                    return true;
+                }
+            }
+            return false;
         case il::Op::SuperGet:
             return inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex];
 
         // Everything without a narrower answer above: the one predicate, so a
         // loop and a straight-line run agree about what can write a property.
         default:
+            if (keyIndex == lengthKeyIndex &&
+                canMutateLengthViaCoercion(inst, recv, lengthKeyIndex, fn, defs, isAccessorKey,
+                                           protoPatchFree)) {
+                return true;
+            }
             return isImpureForLoopPropHoist(inst);
     }
 }

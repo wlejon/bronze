@@ -84,4 +84,12 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
                        const std::vector<uint8_t>* isMutatedMethodKey = nullptr,
                        const std::vector<std::vector<uint32_t>>* closedKeyTargets = nullptr);
 
+bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
+                                uint32_t lengthKeyIndex, const il::Function& fn,
+                                const std::vector<DefSite>& defs,
+                                const std::vector<uint8_t>& isAccessorKey,
+                                bool protoPatchFree);
+
+void sanitizeLoopInBoundsProofs(il::Module& module);
+
 }  // namespace bronze::lower

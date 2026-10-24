@@ -3,7 +3,7 @@ bronze_add_module(lower
             lower_scope.cpp lower_closure.cpp lower_env_slot_number.cpp
             lower_static_call_plan.cpp lower_closure_param_proof.cpp
             lower_class.cpp lower_control.cpp lower_expr.cpp lower_expr_assign.cpp lower_expr_binary.cpp lower_expr_cond.cpp lower_generator.cpp
-            lower_update.cpp lower_private.cpp lower_typed_elem.cpp bigint_reach.cpp
+            lower_update.cpp lower_private.cpp lower_typed_elem.cpp lower_typed_elem_proof.cpp bigint_reach.cpp
             lower_concat_chain.cpp lower_define_props.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_build.cpp
             guard_region_runs.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp inline_small.cpp

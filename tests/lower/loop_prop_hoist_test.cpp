@@ -408,3 +408,100 @@ TEST_CASE("store-to-load forwarding does not carry a literal's store across an o
     }
 }
 
+TEST_CASE("TypedArray in-bounds proof and length hoisting are disabled across coercion, setter, Proxy, and buffer resize/transfer hazards") {
+    // 1. Pure numeric loop keeps kElemFlagProvenInBounds and hoists a.length to preheader.
+    {
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const auto optMod = inferAndLower(
+            "function pureSum(n) {\n"
+            "  const a = new Uint8Array(64);\n"
+            "  let s = 0;\n"
+            "  for (let i = 0; i < a.length; i++) {\n"
+            "    s += a[i];\n"
+            "  }\n"
+            "  return s;\n"
+            "}\n"
+            "console.log(pureSum(1));\n",
+            diags, buf);
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+        const il::Function* fn = findFunction(*optMod, "pureSum");
+        REQUIRE(fn != nullptr);
+        CHECK(blockHasPropGet(fn->blocks[0]));
+        bool foundProvenInBounds = false;
+        for (const auto& blk : fn->blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == il::Op::ElemGetTyped &&
+                    (inst.immI32 & il::kElemFlagProvenInBounds) != 0) {
+                    foundProvenInBounds = true;
+                }
+            }
+        }
+        CHECK(foundProvenInBounds);
+    }
+
+    // 2. Unary +evil coercion in loop body strips kElemFlagProvenInBounds and prevents hoisting a.length.
+    {
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const auto optMod = inferAndLower(
+            "const ab = new ArrayBuffer(64);\n"
+            "const a = new Uint8Array(ab);\n"
+            "function sumWithCoercion(evil) {\n"
+            "  let s = 0;\n"
+            "  for (let i = 0; i < a.length; i++) {\n"
+            "    if (i === 0) +evil;\n"
+            "    s += a[i];\n"
+            "  }\n"
+            "  return s;\n"
+            "}\n"
+            "console.log(sumWithCoercion(0), sumWithCoercion({ valueOf() { ab.transfer(); return 0; } }));\n",
+            diags, buf);
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+        const il::Function* fn = findFunction(*optMod, "sumWithCoercion");
+        REQUIRE(fn != nullptr);
+        CHECK_FALSE(blockHasPropGet(fn->blocks[0]));
+        for (const auto& blk : fn->blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == il::Op::ElemGetTyped) {
+                    CHECK((inst.immI32 & il::kElemFlagProvenInBounds) == 0);
+                }
+            }
+        }
+    }
+
+    // 3. Property setter / Proxy read / resize in loop body strips kElemFlagProvenInBounds and prevents hoisting a.length.
+    {
+        DiagnosticSink diags;
+        SourceBuffer buf("test.ts", "");
+        const auto optMod = inferAndLower(
+            "const rab = new ArrayBuffer(64, { maxByteLength: 128 });\n"
+            "const a = new Uint8Array(rab);\n"
+            "function sumWithSetter(sink) {\n"
+            "  let s = 0;\n"
+            "  for (let i = 0; i < a.length; i++) {\n"
+            "    if (i === 1) sink.x = i;\n"
+            "    s += a[i];\n"
+            "  }\n"
+            "  return s;\n"
+            "}\n"
+            "console.log(sumWithSetter({ x: 0 }));\n",
+            diags, buf);
+        REQUIRE_FALSE(diags.hasErrors());
+        REQUIRE(optMod.has_value());
+        const il::Function* fn = findFunction(*optMod, "sumWithSetter");
+        REQUIRE(fn != nullptr);
+        CHECK_FALSE(blockHasPropGet(fn->blocks[0]));
+        for (const auto& blk : fn->blocks) {
+            for (const auto& inst : blk.instructions) {
+                if (inst.op == il::Op::ElemGetTyped) {
+                    CHECK((inst.immI32 & il::kElemFlagProvenInBounds) == 0);
+                }
+            }
+        }
+    }
+}
+
+
