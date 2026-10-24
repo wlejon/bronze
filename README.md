@@ -4,82 +4,167 @@
 [![Nightly](https://github.com/wlejon/bronze/actions/workflows/nightly.yml/badge.svg)](https://github.com/wlejon/bronze/releases/tag/nightly)
 [![CodeQL](https://github.com/wlejon/bronze/actions/workflows/codeql.yml/badge.svg)](https://github.com/wlejon/bronze/actions/workflows/codeql.yml)
 
-An AOT/JIT compiler, single-source GPU shader compiler, and formal verification & superoptimization engine for JavaScript, built on [Brass](https://github.com/wlejon/brass).
+An ahead-of-time compiler that turns JavaScript into a native executable.
 
-```bash
+```
 bronze build app.js -o app
 ./app
 ```
 
-bronze follows `import`s from your entry file, infers types and proofs across the whole program, and writes a standalone native executable — no external linker or toolchain required. The test suite compiles unmodified `three.js` r160 and `pixi.js` v8 from source.
+bronze compiles JavaScript to machine code through Brass. It follows `import`s
+from your entry file, compiles the whole program, and writes a native program —
+no linker, no toolchain, nothing on the machine but bronze itself.
+The test suite compiles three.js r160 and pixi.js v8 from unmodified source.
 
-## What bronze does
+## What you can build
 
-- **Ahead-of-time & in-memory JIT compilation.** `bronze build app.js -o app` emits a native executable, its compiled module (`.dll` / `.so` / `.dylib`), and bronze's runtime. `bronze run app.js` and `bronze eval "expr"` compile and execute directly in memory via the Brass JIT.
-- **Embeddable native modules.** `--emit-obj` and `--emit-shared` compile JS against a `--host-globals` manifest so host engines (like [bro](https://github.com/wlejon/bro)) run compiled apps as native machine code against their own DOM, WebGL, physics, and audio APIs.
-- **Proof-driven native codegen.** Whole-program type, shape, interval, and nullish inference works together with Brass's in-process bitvector SMT solver (`BVSolver`) to prove bounds, integrality, and value tags — stripping NaN-boxing, bounds checks, and type guards from hot loops to unlock unboxed `i32`/`f64` and `AVX2`/`NEON` SIMD codegen.
-- **Single-source JS-to-GPU compilation (`@kernel` / `@shader`).** Annotated JS functions — or plain `TypedArray` loops promoted via `bronze auto-kernel` — compile directly to Vulkan **SPIR-V** and CUDA **PTX** (compute, vertex, and fragment stages), with symbolic reverse-mode automatic differentiation (`js_gpu_autodiff`) and static proofs of memory safety, barrier uniformity, and CPU-vs-GPU equivalence.
-- **Formal verification, constraint solving & CEGIS superoptimization.** Because the compiler and SMT solver share one IR in-process, bronze can run JS functions backwards (`solveFunction`), prove two functions mathematically equivalent (`prove-equiv`), prove cross-platform float determinism (`prove-determinism`), synthesize minimal edge-case test vectors (`synth-tests`), and rewrite JS source into shorter, faster, mathematically proven equivalents (`bronze optimize`).
+**A native program.** `bronze build app.js -o app` writes three files in one
+directory: `app`, the compiled program as a loadable module beside it (`app.dll`
+/ `app.so` / `app.dylib`), and bronze's shared runtime. The executable is a
+copy of bronze's program host, which opens the module named after itself; the
+three travel together.
+
+**Direct in-memory execution / JIT.** `bronze run app.js` compiles and runs
+scripts and module graphs directly in memory with zero disk I/O, and
+`bronze eval "2 + 2"` (or `-e`) evaluates expressions on the fly.
+
+**An app embedded in a larger program.** `--emit-obj` produces an object
+file for your own build to link, and `--host-globals` lists the globals your
+host provides (`document`, `requestAnimationFrame`, and so on).
+`--emit-shared` produces a module your host opens at run time instead, linked
+against a shared bronze runtime so one process can load several. The bro
+engine uses this to run compiled three.js apps against its DOM and WebGL.
+The app's scene graph and render loop run as machine code while the engine
+supplies the browser surface. `src/embed` is the C++ API a host uses to
+drive the compiled program, register globals, and hold GC-safe handles
+(`Persistent`, `HandleScope`, `Local<T>`). A host can also compile a script
+ahead of time through the embedded evaluator (`eval::buildModule`): the same
+program the JIT would run, written as a loadable module with a record of what
+it was built from, which `eval::loadModule` checks before running it, so a
+stale module falls back to the JIT instead of running.
+
+## How it works
+
+bronze infers types by analysing the whole program: each binding's type at
+each point, the shape of each object site, each function's signature across
+its call sites. Where inference proves a type, the compiler emits direct
+native code; everywhere else it uses boxed dynamic values with inline
+caches, which keeps every program correct while the proven parts run fast.
+`bronze types app.js` prints what inference concluded about your code.
+
+TypeScript annotations are accepted and treated as hints. When inference
+confirms an annotation, the code takes the native path; when it can't, the
+annotation is dropped with a warning and the code runs with its actual
+JavaScript behaviour.
+
+The performance target is concrete: compiled output should beat nodejs on the
+same program, and benchmarks that fall short are treated as bugs.
+
+## Status
+
+bronze implements enough of ECMA-262 to compile large real-world libraries
+(three.js and pixi.js are the pinned milestones). Ahead-of-time compilation
+turns the full module graph into native machine code. Dynamic constructs
+like `eval` and `new Function` (including generator and async functions)
+are evaluated dynamically in-memory via the Brass JIT engine (`src/eval`).
+When a program uses a language feature bronze hasn't implemented yet,
+compilation stops with an error naming the feature.
+
+## Verification
+
+`src/check` provides static verification and `int32` bitvector constraint
+solving over straight-line JavaScript functions (backed by Brass's `BVSolver`):
+
+- `bronze check <entry.js>`: abstract-interpretation and bitvector hazard checks
+  (null/undefined dereference, division by zero, typed-array bounds, and
+  lockstep non-determinism audit with `--deterministic`).
+- `bronze prove-equiv <a.js> <b.js> --fn <name>`: bitvector equivalence check
+  for straight-line integer JS functions, reporting a concrete counterexample
+  when outputs differ.
+- `bronze verify-cert <cert.json> [entry.js]`: verifies a proof certificate's
+  IL proof invariants (`il::verifyModuleProofs`) and source digest.
 
 ## The CLI
 
 ```
-bronze run               <entry.js>                run JS in-memory via JIT
-bronze eval              <code> (or -e <code>)     evaluate JS expression in-memory
-bronze build             <entry.js> -o <exe>       compile to a standalone native program
-bronze build             <entry.js> -o <obj> \
-                         --emit-obj \
-                         --host-globals <manifest> compile to a relocatable object for a host build
-bronze build             <entry.js> -o <lib> \
-                         --emit-shared             compile a shared module a host loads at runtime
-bronze check             <entry.js>                static type, bounds, nullish & safety verification
-bronze optimize          <entry.js> [--write] \
-                         [--diff] [--superopt]     verified JS source-to-source optimizer & CEGIS rewriter
-bronze auto-kernel       <entry.js> [--write]      rewrite proven-parallel TypedArray loops into GPU kernels
-bronze prove-equiv       <file.js> <fnA> <fnB>     prove two JS functions bit-identical via SMT
-bronze prove-determinism <entry.js>                prove cross-platform IEEE-754 / netcode determinism
-bronze synth-tests       <entry.js>                synthesize minimal branch-covering unit tests via SMT
-bronze types             <entry.js>                show inferred types and proof certificates
-bronze il                <entry.js>                dump the typed IL
-bronze lex / parse       <entry.js>                inspect lexer / parser output
-bronze version                                     print the version
+bronze run   <entry.js>                   run JS directly in-memory via JIT
+bronze eval  <code> (or -e <code>)        evaluate JS code directly in-memory via JIT
+bronze build <entry.js> -o <exe>          compile to a native program (the
+                                          executable, its module, its runtime)
+bronze build <entry.js> -o <obj> \
+             --emit-obj \
+             --host-globals <manifest>    compile to an object for a host build
+bronze build <entry.js> -o <lib> \
+             --emit-shared                compile a module a host loads at run time
+bronze check <entry.js>                   run static & bitvector hazard checks
+bronze types <entry.js>                   show what inference proved
+bronze il    <entry.js>                   dump the typed IL
+bronze lex / bronze parse                 earlier pipeline stages
+bronze version                            print the version
 ```
 
-`<entry.js>` is the root of a module graph (`import`/`export` pull in dependencies). `--no-infer` forces the boxed dynamic path for differential debugging.
+`<entry.js>` is the entry of a module graph: `import`/`export` with relative
+specifiers pull in the rest. `--no-infer` compiles everything on the dynamic
+path; it exists as a debugging tool for isolating inference bugs
+([docs/internals.md](docs/internals.md) has the details).
 
-## How it works
+## Getting bronze
 
-bronze infers types and value invariants across the whole module graph: each binding's type and interval at each program point, the shape of each object site, and each function's signature across its call sites. TypeScript annotations are accepted as hints and verified by inference.
+[Nightly builds](https://github.com/wlejon/bronze/releases/tag/nightly) are
+published for Windows x64, Linux x64, and macOS arm64 — each zip is the
+compiler, the shared runtime and the program host it copies beside every
+program it builds, tested against the full suite before publishing. Unzip
+anywhere and run `bronze build app.js -o app`. Nothing else is needed: bronze
+writes its own executables and modules, so there is no linker to install.
 
-Where inference and `StaticChecker` prove a type, integer range, or array bound, the compiler emits direct unboxed machine instructions and feeds proof certificates into Brass's MIR/LIR superoptimizer and SIMD vectorizer. Everywhere else it uses NaN-boxed dynamic values with inline caches and deoptimization guards, keeping all ECMA-262 behavior exact while proven paths run at native C++/SIMD speed. Dynamic constructs like `eval` and `new Function` execute in-process via the Brass JIT (`src/eval`).
+## Building bronze
 
-## Getting & building bronze
+Prereqs: CMake ≥ 3.24, Ninja, a C++20 compiler, and vcpkg. On Windows,
+`dev.cmd` wraps the MSVC environment: `.\dev.cmd cmake ...`.
 
-[Nightly builds](https://github.com/wlejon/bronze/releases/tag/nightly) are published for Windows x64, Linux x64, and macOS arm64. Unzip anywhere and run `bronze build app.js -o app`.
-
-To build from source (requires CMake ≥ 3.24, Ninja, a C++20 compiler, and vcpkg; on Windows use `.\dev.cmd cmake ...`):
-
-```bash
+```
 cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev
 ```
 
-Brass (`../brass`) is fetched automatically at configure time if not checked out alongside `bronze`.
+The native code generation backend is Brass (`src/codegen-brass`), which compiles
+Bronze IL to native machine code. Brass is a dependency, not a submodule: a
+working tree at `../brass` is used when there is one, otherwise configure fetches
+the head of brass's main (`cmake/bro_deps.cmake`; a release tag's
+`cmake/bro_lock.cmake` fixes the commit).
+
+[docs/internals.md](docs/internals.md) has the full build-and-iteration workflow.
 
 ## Testing
 
-Correctness is enforced by:
-1. **Differential ECMA-262 oracle suite** ([tests/oracle/README.md](tests/oracle/README.md)): every program compiles and runs twice (with inference and with `--no-infer`) and must produce byte-identical stdout.
-2. **Formal discovery & equivalence suites** (`tests/check/`, `tests/discovery/`): SMT-backed equivalence proofs over 3D math, codecs, hashes, physics integrators, GPU shaders, and standard library routines.
+Correctness rests on a differential suite
+([tests/oracle/README.md](tests/oracle/README.md)): JavaScript programs
+whose exact stdout is pinned in committed files derived from ECMA-262. Every
+case compiles and runs twice (with inference and with `--no-infer`) and
+both runs must produce identical bytes, so the analysis and the dynamic
+fallback check each other. Compiled objects carry an ABI fingerprint the
+runtime verifies at startup, so an object built against an older runtime
+fails at launch with both versions named.
 
-## Documentation
+## More
 
-- [docs/internals.md](docs/internals.md) — pipeline, repository layout, inference, embedding, and iteration workflow
-- [docs/dynamic-eval.md](docs/dynamic-eval.md) — in-memory dynamic evaluation and JIT execution (`src/eval`)
-- [docs/formal_discovery_report.md](docs/formal_discovery_report.md) — bugs and arithmetic invariants discovered across JS libraries via `BVSolver`
-- [docs/pin-census.md](docs/pin-census.md) · [docs/shape-census.md](docs/shape-census.md) · [docs/slot-representation.md](docs/slot-representation.md) · [docs/env-promotion.md](docs/env-promotion.md)
-- [tests/oracle/README.md](tests/oracle/README.md) — differential oracle suite guide
+- [docs/internals.md](docs/internals.md) the pipeline, repository layout,
+  inference and `--no-infer` in depth, embedding details, and the iteration
+  workflow.
+- [docs/dynamic-eval.md](docs/dynamic-eval.md) in-memory dynamic evaluation and
+  JIT execution (`eval`, `new Function`, `bronze run`, `bronze eval`, `src/eval`).
+- [docs/pin-census.md](docs/pin-census.md) `--census`: how a `--pins` manifest
+  gets written by a run of the program instead of by hand.
+- [docs/shape-census.md](docs/shape-census.md) the shape-flow census
+  (`BRONZE_SHAPE_CENSUS=1`) and artifact schema v0.
+- [docs/slot-representation.md](docs/slot-representation.md) per-slot
+  representation: what lets a shape say a slot holds a raw double, and what
+  keeps that true.
+- [docs/env-promotion.md](docs/env-promotion.md) scoped escape analysis and
+  environment record optimization.
+- [tests/oracle/README.md](tests/oracle/README.md) how the differential
+  suite works and how to add a case.
 
 ## License
 
