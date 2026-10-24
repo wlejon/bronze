@@ -865,7 +865,7 @@ GpuCompileResult compileJsGpuKernelSource(
 
         brass::spirv::Module spvMod(spvOpts.spirv_version);
         brass::spirv::SpirvISel spvIsel(spvMod, spvOpts);
-        spvIsel.lower(*mirFn);
+        res.spirvLayout = spvIsel.lower(*mirFn);
 
         if (opts.enableRelaxedPrecision) {
             brass::spirv::SpirvRelaxedPrecisionOptions rpOpts;

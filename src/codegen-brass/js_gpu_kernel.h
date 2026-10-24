@@ -9,6 +9,7 @@
 #include <brass/target/ptx/ptx_verifier.hpp>
 #include <brass/target/ptx_target.hpp>
 #include <brass/target/spirv/spirv_ir.hpp>
+#include <brass/target/spirv/spirv_isel.hpp>
 #include <brass/target/spirv/spirv_relaxed_precision.hpp>
 #include <brass/target/spirv_target.hpp>
 #include <brass/verify/gpu_equiv.hpp>
@@ -50,6 +51,11 @@ struct GpuCompileResult {
     uint32_t scalarParamCount = 0;
     float maxCpuGpuUlpDiff = 0.0f;
     std::vector<uint32_t> spirvWords;
+    // The push-constant layout the SPIR-V lowering chose, in parameter order:
+    // which members are buffer addresses (ptr) and which are scalars. A host
+    // binds dispatch arguments from this; the binary alone cannot tell a
+    // buffer's 64-bit address from a 64-bit integer.
+    brass::spirv::KernelLayout spirvLayout;
     std::string spirvDisassembly;
     std::string ptxAssembly;
     std::vector<brass::spirv::Diagnostic> spirvDiagnostics;
