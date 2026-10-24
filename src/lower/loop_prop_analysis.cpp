@@ -65,6 +65,10 @@ SafeConstructorInfo analyzeConstructor(const il::Function& calleeFn) {
     SafeConstructorInfo info;
     for (const auto& blk : calleeFn.blocks) if (blk.handler != il::kNoBlock) return info;
     if (!calleeFn.needsThis) return info;
+    // A property is forwarded to the call's argument at its parameter's
+    // position. A rest parameter is no one argument but an array of all the
+    // rest, so `this.items = items` read back as the first of them.
+    if (calleeFn.hasRestParam) return info;
     const il::ValueId thisVal = calleeFn.needsEnv ? 1u : 0u;
     const size_t firstSource = calleeFn.firstSourceParam();
 
