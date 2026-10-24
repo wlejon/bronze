@@ -35,6 +35,10 @@ constexpr size_t kMaxSynthesizedPathsPerFn = 64;
 struct PathSymState {
     std::unordered_map<il::ValueId, BVNodeId> values;
     std::unordered_map<il::ValueId, int64_t> arrayLengths;
+    // What a created array's elements hold: a literal lowers to
+    // `create.array N` then one `prop.set arr, "<i>", v` per element, and a
+    // read through them is what the function returns.
+    std::unordered_map<il::ValueId, std::vector<BVNodeId>> arrayValues;
     std::unordered_map<uint64_t, BVNodeId> envSlots;
     std::unordered_map<uint32_t, std::string> globalRefs;
 };
@@ -53,6 +57,18 @@ std::string jsonEscape(std::string_view s) {
         }
     }
     return out;
+}
+
+// A canonical array index key ("0", "17"; not "01" or "-1").
+bool arrayIndexKey(std::string_view key, size_t& out) {
+    if (key.empty() || key.size() > 9 || (key.size() > 1 && key[0] == '0')) return false;
+    size_t v = 0;
+    for (char c : key) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + static_cast<size_t>(c - '0');
+    }
+    out = v;
+    return true;
 }
 
 class FunctionTestSynthesizer {
@@ -263,6 +279,12 @@ private:
 
         for (const auto& inst : blk.instructions) {
             using Op = il::Op;
+            if (!state.arrayValues.empty() && inst.op != Op::PropSet &&
+                inst.op != Op::ElemGet && inst.op != Op::ElemSet) {
+                // Handed to anything else (a call, a store into another
+                // object), the array may be written behind the model's back.
+                for (il::ValueId v : inst.operands) state.arrayValues.erase(v);
+            }
             switch (inst.op) {
                 case Op::ConstI32: {
                     uint64_t sext = static_cast<uint64_t>(static_cast<int64_t>(inst.immI32));
@@ -284,7 +306,25 @@ private:
                 case Op::CreateArray:
                     state.values[inst.result] = zero64_;
                     state.arrayLengths[inst.result] = std::max<int32_t>(0, inst.immI32);
+                    state.arrayValues[inst.result].assign(
+                        static_cast<size_t>(std::max<int32_t>(0, inst.immI32)), zero64_);
                     break;
+                case Op::PropSet: {
+                    if (inst.operands.size() < 2) break;
+                    auto valsIt = state.arrayValues.find(inst.operands[0]);
+                    if (valsIt == state.arrayValues.end()) break;
+                    size_t elem = 0;
+                    if (inst.keyIndex < mod_.keyConstants.size() &&
+                        arrayIndexKey(mod_.keyConstants[inst.keyIndex], elem) &&
+                        elem < valsIt->second.size()) {
+                        valsIt->second[elem] = toBV64(getVal(state, inst.operands[1]));
+                    } else {
+                        // A named property or one past the length: the
+                        // elements are no longer the literal's.
+                        state.arrayValues.erase(valsIt);
+                    }
+                    break;
+                }
                 case Op::ElemGet:
                 case Op::ElemSet: {
                     if (inst.operands.size() >= 2) {
@@ -303,7 +343,29 @@ private:
                                                     "negative array index access (index < 0)");
                         }
                     }
-                    if (inst.result != il::kNoValue) state.values[inst.result] = zero64_;
+                    BVNodeId read = zero64_;
+                    auto valsIt = inst.operands.size() >= 2
+                                      ? state.arrayValues.find(inst.operands[0])
+                                      : state.arrayValues.end();
+                    if (valsIt != state.arrayValues.end()) {
+                        BVNodeId idx = toBV64(getVal(state, inst.operands[1]));
+                        std::vector<BVNodeId>& elems = valsIt->second;
+                        if (inst.op == Op::ElemGet) {
+                            // Out of range reads undefined, which the int
+                            // model holds as 0.
+                            for (size_t i = 0; i < elems.size(); ++i) {
+                                BVNodeId eq = ctx_.make_binary(BVOp::Eq, idx, ctx_.make_const(i, 64));
+                                read = ctx_.make_ite(eq, elems[i], read);
+                            }
+                        } else if (inst.operands.size() >= 3) {
+                            BVNodeId v = toBV64(getVal(state, inst.operands[2]));
+                            for (size_t i = 0; i < elems.size(); ++i) {
+                                BVNodeId eq = ctx_.make_binary(BVOp::Eq, idx, ctx_.make_const(i, 64));
+                                elems[i] = ctx_.make_ite(eq, v, elems[i]);
+                            }
+                        }
+                    }
+                    if (inst.result != il::kNoValue) state.values[inst.result] = read;
                     break;
                 }
                 case Op::Box:

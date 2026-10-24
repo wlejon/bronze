@@ -413,6 +413,32 @@ TEST_CASE("synth-tests: symbolic path-covering and hazard-reproducing test synth
         CHECK(foundOob);
         CHECK(foundThrow);
     }
+
+    SUBCASE("a read through an array literal returns the element, not 0") {
+        std::string err;
+        SynthTestsReport rep = bronze::check::synthesizeSourceTests(
+            R"(
+                export function gate(x) {
+                    const t = [5, 6, 7, 8];
+                    t[2] = 70;
+                    const v = t[x & 3];
+                    if (v > 6) return v;
+                    return -v;
+                }
+            )",
+            &err);
+        REQUIRE(err.empty());
+        const int64_t table[] = {5, 6, 70, 8};
+        size_t checked = 0;
+        for (const auto& t : rep.tests) {
+            if (t.kind != SynthTestKind::BranchCoverage || !t.hasExpectedReturn) continue;
+            REQUIRE(t.args.size() == 1);
+            int64_t v = table[t.args[0] & 3];
+            CHECK(t.expectedReturn == (v > 6 ? v : -v));
+            ++checked;
+        }
+        CHECK(checked >= 2);
+    }
 }
 
 TEST_CASE("CLI file entry points: runProveEquiv, runDeterministicCheckFile, and runSynthTests") {
