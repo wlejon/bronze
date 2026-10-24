@@ -7,7 +7,6 @@
 #include "check/cegis_optimize.h"
 #include "check/fuzz_fn.h"
 #include "check/layout_solver.h"
-#include "check/live_supervisor.h"
 #include "check/prove_fn.h"
 #include "check/solve_fn.h"
 
@@ -265,82 +264,6 @@ TEST_CASE("layout_solver (#137): non-convex 2D/3D layout solver with non-overlap
         CHECK(sol.boxes.at("b").x >= 152);
         CHECK((sol.boxes.at("b").x % 8) == 0);
         CHECK(sol.boxes.at("b").w == 200);
-    }
-}
-
-TEST_CASE("live_supervisor (#148): self-healing proof-gated live-reload supervisor & behavioral diff") {
-    SUBCASE("automatically heals unguarded Math.sqrt, Math.acos, Math.log, division, and shift hazards") {
-        std::string hazardousCandidate = R"(
-            function dspFilter(x, y, shift) {
-                let s = Math.sqrt(x - y);
-                let a = Math.acos(x);
-                let l = Math.log(y);
-                let d = 100 / y;
-                let m = 1 << shift;
-                return s + a + l + d + m;
-            }
-        )";
-        auto rep = bronze::check::superviseLiveReload("", hazardousCandidate);
-        CHECK(rep.accepted);
-        CHECK(rep.selfHealed);
-        CHECK(rep.originalHazardCount >= 4);
-        CHECK(rep.remainingHazardCount == 0);
-        CHECK(rep.repairs.size() >= 4);
-        CHECK(rep.healedSource.find("Math.max(0,") != std::string::npos);
-        CHECK(rep.healedSource.find("Math.min(1, Math.max(-1,") != std::string::npos);
-        CHECK(rep.healedSource.find("Math.max(1,") != std::string::npos);
-        CHECK(rep.healedSource.find("y === 0 ? 1 : y") != std::string::npos);
-    }
-
-    SUBCASE("proves behavioral equivalence on pure refactor and produces divergence witness on semantic change") {
-        std::string prevSrc = "function scale2(x) { return x + x; }";
-        std::string pureRefactor = "function scale2(x) { return x * 2; }";
-        auto sameRep = bronze::check::superviseLiveReload(prevSrc, pureRefactor);
-        CHECK(sameRep.accepted);
-        CHECK(sameRep.hasPrevious);
-        CHECK(sameRep.behaviorallyIdentical);
-        CHECK(!sameRep.divergenceWitness.hasDivergence);
-
-        std::string changedSrc = "function scale2(x) { return x * 2 + 1; }";
-        auto diffRep = bronze::check::superviseLiveReload(prevSrc, changedSrc);
-        CHECK(diffRep.accepted);
-        CHECK(diffRep.hasPrevious);
-        CHECK(!diffRep.behaviorallyIdentical);
-        CHECK(diffRep.divergenceWitness.hasDivergence);
-        CHECK(!diffRep.divergenceWitness.args.empty());
-        CHECK(diffRep.divergenceWitness.oldOutput != diffRep.divergenceWitness.newOutput);
-    }
-}
-
-TEST_CASE("live_supervisor (#149): autonomous multi-generation superoptimization & kernel evolution") {
-    SUBCASE("evolves branchy abs through CEGIS superoptimization with proven equivalence") {
-        std::string src = R"(
-            function branchyAbs(x) {
-                if (x < 0) return -x;
-                return x;
-            }
-        )";
-        auto evo = bronze::check::evolveJsFunction(src);
-        CHECK(evo.provenEquivalent);
-        CHECK(evo.generations.size() >= 2);
-        CHECK(evo.bestTier == "cegis-superopt");
-        CHECK(evo.speedup > 1.0);
-        CHECK(evo.optimizedSource.find(">> 31") != std::string::npos);
-    }
-
-    SUBCASE("evolves independent TypedArray loop to @kernel tier") {
-        std::string loopSrc = R"(
-            function saxpyLoop(out, x, y, a, n) {
-                for (let i = 0; i < n; i++) {
-                    out[i] = a * x[i] + y[i];
-                }
-            }
-        )";
-        auto evo = bronze::check::evolveJsFunction(loopSrc);
-        CHECK(evo.provenEquivalent);
-        CHECK(evo.hasAutoKernel);
-        CHECK(evo.bestTier == "auto-kernel");
-        CHECK(evo.kernelSource.find("@kernel") != std::string::npos);
     }
 }
 

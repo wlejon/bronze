@@ -2,27 +2,137 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "abi/bronze_abi.h"
 #include "runtime/atomic_ref.h"
+#include "runtime/bigint.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/host_globals.h"
+#include "runtime/iterator.h"
+#include "runtime/module_registry.h"
 #include "runtime/object.h"
+#include "runtime/promise.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "runtime/symbol.h"
+#include "runtime/typed_array.h"
 #include "runtime/realm.h"
 #include "runtime/value.h"
+#include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
+
+static std::mutex g_nativeDisplayNamesMu;
+static std::unordered_map<const void*, std::string> g_nativeDisplayNames;
+
+static const void* resolveJumpThunk(const void* p) {
+    if (!p) return nullptr;
+#if defined(_WIN32) && defined(_M_X64)
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(p);
+    if (b[0] == 0xE9) {
+        int32_t rel = *reinterpret_cast<const int32_t*>(b + 1);
+        return b + 5 + rel;
+    }
+#endif
+    return p;
+}
+
+void rtRegisterNativeDisplayName(const void* code, const char* displayName) {
+    if (!code || !displayName) return;
+    std::lock_guard<std::mutex> lock(g_nativeDisplayNamesMu);
+    g_nativeDisplayNames[code] = displayName;
+    const void* target = resolveJumpThunk(code);
+    if (target && target != code) {
+        g_nativeDisplayNames[target] = displayName;
+    }
+}
+
+const char* rtGetNativeDisplayName(const void* code) {
+    if (!code) return nullptr;
+    std::lock_guard<std::mutex> lock(g_nativeDisplayNamesMu);
+    auto it = g_nativeDisplayNames.find(code);
+    if (it != g_nativeDisplayNames.end()) {
+        return it->second.c_str();
+    }
+    const void* target = resolveJumpThunk(code);
+    if (target && target != code) {
+        it = g_nativeDisplayNames.find(target);
+        if (it != g_nativeDisplayNames.end()) {
+            return it->second.c_str();
+        }
+    }
+    return nullptr;
+}
+
+bool rtResolveBuiltinGlobal(const std::string& keyStr, Value& out) {
+    if (keyStr == "Math") {
+        out = rtMathObject();
+    } else if (keyStr == "Object") {
+        out = rtObjectNamespace();
+    } else if (keyStr == "Function") {
+        out = rtFunctionConstructorObject();
+    } else if (keyStr == "JSON") {
+        out = rtJsonNamespace();
+    } else if (keyStr == "globalThis") {
+        out = rtGlobalThisObject();
+    } else if (keyStr == "performance") {
+        out = rtPerformanceNamespace();
+    } else if (keyStr == "Reflect") {
+        out = rtReflectNamespace();
+    } else if (keyStr == "Date") {
+        out = rtDateConstructor();
+    } else if (keyStr == "Intl") {
+        out = rtIntlNamespace();
+    } else if (keyStr == "Symbol") {
+        out = rtSymbolFunction();
+    } else if (Value bigint = rtBigIntConstructor(keyStr); bigint.isObject()) {
+        out = bigint;
+    } else if (Value regexp = rtRegExpConstructor(keyStr); regexp.isObject()) {
+        out = regexp;
+    } else if (Value iterator = rtIteratorConstructor(keyStr); iterator.isObject()) {
+        out = iterator;
+    } else if (Value collection = rtMapConstructor(keyStr); collection.isObject()) {
+        out = collection;
+    } else if (Value weak = rtWeakCollectionConstructor(keyStr); weak.isObject()) {
+        out = weak;
+    } else if (Value weakRef = rtWeakRefConstructor(keyStr); weakRef.isObject()) {
+        out = weakRef;
+    } else if (Value typed = rtTypedArrayConstructor(keyStr); typed.isObject()) {
+        out = typed;
+    } else if (Value shared = rtSharedArrayBufferConstructor(keyStr); shared.isObject()) {
+        out = shared;
+    } else if (keyStr == "Atomics") {
+        out = rtAtomicsObject();
+    } else if (Value dataView = rtDataViewConstructor(keyStr); dataView.isObject()) {
+        out = dataView;
+    } else if (Value global = rtGlobalConstructor(keyStr); global.isObject()) {
+        out = global;
+    } else if (Value ctor = rtErrorConstructor(keyStr); ctor.isObject()) {
+        out = ctor;
+    } else if (Value promise = rtPromiseConstructor(keyStr); promise.isObject()) {
+        out = promise;
+    } else if (Value numeric = rtGlobalNumericFunction(keyStr); numeric.isObject()) {
+        out = numeric;
+    } else if (Value moduleIntrinsic = rtModuleRegistryIntrinsic(keyStr);
+               moduleIntrinsic.isObject()) {
+        out = moduleIntrinsic;
+    } else {
+        return false;
+    }
+    return true;
+}
 
 Value rtGlobalThisObject() {
     return bronze::rtCurrentRealm()->globalObject();

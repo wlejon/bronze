@@ -13,7 +13,6 @@ bronze_add_module(check
         cegis_superopt.cpp
         js_source_rewriter.cpp
         auto_kernel_rewriter.cpp
-        live_supervisor.cpp
         fuzz_fn.cpp
         prove_fn.cpp
         layout_solver.cpp
