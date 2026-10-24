@@ -507,8 +507,16 @@ std::optional<uint32_t> Lowerer::literalIndexKey(const ast::Expr& index) {
 
 std::optional<Lowerer::Value> Lowerer::lowerIndexAccess(const ast::IndexAccess* idxAccess,
                                                         il::Function& ilFn, bool onSpine) {
+    // Here the read's value is used as it is (`a[i] === undefined`, `return
+    // a[i]`), not coerced, so the f64 form, which reads an invalid index as
+    // NaN, is exact only where every index is proven a valid one.
     if (const auto kind = typedElemAccessKind(*idxAccess)) {
-        return lowerTypedElemRead(*idxAccess, *kind, ilFn);
+        const bool plain = (*kind & static_cast<uint32_t>(il::kElemKindMask)) ==
+                           static_cast<uint32_t>(il::kElemKindPlainArrayF64);
+        if (plain || (typedElemProofFlags(*idxAccess, *kind) &
+                      static_cast<uint32_t>(il::kElemFlagProvenInBounds)) != 0) {
+            return lowerTypedElemRead(*idxAccess, *kind, ilFn);
+        }
     }
 
     auto objVal = lowerChainBase(*idxAccess->object, ilFn, onSpine);
