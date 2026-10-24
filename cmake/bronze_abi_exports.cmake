@@ -142,6 +142,15 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
             "bronze_abi_export_files: found no Y(...) lines in BRONZE_ABI_BRASS_SYMBOLS in "
             "${header}.")
     endif()
+    # And the ones brass defines under their own names (the parallel-loop
+    # runtime), exported as they are.
+    bronze_abi_cut_block("${_after_fns}" "#define BRONZE_ABI_BRASS_PLAIN_SYMBOLS(Y)" _plain_text _unused)
+    string(REGEX MATCHALL "Y[(][A-Za-z_][A-Za-z0-9_]*[)]" _plain_entries "${_plain_text}")
+    set(_brass_plain "")
+    foreach(_entry IN LISTS _plain_entries)
+        string(REGEX MATCH "Y[(]([A-Za-z_][A-Za-z0-9_]*)" _matched "${_entry}")
+        list(APPEND _brass_plain "${CMAKE_MATCH_1}")
+    endforeach()
     foreach(_flavor WINDOWS SYSV)
         string(REGEX MATCH "#define BRONZE_ABI_PERSONALITY_${_flavor}[ \t]+([A-Za-z_][A-Za-z0-9_]*)"
                _matched "${_after_fns}")
@@ -158,7 +167,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set(_def_text "; Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _def_text "; DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _def_text "EXPORTS\n")
-    foreach(_name IN LISTS _fns)
+    foreach(_name IN LISTS _fns _brass_plain)
         string(APPEND _def_text "    ${_name}\n")
     endforeach()
     # brass defines each of these as brass_default_<rest> and no image but
@@ -183,7 +192,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     set(_ver_text "# Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _ver_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
     string(APPEND _ver_text "{\n  global:\n")
-    foreach(_name IN LISTS _fns)
+    foreach(_name IN LISTS _fns _brass_plain)
         string(APPEND _ver_text "    ${_name};\n")
     endforeach()
     foreach(_name IN LISTS _brass _personality_SYSV)
@@ -202,7 +211,7 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     # mangled name picks up on top of it).
     set(_exp_text "# Generated from ${header} by cmake/bronze_abi_exports.cmake.\n")
     string(APPEND _exp_text "# DO NOT EDIT: add an X(...) line to the registry instead.\n")
-    foreach(_name IN LISTS _fns)
+    foreach(_name IN LISTS _fns _brass_plain)
         string(APPEND _exp_text "_${_name}\n")
     endforeach()
     foreach(_name IN LISTS _brass _personality_SYSV)
@@ -227,4 +236,8 @@ function(bronze_abi_export_files header outdir def_var ver_var exp_var)
     # alias the link defines for brass_default_<rest> (the .def spells its
     # aliases itself).
     set(BRONZE_ABI_BRASS_SYSV_ALIASES ${_brass} ${_personality_SYSV} PARENT_SCOPE)
+    # The brass names exported as they are, which the ELF and Mach-O links
+    # must pull out of brass's archive themselves (nothing in the runtime
+    # calls them; the .def's EXPORTS line does that on Windows).
+    set(BRONZE_ABI_BRASS_PLAIN ${_brass_plain} PARENT_SCOPE)
 endfunction()

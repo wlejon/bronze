@@ -36,6 +36,7 @@ bool isRuntimeExport(const std::string& name, const brass::Target& target) {
 #undef BRONZE_LINK_EXPORT_NAME
 #define BRONZE_LINK_BRASS_NAME(name) names.insert(#name);
         BRONZE_ABI_BRASS_SYMBOLS(BRONZE_LINK_BRASS_NAME)
+        BRONZE_ABI_BRASS_PLAIN_SYMBOLS(BRONZE_LINK_BRASS_NAME)
 #undef BRONZE_LINK_BRASS_NAME
         return names;
     }();

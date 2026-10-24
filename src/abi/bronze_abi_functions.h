@@ -656,6 +656,20 @@
     Y(brass_rethrow) \
     Y(brass_coro_create)
 
+/*
+ * The brass runtime symbols a compiled module names that brass defines under
+ * their own names, which the runtime exports as they are: the parallel-loop
+ * runtime an optimized build's auto-parallelized loops call
+ * (brass/runtime/parallel_runtime.hpp). A module calls all of them, so all
+ * its calls reach the one copy, the runtime's, whatever a host links.
+ */
+#define BRONZE_ABI_BRASS_PLAIN_SYMBOLS(Y) \
+    Y(brass_parallel_for) \
+    Y(brass_parallel_reduce_i64) \
+    Y(brass_parallel_reduce_f64) \
+    Y(brass_parallel_alloc_context) \
+    Y(brass_parallel_free_context)
+
 #define BRONZE_ABI_PERSONALITY_WINDOWS brass_seh_personality
 #define BRONZE_ABI_PERSONALITY_SYSV    brass_sysv_personality
 
