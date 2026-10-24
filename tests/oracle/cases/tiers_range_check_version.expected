@@ -1,0 +1,23 @@
+blur fits 325289414
+blur short dst 554516045
+blur short src 546332958
+blur wide 475298602
+mat fits 894893838
+mat n+1 76825189
+mat short b 578896582
+window fits 40461176
+window -1 0 10 NaN
+window 10 0 41 NaN
+window 0 -2 5 NaN
+window 0 45 49 1.9543215450830758
+window 0 49 51 NaN
+window -60 60 70 4.811529418686405
+window 0 5 5 0
+window 0 7 3 0
+column fits 470518508
+column 4 1 11 834630882
+column -3 20 9 581180320
+column 0 39 3 102000
+column 5 -2 4 325750921
+column 7 0 6 335655847
+column 1 38 4 3201000
