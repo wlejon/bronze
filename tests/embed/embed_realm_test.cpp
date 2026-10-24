@@ -218,14 +218,14 @@ TEST_CASE("HostClass brand isolation, inheritance lineage, multi-realm install, 
     classBase.install("TestBase", 0, nullptr, [](embed::ObjectBuilder& proto) {
         proto.def("getBaseVal", 0, [](embed::Value self, std::span<const embed::Value>) {
             auto* p = static_cast<Payload*>(classBase.unwrap(self));
-            if (!p) return embed::throwTypeError("bad receiver");
+            if (!p) embed::throwTypeError("bad receiver");
             return embed::fromDouble(p->value);
         });
     });
     classDerived.install("TestDerived", 0, nullptr, [](embed::ObjectBuilder& proto) {
         proto.def("getDerivedVal", 0, [](embed::Value self, std::span<const embed::Value>) {
             auto* p = static_cast<Payload*>(classDerived.unwrap(self));
-            if (!p) return embed::throwTypeError("bad receiver");
+            if (!p) embed::throwTypeError("bad receiver");
             return embed::fromDouble(p->value * 2);
         });
     });

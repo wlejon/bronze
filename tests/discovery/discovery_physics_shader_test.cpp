@@ -236,7 +236,9 @@ TEST_CASE("Issue #127.2: Cubic-Bezier Easing Flat-Tangent Newton-Raphson Singula
         CHECK(slabRep.divByZeroCount >= 1);
 
         // Concrete IEEE-754 demonstration of 0 / 0 = NaN poisoning tMin/tMax in slab intersection:
-        double rayOrigX = 10.0, rayDirX = 0.0, boxMinX = 10.0, boxMaxX = 20.0;
+        // volatile: a folded constant divide by zero is MSVC's C4723, an error under /WX.
+        volatile double zeroDir = 0.0;
+        double rayOrigX = 10.0, rayDirX = zeroDir, boxMinX = 10.0, boxMaxX = 20.0;
         double t1 = (boxMinX - rayOrigX) / rayDirX;
         double t2 = (boxMaxX - rayOrigX) / rayDirX;
         CHECK(std::isnan(t1));
