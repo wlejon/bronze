@@ -176,6 +176,7 @@ TEST_CASE("check --deterministic: lockstep multiplayer & replay verifier") {
                 case DeterministicHazardKind::TranscendentalFloatDrift: ++floatCount; break;
                 case DeterministicHazardKind::ObjectIterationOrder: ++orderCount; break;
                 case DeterministicHazardKind::CrossArchBitwiseDrift: break;
+                case DeterministicHazardKind::ExternalStateAccess: break;
             }
         }
         CHECK(prngCount == 1);
@@ -207,6 +208,97 @@ TEST_CASE("check --deterministic: lockstep multiplayer & replay verifier") {
         REQUIRE(ok);
         REQUIRE(err.empty());
         CHECK(diags.empty());
+    }
+
+    SUBCASE("rejects Math/Date aliases, transitive non-deterministic helpers, and mutable outer state (#156)") {
+        {
+            std::vector<CheckDiagnostic> diags;
+            std::string err;
+            bool ok = bronze::check::checkDeterministicSource(
+                R"(
+                    const M = Math;
+                    function tickAlias() {
+                        const r = M.random;
+                        return M.random() + r();
+                    }
+                )",
+                diags, &err);
+            REQUIRE(ok);
+            REQUIRE(err.empty());
+            bool foundPrng = false;
+            for (const auto& d : diags) {
+                if (d.kind == DeterministicHazardKind::UnseededPrng && d.functionName == "tickAlias") {
+                    foundPrng = true;
+                }
+            }
+            CHECK(foundPrng);
+        }
+        {
+            std::vector<CheckDiagnostic> diags;
+            std::string err;
+            bool ok = bronze::check::checkDeterministicSource(
+                R"(
+                    function h() {
+                        return Date.now();
+                    }
+                    function tick(s) {
+                        return s + h();
+                    }
+                )",
+                diags, &err);
+            REQUIRE(ok);
+            REQUIRE(err.empty());
+            bool hFlagged = false;
+            bool tickFlagged = false;
+            for (const auto& d : diags) {
+                if (d.kind == DeterministicHazardKind::WallClockTime) {
+                    if (d.functionName == "h") hFlagged = true;
+                    if (d.functionName == "tick") tickFlagged = true;
+                }
+            }
+            CHECK(hFlagged);
+            CHECK(tickFlagged);
+        }
+        {
+            std::vector<CheckDiagnostic> diags;
+            std::string err;
+            bool ok = bronze::check::checkDeterministicSource(
+                R"(
+                    let count = 0;
+                    function tick(s) {
+                        count++;
+                        return s + count;
+                    }
+                )",
+                diags, &err);
+            REQUIRE(ok);
+            REQUIRE(err.empty());
+            bool foundExternal = false;
+            for (const auto& d : diags) {
+                if (d.kind == DeterministicHazardKind::ExternalStateAccess && d.functionName == "tick") {
+                    foundExternal = true;
+                }
+            }
+            CHECK(foundExternal);
+        }
+        {
+            std::vector<CheckDiagnostic> diags;
+            std::string err;
+            bool ok = bronze::check::checkDeterministicSource(
+                R"(
+                    "use deterministic";
+                    function stepDeterministicPhysics(x, y, z) {
+                        const s = Math.sin(x) + Math.cos(y);
+                        const a = Math.atan2(y, x) + Math.exp(z);
+                        const p = Math.pow(x, 2) + (x ** 3) + Math.hypot(x, y) + Math.cbrt(z);
+                        return s * a + p;
+                    }
+                )",
+                diags, &err);
+            REQUIRE(ok);
+            REQUIRE(err.empty());
+            CHECK(diags.empty());
+        }
     }
 }
 

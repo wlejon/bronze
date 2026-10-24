@@ -19,6 +19,8 @@
 #include <limits>
 #include <string>
 
+#include <brass/runtime/deterministic_math.hpp>
+
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
 #include "runtime/bigint.h"
@@ -618,7 +620,7 @@ double rtExponentiate(double base, double exponent) {
     if (std::abs(base) == 1.0 && std::isinf(exponent)) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    return std::pow(base, exponent);
+    return brass_det_pow(base, exponent);
 }
 
 bool rtOrdinaryHasInstance(Value ctor, Value obj) {

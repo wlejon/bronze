@@ -385,6 +385,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     const bool optimize = this->optimize();
     il2mir::TranslatorOptions options;
     setOptimizationOptions(options, optimize);
+    options.deterministic_fp = module.hasDeterministicFp();
     options.run_alias_analysis = optimize;
     options.enable_tlab = true;
     // The TLS block rides in a callee-saved register (bronze_abi_tls.h): the

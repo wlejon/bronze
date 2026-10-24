@@ -363,7 +363,9 @@ static void declare_data_symbols(Module& mod) {
 std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     bronze::support::PhaseTimer ltimer(bronze::support::timingsEnabled(), 8);
     auto mod = std::make_unique<Module>(ast.name);
-    mod->set_allow_fp_reassociation(options_.allow_fp_reassociation);
+    const bool mod_det_fp = options_.deterministic_fp || ast.is_deterministic_fp;
+    mod->set_deterministic_fp(mod_det_fp);
+    mod->set_allow_fp_reassociation(options_.allow_fp_reassociation && !mod_det_fp);
     mod->set_pinned_tls_register(options_.pin_tls_register);
     current_file_id_ = mod->debug_context().get_or_add_file(ast.name.empty() ? "<anonymous>" : ast.name);
     source_file_ids_.clear();
@@ -581,8 +583,10 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             external_signatures_[fn_name] = {ret_type, std::move(param_types)};
             continue;
         }
+        const bool fn_det_fp = mod_det_fp || fn_ast.is_deterministic_fp;
         Function* fn = mod->create_function(fn_name, ret_type, Span<const Type>(param_types.data(), param_types.size()));
-        fn->set_allow_fp_reassociation(options_.allow_fp_reassociation);
+        fn->set_deterministic_fp(fn_det_fp);
+        fn->set_allow_fp_reassociation(options_.allow_fp_reassociation && !fn_det_fp);
 
         if (fn_name != "main" && !fn_ast.is_coroutine_body()) {
             std::vector<Type> wrapper_param_types = {Type::i64(), Type::i64(), Type::i32(), Type::ptr()};
@@ -590,7 +594,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
                 "__wrapper_" + fn_name,
                 Type::i64(),
                 Span<const Type>(wrapper_param_types.data(), wrapper_param_types.size()));
-            wfn->set_allow_fp_reassociation(options_.allow_fp_reassociation);
+            wfn->set_deterministic_fp(fn_det_fp);
+            wfn->set_allow_fp_reassociation(options_.allow_fp_reassociation && !fn_det_fp);
         }
     }
 

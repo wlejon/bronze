@@ -8,6 +8,21 @@
 
 namespace bronze::lower {
 
+namespace {
+
+bool hasUseDeterministicPrologue(const std::vector<ast::StmtPtr>& body) {
+    for (const auto& stmtPtr : body) {
+        const auto* exprStmt = dynamic_cast<const ast::ExprStmt*>(stmtPtr.get());
+        if (!exprStmt || !exprStmt->expr || exprStmt->expr->parenthesized) break;
+        const auto* strLit = dynamic_cast<const ast::StringLit*>(exprStmt->expr.get());
+        if (!strLit) break;
+        if (strLit->value == "use deterministic") return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 // The closure-parameter plan is made for THIS body and consumed while THIS body
 // is lowered, so it lives in a frame that opens and closes here. Keyed by node
 // address, it must not survive the nodes it names — a class constructor's body
@@ -56,6 +71,9 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     ilFn.blocks.push_back(il::Block{.id = 0});
     ilFn.isStrict = strictCode_;
     ilFn.isGenerator = isGenerator;
+    if (hasUseDeterministicPrologue(body) || hasUseDeterministicPrologue(astModule_.body)) {
+        ilFn.setDeterministicFp(true);
+    }
     currentBlockIdx_ = 0;
     varBindings_.clear();
     varNativeClasses_.clear();

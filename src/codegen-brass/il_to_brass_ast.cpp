@@ -476,6 +476,7 @@ il2mir::BronzeModuleAST lowerToBrassAst(
     il2mir::BronzeModuleAST ast;
     ast.name = !module.name.empty() ? module.name : (!module.sourceFiles.empty() ? module.sourceFiles[0] : "");
     ast.source_files = module.sourceFiles;
+    ast.is_deterministic_fp = module.hasDeterministicFp();
     ast.functions.resize(module.functions.size());
 
     if (globalReadKeys) {
@@ -545,6 +546,7 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
         bfn.is_exported = fn.isExported;
         bfn.coro_kind = fn.coroKind;
         bfn.is_toplevel = (fn.descFlags & BRONZE_FN_DESC_TOPLEVEL) != 0;
+        bfn.is_deterministic_fp = fn.isDeterministicFp();
 
         bfn.params.reserve(fn.params.size());
         for (size_t p = 0; p < fn.params.size(); ++p) {

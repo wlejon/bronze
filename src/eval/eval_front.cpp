@@ -258,6 +258,11 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                       options.censusOutPath,
                                       in.nativeManifest ? &*in.nativeManifest : nullptr);
     if (diags.hasErrors() || !lowered) return nullptr;
+    if (options.deterministicFp || isDeterministicFpMode()) {
+        for (auto& fn : lowered->functions) {
+            fn.setDeterministicFp(true);
+        }
+    }
     timer.mark("lower");
     reportProgress(options, "lower", 0.88);
     return std::make_unique<il::Module>(std::move(*lowered));

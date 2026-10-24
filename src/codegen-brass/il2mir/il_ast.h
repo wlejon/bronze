@@ -225,6 +225,7 @@ struct BronzeFunction {
     bool is_coroutine_body() const { return coro_kind >= 0; }
     // The program's top level (`main` and its segments): run once.
     bool is_toplevel = false;
+    bool is_deterministic_fp = false;
     std::vector<BronzeBlock> blocks;
 };
 
@@ -235,6 +236,7 @@ struct BronzeModuleAST {
     // of them (a program's merged top level), so the debug location of each
     // instruction names its own.
     std::vector<std::string> source_files;
+    bool is_deterministic_fp = false;
     std::vector<BronzeFunction> functions;
 };
 

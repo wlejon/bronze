@@ -92,6 +92,7 @@ static std::condition_variable& sharedInFlightCv() {
 }
 static std::atomic<uint64_t> s_evalCounter{0};
 static std::atomic<ExecutionTier> s_defaultTier{ExecutionTier::Auto};
+static std::atomic<bool> s_deterministicFpMode{false};
 
 // At exit, no retained or live dynamic program may still be compiling in the
 // background: a compile worker would be running brass while the process tears
@@ -484,6 +485,14 @@ void setDefaultTier(ExecutionTier tier) {
 
 ExecutionTier defaultTier() {
     return s_defaultTier.load(std::memory_order_relaxed);
+}
+
+void setDeterministicFpMode(bool enabled) {
+    s_deterministicFpMode.store(enabled, std::memory_order_relaxed);
+}
+
+bool isDeterministicFpMode() {
+    return s_deterministicFpMode.load(std::memory_order_relaxed);
 }
 
 void retainProgram(std::shared_ptr<BrassTieredProgram> program) {

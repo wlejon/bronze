@@ -100,6 +100,9 @@ struct EvalOptions {
     uint64_t codeCacheMaxBytes = uint64_t{256} << 20;
     // Called on the compiling thread at each phase boundary.
     std::function<void(const CompileProgress&)> onProgress = {};
+    // Enforces IEEE-754 cross-architecture floating-point determinism (no FMA,
+    // no FP reassociation, deterministic transcendental math).
+    bool deterministicFp = false;
 };
 
 struct CompiledScript {
@@ -129,6 +132,17 @@ BRONZE_EMBED_API void captureThreadInputs(EvalOptions& options);
 // then optimized code in the background) unless the host says otherwise.
 BRONZE_EMBED_API void setDefaultTier(ExecutionTier tier);
 BRONZE_EMBED_API ExecutionTier defaultTier();
+
+BRONZE_EMBED_API void setDeterministicFpMode(bool enabled);
+BRONZE_EMBED_API bool isDeterministicFpMode();
+
+struct DeterministicFpScope {
+    bool prev;
+    explicit DeterministicFpScope(bool enabled = true) : prev(isDeterministicFpMode()) {
+        setDeterministicFpMode(enabled);
+    }
+    ~DeterministicFpScope() { setDeterministicFpMode(prev); }
+};
 
 // Retains a compiled program for the process lifetime so its code, data
 // image and function pointers remain valid across executions. At exit the

@@ -69,6 +69,7 @@ struct TranslatorOptions {
     // build a body on demand; see translate_bronze_ast_lazy.
     bool lazy_bodies = false;
     bool allow_fp_reassociation = false;
+    bool deterministic_fp = false;
     bool trace_lowering = false;
     bool enable_f64_demote = true;
     bool demote_stats = false;

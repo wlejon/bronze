@@ -21,7 +21,8 @@ enum class DeterministicHazardKind : uint8_t {
     WallClockTime,            // Date.now(), new Date(), performance.now()
     TranscendentalFloatDrift, // Math.sin/cos/tan/pow/exp/log/** ULP drift across platforms
     ObjectIterationOrder,     // for..in, Object.keys/values/entries without deterministic .sort()
-    CrossArchBitwiseDrift,    // x86_64 vs AArch64 LIR block equivalence or shift-count hazard
+    CrossArchBitwiseDrift,    // x86_64 vs AArch64 bitwise/shift hazard
+    ExternalStateAccess,      // Mutable outer/module/global state access or non-whitelisted host call
 };
 
 const char* deterministicHazardTag(DeterministicHazardKind kind);

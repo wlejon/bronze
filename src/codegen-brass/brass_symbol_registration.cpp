@@ -6,6 +6,7 @@
 
 #include <brass/gc/heap.hpp>
 #include <brass/runtime/code_installer.hpp>
+#include <brass/runtime/deterministic_math.hpp>
 #include <brass/runtime/tiering.hpp>
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/interpreter/interpreter.hpp>
@@ -90,8 +91,8 @@ struct MathSymbol {
     UnaryMath fn;
 };
 const MathSymbol kMathSymbols[] = {
-    {"sin", static_cast<UnaryMath>(&std::sin)},
-    {"cos", static_cast<UnaryMath>(&std::cos)},
+    {"sin", &brass::math::det_sin},
+    {"cos", &brass::math::det_cos},
     {"sqrt", static_cast<UnaryMath>(&std::sqrt)},
     {"fabs", static_cast<UnaryMath>(&std::fabs)},
     {"floor", static_cast<UnaryMath>(&std::floor)},

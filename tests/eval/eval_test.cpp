@@ -6,6 +6,8 @@
 #include "embed/embed.h"
 #include "runtime/exception.h"
 #include "runtime/rt_state.h"
+#include <brass/runtime/deterministic_math.hpp>
+#include <bit>
 #include <filesystem>
 #include <fstream>
 
@@ -768,5 +770,42 @@ TEST_CASE("dynamic eval and Function modules are reclaimed when unreachable and 
         CHECK(runtime::rtDynamicModuleCount() == baseline);
     }
 }
+
+TEST_CASE("deterministic math (#156): Tier-0 interpreter and Tier-2 JIT match brass_det_* IEEE-754 bits") {
+    const char* script = R"(
+        "use deterministic";
+        function stepPhysics(x, y, z) {
+            const s = Math.sin(x) + Math.cos(y);
+            const a = Math.atan2(y, x) + Math.exp(z);
+            const p = Math.pow(x, 1.5) + Math.hypot(x, y) + Math.cbrt(z);
+            return s * a + p;
+        }
+        stepPhysics(0.7, 1.2, 0.3);
+    )";
+
+    EvalOptions opts0;
+    opts0.tier = ExecutionTier::Tier0_Interpreter;
+    opts0.deterministicFp = true;
+    embed::CallResult r0 = evalScript(script, opts0);
+    REQUIRE(!r0.thrown);
+    REQUIRE(r0.value.isNumber());
+
+    EvalOptions opts2;
+    opts2.tier = ExecutionTier::Tier2_Optimized;
+    opts2.deterministicFp = true;
+    embed::CallResult r2 = evalScript(script, opts2);
+    REQUIRE(!r2.thrown);
+    REQUIRE(r2.value.isNumber());
+
+    const double x = 0.7, y = 1.2, z = 0.3;
+    const double s = brass_det_sin(x) + brass_det_cos(y);
+    const double a = brass_det_atan2(y, x) + brass_det_exp(z);
+    const double p = brass_det_pow(x, 1.5) + brass_det_hypot(x, y) + brass_det_cbrt(z);
+    const double expected = s * a + p;
+
+    CHECK(std::bit_cast<uint64_t>(r0.value.asNumber()) == std::bit_cast<uint64_t>(expected));
+    CHECK(std::bit_cast<uint64_t>(r2.value.asNumber()) == std::bit_cast<uint64_t>(expected));
+}
+
 
 

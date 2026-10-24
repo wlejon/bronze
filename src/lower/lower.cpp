@@ -224,6 +224,16 @@ std::optional<il::Module> Lowerer::lower() {
         mainFn.name = "main";
         mainFn.displayName = "";
         mainFn.descFlags |= BRONZE_FN_DESC_TOPLEVEL;
+        for (const auto& stmtPtr : astModule_.body) {
+            const auto* exprStmt = dynamic_cast<const ast::ExprStmt*>(stmtPtr.get());
+            if (!exprStmt || !exprStmt->expr || exprStmt->expr->parenthesized) break;
+            const auto* strLit = dynamic_cast<const ast::StringLit*>(exprStmt->expr.get());
+            if (!strLit) break;
+            if (strLit->value == "use deterministic") {
+                mainFn.setDeterministicFp(true);
+                break;
+            }
+        }
         // The program's top level is the entry file's (file 0, SourceSet): a
         // merged program's starts with the modules it links in, often a
         // synthesized binding of one already loaded, whose label named the

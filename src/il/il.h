@@ -413,6 +413,13 @@ struct Function {
     std::string displayName;
     uint32_t descFlags = 0;
 
+    static constexpr uint32_t kDescFlagDeterministicFp = 1u << 8;
+    bool isDeterministicFp() const { return (descFlags & kDescFlagDeterministicFp) != 0; }
+    void setDeterministicFp(bool v) {
+        if (v) descFlags |= kDescFlagDeterministicFp;
+        else descFlags &= ~kDescFlagDeterministicFp;
+    }
+
     // Index of the first source-level parameter.
     size_t firstSourceParam() const {
         return static_cast<size_t>(needsEnv) + static_cast<size_t>(needsThis) +
@@ -566,6 +573,13 @@ struct Module {
         std::sort(sites.begin(), sites.end());
         sites.erase(std::unique(sites.begin(), sites.end()), sites.end());
         return sites;
+    }
+
+    bool hasDeterministicFp() const {
+        for (const auto& fn : functions) {
+            if (fn.isDeterministicFp()) return true;
+        }
+        return false;
     }
 };
 
