@@ -151,7 +151,9 @@ private:
     bool provenArrayOrTypedArray(const ast::Expr& e) const;
     bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
     bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;
-    std::optional<Value> lowerCoercingOperand(const ast::Expr& e, il::Function& ilFn);
+    std::optional<Value> lowerCoercingOperand(const ast::Expr& e, il::Function& ilFn,
+                                              bool* outDeferredUnbox = nullptr,
+                                              bool allowUnprovenLengthUnbox = true);
     std::optional<Value> lowerTypedElemRead(const ast::IndexAccess& idx, uint32_t elemKind,
                                             il::Function& ilFn);
     std::optional<Value> lowerTypedElemAssign(const ast::Binary* bin,

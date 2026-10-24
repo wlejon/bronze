@@ -90,3 +90,29 @@ console.log(u8Sliced[0]);
   console.log(sumResize(evil2).join(","));
 }
 
+// Binary operator evaluation order: evaluate both operands left-to-right before
+// coercing the left operand via valueOf() (#160).
+{
+  const b3 = new ArrayBuffer(64);
+  const a3 = new Uint8Array(b3);
+  for (let i = 0; i < 64; i++) a3[i] = 1;
+  const evil3 = { valueOf() { b3.transfer(); return 0; } };
+  let s3 = 0;
+  for (let i = 0; i < a3.length; i++) {
+    s3 += (i === 0 ? evil3 : 0) + a3[i];
+  }
+  console.log(s3);
+
+  const log = [];
+  const o = { length: { valueOf() { log.push("lhs.valueOf"); return 10; } } };
+  function rhsEffect() { log.push("rhs.eval"); return 3; }
+  console.log(o.length + rhsEffect(), log.join(","));
+  log.length = 0;
+  console.log(o.length - rhsEffect(), log.join(","));
+  log.length = 0;
+  console.log(o.length < rhsEffect(), log.join(","));
+  log.length = 0;
+  console.log(o.length == rhsEffect(), log.join(","));
+}
+
+

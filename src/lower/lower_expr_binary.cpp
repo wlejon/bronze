@@ -272,13 +272,26 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     // same order — only the instruction differs.
     const bool lhsCoerces = binaryCoercesOperand(bin->op, *bin->rhs);
     const bool rhsCoerces = binaryCoercesOperand(bin->op, *bin->lhs);
-    auto lhsOpt = lhsCoerces ? lowerCoercingOperand(*bin->lhs, ilFn) : lowerExpr(*bin->lhs, ilFn);
+    const bool allowLenUnbox = bin->op != ast::BinaryOp::Add;
+    bool lhsDeferUnbox = false;
+    bool rhsDeferUnbox = false;
+    auto lhsOpt = lhsCoerces
+                      ? lowerCoercingOperand(*bin->lhs, ilFn, &lhsDeferUnbox, allowLenUnbox)
+                      : lowerExpr(*bin->lhs, ilFn);
     if (!lhsOpt) return std::nullopt;
-    auto rhsOpt = rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn) : lowerExpr(*bin->rhs, ilFn);
+    auto rhsOpt = rhsCoerces
+                      ? lowerCoercingOperand(*bin->rhs, ilFn, &rhsDeferUnbox, allowLenUnbox)
+                      : lowerExpr(*bin->rhs, ilFn);
     if (!rhsOpt) return std::nullopt;
 
     Value lhs = *lhsOpt;
     Value rhs = *rhsOpt;
+    if (lhsDeferUnbox) {
+        lhs = unboxValueIfNeeded(lhs, il::Type::F64, ilFn);
+    }
+    if (rhsDeferUnbox) {
+        rhs = unboxValueIfNeeded(rhs, il::Type::F64, ilFn);
+    }
 
     if (const auto bitOp = bitwiseOpFor(bin->op)) {
         return emitBitwise(*bitOp, lhs, rhs, ilFn);

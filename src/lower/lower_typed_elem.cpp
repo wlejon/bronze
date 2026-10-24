@@ -324,7 +324,10 @@ bool Lowerer::binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) con
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerCoercingOperand(const ast::Expr& e,
-                                                            il::Function& ilFn) {
+                                                            il::Function& ilFn,
+                                                            bool* outDeferredUnbox,
+                                                            bool allowUnprovenLengthUnbox) {
+    if (outDeferredUnbox != nullptr) *outDeferredUnbox = false;
     if (const auto kind = typedElemAccessKind(e, true)) {
         return lowerTypedElemRead(static_cast<const ast::IndexAccess&>(e), *kind, ilFn);
     }
@@ -353,13 +356,21 @@ std::optional<Lowerer::Value> Lowerer::lowerCoercingOperand(const ast::Expr& e,
         return emitNullishUnbox(*val, ilFn);
     }
     if (val && val->type == il::Type::Dynamic) {
-        if (provenNumber(e)) {
-            return unboxValueIfNeeded(*val, il::Type::F64, ilFn);
-        }
-        if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&e)) {
-            if (mem->property == "length") {
-                return unboxValueIfNeeded(*val, il::Type::F64, ilFn);
+        bool shouldUnbox = provenNumber(e);
+        if (!shouldUnbox) {
+            if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(&e)) {
+                if (mem->property == "length" &&
+                    (allowUnprovenLengthUnbox || provenArrayOrTypedArray(*mem->object))) {
+                    shouldUnbox = true;
+                }
             }
+        }
+        if (shouldUnbox) {
+            if (outDeferredUnbox != nullptr) {
+                *outDeferredUnbox = true;
+                return val;
+            }
+            return unboxValueIfNeeded(*val, il::Type::F64, ilFn);
         }
     }
     return val;
