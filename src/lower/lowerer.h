@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <deque>
 #include <vector>
 
 #include "ast/ast.h"
@@ -175,7 +176,11 @@ private:
     bool unboxedFieldsDisabled_ = false;
     static bool unboxedFieldSeamDisabled();
     std::vector<ProvenParamPlan> provenClosureParams_;
-    std::vector<FnParamFactsPlan> fnParamFactsStack_;
+    // A deque, not a vector: currentFnParamFacts_ points into one plan while a
+    // nested body pushes the next, and a vector that grows copies its maps
+    // (MSVC's unordered_map move is not noexcept), leaving the pointer to freed
+    // nodes. A deque's push_back and pop_back never move the other elements.
+    std::deque<FnParamFactsPlan> fnParamFactsStack_;
     const FnParamFacts* currentFnParamFacts_ = nullptr;
     bool moduleBufferDetachFree_ = true;
     void initModuleBufferDetachFree();

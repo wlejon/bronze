@@ -437,6 +437,10 @@ void Lowerer::planFunctionParamFacts(const std::vector<ast::Param>& params,
             if (p.defaultValue || p.isRest || p.pattern || p.name.empty()) shapeFits = false;
         }
         if (!shapeFits) continue;
+        // `arguments` is a door the call-site scan cannot see through: the
+        // body calls itself by `arguments.callee(...)` with arguments no site
+        // shows, and a sloppy `arguments[k] = v` writes the parameter itself.
+        if (ast::usesArguments(fnDecl->params, fnDecl->body)) continue;
 
         CalleeOnlyScan scan(fnDecl->name, fnDecl);
         if (!isTopLevel) scan.scopeStack.push_back(ScopeFrame{&astModule_.body, nullptr});
