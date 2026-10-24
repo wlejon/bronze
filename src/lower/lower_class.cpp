@@ -62,7 +62,11 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // base's — and a site calling one of those is exactly the site that needs
     // the walk. Recording the link only alongside a method would lose the edge
     // for a subclass that adds fields and nothing else.
-    directMethods_.recordClassSuper(name, superName);
+    // A heritage that is an expression (`extends mixin(Base)`) has no name; it
+    // is recorded under one no class declares, so the table cannot take the
+    // class for a root.
+    directMethods_.recordClassSuper(name, hasSuper && superName.empty() ? "<extends expression>"
+                                                                        : superName);
 
     // The private names this class declares, and the record that holds them.
     // Opened BEFORE the heritage is read, which is 15.7.14's order (the class's

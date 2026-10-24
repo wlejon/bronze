@@ -73,6 +73,10 @@ bool DirectMethodTable::isMethodSealedOnSubclasses(uint32_t icIndex) const {
             cur = up->second;
             if (cur == recvClass || ambiguousClasses_.count(cur) != 0) return false;
         }
+        // The chain ended at a name no class here declares: a base imported
+        // from another module under its own binding, or an `extends <expr>`.
+        // Either may be the receiver's class, so the override may be its.
+        if (cur != subCls && declaredClasses_.count(cur) == 0) return false;
     }
     return true;
 }
