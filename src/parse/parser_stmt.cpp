@@ -67,8 +67,17 @@ bool Parser::consumeSemicolon(const char* what) {
     return false;
 }
 
+bool Parser::isTypeScriptPath(std::string_view path) {
+    auto endsWith = [&](std::string_view suffix) {
+        return path.size() >= suffix.size() &&
+               path.substr(path.size() - suffix.size()) == suffix;
+    };
+    return endsWith(".ts") || endsWith(".mts") || endsWith(".cts");
+}
+
 std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) {
     auto mod = std::make_unique<Module>();
+    typescript_ = typescript_ || isTypeScriptPath(name);
     mod->name = std::move(name);
     currentModule_ = mod.get();
     // 11.2.2 first, because it is not a property of the text: module code is
@@ -117,6 +126,8 @@ bool one(std::vector<StmtPtr>& out, StmtPtr stmt) {
 bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     const bool atModuleTop = atModuleTopLevel_;
     atModuleTopLevel_ = false;
+    const bool atNamespaceTop = atNamespaceTopLevel_;
+    atNamespaceTopLevel_ = false;
     // ECMA-262 14.4: `;` on its own is the EmptyStatement, which evaluates to
     // empty and does nothing. It contributes no node — there is nothing for a
     // node to say — which is why this appends to a list instead of returning
@@ -179,7 +190,17 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
     if (isTypeAliasDeclStart()) return parseTypeAliasDecl();
     if (isInterfaceDeclStart()) return parseInterfaceDecl();
     if (isEnumDeclStart()) return parseEnumDecl(out);
-    if (isNamespaceDeclStart()) return parseNamespaceDecl(out);
+    if (isNamespaceDeclStart()) {
+        // TypeScript allows a namespace only where its object can be one
+        // binding of the enclosing scope that every merged declaration of it
+        // shares: the top level of a module or of another namespace.
+        if (!atModuleTop && !atNamespaceTop) {
+            error("a namespace declaration is only allowed at the top level of a module or a "
+                  "namespace");
+            return false;
+        }
+        return parseNamespaceDecl(out);
+    }
     if (isAbstractClassDeclStart()) {
         advance();  // 'abstract'
         return one(out, parseClass());
@@ -291,7 +312,13 @@ bool Parser::parseVarDecl(std::vector<StmtPtr>& out, bool isStatement) {
             decl->name = std::string(name->text);
         }
 
-        if (!isPattern) match(TokenKind::Bang);  // definite assignment assertion `let x!: T`
+        // TypeScript's definite assignment assertion, `let x!: T`. Only with
+        // the annotation after it and on the same line: `let x` and a `!` on
+        // the next line is `let x; !…` by ASI in either grammar.
+        if (typescript_ && !isPattern && check(TokenKind::Bang) && !atLineBreak() &&
+            peek(1).kind == TokenKind::Colon) {
+            advance();
+        }
         if (match(TokenKind::Colon)) decl->typeAnnotation = parseTypeAnnotation();
         if (match(TokenKind::Assign)) {
             decl->init = parseAssign();
@@ -724,7 +751,14 @@ StmtPtr Parser::parseSwitch() {
             // A CaseClause's Expression is an *Expression*, comma operator
             // and all: the colon ends it, so nothing here has to stop at a
             // comma the way an argument list does.
+            //
+            // The colon that ends it is the same hazard a conditional's is:
+            // `case (a): b => 1` is the clause `(a)` and then a statement, not
+            // an arrow with a return type, so it is parsed under the same flag.
+            const bool savedInThen = inConditionalThen_;
+            inConditionalThen_ = true;
             clause.test = parseExpr();
+            inConditionalThen_ = savedInThen;
             if (!clause.test) return nullptr;
         } else if (match(TokenKind::KwDefault)) {
             // ECMA-262 14.12.1 splits a CaseBlock at the DefaultClause, so

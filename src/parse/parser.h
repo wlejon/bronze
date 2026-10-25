@@ -1,5 +1,8 @@
 #pragma once
 #include <memory>
+#include <set>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "ast/ast.h"
@@ -38,7 +41,23 @@ public:
     // in, far too late for the early errors that depend on the mode — so the
     // module loader decides and says so here. A `"use strict"` prologue still
     // selects strict on its own; this only takes away the option of sloppy.
+    //
+    // Whether the file is TypeScript is decided from `name` as well (see
+    // isTypeScriptPath): the module graph names every file by its path, and
+    // the extension is the only thing that says which grammar the author
+    // wrote in.
     std::unique_ptr<ast::Module> parseModule(std::string name, bool forceStrict = false);
+
+    // `.ts`, `.mts` and `.cts` — the extensions TypeScript itself reads as
+    // TypeScript source. Everything else, `.js` included, is JavaScript.
+    static bool isTypeScriptPath(std::string_view path);
+
+    // Reads the file as TypeScript whatever parseModule's name says, for a
+    // caller whose module name is not the file's path.
+    Parser& setTypeScript(bool on) {
+        typescript_ = on;
+        return *this;
+    }
 
 private:
     std::vector<Token> tokens_;
@@ -108,10 +127,23 @@ private:
     // declared inside strict code is strict" means. Nothing later can ask the
     // question, which is why the answer is written onto the AST nodes here.
     bool strict_ = false;
+    // Whether this file is TypeScript (parseModule decides, from its name).
+    // Several TypeScript productions are spelled with tokens that already mean
+    // something in JavaScript — `a < b > (c)` is two comparisons in JavaScript
+    // and a generic call in TypeScript, `type`, `namespace` and `declare` are
+    // ordinary identifiers — so a `.js` file must never see them. What stays
+    // on in both grammars is the annotation syntax bronze read in `.js` before
+    // it read TypeScript (`let x: T`, `(a: T): R => …`), because no JavaScript
+    // program spells a colon there.
+    bool typescript_ = false;
+    // Whether the statement about to be parsed sits directly in a namespace
+    // body, the one place other than the module's top level TypeScript lets a
+    // namespace be declared. Cleared by parseStatement the way
+    // atModuleTopLevel_ is, so a nested block sees false.
+    bool atNamespaceTopLevel_ = false;
     ast::Module* currentModule_ = nullptr;
     bool inConditionalThen_ = false;
     bool lastFunctionWasOverload_ = false;
-    size_t namespaceOrdinal_ = 0;
     size_t speculativeDepth_ = 0;
     std::vector<std::pair<size_t, Token>> tokenEditsLog_;
     std::vector<std::string> declaredTypesUndo_;
@@ -502,8 +534,49 @@ private:
     bool isAbstractClassDeclStart() const;
     bool parseTypeAliasDecl();
     bool parseInterfaceDecl();
-    bool parseEnumDecl(std::vector<ast::StmtPtr>& out, std::string* outName = nullptr);
-    bool parseNamespaceDecl(std::vector<ast::StmtPtr>& out, std::string* outName = nullptr);
+    // --- parser_ts_enum.cpp / parser_ts_namespace.cpp ----------------------
+    // Both append the JavaScript TypeScript emits for the declaration to
+    // `out`, the statement list of the scope it is declared in, which is also
+    // where they look for an earlier declaration of the same name to merge
+    // with. `exportInto` is the parameter of the enclosing namespace's body
+    // when the declaration is `export`ed from one: its object then lives on
+    // that namespace (`ns.E`) rather than in a binding of its own.
+    bool parseEnumDecl(std::vector<ast::StmtPtr>& out, std::string* outName = nullptr,
+                       const std::string* exportInto = nullptr);
+    bool parseNamespaceDecl(std::vector<ast::StmtPtr>& out, std::string* outName = nullptr,
+                            const std::string* exportInto = nullptr);
+    // One `namespace A.B.C { … }` level: `segments[index]` is the namespace
+    // this call builds, and the levels below it are its only member.
+    bool parseNamespaceLevel(const std::vector<std::string>& segments, size_t index,
+                             std::vector<ast::StmtPtr>& out, const std::string* exportInto,
+                             Span startSpan, bool& outEmitted);
+    // The namespace body's statements, cursor past the `{`, up to and
+    // including the `}`. `param` is the body's namespace object; the names
+    // the body exports as variables go to `qualified`.
+    bool parseNamespaceBody(std::vector<ast::StmtPtr>& body, const std::string& param,
+                            std::set<std::string>& qualified, bool& outInstantiated);
+    // One enum block's members, kept so that a later block of the same enum
+    // in the same scope — TypeScript's declaration merging — can fold the
+    // constants it names and qualify the rest.
+    struct EnumRecord {
+        const std::vector<ast::StmtPtr>* scope = nullptr;
+        // The first statement the first block emitted. A record is live only
+        // while that statement is still in `scope`, which is what keeps a
+        // record from a scope that has ended from matching a new one that
+        // happens to reuse its address.
+        const ast::Stmt* marker = nullptr;
+        std::string name;
+        // The binding the first block declared, when it declared one.
+        ast::VarDecl* decl = nullptr;
+        std::vector<std::string> members;
+        std::unordered_map<std::string, double> numbers;
+        std::unordered_map<std::string, std::string> strings;
+    };
+    std::vector<EnumRecord> enumRecords_;
+    // parser_ts_params.cpp: a constructor's `this.x = x` for each parameter
+    // property, placed after its super() call. False on a diagnosed error.
+    bool insertParameterProperties(ast::FunctionExpr& ctor);
+    EnumRecord* findEnumRecord(const std::vector<ast::StmtPtr>& scope, const std::string& name);
     bool parseDeclareStmt();
     // The characters a string literal denotes, escapes resolved (see the
     // definition: the lexer finds the literal's end, the parser decides what

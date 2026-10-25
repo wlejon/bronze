@@ -66,7 +66,7 @@ bool Parser::parseAsyncFnTail(ast::FunctionExpr& fn) {
     if (!expect(TokenKind::RParen, "')' after async function parameters")) return false;
     if (match(TokenKind::Colon)) fn.returnType = parseTypeAnnotation();
 
-    if (!check(TokenKind::LBrace)) {
+    if (typescript_ && !check(TokenKind::LBrace)) {
         if (consumeSemicolon("async function overload signature")) {
             lastFunctionWasOverload_ = true;
         }

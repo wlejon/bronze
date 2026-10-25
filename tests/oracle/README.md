@@ -28,6 +28,13 @@ For a directory case the directory is the case, `main.js` is what bronze is
 pointed at, and its neighbours are what it imports. The pairing rule is the
 same either way: the entry's path with the extension replaced.
 
+A TypeScript case is the same with `.ts`: `cases/<name>.ts` or
+`cases/<name>/main.ts`. The extension is what makes bronze read a file as
+TypeScript, so a case about TypeScript is written as one, and a case about
+how JavaScript reads tokens TypeScript would read differently (`ts_js_*`) is
+written as `.js`. A TypeScript case's expectation comes from
+`node --experimental-transform-types`, node's own TypeScript transform.
+
 Requirements the harness enforces:
 
 - **Deterministic.** No clock read and no `Math.random` — checked by the

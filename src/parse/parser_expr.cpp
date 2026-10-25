@@ -218,8 +218,11 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
     if (!lhs) return nullptr;
     bool lhsIsUnary = lastOperandIsUnary_;
     for (;;) {
-        if (minPrecedence <= kPrecRelational && check(TokenKind::Identifier) && !atLineBreak() &&
-            (peek().text == "as" || peek().text == "satisfies")) {
+        // `expr as T` / `expr satisfies T`, TypeScript only. Never across a
+        // line break, which is TypeScript's own rule and the one that keeps
+        // `x\nas(y)` the two statements ASI makes of it.
+        if (typescript_ && minPrecedence <= kPrecRelational && check(TokenKind::Identifier) &&
+            !atLineBreak() && (peek().text == "as" || peek().text == "satisfies")) {
             const std::string_view kw = advance().text;
             if (kw == "as" && match(TokenKind::KwConst)) {
                 // `expr as const`
@@ -320,9 +323,11 @@ ExprPtr Parser::parseUnaryPrefix() {
         lastOperandIsUnary_ = false;
         return ne;
     }
-    if (check(TokenKind::Less)) {
+    if (typescript_ && check(TokenKind::Less)) {
         // TypeScript prefix type assertion `<Type>expr` (generic arrow
         // functions `<T>(x) => ...` were already matched at `parseAssign()`).
+        // No JavaScript expression starts with `<`, so in a `.js` file this
+        // stays the syntax error it is there.
         advance();
         if (!match(TokenKind::KwConst)) {
             if (parseTypeAnnotation().empty()) return nullptr;
@@ -500,7 +505,7 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             // is the ordinary one with `optional` set: what differs is when the
             // link runs, not what it computes.
             advance();
-            if (check(TokenKind::Less)) {
+            if (typescript_ && check(TokenKind::Less)) {
                 tryConsumeTypeArgsForCall();
             }
             if (check(TokenKind::LBracket)) {
@@ -548,11 +553,14 @@ ExprPtr Parser::parsePostfixOps(ExprPtr expr) {
             expr = std::move(mem);
         } else if (check(TokenKind::Dot) || check(TokenKind::LBracket)) {
             if (!parseMemberLink(expr)) return nullptr;
-        } else if (check(TokenKind::Bang) && !atLineBreak()) {
+        } else if (typescript_ && check(TokenKind::Bang) && !atLineBreak()) {
             // TypeScript postfix non-null assertion `expr!`
             advance();
             expr->span.end = previous().span.end;
-        } else if (check(TokenKind::Less) && !atLineBreak() && tryConsumeTypeArgsForCall()) {
+        } else if (typescript_ && check(TokenKind::Less) && !atLineBreak() &&
+                   tryConsumeTypeArgsForCall()) {
+            // `f<T>(x)`. In JavaScript the same tokens are two comparisons —
+            // `a < b > (c)` is `(a < b) > c` — so a `.js` file never asks.
             continue;
         } else if (check(TokenKind::LParen)) {
             advance();
@@ -651,12 +659,13 @@ ExprPtr Parser::parseNewCallee() {
             if (!parseMemberLink(expr)) return nullptr;
             continue;
         }
-        if (check(TokenKind::Bang) && !atLineBreak()) {
+        if (typescript_ && check(TokenKind::Bang) && !atLineBreak()) {
             advance();
             expr->span.end = previous().span.end;
             continue;
         }
-        if (check(TokenKind::Less) && !atLineBreak() && tryConsumeTypeArgsForCall()) {
+        if (typescript_ && check(TokenKind::Less) && !atLineBreak() &&
+            tryConsumeTypeArgsForCall()) {
             return expr;
         }
         if (check(TokenKind::QuestionDot)) {

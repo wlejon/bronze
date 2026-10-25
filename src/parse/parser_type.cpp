@@ -591,7 +591,9 @@ bool Parser::looksLikeArrowFrom(size_t offset) const {
         peek(offset + 1).kind == TokenKind::Arrow && !peek(offset + 1).newlineBefore) {
         return true;
     }
-    if (first != TokenKind::LParen && first != TokenKind::Less) return false;
+    // `<T>(x) => x` is a generic arrow only in TypeScript; no JavaScript
+    // expression starts with `<`.
+    if (first != TokenKind::LParen && !(first == TokenKind::Less && typescript_)) return false;
 
     auto* self = const_cast<Parser*>(this);
     const size_t savedPos = self->pos_;
@@ -628,7 +630,11 @@ bool Parser::looksLikeArrowFrom(size_t offset) const {
             } else if (self->match(TokenKind::Colon)) {
                 // In `cond ? (a) : b => c`, `(a)` is a parenthesized identifier in the ternary's
                 // then-branch and `:` is the ternary's colon, unless `(a)` has explicit param syntax.
-                if (!(inConditionalThen_ && first == TokenKind::LParen && !hasExplicitParamSyntax)) {
+                // In a `.js` file a return type there is never read: every
+                // `c ? (…) : …` is a JavaScript conditional, whatever the
+                // parentheses hold (`c ? (a = 1) : b => b` included).
+                if (!(inConditionalThen_ && first == TokenKind::LParen &&
+                      (!hasExplicitParamSyntax || !typescript_))) {
                     std::string ret = self->parseTypeAnnotation(/*inArrowReturn=*/true);
                     if (!ret.empty() && self->diags_.size() == savedDiagCount &&
                         self->check(TokenKind::Arrow) && !self->atLineBreak()) {

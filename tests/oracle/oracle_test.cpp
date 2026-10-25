@@ -204,17 +204,25 @@ struct OracleCase {
 
 std::vector<OracleCase> casesIn(const std::filesystem::path& dir) {
     std::vector<OracleCase> cases;
+    // A case's entry is JavaScript or TypeScript: `<name>.js` / `<name>.ts`,
+    // or a directory's `main.js` / `main.ts`. Which grammar a file is read in
+    // is its extension's to say, so a TypeScript case is pinned under the
+    // name it is written in rather than a `.js` it could never be.
     for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".js") {
+        const std::filesystem::path ext = entry.path().extension();
+        if (entry.is_regular_file() && (ext == ".js" || ext == ".ts")) {
             cases.push_back({entry.path(), entry.path().stem().string()});
             continue;
         }
         if (!entry.is_directory()) continue;
         if (entry.path().filename() == "blocked") continue;
-        std::filesystem::path main = entry.path() / "main.js";
-        std::error_code ec;
-        if (!std::filesystem::exists(main, ec)) continue;
-        cases.push_back({main, entry.path().filename().string()});
+        for (const char* mainName : {"main.js", "main.ts"}) {
+            std::filesystem::path main = entry.path() / mainName;
+            std::error_code ec;
+            if (!std::filesystem::exists(main, ec)) continue;
+            cases.push_back({main, entry.path().filename().string()});
+            break;
+        }
     }
     std::sort(cases.begin(), cases.end(),
               [](const OracleCase& a, const OracleCase& b) { return a.entry < b.entry; });

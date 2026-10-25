@@ -56,7 +56,9 @@ StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultNam
     if (!expect(TokenKind::RParen, "')' after parameters")) return nullptr;
     if (match(TokenKind::Colon)) fn->returnType = parseTypeAnnotation();
 
-    if (!check(TokenKind::LBrace)) {
+    // A body-less signature is a TypeScript overload. In a `.js` file the
+    // missing body is the syntax error parseFunctionBody reports.
+    if (typescript_ && !check(TokenKind::LBrace)) {
         if (consumeSemicolon("function overload signature")) {
             lastFunctionWasOverload_ = true;
         }
@@ -137,7 +139,12 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
             return false;
         }
         // TypeScript `this: SomeType` first parameter is erased at runtime.
-        if (isFirst && check(TokenKind::KwThis) && peek(1).kind == TokenKind::Colon) {
+        // The `this` parameter, the modifiers and the `?` below are
+        // TypeScript's alone. None of them collides with a JavaScript
+        // parameter list, but a `.js` file that writes one has written a
+        // syntax error, and it gets the error rather than TypeScript's reading.
+        if (typescript_ && isFirst && check(TokenKind::KwThis) &&
+            peek(1).kind == TokenKind::Colon) {
             isFirst = false;
             advance();  // 'this'
             advance();  // ':'
@@ -150,8 +157,11 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
         Param p;
         p.span.begin = peek().span.begin;
 
-        // Constructor parameter property modifiers: `public`, `private`, `protected`, `readonly`, `override`
-        while (check(TokenKind::Identifier) &&
+        // Constructor parameter property modifiers: `public`, `private`,
+        // `protected`, `readonly`, `override`. A modifier is one only when the
+        // binding follows it on the same line, TypeScript's rule for every
+        // modifier word.
+        while (typescript_ && check(TokenKind::Identifier) && !peek(1).newlineBefore &&
                (peek().text == "public" || peek().text == "private" ||
                 peek().text == "protected" || peek().text == "readonly" ||
                 peek().text == "override") &&
@@ -182,7 +192,7 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
             p.name = std::string(param->text);
         }
 
-        if (match(TokenKind::Question)) {
+        if (typescript_ && match(TokenKind::Question)) {
             p.isOptional = true;
         }
         if (match(TokenKind::Colon)) {

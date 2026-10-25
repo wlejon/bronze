@@ -1,0 +1,16 @@
+generic arrows 3 a:1 function
+generic calls 4 0
+generic new 1
+assertions fast fast fast 3 5
+definite 2
+relational true true true
+conditional 4 6
+this param 1 3
+overloads number string 1
+method overloads 7
+abstract hi woof constructor,hello
+predicates true false
+asserts threw not a number
+fn type 1
+members 1:undefined 6 9 secret,shared,open,optional
+types erased 3

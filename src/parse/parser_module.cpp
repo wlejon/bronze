@@ -98,7 +98,7 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
     // TypeScript `import type ... from "..."`:
     // Distinguish `import type from "./x"` (default import named `type`) from
     // `import type Foo from "./x"`, `import type { A } from "./x"`, `import type * as ns from "./x"`.
-    if (isContextual(peek(), "type") && !peek(1).newlineBefore &&
+    if (typescript_ && isContextual(peek(), "type") && !peek(1).newlineBefore &&
         !isContextual(peek(1), "from") && peek(1).kind != TokenKind::Comma) {
         advance();  // 'type'
         if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
@@ -192,7 +192,7 @@ bool Parser::parseImportDecl(std::vector<StmtPtr>& out) {
         while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
             // Check for inline `type` modifier: `import { type Foo, type Bar as Baz, val }`
             const bool isInlineType =
-                isContextual(peek(), "type") && !peek(1).newlineBefore &&
+                typescript_ && isContextual(peek(), "type") && !peek(1).newlineBefore &&
                 isIdentifierName(peek(1).kind) &&
                 !(isContextual(peek(1), "as") && !isContextual(peek(2), "as"));
             if (isInlineType) {
@@ -253,7 +253,7 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
     }
 
     // TypeScript `export type * from './x'` or `export type { ... } [from './x']`
-    if (isContextual(peek(), "type") && !peek(1).newlineBefore &&
+    if (typescript_ && isContextual(peek(), "type") && !peek(1).newlineBefore &&
         (peek(1).kind == TokenKind::Star || peek(1).kind == TokenKind::LBrace)) {
         advance();  // 'type'
         if (match(TokenKind::Star)) {
@@ -322,7 +322,7 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
         bool skippedInlineType = false;
         while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {
             const bool isInlineType =
-                isContextual(peek(), "type") && !peek(1).newlineBefore &&
+                typescript_ && isContextual(peek(), "type") && !peek(1).newlineBefore &&
                 isIdentifierName(peek(1).kind) &&
                 !(isContextual(peek(1), "as") && !isContextual(peek(2), "as"));
             if (isInlineType) {
@@ -370,7 +370,8 @@ bool Parser::parseExportDecl(std::vector<StmtPtr>& out) {
     // everything downstream identifies a function by its name.
     if (check(TokenKind::KwDefault)) {
         const Token& defTok = advance();
-        if (check(TokenKind::Identifier) && peek().text == "interface" && !peek(1).newlineBefore) {
+        if (typescript_ && check(TokenKind::Identifier) && peek().text == "interface" &&
+            !peek(1).newlineBefore) {
             return parseInterfaceDecl();
         }
         ExportSpecifier spec;

@@ -26,7 +26,11 @@ inline std::unique_ptr<ast::Module> parseOnly(std::string_view src, DiagnosticSi
     buf = SourceBuffer("test.ts", std::string(src));
     auto tokens = Lexer(buf, diags).lex();
     if (diags.hasErrors()) return nullptr;
-    return Parser(std::move(tokens), diags).parseModule("test");
+    // The buffer is named `test.ts`, so the source is read as TypeScript; the
+    // module keeps the name `test` its printed IL is pinned under.
+    return Parser(std::move(tokens), diags)
+        .setTypeScript(Parser::isTypeScriptPath(buf.name()))
+        .parseModule("test");
 }
 
 // Lowering with NO inference result — the `--no-infer` path. Everything is the

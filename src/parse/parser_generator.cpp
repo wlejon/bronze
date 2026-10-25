@@ -107,7 +107,7 @@ bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     if (!expect(TokenKind::RParen, "')' after generator parameters")) return false;
     if (match(TokenKind::Colon)) fn.returnType = parseTypeAnnotation();
 
-    if (!check(TokenKind::LBrace)) {
+    if (typescript_ && !check(TokenKind::LBrace)) {
         if (consumeSemicolon("generator overload signature")) {
             lastFunctionWasOverload_ = true;
         }

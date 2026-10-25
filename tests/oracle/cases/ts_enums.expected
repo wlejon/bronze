@@ -1,0 +1,17 @@
+basic 0 1 10 11 D B
+{"0":"A","1":"B","10":"C","11":"D","A":0,"B":1,"C":10,"D":11}
+strings UP UP-DOWN {"Up":"UP","Down":"DOWN","Joined":"UP-DOWN"}
+computed {"1":"A","2":"B","3":"C","101":"D","A":1,"B":2,"C":3,"D":101,"E":"w","w":"E"}
+reverse of computed B C D E
+after string undefined T
+shadowing 10 10 1000
+folded 0.5 1.5 -1 Infinity true
+folded 1e+21 0.30000000000000004 s0.1 0.5 NaN -3
+folded -2147483648 15 -4 1 0 0
+folded 1 NaN
+folded keys 0,1,15,Frac,0.5,Next,1.5,Neg,-1,Inf,Infinity,NegZero,Big,1e+21,Sum,0.30000000000000004,Concat,Exp,NanMod,NaN,Not,-3,Shl,-2147483648,UShr,Shr,-4,Or,NanOr,InfAnd,Wrap,PowNan
+quoted 1 2 3 d
+const enum 3 3
+declare enum undefined
+local 8 Q
+is A is C other D

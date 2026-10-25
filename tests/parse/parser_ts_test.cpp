@@ -13,13 +13,54 @@ std::string parseTs(std::string_view src) {
     DiagnosticSink diags;
     auto tokens = Lexer(buf, diags).lex();
     REQUIRE_FALSE(diags.hasErrors());
-    auto mod = Parser(std::move(tokens), diags).parseModule("t");
+    auto mod = Parser(std::move(tokens), diags).setTypeScript(true).parseModule("t");
+    if (diags.hasErrors()) return "ERRORS:\n" + diags.render(buf);
+    REQUIRE(mod != nullptr);
+    return ast::dump(*mod);
+}
+
+// The same source as a `.js` file, which must read every token sequence the
+// way JavaScript does.
+std::string parseJs(std::string_view src) {
+    SourceBuffer buf("t.js", std::string(src));
+    DiagnosticSink diags;
+    auto tokens = Lexer(buf, diags).lex();
+    REQUIRE_FALSE(diags.hasErrors());
+    auto mod = Parser(std::move(tokens), diags).parseModule("t.js");
     if (diags.hasErrors()) return "ERRORS:\n" + diags.render(buf);
     REQUIRE(mod != nullptr);
     return ast::dump(*mod);
 }
 
 }  // namespace
+
+TEST_CASE("the TypeScript grammar is chosen by the file's extension") {
+    CHECK(Parser::isTypeScriptPath("a/b.ts"));
+    CHECK(Parser::isTypeScriptPath("b.mts"));
+    CHECK(Parser::isTypeScriptPath("b.cts"));
+    CHECK_FALSE(Parser::isTypeScriptPath("b.js"));
+    CHECK_FALSE(Parser::isTypeScriptPath("b.mjs"));
+    CHECK_FALSE(Parser::isTypeScriptPath("ts"));
+
+    // `a < b > (c)` is a generic call in TypeScript and two comparisons in
+    // JavaScript.
+    const auto ts = parseTs("f(a < b > (c));\n");
+    const auto js = parseJs("f(a < b > (c));\n");
+    CHECK(ts.find("(binary <") == std::string::npos);
+    CHECK(js.find("(binary >\n        (binary <") != std::string::npos);
+
+    // TypeScript-only syntax is a syntax error in a .js file, and the
+    // contextual words are identifiers there.
+    CHECK(parseJs("const x = y as number;\n").find("ERRORS:") == 0);
+    CHECK(parseJs("const x = y!;\n").find("ERRORS:") == 0);
+    CHECK(parseJs("const x = <T>y;\n").find("ERRORS:") == 0);
+    CHECK(parseJs("function f(x);\n").find("ERRORS:") == 0);
+    CHECK(parseJs("let type = 1, namespace = 2; type = namespace;\n").find("ERRORS:") ==
+          std::string::npos);
+    // The annotation syntax bronze read in .js before it read TypeScript.
+    CHECK(parseJs("let n: number = 1; function g(a: number): number { return a; }\n")
+              .find("ERRORS:") == std::string::npos);
+}
 
 TEST_CASE("type alias and interface declarations are erased from the AST") {
     const auto out = parseTs(
@@ -147,7 +188,8 @@ TEST_CASE("class modifiers, implements, abstract members, and parameter properti
     // `declare virtualField: T` and uninitialized `id!: number` / `label?: string`
     // and `abstract compute` and overload `toString` are erased; constructor
     // parameter properties `public x` and `private readonly y` synthesize
-    // `this.x = x` and `this.y = y` at the top of the constructor body.
+    // `this.x = x` and `this.y = y` at the top of the constructor body, which
+    // has no super() call to follow.
     CHECK(out.find("virtualField") == std::string::npos);
     CHECK(out.find("compute") == std::string::npos);
     CHECK(out.find("(binary =\n            (member .x\n              (this)\n            )\n            (ident x)\n          )") != std::string::npos);
@@ -215,9 +257,47 @@ TEST_CASE("namespace lowers runtime members and erases type-only namespaces") {
         "}\n");
     CHECK(out.find("ERRORS:") == std::string::npos);
     CHECK(out.find("PureTypes") == std::string::npos);
-    CHECK(out.find("(const MathUtil") != std::string::npos);
+    // TypeScript's emit: `var MathUtil; (function (MathUtil) { MathUtil.PI =
+    // 3; function double… ; MathUtil.double = double; })(MathUtil || …)`.
+    CHECK(out.find("(var MathUtil") != std::string::npos);
     CHECK(out.find(".PI") != std::string::npos);
     CHECK(out.find(".double") != std::string::npos);
+}
+
+TEST_CASE("a namespace's exported variables are read through its object") {
+    const auto out = parseTs(
+        "namespace C {\n"
+        "  export let count = 0;\n"
+        "  export function inc() { count++; }\n"
+        "  export function shadow(count: number) { return count; }\n"
+        "}\n");
+    CHECK(out.find("ERRORS:") == std::string::npos);
+    // `count++` became `C.count++`; the parameter `count` stays a name.
+    CHECK(out.find("(member .count\n") != std::string::npos);
+    CHECK(out.find("(let count") == std::string::npos);
+    CHECK(out.find("(ident count)") != std::string::npos);
+}
+
+TEST_CASE("parameter properties follow the super() call wherever it is") {
+    const auto out = parseTs(
+        "class D extends B {\n"
+        "  constructor(public n: number) {\n"
+        "    const t = n + 1;\n"
+        "    if (t) { super(t); } else super(0);\n"
+        "  }\n"
+        "}\n");
+    CHECK(out.find("ERRORS:") == std::string::npos);
+    // Once after each super call and never above them.
+    const size_t first = out.find("(member .n\n");
+    REQUIRE(first != std::string::npos);
+    CHECK(out.find("(member .n\n", first + 1) != std::string::npos);
+    CHECK(out.find("(super-call") < first);
+
+    const auto arrow = parseTs(
+        "class E extends B {\n"
+        "  constructor(public n: number) { const f = () => super(); f(); }\n"
+        "}\n");
+    CHECK(arrow.find("super() call inside an arrow function") != std::string::npos);
 }
 
 TEST_CASE("typed destructuring, catch clause, and for-of bindings") {

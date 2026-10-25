@@ -1,0 +1,5 @@
+values 1 9
+circle 13 2x2
+square 9 3x3
+live namespace export across modules 2
+after another call 3

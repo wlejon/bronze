@@ -57,6 +57,14 @@ confirms an annotation, the code takes the native path; when it can't, the
 annotation is dropped with a warning and the code runs with its actual
 JavaScript behaviour.
 
+`.ts`, `.mts` and `.cts` files are read as TypeScript: types, generics,
+assertions and overloads are erased, and enums, namespaces and parameter
+properties become the JavaScript node's TypeScript transform emits for them.
+A `.js` file is read as JavaScript, so tokens TypeScript would read
+differently (`a < b > (c)`, `type`, `namespace`) mean what JavaScript says;
+plain annotations (`let x: number`, `function f(a: T): R`) are still
+accepted there.
+
 The performance target is concrete: compiled output should beat nodejs on the
 same program, and benchmarks that fall short are treated as bugs.
 
