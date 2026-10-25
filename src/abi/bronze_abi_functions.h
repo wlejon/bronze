@@ -532,7 +532,8 @@
      * four are the scalar kernels the inline fast path calls, each the SAME C
      * runtime function the helper path runs, so the two paths cannot differ
      * by a bit (the determinism rule: llvm.sqrt/llvm.fabs are IEEE-exact and
-     * inlined; sin/cos/min/max are not and stay C calls). */ \
+     * inlined; sin/cos/min/max are not and stay C calls, made directly from
+     * a speculated Math.sin/Math.cos site). */ \
     X(bronze_math_sqrt,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_sin,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_cos,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \

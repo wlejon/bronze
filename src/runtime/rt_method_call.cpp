@@ -385,10 +385,9 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
 // dispatch; nothing here allocates before the callee runs.
 //
 // A DIRECT hit calls the cached code with the cached env under the same
-// `NewTargetScope(undefined)` `bronze_dynamic_call` pushes, and only when the
-// argument count satisfies the cached arity — fewer arguments need the
-// function object's own adapting call, which a direct entry does not hold, so
-// that case misses to the generic path. A SLOT hit re-derives the callee from
+// `NewTargetScope(undefined)` `bronze_dynamic_call` pushes, with fewer
+// arguments than the cached arity extended with undefined the way the
+// function object's own call adapts them. A SLOT hit re-derives the callee from
 // the live slot and hands it to `bronze_dynamic_call`, the universal dispatch
 // the contract names (Function test and TypeError included).
 bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint64_t* argv,
@@ -410,9 +409,23 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
         const auto code = reinterpret_cast<bronze_fn_code>(way[BRONZE_ABI_METHOD_IC_CODE_WORD]);
         if (!code) return false;
         const auto arity = static_cast<uint32_t>(arityWord);
-        if (arity != 0 && argc < arity) return false;
+        if (arity == 0 || argc >= arity) {
+            NewTargetScope targetScope(Value::fromUndefined());
+            result = rtEnterJs(code, way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);
+            return true;
+        }
+        // Fewer arguments than the callee's parameters (`q.setFromEuler(e)`
+        // of `setFromEuler(euler, update = true)`): extended with undefined
+        // up to the arity, as FunctionHeader::call adapts them, and unrooted
+        // for its reason (the callee's prologue roots its parameters before
+        // it can allocate).
+        constexpr uint32_t kPaddedArgsCap = 32;
+        if (arity > kPaddedArgsCap) return false;
+        uint64_t padded[kPaddedArgsCap];
+        for (uint32_t i = 0; i < argc; ++i) padded[i] = argv[i];
+        for (uint32_t i = argc; i < arity; ++i) padded[i] = Value::fromUndefined().rawBits();
         NewTargetScope targetScope(Value::fromUndefined());
-        result = rtEnterJs(code, way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);
+        result = rtEnterJs(code, way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, arity, padded);
         return true;
     };
     auto dispatchSlot = [&](ObjectHeader* holder, uint64_t slotPlusOne) -> bool {

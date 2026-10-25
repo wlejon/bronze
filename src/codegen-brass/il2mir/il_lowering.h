@@ -57,6 +57,13 @@ public:
                    : nullptr;
     }
     BasicBlock* entry_hoist_block() const { return hoist_block_; }
+    // The key index IL value `id` was read with, if a `prop.get` of a named
+    // key made it in the current function (a builtin read into a local, then
+    // called through it).
+    uint32_t prop_get_key_of(uint32_t id) const {
+        auto it = prop_get_keys_.find(id);
+        return it == prop_get_keys_.end() ? UINT32_MAX : it->second;
+    }
     std::unordered_map<uint32_t, std::pair<Value*, Value*>>& ta_cursors() { return ta_cursors_; }
     DiagnosticReporter* diag() const { return diag_; }
     void set_diag(DiagnosticReporter* diag) { diag_ = diag; }
@@ -147,6 +154,7 @@ private:
     std::unordered_map<uint32_t, std::pair<Value*, Value*>> ta_cursors_;
     std::unordered_map<uint32_t, uint32_t> single_block_propset_use_;
     std::unordered_map<uint32_t, uint32_t> value_use_counts_;
+    std::unordered_map<uint32_t, uint32_t> prop_get_keys_;
     Value* coro_frame_val_ = nullptr;
     uint32_t coro_suspend_count_ = 0;
     // AST function `i`'s body, and its `__wrapper_` (a no-op for a function

@@ -68,7 +68,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_dynamic_shl", "bronze_dynamic_shr", "bronze_dynamic_ushr", "bronze_dynamic_sub",
         "bronze_dynamic_mul", "bronze_dynamic_div", "bronze_dynamic_mod", "bronze_dynamic_neg",
         "bronze_dynamic_bitnot",
-        "sin", "cos", "sqrt", "fabs", "floor", "ceil", "trunc",
+        "sin", "cos", "sqrt", "fabs", "floor", "ceil", "trunc", "bronze_math_sin_f64", "bronze_math_cos_f64",
     };
     for (const char* sym : kSymbols) {
         mod->add_external_symbol(sym);
@@ -82,6 +82,9 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
     mod->add_symbol_role("bronze_elem_set", SymbolRole::ArraySet);
     // JS `%` on numbers: fmod.
     mod->add_symbol_role("bronze_f64_mod", SymbolRole::FloatRem);
+    // Math.sin / Math.cos's kernels (brass's deterministic fdlibm).
+    mod->add_symbol_role("bronze_math_sin_f64", SymbolRole::Pure);
+    mod->add_symbol_role("bronze_math_cos_f64", SymbolRole::Pure);
     const std::string key_sym = (entry_symbol.empty() || entry_symbol == "main" || entry_symbol == "bronze_main")
                                     ? "bronze_main_key_constants"
                                     : (entry_symbol + "_key_constants");
