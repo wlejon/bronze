@@ -1,0 +1,11 @@
+{"a":1} 1 a
+ctor sees undefined
+{"a":5} 5
+[]
+{} getter
+set a 1 | set b 2
+{"b":7} []
+{"c":3} true
+[]
+own
+{"m":1} []

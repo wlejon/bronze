@@ -171,6 +171,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         res->optional = mem->optional;
         res->isPrivate = mem->isPrivate;
         res->isPrivateDefine = mem->isPrivateDefine;
+        res->isFieldDefine = mem->isFieldDefine;
         return res;
     }
     if (const auto* idx = dynamic_cast<const IndexAccess*>(&expr)) {

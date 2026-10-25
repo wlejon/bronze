@@ -1,0 +1,21 @@
+branch 1 ok {"tag":"one","field":"f","after":1}
+branch 2 ok {"tag":"two","field":"f","extra":true,"after":2}
+branch 3 ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+ternary ok {"tag":"t","done":true}
+ternary else ok {"tag":"f","done":true}
+logical yes ok {"tag":"and","flag":true}
+logical no ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+loop 0 ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+loop 1 ok {"tag":"loop 0","field":1}
+loop 2 ReferenceError Super constructor may only be called once
+for hit ok {"tag":"for 2","n":2}
+for miss ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+switch a ok {"tag":"A"}
+switch b ok {"tag":"B","c":true}
+switch c ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+switch d ok {"tag":"D"}
+try ok {"tag":"try","finally":true}
+catch ok {"tag":"catch","finally":true}
+labeled ok {"tag":"labeled","skip":false}
+labeled skip ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+300 100

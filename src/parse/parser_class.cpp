@@ -16,9 +16,8 @@
 // token pre-scan below: it is not an optimisation, it is the only order in
 // which the rule can be checked in one pass.
 
-#include <algorithm>
+#include <iterator>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include "parse/parser.h"
@@ -672,35 +671,32 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         methods.insert(methods.begin(), std::move(ctor));
     }
 
-    // If a TypeScript field declaration has a type annotation and no initializer
-    // (`x: number;`), and the constructor body already assigns `this.x = ...`,
-    // omit the uninitialized field entry so FieldAudit and ClassLayoutTable
-    // observe only the typed constructor initialization rather than an initial
-    // `undefined` write.
-    std::unordered_set<std::string> ctorAssignedFields;
+    // Every field stays exactly as written, `x: number;` included: a field
+    // definition is a [[DefineOwnProperty]] of `undefined` when the instance is
+    // initialized, which fixes the key's place in the property order, shadows
+    // an inherited accessor of that name, and is visible to `Object.keys`
+    // before the constructor assigns it. What the analyses make of a field the
+    // constructor then assigns is theirs to decide (types/field_audit.cpp).
+    //
+    // A parameter property (`constructor(public x)`) is a field too, in the
+    // transform TypeScript and node both run: `x;` is declared ahead of the
+    // class's own fields, and the constructor assigns it after `super()`
+    // (parser_ts_params.cpp). So its key comes first, as it does there.
     for (const auto& m : methods) {
         if (!m.isConstructor || !m.fn) continue;
-        for (const auto& st : m.fn->body) {
-            const auto* es = dynamic_cast<const ExprStmt*>(st.get());
-            if (!es) continue;
-            const auto* bin = dynamic_cast<const Binary*>(es->expr.get());
-            if (!bin || bin->op != BinaryOp::Assign) continue;
-            const auto* mem = dynamic_cast<const MemberAccess*>(bin->lhs.get());
-            if (!mem || mem->isPrivate) continue;
-            if (dynamic_cast<const ThisExpr*>(mem->object.get()) != nullptr) {
-                ctorAssignedFields.insert(mem->property);
-            }
+        std::vector<ClassMethod> declared;
+        for (const auto& p : m.fn->params) {
+            if (!p.isParameterProperty || p.name.empty()) continue;
+            ClassMethod field;
+            field.name = p.name;
+            field.isField = true;
+            field.hasTypeAnnotation = p.typeAnnotation != nullptr;
+            declared.push_back(std::move(field));
         }
-    }
-    if (!ctorAssignedFields.empty()) {
-        methods.erase(
-            std::remove_if(methods.begin(), methods.end(),
-                           [&](const ClassMethod& m) {
-                               return m.isField && !m.isStatic && !m.init &&
-                                      m.hasTypeAnnotation && !m.isPrivate() &&
-                                      ctorAssignedFields.count(m.name) != 0;
-                           }),
-            methods.end());
+        if (declared.empty()) break;
+        methods.insert(methods.begin(), std::make_move_iterator(declared.begin()),
+                       std::make_move_iterator(declared.end()));
+        break;
     }
     return true;
 }

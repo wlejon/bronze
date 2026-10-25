@@ -83,6 +83,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
     }
 
     if (dynamic_cast<const ast::ThisExpr*>(&expr)) {
+        if (!emitThisBindingCheck(&expr, expr.span, ilFn)) return std::nullopt;
         return lowerThisValue(expr.span, ilFn);
     }
 
@@ -370,15 +371,7 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
         return Value{callRes, il::Type::Dynamic};
     }
 
-    if (dynamic_cast<const ast::NewTargetExpr*>(&expr)) {
-        il::ValueId res = ilFn.valueCount++;
-        il::Instruction inst;
-        inst.op = il::Op::GetNewTarget;
-        inst.type = il::Type::Dynamic;
-        inst.result = res;
-        emitInst(ilFn, inst);
-        return Value{res, il::Type::Dynamic};
-    }
+    if (dynamic_cast<const ast::NewTargetExpr*>(&expr)) return lowerNewTargetValue(ilFn);
 
     // 13.3.12 `import.meta`. What it MEANS is a fact about the module the
     // expression sits in, and the linker recorded that on the span: every

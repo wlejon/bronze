@@ -333,11 +333,10 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         if (currentBlockIsTerminated(ilFn)) return true;
 
         // 10.2.2 step 10: a derived constructor returns the object it names,
-        // and its receiver for anything else. (A primitive is a TypeError
-        // there; bronze returns the receiver instead, as it does for `new`.)
+        // its receiver for `undefined`, and raises a TypeError for anything
+        // else.
         if (derivedCtorThis_ && val->type == il::Type::Dynamic) {
-            emitDerivedCtorReturn(*val, ilFn);
-            return true;
+            return emitDerivedCtorReturn(*val, retStmt, ilFn);
         }
 
         il::Instruction inst;
@@ -368,6 +367,7 @@ bool Lowerer::lowerReturnStmt(const ast::ReturnStmt* retStmt, il::Function& ilFn
         // A derived constructor's `return;` returns its receiver (10.2.2
         // step 10, the undefined case), which `super()` may have rebound.
         if (derivedCtorThis_ && ilFn.returnType == il::Type::Dynamic) {
+            if (!emitThisBindingCheck(retStmt, retStmt->span, ilFn)) return false;
             const Value self = boxValueIfNeeded(
                 readBinding(varBindings_[activeVarMap_.at("this")], ilFn), ilFn);
             inst.type = self.type;

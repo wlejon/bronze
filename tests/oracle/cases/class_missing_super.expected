@@ -1,0 +1,15 @@
+empty body ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+bare return ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+return undefined ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+return object ok {"replaced":true}
+return function ok undefined
+return primitive TypeError Derived constructors may only return object or undefined
+return null TypeError Derived constructors may only return object or undefined
+return primitive after super TypeError Derived constructors may only return object or undefined
+return undefined after super ok {"base":1}
+sometimes yes ok {"base":1}
+sometimes no ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+early return ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+no early return ok {"base":1,"full":true}
+throws first Error own
+implicit ok {"base":1}

@@ -188,6 +188,12 @@ bool usesThis(const std::vector<Param>& params, const std::vector<const Stmt*>& 
 bool usesThis(const std::vector<StmtPtr>& stmts);
 bool usesThis(const std::vector<const Stmt*>& stmts);
 
+// Does this body read the function's new.target — `new.target` itself or a
+// `super(...)`, which constructs with it — directly or from an arrow inside
+// it? Nested non-arrow functions bind their own and are not descended into.
+// Decides whether an arrow captures the enclosing function's new.target.
+bool usesNewTarget(const std::vector<Param>& params, const std::vector<StmtPtr>& stmts);
+
 // Does this function need an `arguments` object, and may it have one?
 //
 // Two questions in one answer, because they have one consumer. It descends into

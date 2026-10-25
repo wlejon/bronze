@@ -403,6 +403,9 @@ public:
         // captured like a free variable — under the one name no source binding
         // can collide with, because `this` is a keyword.
         if (f.isArrow && usesThis(f.body)) captured.insert("this");
+        // Its new.target is the enclosing function's the same way, under a
+        // spelling no binding can have either.
+        if (f.isArrow && usesNewTarget(f.params, f.body)) captured.insert("new.target");
     }
     void visit(const FunctionDecl& f) override { addFunctionBody(f.body, &f.params); }
 

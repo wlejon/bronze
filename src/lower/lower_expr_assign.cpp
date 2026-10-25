@@ -28,6 +28,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         // reached through the class-evaluation record rather than the
         // prototype chain (lower_private.cpp).
         if (mem->isPrivate) return lowerPrivateAssignment(bin, ilFn);
+        // A field definition the class desugar could not prove a plain write
+        // (lower_class_fields.cpp).
+        if (mem->isFieldDefine) return lowerFieldDefinition(*mem, *bin->rhs, ilFn);
         auto objVal = lowerExpr(*mem->object, ilFn);
         if (!objVal) return std::nullopt;
         auto objBoxed = boxValueIfNeeded(*objVal, ilFn);
@@ -402,6 +405,7 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         return storedBoxed;
     }
     if (const auto* sm = dynamic_cast<const ast::SuperMember*>(bin->lhs.get())) {
+        if (!emitThisBindingCheck(sm, sm->span, ilFn)) return std::nullopt;
         auto protoOpt = lowerSuperLookupStart(*sm, ilFn);
         if (!protoOpt) return std::nullopt;
         const Value protoVal = *protoOpt;

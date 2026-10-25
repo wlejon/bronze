@@ -424,7 +424,7 @@ std::optional<Lowerer::Value> Lowerer::lowerPrivateIn(const ast::Expr& nameExpr,
 // private ones by position and there is only one order to keep.
 std::vector<ast::StmtPtr> Lowerer::buildFieldInitStatements(
     const std::vector<ast::ClassMethod>& methods, const std::vector<PrivateElement>& elements,
-    Span span) {
+    const std::string& superName, bool hasSuper, Span span) {
     std::vector<ast::StmtPtr> out;
 
     // `this.<slot> = <value>` as a DEFINITION: `isPrivateDefine` names the
@@ -499,6 +499,7 @@ std::vector<ast::StmtPtr> Lowerer::buildFieldInitStatements(
             memAccess->span = thisExpr->span;
             memAccess->object = std::move(thisExpr);
             memAccess->property = m.name;
+            memAccess->isFieldDefine = !fieldSetIsDefinition(methods, superName, hasSuper, m.name);
             target = std::move(memAccess);
         }
         auto bin = std::make_unique<ast::Binary>();

@@ -241,19 +241,27 @@ public:
     }
 
     void visit(const ast::ClassDecl& n) override {
-        classBody(n.methods);
+        classBody(n.methods, n.superClass != nullptr || !n.superName.empty());
         Walker::visit(n);
     }
     void visit(const ast::ClassExpr& n) override {
-        classBody(n.methods);
+        classBody(n.methods, n.superClass != nullptr || !n.superName.empty());
         Walker::visit(n);
     }
 
 private:
-    void classBody(const std::vector<ast::ClassMethod>& methods) {
-        for (const auto& m : methods) {
+    // A field with no initializer writes `undefined`, which no Number claim
+    // survives — unless no read can see it before the constructor writes the
+    // property (field_audit_fields.cpp). That write is recorded on its own by
+    // `assignment`, so a field it covers contributes only its name.
+    void classBody(const std::vector<ast::ClassMethod>& methods, bool derived) {
+        for (size_t i = 0; i < methods.size(); ++i) {
+            const ast::ClassMethod& m = methods[i];
             if (m.name.empty() || m.isPrivate()) continue;
             if (m.isField && !m.isStatic && m.accessor == ast::AccessorKind::None) {
+                if (!m.init && !m.computed() && fieldUndefinedUnobserved(methods, i, derived)) {
+                    continue;
+                }
                 a_.record(m.name, m.init.get());
             }
         }

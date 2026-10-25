@@ -1,0 +1,10 @@
+arrow ok {"tag":"arrow","field":"f","after":"f"}
+value ok {"tag":"value","same":true}
+twice ok {"tag":"twice","second":"Super constructor may only be called once"}
+never ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+then this ok {"tag":"then this","inner":true,"outer":true}
+this before ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+nested ok {"tag":"nested","n":1}
+passed ok {"tag":"passed","p":1}
+base arrow | base value | base twice | base twice | base then this | base nested | base passed
+new.target ok {"seen":"SeenArrow","arrow":"SeenArrow"}

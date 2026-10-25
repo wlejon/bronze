@@ -1,0 +1,8 @@
+{"x":40}
+base 1 | base 2 | Super constructor may only be called once
+0 ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+
+1 {"x":7}
+base 0
+2 ReferenceError Super constructor may only be called once
+base 0 | base 1

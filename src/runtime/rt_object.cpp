@@ -726,6 +726,64 @@ uint64_t bronze_super_call_spread(uint64_t baseBits, uint64_t thisBits, uint64_t
     return result.isObject() ? result.rawBits() : self.get().rawBits();
 }
 
+// 9.1.1.3.4 GetThisBinding on a derived constructor's environment before
+// `super()` has returned. The message is V8's, which is what a program that
+// prints one compares against.
+uint64_t bronze_this_unbound() {
+    recordHelperCall("bronze_this_unbound");
+    return rtThrowReferenceError(
+               "Must call super constructor in derived class before accessing 'this' or "
+               "returning from derived constructor")
+        .rawBits();
+}
+
+// A `super()` after the receiver is bound. 13.3.7.1 constructs through the
+// base first (step 6) — a NEW object, with the new.target of this
+// construction, whose side effects are the base constructor's to have — and
+// only BindThisValue (step 7) throws. The instance this constructor already
+// has is never handed to the base a second time. The new.target comes from
+// the lowering, because a `super()` in an arrow runs under the arrow call's.
+uint64_t bronze_super_rebind(uint64_t baseBits, uint64_t argsBits, uint64_t newTargetBits) {
+    recordHelperCall("bronze_super_rebind");
+    Rooted<Value> base{Value(baseBits)};
+    Rooted<Value> args{Value(argsBits)};
+    Rooted<Value> newTarget{Value(newTargetBits)};
+    if (!base.get().isObject() ||
+        (base.get().asObject<HeapObjectHeader>()->flags != HeapKind::Function &&
+         base.get().asObject<HeapObjectHeader>()->flags != ProxyHeader::kFlags)) {
+        return rtThrowTypeError(std::string(valueKindName(base.get())) + " is not a constructor")
+            .rawBits();
+    }
+    const uint32_t count =
+        args.get().isObject() && args.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array
+            ? args.get().asObject<ArrayHeader>()->length
+            : 0;
+    RootedBlock block(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        block.set(i, args.get().asObject<ArrayHeader>()->getElem(i));
+    }
+    rtConstructWithNewTarget(base, count, block.data(), newTarget);
+    return rtThrowReferenceError("Super constructor may only be called once").rawBits();
+}
+
+// The first `super()` of a constructor, made from an arrow inside it. The
+// base is called on the receiver exactly as `bronze_super_call_spread` calls
+// it, with the constructor's new.target current again for the call: the
+// arrow was entered as an ordinary call, which made it undefined.
+uint64_t bronze_super_call_lexical(uint64_t baseBits, uint64_t thisBits, uint64_t argsBits,
+                                   uint64_t newTargetBits) {
+    recordHelperCall("bronze_super_call_lexical");
+    NewTargetScope scope{Value(newTargetBits)};
+    return bronze_super_call_spread(baseBits, thisBits, argsBits);
+}
+
+// 10.2.2 [[Construct]] step 10.c: a derived constructor's `return` of a value
+// that is neither an object nor undefined.
+uint64_t bronze_derived_return_error() {
+    recordHelperCall("bronze_derived_return_error");
+    return rtThrowTypeError("Derived constructors may only return object or undefined").rawBits();
+}
+
 // 13.2.8.4 GetTemplateObject, minus the lookup: the SITE's cache cell is
 // handed in, and generated code has already found it cold (llvm_ops.cpp's
 // `template.cached` and the branch over it). So this builds, freezes and

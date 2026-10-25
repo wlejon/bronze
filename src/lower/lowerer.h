@@ -14,6 +14,7 @@
 #include "ast/clone.h"
 #include "il/il.h"
 #include "lower/bigint_reach.h"
+#include "lower/derived_ctor_plan.h"
 #include "lower/direct_method_table.h"
 #include "lower/infer_stats.h"
 #include "lower/lowerer_state.h"
@@ -120,6 +121,20 @@ private:
     bool currentFunctionIsArrow_ = false;
     bool derivedCtorThis_ = false;
     bool pendingDerivedCtor_ = false;
+    // The receiver-binding plan of the derived constructor being lowered, and
+    // its field statements when they run at each `super()` rather than after
+    // one statement of the body (lower_derived_ctor.cpp). Set by lowerClass
+    // around the constructor's closure, null for a base class's.
+    const DerivedCtorPlan* derivedPlan_ = nullptr;
+    const std::vector<ast::StmtPtr>* derivedFieldStmts_ = nullptr;
+    // Raised by lowerClass beside `pendingDerivedCtor_` when the plan needs
+    // the state slot; read by enterFunctionEnv, which lays the record out.
+    bool pendingSuperState_ = false;
+    bool superStateSlotWanted_ = false;
+    static const char* const kSuperStateSlot;
+    // The enclosing function's new.target, in its record when an arrow in
+    // it reads one (enterFunctionEnv; lowerNewTargetValue).
+    static const char* const kNewTargetSlot;
     bool strictCode_ = false;
     int32_t strictFlag() const { return strictCode_ ? 1 : 0; }
     std::unordered_set<std::string> capturedNames_;
@@ -456,7 +471,7 @@ private:
                                     const std::string& inferredName = {});
     Value emitPrototypeOf(Value ctorVal, il::Function& ilFn);
     std::optional<Value> lowerSuperLookupStart(const ast::SuperMember& sm, il::Function& ilFn);
-    void emitDerivedCtorReturn(Value val, il::Function& ilFn);
+    bool emitDerivedCtorReturn(Value val, const ast::ReturnStmt* site, il::Function& ilFn);
 
     // --- lower_private.cpp: private class elements ---
     std::vector<std::vector<PrivateElement>> privateScopes_;
@@ -487,7 +502,30 @@ private:
                               il::Function& ilFn);
     std::vector<ast::StmtPtr> buildFieldInitStatements(
         const std::vector<ast::ClassMethod>& methods,
-        const std::vector<PrivateElement>& elements, Span span);
+        const std::vector<PrivateElement>& elements, const std::string& superName,
+        bool hasSuper, Span span);
+    bool fieldSetIsDefinition(const std::vector<ast::ClassMethod>& methods,
+                              const std::string& superName, bool hasSuper,
+                              const std::string& field);
+    // Whether the program can install a property on a prototype other than by
+    // writing it: lower_class_fields.cpp. Computed once, on first ask.
+    std::optional<bool> reshapesPrototypes_;
+    std::optional<Value> lowerFieldDefinition(const ast::MemberAccess& mem, const ast::Expr& rhs,
+                                              il::Function& ilFn);
+    // --- lower_derived_ctor.cpp: the receiver binding before super() ---
+    void emitRaisingHelper(const char* symbol, const std::vector<il::ValueId>& args, Span span,
+                           il::Function& ilFn);
+    std::optional<Value> readSuperState(Span span, il::Function& ilFn);
+    std::optional<il::ValueId> emitSuperStateIsUnbound(Span span, il::Function& ilFn);
+    void emitBranchTo(il::ValueId cond, il::BlockId then, il::BlockId otherwise,
+                      il::Function& ilFn);
+    bool emitThisBindingCheck(const void* site, Span span, il::Function& ilFn);
+    bool emitThisUnboundTest(Span span, il::Function& ilFn);
+    std::optional<Value> lowerCheckedSuperCall(const ast::SuperCall& sc, Value base, Value receiver,
+                                               il::Function& ilFn);
+    bool markSuperCalled(Value bound, Span span, il::Function& ilFn);
+    Value lowerNewTargetValue(il::Function& ilFn);
+    bool emitFieldsAfterSuper(il::Function& ilFn);
     bool emitStaticPrivateBrands(const std::vector<PrivateElement>& elements, Value ctorVal,
                                  Span span, il::Function& ilFn);
     std::optional<Value> lowerSuperMember(const ast::SuperMember* sm, il::Function& ilFn);

@@ -51,6 +51,30 @@ public:
     void visit(const ClassExpr&) override {}
 };
 
+// Finds what reads the function's new.target in a body, descending into
+// arrows and stopping at every other function — the boundary `ThisVisitor`
+// walks, for the same reason: an arrow has no new.target of its own
+// (10.2.1.1 OrdinaryCallBindThis aside, 9.4.5 GetNewTarget reaches the
+// enclosing function's environment). `super(...)` is a reader too, since
+// 13.3.7.1 constructs the base with the new.target of the constructor it is
+// written in.
+class NewTargetVisitor final : public CaptureVisitor {
+public:
+    bool found = false;
+    void visit(const NewTargetExpr&) override { found = true; }
+    void visit(const SuperCall&) override { found = true; }
+    void visit(const FunctionExpr& f) override {
+        if (!f.isArrow) return;
+        visitParamExprs(f.params, *this);
+        for (const auto& s : f.body) {
+            if (s) s->accept(*this);
+        }
+    }
+    void visit(const FunctionDecl&) override {}
+    void visit(const ClassDecl&) override {}
+    void visit(const ClassExpr&) override {}
+};
+
 // Finds `arguments` in a function body, descending into ARROWS and stopping at
 // every other function — the same boundary `ThisVisitor` walks, because it is
 // the same rule: an arrow has no `arguments` of its own and sees the enclosing
@@ -356,6 +380,15 @@ bool usesThis(const std::vector<StmtPtr>& stmts) {
 bool usesThis(const std::vector<const Stmt*>& stmts) {
     ThisVisitor v;
     for (const auto* s : stmts) {
+        if (s) s->accept(v);
+    }
+    return v.found;
+}
+
+bool usesNewTarget(const std::vector<Param>& params, const std::vector<StmtPtr>& stmts) {
+    NewTargetVisitor v;
+    visitParamExprs(params, v);
+    for (const auto& s : stmts) {
         if (s) s->accept(v);
     }
     return v.found;

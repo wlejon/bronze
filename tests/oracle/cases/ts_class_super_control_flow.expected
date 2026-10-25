@@ -1,0 +1,7 @@
+branch yes ok {"tag":"yes","x":1,"count":11}
+branch no ok {"tag":"no","x":2,"count":10}
+loop once ok {"tag":"loop","x":1,"done":true}
+loop twice ReferenceError Super constructor may only be called once
+arrow ok {"tag":"arrow","value":3,"late":"late"}
+arrow early ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+22000

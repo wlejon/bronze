@@ -82,6 +82,16 @@
     X(bronze_import_meta,         BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     X(bronze_super_call,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_super_call_spread,   BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* The derived constructor's three binding errors (lower_derived_ctor.cpp):\
+     * a receiver read before `super()` returned, a second `super()` — which\
+     * constructs through the base all the same before it throws (13.3.7.1\
+     * steps 6 and 7), so it takes the base and the argument array — and a\
+     * `return` of something that is neither an object nor undefined. Each\
+     * raises and returns the exception sentinel. */ \
+    X(bronze_this_unbound,        BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
+    X(bronze_super_rebind,        BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_super_call_lexical,  BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    X(bronze_derived_return_error, BRONZE_ABI_U64, (BRONZE_ABI_NOARGS)) \
     X(bronze_template_object,     BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
     X(bronze_array_append_hole,   BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
     X(bronze_prop_delete,         BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \

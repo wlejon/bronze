@@ -1,0 +1,17 @@
+read ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+write ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+pass ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+bare this ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+super member ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+arrow ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+arrow after ok {"made":true,"seen":true}
+default param ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+in super args ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+after super ok {"made":true,"after":true}
+order ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+["before"]
+branch not taken ok {"made":true,"late":2}
+branch taken ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+caught ok {"made":true,"y":2}
+["before","ReferenceError"]
+501500

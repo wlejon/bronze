@@ -276,6 +276,13 @@ struct MemberAccess final : Expr {
     // The difference is the brand check — a definition installs the element,
     // a write requires it to be there already.
     bool isPrivateDefine = false;
+    // A public field DEFINITION (7.3.6 CreateDataPropertyOrThrow, which is a
+    // [[DefineOwnProperty]]) rather than a [[Set]]. The two differ only where
+    // the prototype chain carries an accessor or a read-only property of the
+    // name, so lowering sets this on the field statements it synthesizes only
+    // where it cannot rule that out (lower_private.cpp); a plain write keeps
+    // its inline cache. Never set by the parser, like the flag above.
+    bool isFieldDefine = false;
     void accept(Visitor& v) const override;
 };
 

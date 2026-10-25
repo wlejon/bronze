@@ -1,0 +1,10 @@
+base ["a","b"] undefined true
+base after ["a","b"] 1
+base ["a","b"] undefined true
+base after ["a","b"] 1
+derived ["a","b","c","d"] undefined 4
+{"a":1,"b":2,"c":3,"d":4}
+show ["e"] undefined
+override ["e"] false
+{"x":10}
+4950

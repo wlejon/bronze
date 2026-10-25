@@ -117,11 +117,38 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
     const bool derivedCtor = pendingDerivedCtor_ && currentThisValue_ != il::kNoValue;
     pendingDerivedCtor_ = false;
     derivedCtorThis_ = false;
+    // The binding state's slot (lower_derived_ctor.cpp), for a constructor
+    // whose plan left a site undecided.
+    const bool superState = derivedCtor && pendingSuperState_;
+    pendingSuperState_ = false;
 
     std::vector<const ast::Stmt*> stmts;
     stmts.reserve(body.size());
     for (const auto& s : body) stmts.push_back(s.get());
+    superStateSlotWanted_ = superState;
     enterFunctionEnv(params, stmts, ilFn);
+    superStateSlotWanted_ = false;
+    if (superState) {
+        // `undefined` is unbound; EnvCreate's fill says so already, and this
+        // says it where the reader can see it.
+        const auto& scope = envScopes_[functionEnvScope_];
+        emitEnvSet(envDepthOf(functionEnvScope_), scope.slotOf.at(kSuperStateSlot),
+                   Value{emitConstUndefined(ilFn), il::Type::Dynamic}, ilFn);
+    }
+
+    // An arrow in this body reads the new.target out of the environment: the
+    // one this call has is copied in on entry, the only time it is right.
+    if (functionEnvScope_ != SIZE_MAX &&
+        envScopes_[functionEnvScope_].slotOf.contains(kNewTargetSlot)) {
+        il::Instruction nt;
+        nt.op = il::Op::GetNewTarget;
+        nt.type = il::Type::Dynamic;
+        nt.result = ilFn.valueCount++;
+        emitInst(ilFn, nt);
+        emitEnvSet(envDepthOf(functionEnvScope_),
+                   envScopes_[functionEnvScope_].slotOf.at(kNewTargetSlot),
+                   Value{nt.result, il::Type::Dynamic}, ilFn);
+    }
 
     // An arrow in this body reads the receiver out of the environment, so
     // the receiver has to be IN it: copy `__this` across on entry, once,
@@ -265,7 +292,12 @@ bool Lowerer::lowerBodyWithPlan(const std::vector<ast::Param>& params,
                 Value retVal{il::kNoValue, il::Type::Void};
                 if (derivedCtorThis_ && reachable) {
                     // A derived constructor falling off its end returns the
-                    // receiver `super()` decided, not `undefined`.
+                    // receiver `super()` decided, not `undefined` — and the
+                    // receiver has to have been bound (10.2.2 step 12).
+                    if (derivedPlan_ != nullptr && derivedPlan_->endChecked &&
+                        !emitThisUnboundTest(Span{}, ilFn)) {
+                        return false;
+                    }
                     retVal = boxValueIfNeeded(
                         readBinding(varBindings_[activeVarMap_.at("this")], ilFn), ilFn);
                 } else if (ilFn.returnType == il::Type::Dynamic) {

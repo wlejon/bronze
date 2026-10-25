@@ -1,0 +1,10 @@
+{"count":1,"n":1}
+base 1
+base 2
+ReferenceError: Super constructor may only be called once
+after: n=1 count=1
+ReferenceError Super constructor may only be called once
+base 1 | base 2
+base 1 | args evaluated | base 3 | caught
+{"other":true,"mine":1,"second":"ReferenceError"}
+derived proto | derived proto

@@ -490,6 +490,16 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // first, reading `undefined` instead of walking on to the function that
     // does bind one.
     if (!currentFunctionIsArrow_ && ilFn.needsArguments) addSlot("arguments");
+    // The new.target, when an arrow in this body reads it (`new.target`, or a
+    // `super()` that constructs with it). Same rule again: an arrow has none
+    // of its own, and the value an arrow is CALLED with is not it.
+    if (!currentFunctionIsArrow_) addSlot(kNewTargetSlot);
+    // A derived constructor's binding state, when its plan needs one
+    // (lower_derived_ctor.cpp). Always in the record: an arrow may test it.
+    if (superStateSlotWanted_) {
+        memoryNames_.insert(kSuperStateSlot);
+        addSlot(kSuperStateSlot);
+    }
     if (slots.empty()) return;
 
     EnvScopeInfo info;
@@ -507,6 +517,10 @@ void Lowerer::enterFunctionEnv(const std::vector<ast::Param>& params,
     // static call plan, lower_scope.cpp.
     planStableFunctionSlots(body, &params, info);
     planScopeRebinds(body, &params, info);
+    // No source assigns the binding state, so the rebind plan cannot see the
+    // `super()` that does; an arrow that took it for immutable would read it
+    // once on entry and never again.
+    if (superStateSlotWanted_) info.deeplyAssigned.insert(kSuperStateSlot);
     info.envValue = emitEnvCreate(static_cast<uint32_t>(slots.size()), ilFn);
     envScopes_.push_back(std::move(info));
     savedEnvValues_.push_back(currentEnvValue_);

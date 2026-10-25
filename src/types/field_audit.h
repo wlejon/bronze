@@ -122,4 +122,11 @@ private:
 bool builtinOwnedName(const std::string& name);
 bool couldBeNumericKey(const std::string& name);
 
+// Whether the `undefined` that `methods[fieldIndex]` — a public instance field
+// with no initializer — defines can be read by anything before the class's
+// constructor assigns the property. False means it can, or that this cannot
+// tell (field_audit_fields.cpp says what is proven and why).
+bool fieldUndefinedUnobserved(const std::vector<ast::ClassMethod>& methods, size_t fieldIndex,
+                              bool derived);
+
 }  // namespace bronze::types

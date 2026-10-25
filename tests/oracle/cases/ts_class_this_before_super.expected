@@ -1,0 +1,10 @@
+typed field before super: number
+read ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+statement ok {"tag":"after","made":true,"x":1,"y":2,"late":3}
+branch then ok {"tag":"then","made":true,"x":3}
+branch else ok {"tag":"else","made":true,"x":4}
+same receiver: true 5
+expression ok {"tag":"expr","made":true,"x":5}
+arrow made
+arrow ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+125250

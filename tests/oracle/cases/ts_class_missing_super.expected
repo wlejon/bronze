@@ -1,0 +1,4 @@
+no super ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+guarded ok ok {"x":1,"field":2}
+guarded skip ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+replaces ok {"replaced":"yes"}

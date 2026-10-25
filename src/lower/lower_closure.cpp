@@ -124,7 +124,13 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // called: its `this` is the enclosing function's, read from the
     // environment. Giving it one would be a second, contradictory answer to the
     // same question.
-    if (!isArrow && ast::usesThis(params, body)) {
+    //
+    // A derived constructor always takes one, even one whose body never
+    // names it: what it returns when it falls off its end or writes a bare
+    // `return` is its receiver binding, which has to be tested for having
+    // been bound (lower_derived_ctor.cpp) — `constructor() {}` with no
+    // `super()` is a ReferenceError at the end of the body.
+    if (!isArrow && (pendingDerivedCtor_ || ast::usesThis(params, body))) {
         newFn.needsThis = true;
         newFn.params.push_back({"__this", il::Type::Dynamic});
     }

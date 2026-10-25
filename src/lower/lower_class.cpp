@@ -131,8 +131,18 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // The constructor's prologue: brand adds for the private methods and
     // accessors, then every field initializer — public and private alike — in
     // definition order (lower_private.cpp says why the order is observable).
+    //
+    // The base is named the way inference names it — by the heritage
+    // expression's identifier, which the module linker renamed, rather than by
+    // the parser's `superName` — because that is the name its class table is
+    // keyed by (types/class_layout.cpp, `ClassCollector::make`).
+    std::string baseBinding = superName;
+    if (superClass != nullptr) {
+        const auto* id = dynamic_cast<const ast::Ident*>(superClass);
+        baseBinding = id != nullptr ? id->name : std::string();
+    }
     std::vector<ast::StmtPtr> fieldStmts =
-        buildFieldInitStatements(methods, privateElements, span);
+        buildFieldInitStatements(methods, privateElements, baseBinding, hasSuper, span);
 
     // The copy is what lets the field initializers be spliced in without
     // editing the tree inference read, and the map is what stops that costing
@@ -143,6 +153,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // one (ast/clone.h).
     ast::CloneOrigins ctorOrigins;
     std::vector<ast::StmtPtr> ctorBody;
+    std::vector<ast::StmtPtr> atSuperFields;
     if (fieldStmts.empty()) {
         for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
     } else if (!hasSuper) {
@@ -150,11 +161,18 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
         for (auto& fs : fieldStmts) ctorBody.push_back(std::move(fs));
         for (const auto& s : ctor->fn->body) ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
     } else {
-        // Derived class: fields run after super(...)
+        // Derived class: the fields run when super(...) returns. A body that
+        // calls it exactly once, as a statement of its own, gets them spliced
+        // in after that statement, which is the same thing said once; any
+        // other body — the call in an `if` arm, a loop, an expression, an
+        // arrow — gets them at the call (`emitFieldsAfterSuper`), because only
+        // there is "when it returns" a point in the code.
+        const DerivedCtorPlan shape = planDerivedCtor(ctor->fn->params, ctor->fn->body);
+        const bool splice = shape.superCalls == 1 && shape.topLevelSuperStatement;
         bool inserted = false;
         for (const auto& s : ctor->fn->body) {
             ctorBody.push_back(ast::cloneStmt(*s, &ctorOrigins));
-            if (!inserted) {
+            if (splice && !inserted) {
                 if (const auto* es = dynamic_cast<const ast::ExprStmt*>(s.get())) {
                     if (dynamic_cast<const ast::SuperCall*>(es->expr.get())) {
                         for (auto& fs : fieldStmts) ctorBody.push_back(std::move(fs));
@@ -163,12 +181,13 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                 }
             }
         }
-        if (!inserted) {
-            for (size_t i = 0; i < fieldStmts.size(); ++i) {
-                ctorBody.insert(ctorBody.begin() + i, std::move(fieldStmts[i]));
-            }
-        }
+        if (!inserted) atSuperFields = std::move(fieldStmts);
     }
+
+    // Where the constructor tests its receiver binding, decided over the body
+    // as it will be lowered (derived_ctor_plan.h); a base class has none.
+    DerivedCtorPlan plan;
+    if (hasSuper) plan = planDerivedCtor(ctor->fn->params, ctorBody);
 
     // The class IS its constructor function, and the binding the declaration
     // introduces holds exactly that value.
@@ -183,9 +202,20 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // A derived constructor's receiver is rebindable — `super()` decides it —
     // and the prologue of the closure lowered next is what makes it so.
     pendingDerivedCtor_ = hasSuper;
+    pendingSuperState_ = hasSuper && plan.needsState();
+    // The plan and the deferred fields are this class's for exactly as long as
+    // its constructor is being lowered; a class nested in that constructor
+    // installs its own and puts these back.
+    const DerivedCtorPlan* outerPlan = derivedPlan_;
+    const std::vector<ast::StmtPtr>* outerFields = derivedFieldStmts_;
+    derivedPlan_ = hasSuper ? &plan : nullptr;
+    derivedFieldStmts_ = atSuperFields.empty() ? nullptr : &atSuperFields;
     auto ctorVal = lowerClosure(*ctor->fn, name, shownName, ctor->fn->params,
                                 ctor->fn->returnType, ctorBody, span, ilFn);
+    derivedPlan_ = outerPlan;
+    derivedFieldStmts_ = outerFields;
     pendingDerivedCtor_ = false;
+    pendingSuperState_ = false;
     cloneOrigins_.pop_back();
     if (!ctorVal) return std::nullopt;
     ilModule_.functions[lastClosureFnIndex_].displayName = shownName.empty() ? "<anonymous>" : shownName;
@@ -445,8 +475,8 @@ std::optional<Lowerer::Value> Lowerer::lowerClassExpr(const ast::ClassExpr* cls,
 // "object" and the value is not null, or `typeof` is "function" — rather than
 // a new instruction, because an explicit `return` in a derived constructor is
 // rare enough that four compares and three branches are the whole cost worth
-// paying for it. Both arms return; nothing joins.
-void Lowerer::emitDerivedCtorReturn(Value val, il::Function& ilFn) {
+// paying for it. Every arm returns or throws; nothing joins.
+bool Lowerer::emitDerivedCtorReturn(Value val, const ast::ReturnStmt* site, il::Function& ilFn) {
     const auto emitTypeOfIs = [&](il::ValueId typeOfVal, const char* name) {
         il::ValueId str = ilFn.valueCount++;
         il::Instruction box;
@@ -514,8 +544,28 @@ void Lowerer::emitDerivedCtorReturn(Value val, il::Function& ilFn) {
     setCurrentBlock(bValue);
     emitRet(val);
 
+    // Not an object: `undefined` returns the receiver — which has to be bound
+    // by now (step 12, GetThisBinding) — and anything else is step 10.c's
+    // TypeError.
     setCurrentBlock(bReceiver);
+    il::ValueId isUndef = ilFn.valueCount++;
+    il::Instruction undefCmp;
+    undefCmp.op = il::Op::StrictEq;
+    undefCmp.type = il::Type::Bool;
+    undefCmp.result = isUndef;
+    undefCmp.operands = {val.id, emitConstUndefined(ilFn)};
+    emitInst(ilFn, undefCmp);
+    const il::BlockId bThis = createBlock(ilFn);
+    const il::BlockId bPrimitive = createBlock(ilFn);
+    emitBranch(isUndef, bThis, bPrimitive);
+
+    setCurrentBlock(bPrimitive);
+    emitRaisingHelper("bronze_derived_return_error", {}, site->span, ilFn);
+
+    setCurrentBlock(bThis);
+    if (!emitThisBindingCheck(site, site->span, ilFn)) return false;
     emitRet(boxValueIfNeeded(readBinding(varBindings_[activeVarMap_.at("this")], ilFn), ilFn));
+    return true;
 }
 
 // `super.m` — the lookup starts at the PARENT prototype, which is why it cannot
@@ -566,6 +616,8 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperLookupStart(const ast::SuperMem
 
 std::optional<Lowerer::Value> Lowerer::lowerSuperMember(const ast::SuperMember* sm,
                                                         il::Function& ilFn) {
+    // 13.3.7.1: the receiver binding is read first, and throws first.
+    if (!emitThisBindingCheck(sm, sm->span, ilFn)) return std::nullopt;
     auto protoOpt = lowerSuperLookupStart(*sm, ilFn);
     if (!protoOpt) return std::nullopt;
     const Value protoVal = *protoOpt;
@@ -626,31 +678,40 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
     }
     if (!baseVal) return std::nullopt;
 
-    // `super(...args)` is how a DERIVED CLASS WITH NO CONSTRUCTOR forwards, so
-    // this path is not an edge case: it is the default one.
-    const bool spreadArgs = argsTakeArrayPath(sc->args);
-    std::vector<il::ValueId> operands;
-    operands.push_back(boxValueIfNeeded(*baseVal, ilFn).id);
-    operands.push_back(boxValueIfNeeded(*thisVal, ilFn).id);
-    if (spreadArgs) {
-        auto argsArr = lowerListToArray(sc->args, ilFn);
-        if (!argsArr) return std::nullopt;
-        operands.push_back(argsArr->id);
+    il::ValueId res = il::kNoValue;
+    if (derivedPlan_ != nullptr && derivedPlan_->isChecked(sc)) {
+        // A call the plan could not prove the first (lower_derived_ctor.cpp).
+        auto called = lowerCheckedSuperCall(*sc, boxValueIfNeeded(*baseVal, ilFn),
+                                            boxValueIfNeeded(*thisVal, ilFn), ilFn);
+        if (!called) return std::nullopt;
+        res = called->id;
     } else {
-        for (const auto& argPtr : sc->args) {
-            auto argVal = lowerExpr(*argPtr, ilFn);
-            if (!argVal) return std::nullopt;
-            operands.push_back(boxValueIfNeeded(*argVal, ilFn).id);
+        // `super(...args)` is how a DERIVED CLASS WITH NO CONSTRUCTOR forwards,
+        // so this path is not an edge case: it is the default one.
+        const bool spreadArgs = argsTakeArrayPath(sc->args);
+        std::vector<il::ValueId> operands;
+        operands.push_back(boxValueIfNeeded(*baseVal, ilFn).id);
+        operands.push_back(boxValueIfNeeded(*thisVal, ilFn).id);
+        if (spreadArgs) {
+            auto argsArr = lowerListToArray(sc->args, ilFn);
+            if (!argsArr) return std::nullopt;
+            operands.push_back(argsArr->id);
+        } else {
+            for (const auto& argPtr : sc->args) {
+                auto argVal = lowerExpr(*argPtr, ilFn);
+                if (!argVal) return std::nullopt;
+                operands.push_back(boxValueIfNeeded(*argVal, ilFn).id);
+            }
         }
-    }
 
-    il::ValueId res = ilFn.valueCount++;
-    il::Instruction inst;
-    inst.op = spreadArgs ? il::Op::SuperCallSpread : il::Op::SuperCall;
-    inst.type = il::Type::Dynamic;
-    inst.result = res;
-    inst.operands = std::move(operands);
-    emitInst(ilFn, inst);
+        res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = spreadArgs ? il::Op::SuperCallSpread : il::Op::SuperCall;
+        inst.type = il::Type::Dynamic;
+        inst.result = res;
+        inst.operands = std::move(operands);
+        emitInst(ilFn, inst);
+    }
 
     // 13.3.7.1 step 7, BindThisValue: the call's value is the receiver from
     // here on — the object the base returned, or the one it was given (the
@@ -668,6 +729,9 @@ std::optional<Lowerer::Value> Lowerer::lowerSuperCall(const ast::SuperCall* sc,
             emitEnvSet(depth, index, bound, ilFn, /*assigning=*/true);
         }
     }
+    if (!markSuperCalled(bound, sc->span, ilFn)) return std::nullopt;
+    // 13.3.7.1 step 8, where the class desugar left it to the call.
+    if (!emitFieldsAfterSuper(ilFn)) return std::nullopt;
     return bound;
 }
 
