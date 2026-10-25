@@ -235,10 +235,8 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         // `let s: number = "abc"` an `unbox.f64` of a boxed string. The claim
         // is compared against what inference proved reaches this initialiser,
         // and disagreement is a warning, not a cast.
-        if (!checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
-                             inferredType(*varDecl->init))) {
-            return false;
-        }
+        checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
+                        inferredType(*varDecl->init));
         initId = initVal->id;
     }
 
@@ -251,10 +249,8 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
         // rather than as contradicted by the `undefined` the declaration
         // happens to bind: bronze did not look at the later writes at all, and
         // saying "contradicts" would claim more than it knows.
-        if (!checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
-                             types::Type::dynamic())) {
-            return false;
-        }
+        checkAnnotation(varDecl->typeAnnotation, varDecl->span, varDecl->name,
+                        types::Type::dynamic());
         if (!varDecl->isConst && declType == il::Type::Dynamic) {
             // JS: `let x;` / `var x;` binds undefined right here — the TDZ
             // ends at the declaration, not at the first assignment. Which is

@@ -160,13 +160,8 @@ bool Linker::collectExports(ModuleFile& file) {
         if (exp->hasFrom) {
             const uint16_t target = file.deps.at(exp->fromSpecifier);
             for (const auto& spec : exp->specifiers) {
-                if (!info_[target].exports.count(spec.local) &&
-                    graph_.modules[target]->ast->declaredTypes.count(spec.local)) {
-                    file.ast->declaredTypes.insert(spec.exported);
-                    auto ait = graph_.modules[target]->ast->typeAliases.find(spec.local);
-                    if (ait != graph_.modules[target]->ast->typeAliases.end()) {
-                        file.ast->typeAliases[spec.exported] = ait->second;
-                    }
+                // A re-exported type binds no value; linkTypes exported it.
+                if (!info_[target].exports.count(spec.local) && exportsType(target, spec.local)) {
                     continue;
                 }
                 ExportEntry entry;
@@ -191,9 +186,7 @@ bool Linker::collectExports(ModuleFile& file) {
                 if (imported->second.isNamespace) {
                     entry.localName = spec.local;
                 } else if (!info_[imported->second.module].exports.count(imported->second.exportName) &&
-                           graph_.modules[imported->second.module]->ast->declaredTypes.count(
-                               imported->second.exportName)) {
-                    file.ast->declaredTypes.insert(spec.exported);
+                           exportsType(imported->second.module, imported->second.exportName)) {
                     continue;
                 } else {
                     entry.indirect = true;
@@ -202,8 +195,8 @@ bool Linker::collectExports(ModuleFile& file) {
                 }
             } else if (mi.localNames.count(spec.local)) {
                 entry.localName = spec.local;
-            } else if (file.ast->declaredTypes.count(spec.local)) {
-                continue;
+            } else if (file.ast->rootTypeScope()->decls.count(spec.local)) {
+                continue;  // a type of this module's, exported by linkTypes
             } else {
                 diags_.error(spec.span, "export '" + spec.local + "' names nothing declared in " +
                                             file.displayName);
@@ -220,12 +213,6 @@ bool Linker::expandStarExports(ModuleFile& file, bool& changed) {
     for (const auto* exp : file.exports) {
         if (!exp->isStar || !exp->starAlias.empty()) continue;
         const uint16_t target = file.deps.at(exp->fromSpecifier);
-        for (const auto& dt : graph_.modules[target]->ast->declaredTypes) {
-            if (file.ast->declaredTypes.insert(dt).second) changed = true;
-        }
-        for (const auto& ta : graph_.modules[target]->ast->typeAliases) {
-            file.ast->typeAliases.emplace(ta.first, ta.second);
-        }
         // 16.2.3.7: `export *` does not re-export `default`. The target's
         // table may still be GROWING — a cycle can put a star edge between two
         // modules that each star from the other — so the caller runs this to a
@@ -308,15 +295,8 @@ bool Linker::buildRenames(ModuleFile& file) {
         std::string defLocal;
         if (!resolveExport(binding.module, binding.exportName, binding.span, nullptr, defModule,
                            defLocal)) {
-            if (graph_.modules[binding.module]->ast->declaredTypes.count(binding.exportName)) {
-                file.ast->declaredTypes.insert(local);
-                auto ait =
-                    graph_.modules[binding.module]->ast->typeAliases.find(binding.exportName);
-                if (ait != graph_.modules[binding.module]->ast->typeAliases.end()) {
-                    file.ast->typeAliases[local] = ait->second;
-                }
-                continue;
-            }
+            // An import of a type binds no value; linkTypes bound the type.
+            if (exportsType(binding.module, binding.exportName)) continue;
             resolveExport(binding.module, binding.exportName, binding.span, &diags_, defModule,
                           defLocal);
             return false;

@@ -176,7 +176,7 @@ public:
                          : n.isAsync            ? "(async-function-expr "
                                                 : "(function-expr ") +
              (n.name.empty() ? "<anon>" : n.name) + paramHead(n.params) +
-             (n.returnType.empty() ? "" : ": " + n.returnType) + (n.strict ? " strict" : ""));
+             (n.returnType ? ": " + printType(*n.returnType) : "") + (n.strict ? " strict" : ""));
         indented([this, &n] {
             dumpParamDetails(n.params);
             for (const auto& s : n.body) s->accept(*this);
@@ -342,7 +342,7 @@ public:
     void visit(const VarDecl& n) override {
         std::string head = std::string("(") + (n.isConst ? "const " : n.isVar ? "var " : "let ") +
                            (n.pattern ? std::string("<pattern>") : n.name);
-        if (!n.typeAnnotation.empty()) head += ": " + n.typeAnnotation;
+        if (n.typeAnnotation) head += ": " + printType(*n.typeAnnotation);
         emit(head);
         indented([&] {
             if (n.pattern) dumpPattern(n.pattern.get());
@@ -488,7 +488,7 @@ public:
                             : n.isAsync   ? "(async-function "
                                           : "(function ") +
                            n.name + paramHead(n.params);
-        if (!n.returnType.empty()) head += ": " + n.returnType;
+        if (n.returnType) head += ": " + printType(*n.returnType);
         if (n.isExported) head += " exported";
         if (n.strict) head += " strict";
         emit(head);
@@ -551,7 +551,7 @@ private:
             if (i > 0) head += ' ';
             if (params[i].isRest) head += "...";
             head += params[i].pattern ? std::string("<pattern>") : params[i].name;
-            if (!params[i].typeAnnotation.empty()) head += ": " + params[i].typeAnnotation;
+            if (params[i].typeAnnotation) head += ": " + printType(*params[i].typeAnnotation);
             if (params[i].defaultValue) head += " =";
         }
         return head + ')';

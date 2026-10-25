@@ -109,17 +109,13 @@ std::optional<il::Module> Lowerer::lower() {
             // and the enclosing loop is in source order too, so the warning
             // stream is deterministic.
             for (size_t i = 0; i < fnDecl->params.size(); ++i) {
-                if (!checkAnnotation(fnDecl->params[i].typeAnnotation, fnDecl->span,
-                                     fnDecl->params[i].name, provenParamType(moduleFnIndex, i))) {
-                    return std::nullopt;
-                }
+                checkAnnotation(fnDecl->params[i].typeAnnotation, fnDecl->span,
+                                fnDecl->params[i].name, provenParamType(moduleFnIndex, i));
             }
             // A return annotation is reported on the function's own name:
             // there is no other name for the position.
-            if (!checkAnnotation(fnDecl->returnType, fnDecl->span, fnDecl->name,
-                                 provenReturnType(moduleFnIndex))) {
-                return std::nullopt;
-            }
+            checkAnnotation(fnDecl->returnType, fnDecl->span, fnDecl->name,
+                            provenReturnType(moduleFnIndex));
             // Every module function's return type is settled here, before
             // ANY body is lowered, because it is part of the calling
             // convention: `lowerCall` reads it off this entry, and for

@@ -100,6 +100,13 @@ void ImportDecl::accept(Visitor& v) const { v.visit(*this); }
 void ExportNamesDecl::accept(Visitor& v) const { v.visit(*this); }
 void Module::accept(Visitor& v) const { v.visit(*this); }
 
+// Made on first use, so that a module built by hand (a test, a synthesized
+// program) has a root scope without having to know it needs one.
+TypeScope* Module::rootTypeScope() {
+    if (typeScopes.empty()) typeScopes.push_back(std::make_unique<TypeScope>());
+    return typeScopes.front().get();
+}
+
 const char* unaryOpName(UnaryOp op) {
     switch (op) {
         case UnaryOp::Not: return "!";

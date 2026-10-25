@@ -15,6 +15,7 @@ bronze_add_module(lower
     DEPS ast il support types json
     TEST_SOURCES ../../tests/lower/lower_test.cpp ../../tests/lower/lower_jumps_test.cpp
                  ../../tests/lower/lower_try_test.cpp ../../tests/lower/lower_infer_test.cpp
+                 ../../tests/lower/lower_annotation_test.cpp
                  ../../tests/lower/lower_scope_test.cpp
                  ../../tests/lower/lower_for_env_test.cpp
                  ../../tests/lower/lower_generator_test.cpp

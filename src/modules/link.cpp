@@ -316,7 +316,8 @@ bool Linker::run(ast::Module& out) {
     // linked before it and `resolveExport` never has to look at a half-built
     // table. Star expansion is a second pass over the same order for the same
     // reason, plus one of its own: an explicit export wins over a starred one
-    // however they are written.
+    // however they are written. The type tables come before them all.
+    linkTypes();
     for (const uint16_t id : graph_.evaluationOrder) {
         ModuleFile& file = *graph_.modules[id];
         if (!collectLocals(file)) return false;
@@ -471,12 +472,6 @@ bool Linker::run(ast::Module& out) {
         for (const auto& picker : info_[id].dynPickers) {
             if (!synthesizePicker(id, picker, out.body)) return false;
         }
-        for (const auto& dt : file.ast->declaredTypes) {
-            out.declaredTypes.insert(dt);
-        }
-        for (const auto& ta : file.ast->typeAliases) {
-            out.typeAliases.emplace(ta.first, ta.second);
-        }
         for (auto& stmt : file.ast->body) {
             if (dynamic_cast<const ast::ImportDecl*>(stmt.get())) continue;
             if (dynamic_cast<const ast::ExportNamesDecl*>(stmt.get())) continue;
@@ -490,6 +485,18 @@ bool Linker::run(ast::Module& out) {
             if (!synthesizePublish(id, out.body)) return false;
         }
     }
+    // Every file's type scopes, an external module's and a file read for its
+    // types alone included: the merged statements' annotations point into
+    // them, and so do the declarations an importer bound from another file.
+    // The merged module's own root comes first and stays empty — no
+    // reference is written in it.
+    out.rootTypeScope();
+    auto adopt = [&](ModuleFile& file) {
+        for (auto& scope : file.ast->typeScopes) out.typeScopes.push_back(std::move(scope));
+        file.ast->typeScopes.clear();
+    };
+    for (const uint16_t id : graph_.evaluationOrder) adopt(*graph_.modules[id]);
+    for (auto& file : graph_.typeModules) adopt(*file);
     return !diags_.hasErrors();
 }
 

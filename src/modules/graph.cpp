@@ -358,6 +358,90 @@ private:
         return true;
     }
 
+public:
+    // After the load: the file every type-only specifier names, so that the
+    // linker can read its type exports. A file the graph holds anyway is that
+    // module; one no value edge reached (`import type { T } from './types'`
+    // of a file that declares only types) is read for its types alone into
+    // `Graph::typeModules`, and so are the files its own imports and
+    // re-exports name, since its exports may be re-exports. Everything here
+    // goes to a scratch sink: a type-only specifier that resolves to nothing,
+    // or a file that does not parse, is not an error — node never looks at
+    // either — and the name it would have bound only hints nothing.
+    void resolveTypeSpecifiers() {
+        auto want = [&](ModuleFile& file, const std::string& specifier) {
+            if (specifier.empty() || file.deps.count(specifier) || file.typeDeps.count(specifier)) {
+                return;
+            }
+            DiagnosticSink scratch;
+            std::filesystem::path target;
+            if (!resolveSpecifier(specifier, resolvesFrom(file), Span{}, scratch, target,
+                                  options_.moduleRoots)) {
+                return;
+            }
+            const std::string key = target.generic_string();
+            auto known = byPath_.find(key);
+            if (known == byPath_.end()) {
+                uint16_t id = 0;
+                if (!loadForTypes(target, id)) return;
+                known = byPath_.find(key);
+            }
+            file.typeDeps[specifier] = known->second;
+        };
+        auto wantAll = [&](ModuleFile& file, bool typeOnly) {
+            if (!file.ast) return;
+            for (const auto& imp : file.ast->typeImports) want(file, imp.specifier);
+            for (const auto& exp : file.ast->typeExports) {
+                if (exp.hasFrom) want(file, exp.fromSpecifier);
+            }
+            if (!typeOnly) return;
+            for (const auto* imp : file.imports) want(file, imp->specifier);
+            for (const auto* exp : file.exports) {
+                if (exp->hasFrom) want(file, exp->fromSpecifier);
+            }
+        };
+        for (auto& file : graph_.modules) {
+            if (file) wantAll(*file, false);
+        }
+        // Index, not iterator: reading a file for its types may append more.
+        for (size_t i = 0; i < graph_.typeModules.size(); ++i) wantAll(*graph_.typeModules[i], true);
+    }
+
+private:
+    // Read and parse a file for the types it declares. It gets no source id:
+    // nothing in it is compiled, and no diagnostic ever points into it (a
+    // contradicted annotation is reported where the annotation is written).
+    bool loadForTypes(const std::filesystem::path& path, uint16_t& outId) {
+        const size_t id = graph_.modules.size() + graph_.typeModules.size();
+        if (graph_.typeModules.size() >= kMaxModules || id >= UINT16_MAX) return false;
+        std::string text;
+        if (!readFile(path, text)) return false;
+        auto file = std::make_unique<ModuleFile>();
+        file->id = static_cast<uint16_t>(id);
+        file->path = path;
+        file->displayName = path.generic_string();
+        file->typeSource = std::make_unique<SourceBuffer>(file->displayName, std::move(text));
+        DiagnosticSink scratch;
+        auto tokens = Lexer(*file->typeSource, scratch).lex();
+        if (scratch.hasErrors()) return false;
+        file->ast = Parser(std::move(tokens), scratch).parseModule(file->displayName, true);
+        if (!file->ast || scratch.hasErrors()) return false;
+        for (const auto& stmt : file->ast->body) {
+            if (const auto* imp = dynamic_cast<const ast::ImportDecl*>(stmt.get())) {
+                file->imports.push_back(imp);
+            } else if (const auto* exp = dynamic_cast<const ast::ExportNamesDecl*>(stmt.get())) {
+                file->exports.push_back(exp);
+            }
+        }
+        byPath_[file->displayName] = file->id;
+        outId = file->id;
+        graph_.typeModules.push_back(std::move(file));
+        return true;
+    }
+
+public:
+
+private:
     // The path a file's specifiers resolve from: its own, except for an entry
     // the host says lives elsewhere (see `ModuleOptions::entryResolvesAs`).
     const std::filesystem::path& resolvesFrom(const ModuleFile& file) const {
@@ -412,7 +496,9 @@ bool loadGraph(const std::string& entryPath, SourceSet& sources, DiagnosticSink&
     uint16_t entryId = 0;
     out.publishModules = effectiveOptions.publishModules;
     out.publishEntry = effectiveOptions.publishModules && effectiveOptions.publishEntry;
-    if (!Loader(sources, diags, out, effectiveOptions).load(entry, Span{}, entryId)) return false;
+    Loader loader(sources, diags, out, effectiveOptions);
+    if (!loader.load(entry, Span{}, entryId)) return false;
+    loader.resolveTypeSpecifiers();
     return entryId == 0;
 }
 
@@ -454,9 +540,9 @@ bool loadGraphSource(const std::string& code, const std::string& entryPath,
         std::filesystem::path canonical = std::filesystem::weakly_canonical(entry, ec);
         if (!ec) entry = canonical;
     }
-    if (!Loader(sources, diags, out, effectiveOptions).loadSource(entry, code, Span{}, entryId)) {
-        return false;
-    }
+    Loader loader(sources, diags, out, effectiveOptions);
+    if (!loader.loadSource(entry, code, Span{}, entryId)) return false;
+    loader.resolveTypeSpecifiers();
     return entryId == 0;
 }
 

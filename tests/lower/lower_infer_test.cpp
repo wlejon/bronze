@@ -129,20 +129,6 @@ TEST_CASE("with no inference, an annotation types nothing at all") {
     CHECK(diags.render(buf).find("annotation") == std::string::npos);
 }
 
-TEST_CASE("--no-infer suppresses annotation warnings but not the annotation error") {
-    // The suppression is about a warning that carries no information in that
-    // mode. Unreadable annotation text is information about the SOURCE, and
-    // `--no-infer` is a bisection seam: it must not accept a file the normal
-    // mode rejects.
-    DiagnosticSink diags;
-    SourceBuffer buf("test.ts", "");
-    const auto optMod = parseAndLower("function f(x: Widget) { return x; }\n", diags, buf);
-
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    CHECK(diags.render(buf).find("unsupported type annotation: Widget") != std::string::npos);
-}
-
 TEST_CASE("an annotation contradicted by the initialiser is a warning, not a cast") {
     // `let s: number = "abc"` used to emit `unbox.f64` of a boxed string — a
     // coercion the source never wrote, and a live unsoundness. The annotation
@@ -228,19 +214,6 @@ TEST_CASE("annotations are read in TypeScript's spellings, not the IL's") {
     CHECK(rendered.find("on 'd'") == std::string::npos);
     CHECK(rendered.find("warning: annotation 'number' on 'e' contradicts inferred string") !=
           std::string::npos);
-}
-
-TEST_CASE("annotation text bronze cannot read is a hard error, not a silent skip") {
-    DiagnosticSink diags;
-    SourceBuffer buf("test.ts", "");
-    const auto optMod = inferAndLower("function f(x: Widget) { return x; }\n", diags, buf);
-
-    CHECK_FALSE(optMod.has_value());
-    REQUIRE(diags.hasErrors());
-    const std::string rendered = diags.render(buf);
-    CHECK(rendered.find("unsupported type annotation: Widget") != std::string::npos);
-    // The vocabulary is in the message, so the fix does not need this file.
-    CHECK(rendered.find("bronze reads: any, bool, boolean") != std::string::npos);
 }
 
 TEST_CASE("loop-carried bindings are dynamic when nothing proves otherwise") {

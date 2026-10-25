@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ast/type.h"
 #include "support/source.h"
 
 namespace bronze::ast {
@@ -483,7 +484,9 @@ struct ArrayLit final : Expr {
 struct Param {
     // The parameter's name, or empty when the parameter is a `pattern`.
     std::string name;
-    std::string typeAnnotation;
+    // The TypeScript annotation, null when there is none. An optional
+    // parameter's is `T | undefined`, which is what it can hold.
+    TypeNodePtr typeAnnotation;
     // `= expr`, evaluated at CALL time on every call that omits the argument,
     // with the parameters to its left already bound.
     ExprPtr defaultValue;
@@ -520,7 +523,7 @@ enum class FunctionKind : uint8_t {
 struct FunctionExpr final : Expr {
     std::string name;
     std::vector<Param> params;
-    std::string returnType;
+    TypeNodePtr returnType;  // the return annotation, null when there is none
     std::vector<StmtPtr> body;
     // An arrow function. The same node because it is the same thing — a closure
     // value — with one semantic difference that matters: `this` inside it is
@@ -565,7 +568,7 @@ struct VarDecl final : Stmt {
     // `const [a, b] = pair`. The binding target is a pattern rather than one
     // name, which is why `name` and this are never both meaningful.
     PatternPtr pattern;
-    std::string typeAnnotation;  // raw text for now; the type system owns this later
+    TypeNodePtr typeAnnotation;  // null when the declarator has none
     ExprPtr init;                // may be null (let without initializer)
     void accept(Visitor& v) const override;
 };
@@ -779,7 +782,7 @@ struct FunctionDecl final : Stmt {
     bool isExported = false;
     std::string name;
     std::vector<Param> params;
-    std::string returnType;  // raw annotation text
+    TypeNodePtr returnType;  // the return annotation, null when there is none
     std::vector<StmtPtr> body;
     bool strict = false;  // see FunctionExpr::strict
     bool isGenerator = false;  // see FunctionExpr::isGenerator
@@ -851,8 +854,22 @@ struct Module final : Node {
     // one that declares an `import` or an `export` — which 16.2.1.6 makes
     // strict whether or not anything said so.
     bool strict = false;
-    std::unordered_set<std::string> declaredTypes;
-    std::unordered_map<std::string, std::string> typeAliases;
+    // TypeScript's type declarations, by lexical scope (see ast/type.h).
+    // `typeScopes[0]` is the module's top level; every other scope the parser
+    // opened is here too, because a reference holds a pointer to the scope it
+    // was written in and the scopes have to live as long as the tree. The
+    // linker binds a module's type imports into its root scope and moves every
+    // file's scopes into the merged module.
+    std::vector<std::unique_ptr<TypeScope>> typeScopes;
+    // The type-only halves of the module's imports and exports, which the
+    // parser erases from the statement list because they bind nothing at run
+    // time: `import type`, inline `type` specifiers, `export type { … }`,
+    // `export type * from`, and the names `export type` / `export interface`
+    // declare. An ordinary import or export of a name that is a type (an
+    // interface imported by `import { I }`) is read off the ordinary node.
+    std::vector<TypeImport> typeImports;
+    std::vector<TypeExport> typeExports;
+    TypeScope* rootTypeScope();
     void accept(Visitor& v) const override;
 };
 

@@ -351,29 +351,14 @@ size_t Parser::skipBindingTarget(size_t at) const {
     }
     if (peek(next).kind == TokenKind::Colon) {
         auto* self = const_cast<Parser*>(this);
-        const size_t savedPos = self->pos_;
-        const size_t savedEditCount = self->tokenEditsLog_.size();
-        const size_t savedDiagCount = self->diags_.size();
-        const size_t savedDeclaredCount = self->declaredTypesUndo_.size();
-        self->pos_ = savedPos + next + 1;
+        const SpeculationMark mark = self->markSpeculation();
+        self->pos_ = mark.pos + next + 1;
         ++self->speculativeDepth_;
-        const std::string ann = self->parseTypeAnnotation();
-        const size_t endOffset = self->pos_ - savedPos;
+        const ast::TypeNodePtr ann = self->parseTypeAnnotation();
+        const size_t endOffset = self->pos_ - mark.pos;
         --self->speculativeDepth_;
-        while (self->tokenEditsLog_.size() > savedEditCount) {
-            const auto& entry = self->tokenEditsLog_.back();
-            self->tokens_[entry.first] = entry.second;
-            self->tokenEditsLog_.pop_back();
-        }
-        while (self->declaredTypesUndo_.size() > savedDeclaredCount) {
-            if (self->currentModule_) {
-                self->currentModule_->declaredTypes.erase(self->declaredTypesUndo_.back());
-            }
-            self->declaredTypesUndo_.pop_back();
-        }
-        const bool ok = !ann.empty() && self->diags_.size() == savedDiagCount;
-        self->diags_.truncate(savedDiagCount);
-        self->pos_ = savedPos;
+        const bool ok = ann && self->diags_.size() == mark.diags;
+        self->rollbackSpeculation(mark);
         if (ok) return endOffset;
         return next + 2;
     }

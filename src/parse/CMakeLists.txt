@@ -11,6 +11,8 @@ bronze_add_module(parse
         parser_module.cpp
         parser_strict.cpp
         parser_type.cpp
+        parser_type_members.cpp
+        parser_type_lookahead.cpp
         parser_ts.cpp
         parser_ts_enum.cpp
         parser_ts_namespace.cpp
@@ -35,4 +37,5 @@ bronze_add_module(parse
                  ../../tests/parse/parser_strict_test.cpp
                  ../../tests/parse/parser_class_test.cpp
                  ../../tests/parse/parser_ts_test.cpp
+                 ../../tests/parse/parser_type_test.cpp
 )

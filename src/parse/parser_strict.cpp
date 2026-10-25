@@ -139,6 +139,9 @@ bool Parser::prologueSelectsStrict() const {
 std::vector<ast::StmtPtr> Parser::parseFunctionBody(bool& outStrict) {
     std::vector<ast::StmtPtr> body;
     StrictScopeGuard guard(*this);
+    // The body's own type declarations, inside the function's scope (which
+    // holds its type parameters).
+    TypeScopeGuard typeScope(*this);
     if (!expect(TokenKind::LBrace, "'{'")) {
         outStrict = strict_;
         return body;

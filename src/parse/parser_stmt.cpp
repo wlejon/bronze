@@ -80,6 +80,7 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
     typescript_ = typescript_ || isTypeScriptPath(name);
     mod->name = std::move(name);
     currentModule_ = mod.get();
+    typeScopes_.assign(1, mod->rootTypeScope());
     // 11.2.2 first, because it is not a property of the text: module code is
     // strict whether or not it says so, and the caller is the only thing that
     // knows this file is module code.
@@ -96,6 +97,7 @@ std::unique_ptr<Module> Parser::parseModule(std::string name, bool forceStrict) 
         if (!parseStatement(mod->body)) break;
     }
     currentModule_ = nullptr;
+    typeScopes_.clear();
     if (diags_.hasErrors()) return nullptr;
     if (!check(TokenKind::EndOfFile)) {
         error("unconsumed input after last declaration");
@@ -263,6 +265,8 @@ bool Parser::parseStatement(std::vector<StmtPtr>& out) {
 }
 
 std::vector<StmtPtr> Parser::parseBlock() {
+    // A type declared in a block is visible in that block only.
+    TypeScopeGuard typeScope(*this);
     std::vector<StmtPtr> body;
     if (!expect(TokenKind::LBrace, "'{'")) return body;
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile) && !diags_.hasErrors()) {

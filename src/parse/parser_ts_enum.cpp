@@ -192,7 +192,7 @@ bool Parser::parseEnumDecl(std::vector<StmtPtr>& out, std::string* outName,
     const Token* nameTok = expectPropertyName("enum name");
     if (!nameTok) return false;
     const std::string enumName(nameTok->text);
-    recordDeclaredType(enumName);
+    declareType(enumName, ast::kTypeDeclEnum);
     if (outName) *outName = enumName;
     if (!expect(TokenKind::LBrace, "'{' after enum name")) return false;
 

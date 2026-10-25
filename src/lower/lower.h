@@ -24,9 +24,9 @@ namespace bronze::lower {
 // annotation — which types nothing without a proof, so with no inference result
 // it types nothing at all. The warnings that normally name a discarded
 // annotation are silent here: with nothing provable they would fire on every
-// annotation in the file and report only which switch is on. Unreadable
-// annotation text is still the hard error it is in the other mode — this is a
-// bisection seam, not a laxer compiler.
+// annotation in the file and report only which switch is on. In neither mode
+// is an annotation an error: one naming a type bronze does not know (a DOM
+// type, a library's) hints nothing and the program compiles as JavaScript.
 // `hostGlobals` is the `--host-globals` manifest, already read and validated
 // by the CLI: identifiers an EMBEDDING HOST promises to register with the
 // runtime before the program runs. Each joins the provided-globals set, so a
@@ -76,5 +76,12 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const types::PinManifest* pins = nullptr,
                                       const std::string& censusOutPath = {},
                                       const NativeManifest* nativeManifest = nullptr);
+
+// The kind a TypeScript annotation claims, as the lattice states it: `number`,
+// an array type, a class's instances (an object), an alias followed to what
+// it names. `Dynamic` when the annotation claims no one kind — a union of
+// two, an interface, or a name no declaration answers. The claim is only ever
+// compared with a proof (lower_annotation.cpp); it types nothing.
+types::Type annotationHint(const ast::TypeNode& type);
 
 }  // namespace bronze::lower

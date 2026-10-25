@@ -1,5 +1,5 @@
 bronze_add_module(ast
-    SOURCES ast.cpp assigned.cpp clone.cpp dump.cpp queries.cpp queries_declaration.cpp
+    SOURCES ast.cpp type.cpp assigned.cpp clone.cpp dump.cpp queries.cpp queries_declaration.cpp
             queries_tdz.cpp queries_yield.cpp
     DEPS support
     TEST_SOURCES ../../tests/ast/queries_yield_test.cpp

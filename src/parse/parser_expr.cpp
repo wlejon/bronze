@@ -227,7 +227,7 @@ ExprPtr Parser::parseBinary(int minPrecedence) {
             if (kw == "as" && match(TokenKind::KwConst)) {
                 // `expr as const`
             } else {
-                if (parseTypeAnnotation().empty()) return nullptr;
+                if (!parseTypeAnnotation()) return nullptr;
             }
             lhs->span.end = previous().span.end;
             lhsIsUnary = false;
@@ -330,7 +330,7 @@ ExprPtr Parser::parseUnaryPrefix() {
         // stays the syntax error it is there.
         advance();
         if (!match(TokenKind::KwConst)) {
-            if (parseTypeAnnotation().empty()) return nullptr;
+            if (!parseTypeAnnotation()) return nullptr;
         }
         if (!expectTypeGreater("'>' after type assertion")) return nullptr;
         return parseUnaryPrefix();

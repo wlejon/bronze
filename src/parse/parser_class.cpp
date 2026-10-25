@@ -346,7 +346,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                 advance();  // '['
                 advance();  // key name
                 advance();  // ':'
-                if (parseTypeAnnotation().empty()) {
+                if (!parseTypeAnnotation()) {
                     ok = false;
                     break;
                 }
@@ -355,7 +355,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                     ok = false;
                     break;
                 }
-                if (parseTypeAnnotation().empty()) {
+                if (!parseTypeAnnotation()) {
                     ok = false;
                     break;
                 }
@@ -377,6 +377,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                 fn->kind = ast::FunctionKind::Method;
                 const std::string sym = member.isStatic ? "static.computed" : "computed";
                 fn->name = name.empty() ? sym : (name + "." + sym);
+                TypeScopeGuard typeScope(*this);  // the method's type parameters
                 if (check(TokenKind::Less) && !parseTypeParams()) return false;
                 if (!expect(TokenKind::LParen, "'(' after computed method name")) return false;
                 if (!parseParams(fn->params)) return false;
@@ -401,7 +402,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             member.isField = true;
             if (typescript_ && !match(TokenKind::Question)) match(TokenKind::Bang);
             if (match(TokenKind::Colon)) {
-                if (parseTypeAnnotation().empty()) {
+                if (!parseTypeAnnotation()) {
                     ok = false;
                     break;
                 }
@@ -561,7 +562,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             member.isField = true;
             if (typescript_ && !hadQuestion) match(TokenKind::Bang);
             if (match(TokenKind::Colon)) {
-                if (parseTypeAnnotation().empty()) {
+                if (!parseTypeAnnotation()) {
                     ok = false;
                     break;
                 }
@@ -590,6 +591,7 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         fn->kind = member.isConstructor ? ast::FunctionKind::ClassConstructor
                                         : ast::FunctionKind::Method;
         fn->name = name.empty() ? member.name : (name + "." + member.name);
+        TypeScopeGuard typeScope(*this);  // the method's type parameters
         if (check(TokenKind::Less) && !parseTypeParams()) return false;
         if (!expect(TokenKind::LParen, "'(' after method name")) return false;
         if (!parseParams(fn->params)) return false;
@@ -721,8 +723,14 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
         if (!nameTok) return nullptr;
         if (!checkStrictBindingName(nameTok->text, nameTok->span, "class name")) return nullptr;
         cls->name = std::string(nameTok->text);
-        recordDeclaredType(cls->name);
     }
+    // The class is a type in the scope it is declared in; its type
+    // parameters and members are in a scope of its own.
+    const ast::TypeDeclPtr classType = cls->name == defaultName
+                                           ? ast::TypeDeclPtr()
+                                           : declareType(cls->name, ast::kTypeDeclClass);
+    const ast::TypeScope* declaredIn = currentTypeScope();
+    TypeScopeGuard typeScope(*this);
 
     if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
 
@@ -732,11 +740,14 @@ ast::StmtPtr Parser::parseClass(const std::string& defaultName) {
             cls->superClass = parseUnaryPostfix();
             if (!cls->superClass) return nullptr;
             cls->superName = superExpressionName(cls->superClass.get());
-            if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+            // `extends Base<T>`: the base's type arguments.
+            std::vector<ast::TypeNodePtr> baseArgs;
+            if (check(TokenKind::Less) && !parseTypeArguments(baseArgs)) return nullptr;
+            setClassHeritage(classType, cls->superClass.get(), cls->superName, declaredIn);
         } else {
             advance();  // 'implements'
             do {
-                if (parseTypeAnnotation().empty()) return nullptr;
+                if (!parseTypeAnnotation()) return nullptr;
             } while (match(TokenKind::Comma));
         }
     }
@@ -757,6 +768,10 @@ ast::ExprPtr Parser::parseClassExpr() {
         if (!checkStrictBindingName(nameTok.text, nameTok.span, "class name")) return nullptr;
         cls->name = std::string(nameTok.text);
     }
+    // A class expression's name is a type only inside the class.
+    const ast::TypeScope* declaredIn = currentTypeScope();
+    TypeScopeGuard typeScope(*this);
+    const ast::TypeDeclPtr classType = declareType(cls->name, ast::kTypeDeclClass);
 
     if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
 
@@ -766,11 +781,13 @@ ast::ExprPtr Parser::parseClassExpr() {
             cls->superClass = parseUnaryPostfix();
             if (!cls->superClass) return nullptr;
             cls->superName = superExpressionName(cls->superClass.get());
-            if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
+            std::vector<ast::TypeNodePtr> baseArgs;
+            if (check(TokenKind::Less) && !parseTypeArguments(baseArgs)) return nullptr;
+            setClassHeritage(classType, cls->superClass.get(), cls->superName, declaredIn);
         } else {
             advance();  // 'implements'
             do {
-                if (parseTypeAnnotation().empty()) return nullptr;
+                if (!parseTypeAnnotation()) return nullptr;
             } while (match(TokenKind::Comma));
         }
     }

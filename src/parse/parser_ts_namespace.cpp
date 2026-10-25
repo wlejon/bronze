@@ -109,7 +109,7 @@ bool Parser::parseNamespaceDecl(std::vector<StmtPtr>& out, std::string* outName,
     const Token* firstTok = expectPropertyName("namespace name");
     if (!firstTok) return false;
     segments.emplace_back(firstTok->text);
-    recordDeclaredType(segments.front());
+    declareType(segments.front(), ast::kTypeDeclNamespace);
     while (match(TokenKind::Dot)) {
         const Token* segTok = expectPropertyName("namespace segment name");
         if (!segTok) return false;
@@ -193,6 +193,9 @@ bool Parser::parseNamespaceBody(std::vector<StmtPtr>& body, const std::string& p
     const bool savedTopLevel = atModuleTopLevel_;
     atModuleTopLevel_ = false;
     bool sawDeclare = false;
+    // The body's types are its own: a namespace's member type is reached
+    // through the namespace's name, never as a bare name outside it.
+    TypeScopeGuard typeScope(*this);
 
     // `ns.name = name;`, right after the declaration it exports.
     auto exportLocal = [&](const std::string& name, Span span) {

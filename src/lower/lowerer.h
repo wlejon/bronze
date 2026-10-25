@@ -207,7 +207,10 @@ private:
     bool applyProvenSignature(const ast::FunctionDecl& fnDecl, uint32_t moduleFnIndex,
                               il::Function& fn);
     bool applySignaturePins(const std::vector<ast::Param>& params, Span span, il::Function& fn);
-    bool checkAnnotation(const std::string& ann, Span span, const std::string& name,
+    // Compares an annotation's hint with what inference proved and warns when
+    // they disagree (lower_annotation.cpp). Never an error: an annotation
+    // bronze cannot read hints nothing.
+    void checkAnnotation(const ast::TypeNodePtr& ann, Span span, const std::string& name,
                          types::Type proven);
     std::string propBailReason(const ast::Expr& expr) const;
     void recordPropertySite(uint16_t fileId, PropSiteVerdict verdict,
@@ -393,7 +396,7 @@ private:
     std::optional<Value> lowerClosure(const ast::Node& site, const std::string& declaredName,
                                       const std::optional<std::string>& jsName,
                                       const std::vector<ast::Param>& params,
-                                      const std::string& returnTypeAnn,
+                                      const ast::TypeNodePtr& returnTypeAnn,
                                       const std::vector<ast::StmtPtr>& body, Span span,
                                       il::Function& ilFn, bool isArrow = false,
                                       bool bindsOwnName = false);

@@ -11,6 +11,9 @@ using namespace ast;
 
 StmtPtr Parser::parseFunctionDecl(bool isExported, const std::string& defaultName) {
     FunctionSuperScopeGuard superGuard(*this);
+    // The function's type parameters are visible in its parameters, its
+    // return annotation and its body, and nowhere else.
+    TypeScopeGuard typeScope(*this);
     const Token& kw = advance();  // 'function'
     auto fn = std::make_unique<FunctionDecl>();
     fn->span.begin = kw.span.begin;
@@ -85,6 +88,7 @@ ExprPtr Parser::parseArrowFunction() {
     fn->kind = ast::FunctionKind::Arrow;
     fn->span.begin = peek().span.begin;
 
+    TypeScopeGuard typeScope(*this);  // the arrow's type parameters
     if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
 
     if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {
@@ -148,7 +152,7 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
             isFirst = false;
             advance();  // 'this'
             advance();  // ':'
-            if (parseTypeAnnotation().empty()) return false;
+            if (!parseTypeAnnotation()) return false;
             if (!match(TokenKind::Comma)) break;
             continue;
         }
@@ -196,10 +200,23 @@ bool Parser::parseParams(std::vector<ast::Param>& out) {
             p.isOptional = true;
         }
         if (match(TokenKind::Colon)) {
-            p.typeAnnotation = parseTypeAnnotation();
-            if (p.isOptional && !p.typeAnnotation.empty()) {
-                p.typeAnnotation += " | undefined";
+            auto annotation = parseTypeAnnotation();
+            if (!annotation) return false;
+            // An optional parameter holds `undefined` when the argument is
+            // left out, whatever its annotation says, so what it claims is
+            // the union of the two.
+            if (p.isOptional) {
+                auto widened = std::make_shared<ast::TypeNode>();
+                widened->kind = ast::TypeNodeKind::Union;
+                widened->span = annotation->span;
+                auto undefinedType = std::make_shared<ast::TypeNode>();
+                undefinedType->kind = ast::TypeNodeKind::Keyword;
+                undefinedType->name = "undefined";
+                undefinedType->span = annotation->span;
+                widened->types = {std::move(annotation), std::move(undefinedType)};
+                annotation = std::move(widened);
             }
+            p.typeAnnotation = std::move(annotation);
         }
         if (check(TokenKind::Assign)) {
             if (isRest) {
@@ -328,6 +345,7 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseMethodTail(const std::string& na
     fn->span.begin = nameSpan.begin;
     fn->name = name;
     fn->kind = ast::FunctionKind::Method;
+    TypeScopeGuard typeScope(*this);  // the method's type parameters
     if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
     if (!expect(TokenKind::LParen, "'(' after a method name")) return nullptr;
     if (!parseParams(fn->params)) return nullptr;
@@ -442,6 +460,7 @@ ExprPtr Parser::parseFunctionExpr() {
         fn->name = std::string(nameTok.text);
     }
 
+    TypeScopeGuard typeScope(*this);  // the function's type parameters
     if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
 
     FunctionSuperScopeGuard superGuard(*this);

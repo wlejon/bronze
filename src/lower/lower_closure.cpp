@@ -37,7 +37,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
                                                     const std::string& declaredName,
                                                     const std::optional<std::string>& jsName,
                                                     const std::vector<ast::Param>& params,
-                                                    const std::string& returnTypeAnn,
+                                                    const ast::TypeNodePtr& returnTypeAnn,
                                                     const std::vector<ast::StmtPtr>& body,
                                                     Span span, il::Function& ilFn, bool isArrow,
                                                     bool bindsOwnName) {
@@ -148,9 +148,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
         newFn.params.push_back(
             {param.pattern ? "__pattern" + std::to_string(newFn.params.size()) : param.name,
              il::Type::Dynamic});
-        if (!checkAnnotation(param.typeAnnotation, span, param.name, types::Type::dynamic())) {
-            return std::nullopt;
-        }
+        checkAnnotation(param.typeAnnotation, span, param.name, types::Type::dynamic());
     }
     applyParamShape(params, newFn);
     // The RETURN is different in kind: what a body returns is a fact about
@@ -163,9 +161,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClosure(const ast::Node& site,
     // Reported on `fnName`, which for an anonymous function expression is
     // the synthesized `__anon_fn_N` — deliberately, because that is the name
     // it has in the IL dump and the span already points at the source.
-    if (!checkAnnotation(returnTypeAnn, span, fnName, provenClosureReturn(site))) {
-        return std::nullopt;
-    }
+    checkAnnotation(returnTypeAnn, span, fnName, provenClosureReturn(site));
     newFn.valueCount = static_cast<uint32_t>(newFn.params.size());
     // `span` is the SITE's, and for a class that is the whole `class C {...}`
     // rather than the constructor's own text — which is exactly what

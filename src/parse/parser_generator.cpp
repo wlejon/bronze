@@ -101,6 +101,7 @@ ExprPtr Parser::matchSymbolIteratorKey() {
 
 bool Parser::parseGeneratorTail(ast::FunctionExpr& fn) {
     fn.isGenerator = true;
+    TypeScopeGuard typeScope(*this);  // the generator's type parameters
     if (check(TokenKind::Less) && !parseTypeParams()) return false;
     if (!expect(TokenKind::LParen, "'(' after a generator name")) return false;
     if (!parseParams(fn.params)) return false;

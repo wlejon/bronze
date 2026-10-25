@@ -60,6 +60,7 @@ bool Parser::asyncModifiesArrow() const {
 // split parseGeneratorTail makes for `yield`.
 bool Parser::parseAsyncFnTail(ast::FunctionExpr& fn) {
     fn.isAsync = true;
+    TypeScopeGuard typeScope(*this);  // the function's type parameters
     if (check(TokenKind::Less) && !parseTypeParams()) return false;
     if (!expect(TokenKind::LParen, "'(' after an async function name")) return false;
     if (!parseParams(fn.params)) return false;
@@ -159,6 +160,7 @@ ExprPtr Parser::parseAsyncArrow() {
     fn->isAsync = true;
     fn->span.begin = asyncKw.span.begin;
 
+    TypeScopeGuard typeScope(*this);  // the arrow's type parameters
     if (check(TokenKind::Less) && !parseTypeParams()) return nullptr;
 
     if (check(TokenKind::Identifier) || check(TokenKind::KwOf)) {

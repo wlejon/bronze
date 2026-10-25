@@ -63,14 +63,29 @@ struct ModuleFile {
     // it is only ever looked up, but a graph is exactly the kind of thing
     // that grows an iteration over it later.
     std::map<std::string, uint16_t> deps;
+    // The specifiers only TYPE imports and exports name (`import type`,
+    // `export type … from`), resolved to a module the graph loaded for some
+    // other reason. Such a specifier is not an edge — nothing of it exists at
+    // run time, so it is never loaded on its own account — and one naming a
+    // file nothing else imports stays out of this map: its types hint
+    // nothing.
+    std::map<std::string, uint16_t> typeDeps;
     // The template-literal dynamic imports this file writes, in source order,
     // and what each one's directory held at compile time. See
     // `dynamicImportPattern` below for what makes a template one of these.
     std::vector<DynamicImportPattern> dynPatterns;
+    // A file of Graph::typeModules owns its text here rather than in the
+    // program's SourceSet, since none of it is compiled.
+    std::unique_ptr<SourceBuffer> typeSource;
 };
 
 struct Graph {
     std::vector<std::unique_ptr<ModuleFile>> modules;  // indexed by id
+    // Files read only for the types they declare: the targets of type-only
+    // specifiers that no value edge reached. Never linked as code. Their ids
+    // continue after `modules` (typeModules[id - modules.size()]), and only
+    // `typeDeps` ever names one.
+    std::vector<std::unique_ptr<ModuleFile>> typeModules;
     // Post-order of the depth-first walk: a module's dependencies come before
     // it, and the entry is last. A CYCLE has no such order — that is what a
     // cycle is — and the post-order is the answer 16.2.1.5.3 gives anyway: the

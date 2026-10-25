@@ -156,11 +156,12 @@ GpuCompileResult compileJsGpuKernelSource(
     std::vector<bool> isBufferParam(numParams, false);
     std::vector<brass::Type> bufferElemType(numParams, brass::Type::f32());
     for (size_t i = 0; i < numParams && i < fnDecl->params.size(); ++i) {
-        const std::string& ann = fnDecl->params[i].typeAnnotation;
-        if (ann.find("Int32Array") != std::string::npos || ann.find("Uint32Array") != std::string::npos) {
+        const ast::TypeNodePtr& ann = fnDecl->params[i].typeAnnotation;
+        if (!ann) continue;
+        if (ast::namesType(*ann, "Int32Array") || ast::namesType(*ann, "Uint32Array")) {
             isBufferParam[i] = true;
             bufferElemType[i] = brass::Type::i32();
-        } else if (ann.find("Float32Array") != std::string::npos || ann.find("Float64Array") != std::string::npos) {
+        } else if (ast::namesType(*ann, "Float32Array") || ast::namesType(*ann, "Float64Array")) {
             isBufferParam[i] = true;
             bufferElemType[i] = brass::Type::f32();
         }

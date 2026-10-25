@@ -104,55 +104,64 @@ bool Parser::isAbstractClassDeclStart() const {
            !peek(1).newlineBefore && peek(1).kind == TokenKind::KwClass;
 }
 
-bool Parser::parseTypeAliasDecl() {
+// The alias is declared before its right-hand side is read, so that a
+// recursive alias names itself; its type parameters are in a scope of the
+// alias's own, which is the scope every reference in the right-hand side
+// is written in.
+bool Parser::parseTypeAliasDecl(std::string* outName) {
     advance();  // 'type'
     const Token* nameTok = expectPropertyName("type alias name");
     if (!nameTok) return false;
     const std::string aliasName(nameTok->text);
-    recordDeclaredType(aliasName);
+    const ast::TypeDeclPtr decl = declareType(aliasName, ast::kTypeDeclAlias);
+    if (outName) *outName = aliasName;
 
+    TypeScopeGuard typeScope(*this);
     if (check(TokenKind::Less)) {
         if (!parseTypeParams()) return false;
     }
     if (!expect(TokenKind::Assign, "'=' in type alias declaration")) return false;
-    const std::string rhs = parseTypeAnnotation();
-    if (rhs.empty()) return false;
-    recordTypeAlias(aliasName, rhs);
+    ast::TypeNodePtr rhs = parseTypeAnnotation();
+    if (!rhs) return false;
+    if (decl) decl->aliased = std::move(rhs);
     if (!consumeSemicolon("type alias declaration")) return false;
     return true;
 }
 
-bool Parser::parseInterfaceDecl() {
+// The body is read as an object type, members and all, for what it can
+// diagnose; an interface's type is the interface's name, which is what
+// lowering reads, so the members themselves are not kept.
+bool Parser::parseInterfaceDecl(std::string* outName) {
     advance();  // 'interface'
     if (isIdentifierName(peek().kind)) {
         const std::string name(advance().text);
-        recordDeclaredType(name);
+        declareType(name, ast::kTypeDeclInterface);
+        if (outName) *outName = name;
     }
+    TypeScopeGuard typeScope(*this);
     if (check(TokenKind::Less)) {
         if (!parseTypeParams()) return false;
     }
     while (match(TokenKind::KwExtends) ||
            (check(TokenKind::Identifier) && peek().text == "implements" && (advance(), true))) {
         do {
-            if (parseTypeAnnotation().empty()) return false;
+            if (!parseTypeAnnotation()) return false;
         } while (match(TokenKind::Comma));
     }
     if (!check(TokenKind::LBrace)) {
         error("expected '{' to start interface body");
         return false;
     }
-    skipBalancedBraces(
-        [this]() { return check(TokenKind::EndOfFile); },
-        [this](TokenKind k) { return match(k); }, [this]() { advance(); });
+    if (!parseObjectOrMappedType()) return false;
     match(TokenKind::Semicolon);
     return true;
 }
 
-bool Parser::parseDeclareStmt() {
+bool Parser::parseDeclareStmt(std::string* outTypeName) {
     advance();  // 'declare'
 
-    if (isTypeAliasDeclStart()) return parseTypeAliasDecl();
-    if (isInterfaceDeclStart()) return parseInterfaceDecl();
+    if (isTypeAliasDeclStart()) return parseTypeAliasDecl(outTypeName);
+    if (isInterfaceDeclStart()) return parseInterfaceDecl(outTypeName);
 
     if (check(TokenKind::Identifier) && peek().text == "global" && peek(1).kind == TokenKind::LBrace) {
         advance();  // 'global'
@@ -170,7 +179,8 @@ bool Parser::parseDeclareStmt() {
         } else {
             const Token* firstTok = expectPropertyName("namespace name");
             if (!firstTok) return false;
-            recordDeclaredType(std::string(firstTok->text));
+            declareType(std::string(firstTok->text), ast::kTypeDeclNamespace);
+            if (outTypeName) *outTypeName = std::string(firstTok->text);
             while (match(TokenKind::Dot)) {
                 if (!expectPropertyName("namespace segment name")) return false;
             }
@@ -191,7 +201,8 @@ bool Parser::parseDeclareStmt() {
         advance();  // 'enum'
         const Token* nameTok = expectPropertyName("enum name");
         if (!nameTok) return false;
-        recordDeclaredType(std::string(nameTok->text));
+        declareType(std::string(nameTok->text), ast::kTypeDeclEnum);
+        if (outTypeName) *outTypeName = std::string(nameTok->text);
         if (check(TokenKind::LBrace)) {
             skipBalancedBraces(
                 [this]() { return check(TokenKind::EndOfFile); },
@@ -204,14 +215,36 @@ bool Parser::parseDeclareStmt() {
     if (check(TokenKind::KwClass) || isAbstractClassDeclStart()) {
         if (isAbstractClassDeclStart()) advance();  // 'abstract'
         advance();                                  // 'class'
+        ast::TypeDeclPtr classType;
         if (isIdentifierName(peek().kind)) {
-            recordDeclaredType(std::string(advance().text));
+            const std::string name(advance().text);
+            classType = declareType(name, ast::kTypeDeclClass);
+            if (outTypeName) *outTypeName = name;
         }
+        TypeScopeGuard typeScope(*this);
         if (check(TokenKind::Less)) {
             if (!parseTypeParams()) return false;
         }
-        while (!check(TokenKind::LBrace) && !check(TokenKind::EndOfFile)) {
+        // An ambient class's heritage is names with type arguments, which
+        // read as types; a base that is a reference is what the class's
+        // instances are built on.
+        if (match(TokenKind::KwExtends)) {
+            ast::TypeNodePtr base = parseTypeAnnotation();
+            if (!base) return false;
+            if (classType) {
+                classType->classExtends = true;
+                if (base->kind == ast::TypeNodeKind::Reference) classType->heritage = base;
+            }
+        }
+        if (check(TokenKind::Identifier) && peek().text == "implements") {
             advance();
+            do {
+                if (!parseTypeAnnotation()) return false;
+            } while (match(TokenKind::Comma));
+        }
+        if (!check(TokenKind::LBrace)) {
+            error("expected '{' to start a declared class body");
+            return false;
         }
         if (check(TokenKind::LBrace)) {
             skipBalancedBraces(
@@ -228,6 +261,7 @@ bool Parser::parseDeclareStmt() {
         advance();                                    // 'function'
         match(TokenKind::Star);
         if (isIdentifierName(peek().kind)) advance();
+        TypeScopeGuard typeScope(*this);
         if (check(TokenKind::Less)) {
             if (!parseTypeParams()) return false;
         }
@@ -239,7 +273,7 @@ bool Parser::parseDeclareStmt() {
             else advance();
         }
         if (match(TokenKind::Colon)) {
-            if (parseTypeAnnotation().empty()) return false;
+            if (!parseTypeAnnotation()) return false;
         }
         if (check(TokenKind::LBrace)) {
             skipBalancedBraces(
@@ -264,7 +298,7 @@ bool Parser::parseDeclareStmt() {
             }
             match(TokenKind::Bang);
             if (match(TokenKind::Colon)) {
-                if (parseTypeAnnotation().empty()) return false;
+                if (!parseTypeAnnotation()) return false;
             }
             if (match(TokenKind::Assign)) {
                 if (!parseAssign()) return false;

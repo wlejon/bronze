@@ -92,6 +92,16 @@ public:
                        DiagnosticSink* report, uint16_t& outModule, std::string& outLocal);
     bool addExport(ModuleFile& file, const std::string& exported, ExportEntry entry);
 
+    // TypeScript types (link_types.cpp): every module's type exports, and its
+    // type imports bound into its root type scope. Run before the value
+    // tables, which consult it to tell an import or export of a type-only
+    // name from one of a name nothing declares.
+    void linkTypes();
+    bool exportsType(uint16_t moduleId, const std::string& name) const;
+    ast::TypeDeclPtr moduleTypeNamespace(uint16_t moduleId);
+    // A module of the program or a file read for its types alone, by id.
+    ModuleFile& typeFile(uint16_t moduleId) const;
+
     // Synthesis and merging (link.cpp)
     ast::StmtPtr synthesizeNamespace(uint16_t owner, const std::string& local, uint16_t target);
     bool synthesizePicker(uint16_t owner, const ModuleInfo::DynPicker& picker,
@@ -120,6 +130,12 @@ public:
     // binds that one.
     std::set<uint16_t> namespaceDeclared_;
     size_t syntheticCounter_ = 0;
+    // By module id: its type exports, and the one declaration standing for
+    // the module in a namespace import (`import * as ns`, whose `ns.T` reads
+    // the table). Shared, because the declarations outlive the linker in the
+    // scopes of the merged module.
+    std::vector<std::shared_ptr<ast::TypeExportTable>> typeExports_;
+    std::vector<ast::TypeDeclPtr> typeNamespaces_;
 };
 
 }  // namespace bronze::modules

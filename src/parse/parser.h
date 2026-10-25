@@ -145,8 +145,36 @@ private:
     bool inConditionalThen_ = false;
     bool lastFunctionWasOverload_ = false;
     size_t speculativeDepth_ = 0;
+    // True while reading the extends type of a conditional type, where
+    // TypeScript allows no conditional type unbracketed and so reads `infer U
+    // extends C` as a constraint whatever follows. Any type read through
+    // parseTypeAnnotation (a bracketed one) clears it.
+    bool inConditionalExtends_ = false;
     std::vector<std::pair<size_t, Token>> tokenEditsLog_;
-    std::vector<std::string> declaredTypesUndo_;
+    // A type declaration made while speculating, with what the scope held
+    // under that name before it, so that a rolled-back lookahead leaves the
+    // scope as it found it (see declareType).
+    struct TypeDeclUndo {
+        ast::TypeScope* scope;
+        std::string name;
+        ast::TypeDeclPtr previous;
+    };
+    std::vector<TypeDeclUndo> typeDeclUndo_;
+    // The type scopes enclosing the cursor, innermost last. Empty when there
+    // is no module to own them, in which case references carry no scope and
+    // name nothing.
+    std::vector<ast::TypeScope*> typeScopes_;
+    // Everything a speculative parse may change, so that one call puts it
+    // back: the cursor, the split `>>` tokens, the diagnostics, and the type
+    // declarations made since.
+    struct SpeculationMark {
+        size_t pos;
+        size_t edits;
+        size_t diags;
+        size_t typeDecls;
+    };
+    SpeculationMark markSpeculation() const;
+    void rollbackSpeculation(const SpeculationMark& mark);
 
     const Token& peek(size_t ahead = 0) const;
     const Token& advance();
@@ -519,21 +547,73 @@ private:
     ast::StmtPtr parseForAssignmentHead(const Token& kw, bool isAwait);
     std::vector<ast::StmtPtr> parseBlock();
     std::vector<ast::StmtPtr> parseBlockOrSingleStmt();
-    std::string parseTypeAnnotation(bool inArrowReturn = false);
-    bool parseTypeParams();
+    // --- parser_type*.cpp: TypeScript types ------------------------------
+    // A type, as a tree (ast/type.h). Null on a diagnosed error.
+    // `inArrowReturn` is set for an arrow function's return annotation, where
+    // `(a): (T) => body` must leave the `=>` to the arrow.
+    ast::TypeNodePtr parseTypeAnnotation(bool inArrowReturn = false);
+    // `<T extends C = D, …>`, cursor on the `<`. Each name is declared as a
+    // type parameter in the current type scope, which the caller opened for
+    // the generic. `out` receives the parameters when the caller keeps them.
+    bool parseTypeParams(std::vector<ast::TypeParameter>* out = nullptr);
+    // `<A, B>` after a type name or an `extends` expression, cursor on `<`.
+    bool parseTypeArguments(std::vector<ast::TypeNodePtr>& out);
     bool matchTypeGreater();
     bool expectTypeGreater(const char* what);
     bool tryConsumeTypeArgsForCall();
-    void recordDeclaredType(const std::string& name);
-    void recordTypeAlias(const std::string& name, const std::string& rhs);
+    // Declares `name` in the current type scope as `kind` (an
+    // ast::TypeDeclKind bit), merging with a declaration of the same name
+    // already there (an interface into a class, a namespace into an enum).
+    // Returns the declaration, which the caller may fill in further, or null
+    // when there is no scope to declare it in.
+    ast::TypeDeclPtr declareType(const std::string& name, uint8_t kind);
+    // What a class declaration's `extends` clause names (TypeDecl::heritage).
+    void setClassHeritage(const ast::TypeDeclPtr& decl, const ast::Expr* superClass,
+                          const std::string& superName, const ast::TypeScope* scope);
+    ast::TypeScope* currentTypeScope() const {
+        return typeScopes_.empty() ? nullptr : typeScopes_.back();
+    }
+    // Opens a type scope for the extent of the guard: a block, a function, a
+    // class, a generic declaration.
+    struct TypeScopeGuard {
+        Parser& p;
+        bool pushed = false;
+        explicit TypeScopeGuard(Parser& parser);
+        ~TypeScopeGuard();
+        TypeScopeGuard(const TypeScopeGuard&) = delete;
+        TypeScopeGuard& operator=(const TypeScopeGuard&) = delete;
+    };
+    // The grammar's levels, loosest first (parser_type.cpp). `inArrowReturn`
+    // is carried down to the function types a primary may start.
+    ast::TypeNodePtr parseTypeUnion(bool inArrowReturn);
+    ast::TypeNodePtr parseTypeIntersection(bool inArrowReturn);
+    ast::TypeNodePtr parseTypeOperand(bool inArrowReturn);
+    ast::TypeNodePtr parseTypePrimary(bool inArrowReturn);
+    ast::TypeNodePtr parseTypeReference();
+    ast::TypeNodePtr parseTypeQuery();
+    ast::TypeNodePtr parseImportType();
+    ast::TypeNodePtr parseTemplateLiteralType();
+    // parser_type_members.cpp: the bracketed forms.
+    ast::TypeNodePtr parseParenOrFunctionType(bool inArrowReturn);
+    ast::TypeNodePtr parseFunctionType(bool inArrowReturn);
+    ast::TypeNodePtr parseTupleType();
+    ast::TypeNodePtr parseObjectOrMappedType();
+    bool isMappedTypeStart() const;
+    ast::TypeNodePtr parseMappedType(Span start);
+    bool parseTypeMember(ast::TypeMember& out);
+    bool parseSignatureTail(ast::TypeMember& out);
+    // A function type's or a signature's parameter list, cursor past the `(`
+    // and left on the `)`.
+    bool parseTypeFnParams(std::vector<ast::TypeFnParam>& out);
     bool isTypeAliasDeclStart() const;
     bool isInterfaceDeclStart() const;
     bool isEnumDeclStart() const;
     bool isNamespaceDeclStart() const;
     bool isDeclareStmtStart() const;
     bool isAbstractClassDeclStart() const;
-    bool parseTypeAliasDecl();
-    bool parseInterfaceDecl();
+    // Both put the declared name in `outName` when the caller exports it.
+    bool parseTypeAliasDecl(std::string* outName = nullptr);
+    bool parseInterfaceDecl(std::string* outName = nullptr);
     // --- parser_ts_enum.cpp / parser_ts_namespace.cpp ----------------------
     // Both append the JavaScript TypeScript emits for the declaration to
     // `out`, the statement list of the scope it is declared in, which is also
@@ -577,7 +657,10 @@ private:
     // property, placed after its super() call. False on a diagnosed error.
     bool insertParameterProperties(ast::FunctionExpr& ctor);
     EnumRecord* findEnumRecord(const std::vector<ast::StmtPtr>& scope, const std::string& name);
-    bool parseDeclareStmt();
+    // `declare …`. `outTypeName` receives the type the statement declares
+    // (a `declare class`, `declare type`, …) so that `export declare` can
+    // export it; it is left empty for the forms that declare none.
+    bool parseDeclareStmt(std::string* outTypeName = nullptr);
     // The characters a string literal denotes, escapes resolved (see the
     // definition: the lexer finds the literal's end, the parser decides what
     // it means).
