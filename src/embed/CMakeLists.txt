@@ -18,6 +18,7 @@ bronze_add_module(embed
         embed_profiler.cpp
         embed_clone.cpp
         embed_host_class.cpp
+        embed_access.cpp
     DEPS
         runtime
         abi
@@ -27,6 +28,7 @@ bronze_add_module(embed
         ../../tests/embed/embed_handle_scope_test.cpp
         ../../tests/embed/embed_realm_test.cpp
         ../../tests/embed/embed_global_object_test.cpp
+        ../../tests/embed/embed_access_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on —
