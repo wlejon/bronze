@@ -89,8 +89,6 @@ solving over straight-line JavaScript functions (backed by Brass's `BVSolver`):
 - `bronze prove-equiv <a.js> <b.js> --fn <name>`: bitvector equivalence check
   for straight-line integer JS functions, reporting a concrete counterexample
   when outputs differ.
-- `bronze verify-cert <cert.json> [entry.js]`: verifies a proof certificate's
-  IL proof invariants (`il::verifyModuleProofs`) and source digest.
 
 ## The CLI
 
