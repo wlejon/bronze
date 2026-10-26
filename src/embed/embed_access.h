@@ -68,8 +68,9 @@ const char* accessKindName(AccessKind kind);  // "read", "write", "spawn", ...
 struct AccessRequest {
     AccessKind kind;
     std::string_view subject;
-    // Asked again about a resource already open (revalidateHeldAccess): the
-    // gate answers from what is decided and never asks the user.
+    // Asked again about a resource already open (revalidateHeldAccess), or
+    // through checkAccessWithoutAsking: the gate answers from what is decided
+    // and never asks the user.
     bool held = false;
 };
 
@@ -85,6 +86,11 @@ BRONZE_EMBED_API bool accessGateActive();
 
 /// The gate's answer: "" when allowed or when no gate is installed.
 BRONZE_EMBED_API std::string checkAccess(AccessKind kind, std::string_view subject);
+
+/// The same, answered from what is decided without asking the user (the
+/// request's `held` set): for a question that would otherwise be asked many
+/// times over, such as each variable of a listing already refused as a whole.
+BRONZE_EMBED_API std::string checkAccessWithoutAsking(AccessKind kind, std::string_view subject);
 
 inline constexpr std::string_view kPermissionRevokedPrefix = "PermissionRevoked: ";
 

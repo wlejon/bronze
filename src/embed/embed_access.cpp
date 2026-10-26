@@ -98,6 +98,8 @@ std::string ask(AccessKind kind, std::string_view subject, bool held) {
 
 std::string checkAccess(AccessKind kind, std::string_view subject) { return ask(kind, subject, false); }
 
+std::string checkAccessWithoutAsking(AccessKind kind, std::string_view subject) { return ask(kind, subject, true); }
+
 bool isRevokedRefusal(std::string_view refusal) {
     return refusal.substr(0, kPermissionRevokedPrefix.size()) == kPermissionRevokedPrefix;
 }
