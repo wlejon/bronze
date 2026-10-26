@@ -390,6 +390,24 @@ void rtFreezeObject(Value receiver) {
     setIntegrity(receiver, IntegrityLevel::Frozen, "freeze");
 }
 
+void rtHarden(Value receiver) {
+    if (!receiver.isObject()) return;
+    Rooted<Value> self{receiver};
+    setIntegrity(self.get(), IntegrityLevel::Frozen, "freeze");
+    Dictionary* d = rtIntegrityTable(self.get());
+    if (!d) {
+        fatal((std::string("lockdown: cannot record the integrity level of ") +
+               rtObjectKindName(self.get()))
+                  .c_str());
+    }
+    d->hardened = true;
+}
+
+bool rtIsHardened(Value receiver) {
+    const Dictionary* d = rtIntegrityTable(receiver);
+    return d && d->hardened;
+}
+
 uint64_t rtObjectFreeze(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     return setIntegrity(args[0], IntegrityLevel::Frozen, "freeze");

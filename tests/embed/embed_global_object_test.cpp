@@ -129,21 +129,50 @@ TEST_CASE("a host global named after a builtin is not written onto globalThis") 
     CHECK(embed::toDouble(embed::getProperty(viaGlobal, "hostClockMarker")) == 4242.0);
 }
 
-TEST_CASE("a realm created later carries the whole registry, existing realms keep theirs") {
+TEST_CASE("a host global belongs to the realm it was registered in") {
     ShadowStackFrame frame;
 
-    embed::registerGlobal("sharedHostGlobal", embed::fromDouble(9.0));
+    embed::registerGlobal("defaultOnlyGlobal", embed::fromDouble(9.0));
+    embed::Persistent defGlobal{embed::globalValue("globalThis").value};
 
+    // A realm created later starts with none of the default realm's: what a
+    // host installs is mutable, and a realm reaching another's could change it.
     embed::Realm* fresh = embed::createRealm();
     REQUIRE(fresh != nullptr);
     embed::Persistent freshGlobal{embed::getRealmGlobal(fresh)};
-    CHECK(embed::toDouble(embed::getProperty(freshGlobal.get(), "sharedHostGlobal")) == 9.0);
+    CHECK(embed::isUndefined(embed::getProperty(freshGlobal.get(), "defaultOnlyGlobal")));
+    CHECK(!inGlobal(freshGlobal.get(), "defaultOnlyGlobal"));
+    {
+        embed::RealmScope scope(fresh);
+        CHECK(!embed::globalValue("defaultOnlyGlobal").found);
+        CHECK(!embed::hasHostGlobal("defaultOnlyGlobal"));
+        CHECK(!listed(embed::hostGlobalNames(), "defaultOnlyGlobal"));
 
-    // A registration after BOTH realms exist lands on both.
-    embed::registerGlobal("everyRealmGlobal", embed::fromDouble(5.0));
-    embed::Persistent defGlobal{embed::globalValue("globalThis").value};
-    CHECK(embed::toDouble(embed::getProperty(defGlobal.get(), "everyRealmGlobal")) == 5.0);
-    CHECK(embed::toDouble(embed::getProperty(freshGlobal.get(), "everyRealmGlobal")) == 5.0);
+        // A registration in the fresh realm lands there and nowhere else.
+        embed::registerGlobal("freshOnlyGlobal", embed::fromDouble(5.0));
+        CHECK(embed::toDouble(embed::globalValue("freshOnlyGlobal").value) == 5.0);
+        CHECK(embed::toDouble(embed::getProperty(freshGlobal.get(), "freshOnlyGlobal")) == 5.0);
+
+        // One name, two realms, two values.
+        embed::registerGlobal("perRealmGlobal", embed::fromDouble(2.0));
+    }
+    embed::registerGlobal("perRealmGlobal", embed::fromDouble(1.0));
+    CHECK(!embed::globalValue("freshOnlyGlobal").found);
+    CHECK(embed::isUndefined(embed::getProperty(defGlobal.get(), "freshOnlyGlobal")));
+    CHECK(embed::toDouble(embed::globalValue("perRealmGlobal").value) == 1.0);
+    CHECK(embed::toDouble(embed::getProperty(freshGlobal.get(), "perRealmGlobal")) == 2.0);
+    {
+        embed::RealmScope scope(fresh);
+        CHECK(embed::toDouble(embed::globalValue("perRealmGlobal").value) == 2.0);
+    }
+    CHECK(embed::toDouble(embed::globalValue("defaultOnlyGlobal").value) == 9.0);
+
+    // The fresh realm's values survive a collection: the realm roots them.
+    runtime::rtHeap().collect();
+    {
+        embed::RealmScope scope(fresh);
+        CHECK(embed::toDouble(embed::globalValue("freshOnlyGlobal").value) == 5.0);
+    }
 
     embed::destroyRealm(fresh);
 }
@@ -184,32 +213,39 @@ TEST_CASE("a lazy host global is listed at once and built at its first read") {
     CHECK(embed::toDouble(embed::getProperty(glob.get(), "lazyHostA")) == 1.0);
     CHECK(inits == 1);
 
-    // A realm created afterwards sees the values.
+    // A realm created afterwards has none of them.
     embed::Realm* fresh = embed::createRealm();
     REQUIRE(fresh != nullptr);
     embed::Persistent freshGlobal{embed::getRealmGlobal(fresh)};
-    CHECK(embed::toDouble(embed::getProperty(freshGlobal.get(), "lazyHostA")) == 1.0);
+    CHECK(embed::isUndefined(embed::getProperty(freshGlobal.get(), "lazyHostA")));
     embed::destroyRealm(fresh);
 }
 
-TEST_CASE("a lazy host global read through a realm built while it was pending") {
+TEST_CASE("a lazy host global is forced in the realm it was registered in") {
     ShadowStackFrame frame;
     static int inits = 0;
     embed::registerLazyGlobal("lazyHostC", [] {
         ++inits;
         embed::registerGlobal("lazyHostC", embed::fromUtf8("built"));
     });
+    embed::Persistent defGlobal{embed::globalValue("globalThis").value};
     embed::Realm* fresh = embed::createRealm();
     REQUIRE(fresh != nullptr);
     embed::Persistent freshGlobal{embed::getRealmGlobal(fresh)};
-    CHECK(inGlobal(freshGlobal.get(), "lazyHostC"));
+    CHECK(!inGlobal(freshGlobal.get(), "lazyHostC"));
     CHECK(inits == 0);
-    CHECK(embed::toUtf8(embed::getProperty(freshGlobal.get(), "lazyHostC")) == "built");
-    CHECK(inits == 1);
-    // The default realm's property is the value now, not the accessor.
-    embed::Persistent defGlobal{embed::globalValue("globalThis").value};
+    {
+        // Read from the other realm: the accessor forces the name, and the
+        // init registers it, in the realm that owns the accessor.
+        embed::RealmScope scope(fresh);
+        CHECK(embed::toUtf8(embed::getProperty(defGlobal.get(), "lazyHostC")) == "built");
+        CHECK(inits == 1);
+        CHECK(!embed::globalValue("lazyHostC").found);
+    }
+    CHECK(embed::toUtf8(embed::globalValue("lazyHostC").value) == "built");
     CHECK(embed::toUtf8(embed::getProperty(defGlobal.get(), "lazyHostC")) == "built");
     CHECK(inits == 1);
+    CHECK(!inGlobal(freshGlobal.get(), "lazyHostC"));
     embed::destroyRealm(fresh);
 
     // An init that registers nothing leaves undefined.

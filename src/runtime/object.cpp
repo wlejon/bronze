@@ -229,7 +229,7 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
         auto* hdr = proto.asObject<HeapObjectHeader>();
         if (!HeapKind::carriesShape(hdr->flags)) return nullptr;
         cur = reinterpret_cast<ObjectHeader*>(hdr);
-        if (cur->shape && cur->shape->isDictionary()) {
+        if (cur->shape && !cur->shape->readCacheable()) {
             crossedDictionary = true;
             return nullptr;
         }
@@ -238,7 +238,7 @@ ObjectHeader* ObjectHeader::cachedProtoHolder(uint32_t depth, bool& crossedDicti
 }
 
 bool ObjectHeader::chainIsCacheable() const noexcept {
-    if (!shape || shape->isDictionary()) return false;
+    if (!shape || !shape->readCacheable()) return false;
     const ObjectHeader* cur = this;
     for (uint32_t depth = 0; depth <= kMaxPrototypeDepth; ++depth) {
         const Value proto = cur->shape->prototypeValue();
@@ -246,8 +246,10 @@ bool ObjectHeader::chainIsCacheable() const noexcept {
         const auto* hdr = proto.asObject<HeapObjectHeader>();
         if (!HeapKind::carriesShape(hdr->flags)) return false;
         cur = reinterpret_cast<const ObjectHeader*>(hdr);
-        if (!cur->shape || cur->shape->isDictionary()) return false;
-        if (!cur->shape->used_as_prototype) return false;
+        if (!cur->shape || !cur->shape->readCacheable()) return false;
+        // A frozen dictionary is exempt from the mark: the mark exists so an
+        // add bumps the epoch, and nothing can be added to one.
+        if (!cur->shape->used_as_prototype && !cur->shape->isDictionary()) return false;
     }
     return false;  // a cycle, or a chain past the bound: not an answer
 }
@@ -336,7 +338,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
         if (holder->shape && holder->shape->lookupProperty(prop_name, info)) {
             if (info.accessor) {
                 bool crossedDictionary = false;
-                if (site && shape && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
+                if (site && shape && shape->readCacheable() && !runtime::censusFillsSuppressed() &&
                     (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
                     if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
                         into->fillAccessor(shape, info.slot, depth);
@@ -353,14 +355,15 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
                 }
                 return callGetter(getter, self);
             }
-            // A dictionary receiver's shape is private to one object and its
-            // slots are not shape-indexed, so an entry naming it could only
-            // ever hit for that object and would go stale on its next delete.
-            // The proto-hit case fills only what the HIT path would accept —
-            // the walk is asked here rather than the condition restated, so
-            // the two cannot drift into disagreeing about the same entry.
+            // A dictionary receiver's shape is private to one object, so an
+            // entry naming it could only ever hit for that object and would go
+            // stale on its next delete — unless it is frozen and has no next
+            // delete (Shape::readCacheable). The proto-hit case fills only what
+            // the HIT path would accept — the walk is asked here rather than
+            // the condition restated, so the two cannot drift into disagreeing
+            // about the same entry.
             bool crossedDictionary = false;
-            if (site && shape && !shape->isDictionary() && !runtime::censusFillsSuppressed() &&
+            if (site && shape && shape->readCacheable() && !runtime::censusFillsSuppressed() &&
                 (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
                 if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
                     into->fill(shape, info.slot, depth);
@@ -564,7 +567,14 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
                 // property is created and a strict assignment throws. A
                 // WRITABLE one is shadowed by the own property created below,
                 // which is the case this loop used to be the whole of.
-                if (!info.writable) {
+                //
+                // Except where the holder is a HARDENED intrinsic (lockdown.h):
+                // there the write defines the receiver's own property, the
+                // override-mistake fix. The holder is never `this` here — an
+                // own property was answered above — so the intrinsic itself
+                // still refuses every write.
+                if (!info.writable && !(holder->shape->isDictionary() &&
+                                        holder->shape->dict->hardened)) {
                     if (refused) *refused = SetRefusal::NotWritable;
                     return this;
                 }

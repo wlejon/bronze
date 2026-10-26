@@ -19,6 +19,10 @@
 // statics of its own, which would put the collector's roots at the mercy of
 // cross-TU initialization order.
 
+namespace bronze {
+class Realm;
+}
+
 namespace bronze::runtime {
 
 Heap& rtHeap();
@@ -61,6 +65,10 @@ extern "C" uint32_t bronze_register_key_string_len(const char* str, size_t len);
 // Arm and execute per-thread runtime teardown on worker thread exit.
 void rtArmThreadTeardown();
 void rtTeardownThreadState();
+
+// Hand the host globals registered before the thread had a realm to the
+// default realm as it is made (realm.cpp; Realm::hostGlobals).
+void rtAdoptPreRealmHostGlobals(::bronze::Realm& realm);
 
 uint32_t rtArrayMethodId(const std::string& key);
 Value rtArrayMethodById(uint32_t id);

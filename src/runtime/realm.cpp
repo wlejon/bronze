@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,6 +39,8 @@ static const char* const kGlobalObjectNames[] = {
     "decodeURIComponent", "escape", "unescape", "Iterator", "WeakRef", "FinalizationRegistry",
     "eval", "performance",
 };
+
+std::span<const char* const> rtBuiltinGlobalNames() { return kGlobalObjectNames; }
 
 Realm::Realm(bool deferInit) {
     if (!deferInit) {
@@ -78,7 +81,7 @@ void Realm::initGlobalObject(Value customGlobal) {
             /*enumerable=*/false, /*defineOwn=*/true);
     }
 
-    for (const auto& entry : runtime::rtHostGlobalEntries()) {
+    for (const auto& entry : hostGlobals_) {
         // Skipped for the same reason `rtDefineHostGlobalOnLiveRealms` skips
         // it: the bare-name ladder asks the builtins first, so a host global
         // named `Math` is unreachable by name — and writing it here made the
@@ -142,6 +145,7 @@ void Realm::visitRoots(const Heap::RootVisitor& visit) {
     for (auto& entry : moduleRegistry_) {
         if (entry.second.isObject()) visit(entry.second);
     }
+    for (auto& entry : hostGlobals_) visit(entry.second);
 }
 
 Realm* rtDefaultRealm() {
@@ -150,9 +154,23 @@ Realm* rtDefaultRealm() {
         auto* r = new Realm(/*deferInit=*/true);
         g_defaultRealm = r;
         g_liveRealms.push_back(r);
+        runtime::rtAdoptPreRealmHostGlobals(*r);
         r->initGlobalObject(Value::fromUndefined());
     }
     return g_defaultRealm;
+}
+
+Realm* rtHostGlobalRealm() {
+    if (!g_realmStack.empty()) return g_realmStack.back();
+    return g_defaultRealm;
+}
+
+Realm* rtRealmOfGlobal(Value glob) {
+    if (!glob.isObject()) return nullptr;
+    for (Realm* r : g_liveRealms) {
+        if (r && r->globalObject().rawBits() == glob.rawBits()) return r;
+    }
+    return nullptr;
 }
 
 Realm* rtCurrentRealm() {
@@ -172,8 +190,28 @@ Realm* rtCreateRealm(Value customGlobal) {
     return realm;
 }
 
+static std::mutex g_realmDestroyHooksMu;
+
+static std::vector<RealmDestroyHook>& realmDestroyHooks() {
+    static auto* hooks = new std::vector<RealmDestroyHook>();
+    return *hooks;
+}
+
+void rtAddRealmDestroyHook(RealmDestroyHook hook) {
+    if (!hook) return;
+    std::lock_guard<std::mutex> lock(g_realmDestroyHooksMu);
+    auto& hooks = realmDestroyHooks();
+    if (std::find(hooks.begin(), hooks.end(), hook) == hooks.end()) hooks.push_back(hook);
+}
+
 void rtDestroyRealm(Realm* realm) {
     if (!realm || realm == g_defaultRealm) return;
+    std::vector<RealmDestroyHook> hooks;
+    {
+        std::lock_guard<std::mutex> lock(g_realmDestroyHooksMu);
+        hooks = realmDestroyHooks();
+    }
+    for (RealmDestroyHook hook : hooks) hook(realm);
     bool wasActive = (!g_realmStack.empty() && g_realmStack.back() == realm);
     std::erase(g_realmStack, realm);
     std::erase(g_liveRealms, realm);
@@ -204,8 +242,8 @@ void rtVisitRealmRoots(const Heap::RootVisitor& visit) {
     }
 }
 
-void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value) {
-    if (g_liveRealms.empty()) return;
+void rtDefineHostGlobalOnRealm(Realm* r, const std::string& name, Value value) {
+    if (!r) return;
     if (name == "globalThis") return;
     // The bare-name ladder's order, mirrored exactly (rt_state.cpp
     // `bronze_global_get`): the builtins a host may shadow
@@ -221,14 +259,12 @@ void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value) {
     ShadowStackFrame frame;
     Rooted<Value> val{value};
     Rooted<Value> key{runtime::rtMakeString(name)};
-    for (Realm* r : g_liveRealms) {
-        if (!r) continue;
+    {
         Rooted<Value> glob{r->globalObject()};
-        if (!glob.get().isObject()) continue;
+        if (!glob.get().isObject()) return;
         // A lazy name's accessor (host_globals.h) gives way to the value:
         // setProp will not turn an accessor into a data property.
         {
-            // The key is read again per realm: the delete below allocates.
             const PropertyKey pkey = runtime::rtInternPropertyKey(key.get());
             auto* obj = glob.get().asObject<ObjectHeader>();
             PropertyInfo own;
@@ -246,9 +282,9 @@ void rtDefineHostGlobalOnLiveRealms(const std::string& name, Value value) {
     }
 }
 
-void rtDefineLazyHostGlobalOnLiveRealms(const std::string& name) {
+void rtDefineLazyHostGlobalOnRealm(Realm* r, const std::string& name) {
     const runtime::LazyGlobalAccessorHook hook = runtime::rtLazyGlobalAccessorHook();
-    if (!hook || g_liveRealms.empty() || name == "globalThis") return;
+    if (!hook || !r || name == "globalThis") return;
     if (!runtime::rtHostShadowsBuiltin(name)) {
         if (Value builtin = Value::fromUndefined();
             runtime::rtResolveBuiltinGlobal(name, builtin)) {
@@ -256,13 +292,10 @@ void rtDefineLazyHostGlobalOnLiveRealms(const std::string& name) {
         }
     }
     ShadowStackFrame frame;
-    for (Realm* r : g_liveRealms) {
-        if (!r) continue;
-        Rooted<Value> glob{r->globalObject()};
-        if (!glob.get().isObject()) continue;
-        glob.set(hook(glob.get(), name));
-        r->setGlobalObject(glob.get());
-    }
+    Rooted<Value> glob{r->globalObject()};
+    if (!glob.get().isObject()) return;
+    glob.set(hook(glob.get(), name));
+    r->setGlobalObject(glob.get());
 }
 
 void rtTeardownThreadRealms() {

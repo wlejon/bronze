@@ -239,7 +239,8 @@ bool decodeDescriptor(Rooted<Value>& desc, DecodedDescriptor& d, Rooted<Value>& 
 // question affordable: a shape is immutable and installing a property
 // transitions to a different one, so a pointer compare is a proof that nothing
 // was added since the walk. Two conditions narrow where that proof holds — a
-// dictionary shape is mutated in place, and the memo answers for the whole
+// dictionary shape is mutated in place unless it is frozen
+// (Shape::readCacheable), and the memo answers for the whole
 // chain rather than for one link — and outside them the six lookups are
 // simply repeated.
 bool literalDescriptorFieldsAreOwnOnly() {
@@ -255,7 +256,7 @@ bool literalDescriptorFieldsAreOwnOnly() {
     auto* proto = protoVal.asObject<ObjectHeader>();
 
     static thread_local Shape* verified = nullptr;
-    const bool memoizable = proto->shape != nullptr && !proto->shape->isDictionary() &&
+    const bool memoizable = proto->shape != nullptr && proto->shape->readCacheable() &&
                             proto->protoAncestor(1) == nullptr;
     if (memoizable && proto->shape == verified) return true;
 

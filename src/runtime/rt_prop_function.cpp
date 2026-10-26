@@ -77,7 +77,8 @@ void fnStaticsIcReadSeam() noexcept {
 //     the read below hands `getProp` the function's own slot). Generated
 //     code's inline arms hold the box, so they would dispatch the getter with
 //     the wrong receiver; both stay on the helper instead.
-//   - A DICTIONARY shape is never cached, on the same terms as the plain-object
+//   - A DICTIONARY shape is never cached unless it is frozen
+//     (Shape::readCacheable), on the same terms as the plain-object
 //     path: its slots are not shape-indexed and its shape is private to one
 //     object, so an entry naming it goes stale on the next delete.
 //
@@ -91,7 +92,7 @@ void fnStaticsIcReadSeam() noexcept {
 // a key-to-slot map, and the refusals above are exactly those cases.
 bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept {
     if (g_fnStaticsIcEnabled == 0) return false;
-    if (box == nullptr || box->shape == nullptr || box->shape->isDictionary()) return false;
+    if (box == nullptr || box->shape == nullptr || !box->shape->readCacheable()) return false;
     // The intrinsic-constructor gate. `rtIntrinsicConstructorName` is true for
     // exactly the receivers `rtGlobalConstructorMember` can answer for — both
     // ask whether the FunctionHeader's code pointer is one of `kCtors` — so

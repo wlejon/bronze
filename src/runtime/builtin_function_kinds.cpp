@@ -192,6 +192,13 @@ uint32_t slotForKindPrototype(Value obj) {
 
 }  // namespace
 
+Value rtFunctionKindIntrinsic(uint32_t index) {
+    const uint32_t slot = kGenerator + index;
+    if (slot >= kKindCount) return Value::fromUndefined();
+    ensureKind(slot);
+    return g_kinds[slot].proto;
+}
+
 Value rtFunctionKindConstructor(Value fnVal) {
     const uint32_t slot = slotForFunction(fnVal);
     if (slot == kOrdinary) return Value::fromUndefined();

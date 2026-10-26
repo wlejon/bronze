@@ -106,6 +106,16 @@ public:
     // not named properties (integrity.h says why the level is kept HERE).
     IntegrityLevel level{IntegrityLevel::Open};
 
+    // Frozen by lockdown (runtime/lockdown.h) rather than by a program: one of
+    // the intrinsics every realm on the thread shares. Always with `level`
+    // Frozen. What it changes is the override mistake and nothing else: an
+    // assignment to an object that INHERITS a non-writable data property from
+    // a hardened object defines an own property on the receiver, where
+    // 10.1.9.2 step 2.a would refuse it — so `C.prototype.toString = f` and
+    // `MyError.prototype.name = 'MyError'` keep working once
+    // `Object.prototype` and `Error.prototype` are frozen.
+    bool hardened{false};
+
     const DictEntry* find(PropertyKey name) const noexcept;
     DictEntry* find(PropertyKey name) noexcept;
 

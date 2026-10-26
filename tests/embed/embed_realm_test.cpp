@@ -297,3 +297,63 @@ TEST_CASE("HostClass brand isolation, inheritance lineage, multi-realm install, 
     CHECK(embed::toDouble(embed::getElement(squares.get(), 0)) == 0.0);
     CHECK(embed::toDouble(embed::getElement(squares.get(), 3)) == 9.0);
 }
+
+TEST_CASE("a HostClass has its own constructor and prototype in each realm") {
+    static embed::HostClass widget;
+    struct Payload {
+        int value{0};
+    };
+    auto decorate = [](embed::ObjectBuilder& proto) {
+        proto.def("value", 0, [](embed::Value self, std::span<const embed::Value>) {
+            auto* p = static_cast<Payload*>(widget.unwrap(self));
+            return embed::fromDouble(p ? p->value : -1);
+        });
+    };
+
+    widget.install("RealmWidget", 0, nullptr, decorate);
+    embed::Persistent protoA(widget.prototype());
+    embed::Persistent ctorA(widget.constructor());
+    embed::Persistent instA(widget.createInstance(std::make_unique<Payload>(Payload{1})));
+
+    embed::Realm* realmB = embed::createRealm();
+    embed::Persistent protoB;
+    embed::Persistent instB;
+    {
+        embed::RealmScope scope(realmB);
+        // Not installed here until the host installs it here.
+        CHECK(!widget.installed());
+        CHECK(embed::isUndefined(widget.prototype()));
+        widget.install("RealmWidget", 0, nullptr, decorate);
+        CHECK(widget.installed());
+        protoB.set(widget.prototype());
+        instB.set(widget.createInstance(std::make_unique<Payload>(Payload{2})));
+        CHECK(protoB.get() != protoA.get());
+        CHECK(widget.constructor() != ctorA.get());
+        CHECK(embed::globalValue("RealmWidget").value == widget.constructor());
+        // A change to this realm's prototype...
+        embed::setProperty(protoB.get(), "patched", embed::fromDouble(7.0));
+        CHECK(embed::toDouble(embed::getProperty(instB.get(), "patched")) == 7.0);
+    }
+    // ...is invisible from the first realm, whose class is untouched by the
+    // second install.
+    CHECK(widget.installed());
+    CHECK(widget.prototype() == protoA.get());
+    CHECK(embed::globalValue("RealmWidget").value == ctorA.get());
+    CHECK(embed::isUndefined(embed::getProperty(instA.get(), "patched")));
+    embed::Persistent instA2(widget.createInstance(std::make_unique<Payload>(Payload{3})));
+    CHECK(embed::isUndefined(embed::getProperty(instA2.get(), "patched")));
+
+    // The brand is the class's, so either realm's instance unwraps.
+    REQUIRE(widget.unwrap(instA.get()) != nullptr);
+    REQUIRE(widget.unwrap(instB.get()) != nullptr);
+    CHECK(static_cast<Payload*>(widget.unwrap(instB.get()))->value == 2);
+
+    // Destroying the second realm drops its class and leaves the first's.
+    embed::destroyRealm(realmB);
+    CHECK(widget.installed());
+    CHECK(widget.prototype() == protoA.get());
+    embed::Value method = embed::getProperty(instA2.get(), "value");
+    embed::CallResult r = embed::call(method, instA2.get(), {});
+    CHECK(!r.thrown);
+    CHECK(embed::toDouble(r.value) == 3.0);
+}

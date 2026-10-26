@@ -209,6 +209,11 @@ void rtDefineSpeciesGetter(Rooted<Value>& ctor);
 // given elsewhere.
 Value rtFunctionKindConstructor(Value fnVal);
 Value rtFunctionKindPrototype(Value fnVal);
+// The three [[Prototype]] objects above by index — 0 %GeneratorFunction.prototype%,
+// 1 %AsyncFunction.prototype%, 2 %AsyncGeneratorFunction.prototype% — built on
+// first ask, for lockdown, which has no function of the kind to ask with.
+// `undefined` past the last.
+Value rtFunctionKindIntrinsic(uint32_t index);
 
 // An inherited member read off one of those three prototype objects. Each is
 // an ordinary object whose [[Prototype]] is %Function.prototype%, a function

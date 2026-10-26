@@ -105,7 +105,7 @@ const char* classifyPropGet(Value objVal, uint32_t keyIndex, InlineCache* ic) {
     if (hdr->flags != HeapKind::Plain) return "kind_other";
 
     auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
-    if (obj->shape && obj->shape->dict) return "receiver_in_dict_mode";
+    if (obj->shape && !obj->shape->readCacheable()) return "receiver_in_dict_mode";
 
     StringHeader* keyHdr = rtKeyHeader(keyIndex);
     if (keyHdr) {

@@ -521,14 +521,43 @@ static void sweepDynamicModules() {
     });
 }
 
-// Globals an embedding host registered (host_globals.h). A vector of pairs
-// rather than a map: registration happens a handful of times at host startup,
-// and a lookup is a read `bronze_global_get` reaches only for a name the
-// builtin ladder did not answer.
-static thread_local std::vector<std::pair<std::string, Value>> g_hostGlobals;
-// The pending inits of lazy host globals (host_globals.h), whose entries in
-// g_hostGlobals hold the hole until forced.
-static thread_local std::vector<std::pair<std::string, std::function<void()>>> g_lazyHostGlobals;
+// Globals an embedding host registered (host_globals.h) live on the REALM they
+// were registered in (Realm::hostGlobals). A vector of pairs rather than a map:
+// registration happens a handful of times at host startup, and a lookup is a
+// read `bronze_global_get` reaches only for a name the builtin ladder did not
+// answer. These two hold what a host registered before the thread had any
+// realm, which the default realm adopts when it is made.
+static thread_local std::vector<std::pair<std::string, Value>> g_preRealmHostGlobals;
+static thread_local std::vector<std::pair<std::string, std::function<void()>>>
+    g_preRealmLazyHostGlobals;
+
+namespace {
+
+// The tables a registration or a lookup on this thread reads: the current
+// realm's, or the thread's own before any realm exists.
+struct HostGlobalTables {
+    std::vector<std::pair<std::string, Value>>& values;
+    std::vector<std::pair<std::string, std::function<void()>>>& lazy;
+    Realm* realm;
+};
+
+HostGlobalTables hostGlobalTables() {
+    if (Realm* r = bronze::rtHostGlobalRealm()) {
+        return {r->hostGlobals(), r->lazyHostGlobals(), r};
+    }
+    return {g_preRealmHostGlobals, g_preRealmLazyHostGlobals, nullptr};
+}
+
+}  // namespace
+
+void rtAdoptPreRealmHostGlobals(Realm& realm) {
+    for (auto& entry : g_preRealmHostGlobals) realm.hostGlobals().push_back(std::move(entry));
+    for (auto& entry : g_preRealmLazyHostGlobals) {
+        realm.lazyHostGlobals().push_back(std::move(entry));
+    }
+    g_preRealmHostGlobals.clear();
+    g_preRealmLazyHostGlobals.clear();
+}
 
 static void registerThreadRootSources(Heap& heap) {
     {
@@ -547,7 +576,7 @@ static void registerThreadRootSources(Heap& heap) {
         sweepDynamicModules();
     });
     heap.add_root_source([](const Heap::RootVisitor& visit) {
-        for (auto& entry : g_hostGlobals) visit(entry.second);
+        for (auto& entry : g_preRealmHostGlobals) visit(entry.second);
         rtVisitArrayMethodRoots(visit);
         rtVisitRealmRoots(visit);
     });
@@ -569,37 +598,39 @@ void rtRegisterHostGlobal(const std::string& name, Value value) {
     // builtin until a host provides its own, and every module that read the
     // builtin cached it.
     rtInvalidateGlobalCaches();
+    HostGlobalTables t = hostGlobalTables();
     // A pending lazy name registered for real: its init has nothing left to
     // do for it (host_globals.h).
-    for (auto it = g_lazyHostGlobals.begin(); it != g_lazyHostGlobals.end(); ++it) {
+    for (auto it = t.lazy.begin(); it != t.lazy.end(); ++it) {
         if (it->first == name) {
-            g_lazyHostGlobals.erase(it);
+            t.lazy.erase(it);
             break;
         }
     }
-    for (auto& entry : g_hostGlobals) {
+    for (auto& entry : t.values) {
         if (entry.first == name) {
             entry.second = value;
-            rtDefineHostGlobalOnLiveRealms(name, value);
+            rtDefineHostGlobalOnRealm(t.realm, name, value);
             return;
         }
     }
-    g_hostGlobals.emplace_back(name, value);
+    t.values.emplace_back(name, value);
     // The registry answers the BARE name; a realm's global object is what
     // `globalThis[name]`, `name in globalThis` and every reflective walk read.
     // Both, or a host global is invisible to feature detection (realm.h states
     // the rule and why a builtin name is not written).
-    rtDefineHostGlobalOnLiveRealms(name, value);
+    rtDefineHostGlobalOnRealm(t.realm, name, value);
 }
 
 bool rtHostGlobalLookup(const std::string& name, Value& out) {
-    for (const auto& entry : g_hostGlobals) {
+    HostGlobalTables t = hostGlobalTables();
+    for (const auto& entry : t.values) {
         if (entry.first == name) {
             if (entry.second.isHole()) {
                 rtForceLazyHostGlobal(name);
                 // The init may have registered names, growing the vector:
                 // read the entry again.
-                for (const auto& again : g_hostGlobals) {
+                for (const auto& again : t.values) {
                     if (again.first == name) {
                         out = again.second.isHole() ? Value::fromUndefined() : again.second;
                         return true;
@@ -616,7 +647,7 @@ bool rtHostGlobalLookup(const std::string& name, Value& out) {
 }
 
 bool rtHostGlobalRegistered(const std::string& name) {
-    for (const auto& entry : g_hostGlobals) {
+    for (const auto& entry : hostGlobalTables().values) {
         if (entry.first == name) return true;
     }
     return false;
@@ -629,23 +660,24 @@ void rtRegisterLazyHostGlobal(const std::string& name, std::function<void()> ini
                "native or a host global, not both")
                   .c_str());
     }
+    HostGlobalTables t = hostGlobalTables();
     // Already registered for real: there is nothing to defer.
-    for (const auto& entry : g_hostGlobals) {
+    for (const auto& entry : t.values) {
         if (entry.first == name && !entry.second.isHole()) return;
     }
     bool replaced = false;
-    for (auto& pending : g_lazyHostGlobals) {
+    for (auto& pending : t.lazy) {
         if (pending.first == name) {
             pending.second = std::move(init);
             replaced = true;
             break;
         }
     }
-    if (!replaced) g_lazyHostGlobals.emplace_back(name, std::move(init));
+    if (!replaced) t.lazy.emplace_back(name, std::move(init));
     if (!rtHostGlobalRegistered(name)) {
         rtInvalidateGlobalCaches();
-        g_hostGlobals.emplace_back(name, Value::fromHole());
-        rtDefineLazyHostGlobalOnLiveRealms(name);
+        t.values.emplace_back(name, Value::fromHole());
+        rtDefineLazyHostGlobalOnRealm(t.realm, name);
     }
 }
 
@@ -655,10 +687,11 @@ bool rtInLazyGlobalInit() { return g_lazyInitDepth != 0; }
 
 void rtForceLazyHostGlobal(const std::string& name) {
     std::function<void()> init;
-    for (auto it = g_lazyHostGlobals.begin(); it != g_lazyHostGlobals.end(); ++it) {
+    auto& lazy = hostGlobalTables().lazy;
+    for (auto it = lazy.begin(); it != lazy.end(); ++it) {
         if (it->first == name) {
             init = std::move(it->second);
-            g_lazyHostGlobals.erase(it);
+            lazy.erase(it);
             break;
         }
     }
@@ -846,7 +879,9 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
 
 }  // extern "C"
 
-const std::vector<std::pair<std::string, Value>>& rtHostGlobalEntries() { return g_hostGlobals; }
+const std::vector<std::pair<std::string, Value>>& rtHostGlobalEntries() {
+    return hostGlobalTables().values;
+}
 
 extern "C" {
 

@@ -686,6 +686,14 @@ BRONZE_EMBED_API void exitRealm();
 BRONZE_EMBED_API Value getRealmGlobal(Realm* realm = nullptr);
 BRONZE_EMBED_API Realm* currentRealm();
 
+// Run `hook` whenever a realm is about to be destroyed, before its global and
+// host globals go: a host keeping per-realm state (its classes' prototypes,
+// keyed by realm) drops that realm's share so it is collectable and a later
+// realm at the same address starts clean. Process-wide, deduplicated, run on
+// the destroying thread; register once at startup.
+using RealmDestroyHook = void (*)(Realm* realm);
+BRONZE_EMBED_API void addRealmDestroyHook(RealmDestroyHook hook);
+
 // RAII helper for entering and exiting a realm.
 class RealmScope {
 public:
@@ -701,6 +709,15 @@ public:
 private:
     Realm* realm_;
 };
+
+// Freeze every intrinsic the realms of the calling thread share
+// (runtime/lockdown.h): the builtins and everything reachable from them,
+// with the override-mistake fix that keeps `C.prototype.toString = f`
+// working. Each realm's global object, and every host global and host class,
+// stay the realm's own and unfrozen. Call it on each thread before its first
+// script; idempotent. ALLOCATES.
+BRONZE_EMBED_API void lockdown();
+BRONZE_EMBED_API bool lockedDown();
 
 // ---- binary data: embed_typed_array.h --------------------------------------
 //

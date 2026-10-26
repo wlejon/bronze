@@ -21,8 +21,17 @@
 
 namespace bronze::runtime {
 
-// Register (or replace) a host global. The value is rooted by the registry's
-// root source, so it survives collections for the life of the process. A name
+// The registry is PER REALM (Realm::hostGlobals): a registration lands in the
+// realm current at the call, and a lookup, a lazy name, the list a compilation
+// admits (rtHostGlobalEntries) all read the current realm's. Two realms on one
+// thread hold two separate sets, so what a host installs for one — its
+// namespaces, its class prototypes, its document — cannot be reached, or
+// replaced, from the other; a new realm has none until the host installs them
+// there. What is registered before the thread has any realm goes to the
+// default realm when it is made.
+//
+// Register (or replace) a host global. The value is rooted by its realm, so it
+// survives collections for the life of the realm. A name
 // that collides with a builtin is unreachable: `bronze_global_get` asks the
 // builtins first, deliberately — a host must not be able to swap out `Math`
 // under compiled code that was optimized against it.

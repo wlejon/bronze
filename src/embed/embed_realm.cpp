@@ -1,5 +1,6 @@
 #include "embed/embed.h"
 #include "runtime/gc.h"
+#include "runtime/lockdown.h"
 #include "runtime/realm.h"
 
 namespace bronze::embed {
@@ -36,5 +37,14 @@ Realm* currentRealm() {
     ShadowStackFrame frame;
     return bronze::rtCurrentRealm();
 }
+
+void addRealmDestroyHook(RealmDestroyHook hook) { bronze::rtAddRealmDestroyHook(hook); }
+
+void lockdown() {
+    ShadowStackFrame frame;
+    runtime::rtLockdown();
+}
+
+bool lockedDown() { return runtime::rtLockedDown(); }
 
 }  // namespace bronze::embed

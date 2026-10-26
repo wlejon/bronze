@@ -165,7 +165,11 @@ static SetDestination setDestination(Rooted<Value>& target, Rooted<Value>& key) 
         const bool own = rtOwnPropertyOf(holder, key.get(), found);
         if (own) {
             if (found.accessor) return SetDestination::Accessor;
-            return found.writable ? SetDestination::DataOntoReceiver : SetDestination::Refused;
+            // A hardened holder is shadowed rather than refusing (lockdown.h,
+            // the override mistake); when the receiver IS the holder, its own
+            // non-writable property refuses in receiverRefusalForData.
+            return found.writable || rtIsHardened(holder.get()) ? SetDestination::DataOntoReceiver
+                                                                : SetDestination::Refused;
         }
         if (receiverRoute(holder.get()) == ReceiverRoute::Unobservable) break;
         const uint64_t call[1] = {holder.get().rawBits()};

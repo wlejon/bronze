@@ -260,6 +260,46 @@ delta and runs on one thread. `src/embed/embed.h` states the full contract;
 threads concurrently, and one image entered on two threads at once, each
 hammered under per-allocation collection.
 
+### Realms and lockdown
+
+A thread can hold several realms (`embed::createRealm`), each with its own
+global object. The builtins are NOT per realm: the builtin ladder answers one
+`Array`, one `Object.prototype`, one `%IteratorPrototype%` per thread, and
+every realm's global is populated with the same objects. That is what lets
+compiled code be optimized against the real `Math` once, and it is also a
+channel: a realm that patches `Array.prototype.push` changes every other realm
+on the thread.
+
+`embed::lockdown()` (`runtime/lockdown.h`) closes it, SES-style. A host calls
+it on each thread before that thread's first script; it walks everything
+reachable from the builtin globals plus the intrinsics no global names
+(iterator, generator and async prototypes), through properties, accessors and
+prototypes, and freezes each object. A program never locks down by itself, so
+a plain `bronze` program keeps node's semantics.
+
+Frozen objects keep their inline caches: a frozen object's shape is a
+dictionary whose layout can never change again, so `Shape::readCacheable()`
+lets read caches, prototype-chain caches, enumeration caches and the statics
+box cache name it exactly as they name a transition-tree shape; and once the
+walk is done nothing on a frozen prototype can change, so nothing bumps a
+prototype epoch on its account again. The override mistake (assigning
+`MyError.prototype.name` or `obj.toString` where the inherited property is
+frozen) is fixed in the engine rather than by SES's accessor conversion:
+lockdown marks each object it freezes `hardened`, and an inherited read-only
+data property on a hardened holder is shadowed by an own property on the
+receiver instead of refusing the write. The holder itself still refuses, as
+any frozen object does. `tests/eval/eval_lockdown_test.cpp` is the suite.
+
+What a host installs is per realm and never frozen: host globals
+(`registerGlobal`, `registerLazyGlobal`) go to the realm current at the
+registration and to no other, a fresh realm starts with none (those made
+before any realm existed are adopted by the default realm), and a
+`HostClass` has one constructor and prototype per realm, dropped when the realm
+is destroyed (`embed::addRealmDestroyHook` lets a host drop its own per-realm
+state the same way). `tests/embed/embed_global_object_test.cpp` and
+`embed_realm_test.cpp` check that two realms on one thread cannot see each
+other's.
+
 ## In-Memory Dynamic Execution and JIT (`src/eval`)
 
 Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem compiles JavaScript source code or files to brass MIR and runs them through the tiered engine (`src/codegen-brass/brass_tiered_engine.h`): interpreted first, with hot functions compiled to baseline and then optimized code, and hot loops moved into optimized code mid-loop (OSR), all compiled on brass's process-wide compile pool while the program runs. The optimizer runs per function as it tiers up, not over the whole program before it starts. The whole-program optimizing JIT (`BrassBackend::compileToJit`) remains as an explicit tier.

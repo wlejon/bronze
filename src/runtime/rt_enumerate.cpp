@@ -442,14 +442,14 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
 
     // The enumeration cache, probed and (on the walk below) filled under one
     // decision: the holder's key list is a function of (shape, epoch) only for
-    // a non-dictionary shape over a chain `chainIsCacheable` vouches for. Both
+    // a shape over a chain `chainIsCacheable` vouches for — a transition-tree
+    // node, or a frozen dictionary's (Shape::readCacheable). Both
     // sides ask before anything allocates, so the raw holder pointer is live
     // for the whole question; shapes are immortal, so `cacheShape` outlives
     // everything below.
     Shape* cacheShape = nullptr;
     const uint64_t epochNow = protoMutationEpoch();
-    if (enumCacheEnabled() && holder->shape && !holder->shape->isDictionary() &&
-        holder->chainIsCacheable()) {
+    if (enumCacheEnabled() && holder->shape && holder->chainIsCacheable()) {
         cacheShape = holder->shape;
         auto& cache = enumCache();
         if (auto it = cache.find(cacheShape);

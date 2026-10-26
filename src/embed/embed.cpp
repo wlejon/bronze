@@ -27,6 +27,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
+#include "runtime/realm.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/weak_ref.h"
@@ -45,6 +46,29 @@ bool hasHostGlobal(std::string_view name) {
 
 namespace {
 
+// Enters the realm whose global object `receiver` is, for as long as it lives,
+// when that is not the current realm: a lazy name belongs to the realm it was
+// registered in (host_globals.h), so its accessor must force and register
+// there whichever realm's code happened to read it.
+class OwningRealmScope {
+public:
+    explicit OwningRealmScope(Value receiver) {
+        Realm* owner = bronze::rtRealmOfGlobal(receiver);
+        if (owner && owner != bronze::rtCurrentRealm()) {
+            bronze::rtEnterRealm(owner);
+            entered_ = true;
+        }
+    }
+    ~OwningRealmScope() {
+        if (entered_) bronze::rtExitRealm();
+    }
+    OwningRealmScope(const OwningRealmScope&) = delete;
+    OwningRealmScope& operator=(const OwningRealmScope&) = delete;
+
+private:
+    bool entered_ = false;
+};
+
 // The accessor pair a pending lazy global shows on a realm's global object
 // (runtime/host_globals.h): reading forces the name and answers what its
 // init registered; assigning forces it and registers the assigned value.
@@ -55,17 +79,19 @@ Value defineLazyGlobalAccessor(Value globalObject, const std::string& name) {
     // a collection can then free the function object, and with it this
     // closure, while the callback is still running.
     Rooted<Value> getter{makeFunction(
-        [name](Value, std::span<const Value>) -> Value {
+        [name](Value self, std::span<const Value>) -> Value {
             const std::string key = name;
+            OwningRealmScope scope(self);
             Value out = Value::fromUndefined();
             runtime::rtHostGlobalLookup(key, out);
             return out;
         },
         0)};
     Rooted<Value> setter{makeFunction(
-        [name](Value, std::span<const Value> args) -> Value {
+        [name](Value self, std::span<const Value> args) -> Value {
             const std::string key = name;
             const Rooted<Value> v{args.empty() ? Value::fromUndefined() : args[0]};
+            OwningRealmScope scope(self);
             runtime::rtForceLazyHostGlobal(key);
             runtime::rtRegisterHostGlobal(key, v.get());
             return Value::fromUndefined();

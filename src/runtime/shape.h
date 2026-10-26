@@ -201,6 +201,23 @@ public:
 
     bool isDictionary() const noexcept { return dict != nullptr; }
 
+    // May a READ cache name an object at this shape, or walk through one? A
+    // transition-tree node always: its layout is immutable and the epoch covers
+    // what an add elsewhere on the chain could shadow. A dictionary only once it
+    // is FROZEN: until then a delete renumbers its slots and a define or a
+    // prototype swap changes what it answers with no shape moving. A frozen one
+    // can do none of those, ever — no add, no delete, no redefinition, no
+    // [[SetPrototypeOf]] (it is not extensible), and no data write — so its
+    // private shape names one fixed key-to-slot map for the object's life,
+    // which is all an entry needs. That is what keeps the intrinsics lockdown
+    // freezes as fast to read as they were before it: `Object.prototype` sits
+    // at the end of every chain a negative entry speaks for. The shape is an
+    // arena node and immortal, so an entry can never come to name a different
+    // object at a reused address. Write paths keep refusing every dictionary.
+    bool readCacheable() const noexcept {
+        return dict == nullptr || dict->level == IntegrityLevel::Frozen;
+    }
+
     // How many slots this node's own property occupies.
     uint32_t slotWidth() const noexcept { return accessor ? 2u : 1u; }
     // The first slot a property added after this one may use. A root shape

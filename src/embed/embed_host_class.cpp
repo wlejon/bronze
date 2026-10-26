@@ -4,13 +4,53 @@
 #include <span>
 #include <unordered_map>
 
+#include "runtime/realm.h"
+
 namespace bronze::embed {
 
 namespace {
 
-std::unordered_map<const HostClass*, HostClass::Slots>& threadSlots() {
-    static thread_local std::unordered_map<const HostClass*, HostClass::Slots> t;
-    return t;
+// (class, realm) -> that realm's constructor and prototype. Thread-local
+// because a realm belongs to one thread, and never destroyed: its Persistents
+// would otherwise be released at thread exit after the runtime is gone.
+struct SlotKey {
+    const HostClass* cls;
+    const Realm* realm;
+    bool operator==(const SlotKey& o) const noexcept { return cls == o.cls && realm == o.realm; }
+};
+struct SlotKeyHash {
+    size_t operator()(const SlotKey& k) const noexcept {
+        return std::hash<const void*>()(k.cls) * 31u ^ std::hash<const void*>()(k.realm);
+    }
+};
+using SlotTable = std::unordered_map<SlotKey, HostClass::Slots, SlotKeyHash>;
+
+SlotTable& threadSlots() {
+    static thread_local auto* t = new SlotTable();
+    return *t;
+}
+
+void releaseSlots(HostClass::Slots& s) {
+    delete s.ctor;
+    delete s.proto;
+    delete s.instanceProto;
+    s.ctor = nullptr;
+    s.proto = nullptr;
+    s.instanceProto = nullptr;
+}
+
+// A destroyed realm's classes go with it, so its prototypes are collectable and
+// a later realm at the same address starts with none.
+void dropRealmSlots(Realm* realm) {
+    SlotTable& t = threadSlots();
+    for (auto it = t.begin(); it != t.end();) {
+        if (it->first.realm == realm) {
+            releaseSlots(it->second);
+            it = t.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void publishGlobal(const char* name, Value val) {
@@ -55,22 +95,21 @@ void brandedDestroy(void* data) {
 }  // namespace
 
 HostClass::Slots& HostClass::slots() const {
-    return threadSlots()[this];
+    return threadSlots()[SlotKey{this, currentRealm()}];
 }
 
 const HostClass::Slots* HostClass::slotsIfAny() const {
     auto& t = threadSlots();
-    auto it = t.find(this);
+    auto it = t.find(SlotKey{this, currentRealm()});
     return it == t.end() ? nullptr : &it->second;
 }
 
 bool HostClass::installed() const {
     const Slots* s = slotsIfAny();
-    if (!s || !s->ctor || !s->proto || !s->realmGlobal) return false;
+    if (!s || !s->ctor || !s->proto) return false;
     GlobalValue gt = globalValue("globalThis");
     if (!gt.found || !isObject(gt.value)) return false;
     Persistent gtP(gt.value);
-    if (s->realmGlobal->get() != gtP.get()) return false;
     if (s->isGlobal && !s->name.empty()) {
         Value cur = getProperty(gtP.get(), s->name);
         if (cur != s->ctor->get()) return false;
@@ -87,15 +126,9 @@ void HostClass::install(const char* name, uint32_t arity, NativeFn body,
         ctorBody = [msg](Value, std::span<const Value>) { return throwTypeError(msg); };
     }
 
+    bronze::rtAddRealmDestroyHook(&dropRealmSlots);
     Slots& s = slots();
-    delete s.ctor;
-    delete s.proto;
-    delete s.instanceProto;
-    delete s.realmGlobal;
-    s.ctor = nullptr;
-    s.proto = nullptr;
-    s.instanceProto = nullptr;
-    s.realmGlobal = nullptr;
+    releaseSlots(s);
     s.name = name ? name : "";
     s.aliases.clear();
     s.isGlobal = global;
@@ -108,13 +141,6 @@ void HostClass::install(const char* name, uint32_t arity, NativeFn body,
         proto.set("constructor", ctor.get());
         if (decorate) decorate(proto);
         s.proto = new Persistent(proto.get());
-    }
-
-    {
-        GlobalValue gt = globalValue("globalThis");
-        if (gt.found && isObject(gt.value)) {
-            s.realmGlobal = new Persistent(gt.value);
-        }
     }
 
     if (global && !s.name.empty()) {

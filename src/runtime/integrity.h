@@ -105,6 +105,14 @@ bool rtArrayElementsConfigurable(Value arrVal);
 bool rtFunctionPrototypeWritable(Value fnVal);
 void rtFreezeObject(Value receiver);
 
+// Lockdown's freeze (lockdown.h): `Object.freeze`, and the table marked
+// `hardened` so that an object inheriting one of its non-writable properties
+// may shadow it (Dictionary::hardened). A kind with no table to mark — none of
+// the intrinsics is one — is a fatal error naming it, because an intrinsic
+// lockdown could not record would be an intrinsic left mutable.
+void rtHarden(Value receiver);
+bool rtIsHardened(Value receiver);
+
 // The six `Object` members that are SetIntegrityLevel and TestIntegrityLevel
 // (20.1.2.6, 20.1.2.7, 20.1.2.16, 20.1.2.19, 20.1.2.20, 20.1.2.22). They live
 // beside the storage rules above rather than with the rest of the namespace,

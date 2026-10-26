@@ -227,9 +227,10 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
         return probe;
     }
     // A dictionary object's properties are not in the shape at all, so a slot
-    // number cached against one names nothing. The property path refuses the
-    // same receiver for the same reason.
-    if (shape->dict) {
+    // number cached against one names nothing — unless it is frozen
+    // (Shape::readCacheable). The property path refuses the same receivers
+    // for the same reason.
+    if (!shape->readCacheable()) {
         recordElemIcMiss("receiver_dictionary", objVal.rawBits(), key.rawBits());
         return probe;
     }

@@ -1,8 +1,17 @@
 #pragma once
 
 // Canonical host-class wrapper on the embed surface: one constructor function +
-// one shared prototype per thread/realm, with process-wide type-brand
-// verification and base-class lineage walks on unwrap()/isInstance().
+// one prototype PER REALM, with process-wide type-brand verification and
+// base-class lineage walks on unwrap()/isInstance().
+//
+// Per realm, not per thread, because a prototype is mutable and the realms of
+// one thread must not reach each other's (bronze's intrinsics are shared and
+// frozen by lockdown; a host's classes are not frozen, so they are not shared
+// either). install() makes the class in the CURRENT realm, and make(),
+// prototype(), constructor() and installed() answer for the current realm: an
+// instance is born on the prototype of the realm it is made in. A realm that
+// never installed the class makes bare handles, exactly as a thread that never
+// did. Destroying a realm (embed::destroyRealm) drops its slots.
 
 #include <atomic>
 #include <cstddef>
@@ -23,7 +32,6 @@ public:
         Persistent* proto = nullptr;
         Persistent* ctor = nullptr;
         Persistent* instanceProto = nullptr;
-        Persistent* realmGlobal = nullptr;
         std::string name;
         std::vector<std::string> aliases;
         bool isGlobal = true;
@@ -60,7 +68,8 @@ public:
     Value prototype() const;
     Value constructor() const;
 
-    // Whether install() has run on the CALLING thread's active realm.
+    // Whether install() has run in the CALLING thread's current realm, and the
+    // realm's global still names the constructor.
     bool installed() const;
 
 private:
