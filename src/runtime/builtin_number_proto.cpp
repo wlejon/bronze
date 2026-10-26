@@ -29,6 +29,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/locale_hooks.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -320,7 +321,13 @@ uint64_t numberValueOf(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     return Value::fromDouble(x).rawBits();
 }
 
-uint64_t numberToLocaleString(uint64_t code, uint64_t thisBits, uint32_t, const uint64_t*) {
+uint64_t numberToLocaleString(uint64_t code, uint64_t thisBits, uint32_t argc,
+                              const uint64_t* argv) {
+    // A host's Intl formats it (locale_hooks.h); without one, 21.1.3.4's
+    // implementation-defined answer is toString's.
+    if (uint64_t out = 0; rtRunLocaleHook(LocaleHook::NumberToLocaleString, thisBits, argc, argv, out)) {
+        return out;
+    }
     return numberToString(code, thisBits, 0, nullptr);
 }
 

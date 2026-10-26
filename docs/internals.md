@@ -300,6 +300,13 @@ state the same way). `tests/embed/embed_global_object_test.cpp` and
 `embed_realm_test.cpp` check that two realms on one thread cannot see each
 other's.
 
+A host that needs a builtin to answer differently (an `Intl`-backed
+`toLocaleString`) cannot patch the frozen prototype, so the locale methods
+(`Number.prototype.toLocaleString`, `Date.prototype.toLocale{,Date,Time}String`,
+`String.prototype.localeCompare`) consult a per-thread hook first
+(`embed::setLocaleMethod`, `runtime/locale_hooks.h`) and run their own
+fallback when none is set.
+
 ## In-Memory Dynamic Execution and JIT (`src/eval`)
 
 Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem compiles JavaScript source code or files to brass MIR and runs them through the tiered engine (`src/codegen-brass/brass_tiered_engine.h`): interpreted first, with hot functions compiled to baseline and then optimized code, and hot loops moved into optimized code mid-loop (OSR), all compiled on brass's process-wide compile pool while the program runs. The optimizer runs per function as it tiers up, not over the whole program before it starts. The whole-program optimizing JIT (`BrassBackend::compileToJit`) remains as an explicit tier.

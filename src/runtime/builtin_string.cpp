@@ -31,6 +31,7 @@
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
+#include "runtime/locale_hooks.h"
 #include "runtime/object.h"
 #include "runtime/number_format.h"
 #include "runtime/rt_builtins.h"
@@ -857,6 +858,10 @@ extern "C" uint64_t bronze_string_char_code_at(uint64_t env, uint64_t thisBits, 
                                                 const uint64_t* argv);
 
 uint64_t stringLocaleCompare(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // A host's Intl collates it (locale_hooks.h); without one, code-unit order.
+    if (uint64_t out = 0; rtRunLocaleHook(LocaleHook::StringLocaleCompare, thisBits, argc, argv, out)) {
+        return out;
+    }
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits), "localeCompare");
     Units that = args.count() > 0 ? argUnits(args[0]) : argUnits(Value::fromUndefined());

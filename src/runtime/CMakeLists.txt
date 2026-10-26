@@ -100,6 +100,7 @@ bronze_add_module(runtime
         rt_object_keys.cpp
         realm.cpp
         lockdown.cpp
+        locale_hooks.cpp
         module_registry.cpp
         module_instance.cpp
         rt_global.cpp

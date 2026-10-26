@@ -357,3 +357,35 @@ TEST_CASE("a HostClass has its own constructor and prototype in each realm") {
     CHECK(!r.thrown);
     CHECK(embed::toDouble(r.value) == 3.0);
 }
+
+TEST_CASE("a host's locale method answers through the frozen builtin") {
+    // The same function object either way: the host's Intl is reached through
+    // it, never assigned over it (lockdown freezes Number.prototype).
+    embed::Persistent numberCtor(embed::globalValue("Number").value);
+    embed::Persistent proto(embed::getProperty(numberCtor.get(), "prototype"));
+    embed::Persistent method(embed::getProperty(proto.get(), "toLocaleString"));
+    REQUIRE(embed::isFunction(method.get()));
+
+    embed::CallResult plain = embed::call(method.get(), embed::fromDouble(1234.5), {});
+    REQUIRE(!plain.thrown);
+    CHECK(embed::toUtf8(plain.value) == "1234.5");
+
+    embed::setLocaleMethod(embed::LocaleMethod::NumberToLocaleString,
+                           [](embed::Value self, std::span<const embed::Value> args) {
+                               std::string out = "host:" + std::to_string(static_cast<int>(embed::toDouble(self)));
+                               if (!args.empty() && embed::isString(args[0])) out += ":" + embed::toUtf8(args[0]);
+                               return embed::fromUtf8(out);
+                           });
+    embed::Persistent locale(embed::fromUtf8("de-DE"));
+    const embed::Value arg = locale.get();
+    embed::CallResult hosted =
+        embed::call(method.get(), embed::fromDouble(1234.0), std::span<const embed::Value>(&arg, 1));
+    REQUIRE(!hosted.thrown);
+    CHECK(embed::toUtf8(hosted.value) == "host:1234:de-DE");
+    CHECK(embed::getProperty(proto.get(), "toLocaleString") == method.get());
+
+    embed::setLocaleMethod(embed::LocaleMethod::NumberToLocaleString, nullptr);
+    embed::CallResult back = embed::call(method.get(), embed::fromDouble(7.0), {});
+    REQUIRE(!back.thrown);
+    CHECK(embed::toUtf8(back.value) == "7");
+}

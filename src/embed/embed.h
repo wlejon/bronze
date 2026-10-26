@@ -719,6 +719,20 @@ private:
 BRONZE_EMBED_API void lockdown();
 BRONZE_EMBED_API bool lockedDown();
 
+// The locale-sensitive builtin methods, answered by the host's Intl
+// (runtime/locale_hooks.h): the builtin stays the same frozen function and
+// calls `fn` with its receiver and arguments, under the NativeFn contract. A
+// host never assigns these onto the prototypes, which lockdown freezes. Per
+// thread; an empty `fn` restores bronze's own.
+enum class LocaleMethod : uint8_t {
+    NumberToLocaleString,
+    DateToLocaleString,
+    DateToLocaleDateString,
+    DateToLocaleTimeString,
+    StringLocaleCompare,
+};
+BRONZE_EMBED_API void setLocaleMethod(LocaleMethod which, NativeFn fn);
+
 // ---- binary data: embed_typed_array.h --------------------------------------
 //
 // Typed-array and ArrayBuffer access, construction and external storage are

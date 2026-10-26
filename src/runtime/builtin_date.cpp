@@ -28,6 +28,7 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
+#include "runtime/locale_hooks.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -281,6 +282,12 @@ uint64_t dateSetYear(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 
 template <bool DefaultDate, bool DefaultTime>
 uint64_t dateToLocaleText(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // A host's Intl formats it (locale_hooks.h); without one, the built-in
+    // formatter below.
+    constexpr LocaleHook kHook = DefaultDate && DefaultTime ? LocaleHook::DateToLocaleString
+                                 : DefaultDate             ? LocaleHook::DateToLocaleDateString
+                                                           : LocaleHook::DateToLocaleTimeString;
+    if (uint64_t out = 0; rtRunLocaleHook(kHook, thisBits, argc, argv, out)) return out;
     double t = 0.0;
     if (!rtDateThisTimeValue(Value(thisBits), "a Date string method", t)) {
         return Value::fromUndefined().rawBits();
