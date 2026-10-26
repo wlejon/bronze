@@ -166,6 +166,15 @@ uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
             Rooted<Value> v{Value(bronze_elem_get(pair.get().rawBits(),
                                                   Value::fromDouble(1.0).rawBits()))};
             Rooted<Value> propKey{rtToPropertyKey(k)};
+            if (!propKey.get().isString() && !propKey.get().isSymbol()) {
+                // A number (or other primitive) key: rtToPropertyKey hands it
+                // back as is, so the index path, which owns ToString for it,
+                // stores it. `{}` inherits no property a primitive key names,
+                // so the set is the CreateDataProperty the spec asks for.
+                bronze_elem_set(out.get().rawBits(), propKey.get().rawBits(), v.get().rawBits(),
+                                /*strict=*/true);
+                continue;
+            }
             out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), propKey, v,
                                                         /*ic=*/nullptr, /*enumerable=*/true,
                                                         /*defineOwn=*/true);

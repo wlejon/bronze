@@ -1,0 +1,3 @@
+{"0":"low","1":"mid","2":"high"} mid 0,1,2
+{"0":"z","1.5":"a","true":"b","null":"c","undefined":"d","s":"e"}
+1 true __proto__
