@@ -3,7 +3,6 @@ bronze_add_module(check
         static_checker.cpp
         static_checker_math.cpp
         static_checker_domain.cpp
-        applet_cert.cpp
         prove_equiv.cpp
         prove_equiv_bitwise.cpp
         deterministic_check.cpp
@@ -23,7 +22,6 @@ bronze_add_module(check
     TEST_SOURCES
         ../../tests/check/static_checker_test.cpp
         ../../tests/check/prover_tools_test.cpp
-        ../../tests/check/applet_cert_test.cpp
         ../../tests/check/symbolic_runtime_test.cpp
         ../../tests/check/verified_rewriter_test.cpp
         ../../tests/check/auto_kernel_test.cpp

@@ -5,7 +5,6 @@
 #include <string>
 #include <vector>
 
-#include "check/applet_cert.h"
 #include "check/deterministic_check.h"
 #include "check/prove_equiv.h"
 #include "check/solve_fn.h"
