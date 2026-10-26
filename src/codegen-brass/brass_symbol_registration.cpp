@@ -11,6 +11,7 @@
 #include <brass/gc/runtime_gc.hpp>
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/host_symbols.hpp>
+#include <brass/runtime/native_function.hpp>
 #include <brass/runtime/parallel_runtime.hpp>
 #include <cmath>
 #include <cstdio>
@@ -25,65 +26,7 @@ namespace bronze {
 
 namespace {
 
-template <typename T>
-T unpackArg(const std::vector<brass::RuntimeValue>& args, size_t i) {
-    if (i >= args.size()) return T{};
-    if constexpr (std::is_same_v<T, double>) {
-        return args[i].as_f64();
-    } else if constexpr (std::is_same_v<T, float>) {
-        return args[i].as_f32();
-    } else if constexpr (std::is_same_v<T, int32_t>) {
-        return args[i].as_i32();
-    } else if constexpr (std::is_same_v<T, uint32_t>) {
-        return static_cast<uint32_t>(args[i].as_u32());
-    } else if constexpr (std::is_same_v<T, bool>) {
-        return args[i].as_i32() != 0;
-    } else if constexpr (std::is_pointer_v<T>) {
-        return reinterpret_cast<T>(args[i].as_ptr());
-    } else {
-        return static_cast<T>(args[i].as_u64());
-    }
-}
-
-template <typename Ret>
-brass::RuntimeValue packResult(Ret val) {
-    if constexpr (std::is_void_v<Ret>) {
-        return brass::RuntimeValue::from_void();
-    } else if constexpr (std::is_same_v<Ret, double>) {
-        return brass::RuntimeValue::from_f64(val);
-    } else if constexpr (std::is_same_v<Ret, float>) {
-        return brass::RuntimeValue::from_f32(val);
-    } else if constexpr (std::is_same_v<Ret, int32_t>) {
-        return brass::RuntimeValue::from_i32(val);
-    } else if constexpr (std::is_same_v<Ret, uint32_t>) {
-        return brass::RuntimeValue::from_i32(static_cast<int32_t>(val));
-    } else if constexpr (std::is_same_v<Ret, bool>) {
-        return brass::RuntimeValue::from_i32(val ? 1 : 0);
-    } else if constexpr (std::is_pointer_v<Ret>) {
-        return brass::RuntimeValue::from_ptr(reinterpret_cast<uintptr_t>(val));
-    } else {
-        return brass::RuntimeValue::from_u64(static_cast<uint64_t>(val));
-    }
-}
-
-template <typename Ret, typename... Args, size_t... Is>
-brass::RuntimeValue invokeHelper(Ret (*fn)(Args...), const std::vector<brass::RuntimeValue>& args, std::index_sequence<Is...>) {
-    if constexpr (std::is_void_v<Ret>) {
-        fn(unpackArg<Args>(args, Is)...);
-        return brass::RuntimeValue::from_void();
-    } else {
-        return packResult(fn(unpackArg<Args>(args, Is)...));
-    }
-}
-
-// A native helper as an interpreter host function: the fast interpreter's
-// (FastHostFn) or the reference interpreter's (brass::HostFn).
-template <typename Interp, typename Ret, typename... Args>
-auto wrapAbiFunction(Ret (*fn)(Args...)) {
-    return [fn](Interp&, const std::vector<brass::RuntimeValue>& args) -> brass::RuntimeValue {
-        return invokeHelper(fn, args, std::index_sequence_for<Args...>{});
-    };
-}
+using brass::runtime::host_function;
 
 using UnaryMath = double (*)(double);
 struct MathSymbol {
@@ -135,21 +78,21 @@ public:
 
     void install(brass::Interpreter& interp) override {
 #define BRONZE_ABI_REG_INTERP(name, ret, args) \
-        interp.register_external_function(#name, wrapAbiFunction<brass::Interpreter>(&::name));
+        interp.register_external_function(#name, host_function<brass::Interpreter>(&::name));
         BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_INTERP)
 #undef BRONZE_ABI_REG_INTERP
         for (const MathSymbol& m : kMathSymbols) {
-            interp.register_external_function(m.name, wrapAbiFunction<brass::Interpreter>(m.fn));
+            interp.register_external_function(m.name, host_function<brass::Interpreter>(m.fn));
         }
     }
 
     void install(brass::FastInterpreter& interp) override {
 #define BRONZE_ABI_REG_FAST(name, ret, args) \
-        interp.register_external_function(#name, brass::FastHostFn(wrapAbiFunction<brass::FastInterpreter>(&::name)));
+        interp.register_external_function(#name, brass::FastHostFn(host_function<brass::FastInterpreter>(&::name)));
         BRONZE_ABI_FUNCTIONS(BRONZE_ABI_REG_FAST)
 #undef BRONZE_ABI_REG_FAST
         for (const MathSymbol& m : kMathSymbols) {
-            interp.register_external_function(m.name, brass::FastHostFn(wrapAbiFunction<brass::FastInterpreter>(m.fn)));
+            interp.register_external_function(m.name, brass::FastHostFn(host_function<brass::FastInterpreter>(m.fn)));
         }
         interp.register_external_symbol("brass_gc_card_table_base", reinterpret_cast<void*>(&brass_gc_card_table_base));
         interp.register_external_symbol("brass_gc_heap_base", reinterpret_cast<void*>(&brass_gc_heap_base));

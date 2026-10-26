@@ -17,11 +17,12 @@ struct ParallelLoopStats;
 struct RangeAnalysisStats;
 struct SmtGuardElimStats;
 struct SuperoptStats;
+class SpecFeedback;
 } // namespace brass
 
 namespace il2mir {
 
-class SpecFeedback;
+using brass::SpecFeedback;
 class SpecProfile;
 
 struct FunctionMeta {

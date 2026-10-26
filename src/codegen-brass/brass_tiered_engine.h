@@ -12,12 +12,10 @@
 
 namespace brass {
 class Module;
+class SpecFeedback;
 }
 namespace brass::runtime {
 class FunctionDispatchTable;
-}
-namespace il2mir {
-class SpecFeedback;
 }
 
 namespace bronze {
@@ -129,7 +127,7 @@ private:
     // image observes), then the MIR module, then the image the code refers to,
     // then the speculation counters every tier's code increments in place
     // (il2mir/il_speculation.h; null under BRONZE_NO_SPECULATION=1).
-    std::shared_ptr<il2mir::SpecFeedback> specFeedback_;
+    std::shared_ptr<brass::SpecFeedback> specFeedback_;
     std::unique_ptr<TieredProgramImage> image_;
     std::unique_ptr<brass::Module> mirModule_;
     std::unique_ptr<brass::runtime::FunctionDispatchTable> dispatchTable_;

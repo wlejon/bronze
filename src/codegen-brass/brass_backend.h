@@ -11,10 +11,10 @@
 
 namespace brass {
 struct PassPipelineOptions;
+class SpecFeedback;
 }
 namespace il2mir {
 struct TranslatorOptions;
-class SpecFeedback;
 class SpecProfile;
 }
 
@@ -67,7 +67,7 @@ public:
     bool emitDebugInfo() const { return emitDebugInfo_; }
     // buildMirModule's speculation feedback (il2mir/il_speculation.h): for a
     // module run in-process by brass's tiered pipeline, never an object file.
-    void setSpecFeedback(std::shared_ptr<il2mir::SpecFeedback> fb) { specFeedback_ = std::move(fb); }
+    void setSpecFeedback(std::shared_ptr<brass::SpecFeedback> fb) { specFeedback_ = std::move(fb); }
     // An AOT build's speculation profile (il2mir/il_spec_profile.h), from a
     // tiered run of the same program.
     void setSpecProfile(std::shared_ptr<const il2mir::SpecProfile> p) { specProfile_ = std::move(p); }
@@ -127,7 +127,7 @@ private:
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;
     std::vector<std::string>* emittedPathsOut_ = nullptr;
-    std::shared_ptr<il2mir::SpecFeedback> specFeedback_;
+    std::shared_ptr<brass::SpecFeedback> specFeedback_;
     std::shared_ptr<const il2mir::SpecProfile> specProfile_;
 };
 

@@ -2,23 +2,14 @@
 
 // Speculation sites (docs/il2mir.md, section 7).
 //
-// An inline fast path that is correct only for some operands (an IC hit, a
-// number/number operation) is lowered as `br_if %hit, fast, slow`, where
-// `slow` is the generic helper call. In a function that can deoptimize, the
-// site also carries a GUARD in front of that branch: its condition is the
-// constant 1 in the Tier-0 function, its state map every value live into
-// `slow`, and `slow` is its resume target. Tier 0 and Tier 1 never fail it,
-// so they run the branch; the guard is only there so that tier-2 code has a
-// Tier-0 guard of the same resume id to finish the call at.
-//
-// The slow path counts its runs in the program's SpecFeedback. When a
-// function tiers up, apply_tier2_speculation (brass's tier-2 front pass)
-// reads the counts: a site whose slow path stayed cold gets the guard armed
-// with `%hit` and its branch pinned to `fast`, so the tier-2 code is the
-// fast path alone and a miss deoptimizes to Tier 0; any other site drops the
-// guard and keeps the branch. The copy drops every resume point either way
-// (the lower tier holds the resume blocks), which leaves the slow blocks of
-// armed sites unreachable.
+// The mechanism is brass's (brass/mir/speculation_sites.hpp): an inline fast
+// path that is correct only for some operands (an IC hit, a number/number
+// operation) is lowered as `br_if %hit, fast, slow` behind a placeholder
+// guard whose resume target is `slow`; the slow path counts its runs, and
+// tier 2 arms the guards of the sites whose counts say they stay on the fast
+// path. What is bronze's here: the kinds of site, the policy that reads their
+// counts, and an AOT build's profile (il_spec_profile.h), which lays each
+// site out as a recorded run's counts say instead of guarding it.
 //
 // Every function carries guards: nothing its slow paths read is wrong in the
 // fresh Tier-0 frame a deopt resumes in. An argv block (an alloca) is fine:
@@ -31,16 +22,17 @@
 
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
+#include <brass/mir/speculation_sites.hpp>
 #include <cstdint>
-#include <deque>
-#include <mutex>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <vector>
 
 namespace il2mir {
+
+using brass::SpecFeedback;
 
 enum class SpecKind : uint8_t {
     // A number/number arithmetic fast path: armed only if its slow path
@@ -59,46 +51,8 @@ enum class SpecKind : uint8_t {
     PolyProperty,
 };
 
-// One program's speculation sites: per site, its kind and how many times its
-// slow path ran. The counters live as long as the object, at stable
-// addresses the lowered code increments directly.
-class SpecFeedback {
-public:
-    // `fn` is the site's function (kSpecEntryName for the program's entry)
-    // and `tag` what the site tests (a property key, a helper): together
-    // with the kind and the site's occurrence they name it in a profile
-    // (il_spec_profile.h).
-    uint32_t add_site(SpecKind kind, std::string_view fn = {}, std::string_view tag = {});
-    uint32_t* counter(uint32_t site);
-    // Site `site`'s kind; nullopt for an id no site has.
-    std::optional<SpecKind> kind_of(uint32_t site) const;
-    // Whether tier 2 should arm site `site`'s guard.
-    bool should_speculate(uint32_t site) const;
-    // Site `site`'s guard failed often enough that tier 2 dropped the code
-    // it was armed in: it is never armed again.
-    void mark_failed(uint32_t site);
-    size_t size() const;
-
-    // One site as a profile records it.
-    struct SiteRecord {
-        SpecKind kind;
-        uint32_t misses;
-        std::string fn;
-        std::string tag;
-    };
-    // Every site, in lowering order, with its count now.
-    std::vector<SiteRecord> snapshot() const;
-    // One site, with its count now.
-    SiteRecord site(uint32_t site) const;
-
-private:
-    mutable std::mutex mutex_;
-    std::deque<uint32_t> misses_;
-    std::deque<uint8_t> failed_;
-    std::deque<SpecKind> kinds_;
-    std::deque<std::string> fns_;
-    std::deque<std::string> tags_;
-};
+// A program's speculation feedback, armed by bronze's policy.
+std::shared_ptr<SpecFeedback> make_spec_feedback();
 
 class SpecProfile;
 
@@ -106,11 +60,12 @@ class SpecProfile;
 // differs between a JIT run and an AOT build of the same program.
 inline constexpr std::string_view kSpecEntryName = "<entry>";
 
-// The per-lowering half: emits sites and fills their guards' state maps.
+// The per-lowering half: brass's site emitter, or, in an AOT lowering with a
+// profile, the profile's layout of each site.
 class SpecSiteEmitter {
 public:
-    void set_feedback(SpecFeedback* feedback) { feedback_ = feedback; }
-    [[nodiscard]] bool has_feedback() const noexcept { return feedback_ != nullptr; }
+    void set_feedback(SpecFeedback* feedback) { sites_.set_feedback(feedback); }
+    [[nodiscard]] bool has_feedback() const noexcept { return sites_.has_feedback(); }
     // An AOT lowering with a profile (il_spec_profile.h): each site's branch
     // stays a branch (no guard, no count), laid out as the profile's counts
     // say, and a site the profile shows megamorphic skips its poly scan.
@@ -119,31 +74,17 @@ public:
     // Starts a function; `can_deopt` false lowers every site as its branch.
     // `name` is its profile name (kSpecEntryName for the entry).
     void begin_function(bool can_deopt, std::string_view name = {});
-    // A body built again (brass Module::release_bodies) must be the body
-    // its code was compiled from: its sites are the ones its first build
-    // added, ids and counters alike, not new ones. Between begin_replay and
-    // end_replay the emitter hands out sites first..first+count in order
-    // instead of adding sites; end_replay says whether exactly those were
-    // taken. Outside a replay, sites_taken() counts the sites added since
-    // begin_recording, and first_site_taken() the first of them.
-    void begin_replay(uint32_t first, uint32_t count);
-    bool end_replay();
-    void begin_recording();
-    uint32_t sites_taken() const noexcept { return taken_; }
-    uint32_t first_site_taken() const noexcept { return first_taken_; }
-    // Whether the sites added since begin_recording have consecutive ids.
-    bool sites_consecutive() const noexcept { return consecutive_; }
-    // Ends the current block with the site's branch to `fast` / `slow` (and
-    // its guard, where the function can deopt), then leaves the builder at
-    // the end of `slow`, after its miss count. `slow` must be new and empty.
-    // With `counter_out`, `slow` does not count: *counter_out is the
-    // counter's address (0 without feedback), for a helper the slow path
-    // calls anyway to increment (the `*_counted` helpers, bronze_abi.h).
+    // brass::SpecSiteEmitter's replay of a body built again.
+    void begin_replay(uint32_t first, uint32_t count) { sites_.begin_replay(first, count); }
+    bool end_replay() { return sites_.end_replay(); }
+    void begin_recording() { sites_.begin_recording(); }
+    uint32_t sites_taken() const noexcept { return sites_.sites_taken(); }
+    uint32_t first_site_taken() const noexcept { return sites_.first_site_taken(); }
+    bool sites_consecutive() const noexcept { return sites_.sites_consecutive(); }
+    // brass::SpecSiteEmitter::emit_branch for a site of `kind`.
     void emit_branch(Builder& b, Value* hit, BasicBlock* fast, BasicBlock* slow, SpecKind kind,
                      std::string_view tag = {}, Value** counter_out = nullptr);
-    // Gives each guard of the function its state: the values live into its
-    // resume block. Run once the function's CFG is final.
-    void finish_function(Function& fn);
+    void finish_function(Function& fn) { sites_.finish_function(fn); }
     // With a profile: the recorded misses of the next site of (kind, tag),
     // without taking it; nullopt when the profile does not name it.
     std::optional<uint32_t> peek_profile(SpecKind kind, std::string_view tag) const;
@@ -154,30 +95,15 @@ public:
     static bool profile_says_polymorphic(uint32_t misses);
 
 private:
-    struct Pending {
-        Instruction* guard;
-        BasicBlock* slow;
-    };
     // The profile's decision for the next site of (kind, tag): `slow`
     // renamed cold, and a megamorphic scan's `hit` made false. False when
     // the profile does not name the site.
     bool apply_profile(Builder& b, Value*& hit, BasicBlock* slow, SpecKind kind, std::string_view tag);
-    // The next site's id: added to the feedback, or the replay's next.
-    uint32_t take_site(SpecKind kind, std::string_view tag);
-    SpecFeedback* feedback_ = nullptr;
+    brass::SpecSiteEmitter sites_;
     const SpecProfile* profile_ = nullptr;
-    bool can_deopt_ = false;
-    bool replaying_ = false;
-    bool replay_ok_ = true;
-    bool consecutive_ = true;
-    uint32_t replay_first_ = 0;
-    uint32_t replay_count_ = 0;
-    uint32_t taken_ = 0;
-    uint32_t first_taken_ = 0;
     std::string fn_name_;
     // Per (kind, tag): how many sites of the current function came before.
     std::unordered_map<std::string, uint32_t> occurrences_;
-    std::vector<Pending> pending_;
 };
 
 // brass's tier-2 front pass for a program lowered with `feedback`.

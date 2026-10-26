@@ -291,9 +291,9 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // their misses here, and tier 2 arms the guards of the ones that stayed
     // cold. BRONZE_NO_SPECULATION=1 lowers them as plain branches (the A/B
     // seam; the fast paths themselves stay).
-    std::shared_ptr<il2mir::SpecFeedback> spec;
+    std::shared_ptr<brass::SpecFeedback> spec;
     if (const char* off = std::getenv("BRONZE_NO_SPECULATION"); !off || std::string_view(off) != "1") {
-        spec = std::make_shared<il2mir::SpecFeedback>();
+        spec = il2mir::make_spec_feedback();
         backend.setSpecFeedback(spec);
         // The lowered code holds the counters' addresses: the program owns
         // them for as long as any of its code can run.
