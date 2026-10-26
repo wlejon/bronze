@@ -79,6 +79,28 @@ bool isInlinableCandidate(const il::Function& fn) {
                 case il::Op::ImportMeta:
                 case il::Op::DynamicImport:
                 case il::Op::Throw:
+                // A call, a construct or the iterator protocol enters another
+                // function with the callee's frame below it, and that function
+                // can read the stack: `new Error().stack`, console.trace, the
+                // profiler. Inlined, the callee's frame is not there, so a
+                // trace would name the caller at the callee's position and drop
+                // a line. Only a leaf is inlined, as brass's own inliner does.
+                case il::Op::Call:
+                case il::Op::DynamicCall:
+                case il::Op::DynamicCallSpread:
+                case il::Op::MethodCall:
+                case il::Op::MethodCallSpread:
+                case il::Op::Construct:
+                case il::Op::ConstructSpread:
+                case il::Op::IterOpen:
+                case il::Op::AsyncIterOpen:
+                case il::Op::AsyncIterNext:
+                case il::Op::AsyncIterClose:
+                case il::Op::IterStep:
+                case il::Op::IterClose:
+                case il::Op::IterRest:
+                case il::Op::IterDelegate:
+                case il::Op::ArraySpread:
                     return false;
                 default:
                     break;
