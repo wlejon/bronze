@@ -10,11 +10,15 @@
 // deletes the std::function when the function object dies.
 
 #include <cstdio>
+#include <exception>
+#include <new>
 #include <span>
+#include <string>
 #include <utility>
 
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
+#include "runtime/exception.h"
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/gc.h"
@@ -80,9 +84,27 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
     // place, so the arguments the host reads stay current across anything it
     // does. The receiver is a copy — embed.h tells the host to re-root it
     // before allocating.
-    Value result = (*fn)(thisRoot.get(),
-                         std::span<const Value>(args.data(), args.count()));
-    return result.rawBits();
+    //
+    // A C++ exception out of the host (a library's std::invalid_argument, a
+    // bad_alloc for a size a program asked for) becomes the JS error the call
+    // throws, so a native refusing its input is never the process's end. A
+    // JS throw is a BrassException, not a std::exception, and passes through.
+    // The JS error is raised outside the handler, once the C++ exception is
+    // gone.
+    std::string failure;
+    bool outOfMemory = false;
+    try {
+        Value result = (*fn)(thisRoot.get(),
+                             std::span<const Value>(args.data(), args.count()));
+        return result.rawBits();
+    } catch (const std::bad_alloc&) {
+        outOfMemory = true;
+    } catch (const std::exception& e) {
+        failure = e.what();
+        if (failure.empty()) failure = "a native call failed";
+    }
+    if (outOfMemory) runtime::rtThrowOutOfMemory();
+    runtime::rtThrowError(runtime::ErrorKind::Error, failure);
 }
 
 }  // namespace

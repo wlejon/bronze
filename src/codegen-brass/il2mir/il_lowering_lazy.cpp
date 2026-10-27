@@ -137,7 +137,7 @@ bool IlLowering::lower_lazy_body(Function& fn) {
     }
     if (!build_provided_body(fn, it->second)) return false;
     // The module's one verification pass ran before this body existed.
-    if (options_.verify_lowered_module && !verify_function(fn, diag_)) return false;
+    if (options_.verify_lowered_module ? !verify_function(fn, diag_) : !verify_certificates(fn, diag_)) return false;
     return true;
 }
 

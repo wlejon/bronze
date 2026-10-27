@@ -207,7 +207,7 @@ bool dominatesBlock(const std::vector<BlockId>& idom, const std::vector<uint32_t
 
 bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSink& diags) {
     auto fail = [&](const std::string& msg) {
-        diags.error(Span{}, "Function " + fn.name + ": " + msg);
+        diags.error(Span{}, "proof certificate refused in function " + fn.name + ": " + msg);
         return false;
     };
 
@@ -364,6 +364,58 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
         return false;
     };
 
+    // Every use of each value, as (block, instruction index): an operand, or
+    // an argument a terminator passes to a block. Built on first need.
+    std::unordered_map<ValueId, std::vector<std::pair<size_t, size_t>>> uses;
+    bool usesBuilt = false;
+    auto buildUses = [&] {
+        usesBuilt = true;
+        for (size_t bIdx = 0; bIdx < fn.blocks.size(); ++bIdx) {
+            const Block& blk = fn.blocks[bIdx];
+            for (size_t iIdx = 0; iIdx < blk.instructions.size(); ++iIdx) {
+                const Instruction& inst = blk.instructions[iIdx];
+                for (ValueId v : inst.operands) uses[v].push_back({bIdx, iIdx});
+                for (ValueId v : inst.target.args) uses[v].push_back({bIdx, iIdx});
+                for (ValueId v : inst.elseTarget.args) uses[v].push_back({bIdx, iIdx});
+            }
+        }
+    };
+    auto isPureF64Arith = [](const Instruction& inst) {
+        if (inst.type != Type::F64 || inst.result == kNoValue) return false;
+        switch (inst.op) {
+            case Op::Add: case Op::Sub: case Op::Neg: case Op::Mul:
+            case Op::Div: case Op::Mod: case Op::Pow:
+                return true;
+            default:
+                return false;
+        }
+    };
+    // A raw unbox placed ahead of its test (a guarded region's run point,
+    // guard_region_build.cpp): a bitcast over bits nothing has looked at
+    // yet. It is certified when nothing observes them before is.number of
+    // the same value has held: every use, followed through pure f64
+    // arithmetic (which cannot fault or escape), lies where that test's true
+    // edge dominates. A use anywhere else (a compare, a branch, a box, a
+    // store, a call, a block argument) refuses it.
+    auto isValidatedBeforeUse = [&](ValueId unboxed, ValueId src) -> bool {
+        if (!usesBuilt) buildUses();
+        std::vector<ValueId> work{unboxed};
+        std::unordered_set<ValueId> seen{unboxed};
+        while (!work.empty()) {
+            const ValueId v = work.back();
+            work.pop_back();
+            auto it = uses.find(v);
+            if (it == uses.end()) continue;
+            for (const auto& [ub, ui] : it->second) {
+                if (isDominatedByIsNumberTrue(src, static_cast<BlockId>(ub))) continue;
+                const Instruction& user = fn.blocks[ub].instructions[ui];
+                if (!isPureF64Arith(user)) return false;
+                if (seen.insert(user.result).second) work.push_back(user.result);
+            }
+        }
+        return true;
+    };
+
     // 4. Verify each instruction's proof certificates in deterministic block/instruction order.
     for (size_t bIdx = 0; bIdx < fn.blocks.size(); ++bIdx) {
         const Block& blk = fn.blocks[bIdx];
@@ -395,7 +447,14 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
                     }
 
                     const DefInfo& srcDef = srcIt->second;
-                    if (inst.rawUnbox) {
+                    // A dominating is.number that held is the certificate,
+                    // whatever the producer: under a producer that never
+                    // makes a Number the unbox is unreachable (its guard
+                    // folds false after lowering) and never runs.
+                    if (inst.rawUnbox && (isDominatedByIsNumberTrue(src, blockId) ||
+                                          isValidatedBeforeUse(inst.result, src))) {
+                        // certified
+                    } else if (inst.rawUnbox) {
                         if (srcDef.inst != nullptr && isKnownNonNumberProducer(*srcDef.inst)) {
                             return fail("raw unbox %" + std::to_string(inst.result) +
                                         " reads %" + std::to_string(src) + " defined by " +

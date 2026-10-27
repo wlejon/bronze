@@ -189,6 +189,104 @@ TEST_CASE("Proof verifier rejects rawUnbox on the false branch of IsNumber") {
     CHECK(diags.hasErrors());
 }
 
+TEST_CASE("Proof verifier accepts a rawUnbox under is.number of a producer that never makes a Number") {
+    // The unbox is unreachable: the guard that dominates it is always false.
+    Function fn;
+    fn.name = "deadUnbox";
+    fn.returnType = Type::F64;
+    fn.valueCount = 4;
+
+    Block b0;
+    b0.id = 0;
+    b0.instructions.push_back({Op::CreateObject, Type::Dynamic, 0, {}, 0.0, 0, 0});
+    b0.instructions.push_back({Op::IsNumber, Type::Bool, 1, {0}, 0.0, 0, 0});
+    Instruction br{Op::Branch, Type::Void, kNoValue, {1}, 0.0, 0, 0};
+    br.target.block = 1;
+    br.elseTarget.block = 2;
+    b0.instructions.push_back(br);
+
+    Block b1;
+    b1.id = 1;
+    Instruction unbox{Op::Unbox, Type::F64, 2, {0}, 0.0, 0, 0};
+    unbox.rawUnbox = true;
+    b1.instructions.push_back(unbox);
+    b1.instructions.push_back({Op::Ret, Type::Void, kNoValue, {2}, 0.0, 0, 0});
+
+    Block b2;
+    b2.id = 2;
+    b2.instructions.push_back({Op::ConstF64, Type::F64, 3, {}, 0.0, 0, 0});
+    b2.instructions.push_back({Op::Ret, Type::Void, kNoValue, {3}, 0.0, 0, 0});
+
+    fn.blocks.push_back(std::move(b0));
+    fn.blocks.push_back(std::move(b1));
+    fn.blocks.push_back(std::move(b2));
+
+    DiagnosticSink diags;
+    CHECK(verifyFunctionProofs(fn, nullptr, diags));
+    CHECK(!diags.hasErrors());
+}
+
+namespace {
+
+// A guarded region's run point: %1 = method.call, %2 = unbox %1 raw, %3 =
+// add %2, %2, then is.number %1 sends b1 (fast) or b2 (slow). `observe`
+// adds a use of %3 before the test, which must refuse the certificate.
+Function makeRunPoint(bool observe) {
+    Function fn;
+    fn.name = observe ? "runPointObserved" : "runPoint";
+    fn.params = {{"o", Type::Dynamic}};
+    fn.returnType = Type::F64;
+    fn.valueCount = 8;
+
+    Block b0;
+    b0.id = 0;
+    b0.instructions.push_back({Op::MethodCall, Type::Dynamic, 1, {0}, 0.0, 0, 0});
+    Instruction unbox{Op::Unbox, Type::F64, 2, {1}, 0.0, 0, 0};
+    unbox.rawUnbox = true;
+    b0.instructions.push_back(unbox);
+    b0.instructions.push_back({Op::Add, Type::F64, 3, {2, 2}, 0.0, 0, 0});
+    if (observe) {
+        // A box of the unvalidated bits escapes before the test.
+        Instruction box{Op::Box, Type::Dynamic, 6, {3}, 0.0, 0, 0};
+        box.boxType = Type::F64;
+        b0.instructions.push_back(box);
+        b0.instructions.push_back({Op::Print, Type::Void, kNoValue, {6}, 0.0, 0, 0});
+    }
+    b0.instructions.push_back({Op::IsNumber, Type::Bool, 4, {1}, 0.0, 0, 0});
+    Instruction br{Op::Branch, Type::Void, kNoValue, {4}, 0.0, 0, 0};
+    br.target.block = 1;
+    br.elseTarget.block = 2;
+    b0.instructions.push_back(br);
+
+    Block b1;
+    b1.id = 1;
+    b1.instructions.push_back({Op::Ret, Type::Void, kNoValue, {3}, 0.0, 0, 0});
+
+    Block b2;
+    b2.id = 2;
+    b2.instructions.push_back({Op::ConstF64, Type::F64, 5, {}, 0.0, 0, 0});
+    b2.instructions.push_back({Op::Ret, Type::Void, kNoValue, {5}, 0.0, 0, 0});
+
+    fn.blocks.push_back(std::move(b0));
+    fn.blocks.push_back(std::move(b1));
+    fn.blocks.push_back(std::move(b2));
+    return fn;
+}
+
+}  // namespace
+
+TEST_CASE("Proof verifier accepts a run point's rawUnbox that nothing observes before its test") {
+    DiagnosticSink diags;
+    CHECK(verifyFunctionProofs(makeRunPoint(false), nullptr, diags));
+    CHECK(!diags.hasErrors());
+}
+
+TEST_CASE("Proof verifier rejects a run point's rawUnbox observed before its test") {
+    DiagnosticSink diags;
+    CHECK_FALSE(verifyFunctionProofs(makeRunPoint(true), nullptr, diags));
+    CHECK(diags.hasErrors());
+}
+
 TEST_CASE("Proof verifier rejects rawUnbox on EnvGet when EnvSet stores a non-Number") {
     Function fn;
     fn.name = "contradictedEnvSlot";

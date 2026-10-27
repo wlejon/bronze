@@ -693,7 +693,10 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         if (!run_bronze_optimization_pipeline(*mod, options_, hooks)) {
             return nullptr;
         }
-        if (options_.verify_lowered_module && !verify_module(*mod, diag_)) {
+        // What the passes removed (barriers, guards) is checked against its
+        // certificate in every build; the full verifier only where it runs.
+        if (options_.verify_lowered_module ? !verify_module(*mod, diag_)
+                                           : !verify_module_certificates(*mod, diag_)) {
             return nullptr;
         }
         ltimer.mark("optimize");

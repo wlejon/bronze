@@ -4,6 +4,7 @@
 #include "codegen-brass/il_to_brass_ast.h"
 
 #include "abi/bronze_abi.h"
+#include "il/verifier_proofs.h"
 #include "support/timings.h"
 
 #include <brass/brass.hpp>
@@ -450,6 +451,16 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         }
         options.source_files.push_back(sf);
     }
+
+    // The IL's proof certificates (raw and nullish unboxes, pins, typed
+    // element access) are what lowering emits unchecked code for, so they
+    // are checked in every build, Release too: a certificate that does not
+    // hold refuses the module with the function and the proof named,
+    // rather than run code that could read memory it should not.
+    if (!il::verifyModuleProofs(module, diags)) {
+        return nullptr;
+    }
+    mtimer.mark("proofs");
 
     brass::DiagnosticReporter reporter;
     std::vector<uint32_t> globalReadKeys;

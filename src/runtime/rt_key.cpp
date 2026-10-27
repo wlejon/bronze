@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "runtime/bigint.h"
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/number_format.h"
@@ -158,6 +159,14 @@ bool rtValueToElementIndex(Value idxVal, uint32_t& out) {
         if (!s->isLatin1()) return false;
         return rtIsIntegerLikeKey(std::string_view(s->latin1Data(), s->getLength()), out);
     }
+    // ToString(1n) is "1", so `a[1n]` is `a[1]`.
+    if (idxVal.isBigInt()) {
+        BigNum n = rtBigIntValue(idxVal);
+        uint64_t mag = 0;
+        if (n.isNegative() || !n.magnitudeToUint64(mag) || mag > 4294967294ULL) return false;
+        out = static_cast<uint32_t>(mag);
+        return true;
+    }
     if (!idxVal.isNumber()) return false;
     double d = idxVal.asNumber();
     if (!(d >= 0.0) || d != std::floor(d) || d > 4294967294.0) return false;
@@ -174,6 +183,12 @@ bool rtValueToElementIndex(Value idxVal, uint32_t& out) {
 // ALLOCATES, so the caller must have the receiver rooted before it calls.
 Value rtElemKeyAsString(Value idxVal) {
     if (idxVal.isString()) return idxVal;
+    if (idxVal.isBigInt()) {
+        // 6.1.6.2.20 BigInt::toString; the digits are off the GC heap, so the
+        // BigInt need not stay put across the allocation.
+        std::string digits = rtBigIntToString(idxVal, 10);
+        return Value::fromString(StringHeader::createFromUTF8(rtHeap(), digits));
+    }
     char buf[64];
     size_t len = 0;
     if (idxVal.isNumber()) {
