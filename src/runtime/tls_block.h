@@ -36,4 +36,34 @@ inline bronze_tls_block* rtTls() noexcept {
 // first touch of the runtime.
 void rtReadThreadSeams();
 
+// ---- the stack limit and interrupts ------------------------------------------
+//
+// `stack_limit` is two things to generated code: the limit every prologue
+// compares its stack pointer with, and the word every loop backedge compares
+// it with too (brass's interrupt poll, Module::interrupt_poll). The runtime
+// keeps the REAL limit of the running stack beside it, per stack
+// (runtime/stack_locals.h: a compartment's fiber has its own), and arming an
+// interrupt stores UINT64_MAX over the block's copy, which no stack pointer
+// is above: the next prologue or backedge on that thread calls into the
+// runtime (bronze_stack_overflow / bronze_interrupt_poll), which puts the
+// real limit back and services the interrupt (rtServiceInterrupt).
+
+inline constexpr uint64_t kInterruptArmed = UINT64_MAX;
+
+// The running stack's real limit; 0 is none (no check).
+uintptr_t rtStackLimit() noexcept;
+// Sets the running stack's real limit (and the block's copy).
+void rtSetStackLimit(uintptr_t limit) noexcept;
+// The limit for a stack spanning [low, high): its low end plus the reserve
+// the RangeError is built in (a quarter of a small stack).
+uintptr_t rtStackLimitFor(uintptr_t low, uintptr_t high) noexcept;
+// Arms an interrupt on the thread whose block `tls` is. Any thread; a store.
+void rtArmInterrupt(bronze_tls_block* tls) noexcept;
+// Puts the real limit back over an armed one, on the calling thread.
+void rtDisarmInterrupt() noexcept;
+// What an armed interrupt runs, on the interrupted thread, once the limit is
+// back: the compartment scheduler's check (compartment.cpp), which may
+// suspend the running fiber or throw a TerminationException.
+void rtServiceInterrupt();
+
 }  // namespace bronze::runtime

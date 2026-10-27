@@ -458,14 +458,20 @@ TEST_CASE("a bare name that is already a host global is refused") {
     CHECK(contains(err, "host global"));
 }
 
-TEST_CASE("a duplicate registration is refused, and a typed-array return is accepted") {
+TEST_CASE("a duplicate registration is refused, a repeat of the same one is not, and a typed-array return is accepted") {
     ensureRegistered();
     std::string err;
     embed::NativeSignature sig;
     sig.returnType = "f64";
     sig.paramTypes = {"f64", "f64"};
-    CHECK(!embed::registerNative("nt.math.add", reinterpret_cast<void*>(&nt_natives::add), sig, &err));
+    // Another function under a registered path is refused.
+    CHECK(!embed::registerNative("nt.math.add", reinterpret_cast<void*>(&nt_natives::add3), sig, &err));
     CHECK(contains(err, "already registered"));
+    // The same function again is what a host installing its natives in each
+    // realm it makes does: accepted, nothing changes.
+    err.clear();
+    CHECK(embed::registerNative("nt.math.add", reinterpret_cast<void*>(&nt_natives::add), sig, &err));
+    CHECK(number("nt.math.add(2, 3)") == 5.0);
 
     // The same path twice with a `T[]` return: the SECOND refusal is the
     // duplicate, not the return type, which proves the spelling passed
@@ -473,8 +479,7 @@ TEST_CASE("a duplicate registration is refused, and a typed-array return is acce
     sig.returnType = "f32[]";
     sig.paramTypes = {"i32"};
     err.clear();
-    CHECK(!embed::registerNative("nt.buf.rangeF32", reinterpret_cast<void*>(&nt_natives::rangeF32), sig,
-                                 &err));
+    CHECK(!embed::registerNative("nt.buf.rangeF32", reinterpret_cast<void*>(&nt_natives::add), sig, &err));
     CHECK(contains(err, "already registered"));
     CHECK(!contains(err, "parameter-only"));
 }

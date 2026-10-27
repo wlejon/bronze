@@ -16,9 +16,13 @@
     /* The same block, fetched by a module's entry function into the pinned\
      * register (bronze_abi_tls.h), and the first fetch on a thread arms\
      * `stack_limit`. `bronze_stack_overflow` is what a prologue calls when\
-     * its stack pointer is below that limit: it raises the RangeError. */ \
+     * its stack pointer is below that limit: it raises the RangeError, or,\
+     * when the limit is an armed interrupt (a compartment's time slice),\
+     * services it and returns. `bronze_interrupt_poll` is what a loop\
+     * backedge calls below the same word (brass's interrupt poll). */ \
     X(bronze_tls_enter,           BRONZE_ABI_VPTR, (BRONZE_ABI_NOARGS)) \
     X(bronze_stack_overflow,      BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
+    X(bronze_interrupt_poll,      BRONZE_ABI_VOID, (BRONZE_ABI_NOARGS)) \
     X(bronze_truthy,              BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_is_nullish,          BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \
     X(bronze_strict_eq,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \

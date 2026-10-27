@@ -368,6 +368,11 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     mod->set_deterministic_fp(mod_det_fp);
     mod->set_allow_fp_reassociation(options_.allow_fp_reassociation && !mod_det_fp);
     mod->set_pinned_tls_register(options_.pin_tls_register);
+    // Every loop backedge compares the stack pointer with the block's
+    // stack_limit, the word every prologue checks too, so arming one
+    // interrupt (runtime/tls_block.h) stops a runaway loop as well as the
+    // next call: a compartment's time slice and its termination.
+    if (options_.pin_tls_register) mod->set_interrupt_poll(kBronzeTlsStackLimitOff, "bronze_interrupt_poll");
     current_file_id_ = mod->debug_context().get_or_add_file(ast.name.empty() ? "<anonymous>" : ast.name);
     source_file_ids_.clear();
     source_file_ids_.reserve(ast.source_files.size());
@@ -802,7 +807,10 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             }
             // Stack-limit check, before anything is pushed: below the limit,
             // the runtime raises the RangeError, which leaves this frame as
-            // any throw from a call does.
+            // any throw from a call does. The limit may instead be an armed
+            // interrupt (a compartment's time slice, runtime/tls_block.h):
+            // then the runtime services it and returns, and the function
+            // runs on.
             Value* tls = b.build_pinned_tls_read();
             Value* limit = b.build_load(Type::i64(), tls, kBronzeTlsStackLimitOff);
             Value* sp = b.build_read_sp();
@@ -815,7 +823,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             b.build_br_if(below, overflow_bb, body_bb);
             b.position_at_end(overflow_bb);
             b.build_call("bronze_stack_overflow", Type::void_type(), {});
-            b.build_unreachable();
+            b.build_br(body_bb);
             // The IL's first block now lowers into the checked continuation;
             // its parameters stay on the real entry block, which dominates it.
             block_map[fn_ast.blocks[0].id] = body_bb;

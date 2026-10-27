@@ -158,6 +158,12 @@ uint64_t rtFunctionBindBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const
                                BRONZE_ABI_FN_FLAG_NATIVE | BRONZE_ABI_FN_FLAG_NEEDS_ENV);
     fn->env_record = env.get();
     fn->header.flags = HeapKind::Function;
+    // The target's realm (fn.h): a host calling the bound function enters the
+    // realm its target would run in.
+    if (!targetIsProxy && target.get().isObject() &&
+        target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        fn->setRealmSlot(target.get().asObject<FunctionHeader>()->realmSlot());
+    }
     Rooted<Value> fnRoot{Value::fromObject(fn)};
 
     if (targetIsProxy) {

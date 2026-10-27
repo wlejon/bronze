@@ -18,6 +18,7 @@
 #include "runtime/heap.h"
 #include "runtime/native_handle.h"
 #include "runtime/rt_state.h"
+#include "runtime/stack_locals.h"
 #include "runtime/value.h"
 
 namespace bronze::embed {
@@ -51,6 +52,17 @@ thread_local Registries g_registries;
 constexpr uint32_t kNoPersistentSlot = UINT32_MAX;
 thread_local HandleScope* g_currentHandleScope = nullptr;
 
+// Local handles are per STACK (runtime/stack_locals.h): a HandleScope nests
+// with one stack's frames, so a compartment's fiber has its own scope chain
+// and its own local slots, and a Local is valid only on the stack that made
+// it. Persistents stay per thread.
+HandleScope*& currentHandleScopeRef() { return g_currentHandleScope; }
+HandleScope* noHandleScope() { return nullptr; }
+[[maybe_unused]] const int g_handleScopeLocal =
+    runtime::registerStackLocalWord<HandleScope*, &currentHandleScopeRef, &noHandleScope>();
+std::vector<Value>& localSlotsRef() { return g_registries.local; }
+const int g_localSlotsLocal = runtime::registerStackLocalBox<std::vector<Value>, &localSlotsRef>();
+
 // Registration with the collector, on FIRST USE rather than at static
 // initialization: the heap and its root-source table are statics of another
 // translation unit (rt_state.cpp), and registering from this TU's static
@@ -63,6 +75,11 @@ void ensureRegistries() {
             if (g_registriesGone) return;
             for (Value& slot : g_registries.persistent) visit(slot);
             for (Value& slot : g_registries.local) visit(slot);
+            // The local slots of every switched-out stack.
+            runtime::forEachSwitchedStackLocal(g_localSlotsLocal, [&visit](void* box) {
+                if (!box) return;
+                for (Value& slot : *static_cast<std::vector<Value>*>(box)) visit(slot);
+            });
         });
         return true;
     }();
@@ -236,5 +253,7 @@ void drainFinalizers() { runtime::rtDrainFinalizers(); }
 bool finalizersPending() { return runtime::rtFinalizersPending(); }
 
 void* handleData(Value handle) { return runtime::rtHandleData(handle); }
+void* handleDataAnyRealm(Value handle) { return runtime::rtHandleDataAnyRealm(handle); }
+bool handleForeign(Value handle) { return runtime::rtHandleForeign(handle); }
 
 }  // namespace bronze::embed

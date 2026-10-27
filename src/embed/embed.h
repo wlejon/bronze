@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "runtime/compartment.h"
 #include "runtime/host_globals.h"
 #include "runtime/interpreted_frames.h"
 #include "runtime/value.h"
@@ -708,6 +709,53 @@ public:
 
 private:
     Realm* realm_;
+};
+
+// ---- compartments (embed_compartment.cpp; runtime/compartment.h) ------------
+//
+// A realm whose entries run on a fiber of its own in time slices, for a host
+// running several apps on one thread. Every entry into the app (an event, a
+// timer, a frame callback, a module's evaluation) is a job handed to
+// runInCompartment: it runs on the compartment's fiber in its realm, then the
+// fiber's own microtask queue is drained. A job that spends its slice yields
+// at the next loop backedge or function entry (Yielded), and the host resumes
+// it on a later turn. terminateCompartment ends it with nothing the app can
+// catch, unwinding a suspended job; a dead compartment refuses every job.
+using Compartment = runtime::Compartment;
+using CompartmentOptions = runtime::CompartmentOptions;
+using CompartmentState = runtime::CompartmentState;
+using CompartmentStatus = runtime::CompartmentStatus;
+using CompartmentJob = runtime::CompartmentJob;
+
+BRONZE_EMBED_API Compartment* createCompartment(Realm* realm, const CompartmentOptions& options = {});
+BRONZE_EMBED_API void destroyCompartment(Compartment* c);
+BRONZE_EMBED_API CompartmentStatus runInCompartment(Compartment* c, CompartmentJob job, void* arg);
+// The same, for a callable (a lambda): it is called inside the job.
+inline CompartmentStatus runInCompartment(Compartment* c, const std::function<void()>& fn) {
+    return runInCompartment(
+        c, [](void* arg) { (*static_cast<const std::function<void()>*>(arg))(); },
+        const_cast<std::function<void()>*>(&fn));
+}
+BRONZE_EMBED_API CompartmentStatus resumeCompartment(Compartment* c);
+BRONZE_EMBED_API void terminateCompartment(Compartment* c, const std::string& reason);
+BRONZE_EMBED_API CompartmentState compartmentState(const Compartment* c);
+BRONZE_EMBED_API Realm* compartmentRealm(const Compartment* c);
+// The compartment whose job is running on this thread, or null.
+BRONZE_EMBED_API Compartment* runningCompartment();
+BRONZE_EMBED_API uint32_t compartmentOverruns(const Compartment* c);
+BRONZE_EMBED_API double compartmentLongestOverrunMs(const Compartment* c);
+BRONZE_EMBED_API std::string compartmentLongestOverrunSite(const Compartment* c);
+
+// Host code that calls into an app and cannot be re-entered by another
+// app's turn before it returns holds one: a spent slice yields only after it.
+BRONZE_EMBED_API void beginNoYield();
+BRONZE_EMBED_API void endNoYield();
+class NoYieldScope {
+public:
+    NoYieldScope() { beginNoYield(); }
+    ~NoYieldScope() { endNoYield(); }
+    NoYieldScope(const NoYieldScope&) = delete;
+    NoYieldScope& operator=(const NoYieldScope&) = delete;
 };
 
 // Freeze every intrinsic the realms of the calling thread share

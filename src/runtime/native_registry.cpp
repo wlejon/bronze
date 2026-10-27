@@ -24,6 +24,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
+#include "runtime/stack_locals.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 
@@ -130,7 +131,15 @@ bool rtRegisterNative(std::string_view pathView, void* fn, const NativeSpec& spe
         return refuse("not a JS path (identifiers joined by single dots)");
     }
     if (!fn) return refuse("null function pointer");
-    if (rtFindNative(path, spec.kind)) return refuse("already registered");
+    if (const NativeEntry* existing = rtFindNative(path, spec.kind)) {
+        // The same function under the same path again is the same
+        // registration: a host installing its API into a second realm on
+        // the thread (one per app it hosts) registers what the first realm's
+        // install already did, and the registry is the thread's, not the
+        // realm's. A different function under a taken path is still refused.
+        if (existing->fn == fn) return true;
+        return refuse("already registered");
+    }
 
     NativeEntry entry;
     entry.path = path;
@@ -401,7 +410,15 @@ void* bronze_native_handle_data(uint64_t value, const void* classInfo) {
     const auto* cls = static_cast<const NativeClassInfo*>(classInfo);
     if (!cls) fatal("native class tag unbound at a call site");
     const Value v{value};
-    if (rtHandleClassTag(v) == classInfo) return rtHandleData(v);
+    if (rtHandleClassTag(v) == classInfo) {
+        if (void* data = rtHandleData(v)) return data;
+        if (rtHandleForeign(v)) {
+            rtThrowTypeError("expected a " + cls->name +
+                             " handle of this realm, got one another app made");
+            return nullptr;
+        }
+        return nullptr;
+    }
     // One message per way to be wrong, because "expected X" alone sends a
     // caller looking for a missing argument when they passed a handle of the
     // wrong class.
@@ -463,6 +480,11 @@ uint32_t bronze_native_typed_array_length(uint64_t value) {
 // call's pop. Entries are std::strings held by value, so a push never moves
 // the bytes an earlier entry handed out.
 thread_local std::vector<std::unique_ptr<std::string>> g_strScratch;
+// Per stack (runtime/stack_locals.h): a compartment's fiber may be suspended
+// inside a native call's arguments' lifetime.
+static std::vector<std::unique_ptr<std::string>>& strScratchRef() { return g_strScratch; }
+[[maybe_unused]] static const int g_strScratchLocal =
+    bronze::runtime::registerStackLocalBox<std::vector<std::unique_ptr<std::string>>, &strScratchRef>();
 
 const void* bronze_native_str_utf8(uint64_t value) {
     const Value v{value};
@@ -505,6 +527,9 @@ struct BufferSlot {
     uintptr_t frame;
 };
 thread_local std::deque<BufferSlot> g_bufferSlots;
+static std::deque<BufferSlot>& bufferSlotsRef() { return g_bufferSlots; }
+[[maybe_unused]] static const int g_bufferSlotsLocal =
+    bronze::runtime::registerStackLocalBox<std::deque<BufferSlot>, &bufferSlotsRef>();
 
 namespace {
 

@@ -63,7 +63,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_register_key_manifest", "bronze_box_str_key", "bronze_box_str", "bronze_unbox_str",
         "bronze_unbox_f64", "bronze_box_f64", "bronze_unbox_i32", "bronze_box_i32", "bronze_unbox_bool",
         "bronze_box_bool",
-        "bronze_tls_enter", "bronze_stack_overflow", "bronze_pin_violation", "bronze_pin_check_array", "bronze_pow",
+        "bronze_tls_enter", "bronze_stack_overflow", "bronze_interrupt_poll", "bronze_pin_violation", "bronze_pin_check_array", "bronze_pow",
         "bronze_dynamic_pow", "bronze_dynamic_bitand", "bronze_dynamic_bitor", "bronze_dynamic_bitxor",
         "bronze_dynamic_shl", "bronze_dynamic_shr", "bronze_dynamic_ushr", "bronze_dynamic_sub",
         "bronze_dynamic_mul", "bronze_dynamic_div", "bronze_dynamic_mod", "bronze_dynamic_neg",

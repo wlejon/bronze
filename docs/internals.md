@@ -307,6 +307,90 @@ A host that needs a builtin to answer differently (an `Intl`-backed
 (`embed::setLocaleMethod`, `runtime/locale_hooks.h`) and run their own
 fallback when none is set.
 
+### Realm ownership
+
+Each realm has a slot, a small number unique on its thread
+(`Realm::slot`, never reused while the thread lives). Three things carry it:
+- **Function objects** carry it in three bytes of padding (`fn.h`). A host's
+  call into a function (`embed::call`) enters that function's realm first, the
+  way the spec runs a function in its [[Realm]].
+- **Native handles** carry it in an internal slot. `rtHandleData` unwraps a
+  handle only in the realm that made it and answers nullptr in any other, so
+  one app's DOM node, canvas or scene never reaches another app's natives.
+  `bronze_native_handle_data` throws a TypeError naming the cause, and
+  `rtHandleDataAnyRealm` is the host's own unchecked read.
+- **Compiled modules** get one instance of their data per realm
+  (`module_instance.cpp`). Entering a realm activates its instances in the
+  TLS block's delta array, so two realms running one compiled module do not
+  share its top-level bindings.
+
+`registerNative` accepts the same function under the same path again (a
+host installing its natives into each realm it makes) and still refuses a
+different function under a taken path.
+
+### Compartments
+
+A compartment (`runtime/compartment.h`, `embed::createCompartment`) is a realm
+whose entries run on a `brass::gc::Fiber` of its own, in time slices. A host
+running several apps on one thread hands each entry into an app (an event, a
+timer, a frame callback, a module's evaluation) to `runInCompartment`. The
+call runs the entry on the app's fiber, in the app's realm, then drains that
+fiber's microtask queue. It returns when the entry finishes (`Idle`), when its
+slice runs out (`Yielded`, resumed later by `resumeCompartment`), or when it
+is terminated (`Terminated`).
+
+**Per-stack state.** Runtime state that pushes and pops with one stack's
+frames is registered with brass as a stack local, and brass saves and
+restores it on every fiber switch (`runtime/stack_locals.h`). This covers:
+- the shadow stack's innermost frame, the realm stack and the stack limit;
+- the embed handle scopes;
+- the microtask queue and its parked jobs;
+- a native call's string and buffer scratch;
+- the interpreter's argument pool.
+
+The collector walks every switched-out copy (`forEachSwitchedStackLocal`), so
+a suspended compartment keeps what its frames hold.
+
+**The interrupt.** il2mir sets brass's module interrupt poll
+(`Module::set_interrupt_poll`) on the TLS block's stack-limit word. Every
+loop backedge, in every tier, compares the stack pointer against that word
+and calls `bronze_interrupt_poll` when it is below. Function prologues already
+make the same comparison and call `bronze_stack_overflow`.
+`rtArmInterrupt` stores `kInterruptArmed` (all ones) into the word, so the
+next backedge or call reaches `rtServiceInterrupt`.
+
+A watchdog thread (one per process) arms the running compartment's thread
+once its slice deadline passes, and re-arms it every millisecond while the
+slice stays spent. `rtServiceInterrupt` acts only on the compartment's own
+fiber:
+- it suspends the fiber (the yield);
+- or, when termination was requested, it throws brass's
+  `TerminationException`, which no landing pad and no interpreter handler
+  takes, so no guest `catch` or `finally` runs. The fiber unwinds to its
+  entry and ends.
+
+Host code on the unwind path must clean up in destructors or `catch (...)`
+blocks that rethrow. `runProgramAndCollectResult` ends and drops its module
+epoch that way, because the program's code is freed during the unwind.
+
+Loops the parallel transform outlined (`*_par_k_*`) run on parallel-runtime
+workers with no pinned TLS register, and are not polled; the function that
+dispatches them is.
+
+**What is not preempted.** A native call runs to its end. Its overrun past
+the slice is recorded: `compartmentOverruns`, plus the longest overrun and
+the stack it was called from. `embed::NoYieldScope` holds off yields for host
+code that calls into an app and must not be re-entered by other apps' turns
+before it returns.
+
+`tests/eval/eval_compartment_test.cpp` is the suite. Its cases:
+- a runaway loop yields at its slice in each tier, and termination ends it;
+- a long job finishes, resumed slice by slice;
+- termination skips the program's `catch` and `finally`;
+- each compartment runs its own microtasks;
+- an uncaught error is reported and the compartment lives on;
+- sixteen suspended compartments keep their objects through collections.
+
 ## In-Memory Dynamic Execution and JIT (`src/eval`)
 
 Bronze provides native in-memory execution and JIT evaluation without writing files to disk or invoking external linkers. The `src/eval` subsystem compiles JavaScript source code or files to brass MIR and runs them through the tiered engine (`src/codegen-brass/brass_tiered_engine.h`): interpreted first, with hot functions compiled to baseline and then optimized code, and hot loops moved into optimized code mid-loop (OSR), all compiled on brass's process-wide compile pool while the program runs. The optimizer runs per function as it tiers up, not over the whole program before it starts. The whole-program optimizing JIT (`BrassBackend::compileToJit`) remains as an explicit tier.

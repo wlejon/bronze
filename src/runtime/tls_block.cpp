@@ -14,7 +14,9 @@
 #include "runtime/heap.h"
 #include "runtime/profile.h"
 #include "runtime/rt_state.h"
+#include "runtime/stack_locals.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -201,9 +203,62 @@ extern "C" bronze_tls_block* bronze_tls_block_addr(void) {
     return &bronze::runtime::g_tls_block;
 }
 
+namespace bronze::runtime {
+
+namespace {
+
+// The running stack's real limit (tls_block.h). Per stack: a fiber starts
+// with none, and whoever runs code on it sets one from its bounds
+// (compartment.cpp); the block's copy follows it.
+thread_local uintptr_t g_stackLimit = 0;
+
+std::atomic_ref<uint64_t> blockLimit(bronze_tls_block* tls) noexcept {
+    return std::atomic_ref<uint64_t>(tls->stack_limit);
+}
+
+// Registered by hand rather than with registerStackLocalWord: the restore
+// also puts the entered stack's limit in the block, which an interrupt armed
+// for the stack being left must not follow onto it.
+[[maybe_unused]] const int g_stackLimitLocal = [] {
+    brass::gc::StackLocal local;
+    local.save = [](void** slot) { *slot = reinterpret_cast<void*>(g_stackLimit); };
+    local.restore = [](void** slot, bool fresh) {
+        g_stackLimit = fresh ? 0 : reinterpret_cast<uintptr_t>(*slot);
+        blockLimit(&g_tls_block).store(g_stackLimit, std::memory_order_relaxed);
+    };
+    return brass::gc::register_stack_local(local);
+}();
+
+}  // namespace
+
+uintptr_t rtStackLimit() noexcept { return g_stackLimit; }
+
+void rtSetStackLimit(uintptr_t limit) noexcept {
+    g_stackLimit = limit;
+    blockLimit(&g_tls_block).store(limit, std::memory_order_relaxed);
+}
+
+uintptr_t rtStackLimitFor(uintptr_t low, uintptr_t high) noexcept {
+    if (high <= low) return 0;
+    const uintptr_t size = high - low;
+    const uintptr_t reserve = size >= 4 * kStackReserveBytes ? kStackReserveBytes : size / 4;
+    return low + reserve;
+}
+
+void rtArmInterrupt(bronze_tls_block* tls) noexcept {
+    blockLimit(tls).store(kInterruptArmed, std::memory_order_relaxed);
+}
+
+void rtDisarmInterrupt() noexcept {
+    blockLimit(&g_tls_block).store(g_stackLimit, std::memory_order_relaxed);
+}
+
+}  // namespace bronze::runtime
+
 extern "C" void* bronze_tls_enter(void) {
     bronze_tls_block* tls = &bronze::runtime::g_tls_block;
-    if (BRONZE_UNLIKELY(tls->stack_limit == 0)) {
+    uintptr_t limit = bronze::runtime::rtStackLimit();
+    if (BRONZE_UNLIKELY(limit == 0)) {
         // The thread's first entry into generated code. That code calls brass
         // directly (brass_coro_create allocates a generator's frame on
         // Heap::current()), so the thread's heap is bound before it runs, not
@@ -211,23 +266,25 @@ extern "C" void* bronze_tls_enter(void) {
         bronze::runtime::rtHeap();
         uintptr_t low = 0, high = 0;
         bronze::runtime::threadStackBounds(low, high);
-        if (high > low) {
-            const uintptr_t size = high - low;
-            const uintptr_t reserve =
-                size >= 4 * bronze::runtime::kStackReserveBytes ? bronze::runtime::kStackReserveBytes
-                                                                 : size / 4;
-            tls->stack_limit = low + reserve;
-        }
+        limit = bronze::runtime::rtStackLimitFor(low, high);
     }
     char marker = 0;
     const uintptr_t cur_sp = reinterpret_cast<uintptr_t>(&marker);
-    if (tls->stack_limit != 0 && cur_sp <= tls->stack_limit + 32 * 1024) {
-        if (cur_sp > bronze::runtime::kStackReserveBytes) {
-            tls->stack_limit = cur_sp - bronze::runtime::kStackReserveBytes;
-        } else {
-            tls->stack_limit = 0;
-        }
+    if (limit != 0 && cur_sp <= limit + 32 * 1024) {
+        limit = cur_sp > bronze::runtime::kStackReserveBytes ? cur_sp - bronze::runtime::kStackReserveBytes : 0;
     }
+    // Through the setter: an interrupt armed on this thread stays armed only
+    // if nothing changed (the store below would drop it otherwise, and the
+    // scheduler's next tick arms it again).
+    if (limit != bronze::runtime::rtStackLimit()) bronze::runtime::rtSetStackLimit(limit);
     return tls;
+}
+
+// A loop backedge's interrupt poll (brass Module::interrupt_poll) found the
+// stack pointer below `stack_limit`, which in a loop means the limit is the
+// armed one: put the real limit back and service the interrupt.
+extern "C" void bronze_interrupt_poll(void) {
+    bronze::runtime::rtDisarmInterrupt();
+    bronze::runtime::rtServiceInterrupt();
 }
 

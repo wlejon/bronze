@@ -42,6 +42,7 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
+#include "runtime/stack_locals.h"
 #include "runtime/stack_trace.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -51,6 +52,14 @@
 namespace bronze::runtime {
 
 thread_local NewTargetScope* g_topNewTarget = nullptr;
+
+namespace {
+// Per stack (runtime/stack_locals.h): the scopes nest with one stack's frames.
+NewTargetScope*& topNewTargetRef() { return g_topNewTarget; }
+NewTargetScope* noNewTarget() { return nullptr; }
+[[maybe_unused]] const int g_topNewTargetLocal =
+    registerStackLocalWord<NewTargetScope*, &topNewTargetRef, &noNewTarget>();
+}  // namespace
 
 NewTargetScope::NewTargetScope(Value target) : targetRoot_(target), prev_(g_topNewTarget) {
     g_topNewTarget = this;

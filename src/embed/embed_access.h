@@ -48,7 +48,13 @@
 
 #include "embed/embed_handle.h"
 
+namespace bronze {
+class Realm;
+}
+
 namespace bronze::embed {
+
+using Realm = bronze::Realm;
 
 enum class AccessKind : uint8_t {
     Read,          // subject: an absolute path read (listed, watched, stat'ed, opened)
@@ -134,6 +140,11 @@ BRONZE_EMBED_API HeldAccessId holdAccess(AccessKind kind, std::string subject,
 
 /// The resource closed: forget it. 0 and unknown ids are ignored.
 BRONZE_EMBED_API void releaseAccess(HeldAccessId id);
+/// A realm is going away (the host stops the app it ran): revoke everything
+/// it holds open on the calling thread with `refusal`, inside the realm, and
+/// return how many. Each entry remembers the realm current at holdAccess, and
+/// revalidateHeldAccess asks the gate about it inside that realm too.
+BRONZE_EMBED_API int revokeHeldAccessInRealm(Realm* realm, const std::string& refusal);
 
 /// The host's grants changed: every thread revalidates at its next turn.
 BRONZE_EMBED_API void accessChanged();

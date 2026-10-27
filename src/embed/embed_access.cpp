@@ -16,6 +16,7 @@
 #include "embed/embed_access.h"
 
 #include "embed/embed.h"
+#include "runtime/realm.h"
 
 #include <atomic>
 #include <memory>
@@ -40,6 +41,10 @@ std::shared_ptr<const AccessGate> currentGate() {
 
 struct HeldEntry {
     std::thread::id owner;
+    // The realm that opened it (Realm::slot): it is asked about again inside
+    // that realm, so a host with one grant set per realm (an app each)
+    // judges it by the grants of the app that holds it.
+    uint32_t realm = 0;
     AccessKind kind;
     std::string subject;
     std::function<void(const std::string&)> revoke;
@@ -161,8 +166,34 @@ HeldAccessId holdAccess(AccessKind kind, std::string subject, std::function<void
     Ledger& l = ledger();
     std::lock_guard lock(l.mu);
     const HeldAccessId id = l.nextId++;
-    l.entries.emplace(id, HeldEntry{std::this_thread::get_id(), kind, std::move(subject), std::move(revoke)});
+    l.entries.emplace(id, HeldEntry{std::this_thread::get_id(), rtCurrentRealmSlot(), kind,
+                                    std::move(subject), std::move(revoke)});
     return id;
+}
+
+int revokeHeldAccessInRealm(Realm* realm, const std::string& refusal) {
+    if (!realm) return 0;
+    const uint32_t slot = realm->slot();
+    const std::thread::id self = std::this_thread::get_id();
+    std::vector<std::function<void(const std::string&)>> revokes;
+    {
+        Ledger& l = ledger();
+        std::lock_guard lock(l.mu);
+        for (auto it = l.entries.begin(); it != l.entries.end();) {
+            if (it->second.owner == self && it->second.realm == slot) {
+                revokes.push_back(std::move(it->second.revoke));
+                it = l.entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // Inside the realm, as revalidation runs them: each closes its resource
+    // and reports to the program that held it.
+    RealmScope scope(realm);
+    for (auto& revoke : revokes)
+        if (revoke) revoke(refusal);
+    return static_cast<int>(revokes.size());
 }
 
 void releaseAccess(HeldAccessId id) {
@@ -188,6 +219,7 @@ int revalidateHeldAccess(bool force) {
     const std::thread::id self = std::this_thread::get_id();
     struct Probe {
         HeldAccessId id;
+        uint32_t realm;
         AccessKind kind;
         std::string subject;
     };
@@ -196,23 +228,34 @@ int revalidateHeldAccess(bool force) {
         Ledger& l = ledger();
         std::lock_guard lock(l.mu);
         for (const auto& [id, e] : l.entries)
-            if (e.owner == self) mine.push_back({id, e.kind, e.subject});
+            if (e.owner == self) mine.push_back({id, e.realm, e.kind, e.subject});
     }
     int revoked = 0;
     for (const Probe& p : mine) {
+        // Asked, and revoked, inside the realm that holds it.
+        Realm* realm = rtRealmForSlot(p.realm);
+        const bool enter = realm && p.realm != rtCurrentRealmSlot();
+        if (enter) enterRealm(realm);
         std::string refused = ask(p.kind, p.subject, /*held=*/true);
-        if (refused.empty()) continue;
+        if (refused.empty()) {
+            if (enter) exitRealm();
+            continue;
+        }
         std::function<void(const std::string&)> revoke;
         {
             Ledger& l = ledger();
             std::lock_guard lock(l.mu);
             auto it = l.entries.find(p.id);
-            if (it == l.entries.end()) continue;  // closed by an earlier revoke
-            revoke = std::move(it->second.revoke);
-            l.entries.erase(it);
+            if (it != l.entries.end()) {
+                revoke = std::move(it->second.revoke);
+                l.entries.erase(it);
+            }
         }
-        ++revoked;
-        if (revoke) revoke(refused);
+        if (revoke) {  // else closed by an earlier revoke
+            ++revoked;
+            revoke(refused);
+        }
+        if (enter) exitRealm();
     }
     return revoked;
 }

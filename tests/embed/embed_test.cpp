@@ -1361,6 +1361,7 @@ TEST_CASE("createExternalArrayBuffer reads host bytes in place and shares a live
 
 namespace {
 double embedTestScale(double a, double b) { return a * b; }
+double embedTestOffset(double a, double b) { return a + b; }
 void* embedTestProbeNew(double v) { return new double(v); }
 int embedTestProbeFreed = 0;
 void embedTestProbeFree(void* p) {
@@ -1409,8 +1410,11 @@ TEST_CASE("registerNative checks the path, the vocabulary and the class graph") 
 
     // The acceptance, and what the registry then says about it.
     REQUIRE(embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
-    CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
+    // Another function under the taken path is refused; the same one again
+    // (a host installing into a second realm) is the same registration.
+    CHECK(!embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestOffset), sig, &err));
     CHECK(err.find("already registered") != std::string::npos);
+    CHECK(embed::registerNative("et.scale", reinterpret_cast<void*>(&embedTestScale), sig, &err));
     const auto names = embed::hostNativeNames();
     CHECK(std::find(names.begin(), names.end(), "et.scale") != names.end());
     CHECK(embed::nativeManifestJson().find("\"signature\": \"f64(f64,f64)\"") != std::string::npos);

@@ -19,6 +19,7 @@ bronze_add_module(embed
         embed_clone.cpp
         embed_host_class.cpp
         embed_access.cpp
+        embed_compartment.cpp
     DEPS
         runtime
         abi

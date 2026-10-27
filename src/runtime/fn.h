@@ -130,7 +130,26 @@ struct FunctionHeader {
     // a green pixi GC-stress run into an environment-chain corruption).
     // create() zeroes these, so the word is a small integer, never a
     // plausible pointer.
-    uint8_t padding_to_value_scan[3]{};
+    //
+    // The three bytes hold the slot of the realm the function was made in
+    // (Realm::slot, at most kMaxRealmSlot, so the word's top byte stays below
+    // 0x80 and never spells a heap tag): a host calling into the function
+    // enters that realm first (embed::call), the way 10.2.1 runs a function
+    // in its [[Realm]]. 0 is "every realm's" — the intrinsics made before any
+    // realm, and the natives, which are the thread's and shared.
+    uint8_t realm_slot_bytes[3]{};
+
+    uint32_t realmSlot() const noexcept {
+        return static_cast<uint32_t>(realm_slot_bytes[0]) |
+               (static_cast<uint32_t>(realm_slot_bytes[1]) << 8) |
+               (static_cast<uint32_t>(realm_slot_bytes[2]) << 16);
+    }
+    void setRealmSlot(uint32_t slot) noexcept {
+        slot &= 0x7FFFFFu;
+        realm_slot_bytes[0] = static_cast<uint8_t>(slot);
+        realm_slot_bytes[1] = static_cast<uint8_t>(slot >> 8);
+        realm_slot_bytes[2] = static_cast<uint8_t>(slot >> 16);
+    }
     // This function object's own [[Prototype]], or UNDEFINED for "whatever the
     // intrinsic default for its kind is" — %Function.prototype% for an
     // ordinary function, %GeneratorFunction.prototype% for a generator, and so

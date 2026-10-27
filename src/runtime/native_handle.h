@@ -46,7 +46,18 @@ Value rtMakeHandle(void* data, HandleDestructor dtor, Finalize when, Value proto
 
 // The data pointer, or nullptr for a value that is not a handle. A brand
 // check, not a shape check: `Object.setPrototypeOf(handle, p)` is in-contract.
+//
+// A handle made in one realm unwraps only in that realm (or anywhere, for one
+// made before any realm existed): in another this answers nullptr, exactly as
+// for a value of the wrong kind, so a host's natives refuse what another app
+// made. rtHandleDataAnyRealm is the host's own unchecked read (teardown,
+// registries keyed by payload).
 void* rtHandleData(Value handle);
+void* rtHandleDataAnyRealm(Value handle);
+// The realm slot the handle was made in (0 for none, or a non-handle), and
+// whether that is another realm than the current one.
+uint32_t rtHandleRealmSlot(Value handle);
+bool rtHandleForeign(Value handle);
 bool rtIsHandle(Value handle);
 // The class tag the cell was made with, or nullptr for a non-handle or an
 // untagged handle.

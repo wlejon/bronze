@@ -60,7 +60,17 @@ public:
     // Populate the global object with builtins, host globals, and globalThis reference.
     void initGlobalObject(Value customGlobal = Value::fromUndefined());
 
+    // The number naming this realm on its thread (1 and up, never reused while
+    // the thread lives; 0 is "no realm"). Every function object and native
+    // handle made while the realm is current carries it: a host's call into a
+    // function enters the function's realm (embed::call), a handle unwraps
+    // only in the realm that made it (rtHandleData), and the realm's compiled
+    // modules have instances of their own (module_instance.cpp).
+    uint32_t slot() const noexcept { return slot_; }
+    void setSlot(uint32_t slot) noexcept { slot_ = slot; }
+
 private:
+    uint32_t slot_ = 0;
     Value globalObject_{Value::fromUndefined()};
     Value globalEnv_{Value::fromUndefined()};
     std::vector<std::pair<std::string, Value>> moduleRegistry_;
@@ -82,6 +92,20 @@ void rtExitRealm();
 
 // Trace all live realms on the calling thread during GC.
 void rtVisitRealmRoots(const Heap::RootVisitor& visit);
+
+// The largest realm slot: a function object keeps its realm's slot in three
+// bytes of padding whose top byte must never spell a heap tag (fn.h).
+inline constexpr uint32_t kMaxRealmSlot = 0x7FFFFF;
+
+// The current realm's slot WITHOUT creating the default realm: 0 while no
+// realm exists on this thread (the builtins made before one, which belong to
+// every realm). Allocates nothing.
+uint32_t rtCurrentRealmSlot() noexcept;
+// The live realm on this thread with `slot`, or null for 0, a slot never
+// handed out, or one whose realm was destroyed.
+Realm* rtRealmForSlot(uint32_t slot) noexcept;
+// Whether `slot` named a realm on this thread that has since been destroyed.
+bool rtRealmSlotDestroyed(uint32_t slot) noexcept;
 
 // The realm a host-global registration on this thread reaches: the current
 // one, or null while no realm exists yet. Never creates the default realm —

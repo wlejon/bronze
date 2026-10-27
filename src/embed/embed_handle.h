@@ -222,7 +222,14 @@ BRONZE_EMBED_API void drainFinalizers();
 // loop.
 BRONZE_EMBED_API bool finalizersPending();
 
-// The pointer a handle carries, or nullptr for a value that is not one.
+// The pointer a handle carries, or nullptr for a value that is not one — or
+// for a handle another realm made (native_handle.h): every unwrap a host's
+// natives make refuses what another app's realm created, beside the brand
+// check. handleDataAnyRealm is the host's own unchecked read, for its
+// registries and teardown, never for an argument a program passed.
 BRONZE_EMBED_API void* handleData(Value handle);
+BRONZE_EMBED_API void* handleDataAnyRealm(Value handle);
+// Whether `handle` is a handle another realm on this thread made.
+BRONZE_EMBED_API bool handleForeign(Value handle);
 
 }  // namespace bronze::embed

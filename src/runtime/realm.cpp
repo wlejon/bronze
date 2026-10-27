@@ -20,13 +20,89 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/stack_locals.h"
 #include "runtime/string.h"
+#include "runtime/module_instance.h"
 
 namespace bronze {
 
 static thread_local std::vector<Realm*> g_realmStack;
 static thread_local std::vector<Realm*> g_liveRealms;
 static thread_local Realm* g_defaultRealm = nullptr;
+// The realm whose module instances activateTopRealm last made active.
+static thread_local const Realm* g_activeRealm = nullptr;
+
+// Realm slots on this thread: index = slot, the realm while it lives, null
+// once destroyed (a slot is never handed out twice, so a function or handle
+// of a destroyed realm can never be taken for a later realm's). Slot 0 is
+// "no realm".
+static thread_local std::vector<Realm*> g_slotRealms;
+
+static void assignSlot(Realm* r) {
+    if (g_slotRealms.empty()) g_slotRealms.push_back(nullptr);
+    if (g_slotRealms.size() > kMaxRealmSlot) {
+        fatal("realm: more realms were made on this thread than a slot can name");
+    }
+    r->setSlot(static_cast<uint32_t>(g_slotRealms.size()));
+    g_slotRealms.push_back(r);
+}
+
+// Generated code addresses a module's writable tables through the TLS
+// block's delta array, which is the CURRENT realm's: each realm has its own
+// instance of every module entered in it (module_instance.cpp). The default
+// realm keeps the thread's own table (realm slot 0 there).
+static void activateTopRealm() {
+    Realm* top = g_realmStack.empty() ? g_defaultRealm : g_realmStack.back();
+    g_activeRealm = top;
+    runtime::rtActivateRealmModuleInstances(top && top != g_defaultRealm ? top->slot() : 0);
+}
+
+// The realm stack is per STACK (runtime/stack_locals.h): a compartment's fiber
+// enters its own realm, and the stack it switches to finds its own realm on
+// top again, with that realm's module instances active and the global caches
+// (which name one realm's globals) dropped.
+static const int g_realmStackLocal = [] {  // NOLINT: registered for its effect
+    brass::gc::StackLocal local;
+    local.save = [](void** slot) {
+        auto* box = static_cast<std::vector<Realm*>*>(*slot);
+        if (box == nullptr) {
+            box = new std::vector<Realm*>();
+            *slot = box;
+        }
+        box->swap(g_realmStack);
+    };
+    local.restore = [](void** slot, bool fresh) {
+        auto* box = static_cast<std::vector<Realm*>*>(*slot);
+        if (fresh || box == nullptr) {
+            g_realmStack.clear();
+        } else {
+            box->swap(g_realmStack);
+        }
+        // Only a change of the active realm costs anything: a switch between
+        // stacks running the same realm (or none) keeps its caches.
+        const Realm* top = g_realmStack.empty() ? g_defaultRealm : g_realmStack.back();
+        if (top != g_activeRealm) {
+            activateTopRealm();
+            runtime::rtInvalidateGlobalCaches();
+        }
+    };
+    local.release = [](void* value) { delete static_cast<std::vector<Realm*>*>(value); };
+    return brass::gc::register_stack_local(local);
+}();
+
+uint32_t rtCurrentRealmSlot() noexcept {
+    if (!g_realmStack.empty()) return g_realmStack.back()->slot();
+    return g_defaultRealm ? g_defaultRealm->slot() : 0;
+}
+
+Realm* rtRealmForSlot(uint32_t slot) noexcept {
+    if (slot == 0 || slot >= g_slotRealms.size()) return nullptr;
+    return g_slotRealms[slot];
+}
+
+bool rtRealmSlotDestroyed(uint32_t slot) noexcept {
+    return slot != 0 && slot < g_slotRealms.size() && g_slotRealms[slot] == nullptr;
+}
 
 static const char* const kGlobalObjectNames[] = {
     "Math", "Object", "Number", "JSON", "Array", "String", "Boolean", "Symbol", "BigInt", "RegExp",
@@ -154,6 +230,7 @@ Realm* rtDefaultRealm() {
         auto* r = new Realm(/*deferInit=*/true);
         g_defaultRealm = r;
         g_liveRealms.push_back(r);
+        assignSlot(r);
         runtime::rtAdoptPreRealmHostGlobals(*r);
         r->initGlobalObject(Value::fromUndefined());
     }
@@ -186,6 +263,7 @@ Realm* rtCreateRealm(Value customGlobal) {
     (void)rtDefaultRealm();
     auto* realm = new Realm(/*deferInit=*/true);
     g_liveRealms.push_back(realm);
+    assignSlot(realm);
     realm->initGlobalObject(rootCustom.get());
     return realm;
 }
@@ -214,7 +292,19 @@ void rtDestroyRealm(Realm* realm) {
     for (RealmDestroyHook hook : hooks) hook(realm);
     bool wasActive = (!g_realmStack.empty() && g_realmStack.back() == realm);
     std::erase(g_realmStack, realm);
+    // A suspended stack (a compartment's fiber) may have it entered too.
+    runtime::forEachSwitchedStackLocal(g_realmStackLocal, [realm](void* box) {
+        if (box) std::erase(*static_cast<std::vector<Realm*>*>(box), realm);
+    });
+    if (g_activeRealm == realm) g_activeRealm = nullptr;
     std::erase(g_liveRealms, realm);
+    const uint32_t slot = realm->slot();
+    if (slot != 0 && slot < g_slotRealms.size()) g_slotRealms[slot] = nullptr;
+    if (wasActive) activateTopRealm();
+    // Its module instances (environments, caches) and its function
+    // singletons go with it; nothing of it can run again, since a call into
+    // one of its functions is refused (embed::call).
+    runtime::rtReleaseRealmModuleInstances(slot);
     delete realm;
     if (wasActive) {
         runtime::rtInvalidateGlobalCaches();
@@ -224,12 +314,14 @@ void rtDestroyRealm(Realm* realm) {
 void rtEnterRealm(Realm* realm) {
     if (!realm) return;
     g_realmStack.push_back(realm);
+    activateTopRealm();
     runtime::rtInvalidateGlobalCaches();
 }
 
 void rtExitRealm() {
     if (!g_realmStack.empty()) {
         g_realmStack.pop_back();
+        activateTopRealm();
         runtime::rtInvalidateGlobalCaches();
     }
 }
@@ -302,6 +394,9 @@ void rtTeardownThreadRealms() {
     g_realmStack.clear();
     g_realmStack.shrink_to_fit();
     g_defaultRealm = nullptr;
+    g_activeRealm = nullptr;
+    g_slotRealms.clear();
+    g_slotRealms.shrink_to_fit();
     for (Realm* r : g_liveRealms) {
         delete r;
     }

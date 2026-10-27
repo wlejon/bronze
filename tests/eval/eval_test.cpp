@@ -348,6 +348,43 @@ TEST_CASE("evalScript evaluates code within isolated realms") {
     embed::destroyRealm(realmB);
 }
 
+// A function made in a realm runs there whoever calls it (embed::call enters
+// the realm stamped on it), so its free names are that realm's globals; a
+// function bound over it is of the same realm; and once the realm is gone a
+// call is refused rather than run against a global that no longer exists.
+TEST_CASE("a function runs in the realm that made it, and is refused once that realm is gone") {
+    embed::Realm* realmA = embed::createRealm();
+    embed::Persistent fnA, boundA;
+    {
+        embed::RealmScope scopeA(realmA);
+        auto r = evalScript(
+            "globalThis.where = 'A';"
+            "globalThis.whereFn = function () { return where; };"
+            "globalThis.whereBound = whereFn.bind(null);");
+        REQUIRE(!r.thrown);
+        fnA.set(embed::globalValue("whereFn").value);
+        boundA.set(embed::globalValue("whereBound").value);
+    }
+    REQUIRE(embed::isFunction(fnA.get()));
+    auto d = evalScript("globalThis.where = 'default'; where;");
+    REQUIRE(!d.thrown);
+    CHECK(embed::toUtf8(d.value) == "default");
+
+    embed::CallResult r = embed::call(fnA.get(), embed::undefined(), {});
+    REQUIRE(!r.thrown);
+    CHECK(embed::toUtf8(r.value) == "A");
+    embed::CallResult rb = embed::call(boundA.get(), embed::undefined(), {});
+    REQUIRE(!rb.thrown);
+    CHECK(embed::toUtf8(rb.value) == "A");
+    CHECK(embed::currentRealm() != realmA);
+
+    embed::destroyRealm(realmA);
+    embed::CallResult gone = embed::call(fnA.get(), embed::undefined(), {});
+    CHECK(gone.thrown);
+    embed::CallResult goneBound = embed::call(boundA.get(), embed::undefined(), {});
+    CHECK(goneBound.thrown);
+}
+
 TEST_CASE("proxy array refused mutator throws TypeError") {
     embed::CallResult r1 = evalScript(
         "let p = new Proxy([], {});\n"

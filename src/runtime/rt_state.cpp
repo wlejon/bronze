@@ -217,7 +217,29 @@ struct SingletonEntry {
     bronze_fn_code code{nullptr};
     Value value{Value::fromUndefined()};
     uint64_t epoch{0};
+    // The realm the singleton belongs to (Realm::slot), 0 for a native's: a
+    // compiled function object carries its realm's mutable state (its own
+    // properties, its `prototype`) and must not be shared between realms,
+    // while the natives are the frozen intrinsics every realm shares.
+    uint32_t realm{0};
 };
+
+// functionSingletonIndex's key: the code pointer and the realm.
+struct SingletonKey {
+    const void* code;
+    uint32_t realm;
+    bool operator==(const SingletonKey& o) const noexcept { return code == o.code && realm == o.realm; }
+};
+struct SingletonKeyHash {
+    size_t operator()(const SingletonKey& k) const noexcept {
+        return std::hash<const void*>()(k.code) ^ (static_cast<size_t>(k.realm) * 0x9E3779B97F4A7C15ull);
+    }
+};
+
+static void eraseSingletonCode(std::unordered_map<SingletonKey, size_t, SingletonKeyHash>& index,
+                               const void* code) {
+    std::erase_if(index, [code](const auto& kv) { return kv.first.code == code; });
+}
 
 // One {code, value} entry of a module's fn-singleton table. The layout is the
 // ABI's, because generated code reads the two words inline; this declaration
@@ -250,7 +272,7 @@ struct DynamicModule {
 
 struct ThreadModuleState {
     std::vector<SingletonEntry> functionSingletons;
-    std::unordered_map<void*, size_t> functionSingletonIndex;
+    std::unordered_map<SingletonKey, size_t, SingletonKeyHash> functionSingletonIndex;
     std::vector<ModuleSpan<Value>> moduleValueCells;
     std::vector<ModuleSpan<FnSingletonSlot>> moduleFnSlots;
     std::vector<ModuleSpan<Value>> globalCacheSpans;
@@ -302,6 +324,35 @@ void rtInvalidateGlobalCaches() {
     }
 }
 
+void rtDropModuleCellsWithin(const void* begin, size_t size) {
+    if (!g_threadModules || !begin || size == 0) return;
+    ThreadModuleState& s = *g_threadModules;
+    const auto lo = reinterpret_cast<uintptr_t>(begin);
+    const uintptr_t hi = lo + size;
+    auto within = [lo, hi](const void* p) {
+        const auto a = reinterpret_cast<uintptr_t>(p);
+        return a >= lo && a < hi;
+    };
+    std::erase_if(s.moduleValueCells, [&](const ModuleSpan<Value>& sp) { return within(sp.cells); });
+    std::erase_if(s.moduleFnSlots,
+                  [&](const ModuleSpan<FnSingletonSlot>& sp) { return within(sp.cells); });
+    std::erase_if(s.globalCacheSpans, [&](const ModuleSpan<Value>& sp) { return within(sp.cells); });
+}
+
+void rtDropRealmFunctionSingletons(uint32_t realmSlot) {
+    if (!g_threadModules || realmSlot == 0) return;
+    ThreadModuleState& s = *g_threadModules;
+    const size_t before = s.functionSingletons.size();
+    std::erase_if(s.functionSingletons,
+                  [realmSlot](const SingletonEntry& e) { return e.realm == realmSlot; });
+    if (s.functionSingletons.size() == before) return;
+    s.functionSingletonIndex.clear();
+    for (size_t i = 0; i < s.functionSingletons.size(); ++i) {
+        const SingletonEntry& e = s.functionSingletons[i];
+        s.functionSingletonIndex[SingletonKey{reinterpret_cast<const void*>(e.code), e.realm}] = i;
+    }
+}
+
 uint64_t rtBeginModuleEpoch() {
     ThreadModuleState& s = threadModules();
     const uint64_t epoch = ++s.moduleEpochCounter;
@@ -329,21 +380,24 @@ static void dropModuleSpansAndSingletons(ThreadModuleState& s, uint64_t epoch) {
         if (span.epoch != epoch) continue;
         for (uint64_t i = 0; i < span.count; ++i) {
             if (span.cells[i].code) {
-                s.functionSingletonIndex.erase(reinterpret_cast<void*>(span.cells[i].code));
+                eraseSingletonCode(s.functionSingletonIndex,
+                                   reinterpret_cast<const void*>(span.cells[i].code));
             }
         }
     }
     for (const auto& entry : s.functionSingletons) {
         if (entry.epoch == epoch) {
-            s.functionSingletonIndex.erase(reinterpret_cast<void*>(entry.code));
+            eraseSingletonCode(s.functionSingletonIndex, reinterpret_cast<const void*>(entry.code));
         }
     }
     std::erase_if(s.functionSingletons, [epoch, &s](const SingletonEntry& entry) {
         return entry.epoch == epoch ||
-               !s.functionSingletonIndex.contains(reinterpret_cast<void*>(entry.code));
+               !s.functionSingletonIndex.contains(
+                   SingletonKey{reinterpret_cast<const void*>(entry.code), entry.realm});
     });
     for (size_t i = 0; i < s.functionSingletons.size(); ++i) {
-        s.functionSingletonIndex[reinterpret_cast<void*>(s.functionSingletons[i].code)] = i;
+        const SingletonEntry& e = s.functionSingletons[i];
+        s.functionSingletonIndex[SingletonKey{reinterpret_cast<const void*>(e.code), e.realm}] = i;
     }
     std::erase_if(s.moduleValueCells,
                   [epoch](const ModuleSpan<Value>& sp) { return sp.epoch == epoch; });
@@ -826,7 +880,8 @@ bool rtPolyMethodIcEnabled() noexcept { return g_polyMethodIcEnabled; }
 uint32_t rtFunctionSingletonIndexOf(bronze_fn_code code) {
     if (!g_threadModules) return UINT32_MAX;
     const auto& idxMap = g_threadModules->functionSingletonIndex;
-    if (auto it = idxMap.find(reinterpret_cast<void*>(code)); it != idxMap.end()) {
+    if (auto it = idxMap.find(SingletonKey{reinterpret_cast<const void*>(code), 0});
+        it != idxMap.end()) {
         return static_cast<uint32_t>(it->second);
     }
     return UINT32_MAX;
@@ -848,14 +903,19 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
     recordHelperCall("bronze_function_singleton");
     ThreadModuleState& s = threadModules();
     Value result = Value::fromUndefined();
-    if (auto it = s.functionSingletonIndex.find(reinterpret_cast<void*>(code));
-        it != s.functionSingletonIndex.end()) {
+    // A native is one of the intrinsics every realm shares; a compiled
+    // function is its realm's, one per realm (SingletonEntry::realm).
+    const bool native = (fnFlags & BRONZE_ABI_FN_FLAG_NATIVE) != 0;
+    const uint32_t realm = native ? 0 : rtCurrentRealmSlot();
+    const SingletonKey key{reinterpret_cast<const void*>(code), realm};
+    if (auto it = s.functionSingletonIndex.find(key); it != s.functionSingletonIndex.end()) {
         result = s.functionSingletons[it->second].value;
     } else {
         FunctionHeader* fn =
             FunctionHeader::create(rtHeap(), code, Value::fromUndefined(), arity, fnFlags);
         fn->env_record = Value::fromObject(fn);
         fn->header.flags = HeapKind::Function;
+        fn->setRealmSlot(realm);
         rtSetFunctionNameAndLength(fn, nameKey, length);
         result = Value::fromObject(fn);
         uint64_t fnEpoch = 0;
@@ -867,9 +927,8 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
                 fnEpoch = s.currentModuleEpoch;
             }
         }
-        s.functionSingletons.push_back(SingletonEntry{code, result, fnEpoch});
-        s.functionSingletonIndex.emplace(reinterpret_cast<void*>(code),
-                                         s.functionSingletons.size() - 1);
+        s.functionSingletons.push_back(SingletonEntry{code, result, fnEpoch, realm});
+        s.functionSingletonIndex.emplace(key, s.functionSingletons.size() - 1);
     }
     if (slotCell) {
         *reinterpret_cast<FnSingletonSlot*>(slotCell) = FnSingletonSlot{code, result};

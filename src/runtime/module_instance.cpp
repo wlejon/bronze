@@ -27,14 +27,28 @@
 // never frees its predecessor, so a function that loaded the array pointer
 // before another module registered still reads its own module's delta
 // correctly through the old array.
+//
+// PER REALM, not only per thread. A module's environment cell is in the run,
+// so two realms on one thread running the same compiled code would share its
+// top-level bindings (and its inline caches would latch one realm's objects
+// for the other) if they shared an instance. Each realm therefore has a table
+// of its own, and "thread" above reads "(thread, realm)": the first realm in
+// the process to enter a module uses the image's run, every other gets a
+// pristine copy. realm.cpp activates the current realm's table on every
+// enter and exit, which is a pointer store into the TLS block; the default
+// realm keeps the thread's own table, so a host with one realm sees nothing
+// change.
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <new>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "abi/bronze_abi.h"
@@ -75,11 +89,16 @@ constexpr uint64_t kNoDelta = ~uint64_t{0};
 // alignment the backend gave it in the image.
 constexpr size_t kInstanceAlign = 64;
 
+// One realm's instances on this thread (the thread's own table serves its
+// default realm).
 struct ThreadModuleInstanceState {
     uint64_t* deltas = nullptr;
     size_t deltaCapacity = 0;
     std::vector<uint64_t*> retiredDeltas;
     std::vector<void*> threadCopies;
+    // Where each instance this table uses lives (the image's run for the
+    // home, else a copy): what a destroyed realm's GC registrations point at.
+    std::vector<std::pair<const uint8_t*, size_t>> runs;
 
     void clear() {
         delete[] deltas;
@@ -95,27 +114,36 @@ struct ThreadModuleInstanceState {
         }
         threadCopies.clear();
         threadCopies.shrink_to_fit();
+        runs.clear();
+        runs.shrink_to_fit();
     }
 
     ~ThreadModuleInstanceState() { clear(); }
 };
 
 thread_local ThreadModuleInstanceState t_inst;
+// The other realms' tables, by realm slot, and the one generated code reads
+// now. Heap-allocated so a table's address is stable while the map grows.
+thread_local std::unordered_map<uint32_t, std::unique_ptr<ThreadModuleInstanceState>> t_realmInst;
+thread_local ThreadModuleInstanceState* t_active = nullptr;
+
+ThreadModuleInstanceState& active() { return t_active ? *t_active : t_inst; }
 
 void ensureDeltaCapacity(size_t slot) {
-    if (slot < t_inst.deltaCapacity) return;
-    size_t cap = t_inst.deltaCapacity == 0 ? 16 : t_inst.deltaCapacity;
+    ThreadModuleInstanceState& inst = active();
+    if (slot < inst.deltaCapacity) return;
+    size_t cap = inst.deltaCapacity == 0 ? 16 : inst.deltaCapacity;
     while (cap <= slot) cap *= 2;
     auto* grown = new uint64_t[cap];
     for (size_t i = 0; i < cap; ++i) grown[i] = kNoDelta;
-    if (t_inst.deltas) {
-        std::memcpy(grown, t_inst.deltas, t_inst.deltaCapacity * sizeof(uint64_t));
-        // Kept alive for the life of the thread: generated code may hold its
+    if (inst.deltas) {
+        std::memcpy(grown, inst.deltas, inst.deltaCapacity * sizeof(uint64_t));
+        // Kept alive for the life of the table: generated code may hold its
         // address across the call that grew it (see the header comment).
-        t_inst.retiredDeltas.push_back(t_inst.deltas);
+        inst.retiredDeltas.push_back(inst.deltas);
     }
-    t_inst.deltas = grown;
-    t_inst.deltaCapacity = cap;
+    inst.deltas = grown;
+    inst.deltaCapacity = cap;
     rtTls()->module_deltas = grown;
 }
 
@@ -125,11 +153,40 @@ bool rtThreadHasModuleInstance(const uint64_t* slotCell) {
     if (!slotCell) return false;
     AtomicRef<uint64_t> slotRef(*const_cast<uint64_t*>(slotCell));
     const uint64_t slot = slotRef.load(std::memory_order_acquire);
-    return slot != 0 && slot < t_inst.deltaCapacity && t_inst.deltas[slot] != kNoDelta;
+    const ThreadModuleInstanceState& inst = active();
+    return slot != 0 && slot < inst.deltaCapacity && inst.deltas[slot] != kNoDelta;
+}
+
+void rtActivateRealmModuleInstances(uint32_t realmSlot) {
+    ThreadModuleInstanceState* next = &t_inst;
+    if (realmSlot != 0) {
+        auto& slotTable = t_realmInst[realmSlot];
+        if (!slotTable) slotTable = std::make_unique<ThreadModuleInstanceState>();
+        next = slotTable.get();
+    }
+    if (next == &active() && rtTls()->module_deltas == next->deltas) return;
+    t_active = next;
+    rtTls()->module_deltas = next->deltas;
+}
+
+void rtReleaseRealmModuleInstances(uint32_t realmSlot) {
+    if (realmSlot == 0) return;
+    auto it = t_realmInst.find(realmSlot);
+    if (it != t_realmInst.end()) {
+        if (it->second.get() == t_active) {
+            t_active = &t_inst;
+            rtTls()->module_deltas = t_inst.deltas;
+        }
+        for (const auto& [addr, size] : it->second->runs) rtDropModuleCellsWithin(addr, size);
+        t_realmInst.erase(it);
+    }
+    rtDropRealmFunctionSingletons(realmSlot);
 }
 
 void rtTeardownThreadModuleInstances() {
     rtTls()->module_deltas = nullptr;
+    t_active = nullptr;
+    t_realmInst.clear();
     t_inst.clear();
 }
 
@@ -142,8 +199,9 @@ extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, 
     }
     AtomicRef<uint64_t> slotRef(*slotCell);
     uint64_t slot = slotRef.load(std::memory_order_acquire);
-    if (slot != 0 && slot < t_inst.deltaCapacity && t_inst.deltas[slot] != kNoDelta) {
-        return t_inst.deltas[slot];
+    ThreadModuleInstanceState& inst = active();
+    if (slot != 0 && slot < inst.deltaCapacity && inst.deltas[slot] != kNoDelta) {
+        return inst.deltas[slot];
     }
 
     const auto* runBegin = reinterpret_cast<const uint8_t*>(begin);
@@ -171,9 +229,11 @@ extern "C" uint64_t bronze_module_instance(uint64_t* slotCell, uint64_t* begin, 
         }
     }
     if (newCopy) {
-        t_inst.threadCopies.push_back(newCopy);
+        inst.threadCopies.push_back(newCopy);
     }
+    inst.runs.emplace_back(
+        reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(runBegin) + delta), size);
     ensureDeltaCapacity(static_cast<size_t>(slot));
-    t_inst.deltas[slot] = delta;
+    inst.deltas[slot] = delta;
     return delta;
 }

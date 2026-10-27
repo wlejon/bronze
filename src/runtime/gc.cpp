@@ -8,6 +8,7 @@
 #include "abi/bronze_abi.h"
 #include "runtime/fatal.h"
 #include "runtime/ic_log.h"
+#include "runtime/stack_locals.h"
 
 // The C++ side's shadow stack (compiled code's Values are brass stack-map
 // roots, heap.cpp) — and of it, only the parts that are NOT on the hot path. The frame's link, its
@@ -18,6 +19,16 @@
 namespace bronze {
 
 thread_local ShadowStackFrame* ShadowStackFrame::top_frame_ = nullptr;
+
+namespace {
+ShadowStackFrame*& topFrameRef() { return ShadowStackFrame::currentRef(); }
+ShadowStackFrame* noFrame() { return nullptr; }
+// A fresh stack has no frame: its entry opens the one its Rooted<>s need.
+const int g_topFrameLocal =
+    runtime::registerStackLocalWord<ShadowStackFrame*, &topFrameRef, &noFrame>();
+}  // namespace
+
+int shadowStackLocalIndex() noexcept { return g_topFrameLocal; }
 
 void fatalNoRootFrame() {
     fatal("Rooted<> with no ShadowStackFrame open: every entry into bronze opens "

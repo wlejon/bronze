@@ -14,6 +14,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/realm.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 
@@ -57,11 +58,15 @@ thread_local Shape* g_handleShape = nullptr;
 // Unforgeable in practice: internal slots are unreachable from JS, and no
 // other internal-slot creator in the runtime writes this word.
 constexpr uint64_t kHandleBrandBits = 0x0000'B805'EAD1'C377ULL;
-constexpr uint32_t kHandleSlotCount = 4;
+constexpr uint32_t kHandleSlotCount = 5;
 constexpr uint32_t kSlotData = 0;
 constexpr uint32_t kSlotDestructor = 1;
 constexpr uint32_t kSlotBrand = 2;
 constexpr uint32_t kSlotClassTag = 3;
+// The realm the handle was made in (Realm::slot), raw bits of a small
+// integer: a host keeping several realms on a thread (one per app) refuses a
+// handle of one realm in another at unwrap, beside the brand check.
+constexpr uint32_t kSlotRealm = 4;
 
 // The collector's finalizer for a dead cell. The destructor gets the pointer
 // registered with the cell, never one read out of the dead payload.
@@ -131,6 +136,7 @@ Value rtMakeHandle(void* data, HandleDestructor dtor, Finalize when, Value proto
                                                          "handle destructor")));
     cell->setInternalSlot(kSlotBrand, Value::fromRawBits(kHandleBrandBits));
     cell->setInternalSlot(kSlotClassTag, Value::fromRawBits(pointerBits(classTag, "class tag")));
+    cell->setInternalSlot(kSlotRealm, Value::fromRawBits(rtCurrentRealmSlot()));
     // No allocation between the create above and this registration, so `cell`
     // is the address the collector knows the object by.
     if (dtor) registerFinalizer(&cell->header, data, dtor, when);
@@ -158,9 +164,30 @@ ObjectHeader* handleCell(Value handle) {
 
 }  // namespace
 
+void* rtHandleDataAnyRealm(Value handle) {
+    ObjectHeader* obj = handleCell(handle);
+    if (!obj) return nullptr;
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(obj->internalSlot(kSlotData).rawBits()));
+}
+
+uint32_t rtHandleRealmSlot(Value handle) {
+    ObjectHeader* obj = handleCell(handle);
+    if (!obj) return 0;
+    return static_cast<uint32_t>(obj->internalSlot(kSlotRealm).rawBits());
+}
+
+bool rtHandleForeign(Value handle) {
+    const uint32_t owner = rtHandleRealmSlot(handle);
+    return owner != 0 && owner != rtCurrentRealmSlot();
+}
+
 void* rtHandleData(Value handle) {
     ObjectHeader* obj = handleCell(handle);
     if (!obj) return nullptr;
+    // Another realm's handle is not this realm's to use: what one app made
+    // (a DOM node, a canvas, a scene) never reaches into another's natives.
+    const auto owner = static_cast<uint32_t>(obj->internalSlot(kSlotRealm).rawBits());
+    if (owner != 0 && owner != rtCurrentRealmSlot()) return nullptr;
     return reinterpret_cast<void*>(static_cast<uintptr_t>(obj->internalSlot(kSlotData).rawBits()));
 }
 

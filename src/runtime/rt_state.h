@@ -120,6 +120,15 @@ struct ActiveDynamicTokenScope {
 // Invalidate cached global cells across all modules on host global registration and realm switches.
 void rtInvalidateGlobalCaches();
 
+// A destroyed realm's module instances (module_instance.cpp): forget every
+// GC registration (value cells, fn slots, global caches) whose cells lie in
+// [begin, begin + size), before the memory is freed.
+void rtDropModuleCellsWithin(const void* begin, size_t size);
+// A destroyed realm's function singletons (bronze_function_singleton keeps
+// one per code pointer PER REALM for compiled functions; the natives' are
+// the thread's and shared).
+void rtDropRealmFunctionSingletons(uint32_t realmSlot);
+
 // BRONZE_NO_ENV_METHOD_IC=1 (read where every other seam is, heap.cpp's TLS
 // init) gates the INSTALL of the two env-capable method-IC forms — the
 // env-carrying direct latch and the own-slot latch — and nothing else, so one

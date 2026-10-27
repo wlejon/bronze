@@ -42,12 +42,20 @@ public:
     void pop(Value* slot) noexcept { roots_.pop(slot); }
 
     static ShadowStackFrame* current() noexcept { return top_frame_; }
+    // The innermost frame, by reference: per STACK (runtime/stack_locals.h),
+    // so a fiber's chain is its own and a switched-out one is walked from
+    // what it saved (shadowStackLocalIndex).
+    static ShadowStackFrame*& currentRef() noexcept { return top_frame_; }
 
 private:
     ShadowStackFrame* prev_{nullptr};
     RootSlotList roots_;
     static thread_local ShadowStackFrame* top_frame_;
 };
+
+// The brass stack-local index of ShadowStackFrame::current(): a collection
+// walks each switched-out stack's chain from the frame it saved.
+int shadowStackLocalIndex() noexcept;
 
 // The shadow stack roots C++ frames only. Compiled code holds its Values as
 // tagged MIR values, which brass's stack maps describe at every tier; a

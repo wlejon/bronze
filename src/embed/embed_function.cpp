@@ -46,8 +46,10 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
     Rooted<Value> thisRoot{Value(this_bits)};
 
     // The std::function lives on the C++ heap, so the pointer is stable —
-    // read once, before the callback can move anything.
-    auto* fn = static_cast<NativeFn*>(handleData(Value(env_bits)));
+    // read once, before the callback can move anything. The environment is
+    // the runtime's own cell, never a program's argument, so it is read
+    // whichever realm made it: a host function is called from every realm.
+    auto* fn = static_cast<NativeFn*>(handleDataAnyRealm(Value(env_bits)));
     if (!fn) {
         // Diagnostic dump before dying: what the environment slot actually
         // holds decides which corruption class this is.

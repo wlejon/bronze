@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "embed/embed.h"
+#include "embed/embed_access.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/rt_state.h"
@@ -343,10 +344,17 @@ TEST_CASE("a HostClass has its own constructor and prototype in each realm") {
     embed::Persistent instA2(widget.createInstance(std::make_unique<Payload>(Payload{3})));
     CHECK(embed::isUndefined(embed::getProperty(instA2.get(), "patched")));
 
-    // The brand is the class's, so either realm's instance unwraps.
+    // The brand is the class's, but an instance unwraps only in the realm
+    // that made it: from here the second realm's is refused, as another
+    // app's handle is.
     REQUIRE(widget.unwrap(instA.get()) != nullptr);
-    REQUIRE(widget.unwrap(instB.get()) != nullptr);
-    CHECK(static_cast<Payload*>(widget.unwrap(instB.get()))->value == 2);
+    CHECK(widget.unwrap(instB.get()) == nullptr);
+    {
+        embed::RealmScope scope(realmB);
+        REQUIRE(widget.unwrap(instB.get()) != nullptr);
+        CHECK(static_cast<Payload*>(widget.unwrap(instB.get()))->value == 2);
+        CHECK(widget.unwrap(instA.get()) == nullptr);
+    }
 
     // Destroying the second realm drops its class and leaves the first's.
     embed::destroyRealm(realmB);
@@ -356,6 +364,55 @@ TEST_CASE("a HostClass has its own constructor and prototype in each realm") {
     embed::CallResult r = embed::call(method, instA2.get(), {});
     CHECK(!r.thrown);
     CHECK(embed::toDouble(r.value) == 3.0);
+}
+
+// A native handle names the realm that made it: an unwrap in another realm on
+// the thread answers nullptr (the host's natives refuse what another app made),
+// while the host's own unchecked read still finds the payload.
+TEST_CASE("a native handle unwraps only in the realm that made it") {
+    static int payload = 7;
+    embed::Realm* realmA = embed::createRealm();
+    embed::Persistent handle;
+    {
+        embed::RealmScope scopeA(realmA);
+        handle.set(embed::makeHandle(&payload, [](void*) {}));
+        CHECK(embed::handleData(handle.get()) == &payload);
+        CHECK(!embed::handleForeign(handle.get()));
+    }
+    CHECK(embed::handleData(handle.get()) == nullptr);
+    CHECK(embed::handleForeign(handle.get()));
+    CHECK(embed::handleDataAnyRealm(handle.get()) == &payload);
+
+    embed::Persistent own(embed::makeHandle(&payload, [](void*) {}));
+    CHECK(embed::handleData(own.get()) == &payload);
+    {
+        embed::RealmScope scopeA(realmA);
+        CHECK(embed::handleData(own.get()) == nullptr);
+    }
+    embed::destroyRealm(realmA);
+}
+
+// What a realm holds open is revoked with it, inside it, and nothing else.
+TEST_CASE("revokeHeldAccessInRealm revokes only the realm's own resources, inside the realm") {
+    embed::Realm* realmA = embed::createRealm();
+    const size_t before = embed::heldAccessCount();
+    int revokedInA = 0, revokedElsewhere = 0;
+    embed::HeldAccessId outside = embed::holdAccess(
+        embed::AccessKind::Read, "/outside", [&](const std::string&) { ++revokedElsewhere; });
+    {
+        embed::RealmScope scopeA(realmA);
+        embed::holdAccess(embed::AccessKind::Read, "/inside", [&](const std::string& why) {
+            if (embed::currentRealm() == realmA && why == "stopped") ++revokedInA;
+        });
+    }
+    CHECK(embed::heldAccessCount() == before + 2);
+    CHECK(embed::revokeHeldAccessInRealm(realmA, "stopped") == 1);
+    CHECK(revokedInA == 1);
+    CHECK(revokedElsewhere == 0);
+    CHECK(embed::heldAccessCount() == before + 1);
+    embed::releaseAccess(outside);
+    CHECK(embed::heldAccessCount() == before);
+    embed::destroyRealm(realmA);
 }
 
 TEST_CASE("a host's locale method answers through the frozen builtin") {

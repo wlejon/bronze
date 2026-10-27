@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #include "abi/bronze_abi.h"
 #include "runtime/fatal.h"
@@ -570,8 +573,25 @@ uint64_t bronze_immutable_assign(void) {
 // the limit is what the Error's construction — message, stack trace, the
 // property store — and the unwinder's search run on. The message is the one
 // every engine gives.
+//
+// The limit may instead be an ARMED interrupt (tls_block.h): then the real
+// limit goes back, the interrupt is serviced (the scheduler may suspend this
+// stack or terminate it), and the prologue's check is made again against the
+// real limit, whose overflow is still the RangeError. Returning lets the
+// prologue run its function.
 void bronze_stack_overflow(void) {
-    rtThrowRangeError("Maximum call stack size exceeded");
+#if defined(_MSC_VER)
+    // The caller's stack pointer: just above our return address's slot.
+    const uintptr_t callerSp = reinterpret_cast<uintptr_t>(_AddressOfReturnAddress()) + sizeof(void*);
+#else
+    const uintptr_t callerSp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0)) + 2 * sizeof(void*);
+#endif
+    if (rtTls()->stack_limit == kInterruptArmed) {
+        rtDisarmInterrupt();
+        rtServiceInterrupt();
+    }
+    const uintptr_t limit = rtStackLimit();
+    if (limit != 0 && callerSp < limit) rtThrowRangeError("Maximum call stack size exceeded");
 }
 
 // A `--pins` claim contradicted by a value the program produced.

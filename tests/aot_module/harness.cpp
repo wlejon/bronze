@@ -148,6 +148,62 @@ int main() {
         }
     }
 
+    // ---- one module, two realms ----------------------------------------------------------
+    // The module's writable tables (its top-level bindings, its caches, its
+    // non-capturing functions) are one instance per realm: a host running the
+    // same module in two realms (an app each) gives each its own `n`, and each
+    // realm's `bump` runs in the realm that made it, whoever calls it.
+    {
+        const fs::path rdir = dir / "realms";
+        fs::create_directories(rdir, ec);
+        const std::string counting =
+            "let n = 0;\n"
+            "function bump() { n += 1; return realmName + ':' + n; }\n"
+            "globalThis.bump = bump;\n"
+            "bump();\n";
+        const std::string rmod = (rdir / ("unit" + std::string(kModuleExt))).string();
+        const std::string rrec = (rdir / "unit.bzm").string();
+        eval::EvalOptions ropts = optionsFor(rdir);
+        ropts.hostGlobals = {"realmName"};
+        const eval::ModuleBuildResult rb = eval::buildModule(counting, ropts, rmod, rrec);
+        check(rb.success, "a counting module builds" + (rb.success ? std::string() : ": " + rb.errorMessage));
+        const eval::LoadedModule rl = eval::loadModule(counting, ropts, rrec);
+        check(rl.ok, "and loads" + (rl.ok ? std::string() : ": " + rl.why));
+        if (rl.ok) {
+            embed::Realm* realmA = embed::createRealm();
+            embed::Realm* realmB = embed::createRealm();
+            embed::Persistent bumpA, bumpB;
+            {
+                embed::RealmScope scope(realmA);
+                embed::registerGlobal("realmName", embed::fromUtf8("A"));
+                embed::CallResult res = eval::runModule(rl, ropts);
+                check(!res.thrown && embed::toUtf8(res.value) == "A:1", "realm A's top level counts from 0");
+                bumpA.set(embed::globalValue("bump").value);
+            }
+            {
+                embed::RealmScope scope(realmB);
+                embed::registerGlobal("realmName", embed::fromUtf8("B"));
+                embed::CallResult res = eval::runModule(rl, ropts);
+                check(!res.thrown && embed::toUtf8(res.value) == "B:1",
+                      "realm B's top level counts from 0 too: " + embed::toUtf8(res.value));
+                bumpB.set(embed::globalValue("bump").value);
+            }
+            check(bumpA.get().rawBits() != bumpB.get().rawBits(), "each realm has its own bump");
+            embed::CallResult a = embed::call(bumpA.get(), embed::undefined(), {});
+            embed::CallResult b = embed::call(bumpB.get(), embed::undefined(), {});
+            embed::CallResult a2 = embed::call(bumpA.get(), embed::undefined(), {});
+            check(!a.thrown && embed::toUtf8(a.value) == "A:2", "A's bump runs in A on A's n");
+            check(!b.thrown && embed::toUtf8(b.value) == "B:2", "B's bump runs in B on B's n");
+            check(!a2.thrown && embed::toUtf8(a2.value) == "A:3", "and A's n is A's alone");
+            embed::destroyRealm(realmB);
+            embed::CallResult gone = embed::call(bumpB.get(), embed::undefined(), {});
+            check(gone.thrown, "a destroyed realm's function is refused");
+            embed::CallResult a3 = embed::call(bumpA.get(), embed::undefined(), {});
+            check(!a3.thrown && embed::toUtf8(a3.value) == "A:4", "A runs on after B is gone");
+            embed::destroyRealm(realmA);
+        }
+    }
+
     // ---- what makes a record stale ---------------------------------------------------------
     {
         eval::EvalOptions other = optionsFor(dir);

@@ -20,6 +20,7 @@
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/stack_locals.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
 #include "runtime/weak_ref.h"
@@ -163,6 +164,11 @@ Value rtAllocateNativeBaseInstance(uint8_t kind, Rooted<Value>& ctor) {
 
 namespace {
 thread_local NativeReceiverScope* g_topNativeReceiver = nullptr;
+// Per stack (runtime/stack_locals.h): the scopes nest with one stack's frames.
+NativeReceiverScope*& topNativeReceiverRef() { return g_topNativeReceiver; }
+NativeReceiverScope* noNativeReceiver() { return nullptr; }
+[[maybe_unused]] const int g_topNativeReceiverLocal =
+    registerStackLocalWord<NativeReceiverScope*, &topNativeReceiverRef, &noNativeReceiver>();
 }  // namespace
 
 NativeReceiverScope::NativeReceiverScope(Value receiver)

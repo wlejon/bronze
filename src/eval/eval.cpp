@@ -386,26 +386,41 @@ embed::CallResult runProgramAndCollectResult(
     // pre-collection address by the time isPromise reads its shape.
     // A top-level throw is caught here and handed back after the checkpoint:
     // jobs the top level queued before it threw still run.
-    Value entryOut = Value::fromUndefined();
-    bool threw = false;
-    {
-        bronze::ShadowStackFrame stackFrame;
-        threw = runtime::rtTryCatch(
-            [&] { entryOut = Value(programPtr->run().as_u64()); }, entryOut);
-    }
-    embed::Persistent entryVal{entryOut};
-    embed::drainMicrotasks();
-    if (moduleHandleOut) {
-        embed::endModuleLoad(epoch);
-    } else if (epoch != 0) {
-        runtime::rtEndModuleEpoch(epoch);
-    }
-
+    auto endEpoch = [&]() {
+        if (moduleHandleOut) {
+            embed::endModuleLoad(epoch);
+        } else if (epoch != 0) {
+            runtime::rtEndModuleEpoch(epoch);
+        }
+    };
     auto cleanupUnescaping = [&]() {
         if (!hostManaged && !escapable && epoch != 0) {
             runtime::rtDropModuleEpoch(epoch);
         }
     };
+
+    Value entryOut = Value::fromUndefined();
+    bool threw = false;
+    // A compartment's termination (runtime/compartment.h) passes rtTryCatch
+    // and every JS catch: the epoch still ends here, and a program nothing
+    // retains drops its spans, which name cells of the code `program` frees
+    // as the unwind leaves this frame.
+    try {
+        {
+            bronze::ShadowStackFrame stackFrame;
+            threw = runtime::rtTryCatch(
+                [&] { entryOut = Value(programPtr->run().as_u64()); }, entryOut);
+        }
+        embed::Persistent entryVal{entryOut};
+        embed::drainMicrotasks();
+        entryOut = entryVal.get();
+    } catch (...) {
+        endEpoch();
+        cleanupUnescaping();
+        throw;
+    }
+    embed::Persistent entryVal{entryOut};
+    endEpoch();
 
     if (threw) {
         cleanupUnescaping();

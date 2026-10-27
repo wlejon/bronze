@@ -2,6 +2,7 @@
 #include "abi/bronze_abi.h"
 #include "embed/embed.h"
 #include "runtime/fn.h"
+#include "runtime/stack_locals.h"
 #include "runtime/value.h"
 
 #include <brass/gc/heap.hpp>
@@ -96,6 +97,10 @@ public:
         }
         interp.register_external_symbol("brass_gc_card_table_base", reinterpret_cast<void*>(&brass_gc_card_table_base));
         interp.register_external_symbol("brass_gc_heap_base", reinterpret_cast<void*>(&brass_gc_heap_base));
+        // The interrupt poll's handler is called by address at a backward
+        // jump (FastInterpreter::run_interrupt_handler), not as a host
+        // function.
+        interp.register_external_symbol("bronze_interrupt_poll", reinterpret_cast<void*>(&::bronze_interrupt_poll));
     }
 
     // The block a pinned-TLS read sees before the module entry has loaded the
@@ -127,6 +132,19 @@ brass::gc::HeapConfig privateHeapConfig() {
     config.read_environment = false;
     return config;
 }
+
+// brassTieredEnterJsHook's argument vectors, one per nesting depth. Per
+// STACK (runtime/stack_locals.h): the nesting is one stack's, and a
+// compartment's fiber suspended inside a call keeps its vector.
+thread_local std::deque<std::vector<brass::RuntimeValue>> t_enterArgPool;
+thread_local size_t t_enterDepth = 0;
+std::deque<std::vector<brass::RuntimeValue>>& enterArgPoolRef() { return t_enterArgPool; }
+size_t& enterDepthRef() { return t_enterDepth; }
+size_t noDepth() { return 0; }
+[[maybe_unused]] const int g_enterArgPoolLocal =
+    runtime::registerStackLocalBox<std::deque<std::vector<brass::RuntimeValue>>, &enterArgPoolRef>();
+[[maybe_unused]] const int g_enterDepthLocal =
+    runtime::registerStackLocalWord<size_t, &enterDepthRef, &noDepth>();
 
 bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
                            uint32_t argc, const uint64_t* argv, uint64_t* out_result) {
@@ -185,8 +203,8 @@ bool brassTieredEnterJsHook(bronze_fn_code code, uint64_t env_bits, uint64_t thi
     // interpreter takes from native code comes through here, and a fresh
     // vector per call was a heap allocation each. A deque, so growing it
     // leaves the outer calls' vectors where they are.
-    thread_local std::deque<std::vector<brass::RuntimeValue>> argPool;
-    thread_local size_t depth = 0;
+    std::deque<std::vector<brass::RuntimeValue>>& argPool = t_enterArgPool;
+    size_t& depth = t_enterDepth;
     if (argPool.size() <= depth) argPool.resize(depth + 1);
     std::vector<brass::RuntimeValue>& wrapArgs = argPool[depth];
     wrapArgs.clear();

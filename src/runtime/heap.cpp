@@ -14,6 +14,7 @@
 #include "runtime/fatal.h"
 #include "runtime/gc.h"
 #include "runtime/heap_trace.h"
+#include "runtime/stack_locals.h"
 #include "runtime/tls_block.h"
 
 #ifdef _WIN32
@@ -269,14 +270,22 @@ Heap::~Heap() {
 
 void Heap::registerFrameRoots() {
     gc_->add_root_source([](brass::gc::Tracer& t) {
-        // The C++ side's shadow stack: Rooted<>, RootedArgs, RootedBlock.
-        for (ShadowStackFrame* frame = ShadowStackFrame::current(); frame != nullptr; frame = frame->prev()) {
-            Value** slots = frame->roots();
-            const size_t count = frame->count();
-            for (size_t i = 0; i < count; ++i) {
-                if (slots[i]) t.visit(reinterpret_cast<uint64_t*>(slots[i]));
+        // The C++ side's shadow stack: Rooted<>, RootedArgs, RootedBlock —
+        // the running stack's chain, and each switched-out stack's (a
+        // suspended compartment fiber, or the stack that resumed it).
+        auto walk = [&t](ShadowStackFrame* top) {
+            for (ShadowStackFrame* frame = top; frame != nullptr; frame = frame->prev()) {
+                Value** slots = frame->roots();
+                const size_t count = frame->count();
+                for (size_t i = 0; i < count; ++i) {
+                    if (slots[i]) t.visit(reinterpret_cast<uint64_t*>(slots[i]));
+                }
             }
-        }
+        };
+        walk(ShadowStackFrame::current());
+        runtime::forEachSwitchedStackLocal(shadowStackLocalIndex(), [&walk](void* top) {
+            walk(static_cast<ShadowStackFrame*>(top));
+        });
         // Compiled frames' Values are tagged stack-map roots, which brass
         // visits itself (bronzeHeapConfig, walk_stack_on_host_collection).
     });

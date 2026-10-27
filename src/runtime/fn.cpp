@@ -8,6 +8,7 @@
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/exception.hpp>
 
+#include "runtime/realm.h"
 #include "runtime/rt_state.h"
 
 namespace bronze {
@@ -48,7 +49,13 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     fn->statics_materialized = 0;
     // The word these bools share is scanned as a Value; unwritten padding in
     // it is recycled-memory residue that can parse as a heap pointer (fn.h).
-    for (uint8_t& b : fn->padding_to_value_scan) b = 0;
+    // The realm compiled code is made in (fn.h): the current one, or 0 before
+    // any realm exists on the thread. A native (a builtin, a host function, a
+    // promise's resolver) is 0, every realm's: it runs in whichever realm
+    // calls it, and a builtin that calls back into a program (a sort
+    // comparator, a getter) must not move the program out of its own realm.
+    // A bound function takes its target's (builtin_function_bind.cpp).
+    fn->setRealmSlot((function_flags & BRONZE_ABI_FN_FLAG_NATIVE) != 0 ? 0 : rtCurrentRealmSlot());
     // Undefined, not null: null is a legal [[Prototype]] a program can set,
     // so the "never written" state needs a value of its own.
     fn->parent = Value::fromUndefined();

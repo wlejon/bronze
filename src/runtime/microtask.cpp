@@ -16,6 +16,7 @@
 #include "runtime/object.h"
 #include "runtime/promise.h"
 #include "runtime/rt_state.h"
+#include "runtime/stack_locals.h"
 #include "runtime/weak_ref.h"
 
 namespace bronze::runtime {
@@ -44,6 +45,14 @@ thread_local std::deque<Job> g_queue;
 // almost always empty or one deep.
 thread_local std::vector<Value> g_parked;
 
+// Both are per STACK (stack_locals.h): a compartment's fiber has a queue of
+// its own, which its entries drain before they return (compartment.cpp), so
+// one compartment's jobs never run inside another's turn or the host's.
+std::deque<Job>& queueRef() { return g_queue; }
+std::vector<Value>& parkedRef() { return g_parked; }
+const int g_queueLocal = registerStackLocalBox<std::deque<Job>, &queueRef>();
+const int g_parkedLocal = registerStackLocalBox<std::vector<Value>, &parkedRef>();
+
 // The embedder's report sink (rtSetRejectionHook); null = stderr.
 thread_local RejectionHook g_rejectionHook = nullptr;
 
@@ -64,6 +73,17 @@ void ensureQueueRoots() {
                 visit(job.v2);
             }
             for (Value& promise : g_parked) visit(promise);
+            // The queues and registries of the thread's switched-out stacks.
+            forEachSwitchedStackLocal(g_queueLocal, [&](void* box) {
+                for (Job& job : *static_cast<std::deque<Job>*>(box)) {
+                    visit(job.v0);
+                    visit(job.v1);
+                    visit(job.v2);
+                }
+            });
+            forEachSwitchedStackLocal(g_parkedLocal, [&](void* box) {
+                for (Value& promise : *static_cast<std::vector<Value>*>(box)) visit(promise);
+            });
         });
         return true;
     }();
