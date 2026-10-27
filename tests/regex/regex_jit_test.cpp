@@ -24,6 +24,8 @@ struct CompiledPair {
 };
 
 CompiledPair compilePair(std::string_view source, std::string_view flags = "") {
+    // The kernels build off-thread; these tests compare them, so they wait.
+    regex::RegexJitPlan::waitForKernels();
     CompiledPair pair;
     pair.with_jit = compileOk(source, flags);
     pair.interp_only = compileOk(source, flags);
@@ -81,7 +83,8 @@ TEST_CASE("brass regex DFA JIT: verify_mir_equivalence proves Unopt MIR == Super
     REQUIRE(regex::hasJitFastPath(*pat));
     REQUIRE(pat->jitPlan != nullptr);
 
-    const auto& stats = pat->jitPlan->stats();
+    regex::RegexJitPlan::waitForKernels();
+    const auto stats = pat->jitPlan->stats();
     CHECK(stats.nfa_states >= 4);
     CHECK(stats.dfa_states >= 3);
     // Superopt must have proven and elided the redundant UTF-16 `& 0xFFFF` masks

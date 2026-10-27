@@ -2,7 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 
 #include "regex/chars.h"
@@ -810,9 +815,38 @@ struct SharedRegexJitKernels {
     }
 };
 
-const SharedRegexJitKernels& getSharedRegexJitKernels() {
-    static const SharedRegexJitKernels instance;
-    return instance;
+// Built once, on a thread of its own (RegexJitPlan::waitForKernels): the page
+// thread that compiles the first regex never waits on the solver.
+struct KernelBuild {
+    std::atomic<const SharedRegexJitKernels*> ready{nullptr};
+    std::unique_ptr<SharedRegexJitKernels> kernels;
+    std::mutex mu;
+    std::condition_variable cv;
+    std::thread worker;
+
+    KernelBuild() {
+        worker = std::thread([this] {
+            auto k = std::make_unique<SharedRegexJitKernels>();
+            std::lock_guard<std::mutex> lock(mu);
+            kernels = std::move(k);
+            ready.store(kernels.get(), std::memory_order_release);
+            cv.notify_all();
+        });
+    }
+    // Joined at exit, before the statics the build uses go.
+    ~KernelBuild() {
+        if (worker.joinable()) worker.join();
+    }
+};
+
+KernelBuild& kernelBuild() {
+    static KernelBuild build;
+    return build;
+}
+
+// The kernels, or null while they are still being built (started here).
+const SharedRegexJitKernels* readyKernels() {
+    return kernelBuild().ready.load(std::memory_order_acquire);
 }
 
 }  // namespace
@@ -895,25 +929,34 @@ std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
         return nullptr;
     }
 
-    const auto& kernels = getSharedRegexJitKernels();
-    if (!kernels.match_at_fn || !kernels.search_fn) {
-        return nullptr;
-    }
-
-    plan->match_at_fn_ = kernels.match_at_fn;
-    plan->search_fn_ = kernels.search_fn;
+    // Starts the shared kernels' build if nothing has yet.
+    (void)readyKernels();
     plan->stats_.dfa_states = static_cast<uint32_t>(plan->num_dfa_states_);
-    plan->stats_.smt_guards_eliminated = static_cast<uint32_t>(kernels.guard_stats.guards_proven_eliminated);
-    plan->stats_.superopt_masks_elided = kernels.superopt_stats.masks_elided;
-    plan->stats_.superopt_extensions_elided = kernels.superopt_stats.extensions_elided;
-    plan->stats_.superopt_dags_synthesized = kernels.superopt_stats.dags_synthesized;
-    plan->stats_.superopt_solver_queries = kernels.superopt_stats.solver_queries;
     plan->supported_ = true;
     return plan;
 }
 
+void RegexJitPlan::waitForKernels() {
+    KernelBuild& b = kernelBuild();
+    std::unique_lock<std::mutex> lock(b.mu);
+    b.cv.wait(lock, [&b] { return b.ready.load(std::memory_order_acquire) != nullptr; });
+}
+
+RegexJitStats RegexJitPlan::stats() const noexcept {
+    RegexJitStats s = stats_;
+    if (const SharedRegexJitKernels* k = readyKernels()) {
+        s.smt_guards_eliminated = static_cast<uint32_t>(k->guard_stats.guards_proven_eliminated);
+        s.superopt_masks_elided = k->superopt_stats.masks_elided;
+        s.superopt_extensions_elided = k->superopt_stats.extensions_elided;
+        s.superopt_dags_synthesized = k->superopt_stats.dags_synthesized;
+        s.superopt_solver_queries = k->superopt_stats.solver_queries;
+    }
+    return s;
+}
+
 bool RegexJitPlan::tryMatchAt(UnitsView input, size_t at, MatchResult& out, ExecStatus& status) const {
-    if (!supported_ || !match_at_fn_) return false;
+    const SharedRegexJitKernels* k = supported_ ? readyKernels() : nullptr;
+    if (!k || !k->match_at_fn) return false;
     if (at > input.size() || (anchors_at_start_ && at != 0) || start_state_ < 0 || num_dfa_states_ <= 0) {
         status = ExecStatus::NoMatch;
         return true;
@@ -921,7 +964,7 @@ bool RegexJitPlan::tryMatchAt(UnitsView input, size_t at, MatchResult& out, Exec
 
     int64_t match_end = -1;
     const uint16_t* raw_units = input.empty() ? nullptr : reinterpret_cast<const uint16_t*>(input.data());
-    const int64_t rc = match_at_fn_(
+    const int64_t rc = k->match_at_fn(
         transition_table_.data(), accept_table_.data(), start_state_,
         raw_units, static_cast<int64_t>(input.size()), static_cast<int64_t>(at), &match_end);
 
@@ -936,7 +979,8 @@ bool RegexJitPlan::tryMatchAt(UnitsView input, size_t at, MatchResult& out, Exec
 }
 
 bool RegexJitPlan::trySearch(UnitsView input, size_t from, MatchResult& out, ExecStatus& status) const {
-    if (!supported_ || !search_fn_) return false;
+    const SharedRegexJitKernels* k = supported_ ? readyKernels() : nullptr;
+    if (!k || !k->search_fn) return false;
     if (from > input.size() || start_state_ < 0 || num_dfa_states_ <= 0) {
         status = ExecStatus::NoMatch;
         return true;
@@ -952,7 +996,7 @@ bool RegexJitPlan::trySearch(UnitsView input, size_t from, MatchResult& out, Exe
     int64_t match_start = -1;
     int64_t match_end = -1;
     const uint16_t* raw_units = input.empty() ? nullptr : reinterpret_cast<const uint16_t*>(input.data());
-    const int64_t rc = search_fn_(
+    const int64_t rc = k->search_fn(
         transition_table_.data(), accept_table_.data(), start_state_,
         raw_units, static_cast<int64_t>(input.size()), static_cast<int64_t>(from),
         &match_start, &match_end);

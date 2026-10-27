@@ -91,7 +91,9 @@ public:
 
     const std::vector<int32_t>& transitionTable() const noexcept { return transition_table_; }
     const std::vector<int32_t>& acceptTable() const noexcept { return accept_table_; }
-    const RegexJitStats& stats() const noexcept { return stats_; }
+    // The plan's own counts, with the shared kernels' proof counts once they
+    // are built (zero before).
+    RegexJitStats stats() const noexcept;
 
     // Attempts to execute `matchAt` via the native JIT kernel.
     // Returns true if the JIT kernel answered definitively (filling `status` and `out`),
@@ -120,6 +122,14 @@ public:
     // within state limits; returns nullptr if the pattern requires fallback.
     static std::unique_ptr<RegexJitPlan> tryCompile(const Pattern& pattern);
 
+    // The DFA kernels every plan runs are one generic module, proven and
+    // compiled once per process (the solver passes take a few hundred ms). The
+    // first plan starts that on a thread of its own and never waits for it:
+    // until the kernels are in, a plan answers false from tryMatchAt /
+    // trySearch and the interpreter matches, with the same result. This
+    // blocks until they are in, for tests that measure the kernels themselves.
+    static void waitForKernels();
+
 private:
     bool supported_ = false;
     bool requires_capture_extraction_ = false;
@@ -134,9 +144,6 @@ private:
     //   2 = accepting and stop immediately (lazy quantifier / first-alternative priority cut)
     std::vector<int32_t> accept_table_;
     RegexJitStats stats_;
-
-    RegexDfaMatchAtFn match_at_fn_ = nullptr;
-    RegexDfaSearchFn search_fn_ = nullptr;
 };
 
 // Returns true if `pattern` was compiled with a native `brass` DFA JIT fast path.
