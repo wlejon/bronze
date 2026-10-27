@@ -104,10 +104,21 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
         ? (fn_ast.params.size() - first_source_param - (has_rest ? 1 : 0))
         : 0;
 
+    // bronze_arg_at inline: an argument the caller passed, else undefined.
     std::vector<Value*> loaded;
     for (size_t n = 0; n < named_count; ++n) {
+        BasicBlock* cur = b.current_block();
+        const std::string prefix = "argat_" + std::to_string(cur->parent()->next_block_id());
+        BasicBlock* passed = b.append_block(prefix + "_passed");
+        BasicBlock* merge = b.append_block(prefix + "_merge");
+        Value* raw = b.add_block_param(merge, Type::i64());
+        b.position_at_end(cur);
         Value* idx = b.build_iconst_i32(static_cast<int32_t>(n));
-        Value* raw = b.build_call("bronze_arg_at", Type::i64(), {val_argc, val_argv, idx});
+        b.build_br_if(b.build_ugt(val_argc, idx), passed, {}, merge,
+                      {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
+        b.position_at_end(passed);
+        b.build_br(merge, {b.build_load(Type::i64(), val_argv, static_cast<int32_t>(n * 8))});
+        b.position_at_end(merge);
         loaded.push_back(ensure_type(raw, Type::tagged(), b));
     }
 

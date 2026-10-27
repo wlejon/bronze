@@ -96,6 +96,59 @@ Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, co
     return result;
 }
 
+bool is_bits_identity_constant(const Value* v) {
+    if (!v || !v->is_instruction()) return false;
+    const brass::Instruction* def = v->defining_instruction();
+    if (!def || def->opcode() != brass::Opcode::iconst_i64) return false;
+    const uint64_t tag = static_cast<uint64_t>(def->imm_i64()) >> BRONZE_ABI_VALUE_TAG_SHIFT;
+    return tag == BRONZE_ABI_TAG_UNDEFINED || tag == BRONZE_ABI_TAG_NULL || tag == BRONZE_ABI_TAG_BOOL;
+}
+
+// A dynamic `===`, bronze_strict_eq without the call wherever its answer is
+// the bits'. Against an undefined, null or boolean constant it is a plain
+// compare: no Number, String or BigInt has those bits. Otherwise two Numbers
+// compare as doubles (NaN !== NaN, +0 === -0), equal bits are equal, and only
+// two Strings or two BigInts with different bits need the helper's contents
+// compare; any other pair with different bits is false.
+Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_only) {
+    if (is_bits_identity_constant(op0) || is_bits_identity_constant(op1)) return b.build_eq(op0, op1);
+    if (helper_only) {
+        return b.build_and(b.build_call("bronze_strict_eq", Type::i32(), {op0, op1}), b.build_iconst_i32(1));
+    }
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "seq_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* num = b.append_block(prefix + "_num");
+    BasicBlock* other = b.append_block(prefix + "_other");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i32());
+
+    b.position_at_end(cur);
+    Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
+    b.build_br_if(b.build_and(b.build_ule(op0, max), b.build_ule(op1, max)), num, other);
+
+    b.position_at_end(num);
+    b.build_br(merge, {b.build_eq(b.build_bitcast_f64_i64(op0), b.build_bitcast_f64_i64(op1))});
+
+    b.position_at_end(other);
+    Value* same_bits = b.build_eq(op0, op1);
+    Value* shift = b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT);
+    Value* tag0 = b.build_lshr(op0, shift);
+    Value* tag1 = b.build_lshr(op1, shift);
+    Value* by_contents = b.build_or(b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)),
+                                    b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_BIGINT)));
+    Value* needs_helper = b.build_and(b.build_and(by_contents, b.build_eq(tag0, tag1)),
+                                      b.build_eq(same_bits, b.build_iconst_i32(0)));
+    b.build_br_if(needs_helper, slow, {}, merge, {same_bits});
+
+    b.position_at_end(slow);
+    b.build_br(merge, {b.build_and(b.build_call("bronze_strict_eq", Type::i32(), {op0, op1}),
+                                   b.build_iconst_i32(1))});
+
+    b.position_at_end(merge);
+    return result;
+}
+
 // A dynamic `< <= > >=`: two Numbers compare inline as doubles (the ordered
 // compare, false at NaN, as IsLessThan answers); anything else takes the
 // helper, which owns ToPrimitive and the string and BigInt orders.
@@ -564,8 +617,7 @@ bool lower_ops_instruction(
             } else {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
-                res_val = b.build_call("bronze_strict_eq", Type::i32(), {op0, op1});
-                res_val = b.build_and(res_val, b.build_iconst_i32(1));
+                res_val = lower_dynamic_strict_eq(b, op0, op1, lowering->run_once());
             }
             return true;
         }

@@ -339,10 +339,13 @@ void BrassBackend::setOptimizationOptions(il2mir::TranslatorOptions& options, bo
     options.enable_f64_demote = true;
     options.enable_bce = true;
     options.enable_wbe = true;
-    const char* noSmtOpt = std::getenv("BRONZE_NO_SMT_OPT");
-    const bool smtOptDisabled = noSmtOpt && std::string_view(noSmtOpt) == "1";
-    options.enable_smt_guard_elim = optimize && !smtOptDisabled;
-    options.enable_superopt = optimize && !smtOptDisabled;
+    // The solver passes are opt-in: on three.js-sized programs they were
+    // three quarters of an AOT build (three_math 3.7 s against 0.8 s) and
+    // eliminated no guard and folded no branch the passes before them left.
+    const char* smtOpt = std::getenv("BRONZE_SMT_OPT");
+    const bool smtOptEnabled = smtOpt && std::string_view(smtOpt) == "1";
+    options.enable_smt_guard_elim = optimize && smtOptEnabled;
+    options.enable_superopt = optimize && smtOptEnabled;
     const char* smtStats = std::getenv("BRONZE_SMT_OPT_STATS");
     options.dump_smt_opt_stats = smtStats && std::string_view(smtStats) == "1";
     options.enable_gvn_pre = true;
