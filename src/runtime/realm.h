@@ -69,8 +69,16 @@ public:
     uint32_t slot() const noexcept { return slot_; }
     void setSlot(uint32_t slot) noexcept { slot_ = slot; }
 
+    // The realm's ownership group: realms of one group (a host's frames of
+    // one app, as the web's same-origin frames) unwrap each other's native
+    // handles; a realm of another group (another app) does not. A realm
+    // starts in a group of its own, named by its slot.
+    uint32_t group() const noexcept { return group_ != 0 ? group_ : slot_; }
+    void setGroup(uint32_t group) noexcept { group_ = group; }
+
 private:
     uint32_t slot_ = 0;
+    uint32_t group_ = 0;
     Value globalObject_{Value::fromUndefined()};
     Value globalEnv_{Value::fromUndefined()};
     std::vector<std::pair<std::string, Value>> moduleRegistry_;
@@ -106,6 +114,33 @@ uint32_t rtCurrentRealmSlot() noexcept;
 Realm* rtRealmForSlot(uint32_t slot) noexcept;
 // Whether `slot` named a realm on this thread that has since been destroyed.
 bool rtRealmSlotDestroyed(uint32_t slot) noexcept;
+// A call into a function made in realm `slot` runs it in that realm, as
+// 10.2.1 PrepareForOrdinaryCall makes the callee's [[Realm]] the current
+// one: its free names are its own realm's globals and its module data its
+// realm's instance, whoever called it. Every generic call path takes one
+// (bronze_dynamic_call, FunctionHeader::call, embed::call); a method cache
+// never latches another realm's function, so its fast path stays
+// same-realm. Slot 0 (a native, an intrinsic) and the current realm's own
+// slot enter nothing. A function whose realm was destroyed cannot run:
+// dead() answers true and the caller throws kDeadRealmCall.
+class CalleeRealmScope {
+public:
+    explicit CalleeRealmScope(uint32_t slot);
+    ~CalleeRealmScope();
+    CalleeRealmScope(const CalleeRealmScope&) = delete;
+    CalleeRealmScope& operator=(const CalleeRealmScope&) = delete;
+    bool dead() const noexcept { return dead_; }
+
+private:
+    bool entered_ = false;
+    bool dead_ = false;
+};
+inline constexpr const char* kDeadRealmCall = "the function's realm was destroyed (its app has stopped)";
+
+// Whether what a realm of `slot` made belongs to the current realm's
+// ownership group (Realm::group): true for 0 (made before any realm) and for
+// the current realm's own slot, false for a destroyed realm's.
+bool rtRealmSlotInCurrentGroup(uint32_t slot) noexcept;
 
 // The realm a host-global registration on this thread reaches: the current
 // one, or null while no realm exists yet. Never creates the default realm —

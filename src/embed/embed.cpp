@@ -156,42 +156,22 @@ void setDynamicImportHook(DynamicImportHook hook) {
 
 namespace {
 
-// A host entry into a function runs it in the function's realm (fn.h,
-// realm_slot_bytes), as 10.2.1 PrepareForOrdinaryCall makes the callee's
-// [[Realm]] the current one: a host keeping several realms on a thread (one
-// per app it hosts) calls a callback from wherever it happens to be, and the
-// callback must read its own globals and its own module instances, never the
-// caller's. A function whose realm was destroyed cannot run at all.
-struct CalleeRealm {
-    bool entered = false;
-    bool dead = false;
-    explicit CalleeRealm(Value fn) {
-        if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return;
-        const uint32_t slot = fn.asObject<FunctionHeader>()->realmSlot();
-        if (slot == 0 || slot == rtCurrentRealmSlot()) return;
-        Realm* r = rtRealmForSlot(slot);
-        if (!r) {
-            dead = rtRealmSlotDestroyed(slot);
-            return;
-        }
-        rtEnterRealm(r);
-        entered = true;
-    }
-    ~CalleeRealm() {
-        if (entered) rtExitRealm();
-    }
-    CalleeRealm(const CalleeRealm&) = delete;
-    CalleeRealm& operator=(const CalleeRealm&) = delete;
-};
-
-constexpr const char* kDeadRealmCall = "the function's realm was destroyed (its app has stopped)";
+// A host entry into a function runs it in the function's realm
+// (runtime/realm.h, CalleeRealmScope): a host keeping several realms on a
+// thread (one per app it hosts) calls a callback from wherever it happens to
+// be, and the callback must read its own globals and its own module
+// instances, never the caller's.
+uint32_t realmSlotOf(Value fn) {
+    if (!fn.isObject() || fn.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return 0;
+    return fn.asObject<FunctionHeader>()->realmSlot();
+}
 
 }  // namespace
 
 CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
     ShadowStackFrame frame;
-    CalleeRealm realm(fn);
-    if (realm.dead) {
+    CalleeRealmScope realm(realmSlotOf(fn));
+    if (realm.dead()) {
         Value err = Value::fromUndefined();
         runtime::rtTryCatch([&] { runtime::rtThrowTypeError(kDeadRealmCall); }, err);
         return CallResult{err, true};
@@ -220,8 +200,8 @@ CallResult call(Value fn, Value thisValue, std::span<const Value> args) {
 
 CallResult construct(Value fn, std::span<const Value> args) {
     ShadowStackFrame frame;
-    CalleeRealm realm(fn);
-    if (realm.dead) {
+    CalleeRealmScope realm(realmSlotOf(fn));
+    if (realm.dead()) {
         Value err = Value::fromUndefined();
         runtime::rtTryCatch([&] { runtime::rtThrowTypeError(kDeadRealmCall); }, err);
         return CallResult{err, true};

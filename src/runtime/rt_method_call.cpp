@@ -6,6 +6,7 @@
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
 #include "runtime/profile.h"
+#include "runtime/realm.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
@@ -309,6 +310,13 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
                    uint32_t keyIndex) {
     if (!icEntry || rtTls()->method_call_ic_enabled == 0) return;
     if (!fnVal.isObject()) return;
+    // Another realm's function is called through bronze_dynamic_call every
+    // time, which enters its realm (realm.h, CalleeRealmScope); a cached
+    // entry would call its code in the caller's.
+    if (fnVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        const uint32_t slot = fnVal.asObject<FunctionHeader>()->realmSlot();
+        if (slot != 0 && slot != rtCurrentRealmSlot()) return;
+    }
     if (!thisVal.isObject()) {
         latchPrimitiveMethodIc(icEntry, thisVal, fnVal, probe);
         return;

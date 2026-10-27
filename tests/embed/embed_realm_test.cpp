@@ -392,6 +392,41 @@ TEST_CASE("a native handle unwraps only in the realm that made it") {
     embed::destroyRealm(realmA);
 }
 
+// Realms of one ownership group (one app's frames) unwrap each other's
+// handles; a realm of another group (another app) does not, and neither does
+// any realm once the maker is destroyed.
+TEST_CASE("a native handle unwraps in every realm of its maker's group") {
+    static int payload = 9;
+    embed::Realm* app = embed::createRealm();
+    embed::Realm* frame = embed::createRealm();
+    embed::Realm* other = embed::createRealm();
+    embed::joinRealmGroup(frame, app);
+    CHECK(embed::sameRealmGroup(frame, app));
+    CHECK_FALSE(embed::sameRealmGroup(other, app));
+    embed::Persistent fromFrame;
+    {
+        embed::RealmScope scope(frame);
+        fromFrame.set(embed::makeHandle(&payload, [](void*) {}));
+    }
+    {
+        embed::RealmScope scope(app);
+        CHECK(embed::handleData(fromFrame.get()) == &payload);
+        CHECK_FALSE(embed::handleForeign(fromFrame.get()));
+    }
+    {
+        embed::RealmScope scope(other);
+        CHECK(embed::handleData(fromFrame.get()) == nullptr);
+        CHECK(embed::handleForeign(fromFrame.get()));
+    }
+    embed::destroyRealm(frame);
+    {
+        embed::RealmScope scope(app);
+        CHECK(embed::handleData(fromFrame.get()) == nullptr);
+    }
+    embed::destroyRealm(other);
+    embed::destroyRealm(app);
+}
+
 // What a realm holds open is revoked with it, inside it, and nothing else.
 TEST_CASE("revokeHeldAccessInRealm revokes only the realm's own resources, inside the realm") {
     embed::Realm* realmA = embed::createRealm();

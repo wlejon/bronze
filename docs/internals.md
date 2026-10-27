@@ -311,12 +311,21 @@ fallback when none is set.
 
 Each realm has a slot, a small number unique on its thread
 (`Realm::slot`, never reused while the thread lives). Three things carry it:
-- **Function objects** carry it in three bytes of padding (`fn.h`). A host's
-  call into a function (`embed::call`) enters that function's realm first, the
-  way the spec runs a function in its [[Realm]].
+- **Function objects** carry it in three bytes of padding (`fn.h`). Every
+  generic call enters the callee's realm first, the way the spec runs a
+  function in its [[Realm]]: the host's (`embed::call`, `embed::construct`),
+  and script's own calls through `bronze_dynamic_call` and
+  `FunctionHeader::call` (`CalleeRealmScope` in `realm.h`). Calling a
+  function whose realm was destroyed throws a TypeError. A method-call cache
+  never latches another realm's function, so a cached call cannot skip the
+  switch.
 - **Native handles** carry it in an internal slot. `rtHandleData` unwraps a
-  handle only in the realm that made it and answers nullptr in any other, so
-  one app's DOM node, canvas or scene never reaches another app's natives.
+  handle only in a realm of its maker's group and answers nullptr in any
+  other, so one app's DOM node, canvas or scene never reaches another app's
+  natives. A realm's group (`Realm::group`, `embed::joinRealmGroup`) is its
+  own slot unless the host joins it to another's: the frames and windows of
+  one app share one group, as same-origin frames do on the web, while each
+  keeps its own globals.
   `bronze_native_handle_data` throws a TypeError naming the cause, and
   `rtHandleDataAnyRealm` is the host's own unchecked read.
 - **Compiled modules** get one instance of their data per realm

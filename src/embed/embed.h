@@ -687,6 +687,15 @@ BRONZE_EMBED_API void exitRealm();
 BRONZE_EMBED_API Value getRealmGlobal(Realm* realm = nullptr);
 BRONZE_EMBED_API Realm* currentRealm();
 
+// Ownership groups. A native handle unwraps only in a realm of the group of
+// the realm that made it (rtHandleData); a realm starts in a group of its
+// own. joinRealmGroup puts `realm` in `member`'s group: a host's frames of one
+// app, which reach each other's documents as the web's same-origin frames do,
+// while another app's realm stays apart. Join before the realm makes
+// anything.
+BRONZE_EMBED_API void joinRealmGroup(Realm* realm, Realm* member);
+BRONZE_EMBED_API bool sameRealmGroup(const Realm* a, const Realm* b);
+
 // Run `hook` whenever a realm is about to be destroyed, before its global and
 // host globals go: a host keeping per-realm state (its classes' prototypes,
 // keyed by realm) drops that realm's share so it is collectable and a later

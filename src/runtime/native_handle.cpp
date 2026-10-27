@@ -177,17 +177,18 @@ uint32_t rtHandleRealmSlot(Value handle) {
 }
 
 bool rtHandleForeign(Value handle) {
-    const uint32_t owner = rtHandleRealmSlot(handle);
-    return owner != 0 && owner != rtCurrentRealmSlot();
+    if (!handleCell(handle)) return false;
+    return !rtRealmSlotInCurrentGroup(rtHandleRealmSlot(handle));
 }
 
 void* rtHandleData(Value handle) {
     ObjectHeader* obj = handleCell(handle);
     if (!obj) return nullptr;
-    // Another realm's handle is not this realm's to use: what one app made
-    // (a DOM node, a canvas, a scene) never reaches into another's natives.
+    // Another app's handle is not this realm's to use: what one app made (a
+    // DOM node, a canvas, a scene) never reaches into another's natives. A
+    // realm of the same ownership group (the app's own frames) is the app.
     const auto owner = static_cast<uint32_t>(obj->internalSlot(kSlotRealm).rawBits());
-    if (owner != 0 && owner != rtCurrentRealmSlot()) return nullptr;
+    if (owner != 0 && owner != rtCurrentRealmSlot() && !rtRealmSlotInCurrentGroup(owner)) return nullptr;
     return reinterpret_cast<void*>(static_cast<uintptr_t>(obj->internalSlot(kSlotData).rawBits()));
 }
 

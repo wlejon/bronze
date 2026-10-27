@@ -41,6 +41,15 @@ Realm* currentRealm() {
     return bronze::rtCurrentRealm();
 }
 
+void joinRealmGroup(Realm* realm, Realm* member) {
+    if (!realm || !member || realm == member) return;
+    realm->setGroup(member->group());
+}
+
+bool sameRealmGroup(const Realm* a, const Realm* b) {
+    return a != nullptr && b != nullptr && a->group() == b->group();
+}
+
 void addRealmDestroyHook(RealmDestroyHook hook) { bronze::rtAddRealmDestroyHook(hook); }
 
 void lockdown() {

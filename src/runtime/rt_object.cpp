@@ -34,6 +34,7 @@
 #include "runtime/profile.h"
 #include "runtime/ic_log.h"
 #include "runtime/promise.h"
+#include "runtime/realm.h"
 #include "runtime/regexp.h"
 #include "runtime/builtin_object.h"
 #include "runtime/rt_builtins.h"
@@ -654,6 +655,9 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
             .rawBits();
     }
     auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
+    // The callee runs in its own realm (realm.h, CalleeRealmScope).
+    CalleeRealmScope realm(fn->realmSlot());
+    if (realm.dead()) return rtThrowTypeError(kDeadRealmCall).rawBits();
     if (fn->arity == 0 || argc >= fn->arity) {
         return rtEnterJs(fn->code, fn->env_record.rawBits(), thisBits, argc, argvBits);
     }

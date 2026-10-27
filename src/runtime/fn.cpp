@@ -8,6 +8,7 @@
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/exception.hpp>
 
+#include "runtime/exception.h"
 #include "runtime/realm.h"
 #include "runtime/rt_state.h"
 
@@ -69,6 +70,10 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
     }
 
     static_assert(sizeof(Value) == sizeof(uint64_t) && alignof(Value) == alignof(uint64_t));
+    // The callee runs in its own realm (realm.h, CalleeRealmScope): a builtin
+    // calling a program's callback, a super() into another realm's class.
+    CalleeRealmScope realm(realmSlot());
+    if (realm.dead()) return runtime::rtThrowTypeError(kDeadRealmCall);
     if (arity == 0 || argc >= arity) {
         return Value(rtEnterJs(code, env_record.rawBits(), thisArg.rawBits(), argc,
                                reinterpret_cast<const uint64_t*>(argv)));

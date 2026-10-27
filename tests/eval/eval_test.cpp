@@ -385,6 +385,62 @@ TEST_CASE("a function runs in the realm that made it, and is refused once that r
     CHECK(goneBound.thrown);
 }
 
+// The same from another realm's JS: a plain call, a method call made often
+// enough that its cache would latch, a builtin calling it back, a
+// constructor and a super() all run the function in its own realm, and the
+// caller is back in its own after each.
+TEST_CASE("a function called from another realm's code runs in the realm that made it") {
+    for (ExecutionTier tier : {ExecutionTier::Tier0_Interpreter, ExecutionTier::Tier1_Baseline,
+                               ExecutionTier::Tier2_Optimized, ExecutionTier::Auto}) {
+        CAPTURE(static_cast<int>(tier));
+        embed::Realm* realmA = embed::createRealm();
+        embed::Realm* realmB = embed::createRealm();
+        EvalOptions opts;
+        opts.tier = tier;
+        embed::Persistent lib;
+        {
+            embed::RealmScope scopeB(realmB);
+            auto r = evalScript(
+                "globalThis.where = 'B';"
+                "globalThis.lib = {"
+                "  whereFn() { return where; },"
+                "  Thing: class { constructor() { this.made = where; } },"
+                "};",
+                opts);
+            REQUIRE(!r.thrown);
+            lib.set(embed::globalValue("lib").value);
+        }
+        {
+            embed::RealmScope scopeA(realmA);
+            embed::setProperty(embed::getRealmGlobal(realmA), "lib", lib.get());
+            auto r = evalScript(
+                "globalThis.where = 'A';"
+                "const f = lib.whereFn;"
+                "let out = [f()];"
+                "let m = ''; for (let i = 0; i < 200; i++) m = lib.whereFn(); out.push(m);"
+                "out.push([0].map(lib.whereFn)[0]);"
+                "out.push(new lib.Thing().made);"
+                "class Sub extends lib.Thing {}"
+                "out.push(new Sub().made);"
+                "out.push(where);"
+                "out.join(',');",
+                opts);
+            REQUIRE(!r.thrown);
+            CHECK(embed::toUtf8(r.value) == "B,B,B,B,B,A");
+        }
+        embed::destroyRealm(realmB);
+        {
+            embed::RealmScope scopeA(realmA);
+            auto r = evalScript(
+                "let s = 'ran'; try { lib.whereFn(); } catch (e) { s = e instanceof TypeError ? 'refused' : 'other'; } s;",
+                opts);
+            REQUIRE(!r.thrown);
+            CHECK(embed::toUtf8(r.value) == "refused");
+        }
+        embed::destroyRealm(realmA);
+    }
+}
+
 TEST_CASE("proxy array refused mutator throws TypeError") {
     embed::CallResult r1 = evalScript(
         "let p = new Proxy([], {});\n"

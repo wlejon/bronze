@@ -95,6 +95,30 @@ uint32_t rtCurrentRealmSlot() noexcept {
     return g_defaultRealm ? g_defaultRealm->slot() : 0;
 }
 
+CalleeRealmScope::CalleeRealmScope(uint32_t slot) {
+    if (slot == 0 || slot == rtCurrentRealmSlot()) return;
+    Realm* r = rtRealmForSlot(slot);
+    if (!r) {
+        dead_ = rtRealmSlotDestroyed(slot);
+        return;
+    }
+    rtEnterRealm(r);
+    entered_ = true;
+}
+
+CalleeRealmScope::~CalleeRealmScope() {
+    if (entered_) rtExitRealm();
+}
+
+bool rtRealmSlotInCurrentGroup(uint32_t slot) noexcept {
+    if (slot == 0) return true;
+    const Realm* current = !g_realmStack.empty() ? g_realmStack.back() : g_defaultRealm;
+    if (!current) return false;
+    if (slot == current->slot()) return true;
+    const Realm* owner = rtRealmForSlot(slot);
+    return owner != nullptr && owner->group() == current->group();
+}
+
 Realm* rtRealmForSlot(uint32_t slot) noexcept {
     if (slot == 0 || slot >= g_slotRealms.size()) return nullptr;
     return g_slotRealms[slot];
