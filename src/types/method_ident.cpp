@@ -114,6 +114,9 @@ public:
     struct Found {
         std::string name;
         std::string superName;
+        // `extends <expr>` with an expression that is not a binding: a base
+        // this table cannot name.
+        bool superUnknown = false;
         const std::vector<ast::ClassMethod>* methods = nullptr;
     };
     std::vector<Found> found;
@@ -124,7 +127,7 @@ public:
         if (!n.name.empty()) {
             if (seenNames.count(n.name) != 0) duplicates.insert(n.name);
             seenNames.insert(n.name);
-            found.push_back({n.name, n.superName, &n.methods});
+            found.push_back(make(n.name, n.superName, n.superClass.get(), n.methods));
         }
         Walker::visit(n);
     }
@@ -132,9 +135,35 @@ public:
         if (!n.name.empty()) {
             if (seenNames.count(n.name) != 0) duplicates.insert(n.name);
             seenNames.insert(n.name);
-            found.push_back({n.name, n.superName, &n.methods});
+            found.push_back(make(n.name, n.superName, n.superClass.get(), n.methods));
         }
         Walker::visit(n);
+    }
+
+private:
+    // The base's name as the rest of the program spells it. The linker
+    // rewrites `superClass` when it flattens the module graph (`mod2.Object3D`)
+    // and leaves `superName` at the local spelling the parser saw
+    // (`Object3D`), so the expression is the authority wherever there is one —
+    // the rule ClassLayoutTable and CtorTable follow. Read from `superName`, a
+    // class whose base lives in another module had no base here: a call on it
+    // reached none of the base's methods, and so joined nothing into their
+    // parameters, which then answered for callers they never saw.
+    static Found make(const std::string& name, const std::string& superName,
+                      const ast::Expr* superClass, const std::vector<ast::ClassMethod>& methods) {
+        Found f;
+        f.name = name;
+        f.methods = &methods;
+        if (superClass != nullptr) {
+            if (const auto* id = dynamic_cast<const ast::Ident*>(superClass)) {
+                f.superName = id->name;
+            } else {
+                f.superUnknown = true;
+            }
+        } else {
+            f.superName = superName;
+        }
+        return f;
     }
 };
 
@@ -565,6 +594,7 @@ void MethodTable::build(const ast::Module& module) {
         if (classes_.count(cls.name) != 0) continue;
         ClassNode node;
         node.superName = cls.superName;
+        node.superUnknown = cls.superUnknown;
         for (const auto& m : *cls.methods) {
             if (m.fn != nullptr && !m.isStatic && !m.isStaticBlock && !m.isField &&
                 !m.isConstructor && !m.computed() && !m.name.empty() &&
@@ -740,11 +770,22 @@ void MethodTable::reachableFrom(const std::string& className, const std::string&
     const auto start = classes_.find(className);
     if (start == classes_.end()) return;
 
-    // Up: nearest declaration at or above this class
+    // Up: nearest declaration at or above this class. A base this table cannot
+    // name (`extends mixin(B)`) may inherit from any class, so a name not found
+    // below it reaches every declaration of the name, as a call on a receiver
+    // of unknown class does.
     for (const ClassNode* node = &start->second;;) {
         const auto own = node->ownMethods.find(methodName);
         if (own != node->ownMethods.end()) {
             out.push_back(own->second);
+            break;
+        }
+        if (node->superUnknown) {
+            if (const auto* decls = declarationsOf(methodName)) {
+                for (const uint32_t idx : *decls) {
+                    if (std::find(out.begin(), out.end(), idx) == out.end()) out.push_back(idx);
+                }
+            }
             break;
         }
         if (node->superName.empty()) break;

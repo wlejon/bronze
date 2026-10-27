@@ -597,8 +597,16 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     }
     if (!c.optional) {
         if (const auto* id = ast::exactAs<const ast::Ident*>(c.callee.get())) {
-            if (!scope_.isCell(id->name) && scope_.pristineMathFns.count(id->name) != 0) {
-                return Type::number();
+            if (!scope_.isCell(id->name)) {
+                if (const auto it = scope_.pristineMathFns.find(id->name);
+                    it != scope_.pristineMathFns.end()) {
+                    // `const cos = Math.cos; cos(x)`: the binding is the
+                    // pristine builtin for as long as it is in scope, so the
+                    // call is `Math.cos(x)` with `this` undefined, which no
+                    // member of 21.3 reads.
+                    if (record_) mod_.result->pristineMathAliasCalls.emplace(&c, it->second);
+                    return Type::number();
+                }
             }
         }
         if (isHostCallReturningNumber(

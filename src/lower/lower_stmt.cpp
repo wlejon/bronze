@@ -200,6 +200,18 @@ bool Lowerer::lowerVarDecl(const ast::VarDecl* varDecl, il::Function& ilFn) {
                 static_cast<const ast::IndexAccess&>(*varDecl->init), *elemKind, ilFn);
             if (!initVal) return false;
             declType = il::Type::F64;
+        } else if (varDecl->isConst && memoryNames_.count(varDecl->name) == 0 &&
+                   dynamic_cast<const ast::MemberAccess*>(varDecl->init.get()) != nullptr &&
+                   mathAliasOnlyCalled(varDecl->name)) {
+            // `const cos = Math.cos` whose every use is a call lowered as the
+            // builtin's own op (lower_call.cpp): nothing reads the binding.
+            il::ValueId undefId = ilFn.valueCount++;
+            il::Instruction inst;
+            inst.op = il::Op::ConstUndefined;
+            inst.type = il::Type::Dynamic;
+            inst.result = undefId;
+            emitInst(ilFn, inst);
+            initVal = Value{undefId, il::Type::Dynamic};
         } else {
             // 14.3.1.2 / 14.3.2.1: an anonymous function on the right of a
             // binding takes the binding's name, which is what makes

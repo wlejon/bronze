@@ -81,7 +81,8 @@ public:
     // BRONZE_ABI_IC_SLOTWORD_OFFSET), one slot load on a hit and
     // `bronze_prop_get` on a miss. `key_index` is the module's key constant.
     // Requires a real site.
-    Value* lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
+    Value* lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
+                               bool expect_poly = false);
 
     // `bronze_prop_set`; `imm` nonzero is a strict-mode write.
     void lower_prop_set(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm, Value* ic_entry);
@@ -189,6 +190,10 @@ public:
     void lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index, uint32_t elem_index,
                               Value* val, uint32_t strict, const IcSite& site,
                               bool val_is_primitive = false);
+
+    // `obj.length` with an inline Array arm (the header's length) in front
+    // of `bronze_prop_get`.
+    Value* lower_prop_get_array_length(Builder& b, Value* obj, uint32_t key_index, Value* ic_entry);
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
 

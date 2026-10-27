@@ -503,7 +503,7 @@ void FlowAnalyzer::noteVarInit(const std::string& name, const ast::Expr& init, b
             maInit != nullptr && !maInit->optional) {
             if (isPristineMathBase(*maInit->object) &&
                 isMathMethodReturningNumber(maInit->property)) {
-                scope_.pristineMathFns.insert(name);
+                scope_.pristineMathFns[name] = maInit->property;
             } else if (!maInit->isPrivate && !maInit->property.empty() &&
                        !mod_.methods.isMethodName(maInit->property)) {
                 scope_.objectLitMethodAliases[name] = maInit->property;

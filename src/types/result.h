@@ -119,6 +119,11 @@ struct InferenceResult {
     // property load and the call-shaped guards — not just typing the result;
     // that is why the site itself is recorded and not only its type.
     std::unordered_set<const ast::Expr*> pristineMathCalls;
+    // The same proof for a call through a `const` that holds a pristine
+    // `Math.<fn>` (`const cos = Math.cos; cos(x)`), with the member it names:
+    // the binding is never reassigned and its initializer read the builtin,
+    // so the call is that member's.
+    std::unordered_map<const ast::Expr*, std::string> pristineMathAliasCalls;
 
     // Every property read whose `Number` came from the AUDITED field path: the
     // receiver was watched being made, the class installs the field on every

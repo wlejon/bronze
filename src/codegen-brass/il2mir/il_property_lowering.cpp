@@ -320,6 +320,38 @@ Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint
     return result;
 }
 
+Value* PropertyLoweringHelper::lower_prop_get_array_length(Builder& b, Value* obj, uint32_t key_index,
+                                                          Value* ic_entry) {
+    Value* ptr = nullptr;
+    Value* is_obj = nullptr;
+    object_payload(b, obj, ptr, is_obj);
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "arr_len_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i64());
+
+    b.position_at_end(cur);
+    b.build_br_if(is_obj, bb_obj, bb_slow);
+
+    b.position_at_end(bb_obj);
+    constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+    Value* is_array = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
+    b.build_br_if(is_array, bb_fast, bb_slow);
+
+    b.position_at_end(bb_fast);
+    Value* len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(len))});
+
+    b.position_at_end(bb_slow);
+    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, ic_entry)});
+
+    b.position_at_end(bb_merge);
+    return result;
+}
+
 void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32_t key_index,
                                                   uint32_t elem_index, Value* val, uint32_t strict,
                                                   const IcSite& site, bool val_is_primitive) {
@@ -468,9 +500,21 @@ bool lower_property_instruction(
             // only hot functions are optimized at all. Code that runs once
             // (IlLowering::run_once) calls the helper, which caches as well.
             const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
+            // `x.length` where nothing proved what `x` is: an Array answers
+            // from its header (10.4.2's exotic `length`, which the runtime's
+            // read answers the same way for every array, `arguments`
+            // included), and anything else takes the read it took before.
+            // An array is never a plain object, so the mono guard below could
+            // only ever miss on one.
+            if (!mono && prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
+                prop_lowering.key_tag(inst_ast.index) == "length") {
+                res_val = prop_lowering.lower_prop_get_array_length(
+                    b, obj_val, inst_ast.index, site ? prop_lowering.site_ptr(b, site) : nullptr);
+                return true;
+            }
             if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
                 inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
-                res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site);
+                res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family);
                 return true;
             }
             res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index,

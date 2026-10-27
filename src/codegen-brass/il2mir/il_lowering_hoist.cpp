@@ -156,12 +156,16 @@ bool is_primitive_result(const BronzeInstruction& inst, const std::unordered_set
         case BronzeOp::RelGe:
         case BronzeOp::StrictEq:
         case BronzeOp::LooseEq:
+        case BronzeOp::UShr:
+            return true;
+        // Over operands that may be BigInts these give a BigInt (6.1.6.2), a
+        // heap cell: a store of one needs the barrier and a hold of one the
+        // root, so the result is primitive only when its operands are.
         case BronzeOp::BitAnd:
         case BronzeOp::BitOr:
         case BronzeOp::BitXor:
         case BronzeOp::Shl:
         case BronzeOp::Shr:
-        case BronzeOp::UShr:
         case BronzeOp::BitNot:
         case BronzeOp::Sub:
         case BronzeOp::Mul:
@@ -169,6 +173,10 @@ bool is_primitive_result(const BronzeInstruction& inst, const std::unordered_set
         case BronzeOp::Mod:
         case BronzeOp::Pow:
         case BronzeOp::Neg:
+            if (inst.operands.empty()) return false;
+            for (uint32_t op : inst.operands) {
+                if (prim_ids.count(op) == 0) return false;
+            }
             return true;
         case BronzeOp::Box:
             if (inst.box_type == BronzeType::F64 || inst.box_type == BronzeType::I32 ||

@@ -107,6 +107,12 @@ public:
     bool is_proven_dense_array(uint32_t arr_id, uint32_t index) const;
     void get_dense_array_cursor(uint32_t arr_id, Value* obj_val, Builder& b, Value*& out_block, Value*& out_head);
     void invalidate_dense_array_proofs();
+    // Environment record access, inline (il_env_lowering.cpp): `depth`
+    // parent hops from `env`, then slot `index`. The TDZ read calls
+    // bronze_env_get_tdz only for the uninitialized marker, which throws.
+    Value* lower_env_get(Builder& b, Value* env, uint32_t depth, uint32_t index);
+    Value* lower_env_get_tdz(Builder& b, Value* env, uint32_t depth, uint32_t index, Value* key);
+    void lower_env_set(Builder& b, Value* env, uint32_t depth, uint32_t index, Value* val, bool val_is_primitive);
 
 private:
     // Per-function values computed once at the function's entry and shared

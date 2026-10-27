@@ -158,6 +158,18 @@ private:
     bool monomorphicPropSite(const ast::Expr& receiver) const;
     bool functionBindingReceiver(const ast::Expr& receiver, uint32_t keyIndex) const;
     bool pristineMathCall(const ast::Expr& call) const;
+    // The `Math` member a call through a `const` alias of it reaches
+    // (`const cos = Math.cos; cos(x)`), or null.
+    const std::string* pristineMathAliasCall(const ast::Expr& call) const;
+    // Whether every mention of `name` in the body being lowered (nested
+    // functions included) is the callee of a call `pristineMathAliasCall`
+    // answers for: the alias is then never read, and its initializer — a
+    // read of the pristine builtin, which has no effect — need not run.
+    bool mathAliasOnlyCalled(const std::string& name) const;
+    // The one-argument `Math` member a call lowers to as a single f64 op
+    // (lower_call.cpp), directly or through an alias, or nullopt when the call
+    // takes the generic path.
+    std::optional<il::MathUnaryFn> mathUnaryCallFn(const ast::Call& call) const;
 
     // --- lower_typed_elem.cpp: proven typed-array element access ---
     static bool typedElemSeamDisabled();

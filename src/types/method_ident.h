@@ -117,6 +117,7 @@ public:
 private:
     struct ClassNode {
         std::string superName;
+        bool superUnknown = false;
         std::map<std::string, uint32_t> ownMethods;  // name -> method index
         std::vector<std::string> children;
     };

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "abi/bronze_global_statics.h"
+#include "ast/query_walk.h"
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
@@ -87,6 +88,85 @@ bool Lowerer::provenNumber(const ast::Expr& expr) const {
 bool Lowerer::pristineMathCall(const ast::Expr& call) const {
     if (inference_ == nullptr) return false;
     return inference_->pristineMathCalls.count(&inferenceExpr(call)) != 0;
+}
+
+namespace {
+
+// Counts the mentions of one name, and how many of them are the callee of a
+// call the alias proof covers. A shadowing binding of the same name only adds
+// mentions it does not cover, so a mismatch is always the conservative answer.
+class MathAliasUseScan final : public ast::detail::IdentVisitor {
+public:
+    MathAliasUseScan(std::function<bool(const ast::Call&)> covers, const std::string& name)
+        : covers_(std::move(covers)), name_(name) {}
+    uint32_t mentions = 0;
+    uint32_t covered = 0;
+
+    void mention(const std::string& n) override {
+        if (n == name_) ++mentions;
+    }
+    void visit(const ast::Call& c) override {
+        if (const auto* id = dynamic_cast<const ast::Ident*>(c.callee.get());
+            id != nullptr && id->name == name_ && covers_(c)) {
+            ++covered;
+        }
+        ast::detail::IdentVisitor::visit(c);
+    }
+
+private:
+    std::function<bool(const ast::Call&)> covers_;
+    const std::string& name_;
+};
+
+}  // namespace
+
+bool Lowerer::mathAliasOnlyCalled(const std::string& name) const {
+    if (inference_ == nullptr || currentBodyStmts_ == nullptr) return false;
+    // Covered means lowered as the builtin's op (mathUnaryCallFn), not merely
+    // proven to reach it: `fl()` or `fl(s)` with `s` not definitely numeric
+    // still calls through the binding, which must then hold the builtin.
+    MathAliasUseScan scan([this](const ast::Call& c) { return mathUnaryCallFn(c).has_value(); }, name);
+    for (const auto& s : *currentBodyStmts_) {
+        if (s) s->accept(scan);
+    }
+    // The declaration's own name is one mention the calls cannot cover.
+    return scan.covered > 0 && scan.mentions == scan.covered + 1;
+}
+
+std::optional<il::MathUnaryFn> Lowerer::mathUnaryCallFn(const ast::Call& call) const {
+    const std::string* member = nullptr;
+    if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(call.callee.get());
+        mem != nullptr && !mem->optional && pristineMathCall(call)) {
+        member = &mem->property;
+    } else if (dynamic_cast<const ast::Ident*>(call.callee.get()) != nullptr) {
+        member = pristineMathAliasCall(call);
+    }
+    if (member == nullptr || call.optional || call.args.size() != 1 ||
+        dynamic_cast<const ast::SpreadElement*>(call.args[0].get()) != nullptr) {
+        return std::nullopt;
+    }
+    std::optional<il::MathUnaryFn> fn;
+    if (*member == "sqrt") fn = il::MathUnaryFn::Sqrt;
+    else if (*member == "abs") fn = il::MathUnaryFn::Abs;
+    else if (*member == "floor") fn = il::MathUnaryFn::Floor;
+    else if (*member == "ceil") fn = il::MathUnaryFn::Ceil;
+    else if (*member == "trunc") fn = il::MathUnaryFn::Trunc;
+    else if (*member == "sin") fn = il::MathUnaryFn::Sin;
+    else if (*member == "cos") fn = il::MathUnaryFn::Cos;
+    // `definitelyNumericOperand`, not just `provenNumber`: the argument this
+    // exists for is the FFT/N-body shape — a const chain built from
+    // typed-element reads, which inference types dynamic but whose value,
+    // when one exists, can only be a number (a mixed BigInt pair throws before
+    // the call). That is exactly the licence the method's own ToNumber needs:
+    // a number in, unchanged, out.
+    if (!fn.has_value() || !definitelyNumericOperand(*call.args[0], 8)) return std::nullopt;
+    return fn;
+}
+
+const std::string* Lowerer::pristineMathAliasCall(const ast::Expr& call) const {
+    if (inference_ == nullptr) return nullptr;
+    const auto it = inference_->pristineMathAliasCalls.find(&inferenceExpr(call));
+    return it == inference_->pristineMathAliasCalls.end() ? nullptr : &it->second;
 }
 
 // Whether a property site's receiver is proven to have ONE compile-time object

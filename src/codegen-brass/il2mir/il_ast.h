@@ -195,6 +195,11 @@ struct BronzeInstruction {
     uint32_t ic_index = kNoIcIndex;
     bool is_mono = false;
     bool is_fn_recv = false;
+    // A read whose receiver inference typed by a class SOMEBODY EXTENDS (`this`
+    // in a base-class method, a parameter whose callers named a base): more
+    // than one shape is the expected case, so a way-0 miss scans the site's
+    // other ways inline rather than calling the helper.
+    bool is_family = false;
 
     BronzeBlockTarget target;
     BronzeBlockTarget else_target;

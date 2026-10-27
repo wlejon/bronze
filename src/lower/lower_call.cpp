@@ -271,40 +271,25 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // (`pristineMathCalls`) is what licenses skipping the evaluation of
     // `Math.<fn>` itself; the function list is `il::MathUnaryFn`'s, so the
     // dynamic path the other mode takes cannot differ in any output bit.
-    if (const auto* mathMem = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
-        mathMem != nullptr && !mathMem->optional && !call->optional &&
-        pristineMathCall(*call) && call->args.size() == 1 &&
-        !dynamic_cast<const ast::SpreadElement*>(call->args[0].get())) {
-        std::optional<il::MathUnaryFn> mathFn;
-        if (mathMem->property == "sqrt") mathFn = il::MathUnaryFn::Sqrt;
-        else if (mathMem->property == "abs") mathFn = il::MathUnaryFn::Abs;
-        else if (mathMem->property == "floor") mathFn = il::MathUnaryFn::Floor;
-        else if (mathMem->property == "ceil") mathFn = il::MathUnaryFn::Ceil;
-        else if (mathMem->property == "trunc") mathFn = il::MathUnaryFn::Trunc;
-        else if (mathMem->property == "sin") mathFn = il::MathUnaryFn::Sin;
-        else if (mathMem->property == "cos") mathFn = il::MathUnaryFn::Cos;
-        // `definitelyNumericOperand`, not just `provenNumber`: the argument
-        // this exists for is the FFT/N-body shape — a const chain built from
-        // typed-element reads, which inference types dynamic but whose value,
-        // when one exists, can only be a number (a mixed BigInt pair throws
-        // before the call). That is exactly the licence the method's own
-        // ToNumber needs: a number in, unchanged, out.
-        if (mathFn.has_value() && definitelyNumericOperand(*call->args[0], 8)) {
-            auto argVal = lowerCoercingOperand(*call->args[0], ilFn);
-            if (!argVal) return std::nullopt;
-            // Definitely numeric, so this unbox is exact.
-            Value argF64 = unboxValueIfNeeded(*argVal, il::Type::F64, ilFn);
-            recordCall(call->span.file, true, "");
-            il::ValueId res = ilFn.valueCount++;
-            il::Instruction inst;
-            inst.op = il::Op::MathUnary;
-            inst.type = il::Type::F64;
-            inst.result = res;
-            inst.operands = {argF64.id};
-            inst.immI32 = static_cast<int32_t>(*mathFn);
-            emitInst(ilFn, inst);
-            return Value{res, il::Type::F64};
-        }
+    //
+    // A call through a `const` alias (`const cos = Math.cos; cos(x)`, three.js's
+    // setFromEuler) is the same call: the alias is a local the call need not
+    // read, and `this` is undefined, which no member of 21.3 looks at.
+    if (const std::optional<il::MathUnaryFn> mathFn = mathUnaryCallFn(*call)) {
+        auto argVal = lowerCoercingOperand(*call->args[0], ilFn);
+        if (!argVal) return std::nullopt;
+        // Definitely numeric, so this unbox is exact.
+        Value argF64 = unboxValueIfNeeded(*argVal, il::Type::F64, ilFn);
+        recordCall(call->span.file, true, "");
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::MathUnary;
+        inst.type = il::Type::F64;
+        inst.result = res;
+        inst.operands = {argF64.id};
+        inst.immI32 = static_cast<int32_t>(*mathFn);
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::F64};
     }
 
     // `Math.imul(a, b)` on the PROVEN pristine builtin: 32-bit integer

@@ -109,7 +109,8 @@ struct Scope {
     // to know whose observation to join it into.
     uint32_t ctorIndex = kNoCtor;
     bool moduleTopLevel = false;
-    std::unordered_set<std::string> pristineMathFns;
+    // A `const` bound to a pristine `Math.<fn>`, and the member it names.
+    std::unordered_map<std::string, std::string> pristineMathFns;
     std::unordered_map<std::string, std::string> objectLitMethodAliases;
     std::unordered_map<std::string, Type> dictElemTypes;
     std::unordered_map<std::string, HostObjectKind> hostObjectBindings;

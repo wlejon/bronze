@@ -195,17 +195,11 @@ bool IlLowering::lower_instruction(
         }
 
         case BronzeOp::EnvGet: {
-            Value* env_val = ensure_type(get_opd(0), Type::i64(), b);
-            Value* depth_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.depth));
-            Value* idx_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.index));
-            res_val = b.build_call("bronze_env_get", Type::i64(), {env_val, depth_val, idx_val});
+            res_val = lower_env_get(b, get_opd(0), inst_ast.depth, inst_ast.index);
             break;
         }
 
         case BronzeOp::EnvGetTdz: {
-            Value* env_val = ensure_type(get_opd(0), Type::i64(), b);
-            Value* depth_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.depth));
-            Value* idx_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.index));
             uint32_t key_idx = 0;
             if (!inst_ast.string_literal.empty()) {
                 for (size_t k = 0; k < options_.key_constants.size(); ++k) {
@@ -217,26 +211,20 @@ bool IlLowering::lower_instruction(
             } else {
                 key_idx = inst_ast.index;
             }
-            Value* key_val = get_key_id(b, key_idx);
-            res_val = b.build_call("bronze_env_get_tdz", Type::i64(), {env_val, depth_val, idx_val, key_val});
+            res_val = lower_env_get_tdz(b, get_opd(0), inst_ast.depth, inst_ast.index, get_key_id(b, key_idx));
             break;
         }
 
         case BronzeOp::EnvSet: {
-            Value* env_val = ensure_type(get_opd(0), Type::i64(), b);
-            Value* depth_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.depth));
-            Value* idx_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.index));
-            Value* val = ensure_type(get_opd(1), Type::i64(), b);
-            b.build_call("bronze_env_set", Type::void_type(), {env_val, depth_val, idx_val, val});
+            lower_env_set(b, get_opd(0), inst_ast.depth, inst_ast.index, get_opd(1),
+                          inst_ast.operands.size() > 1 && is_primitive_value(inst_ast.operands[1]));
             break;
         }
 
         case BronzeOp::EnvInitTdz: {
-            Value* env_val = ensure_type(get_opd(0), Type::i64(), b);
-            Value* depth_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.depth));
-            Value* idx_val = b.build_iconst_i32(static_cast<int32_t>(inst_ast.index));
-            Value* uninit_val = b.build_iconst_i64(static_cast<int64_t>(0xFFFA000000000000ULL));
-            b.build_call("bronze_env_set", Type::void_type(), {env_val, depth_val, idx_val, uninit_val});
+            lower_env_set(b, get_opd(0), inst_ast.depth, inst_ast.index,
+                          b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_UNINITIALIZED_BITS)),
+                          /*val_is_primitive=*/true);
             break;
         }
 

@@ -202,6 +202,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
             out.static_slot = inst.staticSlot;
+            out.is_family = inst.familyLo != il::Instruction::kNoFamily;
             break;
         case il::Op::SuperGet:
             out.op = il2mir::BronzeOp::SuperGet;

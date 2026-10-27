@@ -62,7 +62,8 @@ Value* PropertyLoweringHelper::lower_prop_get(Builder& b, Value* obj, uint32_t k
     return b.build_call("bronze_prop_get", Type::i64(), {obj, runtime_key(b, key_index), entry});
 }
 
-Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site) {
+Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
+                                                  bool expect_poly) {
     // The bronze object model as the inline hit reads it (bronze_abi.h):
     // a NaN-boxed Value whose tag is BRONZE_ABI_TAG_OBJECT, whose header
     // word's low half is (flags << 16) | tag — so one i32 compare against
@@ -111,9 +112,13 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     // are the ones inference proved monomorphic, and the scan's blocks
     // there cost the whole-program optimizer (tests/cli
     // large_module_compile_test: 3000 top-level reads went from under 90 s
-    // to 213 s) for nothing.
+    // to 213 s) for nothing. The exception is a read inference typed by a
+    // class with subclasses (`expect_poly`): `this.matrix` in
+    // Object3D.updateMatrix meets a Scene, a Mesh and a bare Object3D in one
+    // frame, and the helper installs each new shape at way 0, so without the
+    // scan every one of them after the first missed into the helper.
     bool no_poly_scan = no_poly_scan_env;
-    if (!no_poly_scan && !in_process_) {
+    if (!no_poly_scan && !in_process_ && !expect_poly) {
         const std::optional<uint32_t> way0 =
             spec_ ? spec_->peek_profile(SpecKind::Property, key_tag(key_index)) : std::nullopt;
         no_poly_scan = !way0 || !SpecSiteEmitter::profile_says_polymorphic(*way0);
