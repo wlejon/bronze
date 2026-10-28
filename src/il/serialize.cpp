@@ -548,9 +548,9 @@ void readFunction(Reader& r, Function& fn) {
         f.callee = r.u32();
         f.callSpan.begin = r.u32();
         f.callSpan.end = r.u32();
-        const uint32_t file = r.u32();
-        if (file > UINT16_MAX) r.fail("bad inline frame file");
-        f.callSpan.file = static_cast<uint16_t>(file);
+        const uint32_t callFile = r.u32();
+        if (callFile > UINT16_MAX) r.fail("bad inline frame file");
+        f.callSpan.file = static_cast<uint16_t>(callFile);
         f.parent = r.u32();
     }
     fn.valueCount = r.u32();
