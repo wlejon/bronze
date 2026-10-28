@@ -98,6 +98,17 @@ target_compile_definitions(bronze_runtime_shared PUBLIC ${_bronze_abi_defs})
 # it. Neither is defined for the static libraries, where the macro expands to
 # nothing and the static path stays byte-identical.
 target_compile_definitions(bronze_runtime_shared PRIVATE BRONZE_EMBED_SHARED_BUILD)
+
+# The runtime's thread-locals as the executable's own: the library is always
+# loaded at startup (a built program's DT_NEEDED, or libbro's), never
+# dlopen'd, so its TLS block sits at a fixed offset from the thread pointer and
+# a read is one instruction. Under the default model for a shared object every
+# read called __tls_get_addr, 8-10% of an AOT program's time in object_graph
+# and mesh_churn_2k. Compiled modules are dlopen'd but reach thread state
+# through the pinned TLS register, not C++ thread_local.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT WIN32)
+    target_compile_options(bronze_runtime_shared PRIVATE -ftls-model=initial-exec)
+endif()
 target_compile_definitions(bronze_runtime_shared INTERFACE BRONZE_EMBED_SHARED)
 
 set_target_properties(bronze_runtime_shared PROPERTIES
