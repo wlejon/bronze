@@ -1,0 +1,5 @@
+warm 400140000
+sub 49990000 a,b,c,d,e,f,g,h,i,j,k
+frozen threw 50
+setter 20000 200050000 false
+restored 20000

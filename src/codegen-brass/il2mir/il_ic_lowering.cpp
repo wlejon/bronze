@@ -436,15 +436,31 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     receiver_shape(b, obj, plain, ptr, shape);
     emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
     Value* counter = nullptr;
-    if (spec_) {
-        // A write's tag is its key after '=', apart from the reads of it.
-        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, "=" + std::string(key_tag(key_index)),
-                           compact ? &counter : nullptr);
+    // A write's tag is its key after '=', apart from the reads of it.
+    const std::string tag = "=" + std::string(key_tag(key_index));
+    if (with_transition) {
+        // The site's profile counts only the helper's runs (the transition
+        // arm answers a constructor's adds without one), so the guard goes
+        // where the helper is reached: guarding the own-slot test instead
+        // deopted on every add, since a constructor's write never finds its
+        // key already there, and each recompile disarmed one site.
+        b.build_br_if(hit, bb_fast, bb_slow);
+        b.position_at_end(bb_slow);
+        emit_transition_arm(b, ptr, shape, plain, site, val, need_barrier, bb_merge, prefix);
+        if (spec_) {
+            // `hit` is false here; it is the guard's test so an armed site
+            // exits wherever the helper would run.
+            BasicBlock* bb_tr_miss = b.current_block();
+            BasicBlock* bb_helper = b.append_block(prefix + "_helper");
+            b.position_at_end(bb_tr_miss);
+            spec_->emit_branch(b, hit, bb_fast, bb_helper, SpecKind::Property, tag, compact ? &counter : nullptr);
+        }
+    } else if (spec_) {
+        spec_->emit_branch(b, hit, bb_fast, bb_slow, SpecKind::Property, tag, compact ? &counter : nullptr);
     } else {
         b.build_br_if(hit, bb_fast, bb_slow);
         b.position_at_end(bb_slow);
     }
-    if (with_transition) emit_transition_arm(b, ptr, shape, plain, site, val, need_barrier, bb_merge, prefix);
     if (compact) {
         b.build_call("bronze_prop_set_counted", Type::void_type(),
                      {obj, runtime_key(b, key_index), val, site_ptr(b, site), b.build_iconst_i32(imm != 0 ? 1 : 0),
