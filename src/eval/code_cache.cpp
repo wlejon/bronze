@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <system_error>
@@ -397,14 +398,15 @@ uint64_t lowWater(uint64_t maxBytes) { return maxBytes - maxBytes / 8; }
 // Walks `dir` and, when everything the cache keeps there (entries, their warm
 // lists, writes in progress) takes more than `maxBytes` on disk, deletes the
 // least recently used entries, each with its warm list, until it takes no more
-// than the low-water mark. `keep` (a key's hex, or empty) is the entry just
-// stored, which stays. Returns what the directory takes afterwards.
-uint64_t trimDir(const std::string& dir, uint64_t maxBytes, const std::string& keep) {
+// than the low-water mark. `kept(hex)` says whether a key's entry is the one
+// just stored, which stays: asked at each removal, not once for the walk, as
+// a store made while the walk runs moves it on (and names its key before its
+// entry appears, protectKey). Returns what the directory takes afterwards.
+uint64_t trimDir(const std::string& dir, uint64_t maxBytes, const std::function<bool(const std::string&)>& kept) {
     struct Item {
         std::filesystem::path entry;  // <key>.bzc
         uint64_t bytes = 0;           // the entry and its warm list
         std::filesystem::file_time_type mtime;
-        bool kept = false;
     };
     std::vector<Item> items;
     std::vector<std::pair<std::filesystem::path, uint64_t>> warm;
@@ -435,7 +437,7 @@ uint64_t trimDir(const std::string& dir, uint64_t maxBytes, const std::string& k
             continue;
         }
         if (p.extension() != kExt) continue;
-        items.push_back({p, diskBytes(size), mtime, !keep.empty() && p.stem().string() == keep});
+        items.push_back({p, diskBytes(size), mtime});
     }
     // Each warm list is charged to its entry; one whose entry is gone goes.
     std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.entry < b.entry; });
@@ -457,7 +459,7 @@ uint64_t trimDir(const std::string& dir, uint64_t maxBytes, const std::string& k
     std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.mtime < b.mtime; });
     for (const auto& item : items) {
         if (total <= target) break;
-        if (item.kept) continue;
+        if (kept(item.entry.stem().string())) continue;
         std::error_code e2;
         if (!std::filesystem::remove(item.entry, e2)) continue;
         std::filesystem::path w = item.entry;
@@ -503,10 +505,13 @@ struct Trimmer {
                 s.pending = false;
                 const std::string d = dir;
                 const uint64_t maxBytes = s.maxBytes;
-                const std::string keep = s.keep;
                 busy = true;
                 lock.unlock();
-                const uint64_t total = trimDir(d, maxBytes, keep);
+                const uint64_t total = trimDir(d, maxBytes, [&](const std::string& hex) {
+                    std::lock_guard<std::mutex> guard(mutex);
+                    const std::string& keep = dirs[d].keep;
+                    return !keep.empty() && keep == hex;
+                });
                 lock.lock();
                 busy = false;
                 TrimState& after = dirs[d];
@@ -523,6 +528,15 @@ Trimmer& trimmer() {
     // Never destroyed: the thread may be mid-walk at exit.
     static auto* t = new Trimmer();
     return *t;
+}
+
+// The entry about to be stored under `keep` stays whatever walk meets it:
+// named before its file appears, so a walk running then cannot take it for
+// an old one.
+void protectKey(const std::string& dir, const std::string& keep) {
+    Trimmer& t = trimmer();
+    std::lock_guard<std::mutex> lock(t.mutex);
+    t.dirs[dir].keep = keep;
 }
 
 void requestTrim(const std::string& dir, uint64_t maxBytes, const std::string& keep, uint64_t storedBytes) {
@@ -825,6 +839,7 @@ void store(const std::string& dir, uint64_t maxBytes, const Digest& key, const s
             return;
         }
     }
+    protectKey(dir, key.hex());
     std::filesystem::rename(tmp, finalPath, ec);
     if (ec) {
         std::filesystem::remove(tmp, ec);
