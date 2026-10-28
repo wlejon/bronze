@@ -34,11 +34,7 @@ Value* lower_dynamic_arith(IlLowering* lowering, Builder& b, BronzeOp op, Value*
              : op == BronzeOp::Sub ? b.build_sub(f0, f1)
              : op == BronzeOp::Mul ? b.build_mul(f0, f1)
                                    : b.build_sdiv(f0, f1);
-    Value* bits = b.build_bitcast_i64_f64(f);
-    Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
-    Value* is_nan = b.build_ugt(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x7FF0000000000000ULL)));
-    Value* boxed = b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
-    b.build_br(merge, {boxed});
+    b.build_br(merge, {box_f64_bits(b, f)});
 
     b.position_at_end(merge);
     return result;
@@ -288,6 +284,12 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64, bool raw_unbox = false)
 }
 
 } // namespace
+
+Value* box_f64_bits(Builder& b, Value* f) {
+    Value* bits = b.build_bitcast_i64_f64(f);
+    return b.build_select(b.build_ne(f, f), b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)),
+                          bits);
+}
 
 // ToBoolean of a dynamic value, bronze_truthy without the call for every
 // operand whose answer is in its bits: a Number is true unless it is +-0 or

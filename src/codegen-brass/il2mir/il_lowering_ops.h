@@ -11,6 +11,13 @@ class IlLowering;
 
 bool is_ops_il_op(BronzeOp op);
 
+// The f64 `f` as a Value's bits, every NaN the canonical one (a NaN of any
+// other sign or payload would read as a tagged value). The NaN test is
+// `f != f`: one ucomisd and a cmovp, where testing the bits takes a mask, a
+// compare and two 64-bit constants, and the form brass's number_bits reads
+// as an ordered Number.
+Value* box_f64_bits(Builder& b, Value* f);
+
 // ToBoolean of a dynamic (i64) value as an i32 0/1; inline for every operand
 // whose answer is its bits unless `helper_only`.
 Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only);

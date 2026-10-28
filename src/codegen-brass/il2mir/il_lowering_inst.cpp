@@ -467,11 +467,7 @@ bool IlLowering::lower_instruction(
                            op0->defining_instruction()->operand(0)->type() == Type::i64()) {
                     res_val = op0->defining_instruction()->operand(0);
                 } else {
-                    Value* f_val = ensure_type(op0, Type::f64(), b);
-                    Value* bits = b.build_bitcast_i64_f64(f_val);
-                    Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
-                    Value* is_nan = b.build_ugt(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x7FF0000000000000ULL)));
-                    res_val = b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
+                    res_val = box_f64_bits(b, ensure_type(op0, Type::f64(), b));
                 }
             } else if (inst_ast.box_type == BronzeType::I32) {
                 Value* i_val = ensure_type(op0, Type::i32(), b);

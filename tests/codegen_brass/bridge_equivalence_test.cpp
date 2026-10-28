@@ -13,6 +13,7 @@
 #include "codegen-brass/brass_jit.h"
 #include "codegen-brass/il2mir/il_abi.h"
 #include "codegen-brass/il2mir/il_bridge_verifier.h"
+#include "codegen-brass/il2mir/il_lowering_ops.h"
 #include "codegen-brass/il2mir/il_translator.h"
 #include "codegen-brass/il_to_brass_ast.h"
 #include "eval/eval.h"
@@ -190,6 +191,46 @@ TEST_CASE("Bridge Verifier catches uncanonicalized NaN-box bitcast_i64_f64 and s
         auto res = il2mir::verify_bridge_function_detailed(*fn);
         CHECK(res.ok);
         CHECK(res.errors.empty());
+    }
+
+    SUBCASE("accepts the f != f canonicalization box_f64_bits emits") {
+        brass::Module mod("good_nan_box_fp");
+        brass::Builder b(mod);
+        brass::Function* fn = mod.create_function("safe_box_f64_fp", brass::Type::i64(), {brass::Type::f64()});
+        b.set_function(fn);
+        brass::BasicBlock* entry = b.append_block("entry");
+        b.position_at_end(entry);
+        brass::Value* x = b.add_block_param(entry, brass::Type::f64());
+        brass::Value* boxed = il2mir::box_f64_bits(b, x);
+        b.build_ret(boxed);
+        fn->rebuild_cfg_predecessors();
+
+        auto res = il2mir::verify_bridge_function_detailed(*fn);
+        CHECK(res.ok);
+        CHECK(res.errors.empty());
+    }
+
+    SUBCASE("rejects an f != f test of a different double than the bits") {
+        brass::Module mod("bad_nan_box_fp");
+        brass::Builder b(mod);
+        brass::Function* fn =
+            mod.create_function("wrong_nan_test", brass::Type::i64(), {brass::Type::f64(), brass::Type::f64()});
+        b.set_function(fn);
+        brass::BasicBlock* entry = b.append_block("entry");
+        b.position_at_end(entry);
+        brass::Value* x = b.add_block_param(entry, brass::Type::f64());
+        brass::Value* y = b.add_block_param(entry, brass::Type::f64());
+        // Buggy lowering: y's NaN test guards x's bits, so a NaN x escapes.
+        brass::Value* bits = b.build_bitcast_i64_f64(x);
+        brass::Value* boxed = b.build_select(
+            b.build_ne(y, y), b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
+        b.build_ret(boxed);
+        fn->rebuild_cfg_predecessors();
+
+        auto res = il2mir::verify_bridge_function_detailed(*fn);
+        CHECK_FALSE(res.ok);
+        REQUIRE_FALSE(res.errors.empty());
+        CHECK(res.errors[0].message.find("Uncanonicalized bitcast_i64_f64") != std::string::npos);
     }
 
     SUBCASE("rejects signed comparison against kBronzeNumberMaxBits") {

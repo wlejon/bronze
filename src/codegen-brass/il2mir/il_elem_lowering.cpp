@@ -6,6 +6,7 @@
 // pinned by the BRONZE_ABI_* offsets their static_asserts check.
 
 #include "il_abi.h"
+#include "il_lowering_ops.h"
 #include "il_property.h"
 #include <brass/mir/function.hpp>
 #include <cmath>
@@ -31,14 +32,6 @@ alignas(16) const uint64_t kNotAnArray[8] = {};
 
 Value* iconst(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
-// An f64 as a Value's bits, every NaN the canonical one.
-Value* box_f64(Builder& b, Value* f) {
-    Value* bits = b.build_bitcast_i64_f64(f);
-    Value* abs_bits = b.build_and(bits, iconst(b, 0x7FFFFFFFFFFFFFFFULL));
-    Value* is_nan = b.build_ugt(abs_bits, iconst(b, 0x7FF0000000000000ULL));
-    return b.build_select(is_nan, iconst(b, BRONZE_ABI_CANONICAL_NAN_BITS), bits);
-}
-
 // An element index: `i64` is the index when `ok` (an integral Number; the
 // element paths range-check it against an unsigned length, so a negative one
 // misses there). The boxed Value for the slow-path helper is materialized only
@@ -48,7 +41,7 @@ struct ElemIndex {
     Value* ok = nullptr;
 };
 
-// The f64 an i64 Value was boxed from here (box_f64, IlLowering::ensure_type:
+// The f64 an i64 Value was boxed from here (box_f64_bits, IlLowering::ensure_type:
 // a select of the canonical NaN and the bits), or null.
 Value* boxed_f64_source(Value* v) {
     const Instruction* def = v ? v->defining_instruction() : nullptr;
@@ -72,7 +65,7 @@ Value* boxed_f64_source(Value* v) {
 // The index as the Value the helpers take: an i32 is an int32 Number.
 Value* boxed_index(Builder& b, Value* index) {
     if (index->type() == Type::i32()) return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(index));
-    if (index->type() == Type::f64()) return box_f64(b, index);
+    if (index->type() == Type::f64()) return box_f64_bits(b, index);
     return index;
 }
 
@@ -366,7 +359,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.build_br(bb_box, {load_typed_array_elem(b, data, idx.i64, BRONZE_ABI_TA_KIND_UINT8)});
 
     b.position_at_end(bb_box);
-    b.build_br(bb_merge, {box_f64(b, number)});
+    b.build_br(bb_merge, {box_f64_bits(b, number)});
 
     b.position_at_end(bb_slow);
     b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
@@ -629,7 +622,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
     if (!enable_inlined_fastpaths_) {
         b.build_call("bronze_elem_set", Type::void_type(),
-                     {obj, boxed_index(b, index), box_f64(b, val_f64), strict_val});
+                     {obj, boxed_index(b, index), box_f64_bits(b, val_f64), strict_val});
         return;
     }
 
@@ -671,12 +664,12 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         b.position_at_end(bb_array_store);
         Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
         // A boxed f64 is a primitive Number, never a heap reference, so no write barrier is needed.
-        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64(b, val_f64));
+        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64_bits(b, val_f64));
         b.build_br(bb_merge);
 
         b.position_at_end(bb_slow);
         b.build_call("bronze_elem_set", Type::void_type(),
-                     {obj, boxed_index(b, index), box_f64(b, val_f64), strict_val});
+                     {obj, boxed_index(b, index), box_f64_bits(b, val_f64), strict_val});
         b.build_br(bb_merge);
 
         b.position_at_end(bb_merge);
@@ -688,7 +681,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         return env && env[0] && env[0] != '0';
     }();
     if (unsound_pins || elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
-        lower_elem_set(b, obj, index, box_f64(b, val_f64), strict);
+        lower_elem_set(b, obj, index, box_f64_bits(b, val_f64), strict);
         return;
     }
 
@@ -938,7 +931,7 @@ Value* PropertyLoweringHelper::unbox_known_number(Builder& b, Value* val, Value*
 }
 
 Value* PropertyLoweringHelper::box_number(Builder& b, Value* f64_val) {
-    return box_f64(b, f64_val);
+    return box_f64_bits(b, f64_val);
 }
 
 void PropertyLoweringHelper::object_payload(Builder& b, Value* obj, Value*& out_ptr, Value*& out_is_obj) {

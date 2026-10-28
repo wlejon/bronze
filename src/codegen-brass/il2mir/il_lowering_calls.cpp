@@ -2,6 +2,7 @@
 #include "il_lowering.h"
 #include "il_abi.h"
 #include "il_lowering_direct.h"
+#include "il_lowering_ops.h"
 #include "il_accessor_direct.h"
 #include "il_array_method.h"
 #include "il/il.h"
@@ -139,12 +140,7 @@ Value* lower_builtin_call(IlLowering* lowering, const BuiltinTarget& target, uin
              : target.op == BuiltinOp::Ceil  ? b.build_ceil_f64(x)
              : target.op == BuiltinOp::Sin   ? b.build_call("bronze_math_sin_f64", Type::f64(), {x})
                                              : b.build_call("bronze_math_cos_f64", Type::f64(), {x});
-    Value* bits = b.build_bitcast_i64_f64(r);
-    Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
-    Value* is_nan = b.build_ugt(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x7FF0000000000000ULL)));
-    Value* boxed =
-        b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
-    b.build_br(merge, {boxed});
+    b.build_br(merge, {box_f64_bits(b, r)});
 
     b.position_at_end(merge);
     return result;

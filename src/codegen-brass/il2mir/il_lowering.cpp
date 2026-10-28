@@ -1,6 +1,7 @@
 #include "il_lowering.h"
 #include "il_lowering_direct.h"
 #include "il_lowering_coro.h"
+#include "il_lowering_ops.h"
 #include "il_lowering_calls.h"
 #include "il_abi.h"
 #include "il_bridge_verifier.h"
@@ -133,10 +134,7 @@ Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {
             val->defining_instruction()->operand(0)->type() == Type::i64()) {
             return val->defining_instruction()->operand(0);
         }
-        Value* bits = b.build_bitcast_i64_f64(val);
-        Value* abs_bits = b.build_and(bits, b.build_iconst_i64(static_cast<int64_t>(0x7FFFFFFFFFFFFFFFULL)));
-        Value* is_nan = b.build_ugt(abs_bits, b.build_iconst_i64(static_cast<int64_t>(0x7FF0000000000000ULL)));
-        return b.build_select(is_nan, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_CANONICAL_NAN_BITS)), bits);
+        return box_f64_bits(b, val);
     }
     if (src_type == Type::i64() && target_type == Type::f64()) {
         return b.build_bitcast_f64_i64(val);

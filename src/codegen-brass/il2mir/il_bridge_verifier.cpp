@@ -68,6 +68,12 @@ bool is_canonical_nan_guard_cond(const brass::Value* cond, const brass::Value* r
         return is_const_i64(def->operand(0), 0x7FF0000000000000ULL) &&
                is_sign_mask_of(def->operand(1), raw_bits);
     }
+    // `f != f` on the double the bits are (box_f64_bits): true exactly for a NaN.
+    if (def->opcode() == brass::Opcode::ne && def->operand(0) == def->operand(1)) {
+        const brass::Instruction* bits_def = raw_bits->defining_instruction();
+        return bits_def && bits_def->opcode() == brass::Opcode::bitcast_i64_f64 &&
+               bits_def->operand(0) == def->operand(0) && def->operand(0)->type() == brass::Type::f64();
+    }
     return false;
 }
 

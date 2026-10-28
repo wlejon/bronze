@@ -1,0 +1,50 @@
+Int8Array 0,0,0,0,0,0,1,2,-1,127,-128,-1,0,127,-1,0,-1,0,-1,-1,0,0,0,2,0,0,0
+Uint8Array 0,0,0,0,0,0,1,2,255,127,128,255,0,127,255,0,255,0,255,255,0,0,0,2,0,0,0
+Uint8ClampedArray 0,255,0,0,0,0,2,2,0,128,128,255,255,0,255,255,0,255,0,255,255,255,0,255,255,0,255
+Int16Array 0,0,0,0,0,0,1,2,-1,127,128,255,256,-129,-1,0,32767,0,-1,-1,0,0,0,2,0,0,0
+Uint16Array 0,0,0,0,0,0,1,2,65535,127,128,255,256,65407,65535,0,32767,0,65535,65535,0,0,0,2,0,0,0
+Int32Array 0,0,0,0,0,0,1,2,-1,127,128,255,256,-129,65535,65536,-32769,-2147483648,2147483647,-1,0,1661992960,-1661992960,2,0,0,0
+Uint32Array 0,0,0,0,0,0,1,2,4294967295,127,128,255,256,4294967167,65535,65536,4294934527,2147483648,2147483647,4294967295,0,1661992960,2632974336,2,0,0,0
+Float32Array NaN,Infinity,-Infinity,-0,0.5,-0.5,1.5,2.5,-1.5,127.5,128,255.5,256,-129,65535.69921875,65536,-32769,2147483648,-2147483648,4294967296,4294967296,100000002004087730000,-100000002004087730000,9007199254740992,Infinity,0,Infinity
+Float64Array NaN,Infinity,-Infinity,-0,0.5,-0.5,1.5,2.5,-1.5,127.5,128,255.5,256,-129,65535.7,65536,-32769,2147483648,-2147483649,4294967295.9,4294967296,100000000000000000000,-100000000000000000000,9007199254740994,1.7976931348623157e+308,5e-324,3.4028235677973366e+38
+mono Int8Array 0,0,0,0,0,0,1,2,-1,127,-128,-1,0,127,-1,0,-1,0,-1,-1,0,0,0,2,0,0,0
+mono Int8Array 125:undefined:undefined:0:22 0:undefined:undefined:undefined:0
+mono Uint8Array 0,0,0,0,0,0,1,2,255,127,128,255,0,127,255,0,255,0,255,255,0,0,0,2,0,0,0
+mono Uint8Array 1917:undefined:undefined:0:22 0:undefined:undefined:undefined:0
+mono Uint8ClampedArray 0,255,0,0,0,0,2,2,0,128,128,255,255,0,255,255,0,255,0,255,255,255,0,255,255,0,255
+mono Uint8ClampedArray 2555:undefined:undefined:0:22 0:undefined:undefined:undefined:0
+mono Int16Array 0,0,0,0,0,0,1,2,-1,127,128,255,256,-129,-1,0,32767,0,-1,-1,0,0,0,2,0,0,0
+mono Int16Array 33405:undefined:undefined:0:22 0:undefined:undefined:undefined:0
+mono Uint16Array 0,0,0,0,0,0,1,2,65535,127,128,255,256,65407,65535,0,32767,0,65535,65535,0,0,0,2,0,0,0
+mono Uint16Array 361085:undefined:undefined:0:22 0:undefined:undefined:undefined:0
+mono Int32Array 0,0,0,0,0,0,1,2,-1,127,128,255,256,-129,65535,65536,-32769,-2147483648,2147483647,-1,0,1661992960,-1661992960,2,0,0,0
+mono Int32Array 98941:undefined:undefined:0:22 0:undefined:undefined:undefined:0
+mono Uint32Array 0,0,0,0,0,0,1,2,4294967295,127,128,255,256,4294967167,65535,65536,4294934527,2147483648,2147483647,4294967295,0,1661992960,2632974336,2,0,0,0
+mono Uint32Array 25769902717:undefined:undefined:0:22 0:undefined:undefined:undefined:0
+mono Float32Array NaN,Infinity,-Infinity,-0,0.5,-0.5,1.5,2.5,-1.5,127.5,128,255.5,256,-129,65535.69921875,65536,-32769,2147483648,-2147483648,4294967296,4294967296,100000002004087730000,-100000002004087730000,9007199254740992,Infinity,0,Infinity
+mono Float32Array 9007207844773888:undefined:undefined:-0:22 0:undefined:undefined:undefined:0
+mono Float64Array NaN,Infinity,-Infinity,-0,0.5,-0.5,1.5,2.5,-1.5,127.5,128,255.5,256,-129,65535.7,65536,-32769,2147483648,-2147483649,4294967295.9,4294967296,100000000000000000000,-100000000000000000000,9007199254740994,1.7976931348623157e+308,5e-324,3.4028235677973366e+38
+mono Float64Array 9007207844773890:undefined:undefined:-0:22 0:undefined:undefined:undefined:0
+Int8Array get 0=1 -0=1 1.5=undefined -1=undefined 3=4 4=undefined 4294967296=undefined "1"=2 "-0"=undefined "01"=undefined "1.0"=undefined "+1"=undefined "x"=undefined "Infinity"=undefined "NaN"=undefined "-1"=undefined
+Int8Array set 9,9,3,9 keys 0 1 2 3 01 1.0 +1 x
+Uint8ClampedArray get 0=1 -0=1 1.5=undefined -1=undefined 3=4 4=undefined 4294967296=undefined "1"=2 "-0"=undefined "01"=undefined "1.0"=undefined "+1"=undefined "x"=undefined "Infinity"=undefined "NaN"=undefined "-1"=undefined
+Uint8ClampedArray set 9,9,3,9 keys 0 1 2 3 01 1.0 +1 x
+Uint32Array get 0=1 -0=1 1.5=undefined -1=undefined 3=4 4=undefined 4294967296=undefined "1"=2 "-0"=undefined "01"=undefined "1.0"=undefined "+1"=undefined "x"=undefined "Infinity"=undefined "NaN"=undefined "-1"=undefined
+Uint32Array set 9,9,3,9 keys 0 1 2 3 01 1.0 +1 x
+Float32Array get 0=1 -0=1 1.5=undefined -1=undefined 3=4 4=undefined 4294967296=undefined "1"=2 "-0"=undefined "01"=undefined "1.0"=undefined "+1"=undefined "x"=undefined "Infinity"=undefined "NaN"=undefined "-1"=undefined
+Float32Array set 9,9,3,9 keys 0 1 2 3 01 1.0 +1 x
+Float64Array get 0=1 -0=1 1.5=undefined -1=undefined 3=4 4=undefined 4294967296=undefined "1"=2 "-0"=undefined "01"=undefined "1.0"=undefined "+1"=undefined "x"=undefined "Infinity"=undefined "NaN"=undefined "-1"=undefined
+Float64Array set 9,9,3,9 keys 0 1 2 3 01 1.0 +1 x
+BigInt64Array 5n,-1n -1n TypeError
+BigUint64Array 5n,18446744073709551615n 18446744073709551615n TypeError
+valueOf 7,300 51
+before 7 8 0
+after NaN 0 0 undefined
+discarded undefined 0.25
+shrunk 1000,1001,1002,undefined,undefined,undefined,undefined,undefined 3 0 undefined
+regrown 7,7,7,0,0,0 2 7,0
+subarray 10,20,0,-1,-2,60 0,-1,-2 -1,-2 8 12
+f32sub 2.200000047683716 3.299999952316284 undefined undefined
+poly plain=750 Int8Array=3 Uint8Array=3 Uint8ClampedArray=4 Int16Array=3 Uint16Array=3 Int32Array=3 Uint32Array=3 Float32Array=3.75 Float64Array=3.75 sparse=NaN
+getter 550 undefined 5.5 proto01 1
+nanbits number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true number/NaN/NaN/true
