@@ -199,6 +199,16 @@ struct Instruction {
     // how a `setValue -> arraysEqual -> copyArray` chain becomes one region.
     static constexpr uint32_t kNoDirectTarget = 0xFFFFFFFFu;
     uint32_t directTarget = kNoDirectTarget;
+    // MethodCall: a TYPED ENTRY of `directTarget` (lower/typed_entry.h) the
+    // direct edge calls in its place, or `kNoDirectTarget`. Its identity is
+    // still `directTarget`'s: the fast path's guard compares the site's cached
+    // code pointer against the GENERIC function's wrapper, exactly as the
+    // untyped edge does, so a receiver whose method is anything else takes the
+    // inline cache's ordinary dispatch with the arguments boxed. Only the
+    // callee of the edge changes, to a copy of `directTarget` whose parameters
+    // in the typed positions arrive as `f64` / `bool` — and this site's
+    // operand in each such position IS that type, which the verifier checks.
+    uint32_t typedTarget = kNoDirectTarget;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
     bool envImmutable = false;       // EnvGet: slot is an initialized immutable binding
@@ -414,6 +424,18 @@ struct Function {
     uint32_t sourceEnd = 0;
     std::string displayName;
     uint32_t descFlags = 0;
+    // This function is a TYPED ENTRY of the module function at this index
+    // (lower/typed_entry.h): the same body entered with some source
+    // parameters unboxed, reached only from the direct edge of a method-call
+    // site whose `directTarget` is that function. Never a function object of
+    // its own, so nothing about it is observable but its result.
+    static constexpr uint32_t kNoTypedOrigin = 0xFFFFFFFFu;
+    uint32_t typedOrigin = kNoTypedOrigin;
+    // How many arguments every edge into this typed entry passes. The source
+    // parameters past it are ones the edge omits, which the backend fills
+    // with `undefined` and the entry's body reads as `undefined` — so an edge
+    // passing any other count would hand it a value its body does not expect.
+    uint32_t typedArgc = 0;
 
     static constexpr uint32_t kDescFlagDeterministicFp = 1u << 8;
     bool isDeterministicFp() const { return (descFlags & kDescFlagDeterministicFp) != 0; }

@@ -186,8 +186,10 @@ public:
 
     // A pattern's key expressions and defaults are ordinary expressions that
     // evaluate where the pattern does; the names it binds are a separate
-    // question, and `ast::patternBoundNames` is the one answer to it.
-    void walkPattern(const ast::BindingPattern* pattern) {
+    // question, and `ast::patternBoundNames` is the one answer to it. Virtual
+    // because an object pattern's keys are property READS: an analysis that
+    // tracks which properties escape as values overrides it to see them.
+    virtual void walkPattern(const ast::BindingPattern* pattern) {
         if (!pattern) return;
         for (const auto& elem : pattern->elements) {
             if (elem.keyExpr) elem.keyExpr->accept(*this);

@@ -155,6 +155,21 @@ Value* lower_builtin_method_call(IlLowering* lowering, const BronzeInstruction& 
     return lower_builtin_call(lowering, target, inst.index, b, method, recv, arg);
 }
 
+// An argument as the Value the uniform convention passes, given the
+// parameter type it has on a typed edge (`i64` where it is boxed already): an
+// f64 NaN-canonicalized (ensure_type), a bool — held in an i32 like every IL
+// bool — as the boolean tag. ensure_type alone would hand a bool's 0/1 over as
+// raw bits, which as a Value is a denormal double; the IL type, not the MIR
+// one, says which it is, since an IL i32 is held in an i32 too.
+Value* box_value(IlLowering* lowering, Builder& b, Value* v, Type as) {
+    if (as == Type::i8()) {
+        Value* bit = b.build_and(b.build_zext_i64(v->type() == Type::i64() ? b.build_trunc_i32(v) : v),
+                                 b.build_iconst_i64(1));
+        return b.build_or(bit, b.build_iconst_i64(static_cast<int64_t>(kBoolTag)));
+    }
+    return lowering->ensure_type(v, Type::i64(), b);
+}
+
 // `recv.key(...)` whose callee lowering named (lower/direct_method_table.h).
 // The name is the nearest declaration at or above the class inference gave
 // the receiver, which is a GUESS: a subclass override, a monkey-patch or a
@@ -166,7 +181,7 @@ Value* lower_builtin_method_call(IlLowering* lowering, const BronzeInstruction& 
 // takes the generic call, which dispatches on the receiver in hand.
 Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* recv,
                                 const std::vector<Value*>& args, Value* site, const std::string& callee,
-                                Function* direct_fn) {
+                                const std::string& entry_name, Function* direct_fn) {
     constexpr int32_t kWord = 8;
     constexpr int64_t kDirectFormLimit = int64_t{1} << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
     PropertyLoweringHelper& pl = lowering->prop_lowering();
@@ -205,22 +220,29 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
         b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord), epoch));
     Value* hit = b.build_and(plain, b.build_or(way0, way1));
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
-    Value* argv = lowering->stage_argv(b, args);
+    // The generic dispatch takes every argument boxed. A typed edge's
+    // unboxed operands are boxed here, on the path that needs them.
+    std::vector<Value*> boxed_args;
+    boxed_args.reserve(args.size());
+    const auto& params = direct_fn->param_types();
+    for (size_t a = 0; a < args.size(); ++a) {
+        boxed_args.push_back(box_value(lowering, b, args[a], a + 1 < params.size() ? params[a + 1] : Type::i64()));
+    }
+    Value* argv = lowering->stage_argv(b, boxed_args);
     Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(args.size()));
     Value* key_id = lowering->get_key_id(b, inst.index);
     b.build_br(merge, {b.build_call("bronze_call_method", Type::i64(), {recv, key_id, argc_val, argv, site})});
 
     b.position_at_end(fast);
-    const auto& params = direct_fn->param_types();
     std::vector<Value*> call_args = {lowering->ensure_type(recv, params[0], b)};
     for (size_t p = 1; p < params.size(); ++p) {
         const Type pt = params[p];
         Value* a = p - 1 < args.size() ? args[p - 1] : nullptr;
         // An omitted argument's parameter is tagged (the call site's fit test).
-        call_args.push_back(a ? lowering->ensure_type(a, pt, b)
-                              : b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
+        call_args.push_back(lowering->ensure_type(
+            a ? a : b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), pt, b));
     }
-    Value* direct = b.build_call(callee, direct_fn->return_type(), Span<Value* const>(call_args.data(), call_args.size()));
+    Value* direct = b.build_call(entry_name, direct_fn->return_type(), Span<Value* const>(call_args.data(), call_args.size()));
     Value* boxed = direct_fn->return_type() == Type::void_type()
         ? b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))
         : lowering->ensure_type(direct, Type::i64(), b);
@@ -298,6 +320,47 @@ bool lower_call_instruction(
                 }
             }
             Function* direct_fn = (!callee.empty() && fn && fn->parent()) ? fn->parent()->get_function(callee) : nullptr;
+            // A typed edge (lower/typed_entry.h): the guard keeps `callee`'s
+            // identity and the fast path calls its typed entry, whose typed
+            // parameters this site's operands already are — the IL verifier
+            // checked that, and a mismatch here is a hard error, never a
+            // conversion: converting a boxed value to f64 is a bitcast.
+            std::string entry_name = callee;
+            // Per argument, how it is held: boxed (`i64`) unless a typed edge
+            // passes it unboxed, which is what boxing it for the generic
+            // dispatch has to know.
+            std::vector<Type> arg_kinds(argc, Type::i64());
+            if (direct_fn && lowering && !inst_ast.typed_callee_name.empty()) {
+                const std::string typed = lowering->resolve_callee(inst_ast.typed_callee_name);
+                Function* entry_fn = fn->parent()->get_function(typed);
+                const auto& eparams = entry_fn ? entry_fn->param_types() : direct_fn->param_types();
+                bool fits = entry_fn && eparams.size() >= argc + 1 &&
+                            eparams.size() == direct_fn->param_types().size();
+                // An IL bool is held in an i32 and passed as an i8: the same
+                // 0/1, narrowed by the fast path's ensure_type. A 64-bit or
+                // tagged operand is a boxed value, never a bool.
+                auto same_repr = [](Type have, Type want) {
+                    if (have == want) return true;
+                    return want == Type::i8() && (have == Type::i32() || have == Type::i16());
+                };
+                for (size_t p = 1; fits && p < eparams.size(); ++p) {
+                    if (eparams[p] == direct_fn->param_types()[p]) continue;
+                    Value* a = p <= argc ? get_opd(p) : nullptr;
+                    fits = a && same_repr(a->type(), eparams[p]);
+                }
+                if (!fits) {
+                    lowering->set_has_error(true);
+                    if (lowering->diag()) {
+                        lowering->diag()->error(SourceLocation("", 0, 0),
+                                                "il2mir: typed method entry '" + inst_ast.typed_callee_name +
+                                                    "' does not fit its call site's operands");
+                    }
+                    return false;
+                }
+                entry_name = typed;
+                direct_fn = entry_fn;
+                for (size_t p = 1; p < eparams.size() && p <= argc; ++p) arg_kinds[p - 1] = eparams[p];
+            }
             // The callee takes `argc` arguments, or more whose parameters are
             // tagged (`update = true`), which an omitted argument fills with
             // undefined as an adapting call would.
@@ -305,7 +368,7 @@ bool lower_call_instruction(
                 const auto& params = direct_fn->param_types();
                 if (params.size() < argc + 1) return false;
                 for (size_t p = argc + 1; p < params.size(); ++p) {
-                    if (params[p] != Type::i64()) return false;
+                    if (!params[p].is_tagged() && params[p] != Type::i64()) return false;
                 }
                 return true;
             };
@@ -327,7 +390,7 @@ bool lower_call_instruction(
             if (can_direct && lowering && lowering->run_once()) can_direct = false;
             if (!can_direct && method_call_is_speculated_builtin(lowering, inst_ast)) {
                 if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
-                    Value* arg = ensure_type(get_opd(1), Type::i64());
+                    Value* arg = box_value(lowering, b, get_opd(1), arg_kinds[0]);
                     res_val = lower_builtin_method_call(lowering, inst_ast, b, recv, arg, site);
                     if (res_val) break;
                 }
@@ -336,9 +399,11 @@ bool lower_call_instruction(
                 std::vector<Value*> args;
                 for (size_t a = 0; a < argc; ++a) args.push_back(get_opd(1 + a));
                 if (can_direct) {
-                    res_val = lower_direct_method_call(lowering, inst_ast, b, recv, args, site, callee, direct_fn);
+                    res_val = lower_direct_method_call(lowering, inst_ast, b, recv, args, site, callee, entry_name,
+                                                       direct_fn);
                     break;
                 }
+                for (size_t a = 0; a < argc; ++a) args[a] = box_value(lowering, b, args[a], arg_kinds[a]);
                 Value* argv = lowering->stage_argv(b, args);
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
                 Value* key_id = lowering->get_key_id(b, inst_ast.index);
@@ -351,7 +416,8 @@ bool lower_call_instruction(
                 recv = ensure_type(get_opd(0), Type::i64());
                 std::vector<Value*> dyn_args = {method, recv};
                 for (size_t a = 0; a < argc; ++a) {
-                    dyn_args.push_back(ensure_type(get_opd(1 + a), Type::i64()));
+                    Value* arg = get_opd(1 + a);
+                    dyn_args.push_back(lowering ? box_value(lowering, b, arg, arg_kinds[a]) : ensure_type(arg, Type::i64()));
                 }
                 res_val = build_call_dynamic(b, dyn_args, lowering);
             }

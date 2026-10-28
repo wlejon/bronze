@@ -36,6 +36,7 @@ struct InstructionMirror {
     uint32_t familyLo;
     uint32_t familySpan;
     uint32_t directTarget;
+    uint32_t typedTarget;
     uint32_t envDepth;
     uint32_t envIndex;
     bool envImmutable;
@@ -92,6 +93,8 @@ struct FunctionMirror {
     uint32_t sourceEnd;
     std::string displayName;
     uint32_t descFlags;
+    uint32_t typedOrigin;
+    uint32_t typedArgc;
     std::vector<Block> blocks;
     uint32_t valueCount;
 };
@@ -276,7 +279,8 @@ enum InstBits : uint32_t {
     kRawUnbox = 1u << 21,
     kNullishUnbox = 1u << 22,
     kEnvImmutable = 1u << 23,
-    kKnownBits = (1u << 24) - 1,
+    kHasTyped = 1u << 24,
+    kKnownBits = (1u << 25) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -310,6 +314,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.familyLo != Instruction::kNoFamily) m |= kHasFamilyLo;
     if (inst.familySpan != 0) m |= kHasFamilySpan;
     if (inst.directTarget != Instruction::kNoDirectTarget) m |= kHasDirect;
+    if (inst.typedTarget != Instruction::kNoDirectTarget) m |= kHasTyped;
     if (inst.envDepth != 0) m |= kHasEnvDepth;
     if (inst.envIndex != 0) m |= kHasEnvIndex;
     if (inst.callEnvHops != Instruction::kNoEnvHops) m |= kHasEnvHops;
@@ -341,6 +346,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (m & kHasFamilyLo) w.var(inst.familyLo);
     if (m & kHasFamilySpan) w.var(inst.familySpan);
     if (m & kHasDirect) w.var(inst.directTarget);
+    if (m & kHasTyped) w.var(inst.typedTarget);
     if (m & kHasEnvDepth) w.var(inst.envDepth);
     if (m & kHasEnvIndex) w.var(inst.envIndex);
     if (m & kHasEnvHops) w.var(inst.callEnvHops);
@@ -376,6 +382,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasFamilyLo) inst.familyLo = r.u32();
     if (m & kHasFamilySpan) inst.familySpan = r.u32();
     if (m & kHasDirect) inst.directTarget = r.u32();
+    if (m & kHasTyped) inst.typedTarget = r.u32();
     if (m & kHasEnvDepth) inst.envDepth = r.u32();
     if (m & kHasEnvIndex) inst.envIndex = r.u32();
     if (m & kHasEnvHops) inst.callEnvHops = r.u32();
@@ -476,6 +483,8 @@ void writeFunction(Writer& w, const Function& fn) {
     w.var(fn.sourceEnd);
     w.str(fn.displayName);
     w.var(fn.descFlags);
+    w.var(static_cast<uint32_t>(fn.typedOrigin + 1u));  // kNoTypedOrigin wraps to 0
+    w.var(fn.typedArgc);
     w.var(fn.valueCount);
     w.var(fn.blocks.size());
     for (const auto& b : fn.blocks) writeBlock(w, b);
@@ -518,6 +527,8 @@ void readFunction(Reader& r, Function& fn) {
     fn.sourceEnd = r.u32();
     fn.displayName = r.str();
     fn.descFlags = r.u32();
+    fn.typedOrigin = static_cast<uint32_t>(r.u32() - 1u);
+    fn.typedArgc = r.u32();
     fn.valueCount = r.u32();
     fn.blocks.resize(r.count());
     for (auto& b : fn.blocks) {

@@ -183,6 +183,9 @@ struct BronzeInstruction {
     bool raw_unbox = false;
     bool nullish_unbox = false;
     std::string callee_name;
+    // MethodCall: the typed entry of `callee_name` the direct edge calls
+    // (il.h `typedTarget`), or empty. The guard's identity stays `callee_name`.
+    std::string typed_callee_name;
     std::string string_literal;
 
     uint32_t depth = 0;

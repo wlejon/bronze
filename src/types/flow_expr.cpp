@@ -878,16 +878,12 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                 }
                 if (!mod_.ctors.isClassReached(target.className)) continue;
             }
-            if (args.size() < target.observedParams.size()) {
-                bool hasDefaults = true;
-                for (size_t i = args.size(); i < target.observedParams.size(); ++i) {
-                    if (target.hasDefault.size() <= i || !target.hasDefault[i]) {
-                        hasDefaults = false;
-                        break;
-                    }
-                }
-                if (!hasDefaults) continue;
-            }
+            // A target declaring more parameters than this site passes is
+            // reached all the same: the call does not pick its method by
+            // arity, so each omitted parameter without a default receives
+            // `undefined` here (contributeMethodArg). Skipping such a target
+            // left its join to the other sites, and a parameter typed `number`
+            // from them read `undefined` as NaN.
             contributeArgs(index, target);
         }
         if (record_) ++mod_.unboundedMethodCalls;

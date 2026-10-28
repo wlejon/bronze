@@ -621,6 +621,7 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
 }
 
 bool verifyModuleProofs(const Module& module, DiagnosticSink& diags) {
+    if (!verifyTypedEntries(module, diags)) return false;
     for (const Function& fn : module.functions) {
         if (!verifyFunctionProofs(fn, &module, diags)) {
             return false;

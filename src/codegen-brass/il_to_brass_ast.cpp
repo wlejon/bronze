@@ -406,6 +406,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);
             }
+            if (inst.typedTarget != il::Instruction::kNoDirectTarget) {
+                out.typed_callee_name = ctx.fnName(inst.typedTarget);
+            }
             out.param_count = inst.operands.size() > 1 ? static_cast<uint32_t>(inst.operands.size() - 1) : 0;
             break;
         case il::Op::MethodCallSpread:

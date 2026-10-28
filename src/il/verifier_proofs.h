@@ -18,6 +18,11 @@ namespace bronze::il {
 //   4. `Op::ElemGetTyped`, `Op::ElemSetTyped`, and `Op::IsDenseArray`: receiver
 //      not a known non-array producer, numeric index/value types, and valid
 //      element kind (`0..11` or `kElemKindPlainArrayF64`).
+//   5. Typed entries (`Function::typedOrigin`, `Instruction::typedTarget`): an
+//      entry is a plain method body differing from its origin only in unboxed
+//      f64/bool source parameters, and a typed edge's operands are exactly the
+//      entry's parameter types (verifier_typed_entry.cpp).
+bool verifyTypedEntries(const Module& module, DiagnosticSink& diags);
 bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSink& diags);
 bool verifyModuleProofs(const Module& module, DiagnosticSink& diags);
 

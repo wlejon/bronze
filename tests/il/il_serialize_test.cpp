@@ -52,6 +52,8 @@ Module fullModule() {
     fn.sourceEnd = 40;
     fn.displayName = "f";
     fn.descFlags = 9;
+    fn.typedOrigin = 1;
+    fn.typedArgc = 1;
     fn.valueCount = 12;
 
     Block b;
@@ -73,6 +75,7 @@ Module fullModule() {
     inst.familyLo = 0;
     inst.familySpan = 3;
     inst.directTarget = 0;
+    inst.typedTarget = 0;
     inst.envDepth = 2;
     inst.envIndex = 7;
     inst.envImmutable = true;
@@ -115,6 +118,10 @@ TEST_CASE("a module round-trips through its binary encoding") {
     CHECK(b.target.args == a.target.args);
     CHECK(b.callEnvHops == a.callEnvHops);
     CHECK(b.nullishUnbox);
+    CHECK(b.typedTarget == 0);
+    CHECK(back.functions[0].typedOrigin == 1);
+    CHECK(back.functions[0].typedArgc == 1);
+    CHECK(back.functions[1].typedOrigin == Function::kNoTypedOrigin);
     CHECK(back.functions[0].blocks[1].handler == kNoBlock);
     CHECK(back.functions[0].blocks[0].instructions[2].result == kNoValue);
     CHECK(back.functions[0].coroKind == 2);

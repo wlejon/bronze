@@ -21,7 +21,10 @@ bool paramsArePlain(const std::vector<ast::Param>& params) {
     return true;
 }
 
-bool isNonClassPropertyAccess(const ast::Expr* object, const std::string& property) {
+// An object that is never a class instance whatever the program does: a
+// builtin namespace, a builtin prototype, a literal. Reading a method's name
+// off one of these cannot extract a class method.
+bool isBuiltinObject(const ast::Expr* object) {
     if (object == nullptr) return false;
     if (const auto* id = dynamic_cast<const ast::Ident*>(object)) {
         if (id->name == "Math" || id->name == "Object" || id->name == "Array" ||
@@ -31,18 +34,6 @@ bool isNonClassPropertyAccess(const ast::Expr* object, const std::string& proper
             id->name == "performance" || id->name == "navigator" || id->name == "self" ||
             id->name == "gl") {
             return true;
-        }
-        static const char* kNonClassArrayIdents[] = {
-            "array", "dst", "src", "elements", "te", "target", "out", "data", "buffer",
-            "list", "stack", "queue", "nodes", "items", "cache", "bindings", "actions",
-            "tracks", "curves", "points", "faces", "bones", "lights", "cameras",
-            "materials", "geometries", "textures", "objects", "children", "parents",
-            "coords", "weights", "times", "samples", "table", "map", "dict",
-            "src0", "src1", "dst0", "dst1", "e", "me", "ae", "be", "pe",
-            "values", "boneList"
-        };
-        for (const char* aid : kNonClassArrayIdents) {
-            if (id->name == aid) return true;
         }
     }
     if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(object)) {
@@ -55,13 +46,31 @@ bool isNonClassPropertyAccess(const ast::Expr* object, const std::string& proper
             }
         }
     }
-    if (dynamic_cast<const ast::ArrayLit*>(object) ||
-        dynamic_cast<const ast::ObjectLit*>(object) ||
-        dynamic_cast<const ast::NumberLit*>(object) ||
-        dynamic_cast<const ast::StringLit*>(object) ||
-        dynamic_cast<const ast::BoolLit*>(object) ||
-        dynamic_cast<const ast::RegExpLit*>(object)) {
-        return true;
+    return dynamic_cast<const ast::ArrayLit*>(object) || dynamic_cast<const ast::ObjectLit*>(object) ||
+           dynamic_cast<const ast::NumberLit*>(object) || dynamic_cast<const ast::StringLit*>(object) ||
+           dynamic_cast<const ast::BoolLit*>(object) || dynamic_cast<const ast::RegExpLit*>(object);
+}
+
+// A GUESS that `object.property` is not a class method: a builtin object, or
+// a receiver or property name that in practice holds an array or a field.
+// Only reachability may use it (a method it hides is one more method compiled
+// for nothing); the parameter join may not (EscapeScan uses isBuiltinObject).
+bool isNonClassPropertyAccess(const ast::Expr* object, const std::string& property) {
+    if (object == nullptr) return false;
+    if (isBuiltinObject(object)) return true;
+    if (const auto* id = dynamic_cast<const ast::Ident*>(object)) {
+        static const char* kNonClassArrayIdents[] = {
+            "array", "dst", "src", "elements", "te", "target", "out", "data", "buffer",
+            "list", "stack", "queue", "nodes", "items", "cache", "bindings", "actions",
+            "tracks", "curves", "points", "faces", "bones", "lights", "cameras",
+            "materials", "geometries", "textures", "objects", "children", "parents",
+            "coords", "weights", "times", "samples", "table", "map", "dict",
+            "src0", "src1", "dst0", "dst1", "e", "me", "ae", "be", "pe",
+            "values", "boneList"
+        };
+        for (const char* aid : kNonClassArrayIdents) {
+            if (id->name == aid) return true;
+        }
     }
     if (property == "length" || property == "name" || property == "size" ||
         property == "byteLength" || property == "byteOffset" || property == "buffer" ||
@@ -267,8 +276,12 @@ public:
                             isArrayPushApply = true;
                         }
                     }
-                    if (!isArrayPushApply &&
-                        !isNonClassPropertyAccess(inner->object.get(), inner->property)) {
+                    // Only a builtin object is exempt here: the name lists
+                    // isNonClassPropertyAccess guesses by (`data`, `.scale`)
+                    // are a guess about the receiver, and an extracted method
+                    // called with another `this` and other arguments is the
+                    // one thing the parameter join must hear about.
+                    if (!isArrayPushApply && !isBuiltinObject(inner->object.get())) {
                         out_.addDeclarations(table_, inner->property, "reached through .call/.apply/.bind");
                     }
                     inner->object->accept(*this);
@@ -336,7 +349,7 @@ public:
 
     void visit(const ast::MemberAccess& n) override {
         if (!consumed_) {
-            if (table_.isMethodName(n.property) && !isNonClassPropertyAccess(n.object.get(), n.property)) {
+            if (table_.isMethodName(n.property) && !isBuiltinObject(n.object.get())) {
                 if (dynamic_cast<const ast::ThisExpr*>(n.object.get()) != nullptr &&
                     !currentClass_.empty()) {
                     out_.addSubtree(table_, currentClass_, n.property,
@@ -351,12 +364,40 @@ public:
 
     void visit(const ast::SuperMember& n) override {
         if (!consumed_) {
-            if (table_.isMethodName(n.property) && !isNonClassPropertyAccess(n.baseExpr.get(), n.property)) {
+            if (table_.isMethodName(n.property) && !isBuiltinObject(n.baseExpr.get())) {
                 out_.addDeclarations(table_, n.property, "read as a value rather than called");
             }
         }
         if (n.baseExpr) consume(*n.baseExpr);
         if (n.propertyExpr) consume(*n.propertyExpr);
+    }
+
+    // `const { set } = V.prototype`, `({ step: f } = body)`: an object
+    // pattern's key reads the property as a VALUE, which is the extraction a
+    // member read outside a call is. The source is not looked at — it is any
+    // expression — so every declaration of the name is poisoned, the same
+    // answer a bare `o.set` read gives.
+    void walkPattern(const ast::BindingPattern* pattern) override {
+        if (pattern != nullptr && pattern->isObject) {
+            for (const auto& elem : pattern->elements) {
+                if (elem.isRest) continue;  // own enumerable properties: never a prototype method
+                if (elem.keyExpr) {
+                    std::set<std::string> named;
+                    if (possibleNames(*elem.keyExpr, names_, named)) {
+                        for (const auto& name : named) {
+                            if (table_.isMethodName(name)) {
+                                out_.addDeclarations(table_, name, "read as a value by a destructuring pattern");
+                            }
+                        }
+                    } else {
+                        out_.addAll("a destructuring pattern whose computed key is not a fixed set");
+                    }
+                } else if (table_.isMethodName(elem.key)) {
+                    out_.addDeclarations(table_, elem.key, "read as a value by a destructuring pattern");
+                }
+            }
+        }
+        Walker::walkPattern(pattern);
     }
 
     void visit(const ast::Unary& n) override { consume(*n.operand); }
@@ -366,7 +407,7 @@ public:
             std::set<std::string> named;
             if (possibleNames(*n.index, names_, named)) {
                 for (const auto& name : named) {
-                    if (table_.isMethodName(name) && !isNonClassPropertyAccess(n.object.get(), name)) {
+                    if (table_.isMethodName(name) && !isBuiltinObject(n.object.get())) {
                         out_.addDeclarations(table_, name, "read as a value through a computed property read");
                     }
                 }
@@ -531,6 +572,26 @@ public:
             memberNames.insert(n.property);
         }
         Walker::visit(n);
+    }
+
+    // An object pattern's key is a property read like `o.key`.
+    void walkPattern(const ast::BindingPattern* pattern) override {
+        if (pattern != nullptr && pattern->isObject) {
+            for (const auto& elem : pattern->elements) {
+                if (elem.isRest) continue;
+                if (elem.keyExpr) {
+                    std::set<std::string> named;
+                    if (possibleNames(*elem.keyExpr, literalNames_, named)) {
+                        for (const auto& name : named) memberNames.insert(name);
+                    } else {
+                        anyComputedMember = true;
+                    }
+                } else if (!elem.key.empty()) {
+                    memberNames.insert(elem.key);
+                }
+            }
+        }
+        Walker::walkPattern(pattern);
     }
 
     void visit(const ast::IndexAccess& n) override {

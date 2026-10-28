@@ -10,6 +10,7 @@
 #include "ast/queries.h"
 #include "lower/guard_region.h"
 #include "lower/inline_small.h"
+#include "lower/typed_entry.h"
 #include "lower/loop_prop_analysis.h"
 #include "lower/loop_prop_hoist.h"
 #include "lower/lowerer.h"
@@ -420,6 +421,7 @@ std::optional<il::Module> Lowerer::lower() {
         GuardRegionStats stats;
         applyGuardedRegions(ilModule_, &stats);
         guardRegionStatsReport(stats);
+        applyTypedEntries(ilModule_, nullptr);
     }
     return ilModule_;
 }

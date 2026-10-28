@@ -59,4 +59,10 @@ struct DefSite {
 };
 std::vector<DefSite> computeDefSites(const il::Function& fn);
 
+// Whether every use of a value is reached by that value's definition, with
+// the definition's block preceding the use's in index order (the emitter walks
+// blocks in index order). Any IL -> IL rewrite that moves values across blocks
+// discards its result when this fails.
+bool dominanceHolds(const il::Function& fn);
+
 }  // namespace bronze::lower

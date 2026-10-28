@@ -598,6 +598,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         if (inst.directTarget != Instruction::kNoDirectTarget) {
                             out += ", direct @" + std::to_string(inst.directTarget);
                         }
+                        if (inst.typedTarget != Instruction::kNoDirectTarget) {
+                            out += " typed @" + std::to_string(inst.typedTarget);
+                        }
                         size_t argc = inst.operands.size() > 1 ? inst.operands.size() - 1 : 0;
                         out += ", " + std::to_string(argc);
                         for (size_t i = 1; i < inst.operands.size(); ++i) {

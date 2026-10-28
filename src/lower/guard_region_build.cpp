@@ -87,48 +87,6 @@ il::Instruction makeBranch(il::ValueId cond, il::BlockId thenBlock, il::BlockId 
     return inst;
 }
 
-// The rewrite is only correct if every use of a value is reached by that value's
-// definition, and the block-parameter form of SSA makes that a DOMINANCE
-// question the IL verifier does not ask (it checks types, arity and range).
-// This is the check that makes a shape chunk 1 cannot repair a missed
-// optimisation rather than a miscompile: the whole rewritten function is
-// discarded when it fails.
-//
-// Two conditions, not one. Dominance is what LLVM requires of the IR; the index
-// ordering is what the EMITTER requires — `FunctionEmitter::emit` walks blocks
-// in index order and a use whose def has not been emitted reads a null
-// `values_` entry (llvm_func.cpp).
-bool dominanceHolds(const il::Function& fn) {
-    const Cfg cfg = buildCfg(fn);
-    const std::vector<DefSite> defs = computeDefSites(fn);
-    auto ok = [&](il::ValueId v, il::BlockId useBlock, size_t useIndex) {
-        if (v >= defs.size()) return false;
-        const DefSite& def = defs[v];
-        // `kNoBlock` means one of two things and they are not the same: a
-        // function parameter, which every block may read, and a value with NO
-        // DEFINITION AT ALL — which is what a use left behind by a pruned block
-        // looks like. The parameter ids are the low ones, so the id itself
-        // settles which this is.
-        if (def.block == il::kNoBlock) return v < fn.params.size();
-        if (def.block == useBlock) return def.index == UINT32_MAX || def.index < useIndex;
-        return def.block < useBlock && cfg.dominates(def.block, useBlock);
-    };
-    for (const auto& block : fn.blocks) {
-        for (size_t i = 0; i < block.instructions.size(); ++i) {
-            const auto& inst = block.instructions[i];
-            for (il::ValueId v : inst.operands) {
-                if (!ok(v, block.id, i)) return false;
-            }
-            for (const il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
-                for (il::ValueId v : t->args) {
-                    if (!ok(v, block.id, i)) return false;
-                }
-            }
-        }
-    }
-    return true;
-}
-
 // Blocks nothing reaches, dropped and the rest renumbered compactly.
 //
 // The ENTRY region is what makes these: its fast copy IS the function's entry,
