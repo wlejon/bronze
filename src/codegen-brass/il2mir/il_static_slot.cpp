@@ -190,12 +190,16 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
         Value* shape = nullptr;
         Value* recv_base = nullptr;
         receiver_shape(b, obj, plain, ptr, shape, &recv_base);
-        Value* safe = safe_shape_of(b, plain, recv_base, data_addr(b, family_base_sym_));
+        Value* family_base = data_addr(b, family_base_sym_);
+        Value* safe = safe_shape_of(b, plain, recv_base, family_base);
         Value* unstamped = b.build_eq(b.build_load(Type::i64(), safe, kFamilyOffset),
                                       iconst(b, BRONZE_ABI_FAMILY_UNSTAMPED));
         b.build_br_if(b.build_and(plain, unstamped), bb_call, bb_cont);
         b.position_at_end(bb_call);
-        b.build_call("bronze_family_stamp", Type::void_type(), {obj});
+        // The site's own range goes along, absolute, so a shape two unrelated
+        // classes both describe is stamped with the class this site expects.
+        Value* lo = b.build_add(b.build_load(Type::i64(), family_base, 0), iconst(b, site.family_lo));
+        b.build_call("bronze_family_stamp", Type::void_type(), {obj, lo, iconst(b, site.family_span)});
     } else {
         // Only while the cell is still zero, which makes it one-shot both
         // ways: a site that published stops calling, and a site whose layout

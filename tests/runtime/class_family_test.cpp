@@ -258,7 +258,7 @@ TEST_CASE("class family never stamps a dictionary shape") {
     // The helper records that refusal in the word — NONE, not left UNSTAMPED —
     // so the site behind it stops asking. A dictionary shape belongs to one
     // object and never becomes anyone's parent, so the note dies with it.
-    bronze_family_stamp(obj.get().rawBits());
+    bronze_family_stamp(obj.get().rawBits(), 0, 0);
     CHECK(dict->family_stamp == BRONZE_ABI_FAMILY_NONE);
 }
 
@@ -277,7 +277,7 @@ TEST_CASE("bronze_family_stamp writes once per shape") {
     Rooted<Value> obj(Value::fromObject(ObjectHeader::create(heap, arena, shaped)));
 
     CHECK(shaped->family_stamp == BRONZE_ABI_FAMILY_UNSTAMPED);
-    bronze_family_stamp(obj.get().rawBits());
+    bronze_family_stamp(obj.get().rawBits(), 0, 0);
     CHECK(shaped->family_stamp == mod.base);
 
     // A shape that matched nothing is stamped NONE, not left at zero — which is
@@ -285,7 +285,7 @@ TEST_CASE("bronze_family_stamp writes once per shape") {
     // the life of the program.
     Shape* alien = shapeWith(arena, heap, root, {{"q", true}});
     Rooted<Value> other(Value::fromObject(ObjectHeader::create(heap, arena, alien)));
-    bronze_family_stamp(other.get().rawBits());
+    bronze_family_stamp(other.get().rawBits(), 0, 0);
     CHECK(alien->family_stamp == BRONZE_ABI_FAMILY_NONE);
 
     // A second module registering later cannot revise either answer. That is a
@@ -294,6 +294,46 @@ TEST_CASE("bronze_family_stamp writes once per shape") {
     FakeModule late;
     late.addClass({{"q", true}});
     late.registerAll();
-    bronze_family_stamp(other.get().rawBits());
+    bronze_family_stamp(other.get().rawBits(), 0, 0);
     CHECK(alien->family_stamp == BRONZE_ABI_FAMILY_NONE);
+}
+
+TEST_CASE("bronze_family_stamp breaks a tie between unrelated classes toward the asking site") {
+    classFamilyResetForTesting();
+    NonMovingArena& arena = rtArena();
+    Heap& heap = rtHeap();
+    ShadowStackFrame frame;
+
+    // Two classes that extend nothing and declare the same one field, as
+    // three.js's Matrix4 and Matrix3 do. Their instances have different shapes
+    // (each class's prototype roots its own tree), but either class describes
+    // either shape, and the stamp holds one id. Left to itself the later
+    // registration took both, and every site of the first missed for good.
+    FakeModule mod;
+    mod.addClass({{"elements", true}});
+    mod.addClass({{"elements", true}});
+    mod.addClass({{"elements", true}, {"extra", true}});
+    mod.registerAll();
+
+    Shape* rootA = Shape::createRoot(arena);
+    Shape* rootB = Shape::createRoot(arena);
+    Shape* a = shapeWith(arena, heap, rootA, {{"elements", true}});
+    Shape* b = shapeWith(arena, heap, rootB, {{"elements", true}});
+    Rooted<Value> objA(Value::fromObject(ObjectHeader::create(heap, arena, a)));
+    Rooted<Value> objB(Value::fromObject(ObjectHeader::create(heap, arena, b)));
+
+    // No range of its own: the later registration, as before.
+    CHECK(classFamilyIdFor(a) == mod.base + 1);
+    // A site of the first class gets the first class, of the second the second.
+    bronze_family_stamp(objA.get().rawBits(), mod.base + 0, 0);
+    CHECK(a->family_stamp == mod.base + 0);
+    bronze_family_stamp(objB.get().rawBits(), mod.base + 1, 0);
+    CHECK(b->family_stamp == mod.base + 1);
+
+    // The range only ever breaks a tie. A more specific class still wins over
+    // the asking site's own, so a subclass's sites keep hitting; and a range
+    // naming a class that does not describe the shape changes nothing.
+    Shape* longer = shapeWith(arena, heap, rootA, {{"elements", true}, {"extra", true}});
+    CHECK(classFamilyIdFor(longer, mod.base + 0, 0) == mod.base + 2);
+    CHECK(classFamilyIdFor(a, mod.base + 2, 0) == mod.base + 1);
 }

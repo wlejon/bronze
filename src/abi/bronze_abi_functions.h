@@ -215,8 +215,15 @@
      * Nothing upstream has to be sound for this to be correct: the stamp is a
      * fact the runtime verified about the shape in front of it, so a wrong
      * layout claim costs a guard that never matches. Called once per shape,
-     * from a site's slow path, and only while the stamp is still zero. */ \
-    X(bronze_family_stamp,        BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
+     * from a site's slow path, and only while the stamp is still zero.     \
+     *                                                                       \
+     * The two U64s after the object are the asking site's own range, its    \
+     * first id and span, absolute. They break a tie only: two unrelated     \
+     * classes that declare the same field list both describe the shape, and \
+     * the stamp holds one id, so without the site's say the later           \
+     * registration took it and the earlier class's sites missed into the IC \
+     * forever (three.js's Matrix3 and Matrix4 are both `[elements]`). */    \
+    X(bronze_family_stamp,        BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     /* The ACCESSOR cell (runtime/accessor_cell.cpp): a site whose receiver's\
      * class declares an accessor for its key guards on a two-word module cell,\
      * (shape, prototype-mutation epoch), and on a hit calls that accessor's\

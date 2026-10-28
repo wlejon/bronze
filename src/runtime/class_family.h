@@ -16,9 +16,11 @@
 
 namespace bronze::runtime {
 
-// The id `bronze_family_stamp` would write for `shape`, computed without
-// touching it. Tests only; the helper itself does not go through here.
-uint64_t classFamilyIdFor(Shape* shape);
+// The id `bronze_family_stamp` would write for `shape`, asked by a site whose
+// range is [wantLo, wantLo + wantSpan], computed without touching it. The
+// default range is no class's (ids start above it), which is the plain
+// most-specific, later-registration answer.
+uint64_t classFamilyIdFor(Shape* shape, uint64_t wantLo = 0, uint64_t wantSpan = 0);
 
 // How many classes are registered, across every module. Tests and the IC log.
 uint32_t classFamilyCount();

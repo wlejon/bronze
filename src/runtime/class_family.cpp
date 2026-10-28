@@ -165,7 +165,7 @@ bool prefixMatches(const FamilyClass& cls, const std::vector<const Shape*>& node
 
 }  // namespace
 
-uint64_t classFamilyIdFor(Shape* shape) {
+uint64_t classFamilyIdFor(Shape* shape, uint64_t wantLo, uint64_t wantSpan) {
     if (shape == nullptr || shape->isDictionary()) {
         return BRONZE_ABI_FAMILY_NONE;
     }
@@ -192,13 +192,24 @@ uint64_t classFamilyIdFor(Shape* shape) {
     // only ever written for a class whose fields this shape genuinely begins
     // with, so whichever wins, every site that accepts it reads the name it
     // meant to read.
+    //
+    // That miss is not free, though: it is a miss FOREVER, at every site of
+    // the losing class, since a shape is stamped once. So among the tied, a
+    // class in the asking site's range [wantLo, wantLo + wantSpan] is taken
+    // over one outside it. Only among the tied: specificity still comes first,
+    // so a subclass's sites keep hitting, and a site's range never makes a
+    // class win that does not describe the shape.
     uint64_t best = BRONZE_ABI_FAMILY_NONE;
     uint32_t bestCount = 0;
+    bool bestWanted = false;
     for (const FamilyClass& cls : classes()) {
         if (cls.fieldCount < bestCount) continue;
+        const bool wanted = cls.id - wantLo <= wantSpan;
+        if (cls.fieldCount == bestCount && bestWanted && !wanted) continue;
         if (!prefixMatches(cls, nodes)) continue;
         best = cls.id;
         bestCount = cls.fieldCount;
+        bestWanted = wanted;
     }
     return best;
 }
@@ -258,7 +269,7 @@ void bronze_register_class_family(const uint32_t* classTable, uint32_t classCoun
     nextId() += classCount;
 }
 
-void bronze_family_stamp(uint64_t objBits) {
+void bronze_family_stamp(uint64_t objBits, uint64_t wantLo, uint64_t wantSpan) {
     recordHelperCall("bronze_family_stamp");
     // Census mode: leave every shape UNSTAMPED so the family-guarded static
     // sites keep missing into the ordinary IC sequence, whose helpers the
@@ -273,7 +284,7 @@ void bronze_family_stamp(uint64_t objBits) {
     if (shape == nullptr) return;
     AtomicRef<uint64_t> stampRef(shape->family_stamp);
     if (stampRef.load(std::memory_order_acquire) != BRONZE_ABI_FAMILY_UNSTAMPED) return;
-    uint64_t id = classFamilyIdFor(shape);
+    uint64_t id = classFamilyIdFor(shape, wantLo, wantSpan);
     uint64_t expected = BRONZE_ABI_FAMILY_UNSTAMPED;
     stampRef.compare_exchange_strong(expected, id, std::memory_order_acq_rel);
 }
