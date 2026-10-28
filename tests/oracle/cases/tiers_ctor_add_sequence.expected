@@ -1,0 +1,14 @@
+plain a=5999,b=11998,c=0,d=1.5,e=true,f=null
+setter a=5999,b=-5999,d=1.5,e=true,f=null proto-c 6000 0:ab
+setter gone a=5999,b=1,c=0,d=1.5,e=true,f=null
+read-only 100 TypeError
+read-only gone a=5999,b=2,c=0,d=1.5,e=true,f=null
+thrown boom 7 a=7,b=2,c=3
+lock 1 TypeError
+lock 2 TypeError
+mixed a=5998,b="base",c=0,d=1.5,e=true,f=null false; a=5999,b="sub",c=0,d=1.5,e=true,f=null,g=[5999],h="h" true; 
+reflect a=5999,b="r",c=0,d=1.5,e=true,f=null other true
+proxy a=5999,b="p",c=0,d=1.5,e=true,f=null
+getter a=5999,b="a:undefined",c=3,d="abc:3"
+wide 6 f0=5000,f1=[5000],f2=2,f3=3,f4=4,f5={"i":5000},f6=6,f7=7,f8=8,f9=9,f10=10,f11=11,f12=12,f13=13,f14=14,f15=15,f16=16,f17=17,f18=18,f19=19,f20=20,f21=21,f22=22,f23=23,f24=24,f25=25,f26=26,f27=27,f28=28,f29=29,f30=30,f31=31,f32=32,f33=33,f34=34,f35=35,f36=[36,5000],f37=37,f38="x5000",f39=39
+twice x=6000,y=-5999,z=0,w=1

@@ -22,7 +22,16 @@ constexpr uint32_t kPropertyColdMisses = 2;
 // megamorphic site, whose helper runs on most reads.
 constexpr uint32_t kPolyPropertyColdMisses = 2 * BRONZE_ABI_IC_WAYS;
 
-bool should_arm(uint8_t raw_kind, uint32_t misses) {
+// BRONZE_SPEC_ARM_KINDS=<mask>: the kinds armed (should_arm).
+uint32_t arm_kind_mask() {
+    static const uint32_t mask = [] {
+        const char* v = std::getenv("BRONZE_SPEC_ARM_KINDS");
+        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0xEu;
+    }();
+    return mask;
+}
+
+bool should_arm(uint8_t raw_kind, uint32_t misses, bool ran) {
     // BRONZE_SPEC_ARM_KINDS=<mask>: arm only the kinds whose bit is set (1
     // arith, 2 property, 4 call target, 8 poly property), the per-kind A/B.
     // Arith sites are not armed by default. Arming them once cost nbody time
@@ -34,12 +43,10 @@ bool should_arm(uint8_t raw_kind, uint32_t misses) {
     // slow path never ran is armed whether or not it ran at all, so an OSR
     // copy of a top-level script arms the arithmetic after its loop, which
     // then deopts on its first string `+` (cpu_work's strings phase, 47 ms
-    // to 70). Arming it needs a "ran" signal the fast path does not give.
-    static const uint32_t kind_mask = [] {
-        const char* v = std::getenv("BRONZE_SPEC_ARM_KINDS");
-        return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0xEu;
-    }();
-    if ((kind_mask & (1u << raw_kind)) == 0) return false;
+    // to 70). An armed arith site now records that it ran (`ran`, a flag
+    // the lower tiers set each time it is reached; make_spec_feedback), and
+    // one that never ran keeps its branch.
+    if ((arm_kind_mask() & (1u << raw_kind)) == 0) return false;
     // A property site's inline cache starts empty, so its first run misses:
     // one with no misses has never run, and says nothing about the shapes
     // it will see. Armed, its first run fails the guard, and the frame
@@ -47,7 +54,7 @@ bool should_arm(uint8_t raw_kind, uint32_t misses) {
     // OSR'd before the code after it ran lost its whole OSR entry that way.
     // Left a branch, its first run takes the slow path and carries on.
     switch (static_cast<SpecKind>(raw_kind)) {
-        case SpecKind::Arith:
+        case SpecKind::Arith: return ran && misses == 0;
         case SpecKind::CallTarget: return misses == 0;
         case SpecKind::Property: return misses != 0 && misses <= kPropertyColdMisses;
         case SpecKind::PolyProperty: return misses != 0 && misses <= kPolyPropertyColdMisses;
@@ -58,7 +65,12 @@ bool should_arm(uint8_t raw_kind, uint32_t misses) {
 } // namespace
 
 std::shared_ptr<SpecFeedback> make_spec_feedback() {
-    return std::make_shared<SpecFeedback>(&should_arm);
+    auto feedback = std::make_shared<SpecFeedback>(&should_arm);
+    // The ran flag is a store on every run of the site in the lower tiers,
+    // paid only where arith sites are armed at all.
+    const uint32_t arith = 1u << static_cast<uint32_t>(SpecKind::Arith);
+    if (arm_kind_mask() & arith) feedback->set_ran_kinds(arith);
+    return feedback;
 }
 
 void SpecSiteEmitter::begin_function(bool can_deopt, std::string_view name) {

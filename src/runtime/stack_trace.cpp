@@ -148,7 +148,7 @@ std::vector<InterpretedFrame> interpretedFrames() {
     return out;
 }
 
-static inline void get_stack_bounds(uintptr_t& low, uintptr_t& high) {
+static void query_stack_bounds(uintptr_t& low, uintptr_t& high) {
 #if defined(_WIN32)
     NT_TIB* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
     if (tib) {
@@ -197,13 +197,41 @@ static inline void get_stack_bounds(uintptr_t& low, uintptr_t& high) {
     high = UINTPTR_MAX;
 }
 
-bool lookupProp(ObjectHeader* obj, const std::string& keyStr, Value& out) {
+// A thread's stack does not move, and asking for it is not cheap: glibc
+// answers pthread_getattr_np for the main thread by reading /proc/self/maps
+// line by line, which was a file read per Error created. Asked once per
+// thread.
+static void get_stack_bounds(uintptr_t& low, uintptr_t& high) {
+    thread_local uintptr_t t_low = 0;
+    thread_local uintptr_t t_high = 0;
+    thread_local bool t_known = false;
+    if (!t_known) {
+        query_stack_bounds(t_low, t_high);
+        t_known = true;
+    }
+    low = t_low;
+    high = t_high;
+}
+
+// Whether a key's text is `ascii`, compared in place: converting every key
+// on the chain to UTF-8 to compare it was an allocation per key per Error.
+bool keyIs(const StringHeader* key, std::string_view ascii) {
+    if (key->getLength() != ascii.size()) return false;
+    if (key->isLatin1()) return std::memcmp(key->latin1Data(), ascii.data(), ascii.size()) == 0;
+    const uint16_t* units = key->utf16Data();
+    for (size_t i = 0; i < ascii.size(); ++i) {
+        if (units[i] != static_cast<unsigned char>(ascii[i])) return false;
+    }
+    return true;
+}
+
+bool lookupProp(ObjectHeader* obj, std::string_view keyStr, Value& out) {
     for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
         ObjectHeader* cur = depth == 0 ? obj : obj->protoAncestor(depth);
         if (!cur) return false;
         if (!cur->shape) continue;
         for (PropertyKey k : cur->shape->ownKeysInInsertionOrder()) {
-            if (k.isString() && rtUtf8Chars(k.string()) == keyStr) {
+            if (k.isString() && keyIs(k.string(), keyStr)) {
                 PropertyInfo info;
                 if (cur->shape->lookupProperty(k, info) && !info.accessor) {
                     out = cur->getSlot(info.slot);
@@ -224,7 +252,7 @@ uint32_t getStackTraceLimit() {
     ObjectHeader* props = fn->properties.asObject<ObjectHeader>();
     if (!props->shape) return 10;
     for (PropertyKey k : props->shape->ownKeysInInsertionOrder()) {
-        if (k.isString() && rtUtf8Chars(k.string()) == "stackTraceLimit") {
+        if (k.isString() && keyIs(k.string(), "stackTraceLimit")) {
             PropertyInfo info;
             if (props->shape->lookupProperty(k, info) && !info.accessor) {
                 Value limitVal = props->getSlot(info.slot);
@@ -485,6 +513,10 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
     // above. dladdr cannot: it knows dynamic symbols only, and the shared
     // runtime exports the ABI and nothing else, so it would name the nearest
     // export before the pc rather than the builtin itself.
+    // Rows found by earlier walks are reused while no unwind information
+    // has changed (native_unwind.hpp): an Error's frames are mostly the
+    // ones the last Error saw.
+    brass::UnwindRowCacheScope row_cache;
     brass::NativeUnwindFrame cur;
     bool have = brass::brass_capture_frame(cur, 0);
     while (have && !done()) {
@@ -510,7 +542,8 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
             }
         }
 #else
-        } else if (void* fnBegin = _Unwind_FindEnclosingFunction(call_pc)) {
+        } else if (void* fnBegin = reinterpret_cast<void*>(
+                       brass::brass_function_start(reinterpret_cast<uintptr_t>(call_pc)))) {
             const char* builtinName = rtGetNativeDisplayName(fnBegin);
             if (builtinName) {
                 frames.push_back({nullptr, 0, 0, nullptr, builtinName});

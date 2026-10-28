@@ -47,12 +47,27 @@ const KeyInfo g_emptyKeyInfo{};
 
 thread_local std::vector<StringHeader*> g_keyHeaders;
 thread_local std::vector<const KeyInfo*> g_threadKeyInfos;
+// Each thread's copy of the strings' addresses, as for the infos: a key's
+// string never changes or moves once registered (a deque grows without
+// moving its elements), and the lock was a contended mutex on every property
+// write the helper answers (the miss path asks for the string up front).
+thread_local std::vector<const std::string*> g_threadKeyStrings;
 
 }  // namespace
 
 const std::string& rtKeyString(uint32_t index) {
+    if (index < g_threadKeyStrings.size()) {
+        const std::string* cached = g_threadKeyStrings[index];
+        if (cached != nullptr) return *cached;
+    }
     std::lock_guard<std::mutex> lock(g_keyMutex);
-    return index < g_keyStrings.size() ? g_keyStrings[index] : g_emptyKey;
+    if (index >= g_keyStrings.size()) return g_emptyKey;
+    const std::string* ptr = &g_keyStrings[index];
+    if (index >= g_threadKeyStrings.size()) {
+        g_threadKeyStrings.resize(index + 1, nullptr);
+    }
+    g_threadKeyStrings[index] = ptr;
+    return *ptr;
 }
 
 StringHeader* rtKeyHeader(uint32_t index) {
@@ -98,6 +113,8 @@ void rtTeardownThreadKeys() {
     g_keyHeaders.shrink_to_fit();
     g_threadKeyInfos.clear();
     g_threadKeyInfos.shrink_to_fit();
+    g_threadKeyStrings.clear();
+    g_threadKeyStrings.shrink_to_fit();
 }
 
 extern "C" {

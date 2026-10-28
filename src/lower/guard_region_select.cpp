@@ -354,6 +354,30 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     // guards have to have taken effect by.
     std::vector<std::vector<std::pair<il::BlockId, uint32_t>>> promotedUses(fn.valueCount);
     uint32_t useCount = 0;
+    // An entry region's guard runs once, as each coercion it answers would:
+    // a coercion whose number is only boxed again (`this.id = id` for a
+    // parameter typed number) is the same tag test either way and the same
+    // box after it, so it buys the copy nothing and does not count toward the
+    // floor. Without this a constructor of such stores was duplicated whole,
+    // each of its property adds emitted twice.
+    std::vector<uint8_t> numericUse;
+    if (plan.entryRegion) {
+        numericUse.assign(fn.valueCount, 0);
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op != il::Op::Box) {
+                    for (il::ValueId id : inst.operands) {
+                        if (id < fn.valueCount) numericUse[id] = 1;
+                    }
+                }
+                for (const il::BlockTarget* target : {&inst.target, &inst.elseTarget}) {
+                    for (il::ValueId id : target->args) {
+                        if (id < fn.valueCount) numericUse[id] = 1;
+                    }
+                }
+            }
+        }
+    }
     for (il::BlockId b : plan.blocks) {
         const auto& block = fn.blocks[b];
         for (size_t i = 0; i < block.instructions.size(); ++i) {
@@ -363,7 +387,8 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
                 ++useCount;
                 for (il::ValueId id : inst.operands) promotedUses[id].push_back(here);
             } else if (isCheckedUnboxOf(inst, types) && plan.isCandidate[inst.operands[0]]) {
-                ++useCount;
+                const bool reboxedOnly = plan.entryRegion && inst.result < fn.valueCount && !numericUse[inst.result];
+                if (!reboxedOnly) ++useCount;
                 promotedUses[inst.operands[0]].push_back(here);
             }
             for (const il::BlockTarget* target : {&inst.target, &inst.elseTarget}) {

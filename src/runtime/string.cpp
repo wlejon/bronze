@@ -153,6 +153,16 @@ StringHeader* StringHeader::createFromUTF8(Heap& heap, const char* str, uint32_t
     if (!str || utf8_len == 0) {
         return createLatin1(heap, "", 0);
     }
+    // ASCII is its own Latin-1: one scan and a copy, not two decoding
+    // passes (an Error's stack text is a few hundred ASCII bytes).
+    bool ascii = true;
+    for (uint32_t i = 0; i < utf8_len; ++i) {
+        if (static_cast<unsigned char>(str[i]) >= 0x80) {
+            ascii = false;
+            break;
+        }
+    }
+    if (ascii) return createLatin1(heap, str, utf8_len);
     return decodeUTF8(
         str, utf8_len, /*surrogates=*/true, [&](uint32_t n) { return createLatin1(heap, nullptr, n); },
         [&](uint32_t n) { return createUTF16(heap, nullptr, n); });

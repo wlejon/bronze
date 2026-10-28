@@ -1,0 +1,10 @@
+gone make@19:29 < viaHelper@20:34 < <top>@24:15
+twice true Error: early
+limit3 deep@32:37 < deep@32:57 < deep@32:57
+limit1 deep@32:37
+limit0 "Error: deep"
+default deep@32:37 < deep@32:57 < deep@32:57 < deep@32:57 < <top>@44:31
+map mapper@47:53 < at Array.map (<anonymous>) < <top>@47:21
+hot 7500 Leaf.make@53:20 < Branch.grow@57:30 < hot@59:31 < <top>@63:29
+hot 22500 make@19:29 < viaHelper@20:34 < <top>@63:41
+capture capturer@71:29 < <top>@72:1
