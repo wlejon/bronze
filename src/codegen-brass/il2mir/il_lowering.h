@@ -57,6 +57,14 @@ public:
                    : nullptr;
     }
     BasicBlock* entry_hoist_block() const { return hoist_block_; }
+    // Whether the function being lowered is a class constructor's body
+    // (BRONZE_ABI_FN_FLAG_CLASS_CTOR), whose writes to `this` add properties.
+    bool in_class_constructor() const {
+        const BronzeFunction* f = current_fn_ast();
+        if (!f) return false;
+        const auto it = options_.function_meta.find(f->name);
+        return it != options_.function_meta.end() && (it->second.fn_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0;
+    }
     // The key index IL value `id` was read with, if a `prop.get` of a named
     // key made it in the current function (a builtin read into a local, then
     // called through it).

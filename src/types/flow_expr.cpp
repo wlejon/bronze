@@ -214,6 +214,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // program-wide pristine bit, not the attributes.
         if (!m->optional && isPristineMathBase(*m->object) &&
             isMathValueProperty(m->property)) {
+            if (record_) mod_.result->pristineMathConstants.insert(&e);
             return Type::number();
         }
         if (!m->optional && !m->isPrivate) {

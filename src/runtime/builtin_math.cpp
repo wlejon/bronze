@@ -492,8 +492,14 @@ Value rtMathObject() {
     for (const MathConst& c : kMathConstants) {
         Rooted<Value> key{rtMakeString(c.name)};
         Rooted<Value> val{Value::fromDouble(c.value)};
+        // 21.3.1: every value property of Math is { [[Writable]]: false,
+        // [[Enumerable]]: false, [[Configurable]]: false }. Compiled code
+        // folds a pristine `Math.PI` to its double (types/math_builtins.h),
+        // and these attributes are what make that true however Math is reached.
         obj.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                    /*enumerable=*/false, /*defineOwn=*/true);
+                                                    /*enumerable=*/false, /*defineOwn=*/true,
+                                                    /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                    /*writable=*/false, /*configurable=*/false);
     }
 
     // 21.3.1.9: `Math[@@toStringTag]` is the string "Math", which is what makes

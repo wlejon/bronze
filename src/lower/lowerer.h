@@ -158,6 +158,8 @@ private:
     bool monomorphicPropSite(const ast::Expr& receiver) const;
     bool functionBindingReceiver(const ast::Expr& receiver, uint32_t keyIndex) const;
     bool pristineMathCall(const ast::Expr& call) const;
+    // `Math.PI` and the other 21.3.1 constants on the proven builtin: their value.
+    std::optional<double> pristineMathConstant(const ast::MemberAccess& mem) const;
     // The `Math` member a call through a `const` alias of it reaches
     // (`const cos = Math.cos; cos(x)`), or null.
     const std::string* pristineMathAliasCall(const ast::Expr& call) const;

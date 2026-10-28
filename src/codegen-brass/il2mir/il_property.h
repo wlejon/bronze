@@ -92,8 +92,10 @@ public:
     // whose slot word names an own data slot with no flag (not an accessor,
     // not an f64 slot), stores the value there, inline or overflow, with the
     // write barrier for a reference. Requires a real site.
+    // `with_transition` adds, on the miss, the inline shape-transition store
+    // (emit_transition_arm) ahead of the helper.
     void lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm,
-                             const IcSite& site, bool val_is_primitive = false);
+                             const IcSite& site, bool val_is_primitive = false, bool with_transition = false);
 
     // Tier 2's expansion of a kPolyScanHelper call: the scan inline, as
     // straight-line code at the builder's position. `hit` is whether a way
@@ -203,6 +205,8 @@ public:
     // The base a slot is read at: base + slot_word * 8 +
     // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
     Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
+    void emit_transition_arm(Builder& b, Value* ptr, Value* shape, Value* plain, const IcSite& site, Value* val,
+                             bool need_barrier, BasicBlock* done, const std::string& prefix);
     // Monomorphic way-0 guard on a pre-computed receiver shape: checks that
     // `plain` holds, `shape` matches way 0 of `site`, and its slot word is an
     // own data slot.

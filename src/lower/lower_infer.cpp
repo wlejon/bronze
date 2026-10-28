@@ -19,6 +19,7 @@
 #include "abi/bronze_global_statics.h"
 #include "ast/query_walk.h"
 #include "lower/lowerer.h"
+#include "types/math_builtins.h"
 
 namespace bronze::lower {
 
@@ -88,6 +89,13 @@ bool Lowerer::provenNumber(const ast::Expr& expr) const {
 bool Lowerer::pristineMathCall(const ast::Expr& call) const {
     if (inference_ == nullptr) return false;
     return inference_->pristineMathCalls.count(&inferenceExpr(call)) != 0;
+}
+
+std::optional<double> Lowerer::pristineMathConstant(const ast::MemberAccess& mem) const {
+    if (inference_ == nullptr || inference_->pristineMathConstants.count(&inferenceExpr(mem)) == 0) {
+        return std::nullopt;
+    }
+    return types::mathValueProperty(mem.property);
 }
 
 namespace {

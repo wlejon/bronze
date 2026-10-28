@@ -20,6 +20,10 @@ constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+// The whole header word of a plain object with no internal slots: the kind
+// word above, and its size, BRONZE_ABI_PLAIN_OBJECT_BYTES, in the high half.
+constexpr int64_t kBarePlainHeader =
+    (int64_t{BRONZE_ABI_PLAIN_OBJECT_BYTES} << (8 * BRONZE_ABI_HDR_SIZE_OFFSET)) | kPlainHeaderLow;
 
 // A non-object's header and shape words, for a module that runs in this
 // process: the zeroed block's header is no object's, so its reads refuse
@@ -303,8 +307,116 @@ void PropertyLoweringHelper::expand_poly_scan(Builder& b, Instruction* call, Val
     other_ways_hit(b, plain, shape, IcSite{entry, 0}, hit, slot_word);
 }
 
+// The shape-transition hit, inline: the receiver is one property short of the
+// shape the site's way 0 names, and that property is the site's key — a
+// constructor's `this.x = x` on every `new` after the first. It is the
+// runtime's own transition hit (ObjectHeader::setProp) asked in generated
+// code, guard for guard, so the two cannot disagree about which receivers may
+// take it:
+//  - a plain object with no internal slots: the full header word, size
+//    included. A String wrapper is a plain object with internal slots, and
+//    the helper refuses its `length` and index writes before setProp is ever
+//    reached; the size keeps every such kind on the helper.
+//  - way 0 names a real shape whose parent is the receiver's shape (one add
+//    above it, on the same chain, so the receiver is not in dictionary mode —
+//    frozen, sealed and non-extensible objects all are — and its shape is not
+//    a dictionary either, asked directly as the runtime does);
+//  - the cached shape's own node is the slot the entry names (slots are unique
+//    along a chain, so this is the key identity), a plain data property
+//    (enumerable, writable, configurable, no accessor), and the slot word has
+//    no flag (depth 0, not an f64 slot);
+//  - the receiver's shape is not a prototype's (an add to one must bump the
+//    epoch, the helper's job), and the entry's epoch is the thread's: no setter
+//    or read-only property has appeared on the chain since the fill proved
+//    there was none, and no prototype has been swapped;
+//  - the slot is addressable without allocating: an inline slot, or one the
+//    overflow block already has room for. Growing the block allocates, which
+//    can move the object, so that add stays the helper's.
+// Nothing here allocates or calls out before the stores, so `ptr` stays the
+// object's address throughout. The builder enters in the miss block and leaves
+// in the block that must call the helper; a transition branches to `done`.
+void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* shape, Value* plain,
+                                                 const IcSite& site, Value* val, bool need_barrier,
+                                                 BasicBlock* done, const std::string& prefix) {
+    BasicBlock* bb_miss = b.current_block();
+    BasicBlock* bb_node = b.append_block(prefix + "_tr_node");
+    BasicBlock* bb_room = b.append_block(prefix + "_tr_room");
+    BasicBlock* bb_store = b.append_block(prefix + "_tr_store");
+    BasicBlock* bb_barrier = need_barrier ? b.append_block(prefix + "_tr_barrier") : nullptr;
+    BasicBlock* bb_helper = b.append_block(prefix + "_tr_miss");
+
+    b.position_at_end(bb_miss);
+    Value* cached = b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset);
+    Value* slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
+    // Zero is an unfilled entry and 1 the array-method sentinel (only a read
+    // site holds it, but a pointer is above both either way).
+    Value* real = b.build_ugt(cached, b.build_iconst_i64(BRONZE_ABI_IC_SHAPE_ARRAY_METHOD));
+    Value* no_flag = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
+    b.build_br_if(b.build_and(plain, b.build_and(real, no_flag)), bb_node, bb_helper);
+
+    b.position_at_end(bb_node);
+    Value* header = b.build_load(Type::i64(), ptr, 0);
+    Value* is_bare = b.build_eq(header, b.build_iconst_i64(kBarePlainHeader));
+    Value* is_child = b.build_eq(b.build_load(Type::i64(), cached, BRONZE_ABI_SHAPE_PARENT_OFFSET), shape);
+    Value* own_slot = b.build_eq(
+        b.build_zext_i64(b.build_load(Type::i32(), cached, BRONZE_ABI_SHAPE_SLOTINDEX_OFFSET)), slot_word);
+    Value* plain_data = b.build_eq(b.build_load(Type::i32(), cached, BRONZE_ABI_SHAPE_ATTRS_OFFSET),
+                                   b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_SHAPE_ATTRS_PLAIN_DATA)));
+    Value* not_dict = b.build_eq(b.build_load(Type::i64(), shape, BRONZE_ABI_SHAPE_DICT_OFFSET),
+                                 b.build_iconst_i64(0));
+    Value* not_proto = b.build_eq(b.build_zext_i64(b.build_load(Type::i8(), shape, BRONZE_ABI_SHAPE_USEDPROTO_OFFSET)),
+                                  b.build_iconst_i64(0));
+    Module* mod = b.current_block()->parent()->parent();
+    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+    Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), site.base, site.off + BRONZE_ABI_IC_EPOCH_OFFSET),
+                                 b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+    Value* node_ok = b.build_and(b.build_and(b.build_and(is_bare, is_child), b.build_and(own_slot, plain_data)),
+                                 b.build_and(b.build_and(not_dict, not_proto), epoch_ok));
+    b.build_br_if(node_ok, bb_room, bb_helper);
+
+    // Room: an inline slot always has it; an overflow slot needs a block (the
+    // word is an object-tagged pointer, else undefined) whose capacity, read
+    // off its header's size exactly as ObjectHeader::overflowCapacity does,
+    // reaches the slot. A word that is no block reads the object's own header
+    // instead, and the select throws that answer away.
+    b.position_at_end(bb_room);
+    Value* is_inline = b.build_ult(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots));
+    Value* overflow = b.build_load(Type::i64(), ptr, kBronzeObjOverflowOffset);
+    Value* block = b.build_xor(overflow, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    Value* has_block = b.build_ult(block, b.build_iconst_i64(kPayloadLimit));
+    Value* block_base = b.build_select(has_block, block, ptr);
+    Value* size = b.build_zext_i64(b.build_load(Type::i32(), block_base, BRONZE_ABI_HDR_SIZE_OFFSET));
+    Value* capacity = b.build_lshr(b.build_sub(size, b.build_iconst_i64(BRONZE_ABI_HDR_BYTES)),
+                                   b.build_iconst_i64(3));
+    Value* fits = b.build_and(has_block, b.build_ult(b.build_sub(slot_word, b.build_iconst_i64(kBronzeObjInlineSlots)),
+                                                     capacity));
+    b.build_br_if(b.build_or(is_inline, fits), bb_store, bb_helper);
+
+    // The shape first, then the value: the new slot is already `undefined`
+    // (an object's inline slots and an overflow block's unused ones are
+    // filled when allocated), and the barrier, which comes last as it does on
+    // every slot store, sees the object at its final shape.
+    b.position_at_end(bb_store);
+    b.build_store(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, cached);
+    Value* base = slot_base(b, ptr, slot_word);
+    Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
+                                   b.build_iconst_i64(kBronzeObjSlotsOffset));
+    b.build_store(Type::i64(), slot_addr, 0, val);
+    if (need_barrier) {
+        Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+        b.build_br_if(is_ref, bb_barrier, done);
+        b.position_at_end(bb_barrier);
+        b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+    }
+    b.build_br(done);
+
+    b.position_at_end(bb_helper);
+}
+
 void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val,
-                                                 uint32_t imm, const IcSite& site, bool val_is_primitive) {
+                                                 uint32_t imm, const IcSite& site, bool val_is_primitive,
+                                                 bool with_transition) {
     const bool compact = small_forms_ && in_process_ && spec_ && spec_->has_feedback();
     const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
     BasicBlock* bb_current = b.current_block();
@@ -319,7 +431,10 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     Value* hit = nullptr;
     Value* ptr = nullptr;
     Value* slot_word = nullptr;
-    mono_hit(b, obj, site, hit, ptr, slot_word);
+    Value* plain = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, plain, ptr, shape);
+    emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
     Value* counter = nullptr;
     if (spec_) {
         // A write's tag is its key after '=', apart from the reads of it.
@@ -329,6 +444,7 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
         b.build_br_if(hit, bb_fast, bb_slow);
         b.position_at_end(bb_slow);
     }
+    if (with_transition) emit_transition_arm(b, ptr, shape, plain, site, val, need_barrier, bb_merge, prefix);
     if (compact) {
         b.build_call("bronze_prop_set_counted", Type::void_type(),
                      {obj, runtime_key(b, key_index), val, site_ptr(b, site), b.build_iconst_i32(imm != 0 ? 1 : 0),

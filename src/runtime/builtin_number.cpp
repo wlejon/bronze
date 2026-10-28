@@ -597,8 +597,12 @@ void rtInstallNumberStatics(Rooted<Value>& fn) {
     for (const NamespaceConst& c : kNumberConstants) {
         Rooted<Value> key{rtMakeString(c.name)};
         Rooted<Value> val{Value::fromDouble(c.value)};
+        // 21.1.2: every value property of Number is { [[Writable]]: false,
+        // [[Enumerable]]: false, [[Configurable]]: false }.
         props.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val, nullptr,
-                                                      /*enumerable=*/false, /*defineOwn=*/true);
+                                                      /*enumerable=*/false, /*defineOwn=*/true,
+                                                      /*receiver=*/nullptr, /*refused=*/nullptr,
+                                                      /*writable=*/false, /*configurable=*/false);
     }
 }
 

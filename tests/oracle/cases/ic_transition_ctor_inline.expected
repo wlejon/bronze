@@ -1,0 +1,25 @@
+99 49.5 148.5 x,y,z
+7 8 39 7
+225415
+v proto 5
+v,w 6
+TypeError
+2
+chain setter 2
+k undefined
+trap p 1
+trap r 2
+10 20
+trap p 1
+trap r 2
+10 20
+1 TypeError
+2 TypeError
+3 {"b":2,"a":3} true
+0 {"a":3,"b":2} true
+1 2 0
+9
+3 a true
+TypeError 3 2 abc
+{"m":1,"n":2}:2 {"m":1,"n":2,"o":3}:2 {"m":1,"_n":2}:getter
+{"q":1,"_h":105} {"q":1,"h":5}

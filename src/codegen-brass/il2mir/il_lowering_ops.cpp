@@ -354,15 +354,27 @@ bool lower_ops_instruction(
             Value* op0 = get_opd(0);
             if (!op0) return false;
             op0 = lowering->ensure_type(op0, Type::f64(), b);
-            std::string_view fn = "sqrt";
+            // sqrt, abs, floor and ceil are single instructions with exactly
+            // the IEEE results ECMA-262 asks for (-0, NaN and the infinities
+            // included), so they need no libm call: in the N-body kernel the
+            // call to glibc's sqrt was an eighth of the time.
             switch (inst_ast.imm_i64) {
-                case 0: fn = "sqrt"; break;
-                case 1: fn = "fabs"; break;
-                case 2: fn = "floor"; break;
-                case 3: fn = "ceil"; break;
+                case 0: res_val = b.build_sqrt_f64(op0); return true;
+                case 1: res_val = b.build_fabs_f64(op0); return true;
+                case 2: res_val = b.build_floor_f64(op0); return true;
+                case 3: res_val = b.build_ceil_f64(op0); return true;
+                default: break;
+            }
+            // sin and cos are the runtime's kernels, the ones Math.sin and
+            // Math.cos answer with (brass's deterministic fdlibm, which is
+            // node's to the bit). The platform libm's answer differs in the
+            // last place for a few inputs in a hundred, so a program whose
+            // inline call took it printed what its own `Math.sin` did not.
+            std::string_view fn = "trunc";
+            switch (inst_ast.imm_i64) {
                 case 4: fn = "trunc"; break;
-                case 5: fn = "sin"; break;
-                case 6: fn = "cos"; break;
+                case 5: fn = "bronze_math_sin_f64"; break;
+                case 6: fn = "bronze_math_cos_f64"; break;
                 default: break;
             }
             res_val = b.build_call(fn, Type::f64(), {op0});

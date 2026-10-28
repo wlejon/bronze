@@ -451,6 +451,18 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
         }
     }
 
+    // Nothing to evaluate: the base is the builtin Math, whose read has no
+    // effect, and the property is a constant that cannot change.
+    if (const std::optional<double> k = pristineMathConstant(*mem)) {
+        il::Instruction inst;
+        inst.op = il::Op::ConstF64;
+        inst.type = il::Type::F64;
+        inst.result = ilFn.valueCount++;
+        inst.immF64 = *k;
+        emitInst(ilFn, inst);
+        return Value{inst.result, il::Type::F64};
+    }
+
     auto objVal = lowerChainBase(*mem->object, ilFn, onSpine);
     if (!objVal) return std::nullopt;
     auto objBoxed = boxValueIfNeeded(*objVal, ilFn);

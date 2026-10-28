@@ -138,6 +138,17 @@ bool is_buffer_safe_function(const BronzeFunction& fn_ast,
     return true;
 }
 
+// Whether `id` is the result of an environment or module-binding read.
+bool defined_by_binding_read(const BronzeFunction& fn_ast, uint32_t id) {
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.result_id != id) continue;
+            return inst.op == BronzeOp::EnvGet || inst.op == BronzeOp::ModuleEnvGet;
+        }
+    }
+    return false;
+}
+
 bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
                              const std::unordered_map<uint32_t, Value*>& val_map,
                              Value*& out_data, Value*& out_len) {
@@ -187,7 +198,14 @@ bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
     if (construct_ta_ids.size() > (construct_ta_ids.count(obj_id) != 0 ? 1u : 0u)) return false;
     const bool is_construct =
         raw_obj->is_instruction() && fn_safe && construct_ta_ids.count(obj_id) != 0;
-    if (!is_fn_param && !is_construct) return false;
+    // A captured or module binding read once (the N-body kernel's `pos`, `vel`
+    // and `acc`, closed over by the function that loops on them): the read is
+    // an SSA value, so it names one array for the whole function, and nothing
+    // in a buffer-safe function can store to the binding or run code that
+    // would. Like a construction, the cursor follows the read itself.
+    const bool is_binding_read = raw_obj->is_instruction() && fn_safe &&
+                                 defined_by_binding_read(*fn_ast, obj_id);
+    if (!is_fn_param && !is_construct && !is_binding_read) return false;
 
     BasicBlock* resume_bb = b.current_block();
     const DebugLoc saved_loc = b.current_loc();
@@ -543,15 +561,23 @@ bool lower_property_instruction(
                     return true;
                 }
             }
-            // The same sites the read inlines (see PropGet), less the writes
-            // to an object this function just created: those add a property
-            // (a shape transition), which the inline store never does.
-            const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
-            if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
+            // The same sites the read inlines (see PropGet) get the inline
+            // own-slot store, less the writes to an object this function just
+            // created. Every write in a class constructor (`this.x = x`) gets
+            // it with the inline shape transition on its miss, which is what
+            // answers those adds on every construction after the first. The
+            // arm is code at every site it is put at: at every write, and at
+            // the literals' adds too, three.js grew by a sixth and its scene
+            // graph ran slower for the instruction cache it took.
+            const bool mono = (inst_ast.is_mono || prop_lowering.feedback_driven()) &&
+                              !lowering->is_fresh_object(inst_ast.operands[0]);
+            const bool adds = lowering->in_class_constructor();
+            if (site && (mono || adds) && prop_lowering.enable_inlined_fastpaths() &&
                 prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
-                !lowering->run_once() && !lowering->is_fresh_object(inst_ast.operands[0])) {
+                !lowering->run_once()) {
                 const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
-                prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site, val_prim);
+                prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site, val_prim,
+                                                  /*with_transition=*/adds);
                 return true;
             }
             prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
