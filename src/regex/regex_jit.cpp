@@ -4,9 +4,11 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -800,10 +802,19 @@ struct SharedRegexJitKernels {
 
     SharedRegexJitKernels() {
         mod = RegexJitPlan::buildMirModule();
-        RegexJitPlan::optimizeMirModule(*mod, &guard_stats, &superopt_stats);
+        // The SMT passes prove away one redundant UTF-16 mask and cost some
+        // 200 ms of solver time, in every process that compiles a regex and
+        // again at its exit, which joins this thread. They run here only
+        // when asked, as in the module backend (brass_backend.cpp);
+        // regex_jit_test proves what they would elide either way.
+        const char* smtOpt = std::getenv("BRONZE_SMT_OPT");
+        const bool smtOptEnabled = smtOpt && std::string_view(smtOpt) == "1";
+        if (smtOptEnabled) RegexJitPlan::optimizeMirModule(*mod, &guard_stats, &superopt_stats);
 
         brass::codegen::KernelOptions kopts;
         kopts.enable_optimizations = true;
+        kopts.enable_smt_guard_elim = smtOptEnabled;
+        kopts.enable_superopt = smtOptEnabled;
         kopts.enable_unroll = false;
         kopts.enable_vectorize = false;
         jit = std::make_unique<brass::codegen::KernelJit>(kopts);
