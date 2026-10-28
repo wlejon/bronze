@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdio>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -442,10 +443,12 @@ TEST_CASE("synth-tests: symbolic path-covering and hazard-reproducing test synth
 }
 
 TEST_CASE("CLI file entry points: runProveEquiv, runDeterministicCheckFile, and runSynthTests") {
-    const std::string oldFile = "/tmp/bronze_prove_old_test.js";
-    const std::string newFile = "/tmp/bronze_prove_new_test.js";
-    const std::string badFile = "/tmp/bronze_prove_bad_test.js";
-    const std::string outTestFile = "/tmp/bronze_synth_out_test.js";
+    // (The system's temp directory: there is no /tmp on Windows.)
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path();
+    const std::string oldFile = (tmp / "bronze_prove_old_test.js").string();
+    const std::string newFile = (tmp / "bronze_prove_new_test.js").string();
+    const std::string badFile = (tmp / "bronze_prove_bad_test.js").string();
+    const std::string outTestFile = (tmp / "bronze_synth_out_test.js").string();
 
     {
         FILE* f = std::fopen(oldFile.c_str(), "wb");
