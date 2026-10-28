@@ -662,10 +662,7 @@ std::vector<FunctionEffects> computeModuleEffects(
         for (const auto& blk : fn.blocks) {
             for (const auto& inst : blk.instructions) {
                 if (inst.op == il::Op::PropSet) {
-                    const bool isAcc = inst.keyIndex < isAccessorKey.size() &&
-                                       isAccessorKey[inst.keyIndex] &&
-                                       !(protoPatchFree &&
-                                         inst.staticSlot != il::Instruction::kNoStaticSlot);
+                    const bool isAcc = keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree);
                     bool isFreshCtorThis = false;
                     if (isCtor && !inst.operands.empty()) {
                         const il::ValueId t = inst.operands[0];
@@ -839,10 +836,7 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
     switch (inst.op) {
         case il::Op::PropSet: {
             if (inst.operands.empty()) return true;
-            const bool isAcc = inst.keyIndex < isAccessorKey.size() &&
-                               isAccessorKey[inst.keyIndex] &&
-                               !(protoPatchFree &&
-                                 inst.staticSlot != il::Instruction::kNoStaticSlot);
+            const bool isAcc = keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree);
             if (isAcc) return true;
             if (keyIndex == lengthKeyIndex) {
                 if (inst.staticSlot == il::Instruction::kNoStaticSlot &&
@@ -970,11 +964,9 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
 
         // A read of an accessor key is a call to the getter.
         case il::Op::PropGet:
+            if (keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree)) return true;
             if (protoPatchFree && inst.staticSlot != il::Instruction::kNoStaticSlot) {
                 return false;
-            }
-            if (inst.keyIndex < isAccessorKey.size() && isAccessorKey[inst.keyIndex]) {
-                return true;
             }
             if (keyIndex == lengthKeyIndex &&
                 (inst.operands.empty() || inst.operands[0] != recv ||

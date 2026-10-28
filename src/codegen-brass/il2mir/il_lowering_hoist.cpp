@@ -221,6 +221,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
     hole_insensitive_ids_.clear();
     unrooted_hole_insensitive_ids_.clear();
     primitive_value_ids_.clear();
+    number_value_ids_.clear();
     current_fn_dynamic_ids_.clear();
     block_dense_proofs_.clear();
     active_dense_arrays_.clear();
@@ -269,6 +270,9 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
             if (inst.result_id != UINT32_MAX) {
                 if (is_primitive_result(inst, primitive_value_ids_)) {
                     primitive_value_ids_.insert(inst.result_id);
+                }
+                if (inst.op == BronzeOp::Box && inst.box_type == BronzeType::F64) {
+                    number_value_ids_.insert(inst.result_id);
                 }
                 if (inst.op == BronzeOp::PropGet && inst.index != PropertyLoweringHelper::kNoKey) {
                     prop_get_keys_.emplace(inst.result_id, inst.index);

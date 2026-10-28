@@ -247,7 +247,110 @@ constexpr uint64_t kMaxInlineDispIndex = (uint64_t{INT32_MAX} - kBronzeHdrBytes)
 
 Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<int64_t>(v)); }
 
+// A read's ordinary sequence: the `length` arms, the way-0 inline cache for
+// the sites that get one, else the helper. A static site's guard misses into
+// this.
+Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
+                             const IcSite& site) {
+    PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    // A site the IL calls monomorphic gets the way-0 guard-and-load
+    // in front of the helper: one compare against the most recently
+    // installed shape (the helper fills move-to-front), never a
+    // chain over the other ways. Every site could carry it — the
+    // guard is correct for any receiver — but each one is a merge
+    // GVN-PRE re-walks the function for, and on three.js putting it
+    // at every read doubled the optimized compile for a gain the
+    // `mono` sites alone already deliver. A program that runs under
+    // the tiered pipeline with speculation feedback inlines every
+    // site: its misses, not inference, decide what tier 2 keeps, and
+    // only hot functions are optimized at all. Code that runs once
+    // (IlLowering::run_once) calls the helper, which caches as well.
+    const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
+    // `x.length` where nothing proved what `x` is: an Array answers
+    // from its header (10.4.2's exotic `length`, which the runtime's
+    // read answers the same way for every array, `arguments`
+    // included), and anything else takes the read it took before.
+    // An array is never a plain object, so the mono guard below could
+    // only ever miss on one.
+    if (prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
+        prop_lowering.key_tag(inst_ast.index) == "length") {
+        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site, site && mono,
+                                                   inst_ast.is_family);
+    }
+    if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
+        inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
+        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family);
+    }
+    return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site ? prop_lowering.site_ptr(b, site) : nullptr);
+}
+
+// A write's ordinary sequence: the way-0 inline store (with a constructor's
+// inline transition) for the sites that get one, else the helper. A static
+// site's guard misses into this.
+void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
+                           Value* val, const IcSite& site) {
+    PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
+    // The same sites the read inlines (see PropGet) get the inline
+    // own-slot store, less the writes to an object this function just
+    // created. Every write in a class constructor (`this.x = x`) gets
+    // it with the inline shape transition on its miss, which is what
+    // answers those adds on every construction after the first. The
+    // arm is code at every site it is put at: at every write, and at
+    // the literals' adds too, three.js grew by a sixth and its scene
+    // graph ran slower for the instruction cache it took.
+    const bool mono = (inst_ast.is_mono || prop_lowering.feedback_driven()) &&
+                      !lowering->is_fresh_object(inst_ast.operands[0]);
+    const bool adds = lowering->in_class_constructor();
+    if (site && (mono || adds) && prop_lowering.enable_inlined_fastpaths() &&
+        prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
+        !lowering->run_once()) {
+        const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
+        prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site, val_prim,
+                                          /*with_transition=*/adds);
+        return;
+    }
+    prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
+                                 site ? prop_lowering.site_ptr(b, site) : nullptr);
+}
+
 } // namespace
+
+// Whether a site's layout claim gets the static-slot guard: a named key, in
+// code that runs more than once (code that runs once calls the helper, as
+// every other site there does). A claim this module has no table for is a
+// lowering bug, refused by name rather than quietly lowered without its guard.
+static bool static_site_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
+    const PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    const StaticSlotSite site = StaticSlotSite::of(inst_ast);
+    if (site.none() || inst_ast.index == PropertyLoweringHelper::kNoKey) return false;
+    if (!prop_lowering.enable_inlined_fastpaths() || lowering->run_once()) return false;
+    if (!prop_lowering.static_site_backed(site)) {
+        lowering->set_has_error(true);
+        if (lowering->diag()) {
+            lowering->diag()->error(SourceLocation("", inst_ast.line, inst_ast.column),
+                                    "il2mir: static slot " + std::to_string(site.slot) + " of '" +
+                                        std::string(prop_lowering.key_tag(inst_ast.index)) +
+                                        "' names a guard table the module does not have");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool static_get_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
+    return inst_ast.op == BronzeOp::PropGet && !inst_ast.operands.empty() && static_site_lowerable(lowering, inst_ast);
+}
+
+// A constructor's writes and the writes to an object this function made are
+// adds: the property is not there yet, the guard could only miss, and the
+// cache's transition arm is what answers them. A census build counts every
+// write through the helper (inline_sets off).
+bool static_set_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
+    return inst_ast.op == BronzeOp::PropSet && inst_ast.operands.size() >= 2 &&
+           lowering->prop_lowering().inline_sets() && !lowering->in_class_constructor() &&
+           !lowering->is_fresh_object(inst_ast.operands[0]) && static_site_lowerable(lowering, inst_ast);
+}
 
 void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
     Value* ptr = b.build_and(obj, iconst64(b, kPayloadMask));
@@ -526,6 +629,14 @@ bool lower_property_instruction(
             }
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
+            if (static_get_lowerable(lowering, inst_ast)) {
+                StaticMiss miss;
+                miss.get = [&](Builder& bb) { return lower_prop_get_cached(lowering, inst_ast, bb, obj_val, site); };
+                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
+                res_val = prop_lowering.lower_prop_get_static(b, obj_val, inst_ast.index, StaticSlotSite::of(inst_ast),
+                                                              miss);
+                return true;
+            }
             if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {
                 if (const auto elem_idx = bronze::il::parseIndexKey(prop_lowering.key_tag(inst_ast.index))) {
                     if (prop_lowering.enable_inlined_fastpaths() && prop_lowering.inline_sets()) {
@@ -550,38 +661,7 @@ bool lower_property_instruction(
                     return true;
                 }
             }
-            // A site the IL calls monomorphic gets the way-0 guard-and-load
-            // in front of the helper: one compare against the most recently
-            // installed shape (the helper fills move-to-front), never a
-            // chain over the other ways. Every site could carry it — the
-            // guard is correct for any receiver — but each one is a merge
-            // GVN-PRE re-walks the function for, and on three.js putting it
-            // at every read doubled the optimized compile for a gain the
-            // `mono` sites alone already deliver. A program that runs under
-            // the tiered pipeline with speculation feedback inlines every
-            // site: its misses, not inference, decide what tier 2 keeps, and
-            // only hot functions are optimized at all. Code that runs once
-            // (IlLowering::run_once) calls the helper, which caches as well.
-            const bool mono = inst_ast.is_mono || prop_lowering.feedback_driven();
-            // `x.length` where nothing proved what `x` is: an Array answers
-            // from its header (10.4.2's exotic `length`, which the runtime's
-            // read answers the same way for every array, `arguments`
-            // included), and anything else takes the read it took before.
-            // An array is never a plain object, so the mono guard below could
-            // only ever miss on one.
-            if (prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
-                prop_lowering.key_tag(inst_ast.index) == "length") {
-                res_val = prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site,
-                                                              site && mono, inst_ast.is_family);
-                return true;
-            }
-            if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
-                inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
-                res_val = prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family);
-                return true;
-            }
-            res_val = prop_lowering.lower_prop_get(b, obj_val, inst_ast.index,
-                                                   site ? prop_lowering.site_ptr(b, site) : nullptr);
+            res_val = lower_prop_get_cached(lowering, inst_ast, b, obj_val, site);
             return true;
         }
 
@@ -606,27 +686,18 @@ bool lower_property_instruction(
                     return true;
                 }
             }
-            // The same sites the read inlines (see PropGet) get the inline
-            // own-slot store, less the writes to an object this function just
-            // created. Every write in a class constructor (`this.x = x`) gets
-            // it with the inline shape transition on its miss, which is what
-            // answers those adds on every construction after the first. The
-            // arm is code at every site it is put at: at every write, and at
-            // the literals' adds too, three.js grew by a sixth and its scene
-            // graph ran slower for the instruction cache it took.
-            const bool mono = (inst_ast.is_mono || prop_lowering.feedback_driven()) &&
-                              !lowering->is_fresh_object(inst_ast.operands[0]);
-            const bool adds = lowering->in_class_constructor();
-            if (site && (mono || adds) && prop_lowering.enable_inlined_fastpaths() &&
-                prop_lowering.inline_sets() && inst_ast.index != PropertyLoweringHelper::kNoKey &&
-                !lowering->run_once()) {
+            if (static_set_lowerable(lowering, inst_ast)) {
+                StaticMiss miss;
+                miss.set = [&](Builder& bb) { lower_prop_set_cached(lowering, inst_ast, bb, obj_val, val, site); };
+                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
                 const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
-                prop_lowering.lower_prop_set_mono(b, obj_val, inst_ast.index, val, strict, site, val_prim,
-                                                  /*with_transition=*/adds);
+                const bool need_barrier = !val_prim && !prop_lowering.is_known_non_ref(val);
+                prop_lowering.lower_prop_set_static(b, obj_val, inst_ast.index, val, StaticSlotSite::of(inst_ast),
+                                                    lowering->is_number_value(inst_ast.operands[1]), need_barrier,
+                                                    miss);
                 return true;
             }
-            prop_lowering.lower_prop_set(b, obj_val, inst_ast.index, val, strict,
-                                         site ? prop_lowering.site_ptr(b, site) : nullptr);
+            lower_prop_set_cached(lowering, inst_ast, b, obj_val, val, site);
             return true;
         }
 

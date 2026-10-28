@@ -35,6 +35,39 @@ inline constexpr const char* kPolyScanHelper = "bronze_prop_poly_scan";
 inline constexpr const char* kPropGetStub = "__bronze_prop_get_ic";
 inline constexpr const char* kPropSetStub = "__bronze_prop_set_ic";
 
+// A site whose class layout proved its key's instance slot (il.h
+// `staticSlot`), with the guard that licenses the constant offset: the
+// identity form's module cell, or the family form's class-id range.
+struct StaticSlotSite {
+    uint32_t slot = BronzeInstruction::kNoStaticSlot;
+    uint32_t cell = 0;
+    uint32_t family_lo = BronzeInstruction::kNoFamily;
+    uint32_t family_span = 0;
+
+    static StaticSlotSite of(const BronzeInstruction& inst) {
+        return {inst.static_slot, inst.static_cell, inst.family_lo, inst.family_span};
+    }
+    bool none() const { return slot == BronzeInstruction::kNoStaticSlot; }
+    bool family() const { return family_lo != BronzeInstruction::kNoFamily; }
+};
+
+// One site's part of a static guard: its layout claim and, for a write, the
+// value it will store (whose representation the guard must accept).
+struct StaticGuardTerm {
+    StaticSlotSite site;
+    Value* store = nullptr;
+    bool store_is_number = false;
+};
+
+// What a static site does when its guard misses: the ordinary sequence for a
+// read (`get`) or a write (`set`), and the receiver's bits read afresh after
+// it (`receiver`), for the fill.
+struct StaticMiss {
+    std::function<Value*(Builder&)> get;
+    std::function<void(Builder&)> set;
+    std::function<Value*(Builder&)> receiver;
+};
+
 class PropertyLoweringHelper {
 public:
     // A key operand that names no key constant.
@@ -57,6 +90,51 @@ public:
         ic_site_count_ = site_count;
     }
     [[nodiscard]] uint32_t ic_site_count() const noexcept { return ic_site_count_; }
+
+    // The static-slot guards' tables (TranslatorOptions::static_site_count):
+    // `cell_count` i64 cells at `cells_sym`, and the family base word (then a
+    // zero word) at `family_sym`, which a family guard needs `family_count`
+    // registered classes to have.
+    void set_static_tables(std::string cells_sym, uint32_t cell_count, std::string family_sym,
+                           uint32_t family_count) {
+        static_cells_sym_ = std::move(cells_sym);
+        static_cell_count_ = cell_count;
+        family_base_sym_ = std::move(family_sym);
+        family_count_ = family_count;
+    }
+    // Whether this module has the table `site`'s guard reads. A site it has
+    // none for is a lowering bug the caller diagnoses, never a quiet skip.
+    [[nodiscard]] bool static_site_backed(const StaticSlotSite& site) const noexcept {
+        if (site.none()) return false;
+        return site.family() ? family_count_ > 0 && site.family_lo < family_count_
+                             : site.cell < static_cell_count_;
+    }
+
+    // THE STATIC-SLOT GUARD (il_static_slot.cpp) for every term on the one
+    // receiver `obj`: whether `obj` is a plain object whose shape each
+    // term's site admits — and, for a term that stores, whose slot takes
+    // the value bare — as one i1 before one branch. `ptr` is the receiver's
+    // payload, meaningful only where the i1 holds.
+    Value* static_guard(Builder& b, Value* obj, const std::vector<StaticGuardTerm>& terms, Value*& ptr);
+    // Where slot `slot` of the plain object at `ptr` is: a base and the
+    // constant `off` from it, inline or overflow chosen here.
+    Value* static_slot_base(Builder& b, Value* ptr, uint32_t slot, int32_t& off);
+    // The slot store, then the barrier when `need_barrier` (a value not known
+    // to be primitive); leaves the builder after both.
+    void store_with_barrier(Builder& b, Value* base, int32_t off, Value* val, bool need_barrier,
+                            const std::string& prefix);
+    // The one-shot fill a static site's miss runs after the ordinary access:
+    // the identity cell's publish while it is still zero, or the shape's
+    // family stamp while that is zero. `obj` must be bits read after the
+    // access, which may have collected. Leaves the builder after it.
+    void emit_static_fill(Builder& b, Value* obj, uint32_t key_index, const StaticSlotSite& site, bool for_write);
+    // One static read: the guard, a constant-offset load on a hit, and on a
+    // miss the site's ordinary sequence and then the fill.
+    Value* lower_prop_get_static(Builder& b, Value* obj, uint32_t key_index, const StaticSlotSite& site,
+                                 const StaticMiss& miss);
+    // One static write, likewise; `need_barrier` false for a primitive value.
+    void lower_prop_set_static(Builder& b, Value* obj, uint32_t key_index, Value* val, const StaticSlotSite& site,
+                               bool val_is_number, bool need_barrier, const StaticMiss& miss);
 
     // With per-thread module data (TranslatorOptions::per_thread_module_data)
     // the table's address is the symbol plus the calling thread's delta,
@@ -216,7 +294,9 @@ public:
 
     // A plain object's payload and shape word, and whether it is one; a
     // non-object reads a mapped block whose words refuse every way.
-    void receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape);
+    // `base`, when asked for, is the address the header and shape were read
+    // at: the payload, or the mapped block a non-object reads instead.
+    void receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape, Value** base = nullptr);
     // The base a slot is read at: base + slot_word * 8 +
     // BRONZE_ABI_OBJ_SLOTS_OFFSET, inline or overflow.
     Value* slot_base(Builder& b, Value* ptr, Value* slot_word);
@@ -254,6 +334,12 @@ private:
     std::string key_map_sym_ = "__bronze_key_map";
     std::string ic_table_sym_ = "__bronze_ic_table";
     uint32_t ic_site_count_ = 0;
+    std::string static_cells_sym_;
+    uint32_t static_cell_count_ = 0;
+    std::string family_base_sym_;
+    uint32_t family_count_ = 0;
+    // A writable table's address on this thread (module_delta_fn_).
+    Value* data_addr(Builder& b, const std::string& sym);
     std::function<Value*(Builder&)> module_delta_fn_;
     std::function<Value*(Builder&)> table_base_fn_;
     struct LastTypedGet {

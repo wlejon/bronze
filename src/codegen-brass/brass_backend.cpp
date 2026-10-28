@@ -402,6 +402,8 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.enable_census = !module.censusSites.empty() && !module.censusOutPath.empty();
     options.census_site_count = static_cast<uint32_t>(module.censusSites.size());
     options.template_site_count = module.templateSiteCount;
+    options.static_site_count = module.staticSiteCount;
+    options.class_family_count = static_cast<uint32_t>(module.classFamilies.size());
     // One image, any number of threads: every writable table is addressed
     // through the calling thread's delta (bronze_abi.h,
     // bronze_module_instance), laid out by brass_backend_sections.cpp.

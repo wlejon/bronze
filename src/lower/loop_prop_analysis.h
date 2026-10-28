@@ -58,6 +58,29 @@ bool isMathObject(il::ValueId val, const il::Function& fn,
                   const std::vector<DefSite>& defs,
                   const il::Module& module);
 
+// What `isAccessorKey` says of a key: kPlainKey, nothing installs an accessor
+// under it; kProtoAccessorKey, an accessor may answer it from a prototype or a
+// literal (a class getter, a builtin accessor, a reflection-touching
+// function's write); kInstanceAccessorKey, a reflection call in the module may
+// name it — a string literal or a descriptor map's property in a function that
+// reaches `defineProperty` and its kin — so even an instance's OWN data
+// property may turn into an accessor after the fact.
+inline constexpr uint8_t kPlainKey = 0;
+inline constexpr uint8_t kProtoAccessorKey = 1;
+inline constexpr uint8_t kInstanceAccessorKey = 2;
+
+// Whether `inst`'s key may be answered by an accessor at its receiver. A site
+// with a static slot claim names an own data property, which a prototype's
+// accessor cannot answer while no prototype is patched — but which a
+// `defineProperty` on the instance can still replace, so the claim does not
+// exempt a key a reflection call may name.
+inline bool keyMayBeAccessor(const std::vector<uint8_t>& isAccessorKey, uint32_t key, const il::Instruction& inst,
+                             bool protoPatchFree) {
+    if (key >= isAccessorKey.size() || isAccessorKey[key] == kPlainKey) return false;
+    if (isAccessorKey[key] == kInstanceAccessorKey) return true;
+    return !(protoPatchFree && inst.staticSlot != il::Instruction::kNoStaticSlot);
+}
+
 bool isProvablyNonNullish(il::ValueId val, const il::Function& fn,
                           const std::vector<DefSite>& defs,
                           const il::Module& module,

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 #include "lower/guard_region_cfg.h"
@@ -107,10 +108,7 @@ bool hoistInFunction(il::Function& fn, const std::vector<uint8_t>& isAccessorKey
                 for (size_t i = 0; i < blk.instructions.size();) {
                     auto& inst = blk.instructions[i];
                     if (inst.op == il::Op::PropGet) {
-                        const bool isAcc = inst.keyIndex < isAccessorKey.size() &&
-                                           isAccessorKey[inst.keyIndex] &&
-                                           !(protoPatchFree &&
-                                             inst.staticSlot != il::Instruction::kNoStaticSlot);
+                        const bool isAcc = keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree);
                         if (isAcc) {
                             ++i;
                             continue;
@@ -325,10 +323,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
             }
 
             if (inst.op == il::Op::PropSet) {
-                const bool isAcc = inst.keyIndex < isAccessorKey.size() &&
-                                   isAccessorKey[inst.keyIndex] &&
-                                   !(protoPatchFree &&
-                                     inst.staticSlot != il::Instruction::kNoStaticSlot);
+                const bool isAcc = keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree);
                 if (isAcc) {
                     table.clear();
                 } else if (inst.keyIndex == lengthKeyIndex) {
@@ -509,9 +504,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                 const uint32_t key = inst.keyIndex;
                 const bool isArrIdx = (key < module.keyConstants.size() &&
                                        isArrayIndexKey(module.keyConstants[key]));
-                const bool isAcc = key < isAccessorKey.size() && isAccessorKey[key] &&
-                                   !(protoPatchFree &&
-                                     inst.staticSlot != il::Instruction::kNoStaticSlot);
+                const bool isAcc = keyMayBeAccessor(isAccessorKey, key, inst, protoPatchFree);
                 if (!isArrIdx && !isAcc) {
                     const bool hasStaticSlot =
                         inst.staticSlot != il::Instruction::kNoStaticSlot;
@@ -655,14 +648,30 @@ bool hoistLoopInvariantProps(il::Module& module, const DirectMethodTable* direct
             if (fnTouchesReflection[f]) break;
         }
         if (fnTouchesReflection[f]) {
+            // A string literal here may be the name a `defineProperty` turns
+            // into an accessor on some instance, and so may a property of an
+            // object literal (a `defineProperties` map) or a key a
+            // `define.own_attr` names: those can replace an own data property,
+            // which a static slot claim does not survive (keyMayBeAccessor).
+            // Any other write here may only build a descriptor's fields.
+            std::unordered_set<il::ValueId> literals;
             for (const auto& blk : fn.blocks) {
                 for (const auto& inst : blk.instructions) {
-                    if ((inst.op == il::Op::Box && inst.boxType == il::Type::Str &&
-                         inst.operands.empty()) ||
-                        inst.op == il::Op::PropSet) {
-                        if (inst.keyIndex < isAccessorKey.size()) {
-                            isAccessorKey[inst.keyIndex] = 1;
-                        }
+                    if (inst.op == il::Op::CreateObject) literals.insert(inst.result);
+                }
+            }
+            for (const auto& blk : fn.blocks) {
+                for (const auto& inst : blk.instructions) {
+                    if (inst.keyIndex >= isAccessorKey.size()) continue;
+                    const bool strLiteral =
+                        inst.op == il::Op::Box && inst.boxType == il::Type::Str && inst.operands.empty();
+                    const bool literalField = inst.op == il::Op::PropSet && !inst.operands.empty() &&
+                                              literals.count(inst.operands[0]);
+                    if (strLiteral || literalField || inst.op == il::Op::DefineOwnAttr) {
+                        isAccessorKey[inst.keyIndex] = kInstanceAccessorKey;
+                    } else if (inst.op == il::Op::PropSet) {
+                        isAccessorKey[inst.keyIndex] =
+                            std::max(isAccessorKey[inst.keyIndex], kProtoAccessorKey);
                     }
                 }
             }

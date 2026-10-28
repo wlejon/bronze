@@ -253,6 +253,7 @@ static bool instructions_are_identical(const BronzeInstruction& a, const BronzeI
     if (a.depth != b.depth || a.index != b.index || a.param_count != b.param_count) return false;
     if (a.static_slot != b.static_slot || a.ic_index != b.ic_index || a.is_mono != b.is_mono || a.is_fn_recv != b.is_fn_recv ||
         a.is_family != b.is_family) return false;
+    if (a.static_cell != b.static_cell || a.family_lo != b.family_lo || a.family_span != b.family_span) return false;
     if (a.target.block_id != b.target.block_id || a.target.args != b.target.args) return false;
     if (a.else_target.block_id != b.else_target.block_id || a.else_target.args != b.else_target.args) return false;
     return true;
@@ -387,6 +388,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     register_all_module_external_symbols(mod.get(), options_.entry_symbol);
     prop_lowering_.set_key_map_sym(module_sym("__bronze_key_map"));
     prop_lowering_.set_ic_table(module_sym("__bronze_ic_table"), options_.ic_site_count);
+    prop_lowering_.set_static_tables(module_sym("__bronze_static_cells"), options_.static_site_count,
+                                     module_sym("__bronze_family_base"), options_.class_family_count);
     if (options_.per_thread_module_data) {
         prop_lowering_.set_module_delta_fn([this](Builder& b) { return module_delta(b); });
         mod->add_external_symbol("bronze_module_instance");
@@ -650,7 +653,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // can address is declared here (the entry is always built).
     if (!lazy_bodies_.empty()) {
         for (const char* base : {"__bronze_key_map", "__bronze_module_env", "__bronze_template_cells",
-                                 "__bronze_ic_table", "__bronze_module_slot"}) {
+                                 "__bronze_ic_table", "__bronze_module_slot", "__bronze_static_cells",
+                                 "__bronze_family_base"}) {
             mod->add_symbol_role(module_sym(base), SymbolRole::Data);
         }
     }
@@ -861,6 +865,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             Value* manifest_addr = b.build_func_addr(key_sym);
             Value* map_addr = b.build_func_addr(module_sym("__bronze_key_map"));
             b.build_call("bronze_register_key_manifest", Type::void_type(), {manifest_addr, map_addr});
+            register_class_families(b, map_addr);
             // The method-call sites' env words, registered as value cells
             // (bronze_abi.h, bronze_register_method_ic_cells): a latched
             // direct-form entry may hold a closure's environment record —
@@ -928,7 +933,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
         for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
             if (try_lower_array_index_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter) ||
-                try_lower_elem_offset_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter)) {
+                try_lower_elem_offset_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter) ||
+                try_lower_static_slot_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter)) {
                 if (has_error_) return false;
                 continue;
             }

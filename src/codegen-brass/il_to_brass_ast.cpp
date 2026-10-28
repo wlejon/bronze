@@ -203,6 +203,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
             out.static_slot = inst.staticSlot;
+            out.static_cell = inst.staticCellIndex;
+            out.family_lo = inst.familyLo;
+            out.family_span = inst.familySpan;
             out.is_family = inst.familyLo != il::Instruction::kNoFamily;
             break;
         case il::Op::SuperGet:
@@ -222,6 +225,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.is_mono = inst.icMonomorphic;
             out.is_fn_recv = inst.icFnRecv;
             out.static_slot = inst.staticSlot;
+            out.static_cell = inst.staticCellIndex;
+            out.family_lo = inst.familyLo;
+            out.family_span = inst.familySpan;
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::ElemGet: out.op = il2mir::BronzeOp::ElemGet; break;

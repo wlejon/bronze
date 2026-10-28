@@ -158,6 +158,15 @@ struct TranslatorOptions {
     uint32_t ic_site_count = 0;
     std::vector<uint32_t> method_ic_sites;
     uint32_t template_site_count = 0;
+    // The static-slot guards' tables (il.h `staticSiteCount`,
+    // `classFamilies`): `static_site_count` i64 cells the embedder lays out
+    // as `__bronze_static_cells`, and, when `class_family_count` is nonzero,
+    // the family tables `__bronze_class_families` / `__bronze_class_family_fields`
+    // the entry hands `bronze_register_class_family`, with the base id it
+    // writes into `__bronze_family_base` (all module-suffixed; both writable
+    // tables per thread, like the cache).
+    uint32_t static_site_count = 0;
+    uint32_t class_family_count = 0;
     // Address the module's WRITABLE tables — `__bronze_module_env`,
     // `__bronze_template_cells`, `__bronze_ic_table`, and the embedder's own
     // (global cache, native imports) — per THREAD rather than per image, so

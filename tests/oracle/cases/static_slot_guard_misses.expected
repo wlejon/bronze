@@ -1,0 +1,26 @@
+warm 122
+heavy 203 2 3 4 9 20
+shuffled 5103 51 50 4 10016 x,y,vy,mass,tag,link,vx
+literal 1214 12 14 2 vx,vy,x,y,mass
+literal energy 20
+deleted NaN NaN undefined NaN
+re-added NaN NaN 60100 x,y,vy,mass,tag,link,vx
+solo 3006003 3000 6003
+solo deleted NaN 3001 NaN
+solo re-added 3002003 x,y,vx,mass,tag,link,vy
+solo accessor 3001005 3001 5
+soloRun never 3000:6003:0
+soloRun delete 3000:NaN:0
+soloRun accessor 5:6003:10
+soloRun extra field 3000:6003:0
+accessor 106002 1000 1001 15020
+read-only TypeError 7 1001,1001
+frozen TypeError 2 3 3
+number NaN
+number proto 4
+null TypeError
+relink small:t2:3 t2 true
+relink big big:hh:true true
+relink heavy small:h2:4 h2
+relink literal big:L:true mass,link,tag
+chain 50 p49 p48 null

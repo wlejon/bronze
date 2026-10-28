@@ -114,6 +114,12 @@ public:
     // Whether `id` is statically guaranteed to be a primitive value (never a
     // heap reference), so storing it requires no GC write barrier.
     bool is_primitive_value(uint32_t id) const { return primitive_value_ids_.count(id) != 0; }
+    // Whether `id` is a `box.f64`: a Number's bits, the word a double slot
+    // holds (slot_repr.h), so a store of it needs no representation test.
+    bool is_number_value(uint32_t id) const { return number_value_ids_.count(id) != 0; }
+    // The module's class layouts handed to the runtime at init
+    // (il_static_slot.cpp); `map_addr` is the filled key map.
+    void register_class_families(Builder& b, Value* map_addr);
     // Whether `arr_id` is proven at the current lowering point to be a dense
     // Array with `index < length` and a valid elements block.
     bool is_proven_dense_array(uint32_t arr_id, uint32_t index) const;
@@ -146,6 +152,12 @@ private:
                                    std::unordered_map<uint32_t, Value*>& val_map,
                                    const std::unordered_map<uint32_t, BasicBlock*>& block_map,
                                    uint32_t* cont_counter);
+    // A stretch of static-slot sites on one receiver behind one guard
+    // (il_lowering_static_run.cpp).
+    bool try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
+                                   std::unordered_map<uint32_t, Value*>& val_map,
+                                   const std::unordered_map<uint32_t, BasicBlock*>& block_map,
+                                   uint32_t* cont_counter);
     struct DenseArrayProof {
         uint32_t arr_id = UINT32_MAX;
         uint32_t max_index = 0;
@@ -167,6 +179,7 @@ private:
     std::unordered_set<uint32_t> hole_insensitive_ids_;
     std::unordered_set<uint32_t> unrooted_hole_insensitive_ids_;
     std::unordered_set<uint32_t> primitive_value_ids_;
+    std::unordered_set<uint32_t> number_value_ids_;
     std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
     std::unordered_map<uint32_t, DenseArrayCursor> dense_array_cursors_;

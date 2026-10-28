@@ -237,7 +237,8 @@ void PropertyLoweringHelper::other_ways_hit(Builder& b, Value* plain, Value* sha
     hit = b.build_and(b.build_and(plain, any), b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit)));
 }
 
-void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape) {
+void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plain, Value*& ptr, Value*& shape,
+                                            Value** base_out) {
     // The payload is the Value with its object tag XORed away, which is below
     // 2^48 exactly when the tag was the object tag.
     ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
@@ -255,6 +256,7 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
     Value* is_plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
     shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
     plain = in_process_ ? is_plain : b.build_and(is_obj, is_plain);
+    if (base_out) *base_out = base;
 }
 
 void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
