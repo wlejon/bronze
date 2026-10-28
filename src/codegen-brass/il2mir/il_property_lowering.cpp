@@ -1,4 +1,5 @@
 #include "il_property_lowering.h"
+#include "il_accessor_direct.h"
 #include "il_lowering.h"
 #include "il_abi.h"
 #include "il_property.h"
@@ -629,6 +630,13 @@ bool lower_property_instruction(
             }
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
+            if (accessor_direct_here(lowering, inst_ast)) {
+                AccessorMiss miss;
+                miss.get = [&](Builder& bb) { return lower_prop_get_cached(lowering, inst_ast, bb, obj_val, site); };
+                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
+                res_val = lower_accessor_get(lowering, inst_ast, b, obj_val, miss);
+                return true;
+            }
             if (static_get_lowerable(lowering, inst_ast)) {
                 StaticMiss miss;
                 miss.get = [&](Builder& bb) { return lower_prop_get_cached(lowering, inst_ast, bb, obj_val, site); };
@@ -685,6 +693,13 @@ bool lower_property_instruction(
                     lowering->invalidate_dense_array_proofs();
                     return true;
                 }
+            }
+            if (accessor_direct_here(lowering, inst_ast)) {
+                AccessorMiss miss;
+                miss.set = [&](Builder& bb) { lower_prop_set_cached(lowering, inst_ast, bb, obj_val, val, site); };
+                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
+                lower_accessor_set(lowering, inst_ast, b, obj_val, val, miss);
+                return true;
             }
             if (static_set_lowerable(lowering, inst_ast)) {
                 StaticMiss miss;

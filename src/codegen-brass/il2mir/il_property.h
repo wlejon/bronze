@@ -110,6 +110,13 @@ public:
                              : site.cell < static_cell_count_;
     }
 
+    // The static cells' table on this thread, and whether it holds the
+    // `n` cells from `cell` (an accessor site's pair, il_accessor_direct.h).
+    Value* static_cells_addr(Builder& b) { return data_addr(b, static_cells_sym_); }
+    [[nodiscard]] bool static_cells_cover(uint32_t cell, uint32_t n) const noexcept {
+        return static_cast<uint64_t>(cell) + n <= static_cell_count_;
+    }
+
     // THE STATIC-SLOT GUARD (il_static_slot.cpp) for every term on the one
     // receiver `obj`: whether `obj` is a plain object whose shape each
     // term's site admits — and, for a term that stores, whose slot takes

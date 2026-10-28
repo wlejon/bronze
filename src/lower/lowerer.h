@@ -88,6 +88,10 @@ private:
     DirectMethodTable directMethods_;
     bool inlineGuarded_ = false;
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
+    // The class name inference gives `receiver`'s object type, or empty.
+    std::string receiverClassName(const ast::Expr& receiver);
+    // Whether inference typed `receiver` a dense JS Array.
+    bool receiverIsArray(const ast::Expr& receiver);
     void recordMethodCallSite(const il::Instruction& inst, const ast::Expr& receiver,
                               const std::string& method);
 

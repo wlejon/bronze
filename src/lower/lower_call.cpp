@@ -467,6 +467,7 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
                 }
                 inst.op = il::Op::MethodCall;
                 inst.operands = std::move(argVals);
+                if (receiverIsArray(*mem->object)) inst.immI32 |= il::Instruction::kMethodRecvArray;
                 // Only the fixed-operand form can name a callee: a spread's
                 // argument count is a runtime fact and a direct edge's operand
                 // list is its parameter list.

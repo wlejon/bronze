@@ -477,6 +477,10 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 diags.error(Span{}, "Function " + fn.name + ": method.ic.is takes one operand and is a bool");
                 return false;
             }
+            if (inst.op == Op::AccessorIcIs && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
+                diags.error(Span{}, "Function " + fn.name + ": accessor.ic.is takes one operand and is a bool");
+                return false;
+            }
 
             // The fixed-operand call forms end at sixteen arguments — the
             // last helper of each ladder is `bronze_call_dynamic_16`,
@@ -655,7 +659,8 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                               inst.op == Op::CreateFunction ||
                                               inst.op == Op::FunctionRef ||
                                               inst.op == Op::CoroStart ||
-                                              inst.op == Op::MethodIcIs;
+                                              inst.op == Op::MethodIcIs ||
+                                              inst.op == Op::AccessorIcIs;
                 if (!refersToFunction) continue;
                 if (inst.calleeIndex >= module.functions.size()) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
@@ -716,6 +721,25 @@ bool verify(const Module& module, DiagnosticSink& diags) {
     for (const auto& fn : module.functions) {
         for (const auto& block : fn.blocks) {
             for (const auto& inst : block.instructions) {
+                // An ACCESSOR site (direct_method_table.h, `resolveAccessors`)
+                // and its inlined body's guard both read the two cells from
+                // `staticCellIndex`, and its hit calls the accessor with no
+                // environment: a site naming anything else is a bug in the
+                // pass that stamped it, never something to lower around.
+                const bool accessorSite = (inst.op == Op::PropGet || inst.op == Op::PropSet) &&
+                                          inst.directTarget != Instruction::kNoDirectTarget;
+                if (accessorSite || inst.op == Op::AccessorIcIs) {
+                    const uint32_t target = accessorSite ? inst.directTarget : inst.calleeIndex;
+                    if (static_cast<size_t>(inst.staticCellIndex) + 1 >= module.staticSiteCount ||
+                        target >= module.functions.size() || module.functions[target].needsEnv ||
+                        (accessorSite && inst.staticSlot != Instruction::kNoStaticSlot)) {
+                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                                " names accessor cell " + std::to_string(inst.staticCellIndex) +
+                                                " and target @" + std::to_string(target) +
+                                                ", which the module cannot back");
+                        return false;
+                    }
+                }
                 if (inst.op == Op::PropGet || inst.op == Op::PropSet ||
                     inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
                     if (inst.icIndex >= module.icSiteCount) {

@@ -6,6 +6,7 @@
 
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
+#include <functional>
 #include <vector>
 
 namespace il2mir {
@@ -38,6 +39,14 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod);
 // module's one stub function (il_lowering_direct.cpp), which the site calls.
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
                             const std::vector<Value*>& boxed_args, Value* site);
+
+// `recv.key(...args)` at a site whose key a receiver may hold in an own slot
+// (il.h `kMethodOwnCallee`): the method cache's SLOT form dispatched here —
+// way 0 names the receiver's shape with a slot, and the function in that slot
+// may be entered directly — and everything else `rest`, the site's ordinary
+// dispatch. `boxed_args` are staged for the slot call as `rest` stages them.
+Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
+                                Value* site, const std::function<Value*(Builder&)>& rest);
 
 // `new ctor(...args)`: a vetted constructor (bronze_construct has taken its
 // plain path once) that compiled code may enter gets its instance bumped

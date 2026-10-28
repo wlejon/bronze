@@ -1,0 +1,13 @@
+warm 2000 1999000 0
+reuse 3 0,1,2 undefined
+queue 999000:2000:1000:1999
+objects 3998000:2000
+frozen TypeError TypeError 1,2
+sealed push TypeError 1,2
+non-extensible push TypeError 1,2
+non-extensible shift 1 2 1
+holey 1004 0
+holey push 3 false undefined 5,6
+own push own2 0
+subclass push 1 20 1
+named 3 1 2,3 n

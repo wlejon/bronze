@@ -18,6 +18,7 @@
 
 #include "abi/bronze_global_statics.h"
 #include "ast/query_walk.h"
+#include "il/key.h"
 #include "lower/lowerer.h"
 #include "types/math_builtins.h"
 
@@ -837,6 +838,12 @@ void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) 
             inst.familySpan = site->familySpan;
             verdict.emittedClaim = true;
             verdict.familyGuard = site->familyLo != il::Instruction::kNoFamily;
+        } else if (!il::parseIndexKey(keyStrings_[inst.keyIndex])) {
+            // No own data slot to claim: the receiver's class may answer the
+            // key with an accessor, which the whole-module resolve decides
+            // (direct_method_table.h, `resolveAccessors`).
+            directMethods_.recordAccessorSite(inst.icIndex, receiverClassName(receiver),
+                                              keyStrings_[inst.keyIndex]);
         }
     }
     // The census entry for this site, written HERE and not at the call: this is
@@ -853,20 +860,25 @@ void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) 
 
 // --- the direct method-call edge -----------------------------------------
 
+std::string Lowerer::receiverClassName(const ast::Expr& receiver) {
+    if (inference_ == nullptr) return {};
+    const types::Type t = inference_->typeAt(&inferenceExpr(receiver));
+    if (t.is(types::TypeKind::Object) && t.shapeClass() != types::kNoShapeClass) {
+        if (const types::ClassLayout* cl = inference_->classLayouts.byShapeClass(t.shapeClass()); cl != nullptr) {
+            return cl->name;
+        }
+    }
+    return {};
+}
+
+bool Lowerer::receiverIsArray(const ast::Expr& receiver) {
+    return inference_ != nullptr && inference_->typeAt(&inferenceExpr(receiver)).is(types::TypeKind::Array);
+}
+
 void Lowerer::recordMethodCallSite(const il::Instruction& inst, const ast::Expr& receiver,
                                    const std::string& method) {
     if (method.empty()) return;
-    std::string receiverClass;
-    if (inference_ != nullptr) {
-        const types::Type t = inference_->typeAt(&inferenceExpr(receiver));
-        if (t.is(types::TypeKind::Object) && t.shapeClass() != types::kNoShapeClass) {
-            if (const types::ClassLayout* cl = inference_->classLayouts.byShapeClass(t.shapeClass());
-                cl != nullptr) {
-                receiverClass = cl->name;
-            }
-        }
-    }
-    directMethods_.recordSite(inst.icIndex, std::move(receiverClass), method);
+    directMethods_.recordSite(inst.icIndex, receiverClassName(receiver), method);
 }
 
 void Lowerer::reportClassLayouts() {

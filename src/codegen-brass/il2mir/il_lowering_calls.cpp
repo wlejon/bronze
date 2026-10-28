@@ -2,6 +2,9 @@
 #include "il_lowering.h"
 #include "il_abi.h"
 #include "il_lowering_direct.h"
+#include "il_accessor_direct.h"
+#include "il_array_method.h"
+#include "il/il.h"
 #include <brass/mir/module.hpp>
 #include <algorithm>
 #include <cctype>
@@ -25,6 +28,7 @@ bool is_call_il_op(BronzeOp op) {
         case BronzeOp::FuncRef:
         case BronzeOp::CreateFunc:
         case BronzeOp::MethodIcIs:
+        case BronzeOp::AccessorIcIs:
             return true;
         default:
             return false;
@@ -357,6 +361,18 @@ bool lower_call_instruction(
             break;
         }
 
+        // The guard of an inlined accessor body: the direct accessor site's
+        // own (il_accessor_direct.h). Where sites take no direct form the
+        // answer is no, and the body's guard sends every access to the
+        // original prop.get or prop.set.
+        case BronzeOp::AccessorIcIs: {
+            Value* recv = ensure_type(get_opd(0), Type::i64());
+            res_val = accessor_direct_here(lowering, inst_ast)
+                          ? accessor_cell_hit(lowering, b, recv, inst_ast.static_cell)
+                          : b.build_iconst_i32(0);
+            break;
+        }
+
         case BronzeOp::MethodCall: {
             Value* recv = ensure_type(get_opd(0), Type::i64());
             uint32_t argc = inst_ast.param_count;
@@ -436,6 +452,19 @@ bool lower_call_instruction(
             // Code that runs once dispatches generically: the direct form's
             // guard is only size there.
             if (can_direct && lowering && lowering->run_once()) can_direct = false;
+            if (const ArrayInline arr = can_direct ? ArrayInline::None : array_method_inline(lowering, inst_ast);
+                arr != ArrayInline::None) {
+                if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
+                    std::vector<Value*> args;
+                    for (size_t a = 0; a < argc; ++a) args.push_back(box_value(lowering, b, get_opd(1 + a), arg_kinds[a]));
+                    res_val = lower_array_method_inline(
+                        lowering, b, arr, recv, args.empty() ? nullptr : args[0], [&](Builder& bb) {
+                            return lower_method_call_ic(lowering, bb, recv, lowering->get_key_id(bb, inst_ast.index),
+                                                        args, site);
+                        });
+                    break;
+                }
+            }
             if (!can_direct && method_call_is_speculated_builtin(lowering, inst_ast)) {
                 if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
                     Value* arg = box_value(lowering, b, get_opd(1), arg_kinds[0]);
@@ -454,6 +483,12 @@ bool lower_call_instruction(
                 for (size_t a = 0; a < argc; ++a) args[a] = box_value(lowering, b, args[a], arg_kinds[a]);
                 Value* key_id = lowering->get_key_id(b, inst_ast.index);
                 if (direct_method_ic_here(lowering)) {
+                    if ((inst_ast.imm_i64 & bronze::il::Instruction::kMethodOwnCallee) != 0 && !lowering->run_once()) {
+                        res_val = lower_method_slot_inline(lowering, b, recv, args, site, [&](Builder& bb) {
+                            return lower_method_call_ic(lowering, bb, recv, key_id, args, site);
+                        });
+                        break;
+                    }
                     res_val = lower_method_call_ic(lowering, b, recv, key_id, args, site);
                     break;
                 }

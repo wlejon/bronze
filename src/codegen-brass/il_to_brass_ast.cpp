@@ -207,6 +207,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.family_lo = inst.familyLo;
             out.family_span = inst.familySpan;
             out.is_family = inst.familyLo != il::Instruction::kNoFamily;
+            if (inst.directTarget != il::Instruction::kNoDirectTarget) {
+                out.callee_name = ctx.fnName(inst.directTarget);
+            }
             break;
         case il::Op::SuperGet:
             out.op = il2mir::BronzeOp::SuperGet;
@@ -229,6 +232,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.family_lo = inst.familyLo;
             out.family_span = inst.familySpan;
             out.imm_i64 = inst.immI32;
+            if (inst.directTarget != il::Instruction::kNoDirectTarget) {
+                out.callee_name = ctx.fnName(inst.directTarget);
+            }
             break;
         case il::Op::ElemGet: out.op = il2mir::BronzeOp::ElemGet; break;
         case il::Op::ElemSet:
@@ -416,6 +422,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             if (inst.typedTarget != il::Instruction::kNoDirectTarget) {
                 out.typed_callee_name = ctx.fnName(inst.typedTarget);
             }
+            out.imm_i64 = inst.immI32;
             out.param_count = inst.operands.size() > 1 ? static_cast<uint32_t>(inst.operands.size() - 1) : 0;
             break;
         case il::Op::MethodCallSpread:
@@ -471,6 +478,12 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::MethodIcIs;
             out.callee_name = ctx.fnName(inst.calleeIndex);
             out.ic_index = inst.icIndex;
+            break;
+        case il::Op::AccessorIcIs:
+            out.op = il2mir::BronzeOp::AccessorIcIs;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.static_cell = inst.staticCellIndex;
+            out.index = inst.keyIndex;
             break;
     }
 

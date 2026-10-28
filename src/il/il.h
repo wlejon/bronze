@@ -197,6 +197,14 @@ struct Instruction {
     // is never built, the wrapper's unpack never runs, and the callee is an
     // ordinary internal LLVM function at a call site LLVM may inline — which is
     // how a `setValue -> arraysEqual -> copyArray` chain becomes one region.
+    //
+    // PropGet/PropSet: the getter or setter of the accessor the key resolves
+    // to on the receiver's class, the same kind of GUESS. Its guard is not a
+    // cache's: such a site's `staticCellIndex` names a PAIR of static cells,
+    // (shape, prototype-mutation epoch), which the runtime publishes only
+    // after resolving the key on the receiver's chain to an accessor whose
+    // half is this function (runtime/accessor_cell.cpp); a site that names a
+    // target never also claims a `staticSlot`.
     static constexpr uint32_t kNoDirectTarget = 0xFFFFFFFFu;
     uint32_t directTarget = kNoDirectTarget;
     // MethodCall: a TYPED ENTRY of `directTarget` (lower/typed_entry.h) the
@@ -209,6 +217,19 @@ struct Instruction {
     // in the typed positions arrive as `f64` / `bool` — and this site's
     // operand in each such position IS that type, which the verifier checks.
     uint32_t typedTarget = kNoDirectTarget;
+    // MethodCall `immI32`: HINT bits, each deciding only whether the backend
+    // emits an inline arm that tests what it needs of the receiver itself.
+    //   kMethodRecvArray  inference typed the receiver a dense JS Array: an
+    //                     Array builtin's arm (il_array_method.h).
+    //   kMethodOwnCallee  the key names a class method AND is written as an
+    //                     own property somewhere in the module (three.js's
+    //                     `_onChangeCallback`, a prototype no-op until
+    //                     `_onChange(cb)` stores a closure on the instance):
+    //                     the method cache's SLOT form, for a callee held in
+    //                     the receiver's own slot, is dispatched at the site
+    //                     (il_lowering_direct.h, lower_method_slot_inline).
+    static constexpr int32_t kMethodRecvArray = 1;
+    static constexpr int32_t kMethodOwnCallee = 2;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
     bool envImmutable = false;       // EnvGet: slot is an initialized immutable binding

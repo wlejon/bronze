@@ -297,6 +297,12 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                                      /*enumerable=*/false, ilFn)) {
                     return std::nullopt;
                 }
+                // The accessor half of the direct edge; a static one is the
+                // constructor's, never an instance read's.
+                if (!m.isStatic) {
+                    directMethods_.recordClassAccessor(name, m.name, m.accessor == ast::AccessorKind::Setter,
+                                                       lastClosureFnIndex_);
+                }
             }
             continue;
         }

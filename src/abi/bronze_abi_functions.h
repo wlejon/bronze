@@ -217,6 +217,15 @@
      * layout claim costs a guard that never matches. Called once per shape,
      * from a site's slow path, and only while the stamp is still zero. */ \
     X(bronze_family_stamp,        BRONZE_ABI_VOID, (BRONZE_ABI_U64)) \
+    /* The ACCESSOR cell (runtime/accessor_cell.cpp): a site whose receiver's\
+     * class declares an accessor for its key guards on a two-word module cell,\
+     * (shape, prototype-mutation epoch), and on a hit calls that accessor's\
+     * getter or setter directly. This fills the cell from a slow path: the\
+     * receiver's shape when its chain resolves the key, at the current epoch,\
+     * to an accessor whose half for the site (the getter, or with the BOOL the\
+     * setter) has exactly the given code word; else a refusal for this epoch.\
+     * Called only while the cell's epoch is not the thread's. */ \
+    X(bronze_accessor_cell_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_FNPTR, BRONZE_ABI_BOOL)) \
     X(bronze_elem_get,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     X(bronze_iter_open,           BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_iter_step,           BRONZE_ABI_BOOL, (BRONZE_ABI_U64)) \

@@ -153,6 +153,7 @@ const char* opName(Op op) {
         case Op::PrintSpreadErr: return "print.spread.err";
         case Op::KeepAlive: return "keep.alive";
         case Op::MethodIcIs: return "method.ic.is";
+        case Op::AccessorIcIs: return "accessor.ic.is";
     }
     return "?";
 }
@@ -400,6 +401,12 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                 out += "@" + std::to_string(inst.staticCellIndex);
                             }
                         }
+                        // An accessor site calls its getter or setter behind
+                        // the cell pair it names: emitted code again.
+                        if (inst.directTarget != Instruction::kNoDirectTarget) {
+                            out += ", accessor @" + std::to_string(inst.directTarget) + "@" +
+                                   std::to_string(inst.staticCellIndex);
+                        }
                         break;
                     // The key index, and no cache slot: a class body runs
                     // once, so a method definition has no repeat to cache
@@ -571,6 +578,12 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                 out += "@" + std::to_string(inst.staticCellIndex);
                             }
                         }
+                        // An accessor site calls its getter or setter behind
+                        // the cell pair it names: emitted code again.
+                        if (inst.directTarget != Instruction::kNoDirectTarget) {
+                            out += ", accessor @" + std::to_string(inst.directTarget) + "@" +
+                                   std::to_string(inst.staticCellIndex);
+                        }
                         break;
                     case Op::DynamicCall: {
                         out += "call.dynamic";
@@ -602,6 +615,8 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         if (inst.typedTarget != Instruction::kNoDirectTarget) {
                             out += " typed @" + std::to_string(inst.typedTarget);
                         }
+                        if (inst.immI32 & Instruction::kMethodRecvArray) out += ", array-recv";
+                        if (inst.immI32 & Instruction::kMethodOwnCallee) out += ", own-callee";
                         size_t argc = inst.operands.size() > 1 ? inst.operands.size() - 1 : 0;
                         out += ", " + std::to_string(argc);
                         for (size_t i = 1; i < inst.operands.size(); ++i) {
@@ -911,6 +926,10 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::MethodIcIs:
                         out += "method.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.icIndex) + ", @" + getFnName(inst.calleeIndex);
+                        break;
+                    case Op::AccessorIcIs:
+                        out += "accessor.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", cell " + std::to_string(inst.staticCellIndex) + ", @" + getFnName(inst.calleeIndex);
                         break;
                     case Op::Print:
                     case Op::PrintErr:

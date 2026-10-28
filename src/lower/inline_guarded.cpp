@@ -16,6 +16,14 @@
 // both ways into C supply it, and B dominates C as it dominated the rest of
 // itself. Every new block takes B's handler, so a throw anywhere in the body
 // or in the slow call leaves to wherever a throw out of the call would have.
+//
+// An ACCESSOR site (`prop.get` / `prop.set` naming its getter or setter, il.h
+// `directTarget`) is inlined the same way, as a call of that body with the
+// receiver as `this` and, for a setter, the stored value as its one argument.
+// Its guard is `accessor.ic.is` on the site's cell pair, the test its own
+// direct edge makes, and S keeps the original access, whose miss is what
+// publishes the cell. A setter's return value is discarded, as [[Set]]
+// discards it: a `prop.set` has no result for C to take.
 
 #include "lower/inline_guarded.h"
 #include "lower/guard_region_cfg.h"
@@ -217,7 +225,12 @@ private:
     static constexpr uint32_t kNone = UINT32_MAX;
 
     uint32_t eligibleCallee(const il::Function& fn, uint32_t fnIdx, const il::Instruction& inst) const {
-        if (inst.op != il::Op::MethodCall || inst.operands.empty()) return kNone;
+        // An accessor site (il.h `directTarget` on PropGet/PropSet) is a call
+        // of its getter with no arguments, or of its setter with the value as
+        // its one, behind its accessor cell instead of a method cache.
+        const bool accessor = (inst.op == il::Op::PropGet || inst.op == il::Op::PropSet) &&
+                              inst.directTarget != il::Instruction::kNoDirectTarget;
+        if ((inst.op != il::Op::MethodCall && !accessor) || inst.operands.empty()) return kNone;
         const uint32_t origin = inst.directTarget;
         if (origin == il::Instruction::kNoDirectTarget || origin >= candidate_.size()) return kNone;
         // The body the call would run: the typed entry the site was pointed
@@ -387,13 +400,18 @@ private:
             return t;
         };
 
-        // B ends in the guard.
+        // B ends in the guard: the method cache's, or an accessor site's cell.
         {
-            il::Instruction guard = callSiteInst(il::Op::MethodIcIs);
+            const bool accessor = call.op != il::Op::MethodCall;
+            il::Instruction guard = callSiteInst(accessor ? il::Op::AccessorIcIs : il::Op::MethodIcIs);
             guard.type = il::Type::Bool;
             guard.result = fresh(fn, il::Type::Bool);
             guard.operands = {call.operands[0]};
-            guard.icIndex = call.icIndex;
+            if (accessor) {
+                guard.staticCellIndex = call.staticCellIndex;
+            } else {
+                guard.icIndex = call.icIndex;
+            }
             guard.keyIndex = call.keyIndex;
             guard.calleeIndex = origin;
             il::Instruction br = callSiteInst(il::Op::Branch);

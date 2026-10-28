@@ -163,6 +163,7 @@ enum class BronzeOp {
     PrintSpreadErr,
     KeepAlive,
     MethodIcIs,
+    AccessorIcIs,
     Unknown
 };
 

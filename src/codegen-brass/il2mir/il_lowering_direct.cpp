@@ -563,6 +563,55 @@ Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value
                         {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(boxed_args.size())), argv, site});
 }
 
+// The stub's SLOT arm (build_method_call_stub) at the site, in front of the
+// stub itself: the same words read and the same tests made, so a receiver it
+// answers for is one the stub would have entered the same function for. What
+// it saves is the stub's call and its walk past way 0's DIRECT form, for the
+// receivers that carry their callee — three.js's Euler and Quaternion inside
+// an Object3D, whose `_onChangeCallback` is an own closure on every one.
+Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
+                                Value* site, const std::function<Value*(Builder&)>& rest) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+    const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
+    const std::string prefix = block_prefix(b, "slotcall");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* slot = b.append_block(prefix + "_slot");
+    BasicBlock* enter = b.append_block(prefix + "_enter");
+    BasicBlock* other = b.append_block(prefix + "_rest");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    pl.receiver_shape(b, recv, plain, ptr, shape);
+    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
+    Value* way0 = b.build_and(plain, b.build_eq(shape, b.build_load(Type::i64(), site, 0)));
+    b.build_br_if(b.build_and(way0, b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit))), slot, other);
+
+    // Re-read and re-tested at every call: same-shape receivers may hold
+    // different functions in the slot.
+    b.position_at_end(slot);
+    Value* tls = tls_block(b);
+    Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
+                                   b.build_iconst_i64(1));
+    const EntryTest t = entry_test(b, tls, pl.load_slot(b, ptr, slot_word), kCallMask, kCallBits);
+    b.build_br_if(t.ok, enter, other);
+
+    b.position_at_end(enter);
+    Value* argv = lowering->stage_argv(b, boxed_args);
+    Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
+    Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
+    b.build_br(merge, {call_code(b, code, env, recv, argc, argv)});
+
+    b.position_at_end(other);
+    b.build_br(merge, {rest(b)});
+
+    b.position_at_end(merge);
+    return result;
+}
+
 Value* lower_construct_direct(IlLowering* lowering, Builder& b, Value* ctor, const std::vector<Value*>& boxed_args) {
     const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
     Value* argv = lowering->stage_argv(b, boxed_args);

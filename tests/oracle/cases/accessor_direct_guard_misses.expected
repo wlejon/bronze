@@ -1,0 +1,20 @@
+warm 2000 2000
+own callback 4000 2000
+mixed callback 2005 4005 2005
+own function 2000 2000
+own deleted 2001 2000
+own non-function TypeError 2002
+own x 10010 0
+own x deleted 1 1
+subclass 8 24 12
+subclass inherits 14000 14000
+setPrototypeOf 100 -101
+setPrototypeOf back -100 -100
+y 1999 TypeError
+null TypeError
+proto method replaced 2 2006 2006
+redefined 31070 30070
+redefined inherited 151010 150010
+subclass own 56 28
+deleted undefined
+deleted set 3 1 _x,_y,y

@@ -491,6 +491,15 @@ enum class Op : uint8_t {
     // which is what its direct edge already tests. The guard of an inlined
     // method body (lower/inline_guarded.cpp). Loads only; cannot throw.
     MethodIcIs,
+    // a: bool = accessor.ic.is recv, <cell>, @callee. Whether the receiver is
+    // a plain object whose shape the site's ACCESSOR CELL (two words from
+    // static cell `cell`: a shape and the prototype-mutation epoch it was
+    // published at) names at the current epoch: the runtime publishes a
+    // shape there only after resolving the site's key on its chain to an
+    // accessor whose getter (prop.get) or setter (prop.set) is `@callee`
+    // (runtime/accessor_cell.cpp). The guard of an inlined accessor body.
+    // Loads only; cannot throw.
+    AccessorIcIs,
 };
 
 const char* opName(Op op);

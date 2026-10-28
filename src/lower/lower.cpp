@@ -390,6 +390,7 @@ std::optional<il::Module> Lowerer::lower() {
     // class body that answers it are lowered in the opposite order to the one
     // resolution wants (direct_method_table.h).
     directMethods_.resolve(ilModule_);
+    directMethods_.markOwnCalleeSites(ilModule_);
     reportClassLayouts();
     // Every file, whole, in SourceSet order — the order `Span::file` indexes.
     // Files a function was never lowered from are carried too: the alternative
@@ -428,6 +429,7 @@ std::optional<il::Module> Lowerer::lower() {
         // caller's regions could not form across it (they start at a
         // function's entry or a loop header, and an inlined body is neither),
         // and a typed site would lose its unboxed entry for a generic body.
+        directMethods_.resolveAccessors(ilModule_);
         if (inlineGuarded_) {
             std::vector<uint32_t> inlinedInto;
             inlineGuardedMethods(ilModule_, diags_, &inlinedInto);
