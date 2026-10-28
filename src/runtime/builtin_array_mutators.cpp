@@ -52,7 +52,10 @@ extern "C" uint64_t bronze_array_pop(uint64_t env, uint64_t thisBits, uint32_t a
     Value self(thisBits);
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         ArrayHeader* arr = self.asObject<ArrayHeader>();
-        if (arr->properties.isUndefined()) {
+        // A last element that is a hole is read off the chain (rt_array_holes.cpp)
+        // by the full algorithm below, when the chain could answer it.
+        if (arr->properties.isUndefined() &&
+            (arr->length == 0 || arr->hasElem(arr->length - 1) || !rtArrayChainHoldsIndex(self))) {
             if (arr->length == 0) return Value::fromUndefined().rawBits();
             Value last = arr->getElem(arr->length - 1);
             arr->elementsData()[arr->length - 1] = Value::fromHole();
@@ -73,8 +76,18 @@ uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (arr->length == 0) return Value::fromUndefined().rawBits();
         if (!requireConfigurableElements(self.get(), "pop")) return Value::fromUndefined().rawBits();
-        Value last = arr->getElem(arr->length - 1);
-        arr->elementsData()[arr->length - 1] = Value::fromHole();
+        const uint32_t len = arr->length;
+        if (!arr->hasElem(len - 1) && rtArrayChainHoldsIndex(self.get())) {
+            // Get(len - 1) of a hole is the chain's answer, and it may run a
+            // getter — after which the delete and the length are 23.1.3.22's
+            // steps on the length read before it, not on whatever is there now.
+            Rooted<Value> last{rtArrayInheritedGet(self, len - 1)};
+            rtArrayLikeDeleteElement(self, len - 1);
+            rtArrayLikeSetLength(self, len - 1);
+            return last.get().rawBits();
+        }
+        Value last = arr->getElem(len - 1);
+        arr->elementsData()[len - 1] = Value::fromHole();
         arr->length -= 1;
         if (arr->length == 0) {
             arr->head_offset = 0;
@@ -97,7 +110,9 @@ extern "C" uint64_t bronze_array_shift(uint64_t env, uint64_t thisBits, uint32_t
     Value self(thisBits);
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         ArrayHeader* arr = self.asObject<ArrayHeader>();
-        if (arr->properties.isUndefined()) {
+        // Moving the block down is the specification's element-by-element walk
+        // only when no hole would have read through to the chain.
+        if (arr->properties.isUndefined() && !rtArrayHolesSeeChain(self)) {
             if (arr->length == 0) return Value::fromUndefined().rawBits();
             Value first = arr->getElem(0);
             arr->elementsData()[0] = Value::fromHole();
@@ -119,14 +134,18 @@ uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (arr->length == 0) return Value::fromUndefined().rawBits();
         if (!requireConfigurableElements(self.get(), "shift")) return Value::fromUndefined().rawBits();
-        Value first = arr->getElem(0);
-        arr->elementsData()[0] = Value::fromHole();
-        arr->head_offset += 1;
-        arr->length -= 1;
-        if (arr->length == 0) {
-            arr->head_offset = 0;
+        if (!rtArrayHolesSeeChain(self.get())) {
+            Value first = arr->getElem(0);
+            arr->elementsData()[0] = Value::fromHole();
+            arr->head_offset += 1;
+            arr->length -= 1;
+            if (arr->length == 0) {
+                arr->head_offset = 0;
+            }
+            return first.rawBits();
         }
-        return first.rawBits();
+        // A hole the chain answers: 23.1.3.27's own walk below, which moves an
+        // inherited element down into an own one.
     }
     const uint32_t len = rtArrayLikeLength(self);
     if (len == 0) {
@@ -157,7 +176,9 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         const uint32_t n = args.count();
         if (n == 0) return Value::fromDouble(lengthOf(self.get())).rawBits();
         if (!requireExtensible(self.get(), "unshift")) return Value::fromUndefined().rawBits();
-
+    }
+    if (isArray(self.get()) && !rtArrayHolesSeeChain(self.get())) {
+        const uint32_t n = args.count();
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (arr->head_offset >= n) {
             arr->head_offset -= n;
@@ -212,11 +233,13 @@ uint64_t arrayReverse(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         if (arr->length > 1 && !requireWritableElements(self.get(), "reverse")) {
             return Value::fromUndefined().rawBits();
         }
-        HeapValue* data = arr->elementsData();
-        for (uint32_t i = 0, j = arr->length; i + 1 < j; ++i, --j) {
-            std::swap(data[i], data[j - 1]);
+        if (!rtArrayHolesSeeChain(self.get())) {
+            HeapValue* data = arr->elementsData();
+            for (uint32_t i = 0, j = arr->length; i + 1 < j; ++i, --j) {
+                std::swap(data[i], data[j - 1]);
+            }
+            return self.get().rawBits();
         }
-        return self.get().rawBits();
     }
     const uint32_t len = rtArrayLikeLength(self);
     const uint32_t middle = len / 2;
@@ -294,7 +317,7 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 
     Rooted<Value> removed{rtArraySpeciesCreate(self, 0)};
 
-    if (isArray(self.get()) && isArray(removed.get()) &&
+    if (isArray(self.get()) && isArray(removed.get()) && !rtArrayHolesSeeChain(self.get()) &&
         self.get().asObject<ArrayHeader>()->length == len &&
         self.get().asObject<ArrayHeader>()->head_offset + len <=
             self.get().asObject<ArrayHeader>()->capacity &&
@@ -408,7 +431,8 @@ uint64_t arrayCopyWithin(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     uint32_t count = final > from ? std::min(final - from, len - to) : 0;
     if (count == 0) return self.get().rawBits();
 
-    if (isArray(self.get()) && self.get().asObject<ArrayHeader>()->length == len &&
+    if (isArray(self.get()) && !rtArrayHolesSeeChain(self.get()) &&
+        self.get().asObject<ArrayHeader>()->length == len &&
         self.get().asObject<ArrayHeader>()->head_offset + len <=
             self.get().asObject<ArrayHeader>()->capacity &&
         self.get().asObject<ArrayHeader>()->elementsData() != nullptr) {

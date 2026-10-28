@@ -240,7 +240,9 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     Rooted<Value> list{fastEngine
                            ? Value::fromObject(ArrayHeader::create(rtHeap(), len > 4 ? len : 4))
                            : Value(bronze_create_array(0))};
-    if (isArr) {
+    // A hole the chain answers is an item (HasProperty), which the generic
+    // read takes.
+    if (isArr && !rtArrayChainHoldsIndex(self.get())) {
         for (uint32_t i = 0; i < len; ++i) {
             if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
             const uint32_t at = list.get().asObject<ArrayHeader>()->length;

@@ -246,6 +246,12 @@ void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name
                         kSpreadWriteThrows);
         return;
     }
+    // `Object.assign(Array.prototype, ...)`: the assignment's refusal, which
+    // this direct shape write would otherwise step past (rt_builtins.h).
+    if (rtArrayPrototypeRefusesChange(target.get())) {
+        rtThrowArrayPrototypeChange("write", key.get());
+        return;
+    }
     SetRefusal refusal = SetRefusal::None;
     target.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), key, val,
                                                    /*ic=*/nullptr, /*enumerable=*/true,

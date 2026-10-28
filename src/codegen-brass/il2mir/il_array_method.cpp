@@ -5,10 +5,11 @@
 //   push   an Array with no named-property box and room in its block past
 //          its last element (head + length < capacity): the value stored
 //          there, `length` one more, and the new length returned.
-//   shift  an Array with no box and at least one element: the first element
-//          (a hole reads as undefined) taken out, a hole left in its place,
-//          the head moved past it, `length` one less, and both reset to the
-//          block's start when the array empties.
+//   shift  an Array with no box and at least one element, while the TLS hole
+//          latch says `Array.prototype`'s chain holds no index: the first
+//          element (a hole reads as undefined) taken out, a hole left in its
+//          place, the head moved past it, `length` one less, and both reset to
+//          the block's start when the array empties.
 //
 // The box test is what answers for every array these must not touch. A frozen,
 // sealed or non-extensible array has one (its integrity level lives on it),
@@ -97,7 +98,17 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
         pos = b.build_add(head, length);
         b.build_br_if(b.build_and(no_props, b.build_ult(pos, capacity)), bb_fast, bb_slow);
     } else {
-        b.build_br_if(b.build_and(no_props, b.build_ne(length, iconst(b, 0))), bb_fast, bb_slow);
+        // And the hole latch (bronze_abi_tls.h, array_hole_epoch): the block can
+        // be moved down as it stands only while no hole could read through to
+        // `Array.prototype`'s chain, which the native's fast path asks too
+        // (rtArrayHolesSeeChain). The latch is the chain's half of that; a
+        // miss reaches the native, which re-latches or walks.
+        Value* tls = tls_block(b);
+        Value* hole_epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_ARRAY_HOLE_EPOCH_OFF);
+        Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+        Value* holes_clean = b.build_eq(hole_epoch, epoch);
+        b.build_br_if(b.build_and(b.build_and(no_props, holes_clean), b.build_ne(length, iconst(b, 0))),
+                      bb_fast, bb_slow);
     }
 
     b.position_at_end(bb_fast);

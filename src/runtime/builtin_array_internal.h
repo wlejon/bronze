@@ -16,6 +16,7 @@
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -41,9 +42,14 @@ inline Value toObject(Value v, const char* method) {
     return rtToObject(v);
 }
 
+// HasProperty and Get of an index, which on an array are its own element and,
+// for a hole, the prototype chain's answer (rt_array_holes.cpp) — so a method
+// written in these reads through holes as 23.1.3 says, and pays for it only
+// on a hole and only when the chain could hold an index at all.
 inline bool rtArrayLikeHasElement(Rooted<Value>& src, uint32_t index) {
     if (isArray(src.get())) {
-        return src.get().asObject<ArrayHeader>()->hasElem(index);
+        if (src.get().asObject<ArrayHeader>()->hasElem(index)) return true;
+        return rtArrayChainHoldsIndex(src.get()) && rtArrayInheritedHas(src, index);
     }
     Rooted<Value> key{Value::fromDouble(index)};
     return bronze_has_property(key.get().rawBits(), src.get().rawBits());
@@ -51,13 +57,19 @@ inline bool rtArrayLikeHasElement(Rooted<Value>& src, uint32_t index) {
 
 inline Value rtArrayLikeGetElement(Rooted<Value>& src, uint32_t index) {
     if (isArray(src.get())) {
-        return src.get().asObject<ArrayHeader>()->getElem(index);
+        const ArrayHeader* arr = src.get().asObject<ArrayHeader>();
+        if (arr->hasElem(index) || !rtArrayChainHoldsIndex(src.get())) return arr->getElem(index);
+        return rtArrayInheritedGet(src, index);
     }
     return Value(bronze_elem_get(src.get().rawBits(), Value::fromDouble(index).rawBits()));
 }
 
+// Set and DeletePropertyOrThrow of an index. An array with no box is open —
+// extensible, every element writable and configurable — so its block takes
+// the change directly; one with a box may be sealed, frozen or non-extensible
+// (the level lives on the box), and the full write or delete is what refuses.
 inline void rtArrayLikeSetElement(Rooted<Value>& src, uint32_t index, Rooted<Value>& val) {
-    if (isArray(src.get())) {
+    if (isArray(src.get()) && !src.get().asObject<ArrayHeader>()->properties.isObject()) {
         src.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, val.get());
         return;
     }
@@ -66,7 +78,7 @@ inline void rtArrayLikeSetElement(Rooted<Value>& src, uint32_t index, Rooted<Val
 }
 
 inline void rtArrayLikeDeleteElement(Rooted<Value>& src, uint32_t index) {
-    if (isArray(src.get())) {
+    if (isArray(src.get()) && !src.get().asObject<ArrayHeader>()->properties.isObject()) {
         src.get().asObject<ArrayHeader>()->deleteElem(index);
         return;
     }

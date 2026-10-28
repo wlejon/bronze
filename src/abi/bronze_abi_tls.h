@@ -83,6 +83,15 @@ typedef struct bronze_tls_block {
      * static all-zero table until the intrinsics are built, so it is never
      * null and never hits before then. */
     uint64_t* ta_length_tbl;
+    /* The prototype-mutation epoch at which this thread's ordinary array
+     * chain — `Array.prototype` and what lies above it — was last found to
+     * hold no array-index key (0 when it was not, which no live epoch is).
+     * A hole reads through the chain (10.4.2 leaves it to OrdinaryGet), so
+     * this is what lets an array with no box treat a hole as `undefined`
+     * and as absent without asking: the inline `shift` arm requires it to
+     * equal proto_epoch, as the runtime's fast paths do
+     * (rt_array_holes.cpp, rtArrayChainHoldsIndex). */
+    uint64_t array_hole_epoch;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -118,6 +127,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_GC_CELL_HEADER_OFF            240
 #define BRONZE_TLS_REALM_SLOT_OFF                248
 #define BRONZE_TLS_TA_LENGTH_TBL_OFF             256
+#define BRONZE_TLS_ARRAY_HOLE_EPOCH_OFF          264
 
 /*
  * ---- the pinned register -----------------------------------------------

@@ -272,6 +272,12 @@ bool rtObjectSetPrototypeOfOrdinary(Rooted<Value>& self, Rooted<Value>& proto) {
         const Value current(objectGetPrototypeOf(0, 0, 1, call));
         if (bronze_strict_eq(proto.get().rawBits(), current.rawBits())) return true;
     }
+    // An array's misses go to `Object.prototype` whatever `Array.prototype`'s
+    // chain says, so a new one there is the lie rt_builtins.h refuses.
+    if (rtArrayPrototypeRefusesChange(self.get())) {
+        rtThrowArrayPrototypeChange("replace its prototype");
+        return false;
+    }
     if (!rtIsExtensible(self.get())) return false;
     // Step 8: a chain that would loop back to the object is refused, walked
     // over ordinary links only — step 8.c.i stops the walk at a link whose

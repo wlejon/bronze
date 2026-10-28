@@ -233,6 +233,10 @@ void rtReportSetRefusal(SetRefusal refusal, bool strict, const std::string& key)
 SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
                                      Rooted<Value>& val, Rooted<Value>& receiver);
 
+// 28.1.6 Reflect.get(target, key, receiver) from C++: [[Get]] of `key` on
+// `target` with `receiver` as the `this` an accessor runs against.
+Value rtGetWithReceiver(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& receiver);
+
 // ---- an array's own properties that are not elements (rt_prop_array.cpp) ----
 //
 // `length` and the named ones. Six paths ask — a read, a write, `in`, `delete`,
@@ -262,6 +266,33 @@ bool rtArrayNamedDelete(Value arrVal, PropertyKey name);
 // an array length; the refusal is a frozen `length` or a sealed array's
 // elements refusing to be deleted.
 SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal);
+
+// ---- an array's holes (rt_array_holes.cpp) ----
+//
+// A hole is not an own property, so [[HasProperty]] and [[Get]] of its index go
+// on up the chain (10.1.7.1, 10.1.8.1) — and so do the array methods' reads,
+// which are those two operations. What a hole finds there is almost always
+// nothing, and these are what let every fast path keep saying so with one
+// cached test rather than a walk.
+
+// Could anything on this array's prototype chain answer an array index? False
+// means every hole reads as `undefined` and as absent, which is the fast
+// paths' whole premise. Cached per chain and per prototype-mutation epoch,
+// so a run of holes asks it once; true is conservative for a link that is no
+// ordinary object (a proxy answers for itself). The receiver must be an array.
+bool rtArrayChainHoldsIndex(Value arr);
+
+// The same question and a scan of [0, length) for a hole, which is when a
+// method that MOVES elements (`shift`, `splice`, `reverse`, ...) must take the
+// specification's walk: with no hole every index it reads is an own element
+// and the block can be moved as it stands.
+bool rtArrayHolesSeeChain(Value arr);
+
+// [[HasProperty]] and [[Get]] of `index` on the array's PROTOTYPE, which is
+// what a hole at `index` answers; the getter of an accessor there runs with the
+// array as `this`. Both may run user code (a proxy, a getter).
+bool rtArrayInheritedHas(Rooted<Value>& arr, uint32_t index);
+Value rtArrayInheritedGet(Rooted<Value>& arr, uint32_t index);
 
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table and then to the

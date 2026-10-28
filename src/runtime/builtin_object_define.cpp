@@ -531,6 +531,16 @@ static bool applyRegExpDescriptor(Rooted<Value>& self, PropertyKey name,
 static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const DecodedDescriptor& d,
                             Rooted<Value>& value, Rooted<Value>& getter, Rooted<Value>& setter,
                             bool throwOnRefusal) {
+    // The assignment's refusal (rt_builtins.h), for every spelling of a
+    // define: an unfrozen `Array.prototype` would take the property and no
+    // array would ever see it. It is not 10.1.6.3's refusal — the object is
+    // ordinary and would accept — but bronze's limit, so it throws for
+    // `Reflect.defineProperty` too rather than becoming a `false` that says
+    // the object declined. A frozen one passes on and declines for itself.
+    if (rtArrayPrototypeRefusesChange(self.get())) {
+        rtThrowArrayPrototypeChange("define", name.toValue());
+        return false;
+    }
     const uint16_t kind = self.get().asObject<HeapObjectHeader>()->flags;
     if (kind == HeapKind::Array) {
         return applyArrayDescriptor(self, name, d, value, getter, setter, throwOnRefusal);

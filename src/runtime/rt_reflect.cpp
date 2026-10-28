@@ -253,6 +253,13 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
             bool existed = false;
             const SetRefusal why = receiverRefusalForData(receiver, key, existed);
             if (why != SetRefusal::None) return why;
+            // The write lands on the receiver, so the receiver is what the
+            // `Array.prototype` refusal asks about (rt_builtins.h). Asked
+            // after the refusals above, which a frozen one answers with.
+            if (rtArrayPrototypeRefusesChange(receiver.get())) {
+                rtThrowArrayPrototypeChange("write", key.get());
+                return SetRefusal::None;
+            }
             if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
                 return defineOntoProxyReceiver(receiver, key, val, existed);
             }
@@ -354,6 +361,12 @@ static uint64_t reflectGet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
             return bronze_elem_get(target.get().rawBits(), key.get().rawBits());
     }
     return BRONZE_ABI_UNDEFINED_BITS;
+}
+
+Value rtGetWithReceiver(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& receiver) {
+    const uint64_t argv[3] = {target.get().rawBits(), key.get().rawBits(),
+                              receiver.get().rawBits()};
+    return Value(reflectGet(0, 0, 3, argv));
 }
 
 // 28.1.13 Reflect.set(target, propertyKey, V, receiver).

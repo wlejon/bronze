@@ -12,7 +12,9 @@ uint64_t arrayIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
                                              : rtArrayLikeLength(self);
     uint32_t from = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
     const Value needle = args[0];
-    if (isArray(self.get())) {
+    // The block walk answers a hole as absent, which is the chain's answer too
+    // unless the chain holds an index; the generic walk reads through it.
+    if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         for (uint32_t i = from; i < len; ++i) {
             if (!arr->hasElem(i)) continue;
@@ -48,7 +50,7 @@ uint64_t arrayLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint
     if (k < 0) return Value::fromDouble(-1.0).rawBits();
 
     Value needle = args[0];
-    if (isArray(self.get())) {
+    if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         for (int64_t i = static_cast<int64_t>(k); i >= 0; --i) {
             if (!arr->hasElem(static_cast<uint32_t>(i))) continue;
@@ -76,7 +78,9 @@ uint64_t arrayIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
     const uint32_t len = isArray(self.get()) ? self.get().asObject<ArrayHeader>()->length
                                              : rtArrayLikeLength(self);
     uint32_t from = args.count() > 1 ? relativeIndex(toInteger(rtToNumber(args[1])), len) : 0;
-    if (isArray(self.get())) {
+    // 23.1.3.16 reads every index with Get, so a hole is `undefined` only when
+    // the chain has nothing for it.
+    if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         for (uint32_t i = from; i < len; ++i) {
             if (sameValueZero(arr->getElem(i), args[0])) return Value::fromBool(true).rawBits();
@@ -101,11 +105,7 @@ uint64_t arrayAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* arg
     if (idx < 0 || idx >= static_cast<double>(len)) {
         return Value::fromUndefined().rawBits();
     }
-    const uint32_t uidx = static_cast<uint32_t>(idx);
-    if (isArray(self.get())) {
-        return self.get().asObject<ArrayHeader>()->getElem(uidx).rawBits();
-    }
-    return rtArrayLikeGetElement(self, uidx).rawBits();
+    return rtArrayLikeGetElement(self, static_cast<uint32_t>(idx)).rawBits();
 }
 
 template <bool Reverse, bool WantIndex>
@@ -119,7 +119,7 @@ static uint64_t arrayFindImpl(uint64_t, uint64_t thisBits, uint32_t argc, const 
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
     for (uint32_t n = 0; n < len; ++n) {
         uint32_t i = Reverse ? len - 1 - n : n;
-        Rooted<Value> elem{isArray(self.get()) ? elemOf(self.get(), i) : rtArrayLikeGetElement(self, i)};
+        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
         Rooted<Value> found{callBack(fn, thisArg, elem, i, self)};
         if (bronze_truthy(found.get().rawBits())) {
             return WantIndex ? Value::fromDouble(i).rawBits() : elem.get().rawBits();

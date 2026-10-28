@@ -188,6 +188,21 @@ bool deleteArrayProperty(Rooted<Value>& objRoot, Value keyVal, std::string& outK
 
 }  // namespace
 
+// `delete Array.prototype.shift` would leave every array still answering
+// `shift` from its table while the object said it had none — the refusal
+// rt_builtins.h describes. A key the object does not have is no change, and
+// keeps 13.5.1's `true`; a frozen object refuses for itself. True when this
+// answered the delete, with `result` the answer: the own-key test allocates,
+// so the caller's raw receiver and key are not to be used after it.
+static bool arrayPrototypeDelete(Value objVal, Value key, bool& result) {
+    if (!rtArrayPrototypeRefusesChange(objVal)) return false;
+    Rooted<Value> self{objVal};
+    Rooted<Value> keyRoot{key};
+    result = !rtHasOwnPropertyNamed(self, keyRoot.get());
+    if (!result) rtThrowArrayPrototypeChange("delete", keyRoot.get());
+    return true;
+}
+
 extern "C" {
 
 // The strict half of 13.5.1.2 step 5.b, in one place because `delete o.k` and
@@ -252,6 +267,9 @@ bool bronze_prop_delete(uint64_t objBits, uint32_t keyIndex, bool strict) {
     if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return rtProxyDelete(objVal, Value::fromString(keyHeader), strict);
     }
+    if (bool answer = false; arrayPrototypeDelete(objVal, Value::fromString(keyHeader), answer)) {
+        return answer;
+    }
 
     objVal = prepareDeleteReceiver(objVal);
     ObjectHeader* owner = namedPropertyOwner(objVal);
@@ -308,6 +326,7 @@ bool bronze_elem_delete(uint64_t objBits, uint64_t idxBits, bool strict) {
     if (objVal.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return rtProxyDelete(objVal, idxVal, strict);
     }
+    if (bool answer = false; arrayPrototypeDelete(objVal, idxVal, answer)) return answer;
 
     {
         // The key is a primitive here and may be a heap string, so it rides

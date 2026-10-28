@@ -1,0 +1,20 @@
+frozen true false
+1 defineProperty TypeError
+1 defineProperty new TypeError
+1 defineProperty accessor TypeError
+1 defineProperties TypeError
+1 defineProperties literal TypeError
+1 static block TypeError
+2 false false false false
+3 true true true
+4 sloppy function function
+4 strict TypeError
+4 strict new TypeError
+4 assign TypeError
+4 Reflect.set false false
+5 delete false false true
+5 strict delete TypeError
+5 setPrototypeOf TypeError
+5 Reflect.setPrototypeOf false true
+6 true false false 1 2 2 2,4
+6 false false false function

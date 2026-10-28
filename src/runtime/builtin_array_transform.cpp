@@ -45,7 +45,9 @@ uint64_t arraySlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
                        : len;
     const uint32_t count = end > start ? end - start : 0;
     Rooted<Value> out{rtArraySpeciesCreate(self, 0)};
-    if (isArray(self.get())) {
+    // A hole is copied as a hole unless the chain answers it (23.1.3.28 step
+    // 15.b is HasProperty), which the generic walk asks.
+    if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
         for (uint32_t i = 0; i < count; ++i) {
             const uint32_t srcIdx = start + i;
             if (!hasIndex(self.get(), srcIdx)) {

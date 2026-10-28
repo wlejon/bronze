@@ -342,8 +342,8 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // by reads of `Array.prototype` and by nothing an array does — a property
     // that exists and changes nothing, which is the silent lie the refusal
     // exists to prevent.
-    if (rtIsArrayPrototypeObject(objVal)) {
-        rtThrowTypeError("Cannot decorate Array.prototype (tried to write `" + keyStr + "`)");
+    if (rtArrayPrototypeRefusesChange(objVal)) {
+        rtThrowArrayPrototypeChange("write `" + keyStr + "`");
         return;
     }
 
@@ -684,6 +684,15 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
     ElemSetCacheEntry* setEntry = elemSetCacheEntryFor(objVal, Value(idxBits));
     if (setEntry && setEntry->ic.describesOwn(objVal.asObject<ObjectHeader>()->shape)) {
         objVal.asObject<ObjectHeader>()->setSlot(setEntry->ic.cached_slot, Value(valBits));
+        return;
+    }
+
+    // `bronze_prop_set`'s refusal, for the computed spelling of the same write
+    // (`Array.prototype[k] = v`, and `Object.assign` onto it). No cache entry
+    // can have answered above: only `setProp` fills one, and this keeps every
+    // write to the object from reaching it.
+    if (rtArrayPrototypeRefusesChange(objVal)) {
+        rtThrowArrayPrototypeChange("write", Value(idxBits));
         return;
     }
 

@@ -117,6 +117,7 @@ bronze_add_module(runtime
         rt_prop_function.cpp
         rt_prop_primitive.cpp
         rt_prop_array.cpp
+        rt_array_holes.cpp
         rt_prop_symbol.cpp
         rt_prop_write.cpp
         rt_method_call.cpp

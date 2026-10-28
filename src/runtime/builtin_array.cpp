@@ -234,8 +234,35 @@ Value rtArrayPrototypeObject() {
     return g_arrayPrototype;
 }
 
+Value rtArrayPrototypeObjectIfBuilt() { return g_arrayPrototype; }
+
 bool rtIsArrayPrototypeObject(Value v) {
     return g_arrayPrototype.isObject() && v.rawBits() == g_arrayPrototype.rawBits();
+}
+
+// A FROZEN `Array.prototype` (embed::lockdown, or a program's own
+// `Object.freeze`) is let through: every change the ordinary algorithms could
+// make to it is one they refuse themselves — non-writable, non-configurable,
+// non-extensible — so the program gets the specification's answer, a
+// TypeError or a `false`, and nothing lands that an array would not see.
+bool rtArrayPrototypeRefusesChange(Value obj) {
+    return rtIsArrayPrototypeObject(obj) && rtIntegrityLevel(obj) != IntegrityLevel::Frozen;
+}
+
+void rtThrowArrayPrototypeChange(const std::string& what) {
+    rtThrowTypeError("Cannot decorate Array.prototype (tried to " + what + ")");
+}
+
+void rtThrowArrayPrototypeChange(const char* verb, Value key) {
+    // A symbol's description is not its identity, so the position is named
+    // instead of the key, as the other refusals of a symbol-keyed write do.
+    if (key.isSymbol()) {
+        rtThrowArrayPrototypeChange(std::string(verb) + " a symbol-keyed property");
+        return;
+    }
+    Rooted<Value> text{key.isString() ? key : rtElemKeyAsString(key)};
+    rtThrowArrayPrototypeChange(std::string(verb) + " `" +
+                                rtUtf8Chars(text.get().asString<StringHeader>()) + "`");
 }
 
 bool rtArrayPrototypeCheckMissingMember(Value obj, const std::string& key) {
