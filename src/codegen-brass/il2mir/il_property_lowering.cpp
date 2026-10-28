@@ -338,15 +338,30 @@ Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint
     return result;
 }
 
-Value* PropertyLoweringHelper::lower_prop_get_array_length(Builder& b, Value* obj, uint32_t key_index,
-                                                          Value* ic_entry) {
+// `obj.length` read inline for the two receivers whose length is not a slot:
+// an Array, from its header (10.4.2's exotic `length`, which the runtime's
+// read answers the same way for every array, `arguments` included), and a
+// typed array, from its view header — but only when the runtime's own read
+// would answer from it (rtTypedArrayChainPristine): the view's shape is its
+// kind's intrinsic instance shape (no own property, its own prototype) and
+// the family was verified pristine at the current prototype-mutation epoch
+// (TLS ta_length_tbl). The header's length IS the getter's answer, 0 for a
+// detached or out-of-bounds view (typed_array.h keeps the truth in the
+// field). Any other object takes the site's way-0 guard when `mono`, and
+// everything else the helper.
+Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
+                                                     bool mono, bool is_family) {
     Value* ptr = nullptr;
     Value* is_obj = nullptr;
     object_payload(b, obj, ptr, is_obj);
     BasicBlock* cur = b.current_block();
-    const std::string prefix = "arr_len_" + std::to_string(cur->parent()->next_block_id());
+    const std::string prefix = "len_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* bb_obj = b.append_block(prefix + "_obj");
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    BasicBlock* bb_arr = b.append_block(prefix + "_arr");
+    BasicBlock* bb_not_arr = b.append_block(prefix + "_not_arr");
+    BasicBlock* bb_ta = b.append_block(prefix + "_ta");
+    BasicBlock* bb_ta_hit = b.append_block(prefix + "_ta_hit");
+    BasicBlock* bb_other = b.append_block(prefix + "_other");
     BasicBlock* bb_slow = b.append_block(prefix + "_slow");
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::i64());
@@ -356,15 +371,45 @@ Value* PropertyLoweringHelper::lower_prop_get_array_length(Builder& b, Value* ob
 
     b.position_at_end(bb_obj);
     constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
-    Value* is_array = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kArrayHeaderLow));
-    b.build_br_if(is_array, bb_fast, bb_slow);
+    constexpr int32_t kViewHeaderLow = (BRONZE_ABI_OBJ_FLAGS_TYPED_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;
+    Value* header_low = b.build_load(Type::i32(), ptr, 0);
+    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_arr, bb_not_arr);
 
-    b.position_at_end(bb_fast);
-    Value* len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
-    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(len))});
+    b.position_at_end(bb_arr);
+    Value* arr_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
+    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(arr_len))});
+
+    b.position_at_end(bb_not_arr);
+    b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kViewHeaderLow)), bb_ta, bb_other);
+
+    b.position_at_end(bb_ta);
+    Module* mod = cur->parent()->parent();
+    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+    Value* tbl = b.build_load(Type::i64(), tls, BRONZE_TLS_TA_LENGTH_TBL_OFF);
+    Value* kind = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET));
+    Value* shape_addr = b.build_add(tbl, b.build_shl(kind, b.build_iconst_i64(3)));
+    Value* shape_ok = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                 b.build_load(Type::i64(), shape_addr, BRONZE_ABI_TA_LENGTH_TBL_SHAPES_OFFSET));
+    Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), tbl, BRONZE_ABI_TA_LENGTH_TBL_EPOCH_OFFSET),
+                                 b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+    b.build_br_if(b.build_and(shape_ok, epoch_ok), bb_ta_hit, bb_slow);
+
+    b.position_at_end(bb_ta_hit);
+    Value* ta_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(ta_len))});
+
+    // A plain object's `length` is an ordinary property: the site's way 0
+    // when the IL calls it monomorphic, the helper otherwise.
+    b.position_at_end(bb_other);
+    if (mono) {
+        b.build_br(bb_merge, {lower_prop_get_mono(b, obj, key_index, site, is_family)});
+    } else {
+        b.build_br(bb_slow);
+    }
 
     b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, ic_entry)});
+    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site ? site_ptr(b, site) : nullptr)});
 
     b.position_at_end(bb_merge);
     return result;
@@ -524,10 +569,10 @@ bool lower_property_instruction(
             // included), and anything else takes the read it took before.
             // An array is never a plain object, so the mono guard below could
             // only ever miss on one.
-            if (!mono && prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
+            if (prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
                 prop_lowering.key_tag(inst_ast.index) == "length") {
-                res_val = prop_lowering.lower_prop_get_array_length(
-                    b, obj_val, inst_ast.index, site ? prop_lowering.site_ptr(b, site) : nullptr);
+                res_val = prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site,
+                                                              site && mono, inst_ast.is_family);
                 return true;
             }
             if (site && mono && prop_lowering.enable_inlined_fastpaths() &&

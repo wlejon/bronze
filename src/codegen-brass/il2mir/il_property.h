@@ -207,9 +207,10 @@ public:
                               Value* val, uint32_t strict, const IcSite& site,
                               bool val_is_primitive = false);
 
-    // `obj.length` with an inline Array arm (the header's length) in front
-    // of `bronze_prop_get`.
-    Value* lower_prop_get_array_length(Builder& b, Value* obj, uint32_t key_index, Value* ic_entry);
+    // `obj.length` with inline Array and typed-array arms (each header's
+    // length) in front of the site's way-0 guard (`mono`) or the helper.
+    Value* lower_prop_get_length(Builder& b, Value* obj, uint32_t key_index, const IcSite& site, bool mono,
+                                 bool is_family);
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
 

@@ -1,0 +1,21 @@
+warm 1050000
+kinds 1,2,3,4,5,6,7,8,9
+mixed 39x2
+own 99 4
+subclass 1003 6
+swapped -5 3
+before transfer 8
+after transfer 0 16
+resizable 16:16/8/2 64:64/8/14 10:10/0/0 4:4/0/0 0:0/0/0 32:32/8/6
+patched patched patched 0patched1
+restored 16 5
+kind shadow 7 16 3
+kind unshadow 5 16
+threw no length
+after 23000
+prim threw TypeError
+prim threw TypeError
+prim undefined
+byteLength number byteLength! number
+byteOffset number byteOffset! number
+buffer object buffer! object

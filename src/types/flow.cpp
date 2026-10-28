@@ -711,7 +711,7 @@ void FlowAnalyzer::analyzeLoop(const LoopParts& parts, uint32_t depth, const ast
     const Span span = stmt.span;
     Env header = scope_.env;
     bool converged = false;
-    for (uint32_t iter = 0; iter <= kMaxFlowIterations; ++iter) {
+    for (uint32_t iter = 0; iter <= flowIterationBound(header.size() + scope_.cells.size()); ++iter) {
         const Env beforeHeader = header;
         const Env beforeCells = scope_.cells;
         runLoopOnce(parts, header, depth, /*record=*/false);
@@ -870,7 +870,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     }
     bool converged = false;
     Type probeReturn = Type::dynamic();
-    for (uint32_t iter = 0; iter <= kMaxFlowIterations; ++iter) {
+    for (uint32_t iter = 0; iter <= flowIterationBound(scope.cells.size()); ++iter) {
         const Env beforeCells = scope.cells;
         scope.env.clear();
         scope.clearSideTables();

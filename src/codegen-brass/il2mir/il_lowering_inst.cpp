@@ -515,9 +515,7 @@ bool IlLowering::lower_instruction(
             } else if (inst_ast.result_type == BronzeType::I32) {
                 res_val = b.build_trunc_i32(ensure_type(op0, Type::i64(), b));
             } else if (inst_ast.result_type == BronzeType::Bool) {
-                Value* i_val = ensure_type(op0, Type::i64(), b);
-                res_val = b.build_call("bronze_unbox_bool", Type::i32(), {i_val});
-                res_val = b.build_and(res_val, b.build_iconst_i32(1));
+                res_val = lower_dynamic_truthy(b, ensure_type(op0, Type::i64(), b), run_once_);
             } else if (inst_ast.result_type == BronzeType::Str) {
                 Value* i_val = ensure_type(op0, Type::i64(), b);
                 res_val = b.build_call("bronze_unbox_str", Type::i64(), {i_val});

@@ -81,6 +81,7 @@ static_assert(offsetof(bronze_tls_block, sort_fast_enabled) ==
 static_assert(offsetof(bronze_tls_block, map_fast_enabled) == BRONZE_TLS_MAP_FAST_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, ta_set_fast_enabled) ==
               BRONZE_TLS_TA_SET_FAST_ENABLED_OFF);
+static_assert(offsetof(bronze_tls_block, ta_length_tbl) == BRONZE_TLS_TA_LENGTH_TBL_OFF);
 static_assert(offsetof(bronze_tls_block, truthy_inline_enabled) ==
               BRONZE_TLS_TRUTHY_INLINE_ENABLED_OFF);
 static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
@@ -106,6 +107,11 @@ namespace bronze::runtime {
 // name it and the runtime's own seam predicates become three instructions
 // instead of a call. The initializer is still all compile-time constants, so
 // this is still constant-initialized with no guard.
+// ta_length_tbl before this thread builds its typed-array intrinsics: epoch
+// word 0, which no live epoch equals, so the inline `length` read always
+// misses into the helper. Read-only; nothing writes through the pointer.
+static constexpr uint64_t kNoTypedArrayLengthTable[BRONZE_ABI_TA_LENGTH_TBL_WORDS] = {};
+
 thread_local bronze_tls_block g_tls_block = {
     /*proto_epoch=*/1,
     /*alloc_cursor=*/0,
@@ -139,6 +145,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*module_deltas=*/nullptr,
     /*gc_cell_header=*/0,
     /*realm_slot=*/0,
+    /*ta_length_tbl=*/const_cast<uint64_t*>(kNoTypedArrayLengthTable),
 };
 
 namespace {

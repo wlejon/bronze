@@ -73,6 +73,16 @@ typedef struct bronze_tls_block {
      * runtime, which enters its realm first. Kept equal to the realm stack's
      * top by the runtime at every change of it, a stack switch included. */
     uint64_t realm_slot;
+    /* The typed-array `length` table (layout: BRONZE_ABI_TA_LENGTH_TBL_*):
+     * the prototype-mutation epoch at which this thread's typed-array family
+     * was last verified pristine (0 when it was not, which no live epoch
+     * is), then each kind's intrinsic instance shape. What lets generated
+     * code answer `view.length` from the header exactly when the runtime's
+     * read would (rtTypedArrayChainPristine): the view's shape is its kind's
+     * instance shape and the latch is for the current epoch. Points at a
+     * static all-zero table until the intrinsics are built, so it is never
+     * null and never hits before then. */
+    uint64_t* ta_length_tbl;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -107,6 +117,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_MODULE_DELTAS_OFF             232
 #define BRONZE_TLS_GC_CELL_HEADER_OFF            240
 #define BRONZE_TLS_REALM_SLOT_OFF                248
+#define BRONZE_TLS_TA_LENGTH_TBL_OFF             256
 
 /*
  * ---- the pinned register -----------------------------------------------

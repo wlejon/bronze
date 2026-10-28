@@ -23,11 +23,20 @@
 
 namespace bronze::types {
 
-// The lattice is three tall (Never -> a concrete kind -> Dynamic), so every
-// fixpoint here settles in a couple of rounds. These bounds are tripwires
-// for a rule that stopped being monotone, not real limits: exceeding one is
-// an internal impossibility and is diagnosed rather than looped on.
+// The lattice is flat (Never -> a concrete kind -> Dynamic, with an object's
+// class identity a step or two between), so one binding rises at most
+// kMaxBindingRises times. A fixpoint round that is not the last raised at
+// least one binding, but only one is guaranteed: a loop that rotates N
+// bindings (`t = a; a = b; b = c; ... z = f(t)`) carries a widened type one
+// binding further per round, so it takes N rounds, not a couple. The bound is
+// therefore per binding. It is a tripwire for a rule that stopped being
+// monotone, not a real limit: exceeding it is an internal impossibility and
+// is diagnosed rather than looped on.
 inline constexpr uint32_t kMaxFlowIterations = 8;
+inline constexpr uint32_t kMaxBindingRises = 4;
+inline uint32_t flowIterationBound(size_t bindings) {
+    return kMaxFlowIterations + kMaxBindingRises * static_cast<uint32_t>(bindings);
+}
 inline constexpr uint32_t kMaxCallGraphIterations = 32;
 // How far a pin lookup walks `extends` before giving up. A tripwire, not a
 // limit: a chain this long is a cyclic one, which is a run-time TypeError.

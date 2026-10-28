@@ -326,6 +326,9 @@ struct TypedArrayHeader {
 // ABI header carries them so the layout is pinned where every other heap
 // layout is, and so a host reading a view's bytes (embed.h) has one place to
 // learn it from.
+// The inline `length` read compares a view's shape word where a plain
+// object's is (the ordinary-object prefix).
+static_assert(offsetof(TypedArrayHeader, object) == 0);
 static_assert(offsetof(TypedArrayHeader, buffer) == BRONZE_ABI_TA_BUFFER_OFFSET);
 static_assert(offsetof(TypedArrayHeader, byteOffset) == BRONZE_ABI_TA_BYTEOFFSET_OFFSET);
 static_assert(offsetof(TypedArrayHeader, length) == BRONZE_ABI_TA_LENGTH_OFFSET);

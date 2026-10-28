@@ -93,6 +93,12 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
     const bool hasOwn = obj->shape->lookupProperty(name, own);
     if (hasOwn && own.accessor) {
         slot = own.slot;
+        // The pair is rewritten in place, so no shape moves; on a prototype
+        // the epoch has to. The latches that verify a prototype's getters
+        // only when the epoch changes (rtTypedArrayChainPristine, which
+        // generated code's inline view `length` reads too) would otherwise
+        // keep answering for the getter this call replaced.
+        if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
     } else if (obj->shape->isDictionary()) {
         obj = dictDefine(heap, arena, self, name, enumerable, /*accessor=*/true, slot);
     } else if (hasOwn || obj->shape->nextSlotIndex() + 1 >= Shape::kDictionaryThreshold) {

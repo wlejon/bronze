@@ -532,6 +532,13 @@
  * BigInt kind the same store still owes the ToBigInt that throws for a
  * Number value, so it must reach the helper. kind < BIGINT64 is that test. */
 #define BRONZE_ABI_TA_KIND_BIGINT64     10
+/* Every ElementKind, the ABI's nine and Float16 / BigInt64 / BigUint64, and
+ * the typed-array `length` table the TLS block points at (ta_length_tbl):
+ * word 0 the pristine epoch, then one instance shape per kind. */
+#define BRONZE_ABI_TA_KIND_COUNT        12
+#define BRONZE_ABI_TA_LENGTH_TBL_EPOCH_OFFSET  0
+#define BRONZE_ABI_TA_LENGTH_TBL_SHAPES_OFFSET 8
+#define BRONZE_ABI_TA_LENGTH_TBL_WORDS  (1 + BRONZE_ABI_TA_KIND_COUNT)
 #define BRONZE_ABI_BUF_EXTPTR_OFFSET    72
 #define BRONZE_ABI_BUF_DATA_OFFSET      80
 

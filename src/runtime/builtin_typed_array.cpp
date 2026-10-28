@@ -93,6 +93,21 @@ struct FamilyIntrinsics {
 thread_local ViewIntrinsics g_views[kKindCount];
 thread_local FamilyIntrinsics g_family;
 
+// The TLS block's ta_length_tbl (bronze_abi_tls.h): the latch below, in the
+// form generated code reads, so an inline `view.length` hits exactly when
+// rtTypedArrayChainPristine would answer from the header.
+static_assert(kKindCount == BRONZE_ABI_TA_KIND_COUNT);
+thread_local uint64_t g_lengthTable[BRONZE_ABI_TA_LENGTH_TBL_WORDS] = {};
+
+void publishLatch() noexcept {
+    g_lengthTable[BRONZE_ABI_TA_LENGTH_TBL_EPOCH_OFFSET / 8] = g_family.pristine ? g_family.pristineEpoch : 0;
+    for (size_t k = 0; k < kKindCount; ++k) {
+        g_lengthTable[BRONZE_ABI_TA_LENGTH_TBL_SHAPES_OFFSET / 8 + k] =
+            reinterpret_cast<uint64_t>(g_views[k].instanceShape);
+    }
+    bronze_tls_block_addr()->ta_length_tbl = g_lengthTable;
+}
+
 void ensureTypedArrayIntrinsics();
 
 // ---- the constructors --------------------------------------------------------
@@ -394,6 +409,7 @@ void ensureTypedArrayIntrinsics() {
     g_family.bufferInstanceShape = rtArrayBufferInstanceShape();
     g_family.pristineEpoch = protoMutationEpoch();
     g_family.pristine = true;
+    publishLatch();
 }
 
 // Re-verify the thirteen prototype shapes, the four getter slots, the
@@ -420,6 +436,7 @@ bool reverifyPristine() {
     }
     g_family.pristine = ok;
     g_family.pristineEpoch = protoMutationEpoch();
+    publishLatch();
     return ok;
 }
 

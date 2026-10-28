@@ -289,6 +289,41 @@ Value* lower_to_int32(Builder& b, Value* v, bool is_f64, bool raw_unbox = false)
 
 } // namespace
 
+// ToBoolean of a dynamic value, bronze_truthy without the call for every
+// operand whose answer is in its bits: a Number is true unless it is +-0 or
+// NaN, an Int32 or Boolean unless its payload is 0, undefined and null are
+// false and an Object is true (bronze has no [[IsHTMLDDA]] object). Strings,
+// BigInts and the hole read memory or are the helper's.
+Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only) {
+    if (helper_only) return b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1));
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "truthy_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i32());
+    b.position_at_end(cur);
+
+    auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
+    Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
+    // |x| in [1, +Inf] bits: neither a zero nor a NaN.
+    Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));
+    Value* num_true = b.build_ult(b.build_sub(abs, bits(1)), bits(0x7FF0000000000000ULL));
+    static_assert(BRONZE_ABI_TAG_BOOL == BRONZE_ABI_TAG_INT32 + 1, "Int32 and Boolean are adjacent tags");
+    Value* small = b.build_ult(b.build_sub(v, bits(uint64_t{BRONZE_ABI_TAG_INT32} << BRONZE_ABI_VALUE_TAG_SHIFT)),
+                               bits(uint64_t{2} << BRONZE_ABI_VALUE_TAG_SHIFT));
+    Value* small_true = b.build_ne(b.build_and(v, bits(0xFFFFFFFFULL)), bits(0));
+    Value* is_obj = b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_OBJECT));
+    Value* nullish = b.build_or(b.build_eq(v, bits(kNullTag)), b.build_eq(v, bits(kUndefinedTag)));
+    Value* handled = b.build_or(b.build_or(is_num, small), b.build_or(is_obj, nullish));
+    Value* answer = b.build_select(is_num, num_true, b.build_select(small, small_true, is_obj));
+    b.build_br_if(handled, merge, {answer}, slow, {});
+
+    b.position_at_end(slow);
+    b.build_br(merge, {b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1))});
+    b.position_at_end(merge);
+    return result;
+}
+
 bool is_ops_il_op(BronzeOp op) {
     switch (op) {
         case BronzeOp::ConstF64:

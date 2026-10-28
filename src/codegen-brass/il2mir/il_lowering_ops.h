@@ -11,6 +11,10 @@ class IlLowering;
 
 bool is_ops_il_op(BronzeOp op);
 
+// ToBoolean of a dynamic (i64) value as an i32 0/1; inline for every operand
+// whose answer is its bits unless `helper_only`.
+Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only);
+
 bool lower_ops_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,
