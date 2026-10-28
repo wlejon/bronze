@@ -119,6 +119,7 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
     const std::string prefix = "seq_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* num = b.append_block(prefix + "_num");
     BasicBlock* other = b.append_block(prefix + "_other");
+    BasicBlock* strings = b.append_block(prefix + "_strings");
     BasicBlock* slow = b.append_block(prefix + "_slow");
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i32());
@@ -139,7 +140,38 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
                                     b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_BIGINT)));
     Value* needs_helper = b.build_and(b.build_and(by_contents, b.build_eq(tag0, tag1)),
                                       b.build_eq(same_bits, b.build_iconst_i32(0)));
-    b.build_br_if(needs_helper, slow, {}, merge, {same_bits});
+    b.build_br_if(needs_helper, strings, {}, merge, {same_bits});
+
+    // Two Strings with different bits differ when their lengths do, or when
+    // both carry a memoized hash and the hashes do (StringHeader::hash is of
+    // the code units, so it is the same for either representation of the same
+    // text). A builder's memo is not trusted: it is the one string whose text
+    // can still grow. Anything else is the helper's contents compare.
+    b.position_at_end(strings);
+    {
+        Value* is_string = b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_STRING));
+        Value* mask = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+        // A BigInt pair reads nothing: both bases are then the first's own
+        // payload, whose words are never compared for an answer.
+        Value* s0 = b.build_and(op0, mask);
+        Value* s1 = b.build_select(is_string, b.build_and(op1, mask), s0);
+        Value* len_differ = b.build_ne(b.build_load(Type::i32(), s0, BRONZE_ABI_STRING_LENGTH_OFFSET),
+                                       b.build_load(Type::i32(), s1, BRONZE_ABI_STRING_LENGTH_OFFSET));
+        Value* f0 = b.build_load(Type::i32(), s0, BRONZE_ABI_STRING_FLAGS_OFFSET);
+        Value* f1 = b.build_load(Type::i32(), s1, BRONZE_ABI_STRING_FLAGS_OFFSET);
+        Value* hashed_bit = b.build_iconst_i32(BRONZE_ABI_STRING_HASHED_BIT);
+        Value* both_hashed = b.build_ne(b.build_and(b.build_and(f0, f1), hashed_bit), b.build_iconst_i32(0));
+        // The heap header's low word is (flags << 16) | tag.
+        static_assert(BRONZE_ABI_OBJ_FLAGS_OFFSET == 2, "the kind flags are the header word's high half");
+        Value* h0 = b.build_load(Type::i32(), s0, 0);
+        Value* h1 = b.build_load(Type::i32(), s1, 0);
+        Value* builder = b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_STRING_BUILDER_BIT << 16));
+        Value* no_builder = b.build_eq(b.build_and(b.build_or(h0, h1), builder), b.build_iconst_i32(0));
+        Value* hash_mask = b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_STRING_HASH_MASK));
+        Value* hash_differ = b.build_ne(b.build_and(f0, hash_mask), b.build_and(f1, hash_mask));
+        Value* differ = b.build_or(len_differ, b.build_and(b.build_and(both_hashed, no_builder), hash_differ));
+        b.build_br_if(b.build_and(is_string, differ), merge, {b.build_iconst_i32(0)}, slow, {});
+    }
 
     b.position_at_end(slow);
     b.build_br(merge, {b.build_and(b.build_call("bronze_strict_eq", Type::i32(), {op0, op1}),

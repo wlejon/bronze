@@ -62,6 +62,7 @@ Value* PropertyLoweringHelper::runtime_key(Builder& b, uint32_t key_index) {
 }
 
 Value* PropertyLoweringHelper::lower_prop_get(Builder& b, Value* obj, uint32_t key_index, Value* ic_entry) {
+    if (ic_entry && ic_stubs_) return b.build_call(kPropGetStub, Type::i64(), {obj, runtime_key(b, key_index), ic_entry});
     Value* entry = ic_entry ? ic_entry : b.build_iconst_i64(0);
     return b.build_call("bronze_prop_get", Type::i64(), {obj, runtime_key(b, key_index), entry});
 }
@@ -206,8 +207,7 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
             b.build_br(bb_merge, {poly_val});
             b.position_at_end(bb_slow);
         }
-        Value* slow_val =
-            b.build_call("bronze_prop_get", Type::i64(), {obj, runtime_key(b, key_index), site_ptr(b, site)});
+        Value* slow_val = lower_prop_get(b, obj, key_index, site_ptr(b, site));
         b.build_br(bb_merge, {slow_val});
     }
 
@@ -482,7 +482,8 @@ void PropertyLoweringHelper::lower_prop_set(Builder& b, Value* obj, uint32_t key
     // module has no table entry for passes null, never an index.
     Value* entry = ic_entry ? ic_entry : b.build_iconst_i64(0);
     Value* strict_val = b.build_iconst_i32(imm != 0 ? 1 : 0);
-    b.build_call("bronze_prop_set", Type::void_type(), {obj, runtime_key(b, key_index), val, entry, strict_val});
+    const char* callee = ic_entry && ic_stubs_ ? kPropSetStub : "bronze_prop_set";
+    b.build_call(callee, Type::void_type(), {obj, runtime_key(b, key_index), val, entry, strict_val});
 }
 
 void PropertyLoweringHelper::lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure) {

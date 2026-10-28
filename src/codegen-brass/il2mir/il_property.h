@@ -26,6 +26,15 @@ struct IcSite {
 // expands back inline (il_ic_stub.h).
 inline constexpr const char* kPolyScanHelper = "bronze_prop_poly_scan";
 
+// The module's out-of-line property sites (il_lowering_direct.cpp): what a
+// read or write that would have called bronze_prop_get / bronze_prop_set
+// calls instead in an image build. They answer from the site's cache what the
+// helper's own fast path answers (an own data slot, an absent key, a
+// prototype's data slot or accessor) and call the helper for the rest, with
+// the same operands.
+inline constexpr const char* kPropGetStub = "__bronze_prop_get_ic";
+inline constexpr const char* kPropSetStub = "__bronze_prop_set_ic";
+
 class PropertyLoweringHelper {
 public:
     // A key operand that names no key constant.
@@ -123,6 +132,11 @@ public:
     // Whether a feedback-driven module that runs here takes the small forms
     // (the scan and the misses out of line); off, BRONZE_IC_FULL=1.
     void set_small_forms(bool on) noexcept { small_forms_ = on; }
+    // Whether the helper calls of lower_prop_get / lower_prop_set (and the
+    // misses of the inline paths) go through kPropGetStub / kPropSetStub,
+    // which the module then defines (emit_direct_stubs).
+    void set_ic_stubs(bool on) noexcept { ic_stubs_ = on; }
+    [[nodiscard]] bool ic_stubs() const noexcept { return ic_stubs_; }
     // The module's key constants, which name a property site in a profile.
     void set_key_names(const std::vector<std::string>* names) noexcept { key_names_ = names; }
     [[nodiscard]] std::string_view key_tag(uint32_t key_index) const noexcept {
@@ -233,6 +247,7 @@ private:
     bool feedback_driven_ = false;
     bool in_process_ = false;
     bool small_forms_ = true;
+    bool ic_stubs_ = false;
     const std::vector<std::string>* key_names_ = nullptr;
     bool enable_inlined_fastpaths_ = true;
     std::string key_map_sym_ = "__bronze_key_map";

@@ -261,13 +261,299 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     fn->rebuild_cfg_predecessors();
 }
 
+namespace {
+
+// What a property site's cache says about a plain receiver, as the stubs
+// below read it: whether one of the `ways` entries names the receiver's
+// shape, that entry's slot word ((depth << 32) | slot, the flags in the
+// depth half) and whether the depth > 0 answer it gives is still current
+// (its epoch is the thread's).
+struct PropEntry {
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    Value* hit = nullptr;
+    Value* slot_word = nullptr;
+    Value* epoch_ok = nullptr;
+};
+
+PropEntry prop_entry(PropertyLoweringHelper& pl, Builder& b, Value* tls, Value* obj, Value* site, int ways) {
+    PropEntry e;
+    pl.receiver_shape(b, obj, e.plain, e.ptr, e.shape);
+    Value* any = nullptr;
+    Value* epoch = nullptr;
+    // At most one way names a shape (an install rewrites an entry in place),
+    // so the words select on the match alone.
+    for (int32_t way = ways - 1; way >= 0; --way) {
+        const int32_t at = way * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
+        Value* match = b.build_eq(e.shape, b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SHAPE_OFFSET));
+        Value* word = b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SLOT_OFFSET);
+        Value* ep = b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_EPOCH_OFFSET);
+        e.slot_word = e.slot_word ? b.build_select(match, word, e.slot_word) : word;
+        epoch = epoch ? b.build_select(match, ep, epoch) : ep;
+        any = any ? b.build_or(any, match) : match;
+    }
+    e.hit = b.build_and(e.plain, any);
+    e.epoch_ok = b.build_eq(epoch, b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+    return e;
+}
+
+constexpr int64_t kOwnDataLimit = int64_t{1} << 32;
+constexpr int64_t kAccessorDepth = int64_t{BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG};
+constexpr int64_t kSlotMask = 0xFFFFFFFFLL;
+constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+
+// The deepest entry the stubs walk to; deeper ones are the helper's. Four
+// links cover a three.js leaf class's accessors (Mesh -> Object3D ->
+// EventDispatcher) with one to spare.
+constexpr int64_t kMaxStubDepth = 4;
+
+// Whether `depth` (the slot word's high half) is an entry at 1..kMaxStubDepth
+// with no flag but, at most, the accessor's: not absent, not an f64 slot.
+Value* walkable_depth(Builder& b, Value* depth) {
+    Value* links = b.build_and(depth, b.build_iconst_i64(~kAccessorDepth));
+    return b.build_ult(b.build_sub(links, b.build_iconst_i64(1)), b.build_iconst_i64(kMaxStubDepth));
+}
+
+// The holder of a depth-`depth` entry, walked the way
+// ObjectHeader::cachedProtoHolder walks (shape -> root -> prototype, once a
+// link): every link a plain object whose shape is no dictionary, else `slow`.
+// The builder enters at the walk and leaves in the block where the result is
+// the holder's payload. An entry whose receiver shape and epoch both still
+// hold names the chain it was filled on, so what is left to ask at each link
+// is what the fill asked of it.
+Value* walk_to_prototype(Builder& b, Value* tls, Value* shape, Value* depth, BasicBlock* slow,
+                         const std::string& prefix) {
+    // append_block moves the insertion point.
+    BasicBlock* entry = b.current_block();
+    BasicBlock* walk = b.append_block(prefix + "_walk");
+    Value* cur_shape = b.add_block_param(walk, Type::i64());
+    Value* left = b.add_block_param(walk, Type::i64());
+    BasicBlock* has_root = b.append_block(prefix + "_root");
+    BasicBlock* is_plain = b.append_block(prefix + "_proto");
+    BasicBlock* next = b.append_block(prefix + "_next");
+    BasicBlock* found = b.append_block(prefix + "_holder");
+    Value* holder = b.add_block_param(found, Type::i64());
+    b.position_at_end(entry);
+    b.build_br(walk, {shape, b.build_and(depth, b.build_iconst_i64(~kAccessorDepth))});
+
+    b.position_at_end(walk);
+    Value* root = b.build_load(Type::i64(), cur_shape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
+    b.build_br_if(b.build_ne(root, b.build_iconst_i64(0)), has_root, slow);
+
+    b.position_at_end(has_root);
+    Value* proto = b.build_load(Type::i64(), root, BRONZE_ABI_SHAPE_PROTO_OFFSET);
+    Value* pptr = b.build_xor(proto, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    Value* is_obj = b.build_ult(pptr, b.build_iconst_i64(kPayloadLimit));
+    Value* base = b.build_select(is_obj, pptr, tls);
+    Value* plain = b.build_and(is_obj, b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow)));
+    b.build_br_if(plain, is_plain, slow);
+
+    b.position_at_end(is_plain);
+    Value* hshape = b.build_load(Type::i64(), pptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+    Value* not_dict = b.build_eq(b.build_load(Type::i64(), hshape, BRONZE_ABI_SHAPE_DICT_OFFSET), b.build_iconst_i64(0));
+    b.build_br_if(not_dict, next, slow);
+
+    b.position_at_end(next);
+    Value* rest = b.build_sub(left, b.build_iconst_i64(1));
+    b.build_br_if(b.build_eq(rest, b.build_iconst_i64(0)), found, {pptr}, walk, {hshape, rest});
+
+    b.position_at_end(found);
+    return holder;
+}
+
+// The read stub: kPropGetStub(obj, key, site), bronze_prop_get's operands.
+// It answers what propGetHelperBody's site-cache path answers, test for
+// test, from any of the site's ways:
+//  - an own data slot (the inline paths' hit, for a site without them);
+//  - the negative entry: undefined, while the epoch holds;
+//  - an entry on the prototype chain, up to kMaxStubDepth links (a class's
+//    methods and accessors, an inherited constant): its data slot, or its
+//    getter;
+//  - a depth-0 accessor (one defined on the receiver itself): its getter.
+// A getter is entered directly when compiled code may enter it
+// (BRONZE_ABI_FN_FLAG_DIRECT_CALL), with the receiver as `this` and no
+// arguments, which is the call the helper makes through rtEnterJs; anything
+// else, and every receiver no way describes, is the helper. The stub holds no
+// reference across a call and names no frame in a stack trace.
+void build_prop_get_stub(IlLowering* lowering, Function* fn) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+    Builder b(*fn->parent());
+    b.set_function(fn);
+    BasicBlock* cur = b.append_block("entry");
+    Value* obj = b.add_block_param(cur, Type::i64());
+    Value* key_id = b.add_block_param(cur, Type::i32());
+    Value* site = b.add_block_param(cur, Type::ptr());
+    const std::string prefix = "pget";
+    BasicBlock* own = b.append_block(prefix + "_own");
+    BasicBlock* not_own = b.append_block(prefix + "_notown");
+    BasicBlock* absent = b.append_block(prefix + "_absent");
+    BasicBlock* not_absent = b.append_block(prefix + "_notabsent");
+    BasicBlock* depth1 = b.append_block(prefix + "_depth1");
+    BasicBlock* not_depth1 = b.append_block(prefix + "_notdepth1");
+    BasicBlock* proto_data = b.append_block(prefix + "_protodata");
+    BasicBlock* getter = b.append_block(prefix + "_getter");
+    Value* holder = b.add_block_param(getter, Type::i64());
+    BasicBlock* enter = b.append_block(prefix + "_enter");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+
+    b.position_at_end(cur);
+    Value* tls = tls_block(b);
+    const PropEntry e = prop_entry(pl, b, tls, obj, site, BRONZE_ABI_IC_WAYS);
+    Value* own_data = b.build_ult(e.slot_word, b.build_iconst_i64(kOwnDataLimit));
+    b.build_br_if(b.build_and(e.hit, own_data), own, not_own);
+
+    b.position_at_end(own);
+    b.build_ret(pl.load_slot(b, e.ptr, e.slot_word));
+
+    b.position_at_end(not_own);
+    Value* depth = b.build_lshr(e.slot_word, b.build_iconst_i64(32));
+    Value* slot = b.build_and(e.slot_word, b.build_iconst_i64(kSlotMask));
+    Value* current = b.build_and(e.hit, e.epoch_ok);
+    b.build_br_if(b.build_and(current, b.build_eq(depth, b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_ABSENT_FLAG))),
+                  absent, not_absent);
+
+    b.position_at_end(absent);
+    b.build_ret(b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)));
+
+    // A chain entry with no flag but the accessor's.
+    b.position_at_end(not_absent);
+    Value* d1 = walkable_depth(b, depth);
+    b.build_br_if(b.build_and(current, d1), depth1, not_depth1);
+
+    b.position_at_end(depth1);
+    Value* pptr = walk_to_prototype(b, tls, e.shape, depth, slow, prefix);
+    b.build_br_if(b.build_ne(b.build_and(depth, b.build_iconst_i64(kAccessorDepth)), b.build_iconst_i64(0)), getter,
+                  {pptr}, proto_data, {});
+
+    b.position_at_end(proto_data);
+    b.build_ret(pl.load_slot(b, pptr, slot));
+
+    b.position_at_end(not_depth1);
+    b.build_br_if(b.build_and(e.hit, b.build_eq(depth, b.build_iconst_i64(kAccessorDepth))), getter, {e.ptr}, slow,
+                  {});
+
+    b.position_at_end(getter);
+    Value* fn_val = pl.load_slot(b, holder, slot);
+    const EntryTest t = entry_test(b, tls, fn_val, kCallMask, kCallBits);
+    b.build_br_if(t.ok, enter, slow);
+
+    b.position_at_end(enter);
+    Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
+    Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
+    b.build_ret(call_code(b, code, env, obj, 0u, b.build_iconst_i64(0)));
+
+    b.position_at_end(slow);
+    b.build_ret(b.build_call("bronze_prop_get", Type::i64(), {obj, key_id, site}));
+    fn->rebuild_cfg_predecessors();
+}
+
+// The write stub: kPropSetStub(obj, key, val, site, strict), bronze_prop_set's
+// operands. A write site uses way 0 only (bronze_abi.h), and the stub answers
+// from it what the helper's site-cache path answers:
+//  - an own data slot: the store lower_prop_set_mono makes, with the barrier
+//    for a reference (the fill names only writable own data, and an f64 slot
+//    carries a flag that refuses it here);
+//  - an accessor on the receiver or on its prototype chain (to
+//    kMaxStubDepth links): its setter, entered
+//    directly when it may be, with the receiver as `this` and the value as
+//    its one argument, staged in a traced slot of this frame — the call the
+//    helper makes through rtEnterJs.
+// Everything else, the shape transitions included, is the helper.
+void build_prop_set_stub(IlLowering* lowering, Function* fn) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+    Builder b(*fn->parent());
+    b.set_function(fn);
+    BasicBlock* cur = b.append_block("entry");
+    Value* obj = b.add_block_param(cur, Type::i64());
+    Value* key_id = b.add_block_param(cur, Type::i32());
+    Value* val = b.add_block_param(cur, Type::i64());
+    Value* site = b.add_block_param(cur, Type::ptr());
+    Value* strict = b.add_block_param(cur, Type::i32());
+    const std::string prefix = "pset";
+    BasicBlock* own = b.append_block(prefix + "_own");
+    BasicBlock* barrier = b.append_block(prefix + "_barrier");
+    BasicBlock* done = b.append_block(prefix + "_done");
+    BasicBlock* not_own = b.append_block(prefix + "_notown");
+    BasicBlock* depth1 = b.append_block(prefix + "_depth1");
+    BasicBlock* not_depth1 = b.append_block(prefix + "_notdepth1");
+    BasicBlock* setter = b.append_block(prefix + "_setter");
+    Value* holder = b.add_block_param(setter, Type::i64());
+    BasicBlock* enter = b.append_block(prefix + "_enter");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+
+    b.position_at_end(cur);
+    Value* argv = b.build_alloca_tagged(1);
+    Value* tls = tls_block(b);
+    const PropEntry e = prop_entry(pl, b, tls, obj, site, 1);
+    Value* own_data = b.build_ult(e.slot_word, b.build_iconst_i64(kOwnDataLimit));
+    b.build_br_if(b.build_and(e.hit, own_data), own, not_own);
+
+    b.position_at_end(own);
+    Value* base = pl.slot_base(b, e.ptr, e.slot_word);
+    Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(e.slot_word, b.build_iconst_i64(3))),
+                                   b.build_iconst_i64(kBronzeObjSlotsOffset));
+    b.build_store(Type::i64(), slot_addr, 0, val);
+    Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    b.build_br_if(is_ref, barrier, done);
+
+    b.position_at_end(barrier);
+    b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+    b.build_br(done);
+
+    b.position_at_end(done);
+    b.build_ret_void();
+
+    b.position_at_end(not_own);
+    Value* depth = b.build_lshr(e.slot_word, b.build_iconst_i64(32));
+    Value* slot = b.build_and(e.slot_word, b.build_iconst_i64(kSlotMask));
+    b.build_br_if(b.build_and(b.build_and(e.hit, e.epoch_ok),
+                              b.build_and(walkable_depth(b, depth),
+                                          b.build_ne(b.build_and(depth, b.build_iconst_i64(kAccessorDepth)),
+                                                     b.build_iconst_i64(0)))),
+                  depth1, not_depth1);
+
+    b.position_at_end(depth1);
+    Value* pptr = walk_to_prototype(b, tls, e.shape, depth, slow, prefix);
+    b.build_br(setter, {pptr});
+
+    b.position_at_end(not_depth1);
+    b.build_br_if(b.build_and(e.hit, b.build_eq(depth, b.build_iconst_i64(kAccessorDepth))), setter, {e.ptr}, slow,
+                  {});
+
+    // An accessor's setter is the slot after its getter.
+    b.position_at_end(setter);
+    Value* fn_val = pl.load_slot(b, holder, b.build_add(slot, b.build_iconst_i64(1)));
+    const EntryTest t = entry_test(b, tls, fn_val, kCallMask, kCallBits);
+    b.build_br_if(t.ok, enter, slow);
+
+    b.position_at_end(enter);
+    Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
+    Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
+    b.build_store(Type::i64(), argv, 0, val);
+    call_code(b, code, env, obj, 1u, argv);
+    b.build_ret_void();
+
+    b.position_at_end(slow);
+    b.build_call("bronze_prop_set", Type::void_type(), {obj, key_id, val, site, strict});
+    b.build_ret_void();
+    fn->rebuild_cfg_predecessors();
+}
+
+}  // namespace
+
 void emit_direct_stubs(IlLowering* lowering, Module& mod) {
-    if (!direct_method_ic_here(lowering) || mod.get_function(kMethodCallStub)) return;
+    const bool here = direct_method_ic_here(lowering);
+    lowering->prop_lowering().set_ic_stubs(here);
+    if (!here || mod.get_function(kMethodCallStub)) return;
     // Built before any body: a function built while another is being built
     // shares the module's builder state with it.
     Function* stub = mod.create_function(kMethodCallStub, Type::i64(),
                                          {Type::i64(), Type::i32(), Type::i32(), Type::ptr(), Type::ptr()});
     build_method_call_stub(lowering, stub);
+    build_prop_get_stub(lowering, mod.create_function(kPropGetStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));
+    build_prop_set_stub(lowering, mod.create_function(kPropSetStub, Type::void_type(),
+                                                      {Type::i64(), Type::i32(), Type::i64(), Type::ptr(), Type::i32()}));
 }
 
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
