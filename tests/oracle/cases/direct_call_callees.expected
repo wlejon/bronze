@@ -1,0 +1,54 @@
+plain:0,r
+arity:2:undefined
+rest:2:2/r
+defaults:3,r
+target:none
+this:undef
+arrow:6
+plain:B,7
+proxy:plain:8,r
+NaN
+10
+TypeError:Class constructor K cannot be invoked without 'new'
+iter:gen:12
+promise
+TypeError
+TypeError
+TypeError
+true
+plain:0,undefined
+arity:1:undefined
+rest:1:2
+defaults:3,dflt
+target:none
+this:object
+arrow:6
+plain:B,7
+proxy:plain:8,undefined
+9
+10
+TypeError:Class constructor K cannot be invoked without 'new'
+iter:gen:12
+promise
+TypeError
+TypeError
+TypeError
+plain:0,undefined
+arity:1:undefined
+rest:1:2
+defaults:3,dflt
+target:none
+this:object
+arrow:6
+plain:B,7
+proxy:plain:8,undefined
+9
+10
+TypeError:Class constructor K cannot be invoked without 'new'
+iter:gen:12
+promise
+TypeError
+TypeError
+TypeError
+arity:2:undefined arity:2:undefined
+arity:1:undefined arity:1:undefined

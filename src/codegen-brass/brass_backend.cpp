@@ -410,6 +410,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     options.lazy_bodies = lazyBodies_ && !optimize;
     options.spec_feedback = specFeedback_;
     options.spec_profile = specProfile_;
+    options.direct_js_calls = directJsCalls_;
     // The inline-cache table: lowering numbered every property and method
     // site, the verifier bounded each number, and `__bronze_ic_table`
     // (brass_backend_sections.cpp) is laid out to exactly this count, so brass
@@ -428,7 +429,8 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         meta.has_rest_param = fn.hasRestParam;
         meta.is_strict = fn.isStrict;
         meta.first_source_param = static_cast<uint32_t>(fn.firstSourceParam());
-        meta.fn_flags = fn.fnFlags | (fn.needsEnv ? 0x40u : 0u);
+        meta.fn_flags = fn.fnFlags | (fn.needsEnv ? 0x40u : 0u) |
+                        (directJsCalls_ && il::functionEntersDirectly(fn) ? BRONZE_ABI_FN_FLAG_DIRECT_CALL : 0u);
         meta.name_key = fn.nameKeyIndex;
         meta.required_args = fn.requiredArgs;
         meta.adapt_arity = fn.adaptArity();

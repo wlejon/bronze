@@ -1,4 +1,5 @@
 #include "il_lowering.h"
+#include "il_lowering_direct.h"
 #include "il_lowering_coro.h"
 #include "il_lowering_calls.h"
 #include "il_abi.h"
@@ -607,6 +608,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
         }
     }
 
+    emit_direct_stubs(this, *mod);
     ltimer.mark("declare");
     // 2. Lower each function body, or leave it lazy (il_lowering_lazy.cpp).
     lazy_bodies_.clear();
@@ -721,26 +723,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     begin_hoisting(nullptr);
     analyze_function(fn_ast);
 
-    // The argv block a call stages its arguments in when the helper takes
-    // `const uint64_t* argv` (a dynamic method call, and any call past the
-    // fixed-arity helpers): one alloca.tagged of the widest such call's
-    // arguments, so they stay rooted, and are updated, while the helper
-    // can collect. Nested calls cannot overlap: an argument is a value
-    // already computed by the time its call stores it, and the stores
-    // happen right before the call.
-    uint32_t widest_method_argc = 0;
-    for (const auto& blk : fn_ast.blocks) {
-        for (const auto& inst : blk.instructions) {
-            if (inst.op == BronzeOp::MethodCall && inst.param_count > widest_method_argc &&
-                !method_call_is_speculated_builtin(this, inst)) {
-                widest_method_argc = inst.param_count;
-            }
-            if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
-                inst.param_count > 16 && inst.param_count > widest_method_argc) {
-                widest_method_argc = inst.param_count;
-            }
-        }
-    }
+    // The argv block a call stages its arguments in (il_lowering_calls.h).
+    const uint32_t widest_method_argc = argv_block_words(this, fn_ast);
 
     Builder b(mod);
     b.set_function(fn);
@@ -936,6 +920,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();
         run_once_ = run_once_blocks_.count(blk_ast.id) != 0;
+        protected_block_ = blk_ast.handler_id != UINT32_MAX;
         begin_block_proofs(blk_ast.id);
 
         for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
@@ -964,6 +949,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
     }
     run_once_ = false;
+    protected_block_ = false;
     route_exception_edges(b, block_map);
 
     if (stack_check_entry_bb_ != nullptr) {

@@ -108,6 +108,43 @@ static void store_gc_header(Builder& b, Value* tls_addr, Value* at, size_t bronz
 }
 
 
+Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* precondition,
+                                              BasicBlock* miss, BasicBlock* bb_fast) {
+    using namespace bronze_heap_abi;
+    Value* tls_addr = bronze_tls_addr(b);
+    Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
+    Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
+    Value* new_cursor =
+        b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + PLAIN_OBJECT_BYTES)));
+    Value* can_fit = b.build_ule(new_cursor, cur_limit);
+    b.build_br_if(b.build_and(can_fit, precondition), bb_fast, miss);
+
+    // Fast path: bump pointer and initialize plain object
+    b.position_at_end(bb_fast);
+    b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
+    store_gc_header(b, tls_addr, cur_cursor, PLAIN_OBJECT_BYTES);
+    Value* obj_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
+
+    // HeapObjectHeader at obj_ptr (offset 0):
+    // tag = Tag::Object, flags = HeapKind::Plain, size = 56
+    constexpr uint64_t HEADER_WORD = make_header_word(PLAIN_OBJECT_BYTES, OBJ_FLAGS_PLAIN, TAG_OBJECT);
+    b.build_store(Type::i64(), obj_ptr, 0, b.build_iconst_i64(static_cast<int64_t>(HEADER_WORD)));
+
+    // ObjectHeader: the shape at 8, the overflow word at 16, and the inline
+    // slots at 24..55, every Value undefined (ObjectHeader::create).
+    b.build_store(Type::i64(), obj_ptr, 8, shape);
+    Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
+    b.build_store(Type::i64(), obj_ptr, 16, undef_val);
+    for (int i = 0; i < 4; ++i) {
+        b.build_store(Type::i64(), obj_ptr, 24 + i * 8, undef_val);
+    }
+
+    // NaN-box Tag::Object (0xFFF1ULL << 48)
+    Value* ptr_mask = b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK));
+    Value* masked_ptr = b.build_and(obj_ptr, ptr_mask);
+    return b.build_or(masked_ptr, b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_OBJECT)));
+}
+
 Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
     using namespace bronze_heap_abi;
     BasicBlock* bb_current = b.current_block();
@@ -121,48 +158,9 @@ Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
 
     b.position_at_end(bb_current);
-
-    Value* tls_addr = bronze_tls_addr(b);
-    Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
-    Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
-    Value* plain_shape = b.build_load(Type::i64(), tls_addr, TLS_PLAIN_SHAPE_OFF);
-
-    Value* new_cursor =
-        b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES + PLAIN_OBJECT_BYTES)));
-    Value* can_fit = b.build_ule(new_cursor, cur_limit);
+    Value* plain_shape = b.build_load(Type::i64(), bronze_tls_addr(b), TLS_PLAIN_SHAPE_OFF);
     Value* has_shape = b.build_ne(plain_shape, b.build_iconst_i64(0));
-    Value* can_alloc = b.build_and(can_fit, has_shape);
-    b.build_br_if(can_alloc, bb_fast, bb_fallback);
-
-    // Fast path: bump pointer and initialize plain object
-    b.position_at_end(bb_fast);
-    b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
-    store_gc_header(b, tls_addr, cur_cursor, PLAIN_OBJECT_BYTES);
-    Value* obj_ptr = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
-
-    // HeapObjectHeader at obj_ptr (offset 0):
-    // tag = Tag::Object, flags = HeapKind::Plain, size = 56
-    constexpr uint64_t HEADER_WORD = make_header_word(PLAIN_OBJECT_BYTES, OBJ_FLAGS_PLAIN, TAG_OBJECT);
-    b.build_store(Type::i64(), obj_ptr, 0, b.build_iconst_i64(static_cast<int64_t>(HEADER_WORD)));
-
-    // ObjectHeader:
-    // Offset 8: shape = plain_shape
-    b.build_store(Type::i64(), obj_ptr, 8, plain_shape);
-
-    // Offset 16: overflow = Value::fromUndefined()
-    Value* undef_val = b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED));
-    b.build_store(Type::i64(), obj_ptr, 16, undef_val);
-
-    // Offsets 24, 32, 40, 48: inline_slots[0..3] = undefined
-    for (int i = 0; i < 4; ++i) {
-        b.build_store(Type::i64(), obj_ptr, 24 + i * 8, undef_val);
-    }
-
-    // NaN-box Tag::Object (0xFFF1ULL << 48)
-    Value* ptr_mask = b.build_iconst_i64(static_cast<int64_t>(VALUE_PAYLOAD_MASK));
-    Value* masked_ptr = b.build_and(obj_ptr, ptr_mask);
-    Value* obj_val = b.build_or(masked_ptr, b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_OBJECT)));
-
+    Value* obj_val = bump_plain_object(b, plain_shape, has_shape, bb_fallback, bb_fast);
     b.build_br(bb_merge, {obj_val});
 
     // Fallback path

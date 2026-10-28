@@ -126,8 +126,12 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
 void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
     Rooted<Value> self(Value::fromObject(this));
     if (head_offset + index >= capacity) {
-        // If there is head headroom and in-place compaction fits the write, compact to index 0
-        if (head_offset > 0 && index + 1 <= capacity) {
+        // Head room left by shift(): compact the elements down to index 0 when
+        // that leaves at least half the block free, so the writes that fill it
+        // pay for the copy. A fuller block grows instead — compacting one that
+        // stays nearly full (a queue's push-one, shift-one) copied every
+        // element on every push.
+        if (head_offset > 0 && index + 1 <= capacity && length <= capacity / 2) {
             HeapValue* raw = rawElementsData();
             const HeapValue* cur = elementsData();
             gcCopyValues(elementsBlock(), raw, cur, length);

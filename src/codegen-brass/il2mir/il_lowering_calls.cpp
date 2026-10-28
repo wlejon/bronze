@@ -1,6 +1,7 @@
 #include "il_lowering_calls.h"
 #include "il_lowering.h"
 #include "il_abi.h"
+#include "il_lowering_direct.h"
 #include <brass/mir/module.hpp>
 #include <algorithm>
 #include <cctype>
@@ -258,6 +259,28 @@ bool method_call_is_speculated_builtin(const IlLowering* lowering, const BronzeI
     return builtin_target(lowering, inst).op != BuiltinOp::None;
 }
 
+// One alloca.tagged of the widest such call's arguments, so they stay rooted,
+// and are updated, while the callee or the helper can collect. Nested calls
+// cannot overlap: an argument is a value already computed by the time its call
+// stores it, and the stores happen right before the call.
+uint32_t argv_block_words(const IlLowering* lowering, const BronzeFunction& fn_ast) {
+    const bool direct = lowering && lowering->options().direct_js_calls;
+    uint32_t widest = 0;
+    for (const auto& blk : fn_ast.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.op == BronzeOp::MethodCall && inst.param_count > widest &&
+                !method_call_is_speculated_builtin(lowering, inst)) {
+                widest = inst.param_count;
+            }
+            if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
+                (inst.param_count > 16 || (direct && inst.op != BronzeOp::SuperCall)) && inst.param_count > widest) {
+                widest = inst.param_count;
+            }
+        }
+    }
+    return widest;
+}
+
 bool lower_call_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,
@@ -285,7 +308,11 @@ bool lower_call_instruction(
         case BronzeOp::Construct: {
             Value* ctor = ensure_type(get_opd(0), Type::i64());
             uint32_t argc = inst_ast.param_count;
-            if (argc <= 16) {
+            if (direct_entry_here(lowering)) {
+                std::vector<Value*> args;
+                for (uint32_t i = 0; i < argc; ++i) args.push_back(ensure_type(get_opd(1 + i), Type::i64()));
+                res_val = lower_construct_direct(lowering, b, ctor, args);
+            } else if (argc <= 16) {
                 std::vector<Value*> call_args = {ctor};
                 for (uint32_t i = 0; i < argc; ++i) {
                     call_args.push_back(ensure_type(get_opd(1 + i), Type::i64()));
@@ -404,9 +431,13 @@ bool lower_call_instruction(
                     break;
                 }
                 for (size_t a = 0; a < argc; ++a) args[a] = box_value(lowering, b, args[a], arg_kinds[a]);
+                Value* key_id = lowering->get_key_id(b, inst_ast.index);
+                if (direct_method_ic_here(lowering)) {
+                    res_val = lower_method_call_ic(lowering, b, recv, key_id, args, site);
+                    break;
+                }
                 Value* argv = lowering->stage_argv(b, args);
                 Value* argc_val = b.build_iconst_i32(static_cast<int32_t>(argc));
-                Value* key_id = lowering->get_key_id(b, inst_ast.index);
                 res_val = b.build_call("bronze_call_method", Type::i64(),
                                        {recv, key_id, argc_val, argv, site});
             } else {
@@ -493,6 +524,11 @@ bool lower_call_instruction(
             if (target.op != BuiltinOp::None && !lowering->run_once()) {
                 res_val = lower_builtin_call(lowering, target, lowering->prop_get_key_of(inst_ast.operands[0]), b,
                                              callee_val, this_val, dyn_args[2]);
+                break;
+            }
+            if (direct_entry_here(lowering)) {
+                res_val = lower_closure_call(lowering, b, callee_val, this_val,
+                                             std::vector<Value*>(dyn_args.begin() + 2, dyn_args.end()));
                 break;
             }
             res_val = build_call_dynamic(b, dyn_args, lowering);

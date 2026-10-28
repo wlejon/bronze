@@ -70,6 +70,8 @@ NewTargetScope::~NewTargetScope() {
     g_topNewTarget = prev_;
 }
 
+// A native that reads this must be named in rtEntersWithoutScope (fn.cpp):
+// compiled code enters the natives that do not without pushing a scope.
 Value NewTargetScope::current() {
     return g_topNewTarget ? g_topNewTarget->targetRoot_.get() : Value::fromUndefined();
 }
@@ -655,6 +657,14 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
             .rawBits();
     }
     auto* fn = reinterpret_cast<FunctionHeader*>(hdr);
+    // 10.2.1 [[Call]] step 2: a class constructor has [[Call]], and it throws.
+    // `new` reaches the same code through bronze_construct, never here.
+    if (fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) {
+        return rtThrowTypeError("Class constructor " +
+                                (fn->name ? rtUtf8Chars(fn->name) : std::string()) +
+                                " cannot be invoked without 'new'")
+            .rawBits();
+    }
     // The callee runs in its own realm (realm.h, CalleeRealmScope).
     CalleeRealmScope realm(fn->realmSlot());
     if (realm.dead()) return rtThrowTypeError(kDeadRealmCall).rawBits();

@@ -919,8 +919,14 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
                 (methodKey < module.keyConstants.size()) ? module.keyConstants[methodKey] : "";
 
             if (isArrayMutatingMethod(methodName)) {
-                if (keyIndex != lengthKeyIndex) return false;
-                if (methodName == "fill" && inst.operands.size() == 2 &&
+                // They write the receiver's length and its elements: push,
+                // shift, splice, sort, fill and the rest move or replace what
+                // `a[0]` reads (a loop that pushes and shifts reads a new
+                // `a[0]` each time round). Any other key they leave alone.
+                const bool elementKey = keyIndex < module.keyConstants.size() &&
+                                        isArrayIndexKey(module.keyConstants[keyIndex]);
+                if (keyIndex != lengthKeyIndex && !elementKey) return false;
+                if (keyIndex == lengthKeyIndex && methodName == "fill" && inst.operands.size() == 2 &&
                     isProvablyNumericIndex(inst.operands[1], fn, defs)) {
                     return false;
                 }

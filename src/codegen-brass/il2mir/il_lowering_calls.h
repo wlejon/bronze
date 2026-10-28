@@ -16,6 +16,12 @@ bool is_call_il_op(BronzeOp op);
 // whose target and argument a CallTarget site tests), which stages no argv.
 bool method_call_is_speculated_builtin(const IlLowering* lowering, const BronzeInstruction& inst);
 
+// How many words the function's argv block needs (IlLowering::stage_argv):
+// the widest call that stages its arguments — a dynamic method call, any call
+// past the fixed-arity helpers, and, where calls enter callees directly
+// (il_lowering_direct.h), every call, `new` and closure call.
+uint32_t argv_block_words(const IlLowering* lowering, const BronzeFunction& fn_ast);
+
 bool lower_call_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,

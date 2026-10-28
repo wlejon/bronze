@@ -1,0 +1,15 @@
+closure 354 Error:boom13;Error:boom13;
+method 354 RangeError:hit13;RangeError:hit13;
+slot 354 Error:boom13;Error:boom13;
+new 354 TypeError:ctor13;TypeError:ctor13;
+c:boom13|m:hit13|s:hit13|n:ctor13!
+c:boom13|m:hit13|s:hit13|n:ctor13!
+closureTop boom>viaClosure>closureTop
+methodTop hit>viaMethod>methodTop
+slotTop boom>viaSlot>slotTop
+newTop Thing>viaNew>newTop
+closure RangeError 5 6 7 8
+method RangeError 5 6 7 8
+slot RangeError 5 6 7 8
+new RangeError 5 6 7 8
+1 0 2 2 3 4 4 6 5 8 6 10 7 12 8 14 9 16 TypeError 18 11 20 12 22 13 24 14 cb13 15 28 16 30 17 32 18 34 19 36 TypeError 38 21 40 22 42 23 44 24 46 25 48 26 50 27 52 28 54 29 56 TypeError 58 31 60 32 62 33 64 34 66 35 68 36 70 37 72 38 74 39 76 TypeError 78

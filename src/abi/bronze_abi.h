@@ -174,6 +174,38 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 /* The function requires its closure environment record to be passed on call.
  * When false, the wrapper ignores `env` and passing `undefined` is sound. */
 #define BRONZE_ABI_FN_FLAG_NEEDS_ENV   0x40u
+/* Compiled code may enter this function's `code` itself — load the code and
+ * env words and call it with the pinned register it already holds — instead of
+ * through bronze_dynamic_call / bronze_construct. Set only by an image build
+ * (an executable, a shared module, an AOT module image: code that is machine
+ * code for the life of the process), and only for a function whose body never
+ * reads the new.target scope: no GetNewTarget (which every function an arrow
+ * reads new.target through has), no `super()` (whose proxy-base path reads
+ * it), and neither a generator nor an async function. The flag is one
+ * predicate's answer, il::functionEntersDirectly, and the compiler sets nothing
+ * else on its strength.
+ *
+ * Why entering directly is the same call. What the runtime path does that a
+ * direct entry skips, and what makes each unobservable for such a function:
+ *   - NewTargetScope(undefined) for a call: only a read of the scope sees it,
+ *     and the body has none (natives never carry the flag, so the Object
+ *     constructor's read cannot be reached this way either);
+ *   - CalleeRealmScope: enters nothing when the callee's realm is the current
+ *     one, which the caller checks against bronze_tls_block.realm_slot (a
+ *     function's realm slot is the top 24 bits of the word at
+ *     BRONZE_ABI_FN_FLAGS_WORD_OFFSET);
+ *   - rtEnterJs's dynamic-module token, its enter hook and its C++ entry
+ *     scope: they exist for JIT code the tiered engine may still interpret or
+ *     free, and for a C++ caller without the pinned register — none of which
+ *     applies to image code called from compiled code;
+ *   - padding a short call to the arity: the compiled wrapper reads an absent
+ *     argument as undefined itself, and a function with an `arguments` object
+ *     has arity 0;
+ *   - a CALL of a class constructor must throw (10.2.1 step 2), so a call
+ *     enters directly only with BRONZE_ABI_FN_FLAG_CLASS_CTOR clear; `new`
+ *     may enter a class constructor directly (the construct contract below
+ *     BRONZE_ABI_FN_CTOR_VETTED_OFFSET). */
+#define BRONZE_ABI_FN_FLAG_DIRECT_CALL 0x80u
 #define BRONZE_ABI_FN_FLAGS_ORDINARY (BRONZE_ABI_FN_FLAG_CONSTRUCT | BRONZE_ABI_FN_FLAG_PROTOTYPE)
 
 /* The uninitialized-binding singleton (runtime/value.h Tag::Uninitialized):

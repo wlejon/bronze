@@ -1,0 +1,15 @@
+start=A.m
+proto-replaced=A.m2
+own-shadow=own
+own-deleted=A.m2
+inherited=A.m2
+sub-shadow=B.m
+proto-swapped=swapped
+getter=from-getter
+getter-each=odd,even,odd,even,odd,even
+f0,f1,f2,f3,f0,f1,f2,f3 f0,f1,f2,f3,f0,f1,f2,f3
+slot-number TypeError
+31 own-push:1 31 0
+32 1 32 1
+g1 g2 g2 g3 g3
+870 X29!

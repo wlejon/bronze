@@ -467,6 +467,14 @@ struct Function {
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };
 
+// Whether compiled code may enter a function object made from `fn` without
+// the runtime (bronze_abi.h, BRONZE_ABI_FN_FLAG_DIRECT_CALL): its body never
+// reads the new.target scope a runtime call would have pushed — no
+// `get.new_target` and no `super()` — and it is neither a generator nor an
+// async function, whose calls start a coroutine. The one predicate the flag
+// is set from; defined in effects.cpp.
+bool functionEntersDirectly(const Function& fn);
+
 struct Module {
     std::string name;
     std::vector<std::string> keyConstants;

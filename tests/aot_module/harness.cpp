@@ -160,6 +160,22 @@ int main() {
             "let n = 0;\n"
             "function bump() { n += 1; return realmName + ':' + n; }\n"
             "globalThis.bump = bump;\n"
+            // Callers that may enter a callee from compiled code (bronze_abi.h,
+            // BRONZE_ABI_FN_FLAG_DIRECT_CALL), each in a loop so its site has
+            // latched by the time the other realm's function arrives; and a
+            // callee that says whose realm it runs in. Its own bindings are
+            // its module instance's, which are its realm's whoever runs it,
+            // but `globalThis` is the global of the realm current while it
+            // runs: the callee's only if the call entered that realm. (A
+            // direct form that skipped the realm test answers "AAA".)
+            "globalThis.tag = realmName;\n"
+            "function who() { return globalThis.tag; }\n"
+            "function Who() { this.who = who(); }\n"
+            "globalThis.who = who; globalThis.Who = Who;\n"
+            "globalThis.viaCall = function (f, k) { let r = ''; for (let i = 0; i < k; i++) r = f(); return r; };\n"
+            "globalThis.viaMethod = function (f, k) {\n"
+            "  const o = { m: f }; let r = ''; for (let i = 0; i < k; i++) r = o.m(); return r; };\n"
+            "globalThis.viaNew = function (f, k) { let r; for (let i = 0; i < k; i++) r = new f(); return r.who; };\n"
             "bump();\n";
         const std::string rmod = (rdir / ("unit" + std::string(kModuleExt))).string();
         const std::string rrec = (rdir / "unit.bzm").string();
@@ -189,12 +205,41 @@ int main() {
                 bumpB.set(embed::globalValue("bump").value);
             }
             check(bumpA.get().rawBits() != bumpB.get().rawBits(), "each realm has its own bump");
+            // Each result is read before the next call: a CallResult's value
+            // is not rooted, and the next call may collect (and, under
+            // BRONZE_GC_STRESS, does) and move the string it names.
             embed::CallResult a = embed::call(bumpA.get(), embed::undefined(), {});
-            embed::CallResult b = embed::call(bumpB.get(), embed::undefined(), {});
-            embed::CallResult a2 = embed::call(bumpA.get(), embed::undefined(), {});
             check(!a.thrown && embed::toUtf8(a.value) == "A:2", "A's bump runs in A on A's n");
+            embed::CallResult b = embed::call(bumpB.get(), embed::undefined(), {});
             check(!b.thrown && embed::toUtf8(b.value) == "B:2", "B's bump runs in B on B's n");
+            embed::CallResult a2 = embed::call(bumpA.get(), embed::undefined(), {});
             check(!a2.thrown && embed::toUtf8(a2.value) == "A:3", "and A's n is A's alone");
+            // A function of B called from A's compiled code runs in B, by
+            // whichever form the call takes, and A's own still run in A at
+            // the same sites afterwards.
+            {
+                embed::Persistent whoA, whoB, newA, newB;
+                {
+                    embed::RealmScope scope(realmB);
+                    whoB.set(embed::globalValue("who").value);
+                    newB.set(embed::globalValue("Who").value);
+                }
+                embed::RealmScope scope(realmA);
+                whoA.set(embed::globalValue("who").value);
+                newA.set(embed::globalValue("Who").value);
+                for (const char* via : {"viaCall", "viaMethod", "viaNew"}) {
+                    embed::Persistent fn(embed::globalValue(via).value);
+                    const bool ctor = std::string(via) == "viaNew";
+                    std::string got;
+                    for (embed::Persistent* callee : {ctor ? &newA : &whoA, ctor ? &newB : &whoB,
+                                                      ctor ? &newA : &whoA}) {
+                        const bronze::Value args[2] = {callee->get(), embed::fromDouble(200)};
+                        embed::CallResult r = embed::call(fn.get(), embed::undefined(), args);
+                        got += r.thrown ? std::string("!") : embed::toUtf8(r.value);
+                    }
+                    check(got == "ABA", std::string(via) + ": each callee runs in its own realm: " + got);
+                }
+            }
             embed::destroyRealm(realmB);
             embed::CallResult gone = embed::call(bumpB.get(), embed::undefined(), {});
             check(gone.thrown, "a destroyed realm's function is refused");

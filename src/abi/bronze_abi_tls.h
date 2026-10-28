@@ -65,6 +65,14 @@ typedef struct bronze_tls_block {
      * id is registered at run time, which is why it is read from here and
      * not compiled in. */
     uint64_t gc_cell_header;
+    /* The slot of the realm compiled code on this thread is running in
+     * (realm.h, rtCurrentRealmSlot): 0 before any realm exists. A call from
+     * compiled code enters a function's `code` without the runtime only when
+     * the function was made in this realm (bronze_abi.h,
+     * BRONZE_ABI_FN_FLAG_DIRECT_CALL); any other callee goes through the
+     * runtime, which enters its realm first. Kept equal to the realm stack's
+     * top by the runtime at every change of it, a stack switch included. */
+    uint64_t realm_slot;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -98,6 +106,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_STACK_LIMIT_OFF               224
 #define BRONZE_TLS_MODULE_DELTAS_OFF             232
 #define BRONZE_TLS_GC_CELL_HEADER_OFF            240
+#define BRONZE_TLS_REALM_SLOT_OFF                248
 
 /*
  * ---- the pinned register -----------------------------------------------

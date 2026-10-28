@@ -47,6 +47,15 @@ void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
     icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] = w0;
 }
 
+// A DIRECT entry's arity word: the callee's arity, with the direct-entry bit
+// when compiled code may call it without the runtime (bronze_abi.h,
+// BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT). Both are facts about the function
+// object the entry latches, which the entry's guard keeps the one it calls.
+uint64_t directArityWord(const FunctionHeader* fn) {
+    return static_cast<uint64_t>(fn->arity) |
+           (rtEntersWithoutScope(fn) ? BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT : 0);
+}
+
 static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE,
               "a method site's words must fit the site");
 
@@ -194,7 +203,7 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
     // site mixing an array with a plain receiver keeps both entries.
     displaceMethodWay0(icEntry, newWord0);
     icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
-    icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
+    icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = directArityWord(fn);
     icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] = BRONZE_ABI_UNDEFINED_BITS;
     icEntry[BRONZE_ABI_METHOD_IC_EPOCH_WORD] = epochWord;
     icEntry[0] = newWord0;
@@ -326,6 +335,9 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     if (fnHdr->flags != HeapKind::Function) return;
     auto* fn = reinterpret_cast<FunctionHeader*>(fnHdr);
     if (!fn->code) return;
+    // A call of a class constructor throws (bronze_dynamic_call says so), and
+    // a DIRECT hit would run its body instead: it is never latched.
+    if (fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) return;
     if (objHdr->flags != HeapKind::Plain) {
         // A non-Plain receiver has no shape word of its OWN to guard on, so
         // nothing below this line may run for one. The exotic latch either
@@ -377,7 +389,7 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     if (!envFree && !rtEnvMethodIcEnabled()) return;
     displaceMethodWay0(icEntry, shapeWord);
     icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
-    icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = static_cast<uint64_t>(fn->arity);
+    icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = directArityWord(fn);
     icEntry[BRONZE_ABI_METHOD_IC_ENV_WORD] =
         envFree ? BRONZE_ABI_UNDEFINED_BITS : fn->env_record.rawBits();
     icEntry[BRONZE_ABI_METHOD_IC_EPOCH_WORD] = probe.cached_epoch;
@@ -416,7 +428,8 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
         if ((arityWord >> BRONZE_ABI_METHOD_IC_SLOT_SHIFT) != 0) return false;
         const auto code = reinterpret_cast<bronze_fn_code>(way[BRONZE_ABI_METHOD_IC_CODE_WORD]);
         if (!code) return false;
-        const auto arity = static_cast<uint32_t>(arityWord);
+        const auto arity =
+            static_cast<uint32_t>(arityWord & ~BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT);
         if (arity == 0 || argc >= arity) {
             NewTargetScope targetScope(Value::fromUndefined());
             result = rtEnterJs(code, way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);

@@ -448,6 +448,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         objBackend.setMachOBuildVersion(machoVersion);
         objBackend.setEmitDebugInfo(emitDebugInfo);
         objBackend.setSpecProfile(specProfile);
+        objBackend.setDirectJsCalls(true);
         const bool emittedObj = objBackend.emitObject(*ilModule, outputPath, diags);
         timer.mark("codegen");
         timer.total();
@@ -470,6 +471,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     backend.setTarget(target);
     backend.setEmitDebugInfo(emitDebugInfo);
     backend.setSpecProfile(specProfile);
+    backend.setDirectJsCalls(true);
     std::optional<brass::object::ObjectFile> obj = backend.buildObjectFile(*ilModule, diags);
     timer.mark("codegen");
     if (!obj) {

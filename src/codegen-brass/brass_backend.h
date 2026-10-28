@@ -89,6 +89,13 @@ public:
     // need (il2mir::TranslatorOptions::lazy_bodies). Only for a module run
     // unoptimized by brass's tiered pipeline.
     void setLazyBodies(bool on) { lazyBodies_ = on; }
+    // The image is code for the life of the process (an executable, a shared
+    // module, an AOT module image), so its calls may enter compiled callees
+    // directly (bronze_abi.h, BRONZE_ABI_FN_FLAG_DIRECT_CALL): its functions
+    // carry the flag where il::functionEntersDirectly allows, and its call
+    // sites test for it. Off for JIT code, which the tiered engine may still
+    // interpret, and a program may free.
+    void setDirectJsCalls(bool on) { directJsCalls_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -123,6 +130,7 @@ private:
     bool perThreadModuleData_ = true;
     bool verifyLowered_ = true;
     bool lazyBodies_ = false;
+    bool directJsCalls_ = false;
     brass::Target target_ = brass::Target::host();
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;

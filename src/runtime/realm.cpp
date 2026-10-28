@@ -23,6 +23,7 @@
 #include "runtime/stack_locals.h"
 #include "runtime/string.h"
 #include "runtime/module_instance.h"
+#include "runtime/tls_block.h"
 
 namespace bronze {
 
@@ -47,6 +48,20 @@ static void assignSlot(Realm* r) {
     g_slotRealms.push_back(r);
 }
 
+// The TLS block's copy of rtCurrentRealmSlot (bronze_abi_tls.h, realm_slot),
+// which a call from compiled code compares a callee's realm against before it
+// enters the callee's code itself. Written wherever the answer can change: the
+// realm stack's top (activateTopRealm, which every push, pop, destroy and
+// stack switch that moves the top goes through), the default realm's creation,
+// and the thread's teardown. A stale copy that matched a callee's slot would
+// run that callee outside its realm, which is why there is no other writer.
+static uint32_t currentRealmSlotOf() noexcept {
+    if (!g_realmStack.empty()) return g_realmStack.back()->slot();
+    return g_defaultRealm ? g_defaultRealm->slot() : 0;
+}
+
+static void syncTlsRealmSlot() noexcept { runtime::rtTls()->realm_slot = currentRealmSlotOf(); }
+
 // Generated code addresses a module's writable tables through the TLS
 // block's delta array, which is the CURRENT realm's: each realm has its own
 // instance of every module entered in it (module_instance.cpp). The default
@@ -55,6 +70,7 @@ static void activateTopRealm() {
     Realm* top = g_realmStack.empty() ? g_defaultRealm : g_realmStack.back();
     g_activeRealm = top;
     runtime::rtActivateRealmModuleInstances(top && top != g_defaultRealm ? top->slot() : 0);
+    syncTlsRealmSlot();
 }
 
 // The realm stack is per STACK (runtime/stack_locals.h): a compartment's fiber
@@ -85,15 +101,13 @@ static const int g_realmStackLocal = [] {  // NOLINT: registered for its effect
             activateTopRealm();
             runtime::rtInvalidateGlobalCaches();
         }
+        syncTlsRealmSlot();
     };
     local.release = [](void* value) { delete static_cast<std::vector<Realm*>*>(value); };
     return brass::gc::register_stack_local(local);
 }();
 
-uint32_t rtCurrentRealmSlot() noexcept {
-    if (!g_realmStack.empty()) return g_realmStack.back()->slot();
-    return g_defaultRealm ? g_defaultRealm->slot() : 0;
-}
+uint32_t rtCurrentRealmSlot() noexcept { return currentRealmSlotOf(); }
 
 CalleeRealmScope::CalleeRealmScope(uint32_t slot) {
     if (slot == 0 || slot == rtCurrentRealmSlot()) return;
@@ -255,6 +269,7 @@ Realm* rtDefaultRealm() {
         g_defaultRealm = r;
         g_liveRealms.push_back(r);
         assignSlot(r);
+        syncTlsRealmSlot();
         runtime::rtAdoptPreRealmHostGlobals(*r);
         r->initGlobalObject(Value::fromUndefined());
     }
@@ -419,6 +434,7 @@ void rtTeardownThreadRealms() {
     g_realmStack.shrink_to_fit();
     g_defaultRealm = nullptr;
     g_activeRealm = nullptr;
+    syncTlsRealmSlot();
     g_slotRealms.clear();
     g_slotRealms.shrink_to_fit();
     for (Realm* r : g_liveRealms) {

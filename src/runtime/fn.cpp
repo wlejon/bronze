@@ -8,6 +8,7 @@
 #include <brass/interpreter/interpreter.hpp>
 #include <brass/runtime/exception.hpp>
 
+#include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/realm.h"
 #include "runtime/rt_state.h"
@@ -100,6 +101,18 @@ Value FunctionHeader::call(Value thisArg, uint32_t argc, Value* argv) const {
 
     return Value(rtEnterJs(code, env_record.rawBits(), thisArg.rawBits(), arity,
                            reinterpret_cast<const uint64_t*>(args_data)));
+}
+
+bool rtEntersWithoutScope(const FunctionHeader* fn) noexcept {
+    if (!fn->code) return false;
+    if (fn->isNativeCode()) {
+        // Every native that reads NewTargetScope::current() (rt_object.cpp)
+        // is named here; a direct entry leaves the scope at the enclosing
+        // construction's, which only such a read can tell from undefined.
+        return fn->code != &runtime::objectConstructorBody;
+    }
+    return (fn->function_flags & (BRONZE_ABI_FN_FLAG_DIRECT_CALL | BRONZE_ABI_FN_FLAG_CLASS_CTOR)) ==
+           BRONZE_ABI_FN_FLAG_DIRECT_CALL;
 }
 
 static thread_local EnterJsHook s_enter_js_hook = nullptr;

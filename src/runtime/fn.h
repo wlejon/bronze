@@ -219,6 +219,20 @@ static_assert(offsetof(FunctionHeader, properties) == BRONZE_ABI_FN_PROPERTIES_O
 static_assert(offsetof(FunctionHeader, instance_shape) == BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
 static_assert(offsetof(FunctionHeader, arity) == BRONZE_ABI_FN_ARITY_OFFSET);
 static_assert(offsetof(FunctionHeader, construct_vetted) == BRONZE_ABI_FN_CTOR_VETTED_OFFSET);
+// The word a direct entry tests whole (bronze_abi.h, BRONZE_ABI_FN_FLAG_DIRECT_CALL).
+static_assert(offsetof(FunctionHeader, function_flags) == BRONZE_ABI_FN_FLAGS_WORD_OFFSET);
+static_assert(offsetof(FunctionHeader, realm_slot_bytes) ==
+              BRONZE_ABI_FN_FLAGS_WORD_OFFSET + BRONZE_ABI_FN_REALM_SHIFT / 8);
+static_assert(sizeof(FunctionHeader::realm_slot_bytes) * 8 == 64 - BRONZE_ABI_FN_REALM_SHIFT);
+
+// Whether compiled code may call `fn`'s code without the runtime: the
+// predicate the method-call latch records in BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT.
+// A compiled function says so in its flags (BRONZE_ABI_FN_FLAG_DIRECT_CALL,
+// set by the compiler; a class constructor never, since a call of one must
+// throw); a native qualifies unless it reads the new.target scope, which the
+// Object constructor alone does (builtin_object_methods.cpp) and which a direct
+// entry would leave at the enclosing construction's.
+bool rtEntersWithoutScope(const FunctionHeader* fn) noexcept;
 
 // The trampoline (enter_js_msvc_x64.asm / enter_js.S): saves the caller's
 // pinned register, loads the TLS block into it, calls `code`, restores it.

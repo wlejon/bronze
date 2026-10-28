@@ -294,4 +294,30 @@ bool canCollect(const Instruction& inst) {
     }
 }
 
+// Written the safe way round too: the ops that read the scope are named, and a
+// function the lowering marks a generator, an async function or a coroutine
+// body is refused whatever its instructions are.
+bool functionEntersDirectly(const Function& fn) {
+    if (fn.isExternal || fn.isEntryPoint || fn.isGenerator || fn.isCoroutineBody()) return false;
+    if (fn.fnFlags & (BRONZE_ABI_FN_FLAG_GENERATOR | BRONZE_ABI_FN_FLAG_ASYNC | BRONZE_ABI_FN_FLAG_NATIVE)) {
+        return false;
+    }
+    for (const Block& block : fn.blocks) {
+        for (const Instruction& inst : block.instructions) {
+            switch (inst.op) {
+                // The three that read NewTargetScope::current() (rt_object.cpp):
+                // new.target itself, and `super()`, whose proxy-base path
+                // constructs with it.
+                case Op::GetNewTarget:
+                case Op::SuperCall:
+                case Op::SuperCallSpread:
+                    return false;
+                default:
+                    break;
+            }
+        }
+    }
+    return true;
+}
+
 }  // namespace bronze::il

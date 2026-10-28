@@ -102,6 +102,10 @@ public:
     // Its operations call their helpers, with no inline fast path — a path
     // run once is only size, and every inline cache misses its first run.
     bool run_once() const { return run_once_; }
+    // Whether the IL block being lowered has a handler: its calls become
+    // invokes (il_lowering_eh.cpp), which name their callee, so a call through
+    // a code pointer cannot be one and its site takes the helper.
+    bool in_protected_block() const { return protected_block_; }
     // Whether IL value `id` is an object this function created
     // (CreateObject): a write to it adds a property.
     bool is_fresh_object(uint32_t id) const { return fresh_objects_.count(id) != 0; }
@@ -156,6 +160,7 @@ private:
     bool hoist_at_head_ = false;
     Value* hoisted_[static_cast<size_t>(Hoist::Count)] = {};
     bool run_once_ = false;
+    bool protected_block_ = false;
     bool small_forms_ = true;
     std::unordered_set<uint32_t> run_once_blocks_;
     std::unordered_set<uint32_t> fresh_objects_;

@@ -88,6 +88,7 @@ static_assert(offsetof(bronze_tls_block, elem_set_cache_tbl) ==
 static_assert(offsetof(bronze_tls_block, stack_limit) == BRONZE_TLS_STACK_LIMIT_OFF);
 static_assert(offsetof(bronze_tls_block, module_deltas) == BRONZE_TLS_MODULE_DELTAS_OFF);
 static_assert(offsetof(bronze_tls_block, gc_cell_header) == BRONZE_TLS_GC_CELL_HEADER_OFF);
+static_assert(offsetof(bronze_tls_block, realm_slot) == BRONZE_TLS_REALM_SLOT_OFF);
 // The inline-allocation window is the collector's young bump region in place
 // (heap.cpp, bind_thread): brass's {top, end} pair.
 static_assert(offsetof(bronze_tls_block, alloc_limit) ==
@@ -137,6 +138,7 @@ thread_local bronze_tls_block g_tls_block = {
     /*stack_limit=*/0,
     /*module_deltas=*/nullptr,
     /*gc_cell_header=*/0,
+    /*realm_slot=*/0,
 };
 
 namespace {
@@ -271,7 +273,21 @@ extern "C" void* bronze_tls_enter(void) {
     char marker = 0;
     const uintptr_t cur_sp = reinterpret_cast<uintptr_t>(&marker);
     if (limit != 0 && cur_sp <= limit + 32 * 1024) {
-        limit = cur_sp > bronze::runtime::kStackReserveBytes ? cur_sp - bronze::runtime::kStackReserveBytes : 0;
+        // Near or past the limit. When the limit is the one this thread's
+        // own stack gives and the entry is on that stack, a recursion that
+        // passes through the runtime (a call the runtime makes for compiled
+        // code, every call of an interpreted one) has reached it, and the
+        // callee's prologue raising the RangeError is the answer: moving the
+        // limit down at each such entry let the recursion run off the stack.
+        // Any other limit near this entry does not describe the stack it is
+        // on (bounds misread, or a stack the limit was not computed for), and
+        // the entry gets the reserve below where it stands.
+        uintptr_t low = 0, high = 0;
+        bronze::runtime::threadStackBounds(low, high);
+        const bool own = low < cur_sp && cur_sp <= high && limit == bronze::runtime::rtStackLimitFor(low, high);
+        if (!own) {
+            limit = cur_sp > bronze::runtime::kStackReserveBytes ? cur_sp - bronze::runtime::kStackReserveBytes : 0;
+        }
     }
     // Through the setter: an interrupt armed on this thread stays armed only
     // if nothing changed (the store below would drop it otherwise, and the

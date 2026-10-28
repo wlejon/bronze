@@ -1,0 +1,38 @@
+Plain{"a":0,"s":"p0"}
+Object{"replaced":1}
+RetPrim{"a":2}
+[3]
+Target{"t":"Target","a":4}
+Base{"a":5,"k":"base"}
+Derived{"a":106,"k":"base","d":"Derived"}
+Fields{"x":1,"y":2,"a":7}
+Plain{"a":"bound","s":"pbound"}
+Object{"proxied":9}
+TypeError
+[,,,,,,,,,,]
+Number12
+TypeError
+TypeError
+TypeError
+TypeError
+Plain{"a":0,"s":"p0"}
+Object{"replaced":1}
+RetPrim{"a":2}
+[3]
+Target{"t":"Target","a":4}
+Base{"a":5,"k":"base"}
+Derived{"a":106,"k":"base","d":"Derived"}
+Fields{"x":1,"y":2,"a":7}
+Plain{"a":"bound","s":"pbound"}
+Object{"proxied":9}
+TypeError
+[,,,,,,,,,,]
+Number12
+TypeError
+TypeError
+TypeError
+TypeError
+[0] RetMaybe{"a":1} RetMaybe{"a":2} [3] RetMaybe{"a":4} RetMaybe{"a":5} [6] RetMaybe{"a":7} RetMaybe{"a":8} 
+first:true first:true first:true second:true second:true second:true
+TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError TypeError
+2,302,602,902,1202,1502,1802,2102,2402,2702
