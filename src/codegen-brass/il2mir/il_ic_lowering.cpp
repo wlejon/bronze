@@ -20,6 +20,8 @@ constexpr uint64_t kObjectTagBits = uint64_t{BRONZE_ABI_TAG_OBJECT} << 48;
 constexpr int64_t kPayloadLimit = int64_t{1} << 48;
 constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
 constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+static_assert((kPlainHeaderLow & 1) == 1 && BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_STEP % 2 == 0,
+              "the TLS block stands in for a non-object only while no epoch reads as a header");
 // The whole header word of a plain object with no internal slots: the kind
 // word above, and its size, BRONZE_ABI_PLAIN_OBJECT_BYTES, in the high half.
 constexpr int64_t kBarePlainHeader =
@@ -243,19 +245,20 @@ void PropertyLoweringHelper::receiver_shape(Builder& b, Value* obj, Value*& plai
     // 2^48 exactly when the tag was the object tag.
     ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
-    // A non-object reads through a mapped block whose words refuse the hit.
-    // Compiled code has the TLS block in its pinned register; a module that
-    // runs in this process under the tiered pipeline (feedback-driven, where
-    // any receiver reaches here and the fast interpreter runs it too) uses a
-    // static zeroed block of this process instead, whose header word is no
-    // object's, so its own header compare refuses it and needs no `is_obj`.
+    // A non-object reads through a mapped block whose header word is no
+    // object's, so the header compare alone refuses it and `is_obj` has the
+    // select for its one use, which the backend fuses with the compare.
+    // Compiled code has the TLS block in its pinned register, whose first
+    // word is the even proto epoch (bronze_abi.h); a module that runs in this
+    // process under the tiered pipeline (feedback-driven, where any receiver
+    // reaches here and the fast interpreter runs it too) uses a static zeroed
+    // block of this process instead.
     Value* not_object = in_process_
         ? b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
         : b.build_pinned_tls_read();
     Value* base = b.build_select(is_obj, ptr, not_object);
-    Value* is_plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
+    plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
     shape = b.build_load(Type::i64(), base, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    plain = in_process_ ? is_plain : b.build_and(is_obj, is_plain);
     if (base_out) *base_out = base;
 }
 

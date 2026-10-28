@@ -99,8 +99,9 @@ static_assert(sizeof(brass::gc::Heap::AllocationBuffer) == 2 * sizeof(uint64_t))
 
 namespace bronze::runtime {
 
-// proto_epoch starts at 1 so that a zeroed IC entry (epoch word 0) can never
-// match a live epoch; the enable flags start at 1 and are lowered per thread
+// proto_epoch starts at BRONZE_ABI_PROTO_EPOCH_FIRST, nonzero so that a
+// zeroed IC entry (epoch word 0) can never match a live epoch, and even so
+// that the block reads as no object's header (bronze_abi.h); the enable flags start at 1 and are lowered per thread
 // by Heap's constructor under their BRONZE_NO_* env vars.
 //
 // At namespace scope rather than inside the accessor, so that tls_block.h can
@@ -113,7 +114,7 @@ namespace bronze::runtime {
 static constexpr uint64_t kNoTypedArrayLengthTable[BRONZE_ABI_TA_LENGTH_TBL_WORDS] = {};
 
 thread_local bronze_tls_block g_tls_block = {
-    /*proto_epoch=*/1,
+    /*proto_epoch=*/BRONZE_ABI_PROTO_EPOCH_FIRST,
     /*alloc_cursor=*/0,
     /*alloc_limit=*/0,
     /*plain_shape=*/0,

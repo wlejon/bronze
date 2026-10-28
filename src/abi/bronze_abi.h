@@ -368,7 +368,13 @@ typedef struct bronze_code_range {
  *
  *  - proto_epoch: the prototype-mutation epoch (runtime/object.h): what
  *    makes a cached depth > 0 property hit sound, read inline by the
- *    proto-hit fast path.
+ *    proto-hit fast path. It is always EVEN (it starts at
+ *    BRONZE_ABI_PROTO_EPOCH_FIRST and moves by BRONZE_ABI_PROTO_EPOCH_STEP),
+ *    so its low word is never a heap header's: every header's low 16 bits
+ *    are BRONZE_ABI_TAG_OBJECT, which is odd. That is what lets this block,
+ *    which is the first field's address, stand in for a receiver that is no
+ *    object: a guard steers its header read here and the header compare
+ *    alone refuses it, with no separate test that the value was an object.
  *
  *  - alloc_cursor / alloc_limit: the inline-allocation window. They ARE the
  *    thread heap's young bump region: the collector (brass::gc::Heap, bound
@@ -398,6 +404,13 @@ typedef struct bronze_code_range {
  */
 
 #include "abi/bronze_abi_tls.h"
+
+/* proto_epoch's first value and its step: both even, so the epoch's low 16
+ * bits are never BRONZE_ABI_TAG_OBJECT (odd) and the block's first word reads
+ * as no header (see proto_epoch above). Nonzero, so a zeroed cache entry's
+ * epoch word never matches. */
+#define BRONZE_ABI_PROTO_EPOCH_FIRST    2
+#define BRONZE_ABI_PROTO_EPOCH_STEP     2
 
 /* C-type expansion of the tokens, scoped to the prototype block below and
  * #undef'd after, so consumers can rebind the tokens (codegen-llvm binds

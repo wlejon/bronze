@@ -81,7 +81,13 @@ static SlotRepr desiredSlotRepr(PropertyKey key, Value val, bool enumerable, boo
 // paths compare an entry's fill epoch against it, which is the same question
 // `describes` asks here. Per-thread because the shapes and ICs it guards are.
 uint64_t protoMutationEpoch() noexcept { return runtime::rtTls()->proto_epoch; }
-void bumpProtoMutationEpoch() noexcept { ++runtime::rtTls()->proto_epoch; }
+// By an even step (bronze_abi.h, BRONZE_ABI_PROTO_EPOCH_STEP): guards read the
+// TLS block's first word as the header of a receiver that is no object, and
+// an even epoch is never a header, so the header compare alone refuses it.
+static_assert(BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_STEP % 2 == 0 &&
+                  BRONZE_ABI_TAG_OBJECT % 2 == 1,
+              "an epoch must never read as a heap header");
+void bumpProtoMutationEpoch() noexcept { runtime::rtTls()->proto_epoch += BRONZE_ABI_PROTO_EPOCH_STEP; }
 
 namespace {
 

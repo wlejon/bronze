@@ -879,7 +879,10 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
             ? iconst(b, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&kNotAnArray[0])))
             : b.build_pinned_tls_read();
         Value* base = b.build_select(is_obj, ptr, not_arr);
-        emit_header_checks(base, in_process_ ? nullptr : is_obj, out_ok, out_block, out_head);
+        // Either stand-in's first word is no header (the zeroed block, or the
+        // TLS block's even proto epoch: bronze_abi.h), so the header compare
+        // alone refuses a non-object.
+        emit_header_checks(base, nullptr, out_ok, out_block, out_head);
         return;
     }
 

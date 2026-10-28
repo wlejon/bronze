@@ -76,13 +76,14 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(bb_merge, Type::i64());
 
-    // An Array: the header is read through the TLS block (mapped, and never
-    // read for an answer) when the value is no object at all.
+    // An Array: the header is read through the TLS block (mapped, and its
+    // first word no header: bronze_abi.h, proto_epoch) when the value is no
+    // object at all, so the header compare alone refuses it.
     b.position_at_end(cur);
     Value* ptr = b.build_xor(recv, iconst(b, kObjectTagBits));
     Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
     Value* base = b.build_select(is_obj, ptr, tls_block(b));
-    Value* is_arr = b.build_and(is_obj, b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow)));
+    Value* is_arr = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow));
     b.build_br_if(is_arr, bb_arr, bb_slow);
 
     b.position_at_end(bb_arr);

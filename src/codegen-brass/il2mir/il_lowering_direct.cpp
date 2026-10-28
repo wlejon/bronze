@@ -64,7 +64,9 @@ EntryTest entry_test(Builder& b, Value* tls, Value* callee, uint64_t mask, uint6
     Value* ptr = b.build_xor(callee, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* is_obj = b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit));
     Value* base = b.build_select(is_obj, ptr, tls);
-    Value* is_fn = b.build_and(is_obj, b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kFunctionHeaderLow)));
+    // The TLS block's first word is no header (bronze_abi.h, proto_epoch), so
+    // the header compare alone refuses a non-object.
+    Value* is_fn = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kFunctionHeaderLow));
     // A non-function's payload may be shorter than a function's, so its words
     // past the header are not read at all.
     Value* fn = b.build_select(is_fn, ptr, tls);
@@ -346,7 +348,7 @@ Value* walk_to_prototype(Builder& b, Value* tls, Value* shape, Value* depth, Bas
     Value* pptr = b.build_xor(proto, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* is_obj = b.build_ult(pptr, b.build_iconst_i64(kPayloadLimit));
     Value* base = b.build_select(is_obj, pptr, tls);
-    Value* plain = b.build_and(is_obj, b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow)));
+    Value* plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
     b.build_br_if(plain, is_plain, slow);
 
     b.position_at_end(is_plain);
