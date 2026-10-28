@@ -80,6 +80,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         out.column = lc.column;
         out.file = inst.span.file;
     }
+    out.inline_frame = inst.inlineFrame;
 
     switch (inst.op) {
         // --- Constants ---
@@ -460,6 +461,11 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::PrintSpread: out.op = il2mir::BronzeOp::PrintSpread; break;
         case il::Op::PrintSpreadErr: out.op = il2mir::BronzeOp::PrintSpreadErr; break;
         case il::Op::KeepAlive: out.op = il2mir::BronzeOp::KeepAlive; break;
+        case il::Op::MethodIcIs:
+            out.op = il2mir::BronzeOp::MethodIcIs;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            out.ic_index = inst.icIndex;
+            break;
     }
 
     return out;
@@ -563,6 +569,19 @@ il2mir::BronzeFunction convertFunction(const il::Function& fn, size_t fnIdx,
         }
 
         if (fn.blocks.empty()) return bfn;
+
+        for (const auto& f : fn.inlineFrames) {
+            il2mir::BronzeFunction::InlineFrame bf;
+            bf.callee = ctx.fnName(f.callee);
+            if ((f.callSpan.begin != 0 || f.callSpan.end != 0) && f.callSpan.file < ctx.lineTables.size()) {
+                const SourceBuffer::LineCol lc = ctx.lineTables[f.callSpan.file].lineCol(f.callSpan.begin);
+                bf.line = lc.line;
+                bf.column = lc.column;
+                bf.file = f.callSpan.file;
+            }
+            bf.parent = f.parent;
+            bfn.inline_frames.push_back(std::move(bf));
+        }
 
         bfn.blocks.reserve(fn.blocks.size());
         for (const auto& block : fn.blocks) {

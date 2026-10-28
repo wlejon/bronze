@@ -241,6 +241,63 @@ std::unordered_map<std::string, std::string> emitFunctionDescriptors(
     return fnToDesc;
 }
 
+namespace {
+
+// One code range's inline frames (bronze_inline_frame), built from the brass
+// inlined scopes its line entries name. A scope whose callee has no function
+// descriptor (a runtime-internal function brass's own inliner moved) names no
+// frame: its positions are reported as its call's, in the frame around it,
+// which is what a trace of the uninlined code would show for a function that
+// never appears in one.
+class InlineFrameTable {
+public:
+    struct Frame {
+        std::string desc;
+        brass::DebugLoc call;
+        uint32_t parent = 0;
+    };
+
+    InlineFrameTable(const brass::DebugContext& ctx, const std::unordered_map<std::string, std::string>& fnToDesc)
+        : ctx_(ctx), fnToDesc_(fnToDesc) {}
+
+    // Rewrites `loc` past any scope with no descriptor and answers the frame
+    // (1-based into frames(), 0 for the range's own code) it is a position of.
+    uint32_t frameOf(brass::DebugLoc& loc) {
+        uint32_t sid = loc.inlined_at_id;
+        // Bounded by the scope count: a parent id is always an earlier scope.
+        for (size_t guard = 0; sid != 0 && guard <= ctx_.inlined_scopes().size(); ++guard) {
+            const brass::InlinedScope* scope = ctx_.get_inlined_scope(sid);
+            if (!scope) return 0;
+            if (fnToDesc_.count(scope->callee_name)) return frameFor(sid);
+            loc = scope->callsite_loc;
+            sid = scope->parent_inlined_at_id;
+        }
+        return 0;
+    }
+
+    const std::vector<Frame>& frames() const { return frames_; }
+
+private:
+    uint32_t frameFor(uint32_t sid) {
+        if (auto it = local_.find(sid); it != local_.end()) return it->second;
+        const brass::InlinedScope* scope = ctx_.get_inlined_scope(sid);
+        brass::DebugLoc call = scope->callsite_loc;
+        call.inlined_at_id = scope->parent_inlined_at_id;
+        const uint32_t parent = frameOf(call);
+        frames_.push_back(Frame{fnToDesc_.at(scope->callee_name), call, parent});
+        const uint32_t index = static_cast<uint32_t>(frames_.size());
+        local_.emplace(sid, index);
+        return index;
+    }
+
+    const brass::DebugContext& ctx_;
+    const std::unordered_map<std::string, std::string>& fnToDesc_;
+    std::unordered_map<uint32_t, uint32_t> local_;
+    std::vector<Frame> frames_;
+};
+
+}  // namespace
+
 void emitPcTablesAndCodeRanges(
     ObjectFile& obj, Section& roSec, int32_t roIdx,
     const std::string& entrySymbol, const std::vector<std::string>& sourceFiles,
@@ -272,24 +329,47 @@ void emitPcTablesAndCodeRanges(
                      SymbolBinding::Local);
     }
 
+    const auto fileIndex = [&](uint32_t fileId) {
+        auto itFile = fileIdToIndex.find(fileId);
+        return itFile != fileIdToIndex.end() ? itFile->second : BRONZE_PC_FILE_DESC;
+    };
     std::unordered_map<std::string, std::string> fnToPcTable;
+    std::unordered_map<std::string, std::pair<std::string, uint32_t>> fnToInlineFrames;
     for (const auto& cfi : obj.functions) {
         auto itDt = debugTableMap.find(cfi.name);
         if (itDt != debugTableMap.end() && !itDt->second->line_entries().empty()) {
             const auto& entries = itDt->second->line_entries();
+            InlineFrameTable frames(obj.debug_context, fnToDesc);
             roSec.align_to(4);
             const size_t pcOff = roSec.data.size();
             for (const auto& le : entries) {
+                brass::DebugLoc loc = le.loc;
+                const uint32_t frame = frames.frameOf(loc);
                 roSec.emit32(le.code_offset);
-                roSec.emit32(le.loc.line);
-                roSec.emit32(le.loc.column);
-                auto itFile = fileIdToIndex.find(le.loc.file_id);
-                roSec.emit32(itFile != fileIdToIndex.end() ? itFile->second : BRONZE_PC_FILE_DESC);
+                roSec.emit32(loc.line);
+                roSec.emit32(loc.column);
+                roSec.emit32(fileIndex(loc.file_id));
+                roSec.emit32(frame);
             }
             std::string pcSym = moduleSymbolName(entrySymbol, "__bronze_pc_table_" + cfi.name);
             fnToPcTable[cfi.name] = pcSym;
             defineSymbol(obj, std::move(pcSym), roIdx, pcOff,
                          entries.size() * sizeof(bronze_pc_entry), SymbolBinding::Local);
+            if (!frames.frames().empty()) {
+                roSec.align_to(8);
+                const size_t inlOff = roSec.data.size();
+                for (const auto& f : frames.frames()) {
+                    emitPointer(roSec, f.desc);
+                    roSec.emit32(f.call.line);
+                    roSec.emit32(f.call.column);
+                    roSec.emit32(fileIndex(f.call.file_id));
+                    roSec.emit32(f.parent);
+                }
+                std::string inlSym = moduleSymbolName(entrySymbol, "__bronze_inline_frames_" + cfi.name);
+                defineSymbol(obj, inlSym, roIdx, inlOff, frames.frames().size() * sizeof(bronze_inline_frame),
+                             SymbolBinding::Local);
+                fnToInlineFrames[cfi.name] = {std::move(inlSym), static_cast<uint32_t>(frames.frames().size())};
+            }
         }
     }
     timer.mark("pc tables");
@@ -339,6 +419,10 @@ void emitPcTablesAndCodeRanges(
         auto itMap = fnToStackMap.find(cfi.name);
         roSec.emit32(itMap != fnToStackMap.end() ? static_cast<uint32_t>(itMap->second.second) : 0);
         emitPointer(roSec, itMap != fnToStackMap.end() ? itMap->second.first : "");
+        auto itInl = fnToInlineFrames.find(cfi.name);
+        emitPointer(roSec, itInl != fnToInlineFrames.end() ? itInl->second.first : "");
+        roSec.emit32(itInl != fnToInlineFrames.end() ? itInl->second.second : 0);
+        roSec.emit32(0);  // bronze_code_range's tail padding
     }
     defineSymbol(obj, codeRangesSymbol, roIdx, rangesOff,
                  obj.functions.size() * sizeof(bronze_code_range), SymbolBinding::Global);

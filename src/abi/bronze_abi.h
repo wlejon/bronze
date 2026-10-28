@@ -296,12 +296,33 @@ typedef struct bronze_fn_desc {
  */
 #define BRONZE_PC_FILE_DESC 0xFFFFFFFFu
 
+/*
+ * `inline_frame` is 0 for the range's own code, else a 1-based index into
+ * the range's `inline_frames`: the position is in the body of a call that was
+ * compiled in place (lower/inline_guarded.cpp), and `line`/`col`/`file` are
+ * the callee's own.
+ */
 typedef struct bronze_pc_entry {
     uint32_t pc_offset;
     uint32_t line;
     uint32_t col;
     uint32_t file;
+    uint32_t inline_frame;
 } bronze_pc_entry;
+
+/*
+ * A call compiled in place, as a stack trace reports it: the callee's frame
+ * (`desc`), then the frame the call sits in, at the call's position (`line`,
+ * `col`, `file` as a pc entry's) — the range's own function when `parent` is
+ * 0, else the callee of inline frame `parent` (1-based, this range's table).
+ */
+typedef struct bronze_inline_frame {
+    const bronze_fn_desc* desc;
+    uint32_t line;
+    uint32_t col;
+    uint32_t file;
+    uint32_t parent;
+} bronze_inline_frame;
 
 typedef struct bronze_code_range {
     const void* code_start;
@@ -319,6 +340,9 @@ typedef struct bronze_code_range {
      * registered already, as a JIT's are. Null when the function has none. */
     uint32_t stack_map_size;
     const uint8_t* stack_map;
+    /* The inline frames the pc table's entries name; null and 0 when none. */
+    const bronze_inline_frame* inline_frames;
+    uint32_t inline_frame_count;
 } bronze_code_range;
 
 /*

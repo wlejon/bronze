@@ -317,7 +317,12 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
 
     auto dominates = [&](BlockId a, BlockId b) -> bool {
         if (a == b) return true;
-        if (b >= idom.size() || rpoIndex[b] == UINT32_MAX) return false;
+        if (b >= idom.size()) return false;
+        // A block no path from the entry reaches never runs, so every block
+        // dominates it vacuously. Lowering leaves such blocks (the statements
+        // after a `return` in a branch), using values of the blocks before
+        // them; any pass that rebuilds the function's blocks keeps them.
+        if (rpoIndex[b] == UINT32_MAX) return true;
         for (BlockId cur = idom[b]; cur != kNoBlock; cur = idom[cur]) {
             if (cur == a) return true;
         }
@@ -461,6 +466,16 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
 
             for (ValueId opId : inst.operands) {
                 if (!checkUse(opId, bIdx, iIdx)) return false;
+            }
+            if (inst.inlineFrame > fn.inlineFrames.size()) {
+                diags.error(Span{}, "Function " + fn.name + ": an instruction names inline frame " +
+                                        std::to_string(inst.inlineFrame) + " of " +
+                                        std::to_string(fn.inlineFrames.size()));
+                return false;
+            }
+            if (inst.op == Op::MethodIcIs && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
+                diags.error(Span{}, "Function " + fn.name + ": method.ic.is takes one operand and is a bool");
+                return false;
             }
 
             // The fixed-operand call forms end at sixteen arguments — the
@@ -639,7 +654,8 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                 const bool refersToFunction = inst.op == Op::Call ||
                                               inst.op == Op::CreateFunction ||
                                               inst.op == Op::FunctionRef ||
-                                              inst.op == Op::CoroStart;
+                                              inst.op == Op::CoroStart ||
+                                              inst.op == Op::MethodIcIs;
                 if (!refersToFunction) continue;
                 if (inst.calleeIndex >= module.functions.size()) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +

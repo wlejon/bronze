@@ -646,14 +646,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     const bool first_is_scalar = is_pure_scalar_inst(first);
     if (!first_is_set && !first_is_get && !first_is_scalar) return false;
 
-    auto apply_loc = [&](const BronzeInstruction& inst) {
-        if (current_file_id_ != 0 && inst.line > 0) {
-            const uint32_t fileId = inst.file < source_file_ids_.size() ? source_file_ids_[inst.file] : current_file_id_;
-            b.set_current_loc(DebugLoc(fileId, inst.line, inst.column));
-        } else {
-            b.clear_current_loc();
-        }
-    };
+    auto apply_loc = [&](const BronzeInstruction& inst) { apply_inst_loc(b, inst); };
 
     // Contiguous PropGet runs across one or more receivers (e.g. `ae[0..15]` + `be[0..15]`)
     // when not already proven dense and not a single-use store source.

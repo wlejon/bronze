@@ -154,15 +154,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         return it != value_use_counts_.end() && it->second == 1;
     };
 
-    auto apply_loc = [&](const BronzeInstruction& inst) {
-        if (current_file_id_ != 0 && inst.line > 0) {
-            const uint32_t fileId =
-                inst.file < source_file_ids_.size() ? source_file_ids_[inst.file] : current_file_id_;
-            b.set_current_loc(DebugLoc(fileId, inst.line, inst.column));
-        } else {
-            b.clear_current_loc();
-        }
-    };
+    auto apply_loc = [&](const BronzeInstruction& inst) { apply_inst_loc(b, inst); };
 
     // --- 1. Try matching a contiguous ElemSet run (`toArray`) ---
     auto classify_prop_peer = [&](const BronzeInstruction& prop_inst, ElemRunPeerKind& out_kind,

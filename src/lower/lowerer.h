@@ -66,6 +66,9 @@ public:
             const NativeManifest* nativeManifest = nullptr);
 
     std::optional<il::Module> lower();
+    // Whether lower() compiles resolved method calls' bodies in place
+    // (inline_guarded.h, inlineGuardedEnabled).
+    void setInlineGuarded(bool on) { inlineGuarded_ = on; }
 
 private:
     const ast::Module& astModule_;
@@ -83,6 +86,7 @@ private:
 
     // --- Direct method-call edge (direct_method_table.h) ---
     DirectMethodTable directMethods_;
+    bool inlineGuarded_ = false;
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
     void recordMethodCallSite(const il::Instruction& inst, const ast::Expr& receiver,
                               const std::string& method);

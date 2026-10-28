@@ -296,7 +296,7 @@ void dumpSamplerReport() {
             }
         }
         if (CodeSite site; innermostCompiledSite(pcs, n, site)) {
-            const bronze_fn_desc* desc = site.range->desc;
+            const bronze_fn_desc* desc = site.desc;
             auto& lr = lineRows[{desc, site.file, site.line}];
             if (lr.line == 0) {
                 lr.function = (desc->name && desc->name[0]) ? desc->name : "<anonymous>";

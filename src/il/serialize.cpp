@@ -41,6 +41,7 @@ struct InstructionMirror {
     uint32_t envIndex;
     bool envImmutable;
     uint32_t callEnvHops;
+    uint32_t inlineFrame;
     Span span;
     BlockTarget target;
     BlockTarget elseTarget;
@@ -95,6 +96,7 @@ struct FunctionMirror {
     uint32_t descFlags;
     uint32_t typedOrigin;
     uint32_t typedArgc;
+    std::vector<Function::InlineFrame> inlineFrames;
     std::vector<Block> blocks;
     uint32_t valueCount;
 };
@@ -280,7 +282,8 @@ enum InstBits : uint32_t {
     kNullishUnbox = 1u << 22,
     kEnvImmutable = 1u << 23,
     kHasTyped = 1u << 24,
-    kKnownBits = (1u << 25) - 1,
+    kHasInlineFrame = 1u << 25,
+    kKnownBits = (1u << 26) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -318,6 +321,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.envDepth != 0) m |= kHasEnvDepth;
     if (inst.envIndex != 0) m |= kHasEnvIndex;
     if (inst.callEnvHops != Instruction::kNoEnvHops) m |= kHasEnvHops;
+    if (inst.inlineFrame != 0) m |= kHasInlineFrame;
     if (inst.span.begin != 0 || inst.span.end != 0 || inst.span.file != 0) m |= kHasSpan;
     if (hasTarget(inst.target)) m |= kHasTarget;
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
@@ -350,6 +354,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (m & kHasEnvDepth) w.var(inst.envDepth);
     if (m & kHasEnvIndex) w.var(inst.envIndex);
     if (m & kHasEnvHops) w.var(inst.callEnvHops);
+    if (m & kHasInlineFrame) w.var(inst.inlineFrame);
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -361,7 +366,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
 
 void readInstruction(Reader& r, Instruction& inst) {
     const uint8_t op = r.u8();
-    if (op > static_cast<uint8_t>(Op::KeepAlive)) r.fail("bad op");
+    if (op > static_cast<uint8_t>(Op::MethodIcIs)) r.fail("bad op");
     inst.op = static_cast<Op>(op);
     inst.type = r.type();
     const uint64_t m = r.var();
@@ -386,6 +391,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasEnvDepth) inst.envDepth = r.u32();
     if (m & kHasEnvIndex) inst.envIndex = r.u32();
     if (m & kHasEnvHops) inst.callEnvHops = r.u32();
+    if (m & kHasInlineFrame) inst.inlineFrame = r.u32();
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());
@@ -485,6 +491,14 @@ void writeFunction(Writer& w, const Function& fn) {
     w.var(fn.descFlags);
     w.var(static_cast<uint32_t>(fn.typedOrigin + 1u));  // kNoTypedOrigin wraps to 0
     w.var(fn.typedArgc);
+    w.var(fn.inlineFrames.size());
+    for (const auto& f : fn.inlineFrames) {
+        w.var(f.callee);
+        w.var(f.callSpan.begin);
+        w.var(f.callSpan.end);
+        w.var(f.callSpan.file);
+        w.var(f.parent);
+    }
     w.var(fn.valueCount);
     w.var(fn.blocks.size());
     for (const auto& b : fn.blocks) writeBlock(w, b);
@@ -529,6 +543,16 @@ void readFunction(Reader& r, Function& fn) {
     fn.descFlags = r.u32();
     fn.typedOrigin = static_cast<uint32_t>(r.u32() - 1u);
     fn.typedArgc = r.u32();
+    fn.inlineFrames.resize(r.count());
+    for (auto& f : fn.inlineFrames) {
+        f.callee = r.u32();
+        f.callSpan.begin = r.u32();
+        f.callSpan.end = r.u32();
+        const uint32_t file = r.u32();
+        if (file > UINT16_MAX) r.fail("bad inline frame file");
+        f.callSpan.file = static_cast<uint16_t>(file);
+        f.parent = r.u32();
+    }
     fn.valueCount = r.u32();
     fn.blocks.resize(r.count());
     for (auto& b : fn.blocks) {

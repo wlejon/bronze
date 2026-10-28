@@ -267,9 +267,11 @@ bool find_code_site(const void* pc, CodeSite& out) {
     const bronze_code_range* cr = find_code_range(pc);
     if (!cr || !cr->desc) return false;
     out.range = cr;
+    out.desc = cr->desc;
     out.line = cr->desc->def_line;
     out.col = cr->desc->def_col;
     out.file = cr->desc->file;
+    out.inline_frame = 0;
     if (cr->pc_table && cr->pc_count > 0) {
         const uintptr_t pc_off =
             reinterpret_cast<uintptr_t>(pc) - reinterpret_cast<uintptr_t>(cr->code_start);
@@ -283,8 +285,34 @@ bool find_code_site(const void* pc, CodeSite& out) {
             if (cr->files && it->file < cr->file_count && cr->files[it->file]) {
                 out.file = cr->files[it->file];
             }
+            if (it->inline_frame != 0 && it->inline_frame <= cr->inline_frame_count && cr->inline_frames) {
+                const bronze_inline_frame& f = cr->inline_frames[it->inline_frame - 1];
+                if (f.desc) {
+                    out.desc = f.desc;
+                    out.inline_frame = it->inline_frame;
+                    // A position whose pc entry names no file is in the
+                    // callee's own file, not the range's.
+                    if (!(cr->files && it->file < cr->file_count && cr->files[it->file])) out.file = f.desc->file;
+                }
+            }
         }
     }
+    return true;
+}
+
+bool outer_code_site(CodeSite& site) {
+    const bronze_code_range* cr = site.range;
+    if (!cr || site.inline_frame == 0 || site.inline_frame > cr->inline_frame_count || !cr->inline_frames) {
+        return false;
+    }
+    const bronze_inline_frame& f = cr->inline_frames[site.inline_frame - 1];
+    const bronze_inline_frame* parent =
+        (f.parent != 0 && f.parent <= cr->inline_frame_count) ? &cr->inline_frames[f.parent - 1] : nullptr;
+    site.desc = (parent && parent->desc) ? parent->desc : cr->desc;
+    site.inline_frame = parent ? f.parent : 0;
+    site.line = f.line;
+    site.col = f.col;
+    site.file = (cr->files && f.file < cr->file_count && cr->files[f.file]) ? cr->files[f.file] : site.desc->file;
     return true;
 }
 
@@ -384,9 +412,18 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
             reachedTop = (f.desc->flags & BRONZE_FN_DESC_TOPLEVEL) != 0;
         }
     };
-    const auto pushCompiled = [&](const CodeSite& site) {
-        frames.push_back({site.range->desc, site.line, site.col, site.range->code_start, nullptr, site.file});
-        reachedTop = (site.range->desc->flags & BRONZE_FN_DESC_TOPLEVEL) != 0;
+    // One frame per function the position is in: an inlined call's callee
+    // frames first, innermost out, then the range's own, each at the
+    // position its frame would have reported had the call been made.
+    const auto pushCompiled = [&](const CodeSite& found) {
+        CodeSite site = found;
+        while (true) {
+            const bool own = site.inline_frame == 0 && site.desc == site.range->desc;
+            frames.push_back({site.desc, site.line, site.col, own ? site.range->code_start : site.desc->code, nullptr,
+                              site.file});
+            reachedTop = (site.desc->flags & BRONZE_FN_DESC_TOPLEVEL) != 0;
+            if (done() || !outer_code_site(site)) break;
+        }
     };
 
 #if defined(_WIN32) && defined(_M_X64)

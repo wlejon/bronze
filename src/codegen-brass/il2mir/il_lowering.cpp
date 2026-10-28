@@ -716,6 +716,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     module_env_regs_.clear();
     current_fn_dynamic_ids_.clear();
+    current_fn_ast_ = &fn_ast;
+    current_mod_ = &mod;
+    inline_scope_ids_.assign(fn_ast.inline_frames.size(), 0);
     create_func_counter_.clear();
     argv_block_ = nullptr;
     argv_block_words_ = 0;
@@ -930,17 +933,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
                 continue;
             }
             const auto& inst_ast = blk_ast.instructions[inst_idx];
-            if (current_file_id_ != 0 && inst_ast.line > 0) {
-                // The instruction's own file: a merged top level holds lines
-                // of every imported module, so the module's name is only the
-                // fallback for an instruction that names none.
-                const uint32_t fileId = inst_ast.file < source_file_ids_.size()
-                                            ? source_file_ids_[inst_ast.file]
-                                            : current_file_id_;
-                b.set_current_loc(DebugLoc(fileId, inst_ast.line, inst_ast.column));
-            } else {
-                b.clear_current_loc();
-            }
+            apply_inst_loc(b, inst_ast);
             if (!lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, &cont_counter)) {
                 return false;
             }

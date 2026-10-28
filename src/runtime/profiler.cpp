@@ -188,6 +188,10 @@ struct Session {
     sampling::ModuleRanges modules;
     Collected c;
     std::unordered_map<uint64_t, uint32_t> pcSym;
+    // A pc inside a call compiled in place: the frames around its innermost
+    // one (symForPc's answer), innermost out, each a frame of its own as it
+    // would have been had the call been made.
+    std::unordered_map<uint64_t, std::vector<uint32_t>> pcOuter;
     std::unordered_map<uintptr_t, uint32_t> jitSym;  // by code start + tier
     std::unordered_map<const void*, uint32_t> descSym;
     std::unordered_map<const void*, uint32_t> fnSym;
@@ -274,17 +278,27 @@ uint32_t symForPc(Session& s, uint64_t lookup) {
             s.jitSym.emplace(key, id);
         }
     } else if (range && range->desc) {
-        if (auto d = s.descSym.find(range->desc); d != s.descSym.end()) {
-            id = d->second;
-        } else {
+        const auto aotSym = [&](const bronze_fn_desc* desc) {
+            if (auto d = s.descSym.find(desc); d != s.descSym.end()) return d->second;
             Sym sym;
             sym.kind = SymKind::Aot;
             sym.tier = "aot";
             sym.name = "<anonymous>";
             sym.pc = lookup;  // its module is named at stop
-            fillFromDesc(sym, range->desc);
-            id = addSym(s, std::move(sym));
-            s.descSym.emplace(range->desc, id);
+            fillFromDesc(sym, desc);
+            const uint32_t made = addSym(s, std::move(sym));
+            s.descSym.emplace(desc, made);
+            return made;
+        };
+        CodeSite site;
+        if (range->inline_frame_count != 0 && find_code_site(reinterpret_cast<const void*>(static_cast<uintptr_t>(lookup)), site) &&
+            site.inline_frame != 0) {
+            id = aotSym(site.desc);
+            std::vector<uint32_t> outer;
+            while (outer_code_site(site)) outer.push_back(aotSym(site.desc));
+            s.pcOuter.emplace(lookup, std::move(outer));
+        } else {
+            id = aotSym(range->desc);
         }
     } else {
         Sym sym;
@@ -576,18 +590,33 @@ void record(Session& s, const Raw& raw, uint64_t relMs) {
     const uint32_t thread = threadSlot(s, raw);
     s.c.threads[thread].samples++;
     auto& log = s.c.log;
-    uint32_t nNative = raw.nNative;
     uint32_t syms[kMaxNative];
-    for (uint32_t i = 0; i < raw.nNative; ++i) syms[i] = symForPc(s, i == 0 ? raw.pcs[i] : raw.pcs[i] - 1);
+    uint64_t lookups[kMaxNative];
+    for (uint32_t i = 0; i < raw.nNative; ++i) {
+        lookups[i] = i == 0 ? raw.pcs[i] : raw.pcs[i] - 1;
+        syms[i] = symForPc(s, lookups[i]);
+    }
     // A link register that names frame 0's own function was left by a call
     // it made earlier, not by its caller: no frame.
     const bool dropLr = raw.lrFrame && raw.nNative > 1 && syms[1] == syms[0];
-    if (dropLr) --nNative;
-    log.push_back(packHeader(relMs, thread, nNative, raw.nInterp));
+    // Each native frame, and after it the frames a call compiled in place
+    // stands for, which share its stack pointer.
+    std::vector<std::pair<uint64_t, uint32_t>> frames;
+    frames.reserve(raw.nNative);
     for (uint32_t i = 0; i < raw.nNative; ++i) {
         if (dropLr && i == 1) continue;
-        log.push_back(raw.sps[i]);
-        log.push_back(syms[i]);
+        frames.emplace_back(raw.sps[i], syms[i]);
+        if (auto it = s.pcOuter.find(lookups[i]); it != s.pcOuter.end()) {
+            for (uint32_t outer : it->second) frames.emplace_back(raw.sps[i], outer);
+        }
+    }
+    // The header's frame count is a byte; past it the outermost frames go, as
+    // a stack deeper than the capture's frame limit loses them.
+    if (frames.size() > 0xFF) frames.resize(0xFF);
+    log.push_back(packHeader(relMs, thread, static_cast<uint32_t>(frames.size()), raw.nInterp));
+    for (const auto& [sp, sym] : frames) {
+        log.push_back(sp);
+        log.push_back(sym);
     }
     for (uint32_t i = 0; i < raw.nInterp; ++i) {
         log.push_back(reinterpret_cast<uintptr_t>(raw.frameAddrs[i]));

@@ -10,6 +10,7 @@
 #include "ast/queries.h"
 #include "lower/guard_region.h"
 #include "lower/inline_small.h"
+#include "lower/inline_guarded.h"
 #include "lower/typed_entry.h"
 #include "lower/loop_prop_analysis.h"
 #include "lower/loop_prop_hoist.h"
@@ -422,6 +423,17 @@ std::optional<il::Module> Lowerer::lower() {
         applyGuardedRegions(ilModule_, &stats);
         guardRegionStatsReport(stats);
         applyTypedEntries(ilModule_, nullptr);
+        // Last, so a body is copied as it is finished: its guarded regions
+        // formed, a typed site's entry built and folded. Copied first, the
+        // caller's regions could not form across it (they start at a
+        // function's entry or a loop header, and an inlined body is neither),
+        // and a typed site would lose its unboxed entry for a generic body.
+        if (inlineGuarded_) {
+            std::vector<uint32_t> inlinedInto;
+            inlineGuardedMethods(ilModule_, diags_, &inlinedInto);
+            if (diags_.hasErrors()) return std::nullopt;
+            foldInlinedCallers(ilModule_, inlinedInto);
+        }
     }
     return ilModule_;
 }
@@ -746,9 +758,11 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       bool assumeNoBigInt,
                                       const types::PinManifest* pins,
                                       const std::string& censusOutPath,
-                                      const NativeManifest* nativeManifest) {
+                                      const NativeManifest* nativeManifest,
+                                      const InlineGuardedOptions& inlineGuarded) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
                     assumeNoBigInt, pins, censusOutPath, nativeManifest);
+    lowerer.setInlineGuarded(inlineGuardedEnabled(inlineGuarded));
     return lowerer.lower();
 }
 

@@ -162,6 +162,7 @@ enum class BronzeOp {
     PrintSpread,
     PrintSpreadErr,
     KeepAlive,
+    MethodIcIs,
     Unknown
 };
 
@@ -213,6 +214,9 @@ struct BronzeInstruction {
     // UINT32_MAX for the module's own name (the instruction has no span).
     uint32_t file = UINT32_MAX;
     uint32_t env_hops = UINT32_MAX;
+    // il::Instruction::inlineFrame: 0, or a 1-based index into the function's
+    // `inline_frames`.
+    uint32_t inline_frame = 0;
 };
 
 struct BronzeBlock {
@@ -236,6 +240,16 @@ struct BronzeFunction {
     // The program's top level (`main` and its segments): run once.
     bool is_toplevel = false;
     bool is_deterministic_fp = false;
+    // il::Function::inlineFrames, with the callee by its MIR function name and
+    // the call's position as an instruction's (`file` the same index).
+    struct InlineFrame {
+        std::string callee;
+        uint32_t line = 0;
+        uint32_t column = 0;
+        uint32_t file = UINT32_MAX;
+        uint32_t parent = 0;
+    };
+    std::vector<InlineFrame> inline_frames;
     std::vector<BronzeBlock> blocks;
 };
 

@@ -1,0 +1,11 @@
+1: leaf 7 Inner.leaf@21:32 < oneLevel@38:31
+123
+2: leaf 7 Inner.leaf@21:32 < Middle.mid@26:33 < twoLevels@46:25
+132
+3: leaf 7 Inner.leaf@21:32 < Middle.mid@26:33 < Outer.top@31:31 < threeLevels@54:18
+264
+Inner.make@22:20 < Middle.midMake@27:34 < Outer.topMake@32:35 < notThrown@61:47
+finally 6, finally 7, caught leaf 7, finally 8
+11993990
+3: leaf 7 Inner.leaf@21:32 < Middle.mid@26:33 < Outer.top@31:31 < threeLevels@54:18
+84056

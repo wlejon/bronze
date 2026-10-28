@@ -152,6 +152,7 @@ const char* opName(Op op) {
         case Op::PrintSpread: return "print.spread";
         case Op::PrintSpreadErr: return "print.spread.err";
         case Op::KeepAlive: return "keep.alive";
+        case Op::MethodIcIs: return "method.ic.is";
     }
     return "?";
 }
@@ -906,6 +907,10 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         break;
                     case Op::ModuleEnvGet:
                         out += "module.env.get";
+                        break;
+                    case Op::MethodIcIs:
+                        out += "method.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.icIndex) + ", @" + getFnName(inst.calleeIndex);
                         break;
                     case Op::Print:
                     case Op::PrintErr:

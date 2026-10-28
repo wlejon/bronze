@@ -255,6 +255,15 @@ private:
     uint32_t current_file_id_ = 0;
     // The debug-context file id of each BronzeModuleAST::source_files entry.
     std::vector<uint32_t> source_file_ids_;
+    // The function being lowered, for its inline frames, and the brass
+    // inlined-scope id each of them was given (0: not yet recorded).
+    const BronzeFunction* current_fn_ast_ = nullptr;
+    Module* current_mod_ = nullptr;
+    std::vector<uint32_t> inline_scope_ids_;
+    uint32_t inline_scope_id(uint32_t frame);
+    // Sets `b`'s location to the instruction's: its own line in its own file,
+    // inside the brass inlined scope of its inline frame.
+    void apply_inst_loc(Builder& b, const BronzeInstruction& inst);
     bool has_error_ = false;
     const BronzeModuleAST* current_ast_ = nullptr;
     size_t current_fn_idx_ = 0;

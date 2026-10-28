@@ -24,6 +24,7 @@ bool is_call_il_op(BronzeOp op) {
         case BronzeOp::DynamicCallSpread:
         case BronzeOp::FuncRef:
         case BronzeOp::CreateFunc:
+        case BronzeOp::MethodIcIs:
             return true;
         default:
             return false;
@@ -171,30 +172,14 @@ Value* box_value(IlLowering* lowering, Builder& b, Value* v, Type as) {
     return lowering->ensure_type(v, Type::i64(), b);
 }
 
-// `recv.key(...)` whose callee lowering named (lower/direct_method_table.h).
-// The name is the nearest declaration at or above the class inference gave
-// the receiver, which is a GUESS: a subclass override, a monkey-patch or a
-// receiver of another class entirely resolves `key` to another function. So
-// the direct call runs only when the site's method IC answers the guessed
-// function for this receiver — a plain object whose shape a DIRECT entry
-// (way 0 or way 1) latched, with that entry's code pointer the callee's
-// wrapper. Everything else, the first call that latches the entry included,
-// takes the generic call, which dispatches on the receiver in hand.
-Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* recv,
-                                const std::vector<Value*>& args, Value* site, const std::string& callee,
-                                const std::string& entry_name, Function* direct_fn) {
+// Whether the method-call `site`'s cache answers `callee` for `recv`: a
+// plain receiver whose shape a DIRECT entry (way 0 or way 1) latched, at the
+// current epoch, with that entry's code pointer the callee's wrapper. The
+// direct edge's guard, and `method.ic.is`, the guard of an inlined body.
+Value* direct_method_ic_hit(IlLowering* lowering, Builder& b, Value* recv, Value* site, const std::string& callee) {
     constexpr int32_t kWord = 8;
     constexpr int64_t kDirectFormLimit = int64_t{1} << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
     PropertyLoweringHelper& pl = lowering->prop_lowering();
-
-    BasicBlock* cur = b.current_block();
-    const std::string prefix = "direct_" + std::to_string(cur->parent()->next_block_id());
-    BasicBlock* fast = b.append_block(prefix + "_fast");
-    BasicBlock* slow = b.append_block(prefix + "_slow");
-    BasicBlock* merge = b.append_block(prefix + "_merge");
-    Value* result = b.add_block_param(merge, Type::i64());
-
-    b.position_at_end(cur);
     Value* plain = nullptr;
     Value* ptr = nullptr;
     Value* shape = nullptr;
@@ -219,7 +204,32 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
             b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord)),
             b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord), target)),
         b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord), epoch));
-    Value* hit = b.build_and(plain, b.build_or(way0, way1));
+    return b.build_and(plain, b.build_or(way0, way1));
+}
+
+// `recv.key(...)` whose callee lowering named (lower/direct_method_table.h).
+// The name is the nearest declaration at or above the class inference gave
+// the receiver, which is a GUESS: a subclass override, a monkey-patch or a
+// receiver of another class entirely resolves `key` to another function. So
+// the direct call runs only when the site's method IC answers the guessed
+// function for this receiver — a plain object whose shape a DIRECT entry
+// (way 0 or way 1) latched, with that entry's code pointer the callee's
+// wrapper. Everything else, the first call that latches the entry included,
+// takes the generic call, which dispatches on the receiver in hand.
+Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* recv,
+                                const std::vector<Value*>& args, Value* site, const std::string& callee,
+                                const std::string& entry_name, Function* direct_fn) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "direct_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(prefix + "_fast");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* hit = direct_method_ic_hit(lowering, b, recv, site, callee);
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
     // The generic dispatch takes every argument boxed. A typed edge's
     // unboxed operands are boxed here, on the path that needs them.
@@ -333,6 +343,17 @@ bool lower_call_instruction(
             Value* callee = ensure_type(get_opd(0), Type::i64());
             Value* args = ensure_type(get_opd(1), Type::i64());
             res_val = b.build_call("bronze_construct_spread", Type::i64(), {callee, args});
+            break;
+        }
+
+        // The guard of an inlined method body, which is the direct edge's: no
+        // site (a module built without IC sites) answers no, and the body's
+        // guard sends every call to the original method.call.
+        case BronzeOp::MethodIcIs: {
+            Value* recv = ensure_type(get_opd(0), Type::i64());
+            Value* site = lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr;
+            res_val = site ? direct_method_ic_hit(lowering, b, recv, site, inst_ast.callee_name)
+                           : b.build_iconst_i32(0);
             break;
         }
 

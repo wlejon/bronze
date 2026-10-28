@@ -20,12 +20,22 @@ const bronze_code_range* find_code_range(const void* pc);
 // level holds every imported module's top-level statements.
 struct CodeSite {
     const bronze_code_range* range = nullptr;
+    // The function the position is in: the range's own, or, inside a call
+    // compiled in place, that call's callee (bronze_inline_frame).
+    const bronze_fn_desc* desc = nullptr;
     uint32_t line = 0;
     uint32_t col = 0;
     const char* file = nullptr;
+    // The position's inline frame in `range` (1-based), 0 for the range's own
+    // code.
+    uint32_t inline_frame = 0;
 };
 // False when `pc` is in no registered code range, or in one with no descriptor.
+// The site is the innermost frame at `pc`; outer_code_site steps out of it.
 bool find_code_site(const void* pc, CodeSite& out);
+// The frame around an inlined one: the function its call was compiled into,
+// at the call's position. False for a range's own code, which has none.
+bool outer_code_site(CodeSite& site);
 
 
 std::string bronze_format_stack_trace(Value errorObj, Value skipFn = Value::fromUndefined());

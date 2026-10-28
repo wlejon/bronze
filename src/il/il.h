@@ -230,6 +230,12 @@ struct Instruction {
     static constexpr uint32_t kNoEnvHops = 0xFFFFFFFFu;
     uint32_t callEnvHops = kNoEnvHops;
 
+    // The inlined call this instruction was copied in for, as a 1-based index
+    // into its function's `inlineFrames`; 0 for the function's own code. The
+    // span stays the callee's own, so a stack trace names the callee at that
+    // line and the caller at the frame's call span (lower/inline_guarded.cpp).
+    uint32_t inlineFrame = 0;
+
     Span span;
 
     BlockTarget target;              // Jump target / Branch then-target
@@ -463,6 +469,16 @@ struct Function {
     uint32_t adaptArity() const {
         return needsArguments ? 0u : static_cast<uint32_t>(callerParamCount());
     }
+    // One entry per call inlined into this function (lower/inline_guarded.cpp):
+    // the callee that was inlined, where its call was written, and the frame
+    // that call itself sat in (0 for the function's own code, else a 1-based
+    // index here). An instruction's `inlineFrame` names its innermost entry.
+    struct InlineFrame {
+        uint32_t callee = 0;
+        Span callSpan;
+        uint32_t parent = 0;
+    };
+    std::vector<InlineFrame> inlineFrames;
     std::vector<Block> blocks;
     uint32_t valueCount = 0;  // number of ValueIds in use (params first)
 };

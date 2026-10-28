@@ -101,6 +101,9 @@ bool canThrow(const Instruction& inst) {
         case Op::ExcTake:
         // A use of its operands and nothing else.
         case Op::KeepAlive:
+        // Loads off the receiver's header and the site's cache words, the
+        // receiver's guarded by its tag.
+        case Op::MethodIcIs:
         // Raw bounds-checked loads and stores on a proven view: an invalid
         // index is NaN or a skipped store, never a throw, and neither op
         // allocates or reaches user code.
@@ -227,6 +230,8 @@ bool canCollect(const Instruction& inst) {
         case Op::MathUnary:
         // A use of its operands that emits no code.
         case Op::KeepAlive:
+        // Tag tests and loads, no allocation.
+        case Op::MethodIcIs:
         // The two control transfers that stay inside the function. A `jump`
         // writes its arguments into the target's block parameters and a `br`
         // picks between two of them; neither allocates and neither can reach

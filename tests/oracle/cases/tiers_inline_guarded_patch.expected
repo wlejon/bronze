@@ -1,0 +1,14 @@
+warm 2000 1001
+patched 300
+restored 6006
+shadowed 21
+unshadowed 6006
+swapped -3003
+swapped back 6006
+subclass -3 6006
+accessor 20 4
+value again 4004
+deleted true
+self-replaced 1001
+getter 600
+getter patched 60

@@ -484,6 +484,13 @@ enum class Op : uint8_t {
     // pointer the native was given: the handle's destructor must not run
     // while that pointer, or anything the native derived from it, is in use.
     KeepAlive,
+    // a: bool = method.ic.is recv, <ic_site_index>, @callee. Whether the
+    // method-call site's cache holds a DIRECT entry for `recv`'s shape, latched
+    // at the current prototype-mutation epoch, whose code is `@callee`'s: the
+    // function a `method.call` at that site would enter for this receiver,
+    // which is what its direct edge already tests. The guard of an inlined
+    // method body (lower/inline_guarded.cpp). Loads only; cannot throw.
+    MethodIcIs,
 };
 
 const char* opName(Op op);
