@@ -48,6 +48,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_lowering_eh.cpp
     il2mir/il_lowering_elem_run.cpp
     il2mir/il_lowering_hoist.cpp
+    il2mir/il_ta_cursor.cpp
     il2mir/il_lowering_loc.cpp
     il2mir/il_lowering_inst.cpp
     il2mir/il_lowering_lazy.cpp

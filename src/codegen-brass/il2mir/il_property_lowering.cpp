@@ -150,29 +150,15 @@ bool defined_by_binding_read(const BronzeFunction& fn_ast, uint32_t id) {
     return false;
 }
 
-bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
-                             const std::unordered_map<uint32_t, Value*>& val_map,
-                             Value*& out_data, Value*& out_len) {
-    out_data = nullptr;
-    out_len = nullptr;
-    static const bool unsound_pins = [] {
-        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
-        return env && env[0] && env[0] != '0';
-    }();
-    if (!lowering || unsound_pins || !lowering->prop_lowering().enable_inlined_fastpaths()) {
-        return false;
-    }
-    auto& cursors = lowering->ta_cursors();
-    if (auto it = cursors.find(obj_id); it != cursors.end()) {
-        out_data = it->second.first;
-        out_len = it->second.second;
-        return out_data != nullptr && out_len != nullptr;
-    }
+// Whether the typed array `obj_id` names may be read and written through a
+// cursor (get_preloaded_ta_cursor): it is one array for the whole function,
+// and nothing in the function can collect between a cursor and its uses.
+bool ta_cursor_eligible(IlLowering* lowering, uint32_t obj_id, Value* raw_obj) {
     const BronzeFunction* fn_ast = lowering->current_fn_ast();
     if (!fn_ast) return false;
-    auto vit = val_map.find(obj_id);
-    if (vit == val_map.end() || !vit->second) return false;
-    Value* raw_obj = vit->second;
+    // The array is re-read from its tagged bits in every block, and only a
+    // tagged value is a root the collector updates when the array moves.
+    if (!raw_obj->type().is_tagged()) return false;
 
     std::unordered_set<uint32_t> ta_receivers;
     std::unordered_set<uint32_t> construct_ta_ids;
@@ -180,38 +166,43 @@ bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
         is_buffer_safe_function(*fn_ast, lowering->prop_lowering(), *lowering, ta_receivers,
                                 construct_ta_ids) &&
         ta_receivers.count(obj_id) != 0;
-    bool is_fn_param = false;
-    if (fn_safe) {
-        for (const auto& p : fn_ast->params) {
-            if (p.first == obj_id) {
-                is_fn_param = true;
-                break;
-            }
-        }
-    }
-    // A cursor is a raw pointer into the array's storage, held across the
-    // whole function, and a collection moves that storage: so it is taken only
-    // where nothing after it can collect. A buffer-safe function allocates
-    // nowhere but in its typed-array constructions, so the parameter's cursor
-    // needs none of them and a constructed array's needs to be the only one
-    // (another `new` after it, or a string built in the loop that reads it,
-    // left every read and write going to the storage's old address).
+    if (!fn_safe) return false;
+    // A buffer-safe function allocates nowhere but in its typed-array
+    // constructions, so the parameter's cursor needs none of them and a
+    // constructed array's needs to be the only one (another `new` after it,
+    // or a string built in the loop that reads it, left every read and write
+    // going to the storage's old address).
     if (construct_ta_ids.size() > (construct_ta_ids.count(obj_id) != 0 ? 1u : 0u)) return false;
-    const bool is_construct =
-        raw_obj->is_instruction() && fn_safe && construct_ta_ids.count(obj_id) != 0;
+    for (const auto& p : fn_ast->params) {
+        if (p.first == obj_id) return true;
+    }
+    if (raw_obj->is_instruction() && construct_ta_ids.count(obj_id) != 0) return true;
     // A captured or module binding read once (the N-body kernel's `pos`, `vel`
     // and `acc`, closed over by the function that loops on them): the read is
     // an SSA value, so it names one array for the whole function, and nothing
     // in a buffer-safe function can store to the binding or run code that
-    // would. Like a construction, the cursor follows the read itself.
-    const bool is_binding_read = raw_obj->is_instruction() && fn_safe &&
-                                 defined_by_binding_read(*fn_ast, obj_id);
-    if (!is_fn_param && !is_construct && !is_binding_read) return false;
+    // would.
+    return raw_obj->is_instruction() && defined_by_binding_read(*fn_ast, obj_id);
+}
 
+// Reads, once, what a cursor keeps (IlLowering::TaCursor): at the function's
+// entry for a parameter, right after the definition for a construction or a
+// binding read. The buffer is held tagged, a root. The window's first byte is
+// (buffer address & keep) + off: an inline buffer's bytes follow its header,
+// so keep is the payload mask and off the header's size plus byteOffset; an
+// external store never moves, so keep is 0 and off the store's address plus
+// byteOffset. Those and the length are read once: no collection changes
+// them. Only the host, while a compartment is suspended at a poll, could
+// detach, resize or externalize the buffer under the loop, and each leaves
+// the bytes the cursor names inside the buffer (a detach keeps them, a
+// resizable buffer reserves its maximum, an externalized one keeps its
+// inline copy): a cursor that missed it reads and writes bytes the buffer
+// still owns, never memory it does not.
+bool load_ta_cursor(IlLowering* lowering, Value* raw_obj, Builder& b, IlLowering::TaCursor& cursor) {
     BasicBlock* resume_bb = b.current_block();
     const DebugLoc saved_loc = b.current_loc();
     bool repositioned = false;
-    if (is_fn_param) {
+    if (!raw_obj->is_instruction()) {
         BasicBlock* target_bb = lowering->entry_hoist_block();
         if (!target_bb) return false;
         if (target_bb != resume_bb) {
@@ -229,17 +220,77 @@ bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
             repositioned = true;
         }
     }
-
-    Value* obj_i64 = lowering->ensure_type(raw_obj, Type::i64(), b);
-    Value* ptr = b.build_and(obj_i64, b.build_iconst_i64(0x0000FFFFFFFFFFFFLL));
-    out_data = lowering->prop_lowering().load_typed_array_data(b, ptr);
-    out_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    const auto mask = b.build_iconst_i64(0x0000FFFFFFFFFFFFLL);
+    Value* ptr = b.build_and(lowering->ensure_type(raw_obj, Type::i64(), b), mask);
+    Value* buf_bits = b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET);
+    Value* buf_addr = b.build_and(buf_bits, mask);
+    Value* ext = b.build_load(Type::i64(), buf_addr, BRONZE_ABI_BUF_EXTPTR_OFFSET);
+    Value* is_ext = b.build_ne(ext, b.build_iconst_i64(0));
+    Value* byte_offset = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET));
+    cursor.buf = lowering->ensure_type(buf_bits, Type::tagged(), b);
+    cursor.keep = b.build_select(is_ext, b.build_iconst_i64(0), mask);
+    cursor.off = b.build_add(b.build_select(is_ext, ext, b.build_iconst_i64(BRONZE_ABI_BUF_DATA_OFFSET)),
+                             byte_offset);
+    cursor.len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    cursor.loaded = true;
 
     if (repositioned) {
         b.position_at_end(resume_bb);
         b.set_current_loc(saved_loc);
     }
-    cursors[obj_id] = {out_data, out_len};
+    return true;
+}
+
+bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
+                             const std::unordered_map<uint32_t, Value*>& val_map,
+                             Value*& out_data, Value*& out_len) {
+    out_data = nullptr;
+    out_len = nullptr;
+    static const bool unsound_pins = [] {
+        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
+        return env && env[0] && env[0] != '0';
+    }();
+    if (!lowering || unsound_pins || !lowering->prop_lowering().enable_inlined_fastpaths()) {
+        return false;
+    }
+    auto vit = val_map.find(obj_id);
+    if (vit == val_map.end() || !vit->second) return false;
+    Value* raw_obj = vit->second;
+
+    auto& cursors = lowering->ta_cursors();
+    auto cit = cursors.find(obj_id);
+    if (cit == cursors.end()) {
+        cit = cursors.emplace(obj_id, IlLowering::TaCursor{}).first;
+        cit->second.eligible = ta_cursor_eligible(lowering, obj_id, raw_obj);
+    }
+    IlLowering::TaCursor& cursor = cit->second;
+    if (!cursor.eligible) return false;
+    if (!cursor.loaded && !load_ta_cursor(lowering, raw_obj, b, cursor)) {
+        cursor.eligible = false;
+        return false;
+    }
+    // A cursor is a raw pointer into the array's storage, and a collection
+    // moves that storage, so the pointer is good only until the next point
+    // where one can run. A buffer-safe function has few: its one
+    // construction, if any, which a constructed array's cursor follows, and
+    // a loop's back edge, which carries an interrupt poll (brass
+    // Module::interrupt_poll, inserted after the optimizer). A compartment
+    // suspends its fiber at that poll (rtServiceInterrupt), and while it is
+    // suspended the host and every other compartment on the thread run,
+    // allocate and collect: the collection moves a young array's buffer, and
+    // a pointer taken once at the function's entry went on reading and
+    // writing the nursery copy after it. So the pointer lives within one IL
+    // block, and not past a lowering that emitted a call or a loop
+    // (IlLowering::settle_ta_cursors). It is made again from the buffer's
+    // tagged bits, which the stack maps keep current across the poll and
+    // whose read no pass hoists out of the loop (brass gc_refs.hpp,
+    // bitcast_i64_tagged): a load from the frame, a mask and an add.
+    if (!cursor.data) {
+        Value* buf_bits = lowering->ensure_type(cursor.buf, Type::i64(), b);
+        cursor.data = b.build_add(b.build_and(buf_bits, cursor.keep), cursor.off);
+    }
+    out_data = cursor.data;
+    out_len = cursor.len;
     return true;
 }
 

@@ -928,12 +928,15 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         run_once_ = run_once_blocks_.count(blk_ast.id) != 0;
         protected_block_ = blk_ast.handler_id != UINT32_MAX;
         begin_block_proofs(blk_ast.id);
+        forget_ta_cursors();
 
         for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
+            const MirMark mark = mir_mark(b, *fn);
             if (try_lower_array_index_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter) ||
                 try_lower_elem_offset_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter) ||
                 try_lower_static_slot_run(blk_ast, inst_idx, b, fn, val_map, block_map, &cont_counter)) {
                 if (has_error_) return false;
+                settle_ta_cursors(mark, *fn);
                 continue;
             }
             const auto& inst_ast = blk_ast.instructions[inst_idx];
@@ -941,6 +944,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             if (!lower_instruction(inst_ast, b, fn, val_map, block_map, blk_ast.handler_id, blk_ast.id, &cont_counter)) {
                 return false;
             }
+            settle_ta_cursors(mark, *fn);
             after_instruction_proofs(inst_ast);
         }
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);

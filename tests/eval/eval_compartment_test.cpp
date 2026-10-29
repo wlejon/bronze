@@ -217,3 +217,71 @@ TEST_CASE("compartment: sixteen suspended compartments keep their frames' object
         }
     });
 }
+
+TEST_CASE("compartment: a typed-array loop suspended at its poll writes where its array lives after a collection") {
+    // Each fill() is buffer-safe (it allocates nothing but, in the first, its
+    // own array), so its element accesses go through a cursor: the array's
+    // data pointer, derived once per block (il_property_lowering.cpp). The
+    // array is young when the slice runs out, and the host's collection while
+    // the fiber is suspended at the loop's poll moves it: the loop it resumes
+    // into must write to the bytes the array has now, not the nursery copy it
+    // was made in. A cursor taken once at the function's entry lost every
+    // write after the first yield.
+    const char* kCheck = "let ok = 0; for (let i = 0; i < 64; i++) if (a[i] === 400000) ok++;"
+                         "globalThis.result = 'ok:' + ok;";
+    const std::string kCases[] = {
+        // A construction's cursor.
+        std::string("function fill() {"
+                    "  const a = new Float64Array(64);"
+                    "  for (let r = 0; r < 400000; r++) {"
+                    "    for (let i = 0; i < 64; i++) a[i] = a[i] + 1;"
+                    "  }"
+                    "  return a;"
+                    "}"
+                    "const a = fill();") + kCheck,
+        // A parameter's.
+        std::string("function fill(a) {"
+                    "  for (let r = 0; r < 400000; r++) {"
+                    "    for (let i = 0; i < 64; i++) a[i] = a[i] + 1;"
+                    "  }"
+                    "  return a;"
+                    "}"
+                    "const a = fill(new Float64Array(64));") + kCheck,
+        // A captured binding's.
+        std::string("function make() {"
+                    "  const a = new Float64Array(64);"
+                    "  function fill() {"
+                    "    for (let r = 0; r < 400000; r++) {"
+                    "      for (let i = 0; i < 64; i++) a[i] = a[i] + 1;"
+                    "    }"
+                    "  }"
+                    "  fill();"
+                    "  return a;"
+                    "}"
+                    "const a = make();") + kCheck,
+    };
+    for (const std::string& source : kCases) {
+        for (ExecutionTier tier : kTiers) {
+            onThread([&] {
+                embed::Realm* realm = embed::createRealm();
+                embed::CompartmentOptions opts;
+                opts.sliceMs = 1;
+                embed::Compartment* c = embed::createCompartment(realm, opts);
+                Eval e{source, tier, {}};
+                embed::CompartmentStatus s = embed::runInCompartment(c, &evalJob, &e);
+                int yields = 0;
+                while (s.state == embed::CompartmentState::Yielded && yields < 100000) {
+                    ++yields;
+                    runtime::rtHeap().collect();
+                    s = embed::resumeCompartment(c);
+                }
+                INFO(source, " tier ", static_cast<int>(tier), ": ", s.uncaught, " / ", e.error);
+                CHECK(s.state == embed::CompartmentState::Idle);
+                CHECK(yields >= 1);
+                CHECK(globalString(realm, "result") == "ok:64");
+                embed::destroyCompartment(c);
+                embed::destroyRealm(realm);
+            });
+        }
+    }
+}

@@ -72,7 +72,22 @@ public:
         auto it = prop_get_keys_.find(id);
         return it == prop_get_keys_.end() ? UINT32_MAX : it->second;
     }
-    std::unordered_map<uint32_t, std::pair<Value*, Value*>>& ta_cursors() { return ta_cursors_; }
+    // A typed array's cursor (il_property_lowering.cpp get_preloaded_ta_cursor):
+    // whether the array may have one, decided once per function; what is read
+    // once, at the array's definition: its buffer (tagged, so the collector
+    // keeps it current), the mask and offset that make the window's first
+    // byte from the buffer's address, and the length; and the data pointer
+    // as last derived from those, null once forgotten (il_ta_cursor.cpp).
+    struct TaCursor {
+        bool eligible = false;
+        bool loaded = false;
+        Value* buf = nullptr;
+        Value* keep = nullptr;
+        Value* off = nullptr;
+        Value* len = nullptr;
+        Value* data = nullptr;
+    };
+    std::unordered_map<uint32_t, TaCursor>& ta_cursors() { return ta_cursors_; }
     DiagnosticReporter* diag() const { return diag_; }
     void set_diag(DiagnosticReporter* diag) { diag_ = diag; }
     void set_has_error(bool e) { has_error_ = e; }
@@ -140,6 +155,18 @@ private:
     // Starts a function's hoisting: values go into `block`, after whatever it
     // holds now.
     void begin_hoisting(BasicBlock* block);
+    // Where the MIR stood before an instruction's lowering, and the
+    // forgetting of every typed-array cursor at a block's start or after a
+    // lowering that emitted a point where a collection can run
+    // (il_ta_cursor.cpp).
+    struct MirMark {
+        BasicBlock* block = nullptr;
+        Instruction* tail = nullptr;
+        size_t block_count = 0;
+    };
+    MirMark mir_mark(Builder& b, const Function& fn) const;
+    void forget_ta_cursors();
+    void settle_ta_cursors(const MirMark& mark, const Function& fn);
     // The function's run-once blocks (run_once), fresh objects, and array proofs.
     void analyze_function(const BronzeFunction& fn_ast);
     void begin_block_proofs(uint32_t block_id);
@@ -183,7 +210,7 @@ private:
     std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
     std::unordered_map<uint32_t, DenseArrayCursor> dense_array_cursors_;
-    std::unordered_map<uint32_t, std::pair<Value*, Value*>> ta_cursors_;
+    std::unordered_map<uint32_t, TaCursor> ta_cursors_;
     std::unordered_map<uint32_t, uint32_t> single_block_propset_use_;
     std::unordered_map<uint32_t, uint32_t> value_use_counts_;
     std::unordered_map<uint32_t, uint32_t> prop_get_keys_;
