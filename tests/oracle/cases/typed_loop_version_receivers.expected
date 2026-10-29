@@ -1,0 +1,20 @@
+warm 140400
+sum 36 36 6 9
+past end NaN 15 NaN
+from 3,6,9
+halves 410 410
+halves stored 2,3,4,5
+swap 73 73 NaN
+holes u,1.5,2.5,u u,0.5,u
+subarray 28 4 0,1,4,6,8,10,6,7,8,9
+round 0.30000001192092896 0.30000000447034836
+copy 1.5,2.25,Infinity,-3,NaN,NaN 1,-2,7 1.5,2.25
+fill 7,7,7 3
+tracking 10
+tracking shrunk 6 2,4
+tracking grown 32 4,8,0,0,0,20
+own length 30 15 10,20,3,4,5
+kind getter 6 36 2,4,6,4 2,4,6,8
+kind getter gone 36 2,4,6,8
+base getter 3 3 2,4,3,4 2,4,3,4
+base restored 36 36 2,4,6,8 2,4,6,8

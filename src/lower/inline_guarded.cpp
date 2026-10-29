@@ -60,9 +60,18 @@ constexpr size_t kMaxDepth = 3;
 constexpr size_t kMaxCallerStart = 800;
 // A caller grows to at most twice its size plus this, and never past the cap.
 constexpr size_t kCallerGrowthSlack = 200;
+// ...or by this much, whichever is more: room for one callee of the largest
+// size with its blocks' joins, so a small method's one big call (`updateMatrix`
+// calling `compose`) is not the one call it can never take.
+constexpr size_t kMinCallerGrowth = 320;
 constexpr size_t kMaxCallerInstructions = 1500;
 // The fixed-argument method.call form's widest list (il/verifier.cpp).
 constexpr size_t kMaxArgs = 16;
+
+bool trace() {
+    static const bool on = std::getenv("BRONZE_INLINE_GUARDED_TRACE") != nullptr;
+    return on;
+}
 
 size_t instructionCount(const il::Function& fn) {
     size_t n = 0;
@@ -185,6 +194,7 @@ public:
                 originals_[i] = module.functions[i];
             }
         }
+        markEnteredFromLoops();
     }
 
     // Inlines every eligible call in `fnIdx`, its copied bodies' calls
@@ -200,16 +210,23 @@ public:
         types_ = valueTypes(fn);
         slowBlock_.assign(fn.blocks.size(), 0);
         markLoops(fn);
-        const size_t limit = std::min(kMaxCallerInstructions, count * 2 + kCallerGrowthSlack);
+        const size_t limit =
+            std::min(kMaxCallerInstructions, std::max(count * 2 + kCallerGrowthSlack, count + kMinCallerGrowth));
+        const bool hot = enteredFromLoop_[originOf(fnIdx)] != 0;
         size_t inlined = 0;
         for (size_t b = 0; b < fn.blocks.size(); ++b) {
-            if (slowBlock_[b] || !inLoop_[b]) continue;
+            if (slowBlock_[b] || (!inLoop_[b] && !hot)) continue;
             for (size_t i = 0; i < fn.blocks[b].instructions.size(); ++i) {
                 const il::Instruction& inst = fn.blocks[b].instructions[i];
                 const uint32_t callee = eligibleCallee(fn, fnIdx, inst);
                 if (callee == kNone) continue;
                 const size_t grows = originals_[callee].blocks.size() * 2 + instructionCount(originals_[callee]) + 4;
                 if (count + grows > limit) continue;
+                if (trace()) {
+                    std::fprintf(stderr, "[inline] %s <- %s (%zu)%s\n", fn.name.c_str(),
+                                 module_.functions[callee].name.c_str(), instructionCount(originals_[callee]),
+                                 inLoop_[b] ? "" : " outside loops");
+                }
                 inlineAt(fn, static_cast<il::BlockId>(b), i, callee);
                 count += grows;
                 ++inlined;
@@ -263,7 +280,8 @@ private:
 
     // Which blocks lie in a loop: the calls a body copied in saves more than
     // once. A call outside every loop runs once per entry of its function, and
-    // copying a body there costs build time for the price of one call.
+    // copying a body there costs build time for the price of one call, unless
+    // a loop elsewhere is what enters the function (markEnteredFromLoops).
     void markLoops(const il::Function& fn) {
         inLoop_.assign(fn.blocks.size(), 0);
         const Cfg cfg = buildCfg(fn);
@@ -272,6 +290,54 @@ private:
             for (il::BlockId h : cfg.succs[b]) {
                 if (!cfg.dominates(h, static_cast<il::BlockId>(b))) continue;
                 for (il::BlockId m : naturalLoop(cfg, h, static_cast<il::BlockId>(b))) inLoop_[m] = 1;
+            }
+        }
+    }
+
+    // Which functions a loop enters by a real call, so that the calls outside
+    // their own loops run once per iteration of that loop and are as hot as
+    // its calls are:
+    // - the target of a resolved site in a loop that keeps its call, because
+    //   the target cannot be copied (too big, not self-contained) or is the
+    //   caller itself;
+    // - a method whose own loop calls a method of its own name on something
+    //   else (`updateMatrixWorld` over `children`, `traverse`): a walk down a
+    //   tree, which enters the method once per node. The site resolves to no
+    //   one function, as a tree holds subclasses, so the name is the signal.
+    // Only which calls are copied depends on this; each stays behind its guard.
+    void markEnteredFromLoops() {
+        enteredFromLoop_.assign(module_.functions.size(), 0);
+        const auto mark = [&](uint32_t f, const il::Function& from) {
+            if (!enteredFromLoop_[f] && trace()) {
+                std::fprintf(stderr, "[inline] hot: %s (from a loop in %s)\n", module_.functions[f].name.c_str(),
+                             from.name.c_str());
+            }
+            enteredFromLoop_[f] = 1;
+        };
+        for (size_t g = 0; g < module_.functions.size(); ++g) {
+            const il::Function& fn = module_.functions[g];
+            if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) continue;
+            markLoops(fn);
+            for (size_t b = 0; b < fn.blocks.size(); ++b) {
+                if (!inLoop_[b]) continue;
+                for (const auto& inst : fn.blocks[b].instructions) {
+                    const uint32_t origin = inst.directTarget;
+                    if (origin == il::Instruction::kNoDirectTarget) {
+                        if (inst.op == il::Op::MethodCall && fn.needsThis && inst.keyIndex == fn.nameKeyIndex) {
+                            mark(originOf(static_cast<uint32_t>(g)), fn);
+                        }
+                        continue;
+                    }
+                    const bool site = inst.op == il::Op::MethodCall || inst.op == il::Op::PropGet ||
+                                      inst.op == il::Op::PropSet;
+                    if (!site || origin >= candidate_.size()) continue;
+                    const uint32_t callee =
+                        inst.typedTarget != il::Instruction::kNoDirectTarget ? inst.typedTarget : origin;
+                    if (origin == originOf(static_cast<uint32_t>(g)) || callee >= candidate_.size() ||
+                        !candidate_[callee]) {
+                        mark(origin, fn);
+                    }
+                }
             }
         }
     }
@@ -472,6 +538,7 @@ private:
     std::vector<uint8_t> slowBlock_;
     std::vector<uint8_t> inLoop_;
     std::vector<uint8_t> candidate_;
+    std::vector<uint8_t> enteredFromLoop_;
     std::vector<il::Type> types_;
 };
 

@@ -65,6 +65,8 @@ bool isKnownNonNumberNonNullishProducer(const Instruction& def) {
     }
 }
 
+}  // namespace
+
 bool isKnownNonArrayProducer(const Instruction& def) {
     switch (def.op) {
         case Op::ConstNull:
@@ -85,6 +87,8 @@ bool isKnownNonArrayProducer(const Instruction& def) {
             return false;
     }
 }
+
+namespace {
 
 bool isValidPinBarrier(int32_t raw) {
     return raw == static_cast<int32_t>(PinBarrier::Number) ||

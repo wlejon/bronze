@@ -23,6 +23,10 @@ namespace bronze::il {
 //      f64/bool source parameters, and a typed edge's operands are exactly the
 //      entry's parameter types (verifier_typed_entry.cpp).
 bool verifyTypedEntries(const Module& module, DiagnosticSink& diags);
+// Whether `def` can never produce an Array or a typed view — the receivers
+// rule 4 refuses. Exposed so the passes that produce those ops refuse the same
+// receivers rather than keeping a second list.
+bool isKnownNonArrayProducer(const Instruction& def);
 bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSink& diags);
 bool verifyModuleProofs(const Module& module, DiagnosticSink& diags);
 

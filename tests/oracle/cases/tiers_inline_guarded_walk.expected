@@ -1,0 +1,7 @@
+class thrown compose 901 Mat.compose@23 < Node.local@42 < Node.update@47 < Node.update@51 < Node.update@51
+warm 151482 500
+update 465
+redefined 246
+compose redefined 94152
+thrown compose 901
+partial 899 900 901 3

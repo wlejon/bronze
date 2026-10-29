@@ -19,8 +19,10 @@ struct InlineGuardedOptions {
 bool inlineGuardedEnabled(const InlineGuardedOptions& options);
 
 // Guarded method inlining (docs/il2mir.md, "Guarded method inlining"): each
-// `method.call` in a loop whose site lowering resolved to one module function,
-// and whose callee is small and self-contained, becomes
+// `method.call` in a loop (or anywhere in a function a loop enters by a real
+// call, such as a method that walks a tree by calling itself on its children)
+// whose site lowering resolved to one module function, and whose callee is
+// small and self-contained, becomes
 //
 //     g = method.ic.is recv, <site>, @callee
 //     br g, <the callee's finished body (its typed entry at a typed site),

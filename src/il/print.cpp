@@ -154,6 +154,7 @@ const char* opName(Op op) {
         case Op::KeepAlive: return "keep.alive";
         case Op::MethodIcIs: return "method.ic.is";
         case Op::AccessorIcIs: return "accessor.ic.is";
+        case Op::IsTypedArray: return "is.typed_array";
     }
     return "?";
 }
@@ -504,7 +505,8 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     // The largest index the claim covers is the whole content
                     // of this instruction beside its receiver, so it prints.
                     case Op::IsDenseArray:
-                        out += "is.dense_array %" +
+                    case Op::IsTypedArray:
+                        out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
                                std::to_string(inst.immI32);
                         break;

@@ -9,6 +9,7 @@
 #include "ast/assigned.h"
 #include "ast/queries.h"
 #include "lower/guard_region.h"
+#include "lower/typed_loop_version.h"
 #include "lower/inline_small.h"
 #include "lower/inline_guarded.h"
 #include "lower/typed_entry.h"
@@ -423,6 +424,9 @@ std::optional<il::Module> Lowerer::lower() {
         GuardRegionStats stats;
         applyGuardedRegions(ilModule_, &stats);
         guardRegionStatsReport(stats);
+        // After the regions, so that a region's fast copy, whose element
+        // reads already stand behind `is.number`, is the loop it versions.
+        applyTypedLoopVersions(ilModule_);
         applyTypedEntries(ilModule_, nullptr);
         // Last, so a body is copied as it is finished: its guarded regions
         // formed, a typed site's entry built and folded. Copied first, the

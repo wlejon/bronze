@@ -500,7 +500,28 @@ enum class Op : uint8_t {
     // (runtime/accessor_cell.cpp). The guard of an inlined accessor body.
     // Loads only; cannot throw.
     AccessorIcIs,
+    // a: bool = is.typed_array b, <immI32: types::TypedArrayElem number>.
+    // Whether `b` is a TypedArray of exactly that element kind. Both facts
+    // are fixed when the view is made — no operation changes an object's
+    // kind — so a test that held once holds for as long as the same value
+    // is in hand, across calls, detaches and collections alike; what such a
+    // call CAN change, the view's length and where its bytes are, the typed
+    // element ops read afresh at every access. That is the licence for
+    // `elem.get.typed` / `elem.set.typed` on the true edge, and the
+    // typed-loop versioning pass (lower/typed_loop_version.h) is its only
+    // producer. Header loads only: cannot throw, cannot collect.
+    //
+    // With kTypedArrayPristineLength set in `immI32` it also requires what the
+    // runtime's own `length` read requires to answer from the view header
+    // (rtTypedArrayChainPristine): the view has its kind's intrinsic instance
+    // shape and the family was verified pristine at the current
+    // prototype-mutation epoch. Unlike the kind, that holds only until code
+    // runs that could define a property or patch a prototype.
+    IsTypedArray,
 };
+
+// The bit of `is.typed_array`'s immI32 above its element kind (see there).
+inline constexpr int32_t kTypedArrayPristineLength = 1 << 8;
 
 const char* opName(Op op);
 bool isTerminator(Op op);

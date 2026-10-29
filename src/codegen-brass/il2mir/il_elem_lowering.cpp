@@ -5,6 +5,7 @@
 // The layouts are the runtime's (runtime/array.h, runtime/typed_array.h),
 // pinned by the BRONZE_ABI_* offsets their static_asserts check.
 
+#include "il/il_op.h"
 #include "il_abi.h"
 #include "il_lowering_ops.h"
 #include "il_property.h"
@@ -917,6 +918,56 @@ Value* PropertyLoweringHelper::lower_is_dense_array(Builder& b, Value* obj, uint
     Value* head = nullptr;
     emit_dense_array_guard(b, obj, max_index, /*writable=*/false, ok, block, head);
     return ok;
+}
+
+// Branches rather than selects over a stand-in block: the test is made once
+// per entry of the loop it versions, never per element. The kind word is read
+// only once the header says the object is a view, since only a view is known
+// to be that long.
+Value* PropertyLoweringHelper::typed_array_chain_pristine(Builder& b, Value* ptr, Value* kind) {
+    Module* mod = b.current_block()->parent()->parent();
+    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+    Value* tbl = b.build_load(Type::i64(), tls, BRONZE_TLS_TA_LENGTH_TBL_OFF);
+    Value* shape_addr = b.build_add(tbl, b.build_shl(kind, b.build_iconst_i64(3)));
+    Value* shape_ok = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
+                                 b.build_load(Type::i64(), shape_addr, BRONZE_ABI_TA_LENGTH_TBL_SHAPES_OFFSET));
+    Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), tbl, BRONZE_ABI_TA_LENGTH_TBL_EPOCH_OFFSET),
+                                 b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+    return b.build_and(shape_ok, epoch_ok);
+}
+
+Value* PropertyLoweringHelper::lower_is_typed_array(Builder& b, Value* obj, int64_t imm) {
+    const int64_t elem_kind = imm & 0xFF;
+    const bool pristine = (imm & bronze::il::kTypedArrayPristineLength) != 0;
+    BasicBlock* cur = b.current_block();
+    Function* fn = cur->parent();
+    const std::string prefix = "is_ta_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_view = b.append_block(prefix + "_view");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(bb_merge, Type::i32());
+
+    b.position_at_end(cur);
+    Value* ptr = nullptr;
+    Value* is_obj = nullptr;
+    object_pointer(b, obj, ptr, is_obj);
+    b.build_br_if(is_obj, bb_obj, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_obj);
+    Value* is_view = b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kTypedArrayHeaderLow));
+    b.build_br_if(is_view, bb_view, {}, bb_merge, {b.build_iconst_i32(0)});
+
+    b.position_at_end(bb_view);
+    Value* kind_ok = b.build_eq(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET),
+                                b.build_iconst_i32(static_cast<int32_t>(elem_kind)));
+    if (pristine) {
+        kind_ok = b.build_and(kind_ok, typed_array_chain_pristine(b, ptr, iconst(b, static_cast<uint64_t>(elem_kind))));
+    }
+    b.build_br(bb_merge, {kind_ok});
+
+    b.position_at_end(bb_merge);
+    return result;
 }
 
 void PropertyLoweringHelper::emit_elem_index_guard(Builder& b, Value* index, Value*& out_i64, Value*& out_ok) {

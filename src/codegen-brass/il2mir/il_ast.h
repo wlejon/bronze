@@ -164,6 +164,7 @@ enum class BronzeOp {
     KeepAlive,
     MethodIcIs,
     AccessorIcIs,
+    IsTypedArray,
     Unknown
 };
 

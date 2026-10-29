@@ -487,17 +487,8 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kViewHeaderLow)), bb_ta, bb_other);
 
     b.position_at_end(bb_ta);
-    Module* mod = cur->parent()->parent();
-    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
-                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
-    Value* tbl = b.build_load(Type::i64(), tls, BRONZE_TLS_TA_LENGTH_TBL_OFF);
     Value* kind = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_KIND_OFFSET));
-    Value* shape_addr = b.build_add(tbl, b.build_shl(kind, b.build_iconst_i64(3)));
-    Value* shape_ok = b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET),
-                                 b.build_load(Type::i64(), shape_addr, BRONZE_ABI_TA_LENGTH_TBL_SHAPES_OFFSET));
-    Value* epoch_ok = b.build_eq(b.build_load(Type::i64(), tbl, BRONZE_ABI_TA_LENGTH_TBL_EPOCH_OFFSET),
-                                 b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
-    b.build_br_if(b.build_and(shape_ok, epoch_ok), bb_ta_hit, bb_slow);
+    b.build_br_if(typed_array_chain_pristine(b, ptr, kind), bb_ta_hit, bb_slow);
 
     b.position_at_end(bb_ta_hit);
     Value* ta_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));

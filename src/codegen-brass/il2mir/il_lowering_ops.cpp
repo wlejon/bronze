@@ -366,6 +366,7 @@ bool is_ops_il_op(BronzeOp op) {
         case BronzeOp::NumTruthy:
         case BronzeOp::IsNumber:
         case BronzeOp::IsDenseArray:
+        case BronzeOp::IsTypedArray:
         case BronzeOp::IsNullish:
         case BronzeOp::TypeOf:
         case BronzeOp::InstanceOf:
@@ -775,6 +776,18 @@ bool lower_ops_instruction(
             Value* src = lowering->ensure_type(get_opd(0), Type::i64(), b);
             const auto max_index = static_cast<uint32_t>(inst_ast.imm_i64);
             res_val = lowering->prop_lowering().lower_is_dense_array(b, src, max_index);
+            return true;
+        }
+
+        // With the inline paths off, no versioned loop is entered: its typed
+        // element ops are inline paths too.
+        case BronzeOp::IsTypedArray: {
+            if (!lowering->prop_lowering().enable_inlined_fastpaths()) {
+                res_val = b.build_iconst_i32(0);
+                return true;
+            }
+            Value* src = lowering->ensure_type(get_opd(0), Type::i64(), b);
+            res_val = lowering->prop_lowering().lower_is_typed_array(b, src, inst_ast.imm_i64);
             return true;
         }
 

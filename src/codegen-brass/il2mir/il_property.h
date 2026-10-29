@@ -270,6 +270,16 @@ public:
     // `is.dense_array`: whether `obj` is an Array with an elements block and
     // `max_index < length`.
     Value* lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index);
+    // `is.typed_array`: whether `obj` is a TypedArray of `elem_kind`, as an i32
+    // (and, with kTypedArrayPristineLength in `imm`, whether its chain is
+    // pristine as typed_array_chain_pristine says).
+    Value* lower_is_typed_array(Builder& b, Value* obj, int64_t imm);
+    // Whether the view at `ptr`, of element kind `kind` (an i64), answers
+    // `length` from its header the way the runtime's read would
+    // (rtTypedArrayChainPristine): its kind's intrinsic instance shape, and
+    // the family verified pristine at the current prototype-mutation epoch
+    // (TLS ta_length_tbl). An i32.
+    Value* typed_array_chain_pristine(Builder& b, Value* ptr, Value* kind);
 
     // Element address and load/store on an Array already proven dense in range
     // of `index`.

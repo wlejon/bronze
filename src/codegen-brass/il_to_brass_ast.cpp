@@ -165,6 +165,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::IsDenseArray;
             out.imm_i64 = inst.immI32;
             break;
+        case il::Op::IsTypedArray:
+            out.op = il2mir::BronzeOp::IsTypedArray;
+            out.imm_i64 = inst.immI32;
+            break;
 
         // --- Control Flow & Call Termination ---
         case il::Op::Ret: out.op = il2mir::BronzeOp::Ret; break;
