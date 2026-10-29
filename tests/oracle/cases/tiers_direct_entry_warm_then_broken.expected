@@ -1,0 +1,22 @@
+warm 20000
+class TypeError
+rewarm 20000
+bound -2
+rewarm 20000
+proxy -4
+rewarm 20000
+native 3
+rewarm 20000
+target 7
+rewarm 20000
+method 50010000
+replaced -20000 55000
+shadowed 4985000 55000
+getter 60000
+redefined -30000
+override 50000
+new 199990000:a:true
+swapped 199990000:b:true:false
+ran 20000
+RangeError at 12345
+ran 20000

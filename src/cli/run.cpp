@@ -34,7 +34,8 @@ int runEvalReal(std::string_view code, std::optional<ExecutionTier> tier, bool e
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
     embed::CallResult res = eval::evalScript(
-        code, eval::EvalOptions{.filename = "<eval>", .emitDebugInfo = emitDebugInfo, .tier = tier});
+        code,
+        eval::EvalOptions{.filename = "<eval>", .livesForProcess = true, .emitDebugInfo = emitDebugInfo, .tier = tier});
     if (res.thrown) return reportUncaught(res.value);
     if (!res.value.isUndefined()) {
         std::string out = embed::toUtf8(res.value);
@@ -55,7 +56,11 @@ int runFileInJitReal(const std::string& filePath, const std::vector<std::string>
     bronze::ShadowStackFrame rootFrame;
     eval::installDefaultDynamicHooks();
     embed::CallResult res = eval::evalFile(
-        filePath, eval::EvalOptions{.filename = filePath, .hostGlobals = hostGlobals, .emitDebugInfo = emitDebugInfo, .tier = tier});
+        filePath, eval::EvalOptions{.filename = filePath,
+                          .hostGlobals = hostGlobals,
+                          .livesForProcess = true,
+                          .emitDebugInfo = emitDebugInfo,
+                          .tier = tier});
     if (res.thrown) return reportUncaught(res.value);
     return 0;
 }

@@ -5,6 +5,7 @@
 #include "eval/eval.h"
 #include "embed/embed.h"
 #include "runtime/exception.h"
+#include "runtime/fn.h"
 #include "runtime/rt_state.h"
 #include <brass/runtime/deterministic_math.hpp>
 #include <bit>
@@ -859,6 +860,56 @@ TEST_CASE("dynamic eval and Function modules are reclaimed when unreachable and 
         // sum_{i=0..39} ((i + 3) + 2*i) = 3 * (39 * 40 / 2) + 40 * 3 = 2340 + 120 = 2460
         CHECK(r.value.asNumber() == 2460.0);
 
+        runtime::rtHeap().collect();
+        CHECK(runtime::rtDynamicModuleCount() == baseline);
+    }
+}
+
+// Direct entry skips the dynamic-module token that keeps an eval's code mapped
+// while it runs, so only a program the process keeps may have its functions
+// entered directly (TieredEngineConfig::livesForProcess). A freeable one's
+// functions carry no DIRECT_CALL flag and are swept as before, after a caller
+// that does enter directly has called them hot.
+TEST_CASE("only a retained program's functions are entered directly, and a freeable one is still swept") {
+    installDefaultDynamicHooks();
+    auto flagsOf = [](Value v) -> uint32_t {
+        REQUIRE(v.isObject());
+        return v.asObject<FunctionHeader>()->function_flags;
+    };
+    for (ExecutionTier tier : {ExecutionTier::Tier2_Optimized, ExecutionTier::Auto}) {
+        CAPTURE(static_cast<int>(tier));
+        runtime::rtHeap().collect();
+        const size_t baseline = runtime::rtDynamicModuleCount();
+
+        EvalOptions freeable;
+        freeable.tier = tier;
+        embed::CallResult f = evalScript("globalThis.__dynInc = function(x) { return x + 1; };", freeable);
+        REQUIRE(!f.thrown);
+        CHECK((flagsOf(f.value) & BRONZE_ABI_FN_FLAG_DIRECT_CALL) == 0);
+        CHECK(runtime::rtDynamicModuleCount() == baseline + 1);
+
+        EvalOptions kept;
+        kept.tier = tier;
+        kept.livesForProcess = true;
+        embed::CallResult k = evalScript(
+            "globalThis.__keptSum = function(n) {\n"
+            "  let s = 0;\n"
+            "  for (let i = 0; i < n; i++) s = globalThis.__dynInc(s);\n"
+            "  return s;\n"
+            "};\n",
+            kept);
+        REQUIRE(!k.thrown);
+        CHECK((flagsOf(k.value) & BRONZE_ABI_FN_FLAG_DIRECT_CALL) != 0);
+        // Retained, so never a dynamic module.
+        CHECK(runtime::rtDynamicModuleCount() == baseline + 1);
+
+        // Hot enough for the auto tier to compile the caller.
+        embed::CallResult hot = evalScript("let t = 0; for (let j = 0; j < 200; j++) t += __keptSum(500); t;", kept);
+        REQUIRE(!hot.thrown);
+        CHECK(hot.value.asNumber() == 100000.0);
+
+        embed::CallResult drop = evalScript("delete globalThis.__dynInc; delete globalThis.__keptSum; undefined;");
+        REQUIRE(!drop.thrown);
         runtime::rtHeap().collect();
         CHECK(runtime::rtDynamicModuleCount() == baseline);
     }

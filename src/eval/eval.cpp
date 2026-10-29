@@ -317,6 +317,9 @@ std::shared_ptr<BrassTieredProgram> compileUnit(
     config.hostGlobals = hostGlobals;
     config.emitDebugInfo = options.emitDebugInfo;
     config.perThreadModuleData = share;
+    // The programs runProgramAndCollectResult retains: what a host loads as a
+    // module, or shares across threads, or asks to keep.
+    config.livesForProcess = options.moduleHandleOut != nullptr || share || options.livesForProcess;
 
     std::unique_ptr<BrassTieredProgram> compiled = BrassTieredEngine(config).compile(*ilModule, diags);
     if (!compiled) return nullptr;
@@ -362,7 +365,11 @@ embed::CallResult runProgramAndCollectResult(
     embed::ModuleHandle* moduleHandleOut) {
 
     auto* programPtr = program.get();
-    const bool hostManaged = (moduleHandleOut != nullptr) || programPtr->perThreadData();
+    // A program whose functions are entered directly must never be freed
+    // (BrassTieredProgram::entersDirectly), so it is retained whatever the
+    // caller handed in.
+    const bool hostManaged =
+        (moduleHandleOut != nullptr) || programPtr->perThreadData() || programPtr->entersDirectly();
     const bool escapable = programPtr->hasEscapableCode();
 
     uint64_t epoch = 0;

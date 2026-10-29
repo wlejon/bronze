@@ -49,6 +49,13 @@ struct TieredEngineConfig {
     std::vector<std::string> hostGlobals;
     bool emitDebugInfo = false;
     bool perThreadModuleData = true;
+    // The program is kept for the life of the process (the evaluator retains
+    // it: eval.cpp retainProgram), so its code never goes away under a
+    // closure. Under Tier2_Optimized and Auto its functions then carry
+    // BRONZE_ABI_FN_FLAG_DIRECT_CALL and compiled callers enter them without
+    // the runtime, as an image's do (BrassBackend::setDirectJsCalls). A
+    // program the process may free gets direct call sites only.
+    bool livesForProcess = false;
 };
 
 class BrassTieredProgram {
@@ -92,6 +99,10 @@ public:
     // Whether the module defines any non-entry function or coroutine body
     // whose code/data could outlive the top-level run().
     bool hasEscapableCode() const noexcept { return hasEscapableCode_; }
+    // Whether its functions carry BRONZE_ABI_FN_FLAG_DIRECT_CALL, which
+    // holds only while the program is never freed: whoever runs it must
+    // retain it (TieredEngineConfig::livesForProcess).
+    bool entersDirectly() const noexcept { return entersDirectly_; }
     // Code pointers and dispatch-table tokens identifying this program's
     // functions and coroutine bodies on the GC heap.
     const std::vector<const void*>& codeTokens() const noexcept { return codeTokens_; }
@@ -117,6 +128,7 @@ private:
     std::string entrySymbol_;
     bool perThreadData_ = false;
     bool hasEscapableCode_ = true;
+    bool entersDirectly_ = false;
     std::vector<const void*> codeTokens_;
 
     // Tier2_Optimized only.

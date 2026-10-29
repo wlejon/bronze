@@ -90,12 +90,19 @@ public:
     // unoptimized by brass's tiered pipeline.
     void setLazyBodies(bool on) { lazyBodies_ = on; }
     // The image is code for the life of the process (an executable, a shared
-    // module, an AOT module image), so its calls may enter compiled callees
-    // directly (bronze_abi.h, BRONZE_ABI_FN_FLAG_DIRECT_CALL): its functions
-    // carry the flag where il::functionEntersDirectly allows, and its call
-    // sites test for it. Off for JIT code, which the tiered engine may still
-    // interpret, and a program may free.
-    void setDirectJsCalls(bool on) { directJsCalls_ = on; }
+    // module, an AOT module image, a JIT program the process retains), so its
+    // calls may enter compiled callees directly (bronze_abi.h,
+    // BRONZE_ABI_FN_FLAG_DIRECT_CALL): its functions carry the flag where
+    // il::functionEntersDirectly allows, and its call sites test for it.
+    void setDirectJsCalls(bool on) { directJsCalls_ = on; directCallees_ = on; }
+    // The call sites alone: they enter whatever callee carries the flag, and
+    // this module's own functions carry none. For JIT code a program may
+    // free (an eval, a `new Function`): what keeps such code mapped while it
+    // runs is the dynamic-module token rtEnterJs pushes, which a direct entry
+    // skips, so only a runtime entry may reach it. Its own code calling an
+    // immortal callee directly is sound, as the caller is running and so
+    // already held.
+    void setDirectCallSites(bool on) { directJsCalls_ = on; }
 
     std::unique_ptr<brass::Module> buildMirModule(const il::Module& module,
                                                   DiagnosticSink& diags,
@@ -131,6 +138,7 @@ private:
     bool verifyLowered_ = true;
     bool lazyBodies_ = false;
     bool directJsCalls_ = false;
+    bool directCallees_ = false;
     brass::Target target_ = brass::Target::host();
     brass::object::MachOBuildVersion machoVersion_;
     std::vector<std::string> hostGlobals_;

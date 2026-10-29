@@ -432,7 +432,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
         meta.is_strict = fn.isStrict;
         meta.first_source_param = static_cast<uint32_t>(fn.firstSourceParam());
         meta.fn_flags = fn.fnFlags | (fn.needsEnv ? 0x40u : 0u) |
-                        (directJsCalls_ && il::functionEntersDirectly(fn) ? BRONZE_ABI_FN_FLAG_DIRECT_CALL : 0u);
+                        (directCallees_ && il::functionEntersDirectly(fn) ? BRONZE_ABI_FN_FLAG_DIRECT_CALL : 0u);
         meta.name_key = fn.nameKeyIndex;
         meta.required_args = fn.requiredArgs;
         meta.adapt_arity = fn.adaptArity();

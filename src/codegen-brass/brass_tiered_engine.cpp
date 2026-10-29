@@ -250,6 +250,23 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     backend.setOptimize(tier == ExecutionTier::Tier2_Optimized);
     backend.setEmitDebugInfo(config_.emitDebugInfo);
     backend.setVerifyLowered(jitVerifiesMir());
+    // Every closure's code in these two tiers is native for as long as the
+    // program is: Tier2_Optimized's is the program's own JIT image, and the
+    // pipeline's is the function's module stub (MultiTierPipeline::
+    // function_address), which follows the best code and bridges to Tier 0
+    // for a function not compiled yet. So a compiled caller may enter it
+    // directly, skipping rtEnterJs and its scopes (bronze_abi.h says why
+    // each is unobservable); measured, a third of mesh_churn_2k's steady
+    // state under either tier went there. Tier 0 keeps the runtime path, as
+    // a stub entered natively compiles its function and tier 0 promises none
+    // is; Tier 1 keeps it too, unmeasured. BRONZE_NO_JIT_DIRECT_ENTRY=1 is
+    // the A/B seam.
+    const char* noDirect = std::getenv("BRONZE_NO_JIT_DIRECT_ENTRY");
+    const bool nativeEntries = (tier == ExecutionTier::Tier2_Optimized || tier == ExecutionTier::Auto) &&
+                               !(noDirect && std::string_view(noDirect) == "1");
+    const bool entersDirectly = nativeEntries && config_.livesForProcess;
+    backend.setDirectCallSites(nativeEntries);
+    if (entersDirectly) backend.setDirectJsCalls(true);
     // The pipeline tiers build a function's MIR when it first runs, or a
     // tier-up first copies it: a large program's load lowers what its start
     // needs, not every function it has. Tier 1 compiles everything before
@@ -276,6 +293,7 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     std::unique_ptr<BrassTieredProgram> prog(new BrassTieredProgram(tier, entrySymbol));
     prog->perThreadData_ = perThreadData;
     prog->hasEscapableCode_ = hasEscapable;
+    prog->entersDirectly_ = entersDirectly;
     if (tier == ExecutionTier::Tier2_Optimized) {
         prog->jitProgram_ = backend.compileToJit(module, diags);
         if (!prog->jitProgram_) return nullptr;

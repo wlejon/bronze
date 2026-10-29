@@ -58,6 +58,13 @@ struct EvalOptions {
     // retained either way (retainProgram): closures hold raw code pointers
     // into it, and the unload contract keeps the image mapped.
     embed::ModuleHandle* moduleHandleOut = nullptr;
+    // Keep the program for the life of the process, as a host-loaded module
+    // is, without a handle: its root spans are permanent and its machine code
+    // is never freed, so compiled callers may enter its functions directly
+    // (TieredEngineConfig::livesForProcess). For a process's own top-level
+    // program, `bronze run`'s; never for an eval() or new Function(), whose
+    // programs the collector frees once nothing reaches them.
+    bool livesForProcess = false;
     bool emitDebugInfo = false;
     bool moduleRegistry = false;
     // With moduleRegistry: publish the entry file itself too
