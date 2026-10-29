@@ -28,6 +28,7 @@
 #endif
 
 #include <brass/runtime/coroutine.hpp>
+#include <brass/gc/native_frames.hpp>
 
 #include "abi/bronze_abi.h"
 #include "runtime/code_stack_maps.h"
@@ -469,7 +470,10 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         // The first frame's Rip is the instruction after the call into the
         // runtime, and every later one a return address: the byte before it
         // is the call, and the range and pc-table lookups both see that byte.
-        if (CodeSite site; find_code_site(reinterpret_cast<const void*>(ctx.Rip - 1), site)) {
+        // A frame that deoptimized is finished by its Tier-0 frame, which
+        // the interpreted frames report (brass_native_frame_deoptimized).
+        if (CodeSite site; !brass::brass_native_frame_deoptimized(ctx.Rip) &&
+                           find_code_site(reinterpret_cast<const void*>(ctx.Rip - 1), site)) {
             pushCompiled(site);
             if (done()) break;
         }
@@ -528,7 +532,10 @@ std::string bronze_format_stack_trace(Value errorObj, Value skipFn) {
         flushInterpreted(cur.sp);
         if (done()) break;
 
-        if (CodeSite site; find_code_site(call_pc, site)) {
+        if (brass::brass_native_frame_deoptimized(cur.ip)) {
+            // Finished by its Tier-0 frame, which the interpreted frames
+            // report (brass_native_frame_deoptimized): not a frame of its own.
+        } else if (CodeSite site; find_code_site(call_pc, site)) {
             pushCompiled(site);
             if (done()) break;
 #if defined(__APPLE__)

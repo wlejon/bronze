@@ -10,16 +10,24 @@
 namespace bronze::lower {
 
 // Whether a build compiles resolved method calls' bodies in place
-// (inlineGuardedMethods). Only where every function's code is the program's
-// own native code for as long as the program runs: an image build, or the
-// whole-program tier-2 JIT (ExecutionTier::Tier2_Optimized), which compiles
-// the same object an image build does (BrassBackend::buildObjectFile, its
-// code ranges registered with their inline frames) and loads it once, with
-// no interpreter and no tier-up behind it. Not the tiered engine: it
-// interprets a callee and replaces its code as it tiers up, and its frames
-// are reported by the interpreters, which know nothing of inline frames.
+// (inlineGuardedMethods). Every compile that runs code asks for it: an image
+// build, and the JIT at every tier (eval_front.cpp). What makes that sound
+// is not the code's tier but two facts every backend keeps:
+//  - the guard compares the call site's latched code word with @callee's
+//    address, and that address is fixed for the program's life: an image's
+//    function, or in the tiered engine the function's lazy stub, which every
+//    tier's func_addr yields and which a closure's code word always holds,
+//    whatever tier the callee runs in (brass MultiTierPipeline::
+//    function_address);
+//  - every frame that runs an inlined body reports the callee frames it
+//    stands for: an image's code ranges and tier-1/tier-2/OSR code by their
+//    inline-frame tables (brass_tiered_image.cpp, onCodeInstalled), a Tier-0
+//    frame by its position's inlined scope (walkInterpretedFrames).
+// The inlined body is MIR of the caller, so a tier-2 guard failing inside it
+// resumes Tier 0 in the caller's own Function at that position: no callee
+// frame to rebuild. Off (the default) for the tools that only lower.
 struct InlineGuardedOptions {
-    bool fixedCode = false;
+    bool on = false;
 };
 bool inlineGuardedEnabled(const InlineGuardedOptions& options);
 

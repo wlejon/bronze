@@ -28,10 +28,10 @@
 // module roots, the module-registry flags and the externals it names, the host
 // globals, the natives manifest, the pins text, the census path, whether
 // function source is retained, and every `BRONZE_*` environment variable (the
-// lowering's switches), minus BRONZE_TIMINGS. The tier is NOT in the key,
-// only the one lowering choice that follows it: whether guarded method
-// inlining is on (tier 2 alone; eval_front.cpp, inlineGuardedFor). The IL
-// is otherwise the same at every tier.
+// lowering's switches), minus BRONZE_TIMINGS. The tier is NOT in the key:
+// the IL is the same at every tier, guarded method inlining included
+// (eval_front.cpp, inlineGuardedFor), since every tier reports the inline
+// frames of the bodies it runs.
 //
 // SAFETY. A file is used only when its header, key, length and payload checksum
 // all match and every recorded source file still hashes to its digest and every

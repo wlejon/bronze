@@ -264,6 +264,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     for (const std::string& file : ast.source_files) {
         source_file_ids_.push_back(mod->debug_context().get_or_add_file(file));
     }
+    if (!record_inline_scopes(ast, *mod)) return nullptr;
 
     // Register external runtime helper functions
     register_all_module_external_symbols(mod.get(), options_.entry_symbol);
@@ -602,9 +603,6 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     module_env_regs_.clear();
     current_fn_dynamic_ids_.clear();
     number_bits_ids_.clear();
-    current_fn_ast_ = &fn_ast;
-    current_mod_ = &mod;
-    inline_scope_ids_.assign(fn_ast.inline_frames.size(), 0);
     create_func_counter_.clear();
     argv_block_ = nullptr;
     argv_block_words_ = 0;

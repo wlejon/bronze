@@ -31,10 +31,11 @@ class DiagnosticSink;
 //
 // It is also how the runtime's stack walker sees the program: code the
 // pipeline installs (Tier 1, Tier 2) is registered as code ranges as it is
-// installed, with pc tables made from the compiler's line tables, and the
-// frames the Tier-0 interpreter runs are reported through the process's
-// interpreted-frame walker (runtime/interpreted_frames.h), both attributed
-// to the function descriptors the image holds.
+// installed, with pc tables and inline-frame tables made from the compiler's
+// line tables, and the frames the Tier-0 interpreter runs are reported
+// through the process's interpreted-frame walker (runtime/interpreted_frames.h),
+// both attributed to the function descriptors the image holds, a position
+// inside a body compiled in place (lower/inline_guarded.h) to its callees'.
 class TieredProgramImage {
 public:
     // Loads `image` for `module` (the program's MIR, named after `il`),
@@ -64,6 +65,20 @@ public:
     bronze_pc_entry translate(const brass::DebugLoc& loc, const bronze_fn_desc& desc) const;
     const char* fileName(uint32_t fileIndex) const;
 
+    // The JS frames a position of `desc`'s code stands for, innermost first:
+    // one per call compiled in place around it (`loc.inlined_at_id`, a scope
+    // of `debug`) whose callee is a program function, each at its own
+    // position, then `desc`'s own at the outermost call's. A scope whose
+    // callee has no descriptor (a runtime function brass inlined) names no
+    // frame: its positions are its call's, as the object writer's inline
+    // frames report them (brass_backend_sections.cpp).
+    struct JsFrame {
+        const bronze_fn_desc* desc = nullptr;
+        bronze_pc_entry pos{};
+    };
+    void expandInlined(const brass::DebugLoc& loc, const brass::DebugContext& debug, const bronze_fn_desc& desc,
+                       std::vector<JsFrame>& out) const;
+
     // Stops asking the pipeline the image was loaded into, which is about
     // to go (the program destroys its dispatch table before its image).
     void detachPipeline();
@@ -77,6 +92,7 @@ private:
     struct RangeRecord {
         bronze_code_range range{};
         std::vector<bronze_pc_entry> pcs;
+        std::vector<bronze_inline_frame> inlines;
     };
 
     const brass::Module* module_ = nullptr;

@@ -200,13 +200,14 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
     return modOpts;
 }
 
-// Guarded method inlining (lower/inline_guarded.h) for a compile at
-// `in.tier`: of the JIT tiers, only the whole-program tier 2 keeps every
-// function's code fixed, as the image build that has always inlined does.
-// Without it tier 2 ran instanced_mesh_churn in 26.9 ms against the
-// image's 23.5; with it, 23.8.
-static lower::InlineGuardedOptions inlineGuardedFor(const CompileInputs& in) {
-    return lower::InlineGuardedOptions{/*fixedCode=*/in.tier == ExecutionTier::Tier2_Optimized};
+// Guarded method inlining (lower/inline_guarded.h) at every tier, so the IL
+// is the same at every tier and a program cached at one loads at another
+// (code_cache.h). Tier 2 alone had it at first: instanced_mesh_churn ran in
+// 26.9 ms at tier 2 without it against the image's 23.5, 23.8 with it; the
+// tiered engine (auto) gained it once its interpreted frames and installed
+// code reported inline frames.
+static lower::InlineGuardedOptions inlineGuardedFor(const CompileInputs&) {
+    return lower::InlineGuardedOptions{/*on=*/true};
 }
 
 cache::Digest programKey(std::string_view processMaterial, const EvalOptions& options,
@@ -233,10 +234,9 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field("|natives");
     k.field(in.manifestJson);
     k.field(in.pinsText);
-    // The lowered IL differs with it (lowerProgram), and a program cached
-    // at one tier is loaded at another: tier-2 IL's inlined bodies run in
-    // the tiered engine's interpreters otherwise, whose frames do not
-    // report them.
+    // The lowered IL differs with it (lowerProgram). Today it follows only
+    // BRONZE_NO_INLINE_GUARDED, which the environment's fields carry too;
+    // named here so a policy that ever varies it by input keys it.
     k.field(lower::inlineGuardedEnabled(inlineGuardedFor(in)) ? "inline-guarded" : "no-inline-guarded");
     k.field(entryText);
     return k.finish();

@@ -1,0 +1,9 @@
+proto 20000100000
+replaced 20000300000
+own 20000500000
+deleted 20000300000
+setPrototypeOf 39999800000
+switching 20000500000
+generator 5000050000
+async 5000050000
+async throw boom Thrower.boom@63:7 < athrow@73:3

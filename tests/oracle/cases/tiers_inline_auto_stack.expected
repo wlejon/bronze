@@ -1,0 +1,6 @@
+one shape 2249934 6
+  taken Leaf.read@43:23 < Mid.step@56:11 < drive@66:5
+  thrown thrown Leaf.read@46:7 < Mid.step@56:11 < drive@66:5
+two shapes 2249934 6
+  taken Leaf.read@43:23 < Mid.step@56:11 < drive@66:5
+  thrown thrown Leaf.read@46:7 < Mid.step@56:11 < drive@66:5

@@ -133,14 +133,48 @@ TEST_CASE("code cache: any compile input that differs is a different key") {
     CHECK(interp->cacheStatus == CodeCacheStatus::Hit);
     CHECK(runNumber(std::move(interp), tier0) == 42.0);
 
-    // Tier 2 lowers with guarded method inlining (lower/inline_guarded.h),
-    // which the tiered engine must not run: a different key.
+    // Nor at tier 2: every tier lowers with guarded method inlining
+    // (lower/inline_guarded.h), so IL cached by the tiered engine runs at
+    // tier 2 and the other way round.
     EvalOptions tier2 = opts;
     tier2.tier = ExecutionTier::Tier2_Optimized;
     auto optimized = compileScript("6 * 7;", tier2);
-    CHECK(optimized->cacheStatus == CodeCacheStatus::Miss);
+    CHECK(optimized->cacheStatus == CodeCacheStatus::Hit);
     CHECK(runNumber(std::move(optimized), tier2) == 42.0);
-    CHECK(compileScript("6 * 7;", tier2)->cacheStatus == CodeCacheStatus::Hit);
+}
+
+// IL cached by one tier and run by another carries the bodies guarded method
+// inlining compiled into walk's loop (lower/inline_guarded.h): a stack taken
+// inside the inlined callee names it and then walk, whichever tier stored the
+// IL and whichever runs it (interpreted, baseline, optimized, tiered).
+TEST_CASE("code cache: inlined bodies' frames read the same at every tier that loads them") {
+    const auto cacheDir = makeDir("bronze_cc_inline");
+    constexpr const char* kInlined =
+        "class Leaf { at(i) { if (i === 4999) return new Error('x').stack; return ''; } }\n"
+        "function walk(o) { let s = ''; for (let i = 0; i < 5000; i++) s += o.at(i); return s; }\n"
+        "walk(new Leaf()).split('\\n').slice(1, 3).map((l) => l.trim().split(' ')[1]).join(',');\n";
+    const EvalOptions opts = cached(cacheDir, "<cc-inline>");
+    const auto runText = [](std::unique_ptr<CompiledScript> script, const EvalOptions& o) {
+        REQUIRE(script->success);
+        embed::CallResult r = runCompiledScript(std::move(script), o);
+        REQUIRE(!r.thrown);
+        REQUIRE(embed::isString(r.value));
+        return embed::toUtf8(r.value);
+    };
+    EvalOptions tier2 = opts;
+    tier2.tier = ExecutionTier::Tier2_Optimized;
+    auto stored = compileScript(kInlined, tier2);
+    CHECK(stored->cacheStatus == CodeCacheStatus::Miss);
+    CHECK(runText(std::move(stored), tier2) == "Leaf.at,walk");
+    for (ExecutionTier tier : {ExecutionTier::Auto, ExecutionTier::Tier0_Interpreter, ExecutionTier::Tier1_Baseline,
+                               ExecutionTier::Tier2_Optimized}) {
+        EvalOptions at = opts;
+        at.tier = tier;
+        auto loaded = compileScript(kInlined, at);
+        INFO("tier " << static_cast<int>(tier));
+        CHECK(loaded->cacheStatus == CodeCacheStatus::Hit);
+        CHECK(runText(std::move(loaded), at) == "Leaf.at,walk");
+    }
 }
 
 TEST_CASE("code cache: editing an imported module invalidates the entry") {

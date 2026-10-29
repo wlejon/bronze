@@ -28,9 +28,13 @@ std::unordered_map<const brass::Module*, const TieredProgramImage*>& registry() 
 }
 
 // runtime/interpreted_frames.h's walker: the Tier-0 frames on this thread
-// whose function belongs to a loaded program, innermost first.
+// whose function belongs to a loaded program, innermost first. A frame at a
+// position inside a call compiled in place (lower/inline_guarded.cpp) is
+// reported as the frames the call would have made, all at its record's
+// address: the stack walker keeps equal addresses in the order given.
 size_t walkInterpretedFrames(runtime::InterpretedFrame* out, size_t capacity) {
     size_t n = 0;
+    std::vector<TieredProgramImage::JsFrame> js;
     std::lock_guard<std::mutex> lock(registryMutex());
     brass::FastInterpreter::for_each_frame_on_thread([&](const brass::InterpretedFrameInfo& f) {
         if (!f.function) return true;
@@ -39,20 +43,75 @@ size_t walkInterpretedFrames(runtime::InterpretedFrame* out, size_t capacity) {
         const TieredProgramImage& image = *it->second;
         const bronze_fn_desc* desc = image.descriptorOf(f.function->name());
         if (!desc) return true;
-        if (n < capacity) {
-            const bronze_pc_entry pos = image.translate(f.loc, *desc);
-            runtime::InterpretedFrame& frame = out[n];
-            frame.stackAddress = reinterpret_cast<uintptr_t>(f.frame_address);
-            frame.desc = desc;
-            frame.line = pos.line;
-            frame.col = pos.col;
-            frame.file = image.fileName(pos.file);
+        js.clear();
+        // The scopes are the program module's: Tier 0 runs its Functions.
+        image.expandInlined(f.loc, f.function->parent()->debug_context(), *desc, js);
+        for (const TieredProgramImage::JsFrame& one : js) {
+            if (n < capacity) {
+                runtime::InterpretedFrame& frame = out[n];
+                frame.stackAddress = reinterpret_cast<uintptr_t>(f.frame_address);
+                frame.desc = one.desc;
+                frame.line = one.pos.line;
+                frame.col = one.pos.col;
+                frame.file = image.fileName(one.pos.file);
+            }
+            ++n;
         }
-        ++n;
         return true;
     });
     return n;
 }
+
+// One installed code range's inline frames (bronze_inline_frame), built from
+// the scopes its line entries name, as the object writer builds an image's
+// (brass_backend_sections.cpp, InlineFrameTable) but with the descriptors
+// the loaded image holds.
+class InstalledInlineFrames {
+public:
+    InstalledInlineFrames(const TieredProgramImage& image, const brass::DebugContext& debug,
+                          const bronze_fn_desc& desc)
+        : image_(image), debug_(debug), desc_(desc) {}
+
+    // Rewrites `loc` past any scope with no descriptor and answers the frame
+    // (1-based into frames(), 0 for the range's own code) it is a position
+    // of.
+    uint32_t frameOf(brass::DebugLoc& loc) {
+        uint32_t sid = loc.inlined_at_id;
+        // Bounded by the scope count: a parent is always an earlier scope.
+        for (size_t guard = 0; sid != 0 && guard <= debug_.inlined_scope_count(); ++guard) {
+            const brass::InlinedScope* scope = debug_.get_inlined_scope(sid);
+            if (!scope) return 0;
+            if (const bronze_fn_desc* callee = image_.descriptorOf(scope->callee_name)) return frameFor(sid, *scope, callee);
+            loc = scope->callsite_loc;
+            sid = scope->parent_inlined_at_id;
+        }
+        return 0;
+    }
+
+    std::vector<bronze_inline_frame>& frames() { return frames_; }
+
+private:
+    uint32_t frameFor(uint32_t sid, const brass::InlinedScope& scope, const bronze_fn_desc* callee) {
+        if (auto it = local_.find(sid); it != local_.end()) return it->second;
+        brass::DebugLoc call = scope.callsite_loc;
+        call.inlined_at_id = scope.parent_inlined_at_id;
+        const uint32_t parent = frameOf(call);
+        // The call's position is in the frame around it, whose descriptor
+        // gives the position a line when the call has none.
+        const bronze_fn_desc& around = parent ? *frames_[parent - 1].desc : desc_;
+        const bronze_pc_entry pos = image_.translate(call, around);
+        frames_.push_back(bronze_inline_frame{callee, pos.line, pos.col, pos.file, parent});
+        const uint32_t index = static_cast<uint32_t>(frames_.size());
+        local_.emplace(sid, index);
+        return index;
+    }
+
+    const TieredProgramImage& image_;
+    const brass::DebugContext& debug_;
+    const bronze_fn_desc& desc_;
+    std::unordered_map<uint32_t, uint32_t> local_;
+    std::vector<bronze_inline_frame> frames_;
+};
 
 // runtime/profiler.h's describer: a MIR name to its JS function, looked up in
 // every loaded program (a name is unique within one; the first match wins).
@@ -212,18 +271,46 @@ const char* TieredProgramImage::fileName(uint32_t fileIndex) const {
     return (files_ && fileIndex < fileCount_) ? files_[fileIndex] : nullptr;
 }
 
+void TieredProgramImage::expandInlined(const brass::DebugLoc& at, const brass::DebugContext& debug,
+                                       const bronze_fn_desc& desc, std::vector<JsFrame>& out) const {
+    brass::DebugLoc loc = at;
+    uint32_t sid = loc.inlined_at_id;
+    // Bounded by the scope count: a parent is always an earlier scope.
+    for (size_t guard = 0; sid != 0 && guard <= debug.inlined_scope_count(); ++guard) {
+        const brass::InlinedScope* scope = debug.get_inlined_scope(sid);
+        if (!scope) break;
+        if (const bronze_fn_desc* callee = descriptorOf(scope->callee_name)) {
+            out.push_back(JsFrame{callee, translate(loc, *callee)});
+        }
+        loc = scope->callsite_loc;
+        sid = scope->parent_inlined_at_id;
+    }
+    out.push_back(JsFrame{&desc, translate(loc, desc)});
+}
+
 void TieredProgramImage::onCodeInstalled(const brass::runtime::InstalledCode& code) {
     const bronze_fn_desc* desc = descriptorOf(code.name);
     if (!desc || !code.code || code.size == 0) return;
+    // Code compiled from a copy (tier 2, OSR) names the copy's scopes, the
+    // program's and those brass's inliner added; read only during this call.
+    const brass::DebugContext& debug = code.debug_context ? *code.debug_context : module_->debug_context();
     std::lock_guard<std::mutex> lock(rangesMutex_);
     RangeRecord& r = ranges_.emplace_back();
     if (code.lines) {
+        InstalledInlineFrames inlines(*this, debug, *desc);
         r.pcs.reserve(code.lines->size());
         for (const brass::DebugLineEntry& le : *code.lines) {
-            bronze_pc_entry e = translate(le.loc, *desc);
+            brass::DebugLoc loc = le.loc;
+            const uint32_t frame = inlines.frameOf(loc);
+            // A position in an inlined body is the callee's own, its file
+            // the callee's when the pc entry names none (find_code_site).
+            const bronze_fn_desc& in = frame ? *inlines.frames()[frame - 1].desc : *desc;
+            bronze_pc_entry e = translate(loc, in);
             e.pc_offset = le.code_offset;
+            e.inline_frame = frame;
             r.pcs.push_back(e);
         }
+        r.inlines = std::move(inlines.frames());
     }
     r.range.code_start = code.code;
     r.range.code_size = static_cast<uint32_t>(code.size);
@@ -232,6 +319,8 @@ void TieredProgramImage::onCodeInstalled(const brass::runtime::InstalledCode& co
     r.range.pc_table = r.pcs.empty() ? nullptr : r.pcs.data();
     r.range.files = files_;
     r.range.file_count = fileCount_;
+    r.range.inline_frames = r.inlines.empty() ? nullptr : r.inlines.data();
+    r.range.inline_frame_count = static_cast<uint32_t>(r.inlines.size());
     bronze_register_code_ranges(&r.range, 1);
 }
 

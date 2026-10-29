@@ -193,6 +193,8 @@ struct Session {
     // would have been had the call been made.
     std::unordered_map<uint64_t, std::vector<uint32_t>> pcOuter;
     std::unordered_map<uintptr_t, uint32_t> jitSym;  // by code start + tier
+    // An inlined callee's frame in JIT code, by its descriptor + tier.
+    std::unordered_map<uintptr_t, uint32_t> jitInlinedSym;
     std::unordered_map<const void*, uint32_t> descSym;
     std::unordered_map<const void*, uint32_t> fnSym;
     std::unordered_map<ThreadId, uint32_t> threadIndex;
@@ -276,6 +278,33 @@ uint32_t symForPc(Session& s, uint64_t lookup) {
             if (desc) fillFromDesc(sym, desc);
             id = addSym(s, std::move(sym));
             s.jitSym.emplace(key, id);
+        }
+        // A pc in a body tier-1/tier-2 code compiled in place (its range's
+        // inline frames, brass_tiered_image.cpp) is the callee's, at the
+        // code's tier, with the frames around it as its callers, as an
+        // image's pcs are below; the outermost is the code's own.
+        CodeSite site;
+        if (range && range->inline_frame_count != 0 &&
+            find_code_site(reinterpret_cast<const void*>(static_cast<uintptr_t>(lookup)), site) &&
+            site.inline_frame != 0) {
+            const uint32_t own = id;
+            const auto inlinedSym = [&](const bronze_fn_desc* desc) {
+                const uintptr_t k = reinterpret_cast<uintptr_t>(desc) ^ (uintptr_t(jit.tier) << 60);
+                if (auto d = s.jitInlinedSym.find(k); d != s.jitInlinedSym.end()) return d->second;
+                Sym sym;
+                sym.kind = SymKind::Jit;
+                sym.tier = brass::debug::jit_tier_label(jit.tier);
+                sym.module = "jit";
+                sym.name = "<anonymous>";
+                fillFromDesc(sym, desc);
+                const uint32_t made = addSym(s, std::move(sym));
+                s.jitInlinedSym.emplace(k, made);
+                return made;
+            };
+            id = inlinedSym(site.desc);
+            std::vector<uint32_t> outer;
+            while (outer_code_site(site)) outer.push_back(site.inline_frame != 0 ? inlinedSym(site.desc) : own);
+            s.pcOuter.emplace(lookup, std::move(outer));
         }
     } else if (range && range->desc) {
         const auto aotSym = [&](const bronze_fn_desc* desc) {
