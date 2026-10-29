@@ -639,7 +639,9 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             if (hdr->flags == HeapKind::Array) {
                 auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
                 if (idx < arr->length && idx < arr->capacity && !arr->properties.isObject()) {
-                    arr->elementsData()[idx] = Value(valBits);
+                    // In bounds, so NUMBERS survives a Number (runtime/array.h).
+                    if (valBits > kNumberMaxBits) arr->forgetNumbers();
+                    arr->elementsKeepingNumbers()[idx] = Value(valBits);
                     return;
                 }
             } else if (hdr->flags == TypedArrayHeader::kFlags && valBits <= kNumberMaxBits) {

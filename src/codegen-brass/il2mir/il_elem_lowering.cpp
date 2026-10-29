@@ -42,27 +42,6 @@ struct ElemIndex {
     Value* ok = nullptr;
 };
 
-// The f64 an i64 Value was boxed from here (box_f64_bits, IlLowering::ensure_type:
-// a select of the canonical NaN and the bits), or null.
-Value* boxed_f64_source(Value* v) {
-    const Instruction* def = v ? v->defining_instruction() : nullptr;
-    if (def && def->opcode() == Opcode::bitcast_i64_tagged && def->operand_count() >= 1) {
-        const Instruction* inner = def->operand(0)->defining_instruction();
-        if (inner && inner->opcode() == Opcode::bitcast_tagged_i64 && inner->operand_count() >= 1) {
-            def = inner->operand(0)->defining_instruction();
-        }
-    }
-    if (!def || def->opcode() != Opcode::select || def->operand_count() < 3) return nullptr;
-    const Instruction* nan = def->operand(1)->defining_instruction();
-    if (!nan || nan->opcode() != Opcode::iconst_i64 ||
-        static_cast<uint64_t>(nan->imm_i64()) != BRONZE_ABI_CANONICAL_NAN_BITS) {
-        return nullptr;
-    }
-    const Instruction* bits = def->operand(2)->defining_instruction();
-    if (!bits || bits->opcode() != Opcode::bitcast_i64_f64 || bits->operand(0)->type() != Type::f64()) return nullptr;
-    return bits->operand(0);
-}
-
 // The index as the Value the helpers take: an i32 is an int32 Number.
 Value* boxed_index(Builder& b, Value* index) {
     if (index->type() == Type::i32()) return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(index));
@@ -416,8 +395,20 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         b.position_at_end(bb_slow);
         b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
 
+        // The read is ToNumber of the element (il::elemGetCoerces): a Number
+        // is its own bits, anything else — a hole or a miss read as
+        // undefined, an Int32 box, a string, an object — takes the coercion.
         b.position_at_end(bb_merge);
-        return b.build_bitcast_f64_i64(result);
+        BasicBlock* bb_coerce = b.append_block(prefix + "_coerce_cold");
+        BasicBlock* bb_done = b.append_block(prefix + "_done");
+        Value* number = b.add_block_param(bb_done, Type::f64());
+        b.position_at_end(bb_merge);
+        Value* is_num = b.build_ule(result, iconst(b, kBronzeNumberMaxBits));
+        b.build_br_if(is_num, bb_done, {b.build_bitcast_f64_i64(result)}, bb_coerce, {});
+        b.position_at_end(bb_coerce);
+        b.build_br(bb_done, {b.build_call("bronze_unbox_f64", Type::f64(), {result})});
+        b.position_at_end(bb_done);
+        return number;
     }
 
     static const bool unsound_pins = [] {
@@ -535,10 +526,11 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.position_at_end(bb_array_store);
     Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
     b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
-    // Every reference is tagged above the Number range.
+    // Every reference, and every value that is not a Number, is tagged above the Number range.
     b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), bb_barrier, bb_merge);
 
     b.position_at_end(bb_barrier);
+    forget_numbers(b, obj);
     Value* slot_addr = b.build_add(b.build_add(block, b.build_shl(slot, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
     b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
     b.build_br(bb_merge);

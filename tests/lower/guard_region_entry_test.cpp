@@ -553,7 +553,10 @@ TEST_CASE("the mat4 kernel gets one guard chain, one trampoline and thirty-two r
 
     // Thirty-two values tested, at ONE point. `guardPoints` is the number of
     // block splits, and one is what keeps the reads in a single block.
-    CHECK(countOf(text, "is.number") == 32);
+    CHECK(countOf(text, "is.number %") == 32);
+    // And the NUMBER ARRAYS claims in front of the reads, one per receiver,
+    // which answer all thirty-two when they hold (guard_region.h).
+    CHECK(countOf(text, "is.number_array %") == (lower::numberArraysDisabled() ? 0 : 2));
 
     // Every checked unbox in the fast copy is gone, replaced by thirty-two raw
     // ones — one per value, not one per use.

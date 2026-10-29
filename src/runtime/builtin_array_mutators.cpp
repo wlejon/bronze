@@ -9,8 +9,10 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         ArrayHeader* arr = self.asObject<ArrayHeader>();
         if ((arr->head_offset + arr->length + argc <= arr->capacity) && arr->properties.isUndefined()) {
-            HeapValue* dst = arr->elementsData() + arr->length;
+            // Appends: NUMBERS survives when every value is a Number.
+            HeapValue* dst = arr->elementsKeepingNumbers() + arr->length;
             for (uint32_t i = 0; i < argc; ++i) {
+                if (!Value(argv[i]).isNumber()) arr->forgetNumbers();
                 dst[i] = Value(argv[i]);
             }
             arr->length += argc;
@@ -58,7 +60,8 @@ extern "C" uint64_t bronze_array_pop(uint64_t env, uint64_t thisBits, uint32_t a
             (arr->length == 0 || arr->hasElem(arr->length - 1) || !rtArrayChainHoldsIndex(self))) {
             if (arr->length == 0) return Value::fromUndefined().rawBits();
             Value last = arr->getElem(arr->length - 1);
-            arr->elementsData()[arr->length - 1] = Value::fromHole();
+            // The hole lands at the new length: NUMBERS survives.
+            arr->elementsKeepingNumbers()[arr->length - 1] = Value::fromHole();
             arr->length -= 1;
             if (arr->length == 0) {
                 arr->head_offset = 0;
@@ -87,7 +90,8 @@ uint64_t arrayPop(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
             return last.get().rawBits();
         }
         Value last = arr->getElem(len - 1);
-        arr->elementsData()[len - 1] = Value::fromHole();
+        // The hole lands at the new length: NUMBERS survives.
+        arr->elementsKeepingNumbers()[len - 1] = Value::fromHole();
         arr->length -= 1;
         if (arr->length == 0) {
             arr->head_offset = 0;
@@ -115,7 +119,8 @@ extern "C" uint64_t bronze_array_shift(uint64_t env, uint64_t thisBits, uint32_t
         if (arr->properties.isUndefined() && !rtArrayHolesSeeChain(self)) {
             if (arr->length == 0) return Value::fromUndefined().rawBits();
             Value first = arr->getElem(0);
-            arr->elementsData()[0] = Value::fromHole();
+            // The hole is left behind the new head: NUMBERS survives.
+            arr->elementsKeepingNumbers()[0] = Value::fromHole();
             arr->head_offset += 1;
             arr->length -= 1;
             if (arr->length == 0) {
@@ -136,7 +141,8 @@ uint64_t arrayShift(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
         if (!requireConfigurableElements(self.get(), "shift")) return Value::fromUndefined().rawBits();
         if (!rtArrayHolesSeeChain(self.get())) {
             Value first = arr->getElem(0);
-            arr->elementsData()[0] = Value::fromHole();
+            // The hole is left behind the new head: NUMBERS survives.
+            arr->elementsKeepingNumbers()[0] = Value::fromHole();
             arr->head_offset += 1;
             arr->length -= 1;
             if (arr->length == 0) {

@@ -270,6 +270,19 @@ public:
     // `is.dense_array`: whether `obj` is an Array with an elements block and
     // `max_index < length`.
     Value* lower_is_dense_array(Builder& b, Value* obj, uint32_t max_index);
+    // `is.number_array` (il_number_array.cpp): whether `obj` is an Array with
+    // its NUMBERS bit set and `max_index < length`, as an i32; a clear bit on a
+    // short array is claimed by a scan first.
+    Value* lower_is_number_array(Builder& b, Value* obj, uint32_t max_index, bool proven_dense);
+    // Clears the NUMBERS bit of the Array `obj` (a tagged i64 known to be
+    // one): what an element store owes when the value it stored may not be a
+    // Number in double form (il_number_array.cpp says where).
+    void forget_numbers(Builder& b, Value* obj);
+    // The same, only when `val` (a boxed i64) is tagged above the Number range.
+    void forget_numbers_unless_number(Builder& b, Value* obj, Value* val);
+    // Whether `val` is a Number in double form by construction: an f64, a box
+    // of one, or a constant at or below the Number range.
+    bool is_known_number(Value* val) const;
     // `is.typed_array`: whether `obj` is a TypedArray of `elem_kind`, as an i32
     // (and, with kTypedArrayPristineLength in `imm`, whether its chain is
     // pristine as typed_array_chain_pristine says).

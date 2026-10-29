@@ -46,6 +46,12 @@ il::Instruction makeIsDenseArray(il::ValueId result, il::ValueId operand, uint32
     return inst;
 }
 
+il::Instruction makeIsNumberArray(il::ValueId result, il::ValueId operand, uint32_t maxIndex) {
+    il::Instruction inst = makeIsDenseArray(result, operand, maxIndex);
+    inst.op = il::Op::IsNumberArray;
+    return inst;
+}
+
 il::Instruction makeRawUnbox(il::ValueId result, il::ValueId operand) {
     il::Instruction inst;
     inst.op = il::Op::Unbox;
@@ -145,7 +151,9 @@ void cseFastElemGetTyped(il::Function& fn) {
             if (!replacements.empty()) {
                 rewriteUses(inst, [&](il::ValueId v) { return renamed(replacements, v); });
             }
-            if (inst.op == il::Op::ElemGetTyped && inst.operands.size() == 2 &&
+            // A plain array's read coerces, and two coercions of an object are
+            // two `valueOf` calls, so only a view's raw loads are shared.
+            if (inst.op == il::Op::ElemGetTyped && !il::elemGetCoerces(inst) && inst.operands.size() == 2 &&
                 inst.result != il::kNoValue) {
                 il::ValueId hit = il::kNoValue;
                 for (const auto& entry : active) {
@@ -350,6 +358,15 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         // `run.guardIndex`, with the whole run between them. `kNoValue` here is
         // an ordinary point, whose chain stands at the split itself.
         RegionPlan::RunGuard run;
+        // The point's NUMBER WINDOW (guard_region.h), with a name for each
+        // claim's answer. No skippable value means no claim is emitted.
+        RegionPlan::NumberWindow numbers;
+        std::vector<il::ValueId> claimIds;
+        // The chain's tests in order: `keep` always, then the claims, then the
+        // `skip` tests the claims answer when they all hold.
+        std::vector<il::ValueId> keep;
+        std::vector<il::ValueId> skip;
+        size_t chainLength() const { return keep.size() + claimIds.size() + skip.size(); }
     };
     std::vector<std::vector<GuardPoint>> guardPoints(blockCount);
     std::vector<std::vector<std::pair<uint32_t, il::ValueId>>> inlineUnbox(blockCount);
@@ -358,6 +375,9 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             GuardPoint point;
             point.index = plan.splitsOf[b][j];
             if (j < plan.runGuardsOf[b].size()) point.run = plan.runGuardsOf[b][j];
+            if (b < plan.numberWindowsOf.size() && j < plan.numberWindowsOf[b].size()) {
+                point.numbers = plan.numberWindowsOf[b][j];
+            }
             guardPoints[b].push_back(std::move(point));
         }
     }
@@ -386,6 +406,39 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         }
     }
     for (auto& points : inlineUnbox) std::sort(points.begin(), points.end());
+
+    // The chains' order, and the claims: (instruction index, point) for each
+    // block, so the fast copy can put a point's claims in front of its window.
+    uint32_t claimCount = 0;
+    uint32_t skippedCount = 0;
+    std::vector<std::vector<std::pair<uint32_t, size_t>>> claimsAt(blockCount);
+    std::vector<std::vector<std::vector<il::ValueId>>> ownedClaimIds(blockCount);
+    for (il::BlockId b : plan.blocks) {
+        // Owners first, in point order, so every member finds its owner's names.
+        std::vector<std::vector<il::ValueId>>& ownedIds = ownedClaimIds[b];
+        ownedIds.assign(guardPoints[b].size(), {});
+        for (size_t j = 0; j < guardPoints[b].size(); ++j) {
+            const GuardPoint& point = guardPoints[b][j];
+            if (point.numbers.claims.empty()) continue;
+            for (size_t k = 0; k < point.numbers.claims.size(); ++k) ownedIds[j].push_back(newValue());
+            claimsAt[b].push_back({point.numbers.claimAt, j});
+            claimCount += static_cast<uint32_t>(ownedIds[j].size());
+        }
+        for (size_t j = 0; j < guardPoints[b].size(); ++j) {
+            GuardPoint& point = guardPoints[b][j];
+            const uint32_t owner = point.numbers.owner;
+            const bool claimed = !point.numbers.skippable.empty() && owner < ownedIds.size() &&
+                                 !ownedIds[owner].empty();
+            for (il::ValueId v : point.guarded) {
+                const bool answered = claimed && std::binary_search(point.numbers.skippable.begin(),
+                                                                    point.numbers.skippable.end(), v);
+                (answered ? point.skip : point.keep).push_back(v);
+            }
+            if (point.skip.empty()) continue;
+            point.claimIds = ownedIds[owner];
+            skippedCount += static_cast<uint32_t>(point.skip.size());
+        }
+    }
 
     // ---- the block layout -------------------------------------------------
     // Ids are handed out in EMISSION ORDER, because the backend walks blocks in
@@ -436,7 +489,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         fastPartId[b][0] = nextBlock++;
         for (size_t j = 0; j < guardPoints[b].size(); ++j) {
             if (guardPoints[b][j].run.receiver != il::kNoValue) fastRunId[b][j] = nextBlock++;
-            const size_t extra = guardPoints[b][j].guarded.size();
+            const size_t extra = guardPoints[b][j].chainLength();
             fastChainId[b][j].resize(extra == 0 ? 0 : extra - 1);
             for (size_t k = 0; k + 1 < extra; ++k) fastChainId[b][j][k] = nextBlock++;
             fastPartId[b][j + 1] = nextBlock++;
@@ -706,6 +759,15 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         // writes into rather than of the loop variable below.
         auto emitRange = [&](il::Block& part, size_t from, size_t to) {
             for (size_t i = from; i < to; ++i) {
+                for (const auto& [index, j] : claimsAt[b]) {
+                    if (index != i) continue;
+                    const GuardPoint& point = guardPoints[b][j];
+                    for (size_t k = 0; k < point.numbers.claims.size(); ++k) {
+                        const RegionPlan::NumberClaim& claim = point.numbers.claims[k];
+                        part.instructions.push_back(makeIsNumberArray(
+                            ownedClaimIds[b][j][k], fastDyn(claim.receiver, part, &boxCache), claim.maxIndex));
+                    }
+                }
                 for (const auto& [index, value] : inlineUnbox[b]) {
                     if (index == i) {
                         part.instructions.push_back(makeRawUnbox(rawOf[value], fastOf[value]));
@@ -801,19 +863,30 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             // The guard itself: one test per value, chained, every failing edge
             // landing on the one trampoline for this point. Nothing has been
             // computed between the tests, so they all leave with the same
-            // values.
-            const auto& guarded = guardPoints[b][j].guarded;
-            il::Block* testBlock = part;
-            for (size_t k = 0; k < guarded.size(); ++k) {
+            // values. With a number window the claims stand between the tests
+            // they cannot answer and the ones they can: all holding, the chain
+            // ends there; one failing, it goes on to test the rest.
+            const GuardPoint& point = guardPoints[b][j];
+            const size_t length = point.chainLength();
+            const il::BlockId done = fastPartId[b][j + 1];
+            auto blockAt = [&](size_t t) { return t == 0 ? part : &out[fastChainId[b][j][t - 1]]; };
+            auto idAt = [&](size_t t) { return t < length ? fastChainId[b][j][t - 1] : done; };
+            const size_t skipFrom = point.keep.size() + point.claimIds.size();
+            size_t t = 0;
+            auto emitTest = [&](il::ValueId v) {
                 const il::ValueId cond = newValue();
-                testBlock->instructions.push_back(makeIsNumber(cond, fastOf[guarded[k]]));
-                const il::BlockId nextOk = k + 1 < guarded.size() ? fastChainId[b][j][k]
-                                                                  : fastPartId[b][j + 1];
-                testBlock->instructions.push_back(
-                    makeBranch(cond, nextOk, trampolineId[b][j]));
+                blockAt(t)->instructions.push_back(makeIsNumber(cond, fastOf[v]));
+                blockAt(t)->instructions.push_back(makeBranch(cond, idAt(t + 1), trampolineId[b][j]));
                 ++emittedGuards;
-                if (k + 1 < guarded.size()) testBlock = &out[fastChainId[b][j][k]];
+                ++t;
+            };
+            for (il::ValueId v : point.keep) emitTest(v);
+            for (il::ValueId claim : point.claimIds) {
+                const il::BlockId holds = t + 1 == skipFrom ? done : idAt(t + 1);
+                blockAt(t)->instructions.push_back(makeBranch(claim, holds, idAt(skipFrom)));
+                ++t;
             }
+            for (il::ValueId v : point.skip) emitTest(v);
 
             // The trampoline. Its arguments are the tail's parameters, in the
             // tail's order, each as the boxed value the slow copy expects.
@@ -870,6 +943,8 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     stats.promoted += static_cast<uint32_t>(plan.candidates.size());
     stats.guards += emittedGuards;
     stats.runGuards += runGuardCount;
+    stats.numberClaims += claimCount;
+    stats.numberSkipped += skippedCount;
     stats.unboxFolded += foldedCount;
     stats.blocksPruned += pruned;
     for (il::BlockId b : plan.blocks) {

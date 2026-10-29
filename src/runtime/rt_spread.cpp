@@ -363,6 +363,17 @@ void bronze_array_append(uint64_t arrBits, uint64_t valBits) {
     appendTo(arr, val);
 }
 
+// The claim generated code makes in front of a kernel's constant-index reads
+// (lower/guard_region.h, "NUMBER ARRAYS"), on the cold path where the bit is
+// clear: 1 when every element is now known to be a Number. Not a helper call
+// the census counts — it is a cache refill, and counting it would make the
+// census differ between a build that claims and one that does not.
+uint32_t bronze_array_claim_numbers(uint64_t arrBits) {
+    const Value arr(arrBits);
+    if (!arr.isObject() || arr.asObject<HeapObjectHeader>()->flags != HeapKind::Array) return 0;
+    return arr.asObject<ArrayHeader>()->claimNumbers() ? 1 : 0;
+}
+
 void bronze_array_append_hole(uint64_t arrBits) {
     recordHelperCall("bronze_array_append_hole");
     Rooted<Value> arr{Value(arrBits)};

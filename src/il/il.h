@@ -306,6 +306,13 @@ bool canThrow(const Instruction& inst);
 // than a dangling pointer.
 bool canCollect(const Instruction& inst);
 
+// Whether an `elem.get.typed` is a PLAIN ARRAY read (kElemKindPlainArrayF64),
+// which applies ToNumber to an element that is not a Number — user code for an
+// object, a TypeError for a Symbol — rather than a typed view's raw load.
+inline bool elemGetCoerces(const Instruction& inst) {
+    return inst.op == Op::ElemGetTyped && (inst.immI32 & kElemKindMask) == kElemKindPlainArrayF64;
+}
+
 // Which copy of a guarded numeric region a block belongs to
 // (src/lower/guard_region.h). The pass duplicates a region into a FAST copy
 // whose numbers are carried as `f64` and leaves the original blocks as the SLOW

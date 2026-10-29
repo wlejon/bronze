@@ -518,6 +518,20 @@ enum class Op : uint8_t {
     // prototype-mutation epoch. Unlike the kind, that holds only until code
     // runs that could define a property or patch a prototype.
     IsTypedArray,
+    // a: bool = is.number_array b, <immI32: max index>. The NUMBER-ARRAY
+    // CLAIM: is `b` an Array whose NUMBERS bit is set (runtime/array.h) and
+    // whose length exceeds `immI32` — every constant-index read up to it a
+    // load of a Number? When the bit is clear on such an array, of at most
+    // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements, it scans the elements and
+    // sets the bit if they are all Numbers, so it is NOT pure: it writes the
+    // array's header, an answer nothing in the language can observe.
+    //
+    // Its answer is about the elements as they are at the claim, so it is
+    // spent only across a stretch that cannot write anything — the guarded-
+    // region pass (lower/guard_region.h, "NUMBER ARRAYS") is its only producer
+    // and puts it in front of such a stretch of reads. Cannot throw, cannot
+    // collect; nothing may move it.
+    IsNumberArray,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

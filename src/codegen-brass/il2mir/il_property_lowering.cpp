@@ -613,10 +613,13 @@ void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32
         Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_NUMBER_MAX_BITS)));
         b.build_br_if(is_ref, bb_barrier, bb_merge);
         b.position_at_end(bb_barrier);
+        forget_numbers(b, obj);
         Value* slot_addr = dense_array_slot_addr(b, block, head, elem_index);
         b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
         b.build_br(bb_merge);
     } else {
+        // A primitive the barrier skips may still not be a Number (il_number_array.cpp, the rule for a store).
+        if (!is_known_number(val)) forget_numbers_unless_number(b, obj, val);
         b.build_br(bb_merge);
     }
 
@@ -856,7 +859,11 @@ bool lower_property_instruction(
                 Value* obj_val = ensure_type(get_opd(0), Type::i64());
                 res_val = prop_lowering.lower_elem_get_call(b, obj_val, idx_val);
                 if (inst_ast.result_type == BronzeType::F64) {
-                    res_val = ensure_type(res_val, Type::f64());
+                    // A plain array's element is ToNumber'd (il::elemGetCoerces),
+                    // a view's is a Number already.
+                    const bool plain = (inst_ast.imm_i64 & 0xFFFF) == 100;  // il::kElemKindPlainArrayF64
+                    res_val = plain ? b.build_call("bronze_unbox_f64", Type::f64(), {res_val})
+                                    : ensure_type(res_val, Type::f64());
                 }
             } else {
                 Value* ta_data = nullptr;

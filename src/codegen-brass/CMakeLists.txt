@@ -34,6 +34,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_alloc_lowering.cpp
     il2mir/il_bridge_verifier.cpp
     il2mir/il_elem_lowering.cpp
+    il2mir/il_number_array.cpp
     il2mir/il_env_lowering.cpp
     il2mir/il_ic_lowering.cpp
     il2mir/il_static_slot.cpp

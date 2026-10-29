@@ -42,6 +42,32 @@ struct ArrayHeader {
     HeapValue properties;
 
     static constexpr uint32_t kHasCustomPrototype = 1;
+    // NUMBERS: every element below `length` is a Number in its double form
+    // (`Value::isNumber()`: no hole, no Int32 box, nothing tagged) and the
+    // array has no named-properties object, so a constant-index read in bounds
+    // is a load of a Number. Generated code spends it to skip the per-element
+    // number tests of a kernel's reads (lower/guard_region.h, "NUMBER ARRAYS").
+    //
+    // SET only by `claimNumbers`, which scans, so the bit is never more than a
+    // cached answer to a question about the elements as they are. CLEARED by
+    // every write that could falsify it. The mutable accessors below clear it
+    // themselves, so a path that writes elements without knowing about the bit
+    // can only make the array slower, never make the bit lie; the few writers
+    // that keep it (setElem, the push/pop/shift fast paths, a shrinking
+    // setLength) use `elementsKeepingNumbers` and say why at the write.
+    static constexpr uint32_t kElementsAreNumbers = BRONZE_ABI_ARRAY_BIT_NUMBERS;
+    static_assert(kElementsAreNumbers != kHasCustomPrototype);
+
+    bool elementsAreNumbers() const noexcept { return (reserved & kElementsAreNumbers) != 0; }
+    void forgetNumbers() noexcept { reserved &= ~kElementsAreNumbers; }
+
+    // Sets NUMBERS when it is true now: an array with no properties object
+    // whose every element below `length` is a Number. An Int32-boxed element
+    // (what a bitwise operator produces) is rewritten to the same Number in
+    // double form first — the same value, so nothing can tell — because the
+    // bit is about the representation the reads assume. Arrays longer than
+    // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH are not scanned. Returns the bit.
+    bool claimNumbers() noexcept;
 
     static ArrayHeader* create(Heap& heap, uint32_t initial_capacity = 4);
 
@@ -80,7 +106,7 @@ struct ArrayHeader {
     // index at or past the end was never an own property, so it is a no-op.
     void deleteElem(uint32_t index) noexcept {
         if (index >= length) return;
-        elementsData()[index] = Value::fromHole();
+        elementsData()[index] = Value::fromHole();  // the mutable accessor forgets NUMBERS
     }
 
     // Writing at or past `length` appends and grows the block as needed,
@@ -92,9 +118,15 @@ struct ArrayHeader {
     // all. The old shape opened a `Rooted` per call whether or not the call
     // could allocate, which billed every in-range store — the sort's write
     // path above all — for a defense only the growth edge needs.
+    //
+    // NUMBERS survives a Number written in bounds or appended at `length`:
+    // every element below the new length is still a Number. Anything else
+    // forgets it, here or in setElemSlow (which also forgets it for a write
+    // past `length`, since that leaves holes).
     void setElem(Heap& heap, uint32_t index, Rooted<Value>& val) {
         if (head_offset + index < capacity && index <= length) {
-            elementsData()[index] = val.get();
+            if (!val.get().isNumber()) forgetNumbers();
+            elementsKeepingNumbers()[index] = val.get();
             if (index >= length) length = index + 1;
             return;
         }
@@ -107,7 +139,8 @@ struct ArrayHeader {
     // and the slow path roots `v` before anything can move.
     void setElem(Heap& heap, uint32_t index, Value v) {
         if (head_offset + index < capacity && index <= length) {
-            elementsData()[index] = v;
+            if (!v.isNumber()) forgetNumbers();
+            elementsKeepingNumbers()[index] = v;
             if (index >= length) length = index + 1;
             return;
         }
@@ -133,15 +166,27 @@ struct ArrayHeader {
     // through a root and `this` must not be reused.
     static void setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength);
 
+    // The MUTABLE accessors forget NUMBERS: whoever asks for a writable
+    // pointer may store anything through it. A reader holding a non-const
+    // header should call the const overload (`std::as_const`) so that reading
+    // does not cost the array its bit.
     HeapValue* elementsData() noexcept {
+        forgetNumbers();
+        return elementsKeepingNumbers();
+    }
+    // The writable elements WITHOUT forgetting NUMBERS, for a writer that keeps
+    // the promise itself: it stores only Numbers below `length`, or forgets
+    // the bit before it stores anything else.
+    HeapValue* elementsKeepingNumbers() noexcept {
         if (!elements.isPointer()) return nullptr;
-        return rawElementsData() + head_offset;
+        return elements.asObject<HeapObjectHeader>()->payload<HeapValue>() + head_offset;
     }
     const Value* elementsData() const noexcept {
         if (!elements.isPointer()) return nullptr;
         return rawElementsData() + head_offset;
     }
     HeapValue* rawElementsData() noexcept {
+        forgetNumbers();
         if (!elements.isPointer()) return nullptr;
         return elements.asObject<HeapObjectHeader>()->payload<HeapValue>();
     }
@@ -161,5 +206,6 @@ static_assert(offsetof(ArrayHeader, capacity) == BRONZE_ABI_ARRAY_CAPACITY_OFFSE
 static_assert(offsetof(ArrayHeader, head_offset) == BRONZE_ABI_ARRAY_HEAD_OFFSET);
 static_assert(offsetof(ArrayHeader, elements) == BRONZE_ABI_ARRAY_ELEMS_OFFSET);
 static_assert(offsetof(ArrayHeader, properties) == BRONZE_ABI_ARRAY_PROPS_OFFSET);
+static_assert(offsetof(ArrayHeader, reserved) == BRONZE_ABI_ARRAY_BITS_OFFSET);
 
 }  // namespace bronze

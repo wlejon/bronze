@@ -244,6 +244,10 @@ struct GuardRegionStats {
     // against `guardPoints`: what the merge buys is the points that are NOT
     // there, and this says how many tests were spent buying them.
     uint32_t runGuards = 0;
+    // NUMBER ARRAYS: `is.number_array` claims emitted, and the `is.number`
+    // tests behind them that a holding claim skips.
+    uint32_t numberClaims = 0;
+    uint32_t numberSkipped = 0;
     uint32_t blocksAdded = 0;
     uint32_t blocksPruned = 0;  // blocks the duplication left unreachable
 
@@ -375,6 +379,28 @@ struct RegionPlan {
     };
     std::vector<std::vector<RunGuard>> runGuardsOf;  // by block id
 
+    // Parallel to `splitsOf` too: the NUMBER WINDOW in front of each point's
+    // chain, empty when there is none (guard_region_numbers.cpp). `claims` are
+    // the `is.number_array` tests that stand in front of instruction `claimAt`,
+    // one per receiver whose constant-index reads fill the window; `skippable`
+    // are the point's guarded values those reads define, whose `is.number`
+    // tests the fast copy skips when every claim holds.
+    struct NumberClaim {
+        il::ValueId receiver = il::kNoValue;
+        uint32_t maxIndex = 0;
+    };
+    // Points whose windows overlap share one set of claims: the window of a
+    // later point that reaches back over an earlier point's claims is covered
+    // by them, so `owner` names the point (in this block) whose `claimAt` and
+    // `claims` are emitted, and only the owner's are filled in.
+    struct NumberWindow {
+        uint32_t owner = 0;
+        uint32_t claimAt = 0;
+        std::vector<NumberClaim> claims;
+        std::vector<il::ValueId> skippable;  // ascending
+    };
+    std::vector<std::vector<NumberWindow>> numberWindowsOf;  // by block id
+
     // Everything a guard licenses: promotable arithmetic whose result is a
     // candidate, plus every checked `unbox.f64` of one. It is the numerator of
     // the profitability ratio, and counting the unboxes is what makes a
@@ -398,6 +424,57 @@ uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::strin
 
 // THE SEAM for the merge above (`BRONZE_NO_REGION_RUN_GUARDS`), read once.
 bool regionRunGuardsDisabled();
+
+// The read-run rule's two questions, shared with the number windows below.
+// `indexReadReceiver`: the receiver of a `prop.get` whose key is a canonical
+// array index and which carries no static slot claim, else `kNoValue`;
+// `indexReadOf` the same for a given receiver, with the index.
+// `pureInFastCopy`: whether the instruction, AS THE FAST COPY WILL HAVE IT,
+// can neither collect nor throw (guard_region_runs.cpp says why that is read
+// off the fast copy rather than the IL).
+il::ValueId indexReadReceiver(const il::Instruction& inst, const std::vector<std::string>& keys);
+bool indexReadOf(const il::Instruction& inst, const std::vector<std::string>& keys,
+                 il::ValueId receiver, uint32_t& index);
+bool pureInFastCopy(const il::Instruction& inst, const std::vector<il::Type>& types,
+                    const std::vector<uint8_t>& isCandidate);
+
+// ---------------------------------------------------------------------------
+// NUMBER ARRAYS
+//
+// A guard point's chain tests every guarded value with `is.number`, and on a
+// matrix kernel most of them are constant-index reads off one or two arrays
+// that hold nothing but Numbers. The runtime keeps that fact on the array —
+// its NUMBERS bit (runtime/array.h), set only by a scan and cleared by every
+// store that could falsify it — and `is.number_array %a, max` asks it: the
+// receiver is an Array, `max` is in bounds, and every element is a Number in
+// double form (claiming the bit by a scan when it is clear and the array is
+// short).
+//
+// So in front of a WINDOW of reads the fast copy claims each receiver, and the
+// chain tests the claims instead of the reads: every claim holds, and only the
+// point's other values are tested; any one fails, and every value is tested
+// exactly as before. The chain is one straight run of branches either way, and
+// both ways land on the same next part with the same values, so no join is
+// needed and the slow copy is untouched.
+//
+// WHY A CLAIM MADE BEFORE THE READS STILL HOLDS AT THEM: the window holds only
+// those reads and instructions `pureInFastCopy` — nothing that can run user
+// code, store a non-Number into an element or allocate. With every claim
+// holding, every read in the window is of an Array that has no properties
+// object and is in bounds, which is a load of its own element and runs nothing
+// either. The only store that keeps the bit is a Number store, and the only
+// thing that sets it is a claim; neither can turn a claimed array's element
+// into a non-Number inside the window. A claim is never moved by a later pass
+// (il2mir does not hoist it).
+//
+// THE SEAM is `BRONZE_NO_NUMBER_ARRAYS=1`, read by the compiler once: no window
+// is planned and the pass emits what it emitted before this rule.
+bool numberArraysDisabled();
+
+// Fills `plan.numberWindowsOf` for every region block, from the points and
+// candidates the selection settled. Writes nothing else.
+void planNumberWindows(const il::Function& fn, const std::vector<std::string>& keys,
+                       const std::vector<il::Type>& types, RegionPlan& plan);
 
 // Boxed result over boxed operands, in the `+ - * / % **` family plus unary
 // `neg`: the arithmetic a guard promotes to `f64`. Shared because SELECTION

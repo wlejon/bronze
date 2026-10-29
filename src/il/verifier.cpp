@@ -588,29 +588,32 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
             // tagged value, a `bool` for a `br` to consume, and a NON-NEGATIVE
             // index — `immI32` is compared against a length, and a negative
             // claim would widen to an enormous unsigned bound.
-            if (inst.op == Op::IsDenseArray) {
+            // `is.number_array` owes exactly what `is.dense_array` does, for
+            // the same reasons: it is the same receiver test with one more bit.
+            if (inst.op == Op::IsDenseArray || inst.op == Op::IsNumberArray) {
+                const std::string opn = opName(inst.op);
                 if (inst.operands.size() != 1 || inst.result == kNoValue) {
-                    diags.error(Span{}, "Function " + fn.name +
-                                            ": is.dense_array takes exactly one operand and has a "
+                    diags.error(Span{}, "Function " + fn.name + ": " + opn +
+                                            " takes exactly one operand and has a "
                                             "result");
                     return false;
                 }
                 if (definedTypes[inst.operands[0]] != Type::Dynamic) {
-                    diags.error(Span{}, "Function " + fn.name + ": is.dense_array operand %" +
+                    diags.error(Span{}, "Function " + fn.name + ": " + opn + " operand %" +
                                             std::to_string(inst.operands[0]) + " is " +
                                             typeName(definedTypes[inst.operands[0]]) +
                                             ", not dynamic");
                     return false;
                 }
                 if (inst.type != Type::Bool) {
-                    diags.error(Span{}, "Function " + fn.name + ": is.dense_array result %" +
+                    diags.error(Span{}, "Function " + fn.name + ": " + opn + " result %" +
                                             std::to_string(inst.result) + " is " +
                                             typeName(inst.type) + ", not bool");
                     return false;
                 }
                 if (inst.immI32 < 0) {
                     diags.error(Span{}, "Function " + fn.name +
-                                            ": is.dense_array index " +
+                                            ": " + opn + " index " +
                                             std::to_string(inst.immI32) + " is negative");
                     return false;
                 }

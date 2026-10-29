@@ -638,6 +638,8 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
             return false;
         }
     }
+    // After everything that moves a point or a candidate.
+    planNumberWindows(fn, keys, types, plan);
     return true;
 }
 
@@ -664,6 +666,8 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
         {"guards", {before.guards, after.guards}},
         {"points", {before.guardPoints, after.guardPoints}},
         {"runGuards", {before.runGuards, after.runGuards}},
+        {"numberClaims", {before.numberClaims, after.numberClaims}},
+        {"numberSkipped", {before.numberSkipped, after.numberSkipped}},
         {"unboxFolded", {before.unboxFolded, after.unboxFolded}},
         {"handler", {before.refusedHandler, after.refusedHandler}},
         {"singleEntry", {before.refusedSingleEntry, after.refusedSingleEntry}},
@@ -715,12 +719,12 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
                              s.refusedMachine + s.refusedCopyPred;
     std::fprintf(stderr,
                  "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u runGuards=%u "
-                 "elidedBox=%u "
+                 "numberClaims=%u numberSkipped=%u elidedBox=%u "
                  "elidedPin=%u unboxFolded=%u promoted=%u blocks=+%u pruned=%u "
                  "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
                  "placement %u, entrySplit %u, concatSplit %u, ssa %u, machine %u, copyPred %u)\n",
                  s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
-                 s.runGuards, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
+                 s.runGuards, s.numberClaims, s.numberSkipped, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
                  s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
                  s.refusedEntrySplit, s.refusedConcatSplit, s.refusedSsa, s.refusedMachine,

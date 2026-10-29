@@ -155,6 +155,7 @@ const char* opName(Op op) {
         case Op::MethodIcIs: return "method.ic.is";
         case Op::AccessorIcIs: return "accessor.ic.is";
         case Op::IsTypedArray: return "is.typed_array";
+        case Op::IsNumberArray: return "is.number_array";
     }
     return "?";
 }
@@ -507,10 +508,10 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::TemplateCached:
                         out += "template.cached " + std::to_string(inst.immI32);
                         break;
-                    // The largest index the claim covers is the whole content
-                    // of this instruction beside its receiver, so it prints.
+                    // The claim's index bound is its content beside the receiver.
                     case Op::IsDenseArray:
                     case Op::IsTypedArray:
+                    case Op::IsNumberArray:
                         out += std::string(opName(inst.op)) + " %" +
                                std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", " +
                                std::to_string(inst.immI32);

@@ -328,7 +328,11 @@ TEST_CASE("TypedArray and plain-array numeric loops type sum as f64 and CSE Elem
             if (inst.op == il::Op::ElemGetTyped) ++fastElemGets;
         }
     }
-    CHECK(fastElemGets == 1);
+    // Two: a plain array's typed read is ToNumber of the element
+    // (il::elemGetCoerces), and an element with a `valueOf` is coerced once
+    // per read, so the fast copy does not share the two the way it shares a
+    // view's raw loads above.
+    CHECK(fastElemGets == 2);
 }
 
 TEST_CASE("static-slot intra-block CSE and store-to-load forwarding eliminate redundant PropGet and Unbox") {

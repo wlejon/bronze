@@ -109,10 +109,12 @@ bool canThrow(const Instruction& inst) {
         // Two loads off the receiver's header, the receiver's guarded by its
         // tag.
         case Op::IsTypedArray:
+        // Header loads, and on a miss a scan of at most
+        // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements that raises nothing.
+        case Op::IsNumberArray:
         // Raw bounds-checked loads and stores on a proven view: an invalid
         // index is NaN or a skipped store, never a throw, and neither op
         // allocates or reaches user code.
-        case Op::ElemGetTyped:
         case Op::ElemSetTyped:
         // A machine-number math kernel: no coercion ladder, no user code.
         case Op::MathUnary:
@@ -120,6 +122,11 @@ bool canThrow(const Instruction& inst) {
         // address the compiler already proved in range.
         case Op::TemplateCached:
             return false;
+        // The same over a view, but a PLAIN ARRAY read applies ToNumber to an
+        // element that is not a Number (il_pin.h, kElemKindPlainArrayF64): a
+        // `valueOf` can run, and a Symbol throws.
+        case Op::ElemGetTyped:
+            return elemGetCoerces(inst);
         // The `+`-chain accumulator. `begin` and `append` ARE 13.15.3 over a
         // boxed pair — every reason `add` can throw, they can, ToPrimitive on a
         // fresh operand included. `end` clears a bit and reads nothing, but it
@@ -228,7 +235,6 @@ bool canCollect(const Instruction& inst) {
         // Bounds-checked load and store on a view the compiler proved: the
         // whole point of the pair is that they call nothing, and `canThrow`
         // says the same about them for the same reason.
-        case Op::ElemGetTyped:
         case Op::ElemSetTyped:
         // A machine-number kernel. `Math.sin` reaches libm, which allocates
         // nothing and cannot see a JS heap to move.
@@ -239,6 +245,9 @@ bool canCollect(const Instruction& inst) {
         case Op::MethodIcIs:
         case Op::AccessorIcIs:
         case Op::IsTypedArray:
+        // The claim's scan rewrites an Int32 box as a double in place: a
+        // store of a Number, which allocates nothing.
+        case Op::IsNumberArray:
         // The two control transfers that stay inside the function. A `jump`
         // writes its arguments into the target's block parameters and a `br`
         // picks between two of them; neither allocates and neither can reach
@@ -254,6 +263,9 @@ bool canCollect(const Instruction& inst) {
         case Op::Jump:
         case Op::Branch:
             return false;
+        // As `canThrow` reads it: a plain array's read may call a `valueOf`.
+        case Op::ElemGetTyped:
+            return elemGetCoerces(inst);
         // Boxing a number, a bool or an int is a bitcast and a select
         // (llvm_ops.cpp). A STRING box is not boxing at all — it mints the
         // key's Value through bronze_box_str_key — so it stays a barrier.

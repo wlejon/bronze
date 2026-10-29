@@ -1,6 +1,7 @@
 #include "runtime/array.h"
 
 #include <cstddef>
+#include <utility>
 
 #include "abi/bronze_abi.h"
 
@@ -39,7 +40,9 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
 
     HeapValue* slots = block->payload<HeapValue>();
     uint32_t i = 0;
-    const HeapValue* old_slots = arr->elementsData();
+    // Read through the const accessor: copying the elements across changes
+    // none of them, so NUMBERS stays what it was.
+    const Value* old_slots = std::as_const(*arr).elementsData();
     if (old_slots) {
         for (; i < arr->length && i < new_capacity; ++i) {
             slots[i] = old_slots[i];
@@ -96,6 +99,10 @@ ObjectHeader* ArrayHeader::ensureProperties(Heap& heap, NonMovingArena& arena,
     ObjectHeader* props =
         ObjectHeader::create(heap, arena, runtime::rtRootShapeForPrototype(Value::fromNull()));
     props->header.flags = HeapKind::Plain;
+    // NUMBERS promises a read in bounds is a load from the block; an array
+    // with a properties object is one whose elements a define could have
+    // given attributes or accessors, so it promises nothing.
+    self.get().asObject<ArrayHeader>()->forgetNumbers();
     self.get().asObject<ArrayHeader>()->properties = Value::fromObject(props);
     return props;
 }
@@ -104,7 +111,9 @@ void ArrayHeader::setLength(Heap& heap, Rooted<Value>& self, uint32_t newLength)
     {
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (newLength <= arr->length) {
-            HeapValue* slots = arr->elementsData();
+            // Shrinking keeps NUMBERS: the holes land at or past the new
+            // length, and every element still below it is what it was.
+            HeapValue* slots = arr->elementsKeepingNumbers();
             for (uint32_t i = newLength; i < arr->length; ++i) slots[i] = Value::fromHole();
             arr->length = newLength;
             if (newLength == 0) {
@@ -132,8 +141,10 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
         // stays nearly full (a queue's push-one, shift-one) copied every
         // element on every push.
         if (head_offset > 0 && index + 1 <= capacity && length <= capacity / 2) {
-            HeapValue* raw = rawElementsData();
-            const HeapValue* cur = elementsData();
+            // Moving the elements down changes none of them, so NUMBERS
+            // stays; the write below decides it.
+            HeapValue* raw = elementsKeepingNumbers() - head_offset;
+            const Value* cur = std::as_const(*this).elementsData();
             gcCopyValues(elementsBlock(), raw, cur, length);
             for (uint32_t i = length; i < capacity; ++i) {
                 raw[i] = Value::fromHole();
@@ -160,14 +171,39 @@ void ArrayHeader::setElemSlow(Heap& heap, uint32_t index, Rooted<Value>& val) {
     // `this` may be stale: setCapacity allocates.
     auto* arr = self.get().asObject<ArrayHeader>();
     if (index > arr->length) {
+        // Holes below the new length: the mutable accessor forgets NUMBERS.
         for (uint32_t i = arr->length; i < index; ++i) {
             arr->elementsData()[i] = Value::fromHole();
         }
     }
-    arr->elementsData()[index] = val.get();
+    if (!val.get().isNumber()) arr->forgetNumbers();
+    arr->elementsKeepingNumbers()[index] = val.get();
     if (index >= arr->length) {
         arr->length = index + 1;
     }
+}
+
+bool ArrayHeader::claimNumbers() noexcept {
+    if (elementsAreNumbers()) return true;
+    if (!properties.isUndefined() || length > BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH) return false;
+    if (length > 0 && !elements.isPointer()) return false;
+    const Value* cur = std::as_const(*this).elementsData();
+    for (uint32_t i = 0; i < length; ++i) {
+        const Value v = cur[i];
+        if (v.isNumber()) continue;
+        if (!v.isInt32()) return false;
+    }
+    // Every element is a Number; the Int32 boxes among them become the same
+    // Number in double form. No reference is stored, so no barrier is owed.
+    HeapValue* slots = elementsKeepingNumbers();
+    for (uint32_t i = 0; i < length; ++i) {
+        const Value v = slots[i];
+        if (v.isInt32()) {
+            slots[i] = Value::fromDouble(static_cast<double>(static_cast<int32_t>(v.payload())));
+        }
+    }
+    reserved |= kElementsAreNumbers;
+    return true;
 }
 
 }  // namespace bronze

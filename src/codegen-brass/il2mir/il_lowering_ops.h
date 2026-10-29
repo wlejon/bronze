@@ -17,6 +17,8 @@ bool is_ops_il_op(BronzeOp op);
 // compare and two 64-bit constants, and the form brass's number_bits reads
 // as an ordered Number.
 Value* box_f64_bits(Builder& b, Value* f);
+// The f64 an i64 Value was boxed from by box_f64_bits, or null.
+Value* boxed_f64_source(Value* v);
 
 // ToBoolean of a dynamic (i64) value as an i32 0/1; inline for every operand
 // whose answer is its bits unless `helper_only`.

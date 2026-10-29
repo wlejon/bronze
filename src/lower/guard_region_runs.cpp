@@ -19,8 +19,6 @@
 
 namespace bronze::lower {
 
-namespace {
-
 // A read this rule can reason about: `prop.get %recv, "<index>"` with the key a
 // canonical array index, spelled through the SAME parser the backend's run
 // planner uses (il/key.h says why that has to be one function).
@@ -76,6 +74,8 @@ bool pureInFastCopy(const il::Instruction& inst, const std::vector<il::Type>& ty
     }
     return !il::canCollect(inst) && !il::canThrow(inst);
 }
+
+namespace {
 
 // One run found in a block: reads at `first .. lastRead` off `receiver`, and the
 // largest index any of them takes.

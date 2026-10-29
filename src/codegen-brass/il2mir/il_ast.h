@@ -104,6 +104,7 @@ enum class BronzeOp {
     ConcatEnd,
     IsNumber,
     IsDenseArray,
+    IsNumberArray,
     IsNullish,
     GlobalGet,
     MethodCall,

@@ -1,3 +1,4 @@
+#include <utility>
 #include "runtime/pin_census.h"
 
 #include <algorithm>
@@ -84,7 +85,7 @@ bool isDenseNumberArray(const Value& v) {
     auto* arr = v.asObject<ArrayHeader>();
     if (arr->length == 0) return false;
     if (!arr->elements.isObject()) return false;
-    const HeapValue* data = arr->elementsData();
+    const Value* data = std::as_const(*arr).elementsData();
     for (uint32_t i = 0; i < arr->length; ++i) {
         const Value e = data[i];
         if (!e.isNumber() && !e.isInt32()) return false;

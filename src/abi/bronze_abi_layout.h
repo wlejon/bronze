@@ -470,6 +470,18 @@
 #define BRONZE_ABI_ARRAY_HEAD_OFFSET     16
 #define BRONZE_ABI_ARRAY_ELEMS_OFFSET    24
 #define BRONZE_ABI_ARRAY_PROPS_OFFSET    32
+/* ArrayHeader::reserved, a word of bits. NUMBERS (runtime/array.h says
+ * exactly what it promises): every element below `length` is a Number in its
+ * double form (bits <= BRONZE_ABI_NUMBER_MAX_BITS) and the array has no
+ * properties object. Generated code that stores anything else into an
+ * element, or a hole, clears it; bronze_array_claim_numbers is the only thing
+ * that sets it. Bit 1 is the runtime's custom-prototype mark. */
+#define BRONZE_ABI_ARRAY_BITS_OFFSET     20
+#define BRONZE_ABI_ARRAY_BIT_NUMBERS     2
+/* The longest array bronze_array_claim_numbers scans: a claim is made in
+ * front of a kernel's constant-index reads, and a longer array is not one a
+ * scan per visit could pay for. */
+#define BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH 64
 /* The whole ArrayHeader, header word included, and the elements block it
  * points at: a heap object of BRONZE_ABI_OBJ_FLAGS_VALUE_BLOCK kind whose
  * payload is `capacity` Values, HOLE-filled past `length`. An array literal of

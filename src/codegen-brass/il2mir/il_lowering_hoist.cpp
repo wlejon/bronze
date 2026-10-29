@@ -101,7 +101,10 @@ bool is_pure_scalar_inst(const BronzeInstruction& inst) {
 bool is_pure_or_proven_read(const BronzeInstruction& inst,
                             const std::unordered_map<uint32_t, uint32_t>& proofs,
                             const PropertyLoweringHelper& prop_lowering) {
-    if (is_pure_scalar_inst(inst) || inst.op == BronzeOp::IsDenseArray || inst.op == BronzeOp::MathUnary) {
+    // A number-array claim may rewrite an Int32 box as the same Number, which
+    // changes no element's value, no length and no block: the proofs stand.
+    if (is_pure_scalar_inst(inst) || inst.op == BronzeOp::IsDenseArray || inst.op == BronzeOp::IsNumberArray ||
+        inst.op == BronzeOp::MathUnary) {
         return true;
     }
     if (inst.op == BronzeOp::PropGet && inst.static_slot == UINT32_MAX &&
@@ -862,6 +865,9 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, elem_idx, val);
             if (!is_primitive_value(val_id) && !prop_lowering_.is_known_non_ref(val)) {
                 non_prim_vals.push_back(val);
+            } else if (!prop_lowering_.is_known_number(val)) {
+                // il_number_array.cpp, the rule for a store.
+                prop_lowering_.forget_numbers_unless_number(b, set_obj, val);
             }
         } else if (is_run_local_scalar(inst)) {
             apply_loc(inst);
@@ -882,6 +888,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         }
         b.build_br_if(any_ref, bb_barrier, bb_merge);
         b.position_at_end(bb_barrier);
+        prop_lowering_.forget_numbers(b, set_obj);
         for (Value* v : non_prim_vals) {
             b.build_call("brass_gc_write_barrier", Type::void_type(), {set_block, v});
         }

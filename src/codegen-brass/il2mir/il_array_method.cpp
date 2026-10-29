@@ -67,7 +67,6 @@ ArrayInline array_method_inline(IlLowering* lowering, const BronzeInstruction& i
 
 Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline which, Value* recv, Value* val,
                                  const std::function<Value*(Builder&)>& slow) {
-    (void)lowering;
     BasicBlock* cur = b.current_block();
     const std::string prefix = std::string(which == ArrayInline::Push ? "arr_push_" : "arr_shift_") +
                                std::to_string(cur->parent()->next_block_id());
@@ -128,6 +127,7 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
         b.position_at_end(bb_fast);
         b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), bb_barrier, bb_stored);
         b.position_at_end(bb_barrier);
+        lowering->prop_lowering().forget_numbers(b, recv);  // il_number_array.cpp, the rule for a store
         Value* slot_addr = b.build_add(b.build_add(block, b.build_shl(pos, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
         b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
         b.build_br(bb_stored);
