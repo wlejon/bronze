@@ -244,7 +244,7 @@ int runIl(const std::string& sourcePath, std::string* outString, bool infer,
                                        pins.empty() ? nullptr : &pins,
                                        censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr,
-                                       lower::InlineGuardedOptions{/*imageBuild=*/true});
+                                       lower::InlineGuardedOptions{/*fixedCode=*/true});
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
         if (outString) *outString = msg;
@@ -409,7 +409,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                        pins.empty() ? nullptr : &pins,
                                        censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr,
-                                       lower::InlineGuardedOptions{/*imageBuild=*/true});
+                                       lower::InlineGuardedOptions{/*fixedCode=*/true});
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);

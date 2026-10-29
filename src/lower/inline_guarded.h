@@ -10,12 +10,16 @@
 namespace bronze::lower {
 
 // Whether a build compiles resolved method calls' bodies in place
-// (inlineGuardedMethods). Only an image build: the JIT and the tiered engine
-// may interpret a callee or replace its code, so the code word the guard
-// compares is not a fixed fact there, and their frames are reported by the
-// interpreters, which know nothing of inline frames.
+// (inlineGuardedMethods). Only where every function's code is the program's
+// own native code for as long as the program runs: an image build, or the
+// whole-program tier-2 JIT (ExecutionTier::Tier2_Optimized), which compiles
+// the same object an image build does (BrassBackend::buildObjectFile, its
+// code ranges registered with their inline frames) and loads it once, with
+// no interpreter and no tier-up behind it. Not the tiered engine: it
+// interprets a callee and replaces its code as it tiers up, and its frames
+// are reported by the interpreters, which know nothing of inline frames.
 struct InlineGuardedOptions {
-    bool imageBuild = false;
+    bool fixedCode = false;
 };
 bool inlineGuardedEnabled(const InlineGuardedOptions& options);
 

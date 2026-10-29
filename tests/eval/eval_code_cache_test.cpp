@@ -125,12 +125,22 @@ TEST_CASE("code cache: any compile input that differs is a different key") {
     renamed.filename = "<cc-key-other>";
     CHECK(compileScript("6 * 7;", renamed)->cacheStatus == CodeCacheStatus::Miss);
 
-    // The tier is not part of the key: the IL is the same at every tier.
+    // The tier is not part of the key: the IL is the same at every tier
+    // of the tiered engine.
     EvalOptions tier0 = opts;
     tier0.tier = ExecutionTier::Tier0_Interpreter;
     auto interp = compileScript("6 * 7;", tier0);
     CHECK(interp->cacheStatus == CodeCacheStatus::Hit);
     CHECK(runNumber(std::move(interp), tier0) == 42.0);
+
+    // Tier 2 lowers with guarded method inlining (lower/inline_guarded.h),
+    // which the tiered engine must not run: a different key.
+    EvalOptions tier2 = opts;
+    tier2.tier = ExecutionTier::Tier2_Optimized;
+    auto optimized = compileScript("6 * 7;", tier2);
+    CHECK(optimized->cacheStatus == CodeCacheStatus::Miss);
+    CHECK(runNumber(std::move(optimized), tier2) == 42.0);
+    CHECK(compileScript("6 * 7;", tier2)->cacheStatus == CodeCacheStatus::Hit);
 }
 
 TEST_CASE("code cache: editing an imported module invalidates the entry") {

@@ -693,7 +693,7 @@ private:
 bool inlineGuardedEnabled(const InlineGuardedOptions& options) {
     // BRONZE_NO_INLINE_GUARDED=1 builds the same image without it, the
     // A/B switch every inline path in this compiler has.
-    return options.imageBuild && std::getenv("BRONZE_NO_INLINE_GUARDED") == nullptr;
+    return options.fixedCode && std::getenv("BRONZE_NO_INLINE_GUARDED") == nullptr;
 }
 
 bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector<uint32_t>* changed,

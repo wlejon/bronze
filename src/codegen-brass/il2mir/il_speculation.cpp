@@ -62,6 +62,20 @@ bool should_arm(uint8_t raw_kind, uint32_t misses, bool ran) {
     return false;
 }
 
+// Whether a site of `kind` whose slow path ran `misses` times took it only
+// as rarely as its kind does where the fast path holds: never for an arith
+// or call-target site, the cache fills for a property site. Its slow path is
+// then laid out cold, by an AOT profile and by tier 2 alike.
+bool slow_is_cold(SpecKind kind, uint32_t misses) {
+    switch (kind) {
+        case SpecKind::Arith:
+        case SpecKind::CallTarget: return misses == 0;
+        case SpecKind::Property: return misses <= kPropertyColdMisses;
+        case SpecKind::PolyProperty: return misses <= kPolyPropertyColdMisses;
+    }
+    return false;
+}
+
 } // namespace
 
 std::shared_ptr<SpecFeedback> make_spec_feedback() {
@@ -104,18 +118,10 @@ bool SpecSiteEmitter::apply_profile(Builder& b, Value*& hit, BasicBlock* slow, S
     const uint32_t n = occurrences_[key]++;
     const std::optional<uint32_t> misses = profile_->misses(fn_name_, kind, tag, n);
     if (!misses) return false;
-    bool cold = false;
-    switch (kind) {
-        case SpecKind::Arith:
-        case SpecKind::CallTarget: cold = *misses == 0; break;
-        case SpecKind::Property: cold = *misses <= kPropertyColdMisses; break;
-        case SpecKind::PolyProperty:
-            cold = *misses <= kPolyPropertyColdMisses;
-            // Megamorphic: the scan would miss as the helper does, so the
-            // way-0 miss goes to the helper, as it did before the scan.
-            if (!cold) hit = b.build_iconst_i32(0);
-            break;
-    }
+    const bool cold = slow_is_cold(kind, *misses);
+    // Megamorphic: the scan would miss as the helper does, so the way-0 miss
+    // goes to the helper, as it did before the scan.
+    if (kind == SpecKind::PolyProperty && !cold) hit = b.build_iconst_i32(0);
     // brass's block layout sinks a block whose name says cold to the end of
     // the function (codegen/block_layout.cpp), off the fast path's line.
     if (cold) {
@@ -149,6 +155,18 @@ void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {
     options.trace = trace;
     // What survives of the reads' out-of-line scans goes back inline.
     options.after_function = [](Function& fn) { expand_ic_stubs(fn); };
+    // A site left a branch is laid out as a profile would lay it out: the
+    // counts before tier-up are this run's profile. BRONZE_SPEC_NO_COLD=1
+    // keeps every unarmed slow path in line (the layout A/B).
+    static const bool no_cold = [] {
+        const char* v = std::getenv("BRONZE_SPEC_NO_COLD");
+        return v && v[0] == '1';
+    }();
+    if (!no_cold) {
+        options.cold_slow = [](uint8_t kind, uint32_t misses, bool) {
+            return slow_is_cold(static_cast<SpecKind>(kind), misses);
+        };
+    }
     brass::arm_speculation_sites(mod, feedback, options);
 }
 

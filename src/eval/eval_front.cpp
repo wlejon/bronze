@@ -200,6 +200,15 @@ modules::ModuleOptions moduleOptionsFor(const EvalOptions& options) {
     return modOpts;
 }
 
+// Guarded method inlining (lower/inline_guarded.h) for a compile at
+// `in.tier`: of the JIT tiers, only the whole-program tier 2 keeps every
+// function's code fixed, as the image build that has always inlined does.
+// Without it tier 2 ran instanced_mesh_churn in 26.9 ms against the
+// image's 23.5; with it, 23.8.
+static lower::InlineGuardedOptions inlineGuardedFor(const CompileInputs& in) {
+    return lower::InlineGuardedOptions{/*fixedCode=*/in.tier == ExecutionTier::Tier2_Optimized};
+}
+
 cache::Digest programKey(std::string_view processMaterial, const EvalOptions& options,
                          const modules::ModuleOptions& modOpts, const CompileInputs& in,
                          std::string_view entryText) {
@@ -224,6 +233,11 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field("|natives");
     k.field(in.manifestJson);
     k.field(in.pinsText);
+    // The lowered IL differs with it (lowerProgram), and a program cached
+    // at one tier is loaded at another: tier-2 IL's inlined bodies run in
+    // the tiered engine's interpreters otherwise, whose frames do not
+    // report them.
+    k.field(lower::inlineGuardedEnabled(inlineGuardedFor(in)) ? "inline-guarded" : "no-inline-guarded");
     k.field(entryText);
     return k.finish();
 }
@@ -256,7 +270,8 @@ std::unique_ptr<il::Module> lowerProgram(ast::Module& astModule, const EvalOptio
                                       /*assumeNoBigInt=*/false,
                                       in.pins.empty() ? nullptr : &in.pins,
                                       options.censusOutPath,
-                                      in.nativeManifest ? &*in.nativeManifest : nullptr);
+                                      in.nativeManifest ? &*in.nativeManifest : nullptr,
+                                      inlineGuardedFor(in));
     if (diags.hasErrors() || !lowered) return nullptr;
     if (options.deterministicFp || isDeterministicFpMode()) {
         for (auto& fn : lowered->functions) {
