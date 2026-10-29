@@ -13,6 +13,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "il/il.h"
 
@@ -81,12 +82,27 @@ public:
     // receiver in hand does is the method cache's SLOT entry's to say.
     void markOwnCalleeSites(il::Module& ilModule) const;
 
+    // The CLOSURE GUESSES (direct_method_guess.cpp): for a method-call site
+    // whose key the module writes as an own property, the functions whose
+    // closures those writes store — three.js's Euler `_onChangeCallback`, set
+    // by `_onChange(cb)` from the Object3D constructor's `onRotationChange`.
+    // A guess and nothing more: guarded inlining tests each against the
+    // closure the receiver holds (il_op.h, `closure.is`). Keyed on the site's
+    // IC index; at most kMaxClosureGuesses functions per site, none for a key
+    // stored from more places than that.
+    static constexpr size_t kMaxClosureGuesses = 2;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> closureGuesses(const il::Module& ilModule) const;
+
     // Returns true when `icIndex` is a recorded method-call site with a known
     // non-ambiguous receiver class hierarchy and no strict subclass in the
     // module overrides the method.
     bool isMethodSealedOnSubclasses(uint32_t icIndex) const;
 
 private:
+    // Whether one class is the other or an ancestor of it, by the recorded
+    // extends links; an unknown class (empty) is related to every class.
+    bool classesRelated(const std::string& a, const std::string& b) const;
+
     struct Site {
         std::string receiverClass;
         std::string method;

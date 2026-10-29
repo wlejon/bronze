@@ -437,7 +437,8 @@ std::optional<il::Module> Lowerer::lower() {
         directMethods_.resolveAccessors(ilModule_);
         if (inlineGuarded_) {
             std::vector<uint32_t> inlinedInto;
-            inlineGuardedMethods(ilModule_, diags_, &inlinedInto);
+            const ClosureGuesses guesses = directMethods_.closureGuesses(ilModule_);
+            inlineGuardedMethods(ilModule_, diags_, &inlinedInto, &guesses);
             if (diags_.hasErrors()) return std::nullopt;
             foldInlinedCallers(ilModule_, inlinedInto);
         }

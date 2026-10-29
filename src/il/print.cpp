@@ -156,6 +156,9 @@ const char* opName(Op op) {
         case Op::AccessorIcIs: return "accessor.ic.is";
         case Op::IsTypedArray: return "is.typed_array";
         case Op::IsNumberArray: return "is.number_array";
+        case Op::MethodSlotFn: return "method.slot.fn";
+        case Op::ClosureIs: return "closure.is";
+        case Op::ClosureEnv: return "closure.env";
     }
     return "?";
 }
@@ -944,6 +947,17 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::AccessorIcIs:
                         out += "accessor.ic.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", cell " + std::to_string(inst.staticCellIndex) + ", @" + getFnName(inst.calleeIndex);
+                        break;
+                    case Op::MethodSlotFn:
+                        out += "method.slot.fn %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", " + std::to_string(inst.icIndex);
+                        break;
+                    case Op::ClosureIs:
+                        out += "closure.is %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) + ", @" +
+                               getFnName(inst.calleeIndex);
+                        break;
+                    case Op::ClosureEnv:
+                        out += "closure.env %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
                         break;
                     case Op::Print:
                     case Op::PrintErr:

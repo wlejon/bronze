@@ -24,7 +24,7 @@
 // a build that forgets the first half.
 namespace bronze::il {
 
-inline constexpr uint32_t kFormatVersion = 10;
+inline constexpr uint32_t kFormatVersion = 11;
 
 std::string serializeModule(const Module& module);
 

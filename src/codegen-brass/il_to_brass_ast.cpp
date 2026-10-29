@@ -492,6 +492,15 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.callee_name = ctx.fnName(inst.calleeIndex);
             out.ic_index = inst.icIndex;
             break;
+        case il::Op::MethodSlotFn:
+            out.op = il2mir::BronzeOp::MethodSlotFn;
+            out.ic_index = inst.icIndex;
+            break;
+        case il::Op::ClosureIs:
+            out.op = il2mir::BronzeOp::ClosureIs;
+            out.callee_name = ctx.fnName(inst.calleeIndex);
+            break;
+        case il::Op::ClosureEnv: out.op = il2mir::BronzeOp::ClosureEnv; break;
         case il::Op::AccessorIcIs:
             out.op = il2mir::BronzeOp::AccessorIcIs;
             out.callee_name = ctx.fnName(inst.calleeIndex);

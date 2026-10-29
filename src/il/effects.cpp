@@ -112,6 +112,12 @@ bool canThrow(const Instruction& inst) {
         // Header loads, and on a miss a scan of at most
         // BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH elements that raises nothing.
         case Op::IsNumberArray:
+        // Loads off the site's cache words, the receiver's header and slot,
+        // and a function object's header and words, each guarded by the tag
+        // and kind tested before it.
+        case Op::MethodSlotFn:
+        case Op::ClosureIs:
+        case Op::ClosureEnv:
         // Raw bounds-checked loads and stores on a proven view: an invalid
         // index is NaN or a skipped store, never a throw, and neither op
         // allocates or reaches user code.
@@ -248,6 +254,10 @@ bool canCollect(const Instruction& inst) {
         // The claim's scan rewrites an Int32 box as a double in place: a
         // store of a Number, which allocates nothing.
         case Op::IsNumberArray:
+        // Loads, no allocation.
+        case Op::MethodSlotFn:
+        case Op::ClosureIs:
+        case Op::ClosureEnv:
         // The two control transfers that stay inside the function. A `jump`
         // writes its arguments into the target's block parameters and a `br`
         // picks between two of them; neither allocates and neither can reach

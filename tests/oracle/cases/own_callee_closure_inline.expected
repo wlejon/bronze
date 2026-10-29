@@ -1,0 +1,15 @@
+envs 198 100 100 2098 50 50
+setter 28 105 105
+swap 28 105 2098 53 53
+arrow 10 21
+this 6
+throw thrown by h1 0 105
+replace 40 106 106 r21,r22
+reshape 64 109 109 h1
+delete 80 110 110 false
+reenter 100 111 300 54
+getter 3 124 114 114
+nonfn true 70
+bound 162 116
+proxy 182 118 p,p
+bare 4 false

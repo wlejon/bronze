@@ -614,6 +614,50 @@ Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, c
     return result;
 }
 
+// The slot lower_method_slot_inline would call through, read without the
+// call: way 0 a SLOT entry for this receiver's shape, else `undefined`. The
+// shape compare comes first because only a receiver of the entry's shape is
+// known to be a plain object with that slot.
+Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site) {
+    PropertyLoweringHelper& pl = lowering->prop_lowering();
+    const std::string prefix = block_prefix(b, "slotfn");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* slot = b.append_block(prefix + "_slot");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
+    Value* way0 = b.build_and(b.build_eq(keyed, b.build_load(Type::i64(), site, 0)),
+                              b.build_uge(arity0, b.build_iconst_i64(kSlotFormLimit)));
+    b.build_br_if(way0, slot, {}, merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
+
+    b.position_at_end(slot);
+    Value* ptr = b.build_xor(recv, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
+                                   b.build_iconst_i64(1));
+    b.build_br(merge, {pl.load_slot(b, ptr, slot_word)});
+
+    b.position_at_end(merge);
+    return result;
+}
+
+// The direct entry's own test (entry_test: a function object, of this realm,
+// callable directly) and the code word: a closure of `callee`. Everything a
+// direct entry of it would skip, the inlined body skips the same way.
+Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee) {
+    (void)lowering;
+    Value* tls = tls_block(b);
+    const EntryTest t = entry_test(b, tls, fn_val, kCallMask, kCallBits);
+    Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
+    return b.build_and(t.ok, b.build_eq(code, b.build_func_addr("__wrapper_" + callee)));
+}
+
+Value* lower_closure_env(Builder& b, Value* fn_val) {
+    Value* ptr = b.build_xor(fn_val, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    return b.build_load(Type::i64(), ptr, BRONZE_ABI_FN_ENV_OFFSET);
+}
+
 Value* lower_construct_direct(IlLowering* lowering, Builder& b, Value* ctor, const std::vector<Value*>& boxed_args) {
     const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
     Value* argv = lowering->stage_argv(b, boxed_args);

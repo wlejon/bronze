@@ -376,10 +376,17 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         Value* src_ptr = nullptr;
         std::vector<Value*> src_slot_words(N, nullptr);
 
+        // A dense-array source read whole, element k at step k (`toArray`'s
+        // te[0..15] into a 16-element array): see `claimable` below.
+        Value* dense_src = nullptr;
+        bool reads_whole_source = false;
         if (src_kind == ElemRunPeerKind::DenseArray) {
             uint32_t max_src_idx = 0;
             for (const auto& st : set_steps) max_src_idx = std::max(max_src_idx, st.src_elem_idx);
+            reads_whole_source = max_src_idx + 1 == N && N <= BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH;
+            for (size_t k = 0; k < N && reads_whole_source; ++k) reads_whole_source = set_steps[k].src_elem_idx == k;
             Value* src_obj = ensure_type(get_val_by_id(src_obj_id, b, val_map), Type::i64(), b);
+            dense_src = src_obj;
             if (is_proven_dense_array(src_obj_id, max_src_idx)) {
                 get_dense_array_cursor(src_obj_id, src_obj, b, src_block, src_head);
             } else {
@@ -433,7 +440,59 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             return prop_lowering_.load_proven_dense_array_elem(b, src_block, src_head, set_steps[k].src_elem_idx,
                                                                /*check_hole=*/false);
         };
-        for (size_t k = 0; k < N; ++k) {
+        // THE NUMBERS BIT (runtime/array.h, il_number_array.cpp). A source
+        // whose bit is set holds a Number in double form at every index below
+        // its length, which the guard put past every read: its N tests are
+        // one bit test. The stretch from the test to the last store runs no
+        // user code and allocates nothing, and a store into the source itself
+        // (a target that is the same array) stores one of its own Numbers, so
+        // the bit holds at every reload. With the bit clear the elements are
+        // tested one by one as before; and when they are the whole array
+        // (`claimable`), their passing makes the claim's scan a formality, so
+        // the cold claim sets the bit for the next call. Claiming on any other
+        // source would scan elements the run never tested, and an array that
+        // keeps a non-Number past them would pay the scan at every call.
+        BasicBlock* bb_claim = nullptr;
+        if (reload_src) {
+            // (append_block moves the builder to the new block.)
+            BasicBlock* bb_test = b.append_block(prefix + "_src_test");
+            BasicBlock* bb_whole = reads_whole_source ? b.append_block(prefix + "_src_whole") : nullptr;
+            bb_claim = reads_whole_source ? b.append_block(prefix + "_claim_cold") : nullptr;
+            BasicBlock* bb_part = reads_whole_source ? b.append_block(prefix + "_src_part") : nullptr;
+            b.position_at_end(bb_src_load);
+            Value* src_ptr_raw = b.build_and(dense_src, iconst(b, kPayloadMask));
+            Value* bits = b.build_load(Type::i32(), src_ptr_raw, BRONZE_ABI_ARRAY_BITS_OFFSET);
+            Value* has_bit = b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)),
+                                        b.build_iconst_i32(0));
+            b.build_br_if(has_bit, bb_ta_check, bb_test);
+            b.position_at_end(bb_test);
+            if (reads_whole_source) {
+                Value* len = b.build_load(Type::i32(), src_ptr_raw, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+                Value* whole = b.build_eq(len, b.build_iconst_i32(static_cast<int32_t>(N)));
+                b.build_br_if(whole, bb_whole, bb_part);
+                b.position_at_end(bb_claim);
+                b.build_call("bronze_array_claim_numbers", Type::i32(), {dense_src});
+                b.build_br(bb_ta_check);
+                bb_claim->set_cold();
+                // Each arm tests the elements; only the whole one claims.
+                BasicBlock* arms[2] = {bb_whole, bb_part};
+                for (BasicBlock* arm : arms) {
+                    b.position_at_end(arm);
+                    Value* ok = nullptr;
+                    for (size_t k = 0; k < N; ++k) {
+                        Value* num_ok = nullptr;
+                        prop_lowering_.unbox_known_number(b, src_elem(k), num_ok);
+                        if (num_ok) ok = ok ? b.build_and(ok, num_ok) : num_ok;
+                    }
+                    BasicBlock* pass = arm == bb_whole ? bb_claim : bb_ta_check;
+                    if (ok) b.build_br_if(ok, pass, bb_slow);
+                    else b.build_br(pass);
+                }
+                // The common tail below expects a block to continue in.
+                b.position_at_end(bb_ta_check);
+            }
+        }
+        for (size_t k = 0; k < N && !bb_claim; ++k) {
             Value* raw_val = nullptr;
             if (reload_src) {
                 raw_val = src_elem(k);
@@ -457,16 +516,17 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         auto elem_f64 = [&](size_t k) -> Value* {
             return reload_src ? b.build_bitcast_f64_i64(src_elem(k)) : vals_f64[k];
         };
+        if (!bb_claim) {
+            if (all_num_ok) {
+                b.build_br_if(all_num_ok, bb_ta_check, bb_slow);
+            } else {
+                b.build_br(bb_ta_check);
+            }
+            b.position_at_end(bb_ta_check);
+        }
         Value* max_end_idx = b.build_add(base_i64, iconst(b, N - 1));
         Value* header_low = b.build_load(Type::i32(), arr_ptr, 0);
         Value* is_arr = b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow));
-        if (all_num_ok) {
-            b.build_br_if(all_num_ok, bb_ta_check, bb_slow);
-            b.position_at_end(bb_ta_check);
-        } else {
-            b.build_br(bb_ta_check);
-            b.position_at_end(bb_ta_check);
-        }
         b.build_br_if(is_arr, bb_arr, bb_ta);
 
         b.position_at_end(bb_ta);

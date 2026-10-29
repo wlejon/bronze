@@ -95,13 +95,18 @@ std::vector<il::Type> valueTypes(const il::Function& fn) {
 
 // Whether `fn`'s body means the same thing run at any method call that
 // would have entered it: it reads nothing of the activation a real call
-// builds beyond `this` and its parameters.
-bool isCandidate(const il::Function& fn) {
+// builds beyond `this` and its parameters — and, for a CLOSURE body (one
+// entered behind `closure.is`, "own callees" below), beyond the environment
+// its function object closed over, which the inlined copy is handed.
+bool isCandidate(const il::Function& fn, bool closure) {
     if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isGenerator) return false;
     // The environment, `arguments` and the rest array are built by the call
     // wrapper from the real call; a sloppy function's `this` is coerced there.
-    if (fn.needsEnv || fn.needsArguments || fn.hasRestParam) return false;
-    if (fn.needsThis && !fn.isStrict) return false;
+    // A closure body's environment is its closure's (`closure.env`), and its
+    // `this` is the receiver `method.slot.fn` matched to a SLOT entry's
+    // shape, a plain object, which sloppy coercion leaves as it is.
+    if ((fn.needsEnv && !closure) || fn.needsArguments || fn.hasRestParam) return false;
+    if (fn.needsThis && !fn.isStrict && !closure) return false;
     // No new.target, no super(), no coroutine: what the direct edge requires.
     if (!il::functionEntersDirectly(fn)) return false;
     // A typed entry's source parameters arrive unboxed (typed_entry.h); the
@@ -144,7 +149,7 @@ bool isCandidate(const il::Function& fn) {
                 case il::Op::EnvSet:
                 case il::Op::EnvGetTdz:
                 case il::Op::EnvInitTdz:
-                    if (!moduleEnv(inst)) return false;
+                    if (!closure && !moduleEnv(inst)) return false;
                     break;
                 case il::Op::Call:
                     if (inst.callEnvHops != il::Instruction::kNoEnvHops) return false;
@@ -174,6 +179,9 @@ bool isCandidate(const il::Function& fn) {
                 case il::Op::ModuleEnvSet:
                 case il::Op::ExcTake:
                 case il::Op::MethodIcIs:
+                case il::Op::MethodSlotFn:
+                case il::Op::ClosureIs:
+                case il::Op::ClosureEnv:
                     return false;
                 default:
                     break;
@@ -185,14 +193,22 @@ bool isCandidate(const il::Function& fn) {
 
 class Inliner {
 public:
-    Inliner(il::Module& module) : module_(module) {
+    Inliner(il::Module& module, const ClosureGuesses* guesses) : module_(module), guesses_(guesses) {
         originals_.resize(module.functions.size());
         candidate_.assign(module.functions.size(), 0);
-        for (size_t i = 0; i < module.functions.size(); ++i) {
-            if (isCandidate(module.functions[i])) {
-                candidate_[i] = 1;
-                originals_[i] = module.functions[i];
+        closureCandidate_.assign(module.functions.size(), 0);
+        std::vector<uint8_t> guessed(module.functions.size(), 0);
+        if (guesses_) {
+            for (const auto& [site, fns] : *guesses_) {
+                for (uint32_t f : fns) {
+                    if (f < guessed.size()) guessed[f] = 1;
+                }
             }
+        }
+        for (size_t i = 0; i < module.functions.size(); ++i) {
+            if (isCandidate(module.functions[i], false)) candidate_[i] = 1;
+            if (guessed[i] && isCandidate(module.functions[i], true)) closureCandidate_[i] = 1;
+            if (candidate_[i] || closureCandidate_[i]) originals_[i] = module.functions[i];
         }
         markEnteredFromLoops();
     }
@@ -209,25 +225,52 @@ public:
         if (count > kMaxCallerStart) return 0;
         types_ = valueTypes(fn);
         slowBlock_.assign(fn.blocks.size(), 0);
+        closureTried_.assign(fn.blocks.size(), 0);
         markLoops(fn);
         const size_t limit =
             std::min(kMaxCallerInstructions, std::max(count * 2 + kCallerGrowthSlack, count + kMinCallerGrowth));
         const bool hot = enteredFromLoop_[originOf(fnIdx)] != 0;
         size_t inlined = 0;
+        // The guarded regions' fast copies first: the room is one budget for
+        // the whole function, and a region's slow copy (its original blocks,
+        // so the lower numbers) runs only once a guard of the fast copy has
+        // failed. Taken in block order, the slow copy of instanced's loop got
+        // `compose` and the fast copy, the one that runs, was left with the
+        // calls of `compose` and `Matrix4.toArray` for want of room.
+        for (int pass = 0; pass < 2; ++pass)
         for (size_t b = 0; b < fn.blocks.size(); ++b) {
+            if ((fn.blocks[b].copyClass == il::CopyClass::Slow) != (pass == 1)) continue;
             if (slowBlock_[b] || (!inLoop_[b] && !hot)) continue;
             for (size_t i = 0; i < fn.blocks[b].instructions.size(); ++i) {
                 const il::Instruction& inst = fn.blocks[b].instructions[i];
-                const uint32_t callee = eligibleCallee(fn, fnIdx, inst);
-                if (callee == kNone) continue;
-                const size_t grows = originals_[callee].blocks.size() * 2 + instructionCount(originals_[callee]) + 4;
-                if (count + grows > limit) continue;
-                if (trace()) {
-                    std::fprintf(stderr, "[inline] %s <- %s (%zu)%s\n", fn.name.c_str(),
-                                 module_.functions[callee].name.c_str(), instructionCount(originals_[callee]),
-                                 inLoop_[b] ? "" : " outside loops");
+                // An own callee's guessed closure first (its miss is a block
+                // holding the call, which takes the next guess, then the
+                // prototype's method as any call does), else the method.
+                uint32_t next = 0;
+                const uint32_t closure = closureCallee(fn, fnIdx, static_cast<il::BlockId>(b), inst, next);
+                const auto roomFor = [&](uint32_t callee, size_t extra) -> size_t {
+                    const size_t grows =
+                        originals_[callee].blocks.size() * 2 + instructionCount(originals_[callee]) + 4 + extra;
+                    if (count + grows <= limit) return grows;
+                    if (trace()) {
+                        std::fprintf(stderr, "[inline] %s: no room for %s (%zu + %zu > %zu)\n", fn.name.c_str(),
+                                     module_.functions[callee].name.c_str(), count, grows, limit);
+                    }
+                    return 0;
+                };
+                size_t grows = closure != kNone ? roomFor(closure, kClosureGuardInstructions) : 0;
+                uint32_t callee = closure;
+                if (grows == 0) {
+                    callee = eligibleCallee(fn, fnIdx, inst);
+                    if (callee == kNone || (grows = roomFor(callee, 0)) == 0) continue;
                 }
-                inlineAt(fn, static_cast<il::BlockId>(b), i, callee);
+                const bool asClosure = callee == closure;
+                if (trace()) {
+                    std::fprintf(stderr, "[inline] %s <- %s%s (%zu)%s\n", fn.name.c_str(),
+                                 asClosure ? "closure " : "", module_.functions[callee].name.c_str(),
+                                 instructionCount(originals_[callee]), inLoop_[b] ? "" : " outside loops");
+                }
+                inlineAt(fn, static_cast<il::BlockId>(b), i, callee, asClosure ? next : 0);
                 count += grows;
                 ++inlined;
                 // Block b now ends at the guard; the rest of it is the last
@@ -276,6 +319,58 @@ private:
         }
         if (depth >= kMaxDepth) return kNone;
         return callee;
+    }
+
+    // OWN CALLEES. A `method.call` whose key the program stores closures
+    // under (direct_method_table.h, `closureGuesses`) may find its callee in
+    // the receiver's own slot rather than on its prototype: three.js's
+    // `this._onChangeCallback()`, where every Euler holds its own Object3D's
+    // `onRotationChange`. Each receiver's closure is a different object, so
+    // the method cache's DIRECT test never answers for it; what is the same
+    // across them is the function they are closures of. Such a site is
+    //
+    //     B:  f = method.slot.fn recv, <site>     ; the slot way 0 names, or undefined
+    //         g = closure.is f, @T                ; a closure of T, this realm, enterable
+    //         br g, E(), N()
+    //     E:  env = closure.env f                 ; what that closure closed over
+    //         jump T'0                            ; T's body, its __env `env`, `this` recv
+    //     N:  r2 = method.call recv, ...          ; the original call: the next guess,
+    //         jump C(r2)                          ;   or the prototype method's guard
+    //
+    // and T's body runs exactly when the call would have entered T's code
+    // with this receiver as `this` and that closure's environment as __env:
+    // the slot read is the call's own [[Get]] (a data property the shape
+    // fixes), and the test is the direct entry's. Which T: the guesses for
+    // the site, in turn; `next` is the index after the one returned, the
+    // count the miss block N starts from.
+    uint32_t closureCallee(const il::Function& fn, uint32_t fnIdx, il::BlockId b, const il::Instruction& inst,
+                           uint32_t& next) const {
+        if (!guesses_ || inst.op != il::Op::MethodCall || inst.operands.empty()) return kNone;
+        const auto it = guesses_->find(inst.icIndex);
+        if (it == guesses_->end()) return kNone;
+        if (inst.operands.size() - 1 > kMaxArgs) return kNone;
+        if (inst.result != il::kNoValue && inst.type != il::Type::Dynamic) return kNone;
+        if (types_[inst.operands[0]] != il::Type::Dynamic) return kNone;
+        for (size_t a = 1; a < inst.operands.size(); ++a) {
+            if (inst.operands[a] >= types_.size() || types_[inst.operands[a]] != il::Type::Dynamic) return kNone;
+        }
+        size_t depth = 0;
+        for (uint32_t f = inst.inlineFrame; f != 0; f = fn.inlineFrames[f - 1].parent) ++depth;
+        if (depth >= kMaxDepth) return kNone;
+        for (size_t k = closureTried_[b]; k < it->second.size(); ++k) {
+            const uint32_t t = it->second[k];
+            if (t >= closureCandidate_.size() || !closureCandidate_[t] || t == originOf(fnIdx)) continue;
+            bool recursive = false;
+            for (uint32_t f = inst.inlineFrame; f != 0 && !recursive; f = fn.inlineFrames[f - 1].parent) {
+                recursive = fn.inlineFrames[f - 1].callee == t;
+            }
+            if (recursive) continue;
+            // A body's parameters past the declared ones are dropped; a
+            // closure body is generic, so each is a dynamic value.
+            next = static_cast<uint32_t>(k + 1);
+            return t;
+        }
+        return kNone;
     }
 
     // Which blocks lie in a loop: the calls a body copied in saves more than
@@ -353,7 +448,11 @@ private:
         return v;
     }
 
-    void inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calleeIdx) {
+    // `closureNext` is 0 for a method or accessor body behind its cache's
+    // test, else the body is the closure guess before guess `closureNext` of
+    // an own-callee site (closureCallee) and is entered behind `closure.is`.
+    void inlineAt(il::Function& fn, il::BlockId b, size_t i, uint32_t calleeIdx, uint32_t closureNext) {
+        const bool closure = closureNext != 0;
         const il::Function& callee = originals_[calleeIdx];
         const il::Instruction call = fn.blocks[b].instructions[i];
         const il::BlockId handler = fn.blocks[b].handler;
@@ -365,7 +464,7 @@ private:
         // the one a real call's frame reports, and its wrapper is the code
         // word the site's cache latches (a typed entry is reached only behind
         // that same test).
-        const uint32_t origin = call.directTarget;
+        const uint32_t origin = closure ? calleeIdx : call.directTarget;
         fn.inlineFrames.push_back(il::Function::InlineFrame{origin, call.span, call.inlineFrame});
         const uint32_t frame = static_cast<uint32_t>(fn.inlineFrames.size());
 
@@ -377,6 +476,7 @@ private:
             blk.copyRegion = copyRegion;
             fn.blocks.push_back(std::move(blk));
             slowBlock_.push_back(0);
+            closureTried_.push_back(0);
             inLoop_.push_back(inLoop_[b]);
             return fn.blocks.back().id;
         };
@@ -399,8 +499,11 @@ private:
         }
 
         // S: the original call, unchanged but for the id its result takes.
+        // A closure guess's miss is a call like any other, still open to the
+        // next guess and to the prototype method's body (N, closureCallee).
         const il::BlockId slow = newBlock();
-        slowBlock_[slow] = 1;
+        slowBlock_[slow] = closure ? 0 : 1;
+        if (closure) closureTried_[slow] = closureNext;
         {
             il::Instruction again = call;
             il::Instruction jump = callSiteInst(il::Op::Jump);
@@ -412,6 +515,9 @@ private:
             fn.blocks[slow].instructions.push_back(std::move(again));
             fn.blocks[slow].instructions.push_back(std::move(jump));
         }
+
+        // E: a closure body's entry, where its environment is read.
+        const il::BlockId envBlock = closure ? newBlock() : il::kNoBlock;
 
         // The callee's blocks, numbered after S, and every value it defines.
         const il::BlockId base = static_cast<il::BlockId>(fn.blocks.size());
@@ -449,6 +555,8 @@ private:
         };
         const size_t firstSource = callee.firstSourceParam();
         if (callee.needsThis) vm[firstSource - 1] = call.operands[0];
+        il::ValueId envValue = il::kNoValue;
+        if (closure && callee.needsEnv) vm[0] = envValue = fresh(fn, il::Type::Dynamic);
         for (size_t p = firstSource; p < callee.params.size(); ++p) {
             const size_t arg = 1 + (p - firstSource);
             vm[p] = arg < call.operands.size() ? call.operands[arg] : undefinedAtHead();
@@ -466,8 +574,38 @@ private:
             return t;
         };
 
-        // B ends in the guard: the method cache's, or an accessor site's cell.
-        {
+        // B ends in the guard: the method cache's, or an accessor site's cell,
+        // or for a closure guess the slot's closure's code word.
+        if (closure) {
+            il::Instruction slotFn = callSiteInst(il::Op::MethodSlotFn);
+            slotFn.type = il::Type::Dynamic;
+            slotFn.result = fresh(fn, il::Type::Dynamic);
+            slotFn.operands = {call.operands[0]};
+            slotFn.icIndex = call.icIndex;
+            slotFn.keyIndex = call.keyIndex;
+            il::Instruction is = callSiteInst(il::Op::ClosureIs);
+            is.type = il::Type::Bool;
+            is.result = fresh(fn, il::Type::Bool);
+            is.operands = {slotFn.result};
+            is.calleeIndex = calleeIdx;
+            il::Instruction br = callSiteInst(il::Op::Branch);
+            br.operands = {is.result};
+            br.target.block = envBlock;
+            br.elseTarget.block = slow;
+            if (envValue != il::kNoValue) {
+                il::Instruction env = callSiteInst(il::Op::ClosureEnv);
+                env.type = il::Type::Dynamic;
+                env.result = envValue;
+                env.operands = {slotFn.result};
+                fn.blocks[envBlock].instructions.push_back(std::move(env));
+            }
+            il::Instruction enter = callSiteInst(il::Op::Jump);
+            enter.target.block = base;
+            fn.blocks[envBlock].instructions.push_back(std::move(enter));
+            fn.blocks[b].instructions.push_back(std::move(slotFn));
+            fn.blocks[b].instructions.push_back(std::move(is));
+            fn.blocks[b].instructions.push_back(std::move(br));
+        } else {
             const bool accessor = call.op != il::Op::MethodCall;
             il::Instruction guard = callSiteInst(accessor ? il::Op::AccessorIcIs : il::Op::MethodIcIs);
             guard.type = il::Type::Bool;
@@ -532,12 +670,20 @@ private:
         }
     }
 
+    // What the closure guard adds to B and E beyond a method guard's two.
+    static constexpr size_t kClosureGuardInstructions = 3;
+
     il::Module& module_;
+    const ClosureGuesses* guesses_ = nullptr;
     std::vector<il::Function> originals_;
     // The blocks holding a guard's original call, whose call stays a call.
     std::vector<uint8_t> slowBlock_;
     std::vector<uint8_t> inLoop_;
     std::vector<uint8_t> candidate_;
+    std::vector<uint8_t> closureCandidate_;
+    // Per block: how many of its first call's closure guesses an earlier
+    // guard already took (the miss block of guess k holds the call with k+1).
+    std::vector<uint32_t> closureTried_;
     std::vector<uint8_t> enteredFromLoop_;
     std::vector<il::Type> types_;
 };
@@ -550,9 +696,9 @@ bool inlineGuardedEnabled(const InlineGuardedOptions& options) {
     return options.imageBuild && std::getenv("BRONZE_NO_INLINE_GUARDED") == nullptr;
 }
 
-bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags,
-                          std::vector<uint32_t>* changed) {
-    Inliner inliner(module);
+bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector<uint32_t>* changed,
+                          const ClosureGuesses* guesses) {
+    Inliner inliner(module, std::getenv("BRONZE_NO_INLINE_CLOSURES") ? nullptr : guesses);
     bool any = false;
     for (size_t f = 0; f < module.functions.size(); ++f) {
         if (inliner.inlineInto(static_cast<uint32_t>(f)) == 0) continue;

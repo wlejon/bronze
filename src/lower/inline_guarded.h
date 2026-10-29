@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include "il/il.h"
@@ -34,8 +35,15 @@ bool inlineGuardedEnabled(const InlineGuardedOptions& options);
 // show the callee. A failure of the IL verifier afterwards is a compiler bug
 // and is reported to `diags`. Returns whether any call was inlined; the
 // functions changed are appended to `changed` when it is given.
+//
+// `guesses` (direct_method_table.h, `closureGuesses`), when given, names for
+// a call site whose receiver may hold its callee in an own slot the functions
+// whose closures it may hold; each is copied in behind a test of the slot's
+// closure (inline_guarded.cpp, "own callees"). BRONZE_NO_INLINE_CLOSURES=1
+// builds without them.
+using ClosureGuesses = std::unordered_map<uint32_t, std::vector<uint32_t>>;
 bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags,
-                          std::vector<uint32_t>* changed = nullptr);
+                          std::vector<uint32_t>* changed = nullptr, const ClosureGuesses* guesses = nullptr);
 
 // The typed-entry fold (foldTypedEntry) over each function inlining changed.
 // An inlined body reads its parameters as the call's operands, which at a

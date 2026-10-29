@@ -30,6 +30,9 @@ bool is_call_il_op(BronzeOp op) {
         case BronzeOp::CreateFunc:
         case BronzeOp::MethodIcIs:
         case BronzeOp::AccessorIcIs:
+        case BronzeOp::MethodSlotFn:
+        case BronzeOp::ClosureIs:
+        case BronzeOp::ClosureEnv:
             return true;
         default:
             return false;
@@ -391,6 +394,34 @@ bool lower_call_instruction(
             res_val = site ? direct_method_ic_hit(b, lowering->memo_keyed(b, inst_ast.operands[0], recv), site,
                                                   inst_ast.callee_name)
                            : b.build_iconst_i32(0);
+            if (lowering) lowering->memo_keep();
+            break;
+        }
+
+        // An inlined own-slot callback's tests (il_lowering_direct.h). Loads
+        // only, which move no shape, so the memo stays. Without the direct
+        // forms (no image build) no closure is entered directly, so none is
+        // inlined either: the slot reads `undefined` and the test says no.
+        case BronzeOp::MethodSlotFn: {
+            Value* recv = ensure_type(get_opd(0), Type::i64());
+            Value* site = lowering && direct_method_ic_here(lowering)
+                              ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index)
+                              : nullptr;
+            res_val = site ? lower_method_slot_fn(lowering, b, recv,
+                                                  lowering->memo_keyed(b, inst_ast.operands[0], recv), site)
+                           : b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag));
+            if (lowering) lowering->memo_keep();
+            break;
+        }
+        case BronzeOp::ClosureIs: {
+            Value* f = ensure_type(get_opd(0), Type::i64());
+            res_val = direct_method_ic_here(lowering) ? lower_closure_is(lowering, b, f, inst_ast.callee_name)
+                                                      : b.build_iconst_i32(0);
+            if (lowering) lowering->memo_keep();
+            break;
+        }
+        case BronzeOp::ClosureEnv: {
+            res_val = lower_closure_env(b, ensure_type(get_opd(0), Type::i64()));
             if (lowering) lowering->memo_keep();
             break;
         }

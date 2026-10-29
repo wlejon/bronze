@@ -7,6 +7,7 @@
 #include "il_ast.h"
 #include <brass/mir/builder.hpp>
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace il2mir {
@@ -47,6 +48,13 @@ Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value
 // dispatch. `boxed_args` are staged for the slot call as `rest` stages them.
 Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, const std::vector<Value*>& boxed_args,
                                 Value* site, const std::function<Value*(Builder&)>& rest);
+
+// The three tests of an inlined own-slot callback (il_op.h, MethodSlotFn /
+// ClosureIs / ClosureEnv; lower/inline_guarded.cpp builds them). `keyed` is
+// the receiver's keyed shape, often the shape memo's.
+Value* lower_method_slot_fn(IlLowering* lowering, Builder& b, Value* recv, Value* keyed, Value* site);
+Value* lower_closure_is(IlLowering* lowering, Builder& b, Value* fn_val, const std::string& callee);
+Value* lower_closure_env(Builder& b, Value* fn_val);
 
 // `new ctor(...args)`: a vetted constructor (bronze_construct has taken its
 // plain path once) that compiled code may enter gets its instance bumped

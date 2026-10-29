@@ -97,6 +97,37 @@ static bool verifyConcatChain(const Function& fn, DiagnosticSink& diags) {
     return true;
 }
 
+// closure.env's licence (il_op.h): it reads a function object's env word,
+// which only a closure has, so it must stand where `closure.is` on the same
+// value has just said yes — first in a block entered by exactly one edge, the
+// true edge of a branch on that test. The value is SSA and a closure's env
+// word never changes, so nothing between the test and the read can undo it.
+static bool closureEnvProved(const Function& fn, size_t bIdx, size_t iIdx) {
+    if (iIdx != 0) return false;
+    const ValueId f = fn.blocks[bIdx].instructions[0].operands[0];
+    size_t edges = 0;
+    const Instruction* test = nullptr;
+    for (const auto& blk : fn.blocks) {
+        if (blk.instructions.empty()) continue;
+        const Instruction& t = blk.instructions.back();
+        if (t.op != Op::Jump && t.op != Op::Branch) continue;
+        if (t.target.block == bIdx) {
+            ++edges;
+            if (t.op == Op::Branch) test = &t;
+        }
+        if (t.op == Op::Branch && t.elseTarget.block == bIdx) edges += 2;
+    }
+    if (edges != 1 || test == nullptr || test->operands.empty()) return false;
+    for (const auto& blk : fn.blocks) {
+        for (const auto& inst : blk.instructions) {
+            if (inst.result == test->operands[0]) {
+                return inst.op == Op::ClosureIs && !inst.operands.empty() && inst.operands[0] == f;
+            }
+        }
+    }
+    return false;
+}
+
 bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
     if (fn.blocks.empty()) {
         diags.error(Span{}, "Function " + fn.name + " has no blocks");
@@ -482,6 +513,22 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                 diags.error(Span{}, "Function " + fn.name + ": accessor.ic.is takes one operand and is a bool");
                 return false;
             }
+            if ((inst.op == Op::MethodSlotFn || inst.op == Op::ClosureEnv) &&
+                (inst.operands.size() != 1 || inst.type != Type::Dynamic || inst.result == kNoValue)) {
+                diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                        " takes one operand and is a dynamic value");
+                return false;
+            }
+            if (inst.op == Op::ClosureIs && (inst.operands.size() != 1 || inst.type != Type::Bool)) {
+                diags.error(Span{}, "Function " + fn.name + ": closure.is takes one operand and is a bool");
+                return false;
+            }
+            if (inst.op == Op::ClosureEnv && !closureEnvProved(fn, bIdx, iIdx)) {
+                diags.error(Span{}, "Function " + fn.name + ": closure.env %" + std::to_string(inst.operands[0]) +
+                                        " in b" + std::to_string(bIdx) +
+                                        " is not first in the one successor of its closure.is test");
+                return false;
+            }
             // The kind is compared against the view header's kind word, so it
             // must be one of the Number kinds the typed element ops serve.
             const int32_t taKind = inst.immI32 & ~kTypedArrayPristineLength;
@@ -676,7 +723,8 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                               inst.op == Op::FunctionRef ||
                                               inst.op == Op::CoroStart ||
                                               inst.op == Op::MethodIcIs ||
-                                              inst.op == Op::AccessorIcIs;
+                                              inst.op == Op::AccessorIcIs ||
+                                              inst.op == Op::ClosureIs;
                 if (!refersToFunction) continue;
                 if (inst.calleeIndex >= module.functions.size()) {
                     diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +

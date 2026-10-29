@@ -532,6 +532,32 @@ enum class Op : uint8_t {
     // and puts it in front of such a stretch of reads. Cannot throw, cannot
     // collect; nothing may move it.
     IsNumberArray,
+    // CLOSURE INLINING (lower/inline_guarded.cpp, "own callees"): the three
+    // ops that test which function an own-slot callback is and hand its
+    // body the environment it closed over.
+    //
+    // a: dynamic = method.slot.fn recv, <ic_site_index>. The value in the
+    // receiver's own slot that the method-call site's cache names for it:
+    // way 0 is a SLOT entry latched for the receiver's shape (a plain object
+    // whose own data property under the site's key held a function when the
+    // entry was made), and this is what that slot holds now; `undefined` when
+    // way 0 is anything else. A shape fixes the slot's key, attributes and
+    // representation, so the value read is the one `recv[key]` reads. Loads
+    // only: cannot throw, cannot collect.
+    MethodSlotFn,
+    // a: bool = closure.is f, @callee. Whether `f` is a function object of
+    // the current realm that a call may enter directly
+    // (BRONZE_ABI_FN_FLAG_DIRECT_CALL set, CLASS_CTOR clear) whose code is
+    // @callee's: a closure of that function, whatever environment it closed
+    // over. A bound function, a Proxy, a native or any other value is no.
+    // Loads only: cannot throw, cannot collect.
+    ClosureIs,
+    // a: dynamic = closure.env f. The environment record `f` closed over:
+    // the function object's env word, which create.func set once and nothing
+    // changes. Defined only for a closure, so it stands only where the
+    // verifier sees that proved: first in a block whose single predecessor
+    // ends in `br (closure.is f, @T), <this block>, ...`. Loads only.
+    ClosureEnv,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).
