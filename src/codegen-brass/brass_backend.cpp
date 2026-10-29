@@ -536,6 +536,10 @@ std::optional<brass::object::ObjectFile> BrassBackend::buildObjectFile(
     compiler.set_sched_options(schedOpts);
     compiler.set_enable_trace_layout(optimize);
     compiler.set_enable_mir_opts(optimize);
+    // A program built for this machine may use what its CPU has, as the
+    // vector width above does: three-operand AVX scalar arithmetic. Built
+    // for another target it keeps the SSE2 baseline.
+    compiler.set_x64_avx(target.is_x64() && target == brass::Target::host() && brass::Target::host_has_avx());
     // Each function's map travels in its code range (brass_backend_sections.cpp);
     // the module-wide `__brass_stack_maps` blob would be a second copy.
     compiler.set_emit_stack_map_symbol(false);
