@@ -157,7 +157,10 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         terms.push_back(t);
     }
     Value* ptr = nullptr;
-    Value* ok = prop_lowering_.static_guard(b, obj, terms, ptr);
+    Value* ok = prop_lowering_.static_guard(b, obj, memo_keyed(b, recv_id, obj), terms, ptr);
+    // The shape memo (il_shape_memo.cpp) as the fast copy leaves it: nothing
+    // in the fast copy moves a shape.
+    const auto memo_fast = memo_snapshot();
 
     BasicBlock* guard_bb = b.current_block();
     const std::string prefix = "static_run_" + std::to_string(fn->next_block_id());
@@ -219,9 +222,31 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     }
     BasicBlock* slow_end = b.current_block();
 
+    // The memo past the join: a receiver both copies still hold, as one value
+    // when they agree and else as a join parameter fed by each. The slow
+    // copy's sites carried it across their own joins, so what it holds at
+    // its end is true there.
+    const auto memo_slow = memo_snapshot();
+    std::vector<std::pair<uint32_t, Value*>> memo_join;
+    std::vector<size_t> memo_params;
+    for (const auto& [id, fv] : memo_fast) {
+        for (const auto& [sid, sv] : memo_slow) {
+            if (sid != id) continue;
+            if (sv != fv) {
+                memo_params.push_back(memo_join.size());
+                fast_args.push_back(fv);
+                slow_args.push_back(sv);
+            }
+            memo_join.emplace_back(id, fv);
+            break;
+        }
+    }
+
     for (size_t k = 0; k < live_out.size(); ++k) {
         val_map[live_out[k]] = b.add_block_param(bb_merge, fast_args[k]->type());
     }
+    for (size_t idx : memo_params) memo_join[idx].second = b.add_block_param(bb_merge, Type::i64());
+    memo_restore(std::move(memo_join));
     b.position_at_end(slow_end);
     b.build_br(bb_merge, slow_args);
     b.position_at_end(fast_end);

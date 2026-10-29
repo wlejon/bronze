@@ -21,6 +21,10 @@ Type lower_type(BronzeType t);
 // results, block and function parameters, returns): a dynamic value is
 // tagged, the MIR type every tier's stack maps report to the collector.
 Type lower_abi_type(BronzeType t);
+// An instruction that neither calls, allocates, throws nor touches the heap:
+// a constant, a scalar operation, a box of a scalar, a proven unbox
+// (il_lowering_hoist.cpp).
+bool is_pure_scalar_inst(const BronzeInstruction& inst);
 
 class IlLowering {
 public:
@@ -151,7 +155,34 @@ public:
     Value* lower_env_get_tdz(Builder& b, Value* env, uint32_t depth, uint32_t index, Value* key);
     void lower_env_set(Builder& b, Value* env, uint32_t depth, uint32_t index, Value* val, bool val_is_primitive);
 
+    // THE SHAPE MEMO (il_shape_memo.cpp): per receiver (an IL value id), the
+    // keyed shape last computed for it (PropertyLoweringHelper::keyed_shape),
+    // kept while nothing lowered since can have moved that object's shape.
+    // A receiver's keyed shape, the memo's if it holds one, else computed
+    // here from `obj` (its bits) and remembered.
+    Value* memo_keyed(Builder& b, uint32_t recv_id, Value* obj);
+    // Says the instruction being lowered kept the memo true (a static site
+    // that carried it across its join, a pure guard).
+    void memo_keep() { shape_memo_kept_ = true; }
+    // Fills a static site's memo hooks (StaticMiss): the receiver's keyed
+    // shape, and the memo carried across the site's join.
+    void memo_attach(Builder& b, StaticMiss& miss, uint32_t recv_id, Value* obj,
+                     const std::unordered_map<uint32_t, Value*>& val_map);
+    // The memo as it stands, its receivers' keyed shapes recomputed at the
+    // builder's position, and a rebinding to new values (same order): what
+    // a two-armed lowering uses to carry it across its own join.
+    std::vector<std::pair<uint32_t, Value*>> memo_snapshot() const { return shape_memo_; }
+    std::vector<Value*> memo_recompute(Builder& b, const std::unordered_map<uint32_t, Value*>& val_map);
+    void memo_restore(std::vector<std::pair<uint32_t, Value*>> m) { shape_memo_ = std::move(m); }
+    void memo_kill() { shape_memo_.clear(); }
+
 private:
+    // The memo at a block's start (from its one predecessor's end), after an
+    // instruction (kept, or forgotten unless the instruction can move no
+    // shape), and at a block's end.
+    void memo_begin_block(const BronzeBlock& blk);
+    void memo_after_instruction(const BronzeInstruction& inst);
+    void memo_end_block(const BronzeBlock& blk);
     // Per-function values computed once at the function's entry and shared
     // by every use (il_lowering_hoist.cpp): the inline-cache table's address.
     enum class Hoist : uint8_t { IcTable, Count };
@@ -346,6 +377,14 @@ private:
         std::vector<Type> param_types;
     };
     std::unordered_map<std::string, ExternalSig> external_signatures_;
+    std::vector<std::pair<uint32_t, Value*>> shape_memo_;
+    bool shape_memo_kept_ = false;
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, Value*>>> shape_memo_at_end_;
+    // Per IL block: how many edges enter it, and from which block the last.
+    std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> memo_preds_;
+    std::unordered_set<uint32_t> memo_handler_blocks_;
+    bool shape_memo_off_ = false;
+    void memo_begin_function(const BronzeFunction& fn_ast);
 };
 
 } // namespace il2mir

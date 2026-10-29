@@ -62,10 +62,23 @@ struct StaticGuardTerm {
 // What a static site does when its guard misses: the ordinary sequence for a
 // read (`get`) or a write (`set`), and the receiver's bits read afresh after
 // it (`receiver`), for the fill.
+//
+// `keyed` is the receiver's KEYED SHAPE (PropertyLoweringHelper::keyed_shape),
+// which the guard compares and the caller may have from an earlier site on
+// the same receiver (il_shape_memo.cpp). The three memo hooks carry the
+// shape memo across the site's join: what the hit edge passes on
+// (`memo_hit`), what the miss edge passes after recomputing it once the
+// ordinary sequence ran (`memo_miss`), and the join's parameters that stand
+// for them past the site (`memo_merged`). Unset, the site has no memo to
+// carry.
 struct StaticMiss {
     std::function<Value*(Builder&)> get;
     std::function<void(Builder&)> set;
     std::function<Value*(Builder&)> receiver;
+    Value* keyed = nullptr;
+    std::function<std::vector<Value*>(Builder&)> memo_hit;
+    std::function<std::vector<Value*>(Builder&)> memo_miss;
+    std::function<void(const std::vector<Value*>&)> memo_merged;
 };
 
 class PropertyLoweringHelper {
@@ -120,9 +133,22 @@ public:
     // THE STATIC-SLOT GUARD (il_static_slot.cpp) for every term on the one
     // receiver `obj`: whether `obj` is a plain object whose shape each
     // term's site admits — and, for a term that stores, whose slot takes
-    // the value bare — as one i1 before one branch. `ptr` is the receiver's
-    // payload, meaningful only where the i1 holds.
-    Value* static_guard(Builder& b, Value* obj, const std::vector<StaticGuardTerm>& terms, Value*& ptr);
+    // the value bare — as one i1 before one branch. `keyed` is `obj`'s keyed
+    // shape (keyed_shape). `ptr` is the receiver's payload, meaningful only
+    // where the i1 holds.
+    Value* static_guard(Builder& b, Value* obj, Value* keyed, const std::vector<StaticGuardTerm>& terms,
+                        Value*& ptr);
+    // THE KEYED SHAPE of `obj`: its shape word when it is a plain object,
+    // else kNotPlainShape. One i64 that answers "plain, and of shape S" with
+    // one compare against S, for every S a guard compares it with: a static
+    // cell holds 0, 1 (refused) or a Shape*, a method site's way word 0, a
+    // Shape* or an odd exotic encoding (bronze_abi_layout.h), and a Shape*
+    // is 8-aligned arena memory — none of them is 2.
+    static constexpr uint64_t kNotPlainShape = 2;
+    Value* keyed_shape(Builder& b, Value* obj);
+    // An i64 address that is always readable for a shape's words, whose
+    // contents mean nothing (il_static_slot.cpp).
+    Value* mapped_block(Builder& b);
     // Where slot `slot` of the plain object at `ptr` is: a base and the
     // constant `off` from it, inline or overflow chosen here.
     Value* static_slot_base(Builder& b, Value* ptr, uint32_t slot, int32_t& off);

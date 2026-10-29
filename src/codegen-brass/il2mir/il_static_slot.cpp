@@ -33,6 +33,7 @@
 #include "il_property.h"
 #include <brass/mir/function.hpp>
 #include <algorithm>
+#include <stdexcept>
 
 namespace il2mir {
 
@@ -51,6 +52,21 @@ constexpr int64_t kStandInShapeDelta = 8 - kFamilyOffset;
 // (codegen/block_layout.cpp, which reads the name) puts the hit on the
 // fallthrough: the miss is the cache's sequence, laid out as its own trace.
 constexpr const char* kMissName = "_miss_cold";
+
+// The shape memo's values on one edge into a site's join (StaticMiss).
+void append_memo(std::vector<Value*>& args, const std::function<std::vector<Value*>(Builder&)>& hook, Builder& b) {
+    if (!hook) return;
+    for (Value* v : hook(b)) args.push_back(v);
+}
+
+// The join's parameters for them, handed back to the memo, which stands for
+// the receivers' shapes past the site whichever edge came in.
+void merge_memo(Builder& b, BasicBlock* merge, size_t n, const StaticMiss& miss) {
+    if (!miss.memo_merged) return;
+    std::vector<Value*> params;
+    for (size_t i = 0; i < n; ++i) params.push_back(b.add_block_param(merge, Type::i64()));
+    miss.memo_merged(params);
+}
 
 Value* iconst(Builder& b, uint64_t v) {
     return b.build_iconst_i64(static_cast<int64_t>(v));
@@ -73,23 +89,46 @@ Value* PropertyLoweringHelper::data_addr(Builder& b, const std::string& sym) {
     return module_delta_fn_ ? b.build_add(addr, module_delta_fn_(b)) : addr;
 }
 
-Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, const std::vector<StaticGuardTerm>& terms,
-                                            Value*& ptr) {
+Value* PropertyLoweringHelper::mapped_block(Builder& b) {
+    // In this process, a zeroed block of ours big enough for the shape words
+    // a guard reads; compiled code, the TLS block in its pinned register,
+    // which receiver_shape reads a non-object through too.
+    alignas(16) static const uint64_t kMappedBlock[(kDoubleSlotsOffset + 8) / 8] = {};
+    return in_process_ ? iconst(b, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&kMappedBlock[0])))
+                       : b.build_pinned_tls_read();
+}
+
+Value* PropertyLoweringHelper::keyed_shape(Builder& b, Value* obj) {
     Value* plain = nullptr;
+    Value* ptr = nullptr;
     Value* shape = nullptr;
-    Value* recv_base = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape, &recv_base);
-    Value* ok = plain;
+    receiver_shape(b, obj, plain, ptr, shape);
+    return b.build_select(plain, shape, iconst(b, kNotPlainShape));
+}
+
+Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed,
+                                            const std::vector<StaticGuardTerm>& terms, Value*& ptr) {
+    // The payload, meaningful where the guard holds: an object's tag XORed
+    // away. Every term below admits only a plain object (a cell or a family
+    // stamp names a plain shape, and a non-plain receiver's keyed shape is
+    // none of them), so `ok` needs no separate plainness term.
+    ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
+    Value* ok = nullptr;
+    auto all = [&](Value* term) { ok = ok ? b.build_and(ok, term) : term; };
     Value* cells = nullptr;
     Value* family_base = nullptr;
     Value* safe_shape = nullptr;
-    // A word read off the shape through `safe_shape`, which is the shape when
-    // the receiver is plain and the stand-in otherwise: every term can then be
-    // one more `and` before the guard's single branch.
+    // A word read off the shape through `safe_shape`: the keyed shape itself
+    // when the receiver is plain, and otherwise a block that is always
+    // mapped — the one receiver_shape reads a non-object's header through —
+    // whose words mean nothing. So a term that reads a shape word is ANDed
+    // with plainness where nothing else implies it (a family range); a
+    // double-slot term needs nothing, since the site term beside it refuses
+    // a non-plain receiver already. Every term can then be one more `and`
+    // before the guard's single branch.
     auto shape_word = [&](int32_t off) {
         if (!safe_shape) {
-            family_base = data_addr(b, family_base_sym_);
-            safe_shape = safe_shape_of(b, plain, recv_base, family_base);
+            safe_shape = b.build_select(b.build_eq(keyed, iconst(b, kNotPlainShape)), mapped_block(b), keyed);
         }
         return b.build_load(Type::i64(), safe_shape, off);
     };
@@ -108,16 +147,18 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, const std::v
                 ranges.push_back(range);
                 if (!stamp) {
                     stamp = shape_word(kFamilyOffset);
+                    family_base = data_addr(b, family_base_sym_);
                     first_id = b.build_load(Type::i64(), family_base, 0);
+                    all(b.build_ne(keyed, iconst(b, kNotPlainShape)));
                 }
                 Value* rel = b.build_sub(stamp, b.build_add(first_id, iconst(b, site.family_lo)));
-                ok = b.build_and(ok, b.build_ule(rel, iconst(b, site.family_span)));
+                all(b.build_ule(rel, iconst(b, site.family_span)));
             }
         } else if (std::find(cells_asked.begin(), cells_asked.end(), site.cell) == cells_asked.end()) {
             cells_asked.push_back(site.cell);
             if (!cells) cells = data_addr(b, static_cells_sym_);
             Value* want = b.build_load(Type::i64(), cells, static_cast<int32_t>(site.cell * sizeof(uint64_t)));
-            ok = b.build_and(ok, b.build_eq(shape, want));
+            all(b.build_eq(keyed, want));
         }
         // A store asks what the shape says the slot's eight bytes ARE. A slot
         // the shape calls an f64 (slot_repr.h) takes a bare store of a
@@ -129,9 +170,10 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, const std::v
             if (!doubles) doubles = shape_word(kDoubleSlotsOffset);
             Value* boxed = b.build_eq(b.build_and(doubles, iconst(b, uint64_t{1} << site.slot)), iconst(b, 0));
             Value* is_num = b.build_ule(t.store, iconst(b, kBronzeNumberMaxBits));
-            ok = b.build_and(ok, b.build_or(boxed, is_num));
+            all(b.build_or(boxed, is_num));
         }
     }
+    if (!ok) throw std::logic_error("il2mir: a static guard with no site term");
     return ok;
 }
 
@@ -228,7 +270,7 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
 
     b.position_at_end(bb_cur);
     Value* ptr = nullptr;
-    b.build_br_if(static_guard(b, obj, {StaticGuardTerm{site}}, ptr), bb_hit, bb_miss);
+    b.build_br_if(static_guard(b, obj, miss.keyed, {StaticGuardTerm{site}}, ptr), bb_hit, bb_miss);
 
     b.position_at_end(bb_hit);
     int32_t off = 0;
@@ -237,15 +279,20 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
     // being an own data property of this shape at exactly this slot, so the
     // eight bytes are what [[Get]] answers. A double slot's word is the
     // number's box.
-    b.build_br(bb_merge, {b.build_load(Type::i64(), base, off)});
+    std::vector<Value*> hit_args{b.build_load(Type::i64(), base, off)};
+    append_memo(hit_args, miss.memo_hit, b);
+    b.build_br(bb_merge, hit_args);
 
     b.position_at_end(bb_miss);
     Value* slow_val = miss.get(b);
     // The access may have collected, so the receiver's bits are read again.
     emit_static_fill(b, miss.receiver(b), key_index, site, /*for_write=*/false);
-    b.build_br(bb_merge, {slow_val});
+    std::vector<Value*> miss_args{slow_val};
+    append_memo(miss_args, miss.memo_miss, b);
+    b.build_br(bb_merge, miss_args);
 
     b.position_at_end(bb_merge);
+    merge_memo(b, bb_merge, hit_args.size() - 1, miss);
     return merge_val;
 }
 
@@ -263,20 +310,27 @@ void PropertyLoweringHelper::lower_prop_set_static(Builder& b, Value* obj, uint3
     StaticGuardTerm term{site};
     term.store = val;
     term.store_is_number = val_is_number;
-    b.build_br_if(static_guard(b, obj, {term}, ptr), bb_hit, bb_miss);
+    b.build_br_if(static_guard(b, obj, miss.keyed, {term}, ptr), bb_hit, bb_miss);
 
+    // A hit stores into a slot the shape already has, which moves no shape;
+    // the memo crosses it as it is.
     b.position_at_end(bb_hit);
     int32_t off = 0;
     Value* base = static_slot_base(b, ptr, site.slot, off);
     store_with_barrier(b, base, off, val, need_barrier, prefix);
-    b.build_br(bb_merge);
+    std::vector<Value*> hit_args;
+    append_memo(hit_args, miss.memo_hit, b);
+    b.build_br(bb_merge, hit_args);
 
     b.position_at_end(bb_miss);
     miss.set(b);
     emit_static_fill(b, miss.receiver(b), key_index, site, /*for_write=*/true);
-    b.build_br(bb_merge);
+    std::vector<Value*> miss_args;
+    append_memo(miss_args, miss.memo_miss, b);
+    b.build_br(bb_merge, miss_args);
 
     b.position_at_end(bb_merge);
+    merge_memo(b, bb_merge, hit_args.size(), miss);
 }
 
 void IlLowering::register_class_families(Builder& b, Value* map_addr) {

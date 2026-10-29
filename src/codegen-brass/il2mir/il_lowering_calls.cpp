@@ -176,14 +176,23 @@ Value* box_value(IlLowering* lowering, Builder& b, Value* v, Type as) {
 // plain receiver whose shape a DIRECT entry (way 0 or way 1) latched, at the
 // current epoch, with that entry's code pointer the callee's wrapper. The
 // direct edge's guard, and `method.ic.is`, the guard of an inlined body.
-Value* direct_method_ic_hit(IlLowering* lowering, Builder& b, Value* recv, Value* site, const std::string& callee) {
+//
+// WAY 0 FIRST. A monomorphic site — every site this guard is hot at, since a
+// site that keeps missing way 0 is one whose inlined body rarely runs — is
+// answered by way 0 alone, so way 1's three loads and compares are a block of
+// their own, named cold for brass's block layout (codegen/block_layout.cpp)
+// and reached only when way 0 says no. Testing both ways branch-free cost
+// every hit the second way's words; the answer is the same either way, since
+// way 1 is consulted exactly when way 0 does not answer. The result is the
+// merge's parameter, a constant 1 on the way-0 edge, which brass's jump
+// threading folds into the branch that consumes it.
+//
+// `keyed` is the receiver's keyed shape (PropertyLoweringHelper::keyed_shape),
+// often the shape memo's (il_shape_memo.cpp): equal to a way's shape word
+// exactly when the receiver is plain and of that shape.
+Value* direct_method_ic_hit(Builder& b, Value* keyed, Value* site, const std::string& callee) {
     constexpr int32_t kWord = 8;
     constexpr int64_t kDirectFormLimit = int64_t{1} << BRONZE_ABI_METHOD_IC_SLOT_SHIFT;
-    PropertyLoweringHelper& pl = lowering->prop_lowering();
-    Value* plain = nullptr;
-    Value* ptr = nullptr;
-    Value* shape = nullptr;
-    pl.receiver_shape(b, recv, plain, ptr, shape);
     Value* target = b.build_func_addr("__wrapper_" + callee);
     // A DIRECT entry answers only while the prototype-mutation epoch it was
     // latched at is current: `C.prototype.m = f` moves no shape, only the
@@ -192,19 +201,39 @@ Value* direct_method_ic_hit(IlLowering* lowering, Builder& b, Value* recv, Value
     Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
                                                      : b.build_call("bronze_tls_block_addr", Type::i64(), {});
     Value* epoch = b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "mic_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* way0_entry = b.append_block(prefix + "_way0");
+    BasicBlock* way1_bb = b.append_block(prefix + "_way1_cold");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* hit = b.add_block_param(merge, Type::i32());
+
+    b.position_at_end(cur);
+    b.build_br_if(b.build_eq(keyed, b.build_load(Type::i64(), site, 0)), way0_entry, way1_bb);
+
+    b.position_at_end(way0_entry);
     Value* way0 = b.build_and(
-        b.build_and(b.build_eq(shape, b.build_load(Type::i64(), site, 0)),
-                    b.build_ult(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord),
-                                b.build_iconst_i64(kDirectFormLimit))),
+        b.build_ult(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord),
+                    b.build_iconst_i64(kDirectFormLimit)),
         b.build_and(
             b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord), target),
             b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord), epoch)));
+    b.build_br_if(way0, merge, {b.build_iconst_i32(1)}, way1_bb, {});
+
+    // Way 0 did not answer, so way 1 is the whole answer; at most one way
+    // names a shape (an install rewrites an entry in place).
+    b.position_at_end(way1_bb);
     Value* way1 = b.build_and(
         b.build_and(
-            b.build_eq(shape, b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord)),
+            b.build_eq(keyed, b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord)),
             b.build_eq(b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord), target)),
         b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord), epoch));
-    return b.build_and(plain, b.build_or(way0, way1));
+    b.build_br(merge, {way1});
+    way1_bb->set_cold();
+
+    b.position_at_end(merge);
+    return hit;
 }
 
 // `recv.key(...)` whose callee lowering named (lower/direct_method_table.h).
@@ -229,7 +258,7 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     Value* result = b.add_block_param(merge, Type::i64());
 
     b.position_at_end(cur);
-    Value* hit = direct_method_ic_hit(lowering, b, recv, site, callee);
+    Value* hit = direct_method_ic_hit(b, lowering->memo_keyed(b, inst.operands[0], recv), site, callee);
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
     // The generic dispatch takes every argument boxed. A typed edge's
     // unboxed operands are boxed here, on the path that needs them.
@@ -357,8 +386,12 @@ bool lower_call_instruction(
         case BronzeOp::MethodIcIs: {
             Value* recv = ensure_type(get_opd(0), Type::i64());
             Value* site = lowering ? lowering->prop_lowering().ic_site(b, inst_ast.ic_index) : nullptr;
-            res_val = site ? direct_method_ic_hit(lowering, b, recv, site, inst_ast.callee_name)
+            // A guard reads and decides; it moves no shape, so the memo
+            // stays (il_shape_memo.cpp).
+            res_val = site ? direct_method_ic_hit(b, lowering->memo_keyed(b, inst_ast.operands[0], recv), site,
+                                                  inst_ast.callee_name)
                            : b.build_iconst_i32(0);
+            if (lowering) lowering->memo_keep();
             break;
         }
 
