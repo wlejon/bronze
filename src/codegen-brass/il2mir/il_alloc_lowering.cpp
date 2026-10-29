@@ -145,6 +145,51 @@ Value* AllocLoweringHelper::bump_plain_object(Builder& b, Value* shape, Value* p
     return b.build_or(masked_ptr, b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_OBJECT)));
 }
 
+Value* AllocLoweringHelper::bump_slot_block(Builder& b, Value* capacity, BasicBlock* miss, BasicBlock* fast) {
+    using namespace bronze_heap_abi;
+    constexpr uint64_t OBJ_FLAGS_SLOT_BLOCK = BRONZE_ABI_OBJ_FLAGS_SLOT_BLOCK;
+    Function* fn = b.current_block()->parent();
+    const std::string prefix = "tlab_slots_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_cur = b.current_block();
+    BasicBlock* bb_init = b.append_block(prefix + "_init");
+    BasicBlock* bb_fill = b.append_block(prefix + "_fill");
+    Value* index = b.add_block_param(bb_fill, Type::i64());
+
+    b.position_at_end(bb_cur);
+    Value* tls_addr = bronze_tls_addr(b);
+    // The block's bronze bytes: its header word and the slots.
+    Value* bronze_bytes = b.build_add(b.build_shl(capacity, b.build_iconst_i64(3)),
+                                      b.build_iconst_i64(static_cast<int64_t>(HDR_BYTES)));
+    Value* cur_cursor = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF);
+    Value* cur_limit = b.build_load(Type::i64(), tls_addr, TLS_ALLOC_LIMIT_OFF);
+    Value* new_cursor = b.build_add(b.build_add(cur_cursor, bronze_bytes),
+                                    b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
+    b.build_br_if(b.build_ule(new_cursor, cur_limit), bb_init, miss);
+
+    b.position_at_end(bb_init);
+    b.build_store(Type::i64(), tls_addr, TLS_ALLOC_CURSOR_OFF, new_cursor);
+    Value* cell = b.build_load(Type::i64(), tls_addr, TLS_GC_CELL_HEADER_OFF);
+    b.build_store(Type::i64(), cur_cursor, 0, b.build_or(cell, bronze_bytes));
+    Value* blk = b.build_add(cur_cursor, b.build_iconst_i64(static_cast<int64_t>(GC_HDR_BYTES)));
+    // HeapKind::SlotBlock, not the zero a plain header has: the collector
+    // reads a plain payload's first word as a Shape* (ObjectHeader::ensureOverflow).
+    constexpr uint64_t kKindWord = make_header_word(0, OBJ_FLAGS_SLOT_BLOCK, TAG_OBJECT);
+    b.build_store(Type::i64(), blk, 0,
+                  b.build_or(b.build_shl(bronze_bytes, b.build_iconst_i64(32)),
+                             b.build_iconst_i64(static_cast<int64_t>(kKindWord))));
+    b.build_br(bb_fill, {b.build_iconst_i64(0)});
+
+    // Every slot undefined, which is what a slot the shape does not name yet
+    // must read as when the next add stores the shape before its value.
+    b.position_at_end(bb_fill);
+    Value* at = b.build_add(blk, b.build_shl(index, b.build_iconst_i64(3)));
+    b.build_store(Type::i64(), at, static_cast<int32_t>(HDR_BYTES), b.build_iconst_i64(static_cast<int64_t>(VALUE_TAG_UNDEFINED)));
+    Value* next = b.build_add(index, b.build_iconst_i64(1));
+    b.build_br_if(b.build_ult(next, capacity), bb_fill, {next}, fast, {});
+    b.position_at_end(fast);
+    return blk;
+}
+
 Value* AllocLoweringHelper::lower_create_object_bronze(Builder& b) {
     using namespace bronze_heap_abi;
     BasicBlock* bb_current = b.current_block();

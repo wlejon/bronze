@@ -586,6 +586,12 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                             out += ", accessor @" + std::to_string(inst.directTarget) + "@" +
                                    std::to_string(inst.staticCellIndex);
                         }
+                        // A transition run's guard is emitted code too.
+                        if (inst.transitionRunCell != Instruction::kNoTransitionRun) {
+                            out += ", run @" + std::to_string(inst.transitionRunCell) + " len " +
+                                   std::to_string(inst.transitionRunLength) + " from " +
+                                   std::to_string(inst.transitionRunSlot);
+                        }
                         break;
                     case Op::DynamicCall: {
                         out += "call.dynamic";

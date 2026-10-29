@@ -215,6 +215,13 @@ struct BronzeInstruction {
     uint32_t static_cell = 0;
     uint32_t family_lo = kNoFamily;
     uint32_t family_span = 0;
+    // PropSet: the first write of a transition run (il.h `transitionRunCell`,
+    // lowered by il_transition_run.cpp): its first static cell, its length in
+    // instructions, and the slot its first key lands at.
+    static constexpr uint32_t kNoTransitionRun = UINT32_MAX;
+    uint32_t run_cell = kNoTransitionRun;
+    uint32_t run_length = 0;
+    uint32_t run_slot = 0;
 
     BronzeBlockTarget target;
     BronzeBlockTarget else_target;

@@ -39,6 +39,9 @@ struct StringHeader {
     // the movable heap (shape keys, the compiled key-constant table).
     // Deduplicated: the same content answers the same copy.
     static StringHeader* internToArena(NonMovingArena& arena, const StringHeader* src);
+    // internToArena for a string already in `arena`: the table's copy when it
+    // has one, else `owned` itself, now the copy every later intern answers.
+    static StringHeader* adoptIntoArena(NonMovingArena& arena, StringHeader* owned);
     static StringHeader* createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len);
     static StringHeader* createUTF16InArena(NonMovingArena& arena, const uint16_t* str, uint32_t len);
     static StringHeader* createFromUTF8InArena(NonMovingArena& arena, const char* str, uint32_t utf8_len);

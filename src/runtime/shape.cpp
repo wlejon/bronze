@@ -119,10 +119,21 @@ Shape* Shape::addProperty(NonMovingArena& arena, Heap& heap, Rooted<Value>& name
     // Done BEFORE the transition scan and not only on the create path, so the
     // key handed to `addPropertyKey` is always an arena key — which is what
     // lets that entry be the one place a node is minted.
-    PropertyKey stored =
-        incoming.isSymbol()
-            ? incoming
-            : PropertyKey::forString(StringHeader::internToArena(arena, incoming.string()));
+    // An edge already taken for this key holds an arena copy of it, and a
+    // string key is matched by content, so that copy is the key: the common
+    // case (the hundredth object built the same way) then skips the intern
+    // table's hash and probe.
+    PropertyKey stored = incoming;
+    if (!incoming.isSymbol()) {
+        stored = PropertyKey{};
+        for (const auto& trans : transitions) {
+            if (trans.key.matches(incoming)) {
+                stored = trans.key;
+                break;
+            }
+        }
+        if (!stored.valid()) stored = PropertyKey::forString(StringHeader::internToArena(arena, incoming.string()));
+    }
     return addPropertyKey(arena, stored, out_slot, is_enumerable, is_accessor, is_writable,
                           is_configurable, desired);
 }

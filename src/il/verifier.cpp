@@ -752,6 +752,21 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                         return false;
                     }
                 }
+                // A transition run's cells are the same fixed global, and its
+                // extent is instructions of this block.
+                if (inst.transitionRunCell != Instruction::kNoTransitionRun &&
+                    (inst.op != Op::PropSet ||
+                     static_cast<size_t>(inst.transitionRunCell) + Instruction::kTransitionRunCells >
+                         module.staticSiteCount ||
+                     inst.transitionRunLength < 2 ||
+                     static_cast<size_t>(&inst - block.instructions.data()) + inst.transitionRunLength >
+                         block.instructions.size())) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                            " names transition run cell " + std::to_string(inst.transitionRunCell) +
+                                            " over " + std::to_string(inst.transitionRunLength) +
+                                            " instructions, which the module or block cannot back");
+                    return false;
+                }
                 if (inst.op == Op::PropGet || inst.op == Op::PropSet ||
                     inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
                     if (inst.icIndex >= module.icSiteCount) {

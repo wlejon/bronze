@@ -430,6 +430,17 @@ StringHeader* StringHeader::internToArena(NonMovingArena& arena, const StringHea
     return out;
 }
 
+StringHeader* StringHeader::adoptIntoArena(NonMovingArena& arena, StringHeader* owned) {
+    auto* table = static_cast<ArenaStringTable*>(arena.string_table());
+    if (table == nullptr) {
+        table = arena.create<ArenaStringTable>();
+        arena.set_string_table(table);
+    }
+    owned->sealBuilder();
+    auto [it, inserted] = table->strings.insert(owned);
+    return inserted ? owned : const_cast<StringHeader*>(*it);
+}
+
 StringHeader* StringHeader::createLatin1InArena(NonMovingArena& arena, const char* str, uint32_t len) {
     size_t total = sizeof(StringHeader) + len + 1;
     void* mem = arena.allocate(total, alignof(StringHeader));

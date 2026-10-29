@@ -35,6 +35,9 @@ struct InstructionMirror {
     uint32_t staticCellIndex;
     uint32_t familyLo;
     uint32_t familySpan;
+    uint32_t transitionRunCell;
+    uint32_t transitionRunLength;
+    uint32_t transitionRunSlot;
     uint32_t directTarget;
     uint32_t typedTarget;
     uint32_t envDepth;
@@ -283,7 +286,9 @@ enum InstBits : uint32_t {
     kEnvImmutable = 1u << 23,
     kHasTyped = 1u << 24,
     kHasInlineFrame = 1u << 25,
-    kKnownBits = (1u << 26) - 1,
+    // The three transition-run fields ride on one bit: they are set together.
+    kHasTransitionRun = 1u << 26,
+    kKnownBits = (1u << 27) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -322,6 +327,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.envIndex != 0) m |= kHasEnvIndex;
     if (inst.callEnvHops != Instruction::kNoEnvHops) m |= kHasEnvHops;
     if (inst.inlineFrame != 0) m |= kHasInlineFrame;
+    if (inst.transitionRunCell != Instruction::kNoTransitionRun) m |= kHasTransitionRun;
     if (inst.span.begin != 0 || inst.span.end != 0 || inst.span.file != 0) m |= kHasSpan;
     if (hasTarget(inst.target)) m |= kHasTarget;
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
@@ -355,6 +361,11 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (m & kHasEnvIndex) w.var(inst.envIndex);
     if (m & kHasEnvHops) w.var(inst.callEnvHops);
     if (m & kHasInlineFrame) w.var(inst.inlineFrame);
+    if (m & kHasTransitionRun) {
+        w.var(inst.transitionRunCell);
+        w.var(inst.transitionRunLength);
+        w.var(inst.transitionRunSlot);
+    }
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -392,6 +403,11 @@ void readInstruction(Reader& r, Instruction& inst) {
     if (m & kHasEnvIndex) inst.envIndex = r.u32();
     if (m & kHasEnvHops) inst.callEnvHops = r.u32();
     if (m & kHasInlineFrame) inst.inlineFrame = r.u32();
+    if (m & kHasTransitionRun) {
+        inst.transitionRunCell = r.u32();
+        inst.transitionRunLength = r.u32();
+        inst.transitionRunSlot = r.u32();
+    }
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());

@@ -1,0 +1,29 @@
+six 1760 a,b,c,d,e,f 104 105
+setter a false setb2
+setter gone a,b 4
+readonly a 9
+proxy [] a=5,b=6
+plain call b,a 1 2 a,b z a,b 8
+frozen [] true a,b 2
+kinds 580 s 2.5 1.5 1 undefined null 1
+orders x,y 3 y,x 7
+returns z 3
+subclass 2600 p,q p,q,r,s true
+reflect p,q true false
+object proto yy 7 yy,zz 8
+define a,c,d a,b,c,d 2
+throws TypeError a,b,c,d 5
+tonumber 7 2 v 5 12 number
+literals 314100 k0,k1,k2,k3,k4,k5,k6 s
+sealed TypeError
+class setter a setb2 a,b 4
+class readonly TypeError a,b
+class proxy [] a=5,b=6
+class frozen TypeError a,b 2
+class kinds 580 s 2.5 1.5 1 undefined null 1
+class orders x,y 3 y,x 7
+class returns z
+class define a,c,d a,b,c,d
+class throws TypeError a,b,c,d
+class tonumber 7 2 v 5 12 number
+class prior m,n,o m 5

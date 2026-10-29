@@ -183,6 +183,12 @@ private:
                                    std::unordered_map<uint32_t, Value*>& val_map,
                                    const std::unordered_map<uint32_t, BasicBlock*>& block_map,
                                    uint32_t* cont_counter);
+    // A constructor's stretch of adds behind one guard and one shape store
+    // (il_transition_run.cpp).
+    bool try_lower_transition_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
+                                  std::unordered_map<uint32_t, Value*>& val_map,
+                                  const std::unordered_map<uint32_t, BasicBlock*>& block_map,
+                                  uint32_t* cont_counter);
     // A stretch of static-slot sites on one receiver behind one guard
     // (il_lowering_static_run.cpp).
     bool try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,

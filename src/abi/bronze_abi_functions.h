@@ -194,6 +194,17 @@
     X(bronze_prop_get_counted,    BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_MU32)) \
     X(bronze_prop_set_counted,    BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64, BRONZE_ABI_BOOL, BRONZE_ABI_MU32)) \
     X(bronze_static_shape_publish,BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64, BRONZE_ABI_U32, BRONZE_ABI_BOOL)) \
+    /* A TRANSITION RUN's publish (runtime/transition_run.cpp): after the\
+     * run's slow copy, the receiver, the shape it had when the run began,\
+     * the run's BRONZE_ABI_TRANSITION_RUN_CELLS cells, its runtime key ids\
+     * and their count, and the slot the first lands at. Writes the cells\
+     * only once it has verified that the shape the receiver now has is the\
+     * start shape plus exactly those keys, as plain data properties at\
+     * those slots, and that no link of the prototype chain has a setter, a\
+     * read-only property or a trap for any of them; then the run's guard\
+     * admits a receiver at the start shape while the prototype-mutation\
+     * epoch stands. Arena and cells only: never allocates on the heap. */ \
+    X(bronze_transition_run_publish, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_MU64, BRONZE_ABI_PU64, BRONZE_ABI_U32, BRONZE_ABI_U32)) \
     /* The LAYOUT-FAMILY stamp: what lets one site serve every subclass of the
      * class whose method it was written in. `bronze_static_shape_publish`
      * above pins ONE shape, which is right for a receiver that has one, and

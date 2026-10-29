@@ -122,6 +122,7 @@ bronze_add_module(runtime
         rt_prop_write.cpp
         rt_method_call.cpp
         static_shape.cpp
+        transition_run.cpp
         accessor_cell.cpp
         class_family.cpp
         rt_delete.cpp

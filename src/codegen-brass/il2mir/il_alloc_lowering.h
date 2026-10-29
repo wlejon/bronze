@@ -27,6 +27,11 @@ public:
     // one, and answers its Value bits. Nothing in it is a GC point, so the
     // caller's derived values stay valid up to its next call.
     Value* bump_plain_object(Builder& b, Value* shape, Value* precondition, BasicBlock* miss, BasicBlock* fast);
+    // An object's overflow block of `capacity` (an i64) slots, every one
+    // undefined, as ObjectHeader::ensureOverflow leaves a new one: bumped out
+    // of the thread's window when it has room, else a branch to `miss`. Ends
+    // in `fast` and answers the block's header address, untagged. No GC point.
+    Value* bump_slot_block(Builder& b, Value* capacity, BasicBlock* miss, BasicBlock* fast);
 
 private:
     Value* lower_create_object_bronze(Builder& b);

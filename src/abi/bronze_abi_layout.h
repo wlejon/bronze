@@ -606,6 +606,22 @@
  * set no shape node is ever created double and this word is dead. */
 #define BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET 64
 #define BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT  64
+
+/* A TRANSITION RUN's static cells (il.h `transitionRunCell`), five i64s from
+ * the run's first: the start shape (0 until published, which no shape is),
+ * the shape after the run, the prototype-mutation epoch it was verified at,
+ * the address of the u32 holding how many overflow slots to give a receiver
+ * that has no block yet, and a word whose high half counts publishes. The
+ * run's slow copy calls the publish only while that count is below the
+ * limit, which bounds what a run whose receivers keep changing shape costs. */
+#define BRONZE_ABI_TRANSITION_RUN_CELLS        5
+#define BRONZE_ABI_TRANSITION_RUN_START        0
+#define BRONZE_ABI_TRANSITION_RUN_END          1
+#define BRONZE_ABI_TRANSITION_RUN_EPOCH        2
+#define BRONZE_ABI_TRANSITION_RUN_CAPACITY     3
+#define BRONZE_ABI_TRANSITION_RUN_COUNT        4
+#define BRONZE_ABI_TRANSITION_RUN_COUNT_SHIFT  32
+#define BRONZE_ABI_TRANSITION_RUN_PUBLISH_LIMIT 64
 /* Shape::repr — the representation of the ONE slot this node owns, as the
  * SlotRepr enum spells it (0 boxed, 1 double). Redundant with the bitmap
  * above and kept anyway: the bitmap is a summary of the whole chain and

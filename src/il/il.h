@@ -179,6 +179,20 @@ struct Instruction {
     static constexpr uint32_t kNoFamily = 0xFFFFFFFFu;
     uint32_t familyLo = kNoFamily;
     uint32_t familySpan = 0;
+    // PropSet: the FIRST site of a TRANSITION RUN (lower/transition_runs.h), a
+    // stretch of writes that adds `transitionRunSites` keys to one receiver
+    // with nothing between them that can run user code, throw, or read the
+    // heap. `transitionRunCell` is the first of kTransitionRunCells static
+    // cells the runtime publishes the run's start and end shapes into
+    // (runtime/transition_run.cpp); the stretch is `transitionRunLength`
+    // instructions from this one, and its keys land at consecutive slots from
+    // `transitionRunSlot`. A claim the runtime verifies before it publishes,
+    // so a wrong one costs only the run's guard.
+    static constexpr uint32_t kNoTransitionRun = 0xFFFFFFFFu;
+    static constexpr uint32_t kTransitionRunCells = 5;
+    uint32_t transitionRunCell = kNoTransitionRun;
+    uint32_t transitionRunLength = 0;
+    uint32_t transitionRunSlot = 0;
     // MethodCall: the module function this site's key resolves to, on the class
     // lowering believes the receiver has — a GUESS, and named as one, because
     // the receiver's static class is not its runtime shape and a subclass may

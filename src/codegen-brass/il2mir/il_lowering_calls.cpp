@@ -282,6 +282,11 @@ uint32_t argv_block_words(const IlLowering* lowering, const BronzeFunction& fn_a
                 !method_call_is_speculated_builtin(lowering, inst)) {
                 widest = inst.param_count;
             }
+            // A transition run stages its keys for the publish (il_transition_run.cpp).
+            if (inst.op == BronzeOp::PropSet && inst.run_cell != BronzeInstruction::kNoTransitionRun &&
+                inst.run_length > widest) {
+                widest = inst.run_length;
+            }
             if ((inst.op == BronzeOp::Construct || inst.op == BronzeOp::SuperCall || inst.op == BronzeOp::CallDynamic) &&
                 (inst.param_count > 16 || (direct && inst.op != BronzeOp::SuperCall)) && inst.param_count > widest) {
                 widest = inst.param_count;

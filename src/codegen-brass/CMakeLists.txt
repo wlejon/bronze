@@ -40,6 +40,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_accessor_direct.cpp
     il2mir/il_array_method.cpp
     il2mir/il_lowering_static_run.cpp
+    il2mir/il_transition_run.cpp
     il2mir/il_ic_stub.cpp
     il2mir/il_lowering.cpp
     il2mir/il_lowering_calls.cpp

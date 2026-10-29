@@ -86,7 +86,11 @@ StringHeader* rtKeyHeader(uint32_t index) {
             }
         }
         if (valid) {
-            hdr = StringHeader::createFromUTF8InArena(rtArena(), std::string_view(str));
+            // One copy with the shape keys: a key constant that is the very
+            // pointer an object's shape holds matches it without reading the
+            // characters, which is every lookup of a property that is there.
+            hdr = StringHeader::adoptIntoArena(
+                rtArena(), StringHeader::createFromUTF8InArena(rtArena(), std::string_view(str)));
             g_keyHeaders[index] = hdr;
         }
     }

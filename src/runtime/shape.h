@@ -149,6 +149,13 @@ public:
     // what FUTURE nodes are chosen — never the layout of a node that exists, on
     // which some object's storage already depends.
     bool repr_generalized{false};
+    // On a ROOT: how many overflow slots a transition run gives an object born
+    // here that has no block yet (runtime/transition_run.cpp) — the most any
+    // published run on this root's objects needed, so one allocation serves
+    // the constructor's later runs too. Generated code reads it through the
+    // address the run's cell holds, never at an offset, so it is no ABI.
+    // Monotone, like the two words above.
+    uint32_t run_overflow_hint{0};
     // LAST, and that position is load-bearing: generated code reads every
     // field above this one (the ABI offsets in bronze_abi.h, pinned below),
     // and a standard-library type's size may differ between build

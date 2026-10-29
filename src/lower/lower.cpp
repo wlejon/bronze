@@ -1,4 +1,5 @@
 #include "lower/lower.h"
+#include "lower/transition_runs.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -440,6 +441,9 @@ std::optional<il::Module> Lowerer::lower() {
             if (diags_.hasErrors()) return std::nullopt;
             foldInlinedCallers(ilModule_, inlinedInto);
         }
+        // After every pass that copies instructions: a copied run would share
+        // its cells with the original (transition_runs.h).
+        markTransitionRuns(ilModule_);
     }
     return ilModule_;
 }
