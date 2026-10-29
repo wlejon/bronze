@@ -267,6 +267,26 @@ struct ModuleContext {
     std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>> objectLitSetters;
     std::map<std::pair<ShapeClassId, std::string>, std::string> objectLitModuleVars;
     uint32_t objectLitTableVersion = 0;
+    // Whether a read off a closed literal shape may spend what
+    // `objectLitFields` and the audit say about it. Once only shapes that sat
+    // in a tracked array (`arrayElemShapeClasses`); the claim never rested on
+    // that — a literal installs every key it names at creation, and the audit
+    // covers every later write by name — so any closed literal shape qualifies.
+    // `BRONZE_NO_LITERAL_FIELD_TYPES=1` restores the array-only rule.
+    // A literal shape in a tracked array spends its field types on any
+    // receiver typed by it; one that is not, only on a value built here
+    // (flow_expr.cpp, the class rule `builtHere`).
+    bool literalFieldsAnywhere = true;
+    bool literalFieldsTyped(ShapeClassId cls, bool builtHere) const {
+        return arrayElemShapeClasses.count(cls) != 0 || (literalFieldsAnywhere && builtHere);
+    }
+    // The memo's fact for a literal field (infer_memo.h): bit 0, whether a
+    // receiver of any provenance may spend `objectLitFields`; bit 1, whether one
+    // built here may. A read's answer depends on nothing else of the shape's.
+    uint32_t literalFieldLevel(ShapeClassId cls, const std::string& field) const {
+        if (!fieldAudit.objectLitFieldClean(cls, field)) return 0;
+        return (literalFieldsTyped(cls, false) ? 1u : 0u) | (literalFieldsTyped(cls, true) ? 2u : 0u);
+    }
     Type objectLitFieldType(ShapeClassId cls, const std::string& field) const {
         if (objectLitUnclosed.count(cls) != 0) return Type::dynamic();
         const auto it = objectLitFields.find(cls);

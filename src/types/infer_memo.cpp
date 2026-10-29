@@ -109,8 +109,8 @@ void InferMemo::noteBinding(std::string_view name, bool present, Type t) {
     note(factKey(FactKind::Binding, intern(name), 0), FactValue{t, tag});
 }
 
-void InferMemo::noteField(ShapeClassId cls, std::string_view field, Type fieldType, bool clean) {
-    note(factKey(FactKind::Field, cls, intern(field)), FactValue{fieldType, clean ? 1u : 0u});
+void InferMemo::noteField(ShapeClassId cls, std::string_view field, Type fieldType, uint32_t level) {
+    note(factKey(FactKind::Field, cls, intern(field)), FactValue{fieldType, level});
 }
 
 void InferMemo::noteFunction(uint32_t index, uint32_t version) {
@@ -247,9 +247,7 @@ InferMemo::FactValue InferMemo::current(const ModuleContext& mod, const Scope* p
         case FactKind::Field: {
             const std::string& field = names_[operandB(fact.key)];
             if (mod.result->classLayouts.byShapeClass(a) == nullptr) {
-                const bool elemClean = mod.arrayElemShapeClasses.count(a) != 0 &&
-                                       mod.fieldAudit.objectLitFieldClean(a, field);
-                return FactValue{mod.objectLitFieldType(a, field), elemClean ? 1u : 0u};
+                return FactValue{mod.objectLitFieldType(a, field), mod.literalFieldLevel(a, field)};
             }
             const Type t = mod.result->classLayouts.fieldTypeOf(a, field);
             return FactValue{t, mod.fieldAudit.numberCleanFor(a, field) ? 1u : 0u};

@@ -534,6 +534,10 @@ bool rtIsArrayPrototypeObject(Value v);
 // True when `obj` is that object and the change must be refused; the caller
 // then throws with `rtThrowArrayPrototypeChange("write `k`")` and the like.
 bool rtArrayPrototypeRefusesChange(Value obj);
+// Whether `shape` is the one `Array.prototype` has now (never creating it): a
+// cache keyed by shape must not take an add onto that object, which the
+// refusal above answers for the object and not for its shape.
+bool rtIsArrayPrototypeShape(const Shape* shape);
 void rtThrowArrayPrototypeChange(const std::string& what);
 // The same for a change to one property, `verb` (`write`, `define`, `delete`)
 // and the key as a value: a string, an index, or a symbol.

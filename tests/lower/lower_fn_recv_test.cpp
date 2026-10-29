@@ -126,19 +126,19 @@ TEST_CASE("a table-answered global is not hinted even though it is a function") 
     CHECK(hints(objectIl) == 1);
 }
 
-TEST_CASE("a `prototype` read is not hinted") {
+TEST_CASE("a `prototype` read is hinted") {
     // Answered from the FunctionHeader's own slot, before the statics box is
-    // consulted at all — and the backend already has an inline branch for a
-    // function receiver's `prototype`, so an arm here asks a question that is
-    // answered elsewhere and can never hit. three.js r160 writes exactly this
-    // inside `Vector3`, `Euler` and `Matrix4`, which is what made it worth a
-    // case of its own.
+    // consulted at all. The backend's plain read arm guards on a shape word,
+    // which a function does not have, so without the hint every such read took
+    // the helper's whole function ladder; the fn-recv arm answers a CLASS
+    // constructor's `prototype` from that header slot instead
+    // (il2mir/il_fn_recv.cpp). three.js r160 writes exactly this inside
+    // `Vector3`, `Euler` and `Matrix4`, once per construction.
     const auto il = lowerToText("class Vec { constructor() { Vec.prototype.isVec = true; } }\n"
                                 "console.log(typeof new Vec());\n");
-    CHECK(hints(il) == 0);
+    CHECK(hints(il) == 1);
 
-    // The same class binding, a key that IS a static: still hinted, so the
-    // exclusion is the key's and not the receiver's.
+    // The same class binding, a key that IS a static: hinted too.
     const auto statIl = lowerToText("class Vec { static UP = 1; }\n"
                                     "function r() { return Vec.UP; }\n"
                                     "console.log(r());\n");

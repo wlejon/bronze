@@ -1,6 +1,7 @@
 
 #include "types/infer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -688,6 +689,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // flow pass reads them on every round, and a table that filled in as it went
     // would answer differently on the probe rounds and the recording round.
     mod.valueFlow = std::getenv("BRONZE_NO_VALUE_FLOW") == nullptr;
+    mod.literalFieldsAnywhere = std::getenv("BRONZE_NO_LITERAL_FIELD_TYPES") == nullptr;
     mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
     mod.methodParamTypes = std::getenv("BRONZE_NO_METHOD_PARAM_TYPES") == nullptr;
     // The two pin modes. `--pins` is the targeted one and needs no env var;
@@ -931,6 +933,17 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     for (const auto& r : mod.fieldAudit.residue()) {
         result.fieldAudit.residue.push_back(
             InferenceResult::FieldAuditReport::ResidueSite{r.reason, r.count, r.representativeSite});
+    }
+
+    if (std::getenv("BRONZE_NO_LITERAL_SLOTS") == nullptr) {
+        for (const auto& [cls, fields] : mod.objectLitFields) {
+            if (mod.objectLitUnclosed.count(cls) != 0) continue;
+            const auto& keys = result.shapes.at(cls).properties;
+            const bool named = std::none_of(keys.begin(), keys.end(), [](const std::string& k) {
+                return k == "__proto__" || couldBeNumericKey(k);
+            });
+            if (named && !keys.empty()) result.literalLayouts.emplace(cls, keys);
+        }
     }
 
     result.moduleSignatures.reserve(mod.functions.size());

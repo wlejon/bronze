@@ -444,6 +444,7 @@ std::optional<il::Module> Lowerer::lower() {
         // After every pass that copies instructions: a copied run would share
         // its cells with the original (transition_runs.h).
         markTransitionRuns(ilModule_);
+        assignDefineAddCells(ilModule_);
     }
     return ilModule_;
 }

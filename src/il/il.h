@@ -193,6 +193,14 @@ struct Instruction {
     uint32_t transitionRunCell = kNoTransitionRun;
     uint32_t transitionRunLength = 0;
     uint32_t transitionRunSlot = 0;
+    // DefineOwnAttr: the first of BRONZE_ABI_DEFINE_ADD_CELLS static cells in
+    // which the helper publishes the add this site last made on a plain object
+    // (runtime builtin_object_define.cpp), so the next receiver at the same
+    // shape takes the add inline — the transition a define with a literal
+    // descriptor is, cached as an assignment's is. `kNoDefineAddCell` keeps
+    // the helper alone.
+    static constexpr uint32_t kNoDefineAddCell = 0xFFFFFFFFu;
+    uint32_t defineAddCell = kNoDefineAddCell;
     // MethodCall: the module function this site's key resolves to, on the class
     // lowering believes the receiver has — a GUESS, and named as one, because
     // the receiver's static class is not its runtime shape and a subclass may

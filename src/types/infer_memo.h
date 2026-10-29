@@ -120,7 +120,9 @@ public:
     // when no enclosing function's cells hold it.
     void noteOuterName(std::string_view name, uint32_t level, Type t);
     void noteBinding(std::string_view name, bool present, Type t);
-    void noteField(ShapeClassId cls, std::string_view field, Type fieldType, bool clean);
+    // `level`: a class's `clean` as 0/1; a literal shape's two answers as bits
+    // (`literalFieldLevel` in flow.h), since a site there spends either.
+    void noteField(ShapeClassId cls, std::string_view field, Type fieldType, uint32_t level);
     void noteFunction(uint32_t index, uint32_t version);
     void noteMethod(uint32_t index, uint32_t version, bool poisoned);
     void noteSetter(uint32_t index, uint32_t version);

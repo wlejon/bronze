@@ -622,6 +622,17 @@
 #define BRONZE_ABI_TRANSITION_RUN_COUNT        4
 #define BRONZE_ABI_TRANSITION_RUN_COUNT_SHIFT  32
 #define BRONZE_ABI_TRANSITION_RUN_PUBLISH_LIMIT 64
+/* A DEFINE ADD's static cells (il.h `defineAddCell`), two i64s: the shape a
+ * `define.own.attr` site's last fresh add produced (0 until filled, which no
+ * shape is) and the prototype-mutation epoch it was filled at. The fast arm
+ * takes a receiver whose shape is that shape's parent, so the add it performs
+ * is the one the helper verified: same key (the site's), same attributes, the
+ * next slot. The epoch stands for "no descriptor field is inherited from
+ * Object.prototype", which the helper's literal path also asks, since a
+ * literal descriptor that inherits `get` is a different descriptor. */
+#define BRONZE_ABI_DEFINE_ADD_CELLS 2
+#define BRONZE_ABI_DEFINE_ADD_END   0
+#define BRONZE_ABI_DEFINE_ADD_EPOCH 1
 /* Shape::repr — the representation of the ONE slot this node owns, as the
  * SlotRepr enum spells it (0 boxed, 1 double). Redundant with the bitmap
  * above and kept anyway: the bitmap is a summary of the whole chain and

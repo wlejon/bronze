@@ -102,9 +102,10 @@ void markTransitionRuns(il::Module& module) {
     for (il::Function& fn : module.functions) {
         if (fn.isExternal || fn.blocks.empty()) continue;
         // The `this` parameter (il.h Function::params: [__env] [__this] ...)
-        // of a function that can be a constructor. Only it: a constructible
-        // `function` also writes other receivers, and those are mostly
-        // inlined setters over keys the object already has.
+        // of a function that can be a constructor, or what its `super()`
+        // bound (ownReceiver below). Only those: a constructible `function`
+        // also writes other receivers, and those are mostly inlined setters
+        // over keys the object already has.
         const bool constructs = (fn.fnFlags & BRONZE_ABI_FN_FLAG_CONSTRUCT) != 0;
         const il::ValueId thisValue =
             constructs && fn.needsThis ? static_cast<il::ValueId>(fn.needsEnv ? 1 : 0) : il::kNoValue;
@@ -114,6 +115,19 @@ void markTransitionRuns(il::Module& module) {
                 if (inst.result != il::kNoValue) facts.defOp[inst.result] = inst.op;
             }
         }
+        // A DERIVED constructor's receiver is what `super(...)` answered
+        // (13.3.7.1 step 7: the base's object, or one the base chose to return
+        // instead), so its writes are on that value and not on the `this`
+        // parameter. The guard does not care which object it is — it asks the
+        // receiver's own header and shape — so any object a base returns is a
+        // receiver the run's checks already sort.
+        auto ownReceiver = [&](il::ValueId recv) {
+            if (recv == thisValue) return true;
+            if (!constructs) return false;
+            const auto def = facts.defOp.find(recv);
+            return def != facts.defOp.end() &&
+                   (def->second == il::Op::SuperCall || def->second == il::Op::SuperCallSpread);
+        };
         for (il::Block& block : fn.blocks) {
             auto& insts = block.instructions;
             for (size_t i = 0; i < insts.size(); ++i) {
@@ -144,7 +158,7 @@ void markTransitionRuns(il::Module& module) {
                         if (usesValue(insts[d], recv)) break;
                     }
                 }
-                if (recv != thisValue && !freshLiteral) continue;
+                if (!ownReceiver(recv) && !freshLiteral) continue;
 
                 std::unordered_set<il::ValueId> defined;
                 std::unordered_set<uint32_t> keys;
@@ -179,6 +193,26 @@ void markTransitionRuns(il::Module& module) {
                 head.transitionRunSlot = freshLiteral ? 0u : insts[sites[0]].staticSlot;
                 module.staticSiteCount += il::Instruction::kTransitionRunCells;
                 i = last;
+            }
+        }
+    }
+}
+
+void assignDefineAddCells(il::Module& module) {
+    // The A/B seam, read by the compiler: BRONZE_NO_DEFINE_ADD_CACHE=1 gives
+    // no site cells, so every define is the helper alone.
+    static const bool off = [] {
+        const char* v = std::getenv("BRONZE_NO_DEFINE_ADD_CACHE");
+        return v && v[0] == '1';
+    }();
+    if (off) return;
+    for (il::Function& fn : module.functions) {
+        if (fn.isExternal) continue;
+        for (il::Block& block : fn.blocks) {
+            for (il::Instruction& inst : block.instructions) {
+                if (inst.op != il::Op::DefineOwnAttr || inst.operands.size() != 2) continue;
+                inst.defineAddCell = module.staticSiteCount;
+                module.staticSiteCount += BRONZE_ABI_DEFINE_ADD_CELLS;
             }
         }
     }

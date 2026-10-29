@@ -302,8 +302,25 @@ Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<
 // A read's ordinary sequence: the `length` arms, the way-0 inline cache for
 // the sites that get one, else the helper. A static site's guard misses into
 // this.
+Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
+                               const IcSite& site);
+
 Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
                              const IcSite& site) {
+    PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    // A receiver written as a class's name: the function arms first
+    // (il_fn_recv.cpp), the site's ordinary read for anything else.
+    if (inst_ast.is_fn_recv && site && prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
+        inst_ast.index != PropertyLoweringHelper::kNoKey) {
+        return prop_lowering.lower_prop_get_fn_recv(b, obj_val, inst_ast.index, site, [&](Builder& bb) {
+            return lower_prop_get_ordinary(lowering, inst_ast, bb, obj_val, site);
+        });
+    }
+    return lower_prop_get_ordinary(lowering, inst_ast, b, obj_val, site);
+}
+
+Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
+                               const IcSite& site) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
     // A site the IL calls monomorphic gets the way-0 guard-and-load
     // in front of the helper: one compare against the most recently
@@ -794,8 +811,12 @@ bool lower_property_instruction(
             Value* target = ensure_type(get_opd(0), Type::i64());
             Value* value = ensure_type(get_opd(1), Type::i64());
             Value* key_id = get_key_id(inst_ast.index);
-            Value* mask = b.build_iconst_i32(static_cast<int32_t>(inst_ast.imm_i64));
-            b.build_call("bronze_define_own_attr", Type::void_type(), {target, key_id, value, mask});
+            // A block run once keeps the helper alone: its arm would only be size.
+            const bool arm = lowering && !lowering->run_once();
+            const bool val_is_number = lowering && inst_ast.operands.size() > 1 &&
+                                       lowering->is_number_value(inst_ast.operands[1]);
+            prop_lowering.lower_define_own_attr(b, target, key_id, value, static_cast<uint32_t>(inst_ast.imm_i64),
+                                                inst_ast.define_cell, arm, val_is_number);
             return true;
         }
 

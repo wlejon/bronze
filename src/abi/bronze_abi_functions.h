@@ -79,9 +79,14 @@
      *
      * `target` is checked exactly as `Object.defineProperties` checks it, and
      * with the same member name in the message, so a non-object throws the
-     * same TypeError here as there. Refusals are 20.1.2.4's: a TypeError, not
-     * a boolean. */ \
-    X(bronze_define_own_attr,     BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U32)) \
+     * same TypeError here as there (BRONZE_ABI_DESC_FROM_DEFINE_PROPERTY: the
+     * single-key `Object.defineProperty` spelling). Refusals are 20.1.2.4's: a
+     * TypeError, not a boolean.
+     *
+     * The last argument is the site's BRONZE_ABI_DEFINE_ADD_CELLS, or null:
+     * an add the helper performed on a plain object is published there for
+     * the site's inline arm to repeat on the next receiver at the same shape. */ \
+    X(bronze_define_own_attr,     BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_MU64)) \
     X(bronze_get_new_target,      BRONZE_ABI_U64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_import_meta,         BRONZE_ABI_U64,  (BRONZE_ABI_U32)) \
     X(bronze_super_call,          BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \

@@ -36,6 +36,8 @@
 #include "runtime/map.h"
 #include "runtime/object.h"
 #include "runtime/proxy.h"
+#include "runtime/realm.h"
+#include "runtime/shape_census.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -666,6 +668,51 @@ uint64_t rtObjectDefineProperties(uint64_t, uint64_t, uint32_t argc, const uint6
     return target.get().rawBits();
 }
 
+namespace {
+
+// THE ADD CACHE of a `define.own.attr` site (il.h `defineAddCell`, the arm in
+// codegen-brass il_define_add.cpp). The arm repeats an add for a receiver whose
+// shape is the parent of the shape the cells hold, so what is published must be
+// exactly that: this receiver, a bare plain object at `start`, given one new
+// own property — this site's key, with the attributes the mask completes to
+// (absent fields false, 10.1.6.3 step 2 through 6.2.5.6) — and nothing else.
+//
+// The receiver's start, when it is one an add can be published from: a plain
+// object with no internal slots at a tree shape that is no prototype's, no
+// global object, and not `Array.prototype` (its refusal is by identity, and the
+// arm only sees a shape).
+Shape* defineAddStart(Value objVal, const uint64_t* cells) {
+    if (cells == nullptr || !objVal.isObject()) return nullptr;
+    auto* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Plain || hdr->size != BRONZE_ABI_PLAIN_OBJECT_BYTES) return nullptr;
+    Shape* start = reinterpret_cast<ObjectHeader*>(hdr)->shape;
+    if (start == nullptr || start->isDictionary() || start->used_as_prototype) return nullptr;
+    if (rtIsArrayPrototypeShape(start) || rtRealmOfGlobal(objVal) != nullptr) return nullptr;
+    return start;
+}
+
+void publishDefineAdd(Value objVal, Shape* start, PropertyKey key, const DecodedDescriptor& d, uint64_t* cells) {
+    if (!objVal.isObject() || runtime::censusFillsSuppressed()) return;
+    auto* hdr = objVal.asObject<HeapObjectHeader>();
+    if (hdr->flags != HeapKind::Plain || hdr->size != BRONZE_ABI_PLAIN_OBJECT_BYTES) return;
+    const Shape* end = reinterpret_cast<ObjectHeader*>(hdr)->shape;
+    if (end == nullptr || end->isDictionary() || end->parent != start || end->accessor) return;
+    // Defines run user code only before this helper, so the shape it started
+    // from is still a non-prototype tree node; asked again because the arm's
+    // epoch compare is only sound if the add did not bump it.
+    if (start->isDictionary() || start->used_as_prototype || end->used_as_prototype) return;
+    if (!end->key.valid() || !end->key.matches(key)) return;
+    if (end->writable != (d.hasWritable && d.wantWritable) ||
+        end->enumerable != (d.hasEnumerable && d.wantEnumerable) ||
+        end->configurable != (d.hasConfigurable && d.wantConfigurable)) {
+        return;
+    }
+    cells[BRONZE_ABI_DEFINE_ADD_END] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(end));
+    cells[BRONZE_ABI_DEFINE_ADD_EPOCH] = protoMutationEpoch();
+}
+
+}  // namespace
+
 extern "C" {
 
 // One key of an `Object.defineProperties(o, { k: { ... }, ... })` whose
@@ -679,12 +726,15 @@ extern "C" {
 // itself is 10.1.6.3 through the same `applyDecodedDescriptor` the decode
 // hands its result to.
 void bronze_define_own_attr(uint64_t objBits, uint32_t keyIndex, uint64_t valBits,
-                            uint32_t mask) {
+                            uint32_t mask, uint64_t* cells) {
     Value objVal(objBits);
-    // 20.1.2.3 step 1. The lowering emits a run of these for one call, and the
-    // first of them stands where the member's own check stood, so a target
-    // that is not an object throws before any key of the literal is defined.
-    if (!rtObjectRequirePropertyTable(objVal, "defineProperties")) return;
+    // 20.1.2.3 step 1 (20.1.2.4's for the single-key spelling). The lowering
+    // emits a run of these for one call, and the first of them stands where
+    // the member's own check stood, so a target that is not an object throws
+    // before any key of the literal is defined.
+    const char* member =
+        (mask & BRONZE_ABI_DESC_FROM_DEFINE_PROPERTY) != 0 ? "defineProperty" : "defineProperties";
+    if (!rtObjectRequirePropertyTable(objVal, member)) return;
 
     StringHeader* keyHeader = rtKeyHeader(keyIndex);
     if (!keyHeader) fatal("property definition with an unregistered key index");
@@ -732,10 +782,12 @@ void bronze_define_own_attr(uint64_t objBits, uint32_t keyIndex, uint64_t valBit
     // and the lowering refuses a descriptor literal that names either.
     Rooted<Value> noGetter{Value::fromUndefined()};
     Rooted<Value> noSetter{Value::fromUndefined()};
+    const PropertyKey key = PropertyKey::forString(keyHeader);
+    Shape* start = defineAddStart(objVal, cells);
     // 20.1.2.3.1 step 5 is DefinePropertyOrThrow, so a refusal is 20.1.2.4's
     // TypeError and the keys already defined stay defined.
-    applyToReceiver(self, PropertyKey::forString(keyHeader), d, value, noGetter, noSetter,
-                    /*throwOnRefusal=*/true);
+    if (!applyToReceiver(self, key, d, value, noGetter, noSetter, /*throwOnRefusal=*/true)) return;
+    if (start != nullptr) publishDefineAdd(self.get(), start, key, d, cells);
 }
 
 }  // extern "C"

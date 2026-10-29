@@ -1,5 +1,6 @@
 #include "il/verifier.h"
 #include "il/verifier_proofs.h"
+#include "abi/bronze_abi.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -765,6 +766,14 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                             " names transition run cell " + std::to_string(inst.transitionRunCell) +
                                             " over " + std::to_string(inst.transitionRunLength) +
                                             " instructions, which the module or block cannot back");
+                    return false;
+                }
+                // So are a define's add cells.
+                if (inst.defineAddCell != Instruction::kNoDefineAddCell &&
+                    (inst.op != Op::DefineOwnAttr ||
+                     static_cast<size_t>(inst.defineAddCell) + BRONZE_ABI_DEFINE_ADD_CELLS > module.staticSiteCount)) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) + " names define add cell " +
+                                            std::to_string(inst.defineAddCell) + ", which the module cannot back");
                     return false;
                 }
                 if (inst.op == Op::PropGet || inst.op == Op::PropSet ||

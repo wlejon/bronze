@@ -315,6 +315,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.index = inst.keyIndex;
             out.string_literal = ctx.keyString(inst.keyIndex);
             out.imm_i64 = inst.immI32;
+            out.define_cell = inst.defineAddCell;
             break;
         case il::Op::GetNewTarget: out.op = il2mir::BronzeOp::GetNewTarget; break;
         case il::Op::ImportMeta:

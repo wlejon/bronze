@@ -249,6 +249,11 @@ bool rtArrayPrototypeRefusesChange(Value obj) {
     return rtIsArrayPrototypeObject(obj) && rtIntegrityLevel(obj) != IntegrityLevel::Frozen;
 }
 
+bool rtIsArrayPrototypeShape(const Shape* shape) {
+    return shape != nullptr && g_arrayPrototype.isObject() &&
+           g_arrayPrototype.asObject<ObjectHeader>()->shape == shape;
+}
+
 void rtThrowArrayPrototypeChange(const std::string& what) {
     rtThrowTypeError("Cannot decorate Array.prototype (tried to " + what + ")");
 }

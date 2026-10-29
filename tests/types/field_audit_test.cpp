@@ -316,14 +316,31 @@ TEST_CASE("field harvest arithmetic rejects dynamic operand that may be BigInt")
     CHECK(dl->fieldTypes.at("x").is(types::TypeKind::Number));
 }
 
-TEST_CASE("foreign object passed to method does not qualify for raw f64 unboxing") {
-    // Foreign object without class family validation must not have its fields treated as provenFieldReads
-    const auto inferred = infer(
+TEST_CASE("a literal passed to a function is read as a Number only when every value can be") {
+    // A closed literal installs every key it names at creation, and the audit
+    // covers every later write by name, so a parameter every caller hands a
+    // literal of one shape reads its Number field raw...
+    const auto proven = infer(
         "function read(obj) { return obj.x; }\n"
-        "const foreign = { x: 1 };\n"
-        "read(foreign);\n");
-    const auto& r = *inferred.result;
-    CHECK(r.provenFieldReads.empty());
+        "const lit = { x: 1 };\n"
+        "read(lit);\n");
+    CHECK(proven.result->provenFieldReads.size() == 1);
+
+    // ...and does not once any write to that name anywhere is not a Number,
+    const auto written = infer(
+        "function read(obj) { return obj.x; }\n"
+        "const lit = { x: 1 };\n"
+        "lit.x = 'one';\n"
+        "read(lit);\n");
+    CHECK(written.result->provenFieldReads.empty());
+
+    // ...or once some caller hands over an object no literal built.
+    const auto foreign = infer(
+        "function read(obj) { return obj.x; }\n"
+        "const lit = { x: 1 };\n"
+        "read(lit);\n"
+        "read(JSON.parse('{\"x\":\"s\"}'));\n");
+    CHECK(foreign.result->provenFieldReads.empty());
 }
 
 TEST_CASE("uncalled library method with unproven parameter does not poison constructor-proven number fields") {

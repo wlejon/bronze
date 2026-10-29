@@ -238,6 +238,10 @@ typedef uint64_t (*bronze_fn_code)(uint64_t env_bits, uint64_t this_bits, uint32
 #define BRONZE_ABI_DESC_ENUMERABLE       0x10u
 #define BRONZE_ABI_DESC_HAS_CONFIGURABLE 0x20u
 #define BRONZE_ABI_DESC_CONFIGURABLE     0x40u
+/* Not a field: the mask came from `Object.defineProperty(o, 'k', {...})`
+ * rather than from `defineProperties`, so a non-object target's TypeError names
+ * that member. */
+#define BRONZE_ABI_DESC_FROM_DEFINE_PROPERTY 0x80u
 
 /* COROUTINE BODIES. A generator, an async function and an async generator
  * each compile to a body that runs on a brass coroutine frame, and to a stub

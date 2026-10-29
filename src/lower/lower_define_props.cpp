@@ -153,7 +153,12 @@ std::optional<Lowerer::Value> Lowerer::lowerDefinePropertiesLiteral(
     const ast::Call* call, const ast::MemberAccess& callee, il::Function& ilFn) {
     if (definePropsSeamDisabled()) return std::nullopt;
     if (callee.optional || call->optional) return std::nullopt;
-    if (callee.property != "defineProperties") return std::nullopt;
+    // `Object.defineProperty(t, 'k', { ... })` is the same lowering over a map
+    // of one key (20.1.2.4: the target check, a ToPropertyKey that a string
+    // literal answers at compile time, then 6.2.6.5 and 10.1.6.3 — the order
+    // 20.1.2.3.1 has for each key), named so its TypeError names its member.
+    const bool single = callee.property == "defineProperty";
+    if (callee.property != "defineProperties" && !single) return std::nullopt;
 
     // The RECEIVER must be the `Object` bronze provides, and every way a
     // program can mean something else by that name is a refusal: a binding in
@@ -174,23 +179,42 @@ std::optional<Lowerer::Value> Lowerer::lowerDefinePropertiesLiteral(
     }
     if (!isProvidedGlobal("Object")) return std::nullopt;
 
-    if (call->args.size() != 2) return std::nullopt;
+    if (call->args.size() != (single ? 3u : 2u)) return std::nullopt;
     for (const auto& arg : call->args) {
         if (dynamic_cast<const ast::SpreadElement*>(arg.get()) != nullptr) return std::nullopt;
     }
-    const auto* map = dynamic_cast<const ast::ObjectLit*>(call->args[1].get());
-    if (map == nullptr || map->isModuleNamespace) return std::nullopt;
-    // An empty map defines nothing, so there would be no `define.own.attr` for
-    // 20.1.2.3's step-1 check to ride on — and that check is observable.
-    if (map->props.empty()) return std::nullopt;
 
     // The whole map is read before anything is emitted, so a refusal costs no
     // half-lowered call.
     std::vector<std::string> keys;
     std::vector<uint32_t> masks;
     std::vector<const ast::Expr*> valueExprs;
+    if (single) {
+        // A key the helper takes as a plain name: an index on an array is an
+        // element, and `__proto__` here is an own property, which the
+        // assignment-shaped add underneath must not read as the accessor.
+        const auto* keyLit = dynamic_cast<const ast::StringLit*>(call->args[1].get());
+        if (keyLit == nullptr || keyLit->value == "__proto__" || isArrayIndexKey(keyLit->value)) {
+            return std::nullopt;
+        }
+        const ast::ObjectLit* desc = asDescriptorLiteral(call->args[2].get());
+        if (desc == nullptr || desc->isModuleNamespace) return std::nullopt;
+        uint32_t mask = 0;
+        const ast::Expr* valueExpr = nullptr;
+        if (!readDescriptor(*desc, mask, valueExpr)) return std::nullopt;
+        keys.push_back(keyLit->value);
+        masks.push_back(mask | BRONZE_ABI_DESC_FROM_DEFINE_PROPERTY);
+        valueExprs.push_back(valueExpr);
+    }
+    const auto* map = single ? nullptr : dynamic_cast<const ast::ObjectLit*>(call->args[1].get());
+    if (!single && (map == nullptr || map->isModuleNamespace)) return std::nullopt;
+    // An empty map defines nothing, so there would be no `define.own.attr` for
+    // 20.1.2.3's step-1 check to ride on — and that check is observable.
+    if (!single && map->props.empty()) return std::nullopt;
+
+    static const std::vector<ast::ObjectProp> kNoProps;
     std::unordered_set<std::string> seenKeys;
-    for (const ast::ObjectProp& prop : map->props) {
+    for (const ast::ObjectProp& prop : single ? kNoProps : map->props) {
         if (prop.computed() || prop.isMethod || prop.coverInitialized) return std::nullopt;
         if (prop.accessor != ast::AccessorKind::None) return std::nullopt;
         if (prop.value == nullptr) return std::nullopt;
@@ -247,7 +271,7 @@ std::optional<Lowerer::Value> Lowerer::lowerDefinePropertiesLiteral(
         emitInst(ilFn, inst);
     }
 
-    // 20.1.2.3 step 3: the answer is the target.
+    // 20.1.2.3 step 3 (20.1.2.4 step 5): the answer is the target.
     return target;
 }
 

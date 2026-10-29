@@ -483,6 +483,11 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         field(BRONZE_ABI_DESC_HAS_CONFIGURABLE, BRONZE_ABI_DESC_CONFIGURABLE,
                               "configurable");
                         out += fields + "}";
+                        if ((mask & BRONZE_ABI_DESC_FROM_DEFINE_PROPERTY) != 0) out += " single";
+                        // The inline add arm is emitted code, as a run's is.
+                        if (inst.defineAddCell != Instruction::kNoDefineAddCell) {
+                            out += ", add @" + std::to_string(inst.defineAddCell);
+                        }
                         break;
                     }
                     case Op::GetNewTarget:

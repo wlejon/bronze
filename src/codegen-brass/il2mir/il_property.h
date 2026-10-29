@@ -309,6 +309,17 @@ public:
 
     void lower_method_def(Builder& b, Value* obj, uint32_t key_index, Value* closure);
 
+    // A read at a site whose receiver names a class (il_fn_recv.cpp): the
+    // function arms, and `ordinary` for every other receiver.
+    Value* lower_prop_get_fn_recv(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
+                                  const std::function<Value*(Builder&)>& ordinary);
+
+    // `define.own.attr`: the helper, behind the inline add its cells hold
+    // (il_define_add.cpp) when `arm` and the module backs `cell`.
+    static constexpr uint32_t kNoDefineAddCell = UINT32_MAX;
+    void lower_define_own_attr(Builder& b, Value* obj, Value* key_id, Value* val, uint32_t mask, uint32_t cell,
+                               bool arm, bool val_is_number);
+
     // A plain object's payload and shape word, and whether it is one; a
     // non-object reads a mapped block whose words refuse every way.
     // `base`, when asked for, is the address the header and shape were read

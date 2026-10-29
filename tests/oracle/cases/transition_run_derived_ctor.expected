@@ -1,0 +1,7 @@
+1 2158 base,a,b,c,d,e base,extra,a,b,c,d,e
+2 base,a,b,c,d,e,f,g base,a,b,c,d,e nt true false
+3 pre,x,y,z y,w,x,z 2 TypeError 0,x,y,z 1 3 true x,y,z
+4 S1.q=2 S0.r=3 p,r p,q TypeError p,q,r
+5 true mn  m,n m,n
+6 base,field,after,last
+7 one,self,two,three true

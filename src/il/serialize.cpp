@@ -38,6 +38,7 @@ struct InstructionMirror {
     uint32_t transitionRunCell;
     uint32_t transitionRunLength;
     uint32_t transitionRunSlot;
+    uint32_t defineAddCell;
     uint32_t directTarget;
     uint32_t typedTarget;
     uint32_t envDepth;
@@ -288,7 +289,8 @@ enum InstBits : uint32_t {
     kHasInlineFrame = 1u << 25,
     // The three transition-run fields ride on one bit: they are set together.
     kHasTransitionRun = 1u << 26,
-    kKnownBits = (1u << 27) - 1,
+    kHasDefineAdd = 1u << 27,
+    kKnownBits = (1u << 28) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -328,6 +330,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.callEnvHops != Instruction::kNoEnvHops) m |= kHasEnvHops;
     if (inst.inlineFrame != 0) m |= kHasInlineFrame;
     if (inst.transitionRunCell != Instruction::kNoTransitionRun) m |= kHasTransitionRun;
+    if (inst.defineAddCell != Instruction::kNoDefineAddCell) m |= kHasDefineAdd;
     if (inst.span.begin != 0 || inst.span.end != 0 || inst.span.file != 0) m |= kHasSpan;
     if (hasTarget(inst.target)) m |= kHasTarget;
     if (hasTarget(inst.elseTarget)) m |= kHasElse;
@@ -366,6 +369,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
         w.var(inst.transitionRunLength);
         w.var(inst.transitionRunSlot);
     }
+    if (m & kHasDefineAdd) w.var(inst.defineAddCell);
     if (m & kHasSpan) {
         w.var(inst.span.begin);
         w.svar(static_cast<int64_t>(inst.span.end) - static_cast<int64_t>(inst.span.begin));
@@ -408,6 +412,7 @@ void readInstruction(Reader& r, Instruction& inst) {
         inst.transitionRunLength = r.u32();
         inst.transitionRunSlot = r.u32();
     }
+    if (m & kHasDefineAdd) inst.defineAddCell = r.u32();
     if (m & kHasSpan) {
         inst.span.begin = r.u32();
         const int64_t len = static_cast<int64_t>(inst.span.begin) + static_cast<int64_t>(r.i32());

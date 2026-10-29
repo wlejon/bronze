@@ -223,23 +223,18 @@ bool Lowerer::monomorphicPropSite(const ast::Expr& receiver) const {
 // them measurably slowed pure-math code for a path they can never take, which
 // is the whole reason this predicate exists rather than the arm being
 // unconditional.
-bool Lowerer::functionBindingReceiver(const ast::Expr& receiver, uint32_t keyIndex) const {
+bool Lowerer::functionBindingReceiver(const ast::Expr& receiver, uint32_t /*keyIndex*/) const {
     const auto* id = dynamic_cast<const ast::Ident*>(&receiver);
     if (id == nullptr) return false;
-    // `prototype` is answered before the box and never out of it. The runtime
-    // reads the FunctionHeader's own slot (rt_prop_function.cpp) without ever
-    // looking at the statics object, so no entry for this key can be
-    // installed; and the backend already has a dedicated inline branch for a
-    // function receiver's `prototype` (llvm_prop_get.cpp), so an arm here is
-    // the same question asked twice with only one of the two able to answer.
-    //
-    // Not a tidy-up. three.js r160 opens `Vector3`, `Euler` and `Matrix4`
-    // with `Vector3.prototype.isVector3 = true` INSIDE the constructor, which
-    // put a guaranteed-dead arm in the three most-run constructors of the math
-    // benchmark. `length` and `name` are answered outside the box too, but
-    // only for a function that has not defined them — `class C { static
+    // `prototype` is answered before the box and never out of it: the runtime
+    // reads the FunctionHeader's own slot (rt_prop_function.cpp), and the
+    // backend's function arm reads the same slot for a class constructor
+    // (codegen-brass il_fn_recv.cpp). three.js r160 opens `Vector3`, `Euler`
+    // and `Matrix4` with `Vector3.prototype.isVector3 = true` INSIDE the
+    // constructor, so that read is in the three most-run constructors of the
+    // math benchmark. `length` and `name` are answered outside the box too,
+    // but only for a function that has not defined them — `class C { static
     // name() {} }` really does put `name` in the box — so they stay.
-    if (keyIndex < keyStrings_.size() && keyStrings_[keyIndex] == "prototype") return false;
     // A function DECLARATION's own name, which is a function object by 15.2.
     if (functionIndices_.contains(id->name)) return true;
     // A provided global — but only the few that keep their statics in a real

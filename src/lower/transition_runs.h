@@ -27,7 +27,8 @@ namespace bronze::lower {
 // keys then land at 0, 1, 2, ... The runtime checks both claims against the
 // shape it builds before it publishes anything, so a wrong one is a guard that
 // never matches. Writes to `this` are marked only in a function that can be a
-// constructor, and only to its own `this`: elsewhere a run of writes is a
+// constructor, and only to its own `this` (in a derived constructor, the value
+// `super()` bound it to): elsewhere a run of writes is a
 // setter's `this.x = x` (inlined or not) over keys
 // that already exist, and its guard would be one more miss in front of the
 // static run that answers it.
@@ -35,5 +36,14 @@ namespace bronze::lower {
 // Runs last, after every pass that copies instructions: a copy of a marked
 // write would share its cells with the original.
 void markTransitionRuns(il::Module& module);
+
+// DEFINE ADDS: every `define.own.attr` (a literal-descriptor
+// `Object.defineProperty`/`defineProperties` key, a class field) gets cells of
+// its own (il.h `defineAddCell`) in which the helper publishes the add it made
+// on a plain object, and the backend gives the site an inline arm that repeats
+// it for the next receiver at the same shape. Same reason as a run's to come
+// last: a copied site shares cells, which costs a refill, not an answer, but
+// one cell per site is what the arm is written for.
+void assignDefineAddCells(il::Module& module);
 
 }  // namespace bronze::lower

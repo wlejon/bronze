@@ -1,5 +1,7 @@
 #include "types/result.h"
 
+#include <algorithm>
+
 namespace bronze::types {
 namespace {
 
@@ -31,6 +33,13 @@ uint32_t InferenceResult::staticSlotAt(const ast::Expr* receiver,
                                       const std::string& field) const {
     const Type t = typeAt(receiver);
     if (!t.is(TypeKind::Object)) return ClassLayoutTable::kNoSlot;
+    if (classLayouts.byShapeClass(t.shapeClass()) == nullptr) {
+        const auto lit = literalLayouts.find(t.shapeClass());
+        if (lit == literalLayouts.end()) return ClassLayoutTable::kNoSlot;
+        const auto at = std::find(lit->second.begin(), lit->second.end(), field);
+        return at == lit->second.end() ? ClassLayoutTable::kNoSlot
+                                       : static_cast<uint32_t>(at - lit->second.begin());
+    }
     return classLayouts.slotOf(t.shapeClass(), field);
 }
 

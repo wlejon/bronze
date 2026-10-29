@@ -244,13 +244,18 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             if (mod_.result->classLayouts.byShapeClass(base.shapeClass()) == nullptr) {
                 if (!base.identityOnly()) {
                     const Type field = mod_.objectLitFieldType(base.shapeClass(), m->property);
+                    // A shape that never sat in a tracked array spends its
+                    // field types only on a value this analysis saw built (the
+                    // class rule below, `builtHere`): a receiver that may be any
+                    // object at all has no literal's fields to speak for it.
+                    const bool typed = mod_.literalFieldsTyped(base.shapeClass(), base.builtHere());
                     const bool clean =
-                        mod_.arrayElemShapeClasses.count(base.shapeClass()) != 0 &&
-                        mod_.fieldAudit.objectLitFieldClean(base.shapeClass(), m->property);
+                        typed && mod_.fieldAudit.objectLitFieldClean(base.shapeClass(), m->property);
                     if (InferMemo* memo = mod_.rec()) {
-                        memo->noteField(base.shapeClass(), m->property, field, clean);
+                        memo->noteField(base.shapeClass(), m->property, field,
+                                        mod_.literalFieldLevel(base.shapeClass(), m->property));
                     }
-                    if (mod_.arrayElemShapeClasses.count(base.shapeClass()) != 0) {
+                    if (typed) {
                         if (field.is(TypeKind::Never)) return Type::never();
                         if (field.is(TypeKind::Number)) {
                             if (record_) ++mod_.result->fieldAudit.numberFieldReads;

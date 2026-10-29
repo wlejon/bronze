@@ -222,6 +222,8 @@ struct BronzeInstruction {
     uint32_t run_cell = kNoTransitionRun;
     uint32_t run_length = 0;
     uint32_t run_slot = 0;
+    // DefineOwnAttr: its add cells (il.h `defineAddCell`), or kNoTransitionRun.
+    uint32_t define_cell = kNoTransitionRun;
 
     BronzeBlockTarget target;
     BronzeBlockTarget else_target;

@@ -630,6 +630,25 @@ uint64_t stringPadImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
 // data bronze deliberately does not carry, not data it has and ignores.
 template <bool Upper, bool Locale = false>
 uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    // A string primitive that is already in the case asked for is its own
+    // answer: a string value has no identity a program can tell apart from an
+    // equal one, so returning it is returning the converted copy. Asked only
+    // of ASCII, where the mapping is one unit to one unit and the only units
+    // that change are the 26 letters of the other case — three.js's
+    // `generateUUID` lowercases a string built from lowercase hex digits for
+    // every object it makes.
+    if (Value self(thisBits); self.isString()) {
+        const StringHeader* str = self.asString<StringHeader>();
+        if (str->isLatin1() && !str->isBuilder()) {
+            const auto* units = reinterpret_cast<const unsigned char*>(str->latin1Data());
+            bool unchanged = true;
+            for (uint32_t i = 0; i < str->length && unchanged; ++i) {
+                const unsigned char c = units[i];
+                unchanged = c < 0x80 && !(Upper ? (c >= 'a' && c <= 'z') : (c >= 'A' && c <= 'Z'));
+            }
+            if (unchanged) return thisBits;
+        }
+    }
     RootedArgs args(argc, argv);
     Units self = thisUnits(Value(thisBits),
                            Locale ? (Upper ? "toLocaleUpperCase" : "toLocaleLowerCase")

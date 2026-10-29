@@ -88,6 +88,17 @@ struct InferenceResult {
     std::unordered_map<const ast::Expr*, Type> exprTypes;
     std::unordered_map<const ast::Expr*, ShapeClassId> siteShapes;
 
+    // The object-literal shape classes every literal of which is CLOSED (no
+    // spread, accessor or computed key: types/flow_class_body.cpp), and whose
+    // keys are all ones a literal installs as named slots in source order — no
+    // `__proto__` (which sets the prototype and adds nothing) and nothing that
+    // could be an array index (which goes to elements). For those, key N of the
+    // class is the literal's slot N, which is what `staticSlotAt` answers for a
+    // receiver typed by one. A layout claim like a class's: the runtime checks
+    // it before publishing a site's cell, so a wrong one is a guard that never
+    // hits. `BRONZE_NO_LITERAL_SLOTS=1` leaves this empty.
+    std::unordered_map<ShapeClassId, std::vector<std::string>> literalLayouts;
+
     // Why an identifier that names a METHOD PARAMETER is still dynamic, for the
     // one identifier read that asked. Diagnostics only — `--infer-stats` splits
     // the "receiver is dynamic: identifier" row by it, which is how a chunk aimed
