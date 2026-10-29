@@ -117,6 +117,10 @@ public:
     // Its operations call their helpers, with no inline fast path — a path
     // run once is only size, and every inline cache misses its first run.
     bool run_once() const { return run_once_; }
+    // Whether the IL block being lowered is on a cycle of its function's CFG
+    // (a loop body, or a block a handler re-enters): code that runs many
+    // times per call, where a site's inline path pays for its size.
+    bool in_loop() const { return in_loop_; }
     // Whether the IL block being lowered has a handler: its calls become
     // invokes (il_lowering_eh.cpp), which name their callee, so a call through
     // a code pointer cannot be one and its site takes the helper.
@@ -202,6 +206,8 @@ private:
     bool protected_block_ = false;
     bool small_forms_ = true;
     std::unordered_set<uint32_t> run_once_blocks_;
+    std::unordered_set<uint32_t> loop_blocks_;
+    bool in_loop_ = false;
     std::unordered_set<uint32_t> fresh_objects_;
     std::unordered_set<uint32_t> hole_insensitive_ids_;
     std::unordered_set<uint32_t> unrooted_hole_insensitive_ids_;

@@ -12,6 +12,36 @@
 
 namespace il2mir {
 
+namespace {
+
+// ToNumber of the Value bits `bits`. A Number's bits are its double, so that
+// operand (nearly every one: `queue.length`, a field holding a double) is a
+// compare and a bitcast; everything else is the helper's ToNumber, which may
+// call user code (an object's ToPrimitive). The test is a speculation site,
+// which tier 2 turns into a guard where the helper never ran.
+Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits) {
+    if (lowering->run_once()) return b.build_call("bronze_unbox_f64", Type::f64(), {bits});
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "unbox_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* fast = b.append_block(prefix + "_num");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::f64());
+
+    b.position_at_end(cur);
+    Value* is_num = b.build_ule(bits, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    lowering->spec().emit_branch(b, is_num, fast, slow, SpecKind::Arith, "bronze_unbox_f64");
+    b.build_br(merge, {b.build_call("bronze_unbox_f64", Type::f64(), {bits})});
+
+    b.position_at_end(fast);
+    b.build_br(merge, {b.build_bitcast_f64_i64(bits)});
+
+    b.position_at_end(merge);
+    return result;
+}
+
+} // namespace
+
 bool IlLowering::lower_instruction(
     const BronzeInstruction& inst_ast,
     Builder& b,
@@ -506,7 +536,7 @@ bool IlLowering::lower_instruction(
                     Value* f64_bits = b.build_select(is_num, i_val, nullish_bits);
                     res_val = b.build_bitcast_f64_i64(f64_bits);
                 } else {
-                    res_val = b.build_call("bronze_unbox_f64", Type::f64(), {i_val});
+                    res_val = lower_unbox_f64(this, b, i_val);
                 }
             } else if (inst_ast.result_type == BronzeType::I32) {
                 res_val = b.build_trunc_i32(ensure_type(op0, Type::i64(), b));

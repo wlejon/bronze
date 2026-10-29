@@ -3,6 +3,7 @@
 // (IlLowering::run_once).
 
 #include "il_lowering.h"
+#include "il_cfg_cycles.h"
 #include "il/key.h"
 #include "il_abi.h"
 #include <algorithm>
@@ -54,19 +55,6 @@ Value* IlLowering::hoisted(Builder& b, Hoist kind) {
 }
 
 namespace {
-
-// The IL successors of `blk`: its branch targets and its handler.
-template <typename F>
-void for_each_successor(const BronzeBlock& blk, F&& f) {
-    for (const auto& inst : blk.instructions) {
-        if (inst.op == BronzeOp::Jump) f(inst.target.block_id);
-        if (inst.op == BronzeOp::Branch) {
-            f(inst.target.block_id);
-            f(inst.else_target.block_id);
-        }
-    }
-    if (blk.handler_id != UINT32_MAX) f(blk.handler_id);
-}
 
 bool is_pure_scalar_inst(const BronzeInstruction& inst) {
     switch (inst.op) {
@@ -217,6 +205,13 @@ bool is_known_unrooted_primitive_inst(const BronzeInstruction& inst) {
 void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
     run_once_ = false;
     run_once_blocks_.clear();
+    loop_blocks_.clear();
+    {
+        const std::vector<uint8_t> cyclic = cyclic_blocks(fn_ast);
+        for (size_t i = 0; i < cyclic.size(); ++i) {
+            if (cyclic[i]) loop_blocks_.insert(fn_ast.blocks[i].id);
+        }
+    }
     fresh_objects_.clear();
     hole_insensitive_ids_.clear();
     unrooted_hole_insensitive_ids_.clear();
@@ -519,68 +514,10 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
             if (inst.op == BronzeOp::CreateObject && inst.result_id != UINT32_MAX) fresh_objects_.insert(inst.result_id);
         }
     }
-    if (!fn_ast.is_toplevel || fn_ast.blocks.empty()) return;
-
-    // The blocks on no cycle of the CFG: its strongly connected components
-    // of one block without a self edge (Tarjan's, iteratively — a top level
-    // has thousands of blocks).
-    const size_t n = fn_ast.blocks.size();
-    std::unordered_map<uint32_t, uint32_t> index_of;
-    index_of.reserve(n);
-    for (size_t i = 0; i < n; ++i) index_of.emplace(fn_ast.blocks[i].id, static_cast<uint32_t>(i));
-    std::vector<std::vector<uint32_t>> succ(n);
-    std::vector<uint8_t> self_edge(n, 0);
-    for (size_t i = 0; i < n; ++i) {
-        for_each_successor(fn_ast.blocks[i], [&](uint32_t id) {
-            const auto it = index_of.find(id);
-            if (it == index_of.end()) return;
-            succ[i].push_back(it->second);
-            if (it->second == i) self_edge[i] = 1;
-        });
-    }
-    constexpr uint32_t kUnvisited = UINT32_MAX;
-    std::vector<uint32_t> order(n, kUnvisited), low(n, 0);
-    std::vector<uint8_t> on_stack(n, 0);
-    std::vector<uint32_t> stack;
-    std::vector<std::pair<uint32_t, size_t>> work;
-    uint32_t counter = 0;
-    for (uint32_t root = 0; root < n; ++root) {
-        if (order[root] != kUnvisited) continue;
-        work.emplace_back(root, 0);
-        while (!work.empty()) {
-            auto& [v, next] = work.back();
-            if (next == 0 && order[v] == kUnvisited) {
-                order[v] = low[v] = counter++;
-                stack.push_back(v);
-                on_stack[v] = 1;
-            }
-            if (next < succ[v].size()) {
-                const uint32_t w = succ[v][next++];
-                if (order[w] == kUnvisited) {
-                    work.emplace_back(w, 0);
-                } else if (on_stack[w]) {
-                    low[v] = std::min(low[v], order[w]);
-                }
-                continue;
-            }
-            if (low[v] == order[v]) {
-                size_t members = 0;
-                uint32_t w = 0;
-                do {
-                    w = stack.back();
-                    stack.pop_back();
-                    on_stack[w] = 0;
-                    ++members;
-                } while (w != v);
-                if (members == 1 && !self_edge[v]) run_once_blocks_.insert(fn_ast.blocks[v].id);
-            }
-            const uint32_t done = v;
-            work.pop_back();
-            if (!work.empty()) {
-                const uint32_t parent = work.back().first;
-                low[parent] = std::min(low[parent], low[done]);
-            }
-        }
+    if (!fn_ast.is_toplevel) return;
+    const std::vector<uint8_t> cyclic = cyclic_blocks(fn_ast);
+    for (size_t i = 0; i < cyclic.size(); ++i) {
+        if (!cyclic[i]) run_once_blocks_.insert(fn_ast.blocks[i].id);
     }
 }
 

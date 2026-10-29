@@ -926,6 +926,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         uint32_t cont_counter = 0;
         const size_t first_new_block = fn->blocks().size();
         run_once_ = run_once_blocks_.count(blk_ast.id) != 0;
+        in_loop_ = loop_blocks_.count(blk_ast.id) != 0;
         protected_block_ = blk_ast.handler_id != UINT32_MAX;
         begin_block_proofs(blk_ast.id);
         forget_ta_cursors();
@@ -950,6 +951,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
     }
     run_once_ = false;
+    in_loop_ = false;
     protected_block_ = false;
     route_exception_edges(b, block_map);
 

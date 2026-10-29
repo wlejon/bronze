@@ -138,9 +138,17 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     Function* fn = bb_current->parent();
     const std::string prefix = "ic_get_" + std::to_string(fn->next_block_id());
 
+    // Where nothing measured the site (an AOT build without a profile),
+    // everything past way 0 is laid out after the function's hot code
+    // (codegen/block_layout.cpp reads the name): a loop that reads a few
+    // fields per iteration otherwise carries each read's scan and helper call
+    // in its body, and instanced_mesh_churn's loop took 25x the instruction-
+    // cache misses for it. A profile, or tier 2's counts, place them instead.
+    const bool unmeasured = !in_process_ && !(spec_ && (spec_->has_profile() || spec_->has_feedback()));
+    const std::string cold = unmeasured ? "_cold" : "";
     BasicBlock* bb_fast = b.append_block(prefix + "_hit");
-    BasicBlock* bb_poly = no_poly_scan ? nullptr : b.append_block(prefix + "_poly");
-    BasicBlock* bb_slow = b.append_block(prefix + "_miss");
+    BasicBlock* bb_poly = no_poly_scan ? nullptr : b.append_block(prefix + "_poly" + cold);
+    BasicBlock* bb_slow = b.append_block(prefix + "_miss" + cold);
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
 
@@ -184,8 +192,8 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
             // A site whose way 1 is empty has never held a second shape (the
             // helper installs move-to-front), so its miss goes straight to
             // the helper: one load and branch instead of the scan.
-            BasicBlock* bb_scan = b.append_block(prefix + "_scan");
-            BasicBlock* bb_poly_hit = b.append_block(prefix + "_phit");
+            BasicBlock* bb_scan = b.append_block(prefix + "_scan" + cold);
+            BasicBlock* bb_poly_hit = b.append_block(prefix + "_phit" + cold);
             b.position_at_end(bb_poly);
             Value* way1_shape = b.build_load(Type::i64(), site.base, site.off + kIcEntrySize + kIcShapeOffset);
             b.build_br_if(b.build_ne(way1_shape, b.build_iconst_i64(0)), bb_scan, bb_slow);

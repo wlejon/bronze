@@ -1,0 +1,23 @@
+mono 499500 499500
+reordered 499500
+overflow 4950
+extra 150
+mega 2800 2800
+proto data 500
+own shadow 1495
+proto changed 1693
+proto getter 1099 99
+own deleted 100 199
+proto swapped 149 298
+before define 45 45
+own getter 141
+deleted NaN
+readded 141
+frozen 45
+dict 45 45
+kinds 1,4,6,3,8,9,10,11,12,2 66
+kinds after 1,4,6,3,8,9,undefined,undefined,undefined,2
+hole true
+nullish true
+nullish true
+churn 24500

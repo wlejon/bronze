@@ -329,9 +329,18 @@ Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst
         return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site, site && mono,
                                                    inst_ast.is_family);
     }
-    if (site && mono && prop_lowering.enable_inlined_fastpaths() &&
+    // A read inference could not type, in a loop: the way-0 guard and the
+    // scan of the other ways, inline, in front of the out-of-line site. Its
+    // receivers are what the program's data holds (`basePos[i].x` over
+    // object literals, `children[i].matrixWorldAutoUpdate` over a scene's meshes),
+    // so one site meets a few shapes, which the scan answers without the
+    // call, its caller-saved spills and its root-slot clears. Outside loops
+    // the call stays: there the inline form is only size and compile time.
+    const bool loop_poly = !mono && lowering->in_loop();
+    if (site && (mono || loop_poly) && prop_lowering.enable_inlined_fastpaths() &&
         inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
-        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site, inst_ast.is_family);
+        return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site,
+                                                 inst_ast.is_family || loop_poly);
     }
     return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site ? prop_lowering.site_ptr(b, site) : nullptr);
 }
