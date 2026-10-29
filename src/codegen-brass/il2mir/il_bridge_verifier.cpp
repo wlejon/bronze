@@ -1,6 +1,7 @@
 #include "il_bridge_verifier.h"
 #include "il_abi.h"
 #include <brass/mir/verifier.hpp>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -26,7 +27,49 @@ bool is_const_i64_any(const brass::Value* v, uint64_t& out) {
     return true;
 }
 
-bool is_known_non_nan_f64(const brass::Value* v) {
+// A double that IS a Value's bits rather than the result of arithmetic: a
+// boxed Array element loaded as one (il_abi.h kBoxedElementAliasClass), an
+// i64's bits reinterpreted, or a block parameter every incoming edge
+// passes one of those (the read runs of il_lowering_hoist.cpp merge them).
+// `seen` cuts a loop of parameters: a cycle contributes no other value.
+bool is_value_bits_f64(const brass::Function& fn, const brass::Value* v, std::vector<const brass::Value*>& seen) {
+    if (!v) return false;
+    if (v->is_block_param()) {
+        if (std::find(seen.begin(), seen.end(), v) != seen.end()) return true;
+        seen.push_back(v);
+        const brass::BasicBlock* owner = v->defining_block();
+        bool any = false;
+        for (const brass::BasicBlock* bb : fn.blocks()) {
+            const brass::Instruction* term = bb ? bb->tail() : nullptr;
+            if (!term) continue;
+            auto check = [&](const brass::BranchTarget& t) {
+                if (t.block != owner || v->param_index() >= t.args.size()) return true;
+                any = true;
+                return is_value_bits_f64(fn, t.args[v->param_index()], seen);
+            };
+            if (!check(term->branch_target()) || !check(term->true_target()) || !check(term->false_target())) {
+                return false;
+            }
+            for (const auto& sc : term->switch_cases()) {
+                if (!check(sc.target)) return false;
+            }
+        }
+        return any;
+    }
+    const brass::Instruction* def = v->is_instruction() ? v->defining_instruction() : nullptr;
+    if (!def) return false;
+    if ((def->opcode() == brass::Opcode::load || def->opcode() == brass::Opcode::load_indexed) &&
+        def->alias_class() == kBoxedElementAliasClass) {
+        return true;
+    }
+    // An i64 reinterpreted: turned back, it is the same i64, which this rule
+    // has nothing to say about (it is about doubles that arithmetic made).
+    return def->opcode() == brass::Opcode::bitcast_f64_i64;
+}
+
+bool bits_need_no_canonicalization(const brass::Function& fn, const brass::Value* v) {
+    std::vector<const brass::Value*> seen;
+    if (is_value_bits_f64(fn, v, seen)) return true;
     if (!v || !v->is_instruction()) return false;
     const brass::Instruction* def = v->defining_instruction();
     if (!def) return false;
@@ -155,7 +198,7 @@ BridgeVerifyResult verify_bridge_function_detailed(const brass::Function& fn) {
 
             // 1. Track bitcast_i64_f64 instructions whose input is not proven non-NaN.
             if (op == brass::Opcode::bitcast_i64_f64 && inst->operand_count() == 1 && inst->result()) {
-                if (!is_known_non_nan_f64(inst->operand(0))) {
+                if (!bits_need_no_canonicalization(fn, inst->operand(0))) {
                     uncanonicalized_f64_bits.emplace_back(bb->id(), inst->result());
                 }
             }

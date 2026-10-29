@@ -447,23 +447,26 @@ Value* PropertyLoweringHelper::dense_array_slot_addr(Builder& b, Value* block, V
 }
 
 Value* PropertyLoweringHelper::load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index,
-                                                            bool check_hole) {
+                                                            bool check_hole, Type as) {
     Value* elem = nullptr;
     if (!head) {
         if (index <= kMaxInlineDispIndex) {
             const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-            elem = b.build_load(Type::i64(), block, disp);
+            elem = b.build_load(as, block, disp);
         } else {
-            elem = b.build_load_indexed(Type::i64(), block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes));
+            elem = b.build_load_indexed(as, block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes));
         }
     } else if (index <= kMaxInlineDispIndex) {
         const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-        elem = b.build_load_indexed(Type::i64(), block, head, 8, disp);
+        elem = b.build_load_indexed(as, block, head, 8, disp);
     } else {
         Value* slot = b.build_add(head, iconst64(b, index));
-        elem = b.build_load_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
+        elem = b.build_load_indexed(as, block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
     }
-    if (check_hole) {
+    // The double form carries the hole's bits; its boxed uses map it
+    // (IlLowering::get_val_by_id).
+    if (as == Type::f64()) elem->defining_instruction()->set_alias_class(kBoxedElementAliasClass);
+    if (check_hole && as == Type::i64()) {
         Value* is_hole = b.build_eq(elem, iconst64(b, BRONZE_ABI_HOLE_BITS));
         elem = b.build_select(is_hole, iconst64(b, kUndefinedTag), elem);
     }
@@ -724,7 +727,10 @@ bool lower_property_instruction(
                             Value* block = nullptr;
                             Value* head = nullptr;
                             lowering->get_dense_array_cursor(inst_ast.operands[0], obj_val, b, block, head);
-                            res_val = prop_lowering.load_proven_dense_array_elem(b, block, head, *elem_idx, check_hole);
+                            // il.h `numberBits`: the same load as a double.
+                            res_val = prop_lowering.load_proven_dense_array_elem(
+                                b, block, head, *elem_idx, check_hole,
+                                inst_ast.number_bits ? Type::f64() : Type::i64());
                             return true;
                         }
                         if (!lowering->run_once()) {

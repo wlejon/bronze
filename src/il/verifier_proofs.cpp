@@ -428,6 +428,15 @@ bool verifyFunctionProofs(const Function& fn, const Module* module, DiagnosticSi
         for (size_t iIdx = 0; iIdx < blk.instructions.size(); ++iIdx) {
             const Instruction& inst = blk.instructions[iIdx];
 
+            // Double-held bits (il.h `numberBits`) are a claim about a read of an
+            // element of a boxed receiver into a boxed result; on anything else the
+            // backend would be handed a representation it never chose.
+            if (inst.numberBits && (inst.op != Op::PropGet || inst.type != Type::Dynamic ||
+                                    inst.staticSlot != Instruction::kNoStaticSlot)) {
+                return fail(std::string(opName(inst.op)) +
+                            " carries f64-bits, which only a dynamic element prop.get may");
+            }
+
             // --- (a) Op::Unbox (`rawUnbox` and `nullishUnbox`) ---
             if (inst.op == Op::Unbox) {
                 if (inst.rawUnbox && inst.nullishUnbox) {

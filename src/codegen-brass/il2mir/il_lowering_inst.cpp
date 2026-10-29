@@ -107,6 +107,15 @@ bool IlLowering::lower_instruction(
         if (!lower_property_instruction(this, inst_ast, b, fn, val_map, res_val)) {
             return false;
         }
+        // An element read the guarded-region pass let us hold as a double,
+        // which the property lowering loaded as one: kept as the f64, never
+        // made a tagged value (see number_bits_ids_).
+        if (inst_ast.op == BronzeOp::PropGet && inst_ast.number_bits && res_val &&
+            res_val->type() == Type::f64() && inst_ast.result_id != UINT32_MAX) {
+            val_map[inst_ast.result_id] = res_val;
+            number_bits_ids_[inst_ast.result_id] = !is_hole_insensitive(inst_ast.result_id);
+            return true;
+        }
         set_inst_result(inst_ast.result_id, res_val, b, val_map);
         return true;
     }
@@ -522,7 +531,11 @@ bool IlLowering::lower_instruction(
         case BronzeOp::Unbox: {
             Value* op0 = get_opd(0);
             if (!op0) return false;
-            if (inst_ast.result_type == BronzeType::F64) {
+            if (inst_ast.result_type == BronzeType::F64 && inst_ast.raw_unbox && !inst_ast.operands.empty() &&
+                number_bits_ids_.count(inst_ast.operands[0])) {
+                // The read was loaded as the double these bits are.
+                res_val = val_map.at(inst_ast.operands[0]);
+            } else if (inst_ast.result_type == BronzeType::F64) {
                 Value* i_val = ensure_type(op0, Type::i64(), b);
                 if (inst_ast.raw_unbox) {
                     res_val = b.build_bitcast_f64_i64(i_val);

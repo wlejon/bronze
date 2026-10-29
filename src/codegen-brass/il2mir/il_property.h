@@ -298,7 +298,10 @@ public:
     // of `index`.
     void load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head);
     Value* dense_array_slot_addr(Builder& b, Value* block, Value* head, uint32_t index);
-    Value* load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index, bool check_hole);
+    // `as` i64 (the Value, a hole mapped to undefined with `check_hole`) or
+    // f64 (the same eight bytes as a double, hole and all: il.h `numberBits`).
+    Value* load_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index, bool check_hole,
+                                        Type as = Type::i64());
     void store_proven_dense_array_elem(Builder& b, Value* block, Value* head, uint32_t index, Value* val);
     bool is_known_non_ref(Value* val) const;
 

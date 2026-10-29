@@ -374,16 +374,16 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                     case Op::PropGet:
                         out += "prop.get %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", " + std::to_string(inst.keyIndex) + ", " + std::to_string(inst.icIndex);
-                        // The site inference proved monomorphic: an identity
-                        // claim about the receiver. Visible in the canonical
-                        // text because it is what --infer-stats counts.
+                        // The site inference proved monomorphic: an identity claim about
+                        // the receiver, shown because it is what --infer-stats counts.
                         if (inst.icMonomorphic) out += ", mono";
-                        // The receiver is a class- or function-declaration
-                        // BINDING, so it can be a function object and its
-                        // members can live in a statics box. A hint, not a
-                        // proof — but it decides whether the backend emits the
-                        // arm that reads one, so the canonical text names it.
+                        // The receiver is a class- or function-declaration BINDING, so it
+                        // can be a function object with members in a statics box: a hint,
+                        // not a proof, but it decides whether the backend emits the arm
+                        // that reads one. f64-bits (il.h `numberBits`) changes the read's
+                        // representation. Both change emitted code, so the text names them.
                         if (inst.icFnRecv) out += ", fn-recv";
+                        if (inst.numberBits) out += ", f64-bits";
                         // The stronger claim, and the one that changes emitted
                         // code: a proven class layout put this key at a
                         // constant instance slot, so the site carries a

@@ -325,6 +325,11 @@ private:
     std::unordered_set<uint32_t> module_env_regs_;
     // The IL ids of the current function's dynamic values (held tagged).
     std::unordered_set<uint32_t> current_fn_dynamic_ids_;
+    // The IL ids of the current function's element reads held as doubles
+    // (il.h `numberBits`), each with whether its boxed form maps a hole to
+    // undefined. val_map holds the f64; get_val_by_id hands every other use
+    // the bits, made where that use is, so no GC reference to them lives on.
+    std::unordered_map<uint32_t, bool> number_bits_ids_;
     Value* argv_block_ = nullptr;
     uint32_t argv_block_words_ = 0;
     // The function's per-thread module-data delta, computed at its entry;

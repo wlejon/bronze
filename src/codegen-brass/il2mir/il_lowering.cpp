@@ -211,6 +211,14 @@ Value* IlLowering::get_val_by_id(uint32_t id, Builder& b, const std::unordered_m
     }
     auto it = val_map.find(id);
     if (it == val_map.end()) return nullptr;
+    // An element read held as a double (il.h `numberBits`), its bits made at the use: nothing
+    // collects before its guard chain and past it they are a Number's, never a moved object.
+    if (const auto nb = number_bits_ids_.find(id); nb != number_bits_ids_.end() && it->second) {
+        Value* bits = b.build_bitcast_i64_f64(it->second);
+        if (!nb->second) return bits;
+        Value* is_hole = b.build_eq(bits, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
+        return b.build_select(is_hole, b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag)), bits);
+    }
     // A dynamic value lives as a tagged SSA value, which every tier reports
     // to the collector; each use reads its bits afresh, so a use after a
     // collection sees where the object is now.
@@ -719,6 +727,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
 
     module_env_regs_.clear();
     current_fn_dynamic_ids_.clear();
+    number_bits_ids_.clear();
     current_fn_ast_ = &fn_ast;
     current_mod_ = &mod;
     inline_scope_ids_.assign(fn_ast.inline_frames.size(), 0);

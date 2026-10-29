@@ -23,6 +23,13 @@ constexpr uint64_t kInt32Tag = uint64_t{BRONZE_ABI_TAG_INT32} << 48;
 constexpr uint64_t kPrintTag = 0xFFFE000000000001ULL;
 constexpr uint64_t kPrintErrTag = 0xFFFE000000000002ULL;
 
+// The brass alias class (Instruction::alias_class) of an f64 load of a boxed
+// Array element, the double form of a read il.h `numberBits` licenses: its
+// eight bytes are what a store of a Value put there, so as an i64 they are a
+// valid Value already and need no NaN canonicalization (il_bridge_verifier).
+// Nothing else carries it; every other access is class 0, which overlaps it.
+constexpr uint8_t kBoxedElementAliasClass = 1;
+
 // The thread-local block, as pinned-register code reads it.
 constexpr int32_t kBronzeTlsStackLimitOff = BRONZE_TLS_STACK_LIMIT_OFF;
 // The thread's module-delta array, indexed by a module's slot cell: what

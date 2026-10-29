@@ -420,26 +420,43 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         std::vector<Value*> vals_f64(N, nullptr);
         std::vector<Value*> vals_boxed(N, nullptr);
         Value* all_num_ok = nullptr;
+        // A dense-array source is only tested here; each store block below loads its element
+        // again, right before the store. Holding all N elements, boxed and unboxed, across the
+        // target's header checks kept 2N values live and spilled most of them (toArray's 16).
+        // The second load sees the bits the test saw: between them run only loads of the
+        // target's header and branches, which neither run user code nor collect, so the
+        // elements block cannot move or change.
+        const bool reload_src = src_kind == ElemRunPeerKind::DenseArray;
+        auto src_elem = [&](size_t k) -> Value* {
+            // `check_hole = false`: BRONZE_ABI_HOLE_BITS > kBronzeNumberMaxBits, so a hole
+            // is rejected by the number test without a separate select per load.
+            return prop_lowering_.load_proven_dense_array_elem(b, src_block, src_head, set_steps[k].src_elem_idx,
+                                                               /*check_hole=*/false);
+        };
         for (size_t k = 0; k < N; ++k) {
             Value* raw_val = nullptr;
-            if (src_kind == ElemRunPeerKind::DenseArray) {
-                // `check_hole = false`: BRONZE_ABI_HOLE_BITS > kBronzeNumberMaxBits, so a hole
-                // is rejected by `unbox_known_number` below without a separate select per load.
-                raw_val = prop_lowering_.load_proven_dense_array_elem(b, src_block, src_head,
-                                                                      set_steps[k].src_elem_idx,
-                                                                      /*check_hole=*/false);
+            if (reload_src) {
+                raw_val = src_elem(k);
             } else if (src_kind == ElemRunPeerKind::MonoObj) {
                 raw_val = prop_lowering_.load_slot(b, src_ptr, src_slot_words[k]);
             } else {
                 raw_val = get_val_by_id(set_steps[k].precomputed_val_id, b, val_map);
             }
             Value* num_ok = nullptr;
-            vals_f64[k] = prop_lowering_.unbox_known_number(b, raw_val, num_ok);
-            vals_boxed[k] = (raw_val->type() == Type::i64()) ? raw_val : prop_lowering_.box_number(b, vals_f64[k]);
+            Value* as_f64 = prop_lowering_.unbox_known_number(b, raw_val, num_ok);
+            if (!reload_src) {
+                vals_f64[k] = as_f64;
+                vals_boxed[k] = (raw_val->type() == Type::i64()) ? raw_val : prop_lowering_.box_number(b, as_f64);
+            }
             if (num_ok) {
                 all_num_ok = all_num_ok ? b.build_and(all_num_ok, num_ok) : num_ok;
             }
         }
+        // The element bits for store `k`, in the store's own block (see `reload_src`).
+        auto elem_bits = [&](size_t k) -> Value* { return reload_src ? src_elem(k) : vals_boxed[k]; };
+        auto elem_f64 = [&](size_t k) -> Value* {
+            return reload_src ? b.build_bitcast_f64_i64(src_elem(k)) : vals_f64[k];
+        };
         Value* max_end_idx = b.build_add(base_i64, iconst(b, N - 1));
         Value* header_low = b.build_load(Type::i32(), arr_ptr, 0);
         Value* is_arr = b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow));
@@ -470,14 +487,14 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         Value* f32_data = prop_lowering_.load_typed_array_data(b, arr_ptr);
         for (size_t k = 0; k < N; ++k) {
             b.build_store_indexed(Type::f32(), f32_data, base_i64, 4, static_cast<int32_t>(k * 4),
-                                  b.build_fptrunc_f32_f64(vals_f64[k]));
+                                  b.build_fptrunc_f32_f64(elem_f64(k)));
         }
         b.build_br(bb_merge);
 
         b.position_at_end(bb_ta_f64);
         Value* f64_data = prop_lowering_.load_typed_array_data(b, arr_ptr);
         for (size_t k = 0; k < N; ++k) {
-            b.build_store_indexed(Type::f64(), f64_data, base_i64, 8, static_cast<int32_t>(k * 8), vals_f64[k]);
+            b.build_store_indexed(Type::f64(), f64_data, base_i64, 8, static_cast<int32_t>(k * 8), elem_f64(k));
         }
         b.build_br(bb_merge);
 
@@ -497,9 +514,9 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             b.build_and(b.build_load(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
         for (size_t k = 0; k < N; ++k) {
             const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(k) * 8);
-            b.build_store_indexed(Type::i64(), arr_block, base_slot, 8, disp, vals_boxed[k]);
+            b.build_store_indexed(Type::i64(), arr_block, base_slot, 8, disp, elem_bits(k));
         }
-        // Every `vals_boxed[k]` is proven <= kBronzeNumberMaxBits, so no write barrier is needed.
+        // Every element stored is proven <= kBronzeNumberMaxBits, so no write barrier is needed.
         b.build_br(bb_merge);
 
         // Slow path: lower the slice in helper-only mode (`run_once_ = true`).

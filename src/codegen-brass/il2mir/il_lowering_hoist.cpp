@@ -221,6 +221,7 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
     primitive_value_ids_.clear();
     number_value_ids_.clear();
     current_fn_dynamic_ids_.clear();
+    number_bits_ids_.clear();
     block_dense_proofs_.clear();
     active_dense_arrays_.clear();
     dense_array_cursors_.clear();
@@ -650,11 +651,14 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             BasicBlock* bb_slow = b.append_block(prefix + "_slow");
             BasicBlock* bb_merge = b.append_block(prefix + "_merge");
 
+            // A read il.h `numberBits` licenses merges as a double (number_bits_ids_).
             std::vector<Value*> merge_params;
             merge_params.reserve(get_count);
             for (size_t j = inst_idx; j < run_end; ++j) {
-                const uint32_t res_id = blk_ast.instructions[j].result_id;
-                const Type ptype = current_fn_dynamic_ids_.count(res_id) ? Type::tagged() : Type::i64();
+                const BronzeInstruction& inst = blk_ast.instructions[j];
+                const Type ptype = inst.number_bits                               ? Type::f64()
+                                   : current_fn_dynamic_ids_.count(inst.result_id) ? Type::tagged()
+                                                                                   : Type::i64();
                 merge_params.push_back(b.add_block_param(bb_merge, ptype));
             }
 
@@ -671,8 +675,9 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 apply_loc(inst);
                 const auto [block, head] = recv_cursors[inst.operands[0]];
                 const bool check_hole = !is_hole_insensitive(inst.result_id);
-                Value* v = prop_lowering_.load_proven_dense_array_elem(b, block, head, elem_idx, check_hole);
-                fast_args.push_back(ensure_type(v, merge_params[j - inst_idx]->type(), b));
+                Value* v = prop_lowering_.load_proven_dense_array_elem(b, block, head, elem_idx, check_hole,
+                                                                       inst.number_bits ? Type::f64() : Type::i64());
+                fast_args.push_back(inst.number_bits ? v : ensure_type(v, merge_params[j - inst_idx]->type(), b));
             }
             b.build_br(bb_merge, fast_args);
 
@@ -686,13 +691,24 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                 const IcSite site = prop_lowering_.ic_site_ref(b, inst.ic_index);
                 Value* v = prop_lowering_.lower_prop_get(b, recv, inst.index,
                                                          site ? prop_lowering_.site_ptr(b, site) : nullptr);
-                slow_args.push_back(ensure_type(v, merge_params[j - inst_idx]->type(), b));
+                slow_args.push_back(ensure_type(v, inst.number_bits ? Type::tagged() : merge_params[j - inst_idx]->type(), b));
+            }
+            // The helper reads are GC points, so a double-held read's bits
+            // become a double only after the last of them: each stays a
+            // tagged, rooted value until no collection can follow it.
+            for (size_t j = inst_idx; j < run_end; ++j) {
+                if (blk_ast.instructions[j].number_bits) {
+                    Value*& arg = slow_args[j - inst_idx];
+                    arg = b.build_bitcast_f64_i64(ensure_type(arg, Type::i64(), b));
+                }
             }
             b.build_br(bb_merge, slow_args);
 
             b.position_at_end(bb_merge);
             for (size_t j = inst_idx; j < run_end; ++j) {
-                val_map[blk_ast.instructions[j].result_id] = merge_params[j - inst_idx];
+                const BronzeInstruction& inst = blk_ast.instructions[j];
+                val_map[inst.result_id] = merge_params[j - inst_idx];
+                if (inst.number_bits) number_bits_ids_[inst.result_id] = !is_hole_insensitive(inst.result_id);
             }
             invalidate_dense_array_proofs();
             inst_idx = run_end - 1;

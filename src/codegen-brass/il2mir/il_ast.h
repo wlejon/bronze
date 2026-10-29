@@ -186,6 +186,8 @@ struct BronzeInstruction {
     BronzeType box_type = BronzeType::Unknown;
     bool raw_unbox = false;
     bool nullish_unbox = false;
+    // PropGet: the element's bits may be held as a double (il.h `numberBits`).
+    bool number_bits = false;
     std::string callee_name;
     // MethodCall: the typed entry of `callee_name` the direct edge calls
     // (il.h `typedTarget`), or empty. The guard's identity stays `callee_name`.

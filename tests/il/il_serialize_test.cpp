@@ -70,6 +70,7 @@ Module fullModule() {
     inst.icFnRecv = true;
     inst.rawUnbox = true;
     inst.nullishUnbox = true;
+    inst.numberBits = true;
     inst.staticSlot = 2;
     inst.staticCellIndex = 1;
     inst.familyLo = 0;
@@ -118,6 +119,7 @@ TEST_CASE("a module round-trips through its binary encoding") {
     CHECK(b.target.args == a.target.args);
     CHECK(b.callEnvHops == a.callEnvHops);
     CHECK(b.nullishUnbox);
+    CHECK(b.numberBits);
     CHECK(b.typedTarget == 0);
     CHECK(back.functions[0].typedOrigin == 1);
     CHECK(back.functions[0].typedArgc == 1);

@@ -99,6 +99,31 @@ TEST_CASE("Proof verifier rejects rawUnbox + nullishUnbox set simultaneously") {
     CHECK(diags.hasErrors());
 }
 
+TEST_CASE("Proof verifier rejects f64-bits on a read the backend cannot hold as a double") {
+    // numberBits is only for a dynamic element read; a static-slot read has
+    // its own fast path and a typed one is not a Value's bits.
+    auto rejected = [](void (*mutate)(Instruction&)) {
+        Function fn;
+        fn.name = "badNumberBits";
+        fn.params = {{"a", Type::Dynamic}};
+        fn.returnType = Type::Dynamic;
+        fn.valueCount = 2;
+        Block b0;
+        b0.id = 0;
+        Instruction get{Op::PropGet, Type::Dynamic, 1, {0}, 0.0, 0, 0};
+        get.numberBits = true;
+        mutate(get);
+        b0.instructions.push_back(get);
+        b0.instructions.push_back({Op::Ret, Type::Void, kNoValue, {1}, 0.0, 0, 0});
+        fn.blocks.push_back(std::move(b0));
+        DiagnosticSink diags;
+        return !verifyFunction(fn, diags) && diags.hasErrors();
+    };
+    CHECK(rejected([](Instruction& i) { i.staticSlot = 0; }));
+    CHECK(rejected([](Instruction& i) { i.type = Type::F64; }));
+    CHECK(rejected([](Instruction& i) { i.op = Op::PropSet; i.result = kNoValue; }));
+}
+
 TEST_CASE("Proof verifier rejects rawUnbox of known non-Number producers") {
     auto checkProducerRejected = [](Instruction producer) {
         Function fn;

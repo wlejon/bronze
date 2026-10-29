@@ -31,6 +31,7 @@ struct InstructionMirror {
     bool icFnRecv;
     bool rawUnbox;
     bool nullishUnbox;
+    bool numberBits;
     uint32_t staticSlot;
     uint32_t staticCellIndex;
     uint32_t familyLo;
@@ -290,7 +291,8 @@ enum InstBits : uint32_t {
     // The three transition-run fields ride on one bit: they are set together.
     kHasTransitionRun = 1u << 26,
     kHasDefineAdd = 1u << 27,
-    kKnownBits = (1u << 28) - 1,
+    kNumberBits = 1u << 28,
+    kKnownBits = (1u << 29) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -338,6 +340,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.icFnRecv) m |= kIcFnRecv;
     if (inst.rawUnbox) m |= kRawUnbox;
     if (inst.nullishUnbox) m |= kNullishUnbox;
+    if (inst.numberBits) m |= kNumberBits;
     if (inst.envImmutable) m |= kEnvImmutable;
 
     w.u8(static_cast<uint8_t>(inst.op));
@@ -428,6 +431,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     inst.icFnRecv = (m & kIcFnRecv) != 0;
     inst.rawUnbox = (m & kRawUnbox) != 0;
     inst.nullishUnbox = (m & kNullishUnbox) != 0;
+    inst.numberBits = (m & kNumberBits) != 0;
     inst.envImmutable = (m & kEnvImmutable) != 0;
 }
 

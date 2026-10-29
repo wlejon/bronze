@@ -440,6 +440,35 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         }
     }
 
+    // The reads whose bits the backend may hold as a double (il.h
+    // `numberBits`): the window reads a holding claim answers, and a run
+    // point's guarded reads inside its run. From each such read to its point's
+    // chain the fast copy has only reads and instructions pure in it (the
+    // window's and the run's own rule), so nothing collects while the bits may
+    // still be an object's, and past the chain the value is a Number.
+    std::vector<uint8_t> numberBitsOf(src.valueCount, 0);
+    for (il::BlockId b : plan.blocks) {
+        const il::Block& block = src.blocks[b];
+        auto elementRead = [&](il::ValueId v, uint32_t from, uint32_t to) -> const il::Instruction* {
+            if (defs[v].block != b || defs[v].index < from || defs[v].index >= to) return nullptr;
+            const il::Instruction& def = block.instructions[defs[v].index];
+            const bool read = def.op == il::Op::PropGet && !def.operands.empty() &&
+                              def.staticSlot == il::Instruction::kNoStaticSlot && def.type == il::Type::Dynamic;
+            return read ? &def : nullptr;
+        };
+        for (const GuardPoint& point : guardPoints[b]) {
+            const uint32_t chainAt = point.run.receiver == il::kNoValue ? point.index : point.run.guardIndex;
+            for (il::ValueId v : point.skip) {
+                if (elementRead(v, 0, chainAt)) numberBitsOf[v] = 1;
+            }
+            if (point.run.receiver == il::kNoValue) continue;
+            for (il::ValueId v : point.guarded) {
+                const il::Instruction* def = elementRead(v, point.index, point.run.guardIndex);
+                if (def && def->operands[0] == point.run.receiver) numberBitsOf[v] = 1;
+            }
+        }
+    }
+
     // ---- the block layout -------------------------------------------------
     // Ids are handed out in EMISSION ORDER, because the backend walks blocks in
     // index order and a use whose definition has not been emitted reads a null
@@ -792,7 +821,10 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 const bool promotedArith =
                     inst.result != il::kNoValue && candidateOf[inst.result] != nullptr &&
                     candidateOf[inst.result]->kind == CandidateKind::Promoted;
-                if (inst.result != il::kNoValue) inst.result = fastOf[inst.result];
+                if (inst.result != il::kNoValue) {
+                    inst.numberBits = numberBitsOf[inst.result] != 0;
+                    inst.result = fastOf[inst.result];
+                }
 
                 if (promotedArith) {
                     inst.type = il::Type::F64;

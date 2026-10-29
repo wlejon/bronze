@@ -215,6 +215,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.family_lo = inst.familyLo;
             out.family_span = inst.familySpan;
             out.is_family = inst.familyLo != il::Instruction::kNoFamily;
+            out.number_bits = inst.numberBits;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);
             }

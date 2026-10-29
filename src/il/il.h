@@ -139,6 +139,18 @@ struct Instruction {
     // because there is no lattice element for "number or nullish" and there is
     // deliberately never going to be one.
     bool nullishUnbox = false;
+    // PropGet of a canonical index key: the backend may hold the element's
+    // bits as a DOUBLE rather than as a tagged value. Set by exactly one
+    // thing, the guarded-region pass, on the fast copy of a read that a guard
+    // point tests and whose stretch from the read to that point's chain is
+    // only reads and instructions pure in the fast copy (a NUMBER WINDOW or a
+    // READ RUN, lower/guard_region.h). Sound because until the chain nothing
+    // can collect, so bits held as a double still name where any object is,
+    // and past it the chain has proved the value a Number, whose bits ARE its
+    // double's. What it buys is the representation: the 32 reads of a matrix
+    // kernel become f64 loads, not GC references that are spilled at their
+    // definition and moved to an xmm register at each use.
+    bool numberBits = false;
     // PropGet/PropSet: the instance slot a PROVEN CLASS LAYOUT puts this key
     // at, or `kNoStaticSlot`. Strictly stronger than `icMonomorphic`, which is
     // only an identity claim: this says the receiver's class was modellable end

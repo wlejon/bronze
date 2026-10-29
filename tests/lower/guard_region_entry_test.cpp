@@ -561,6 +561,10 @@ TEST_CASE("the mat4 kernel gets one guard chain, one trampoline and thirty-two r
     // Every checked unbox in the fast copy is gone, replaced by thirty-two raw
     // ones — one per value, not one per use.
     CHECK(countOf(text, ", raw") == 32);
+    // Under the claims nothing between a read and the chain collects, and
+    // past it each read is a Number, so all thirty-two fast-copy reads may be
+    // held as doubles (il.h `numberBits`); the slow copy's reads never are.
+    if (!lower::numberArraysDisabled()) CHECK(countOf(text, ", f64-bits") == 32);
 
     // The trampoline: exactly one block whose only instruction is a jump, and
     // no `box.f64` anywhere in it. Every partial product is computed after the
