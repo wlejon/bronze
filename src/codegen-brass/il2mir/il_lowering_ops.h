@@ -24,6 +24,10 @@ Value* boxed_f64_source(Value* v);
 // whose answer is its bits unless `helper_only`.
 Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only);
 
+// `box.str k` for the global key id `key_id` (i32): bronze_box_str_key's
+// answer, read inline from the thread's key-header table (il_box_str_key.cpp).
+Value* lower_box_str_key(Builder& b, Value* key_id);
+
 bool lower_ops_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,

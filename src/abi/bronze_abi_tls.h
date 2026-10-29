@@ -92,6 +92,17 @@ typedef struct bronze_tls_block {
      * equal proto_epoch, as the runtime's fast paths do
      * (rt_array_holes.cpp, rtArrayChainHoldsIndex). */
     uint64_t array_hole_epoch;
+    /* This thread's interned key headers, indexed by global key id
+     * (rt_key.cpp's per-thread table, mirrored here after every change of
+     * its storage): entry i is the arena StringHeader* for key i, or 0 when
+     * this thread has not interned it yet; `key_header_count` entries.
+     * What lets generated code box a string literal (`box.str k`, which is
+     * bronze_box_str_key) with two loads instead of a call: an entry that is
+     * there, tagged as a String, is exactly the helper's answer, and an index
+     * at or past the count or a 0 entry calls the helper, which interns it.
+     * Null / 0 on a thread that has interned nothing. */
+    uint64_t* key_header_tbl;
+    uint64_t key_header_count;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -128,6 +139,8 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_REALM_SLOT_OFF                248
 #define BRONZE_TLS_TA_LENGTH_TBL_OFF             256
 #define BRONZE_TLS_ARRAY_HOLE_EPOCH_OFF          264
+#define BRONZE_TLS_KEY_HEADER_TBL_OFF            272
+#define BRONZE_TLS_KEY_HEADER_COUNT_OFF          280
 
 /*
  * ---- the pinned register -----------------------------------------------

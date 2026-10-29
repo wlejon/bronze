@@ -32,6 +32,7 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
+#include "runtime/tls_block.h"
 #include "runtime/value.h"
 
 namespace bronze::runtime {
@@ -46,6 +47,16 @@ const std::string g_emptyKey;
 const KeyInfo g_emptyKeyInfo{};
 
 thread_local std::vector<StringHeader*> g_keyHeaders;
+
+// Mirrors g_keyHeaders' storage into the TLS block (bronze_abi_tls.h,
+// key_header_tbl), which generated code's inline `box.str` reads. Called after
+// every change of the vector's data pointer or size; a store into an existing
+// entry needs nothing, the block already points at it.
+void publishKeyHeaders() {
+    bronze_tls_block* tls = rtTls();
+    tls->key_header_tbl = reinterpret_cast<uint64_t*>(g_keyHeaders.data());
+    tls->key_header_count = g_keyHeaders.size();
+}
 thread_local std::vector<const KeyInfo*> g_threadKeyInfos;
 // Each thread's copy of the strings' addresses, as for the infos: a key's
 // string never changes or moves once registered (a deque grows without
@@ -73,6 +84,7 @@ const std::string& rtKeyString(uint32_t index) {
 StringHeader* rtKeyHeader(uint32_t index) {
     if (index >= g_keyHeaders.size()) {
         g_keyHeaders.resize(index + 1, nullptr);
+        publishKeyHeaders();
     }
     StringHeader* hdr = g_keyHeaders[index];
     if (!hdr) {
@@ -115,6 +127,7 @@ const KeyInfo& rtKeyInfo(uint32_t index) {
 void rtTeardownThreadKeys() {
     g_keyHeaders.clear();
     g_keyHeaders.shrink_to_fit();
+    publishKeyHeaders();
     g_threadKeyInfos.clear();
     g_threadKeyInfos.shrink_to_fit();
     g_threadKeyStrings.clear();

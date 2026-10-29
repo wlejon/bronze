@@ -2,6 +2,7 @@
 #include "il_lowering.h"
 #include "il_abi.h"
 #include <cmath>
+#include <cstdlib>
 
 namespace il2mir {
 
@@ -95,9 +96,34 @@ Value* lower_dynamic_bitwise(Builder& b, BronzeOp op, Value* op0, Value* op1, co
 bool is_bits_identity_constant(const Value* v) {
     if (!v || !v->is_instruction()) return false;
     const brass::Instruction* def = v->defining_instruction();
-    if (!def || def->opcode() != brass::Opcode::iconst_i64) return false;
-    const uint64_t tag = static_cast<uint64_t>(def->imm_i64()) >> BRONZE_ABI_VALUE_TAG_SHIFT;
-    return tag == BRONZE_ABI_TAG_UNDEFINED || tag == BRONZE_ABI_TAG_NULL || tag == BRONZE_ABI_TAG_BOOL;
+    if (!def) return false;
+    if (def->opcode() == brass::Opcode::iconst_i64) {
+        const uint64_t tag = static_cast<uint64_t>(def->imm_i64()) >> BRONZE_ABI_VALUE_TAG_SHIFT;
+        return tag == BRONZE_ABI_TAG_UNDEFINED || tag == BRONZE_ABI_TAG_NULL || tag == BRONZE_ABI_TAG_BOOL;
+    }
+    // A boxed Boolean as il_lowering_inst.cpp's Box builds it, `zext(b & 1) |
+    // kBoolTag`, constant or not (`update === true` against a bool parameter
+    // boxed for its default): its bits are one of the two Boolean values, which
+    // no Number, String or BigInt has, so `===` against it is the bits'
+    // compare exactly as against a Boolean constant.
+    // BRONZE_NO_STRICT_EQ_BOXED_BOOL=1 keeps it on the general path.
+    static const bool no_boxed_bool = std::getenv("BRONZE_NO_STRICT_EQ_BOXED_BOOL") != nullptr;
+    if (no_boxed_bool || def->opcode() != brass::Opcode::or_ || def->operand_count() != 2) return false;
+    const Value* lhs = def->operand(0);
+    const Value* rhs = def->operand(1);
+    const brass::Instruction* zext = lhs->is_instruction() ? lhs->defining_instruction() : nullptr;
+    const brass::Instruction* tag = rhs->is_instruction() ? rhs->defining_instruction() : nullptr;
+    if (!zext || !tag || zext->opcode() != brass::Opcode::zext_i64 || tag->opcode() != brass::Opcode::iconst_i64 ||
+        static_cast<uint64_t>(tag->imm_i64()) != kBoolTag) {
+        return false;
+    }
+    // The zero-extended operand must be a 0/1: Box ANDs it with 1 first.
+    const Value* low = zext->operand(0);
+    const brass::Instruction* masked = low->is_instruction() ? low->defining_instruction() : nullptr;
+    if (!masked || masked->opcode() != brass::Opcode::and_ || masked->operand_count() != 2) return false;
+    const Value* one = masked->operand(1);
+    const brass::Instruction* one_def = one->is_instruction() ? one->defining_instruction() : nullptr;
+    return one_def && one_def->opcode() == brass::Opcode::iconst_i32 && one_def->imm_i64() == 1;
 }
 
 // A dynamic `===`, bronze_strict_eq without the call wherever its answer is
@@ -298,14 +324,30 @@ Value* box_f64_bits(Builder& b, Value* f) {
 // BigInts and the hole read memory or are the helper's.
 Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only) {
     if (helper_only) return b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1));
+    // BRONZE_NO_TRUTHY_BOOL_FIRST=1: no Boolean arm ahead of the classifier.
+    // Compile-time, like the other shape-of-code seams.
+    static const bool no_bool_first = std::getenv("BRONZE_NO_TRUTHY_BOOL_FIRST") != nullptr;
     BasicBlock* cur = b.current_block();
     const std::string prefix = "truthy_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* slow = b.append_block(prefix + "_slow");
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i32());
+    BasicBlock* classify = no_bool_first ? nullptr : b.append_block(prefix + "_classify");
     b.position_at_end(cur);
 
     auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
+    // A Boolean first, on its own branch: most dynamic conditions are a flag
+    // field (`if (this.matrixAutoUpdate)`, `data.hasOwnGeometry && ...`) that
+    // only ever holds true or false, and the branch-free classifier below
+    // costs ~50 instructions where this costs four. The two Boolean values are
+    // exactly kBoolTag | 0 and kBoolTag | 1, so `v - kBoolTag < 2` is "v is a
+    // Boolean" and its low bit is its answer; every other value falls through
+    // to the classifier unchanged.
+    if (classify) {
+        Value* is_bool = b.build_ult(b.build_sub(v, bits(kBoolTag)), bits(2));
+        b.build_br_if(is_bool, merge, {b.build_and(b.build_trunc_i32(v), b.build_iconst_i32(1))}, classify, {});
+        b.position_at_end(classify);
+    }
     Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
     // |x| in [1, +Inf] bits: neither a zero nor a NaN.
     Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));

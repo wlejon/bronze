@@ -493,7 +493,7 @@ bool IlLowering::lower_instruction(
         case BronzeOp::Box: {
             if (inst_ast.box_type == BronzeType::Str && inst_ast.operands.empty()) {
                 Value* key_idx = get_key_id(b, inst_ast.index);
-                res_val = b.build_call("bronze_box_str_key", Type::i64(), {key_idx});
+                res_val = lower_box_str_key(b, key_idx);
                 break;
             }
             Value* op0 = get_opd(0);
