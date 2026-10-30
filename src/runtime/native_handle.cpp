@@ -22,15 +22,6 @@ namespace bronze::runtime {
 
 namespace {
 
-// One cell's destructor, the context of the collector finalizer that runs it
-// (brass::gc::Heap::add_finalizer): called once, at the end of the collection
-// that finds the cell dead.
-struct FinalizerEntry {
-    void* data;
-    HandleDestructor dtor;
-    Finalize when;
-};
-
 // Deferred destructors between the collection that queued them and the drain
 // that runs them. Plain host pointers only — nothing here is a GC value, so
 // the queue needs no rooting and survives any number of collections between
@@ -67,24 +58,31 @@ constexpr uint32_t kSlotClassTag = 3;
 // integer: a host keeping several realms on a thread (one per app) refuses a
 // handle of one realm in another at unwrap, beside the brand check.
 constexpr uint32_t kSlotRealm = 4;
+// Set in the class-tag word when it holds a host brand (rtMakeBrandedHandle)
+// rather than a native class tag. Both are pointers to objects of at least
+// 2-byte alignment, so bit 0 is free in either.
+constexpr uint64_t kHostBrandBit = 1;
 
-// The collector's finalizer for a dead cell. The destructor gets the pointer
-// registered with the cell, never one read out of the dead payload.
-void runFinalizer(void* context) {
-    auto* entry = static_cast<FinalizerEntry*>(context);
-    if (entry->when == Finalize::InSweep) {
-        entry->dtor(entry->data);
-    } else {
-        // Deferred: queued for the drain. Only the host pair survives, which
-        // is what licenses the destructor to do anything it likes later.
-        g_pendingFinalizers.push_back({entry->data, entry->dtor});
-    }
-    delete entry;
+// The collector's finalizers for a dead cell, one per `Finalize` mode: the
+// collector holds the (data, destructor) pair itself (its two-word
+// add_finalizer), so registering a cell allocates nothing beyond the
+// collector's own list. The destructor gets the pointer registered with the
+// cell, never one read out of the dead payload. The destructor travels as a
+// data pointer, which every platform bronze targets round-trips exactly.
+void runInSweep(void* data, void* dtor) {
+    reinterpret_cast<HandleDestructor>(dtor)(data);
+}
+
+void runDeferred(void* data, void* dtor) {
+    // Queued for the drain. Only the host pair survives, which is what
+    // licenses the destructor to do anything it likes later.
+    g_pendingFinalizers.push_back({data, reinterpret_cast<HandleDestructor>(dtor)});
 }
 
 void registerFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor, Finalize when) {
-    rtHeap().gc().add_finalizer(reinterpret_cast<uintptr_t>(cell), &runFinalizer,
-                                new FinalizerEntry{data, dtor, when});
+    rtHeap().gc().add_finalizer(reinterpret_cast<uintptr_t>(cell),
+                                when == Finalize::InSweep ? &runInSweep : &runDeferred, data,
+                                reinterpret_cast<void*>(dtor));
 }
 
 // A host pointer stored raw in an internal slot must never look like a heap
@@ -181,9 +179,11 @@ bool rtHandleForeign(Value handle) {
     return !rtRealmSlotInCurrentGroup(rtHandleRealmSlot(handle));
 }
 
-void* rtHandleData(Value handle) {
-    ObjectHeader* obj = handleCell(handle);
-    if (!obj) return nullptr;
+namespace {
+
+// The data pointer of handle cell `obj`, or nullptr when another app's realm
+// made it.
+void* cellDataInThisRealm(ObjectHeader* obj) {
     // Another app's handle is not this realm's to use: what one app made (a
     // DOM node, a canvas, a scene) never reaches into another's natives. A
     // realm of the same ownership group (the app's own frames) is the app.
@@ -192,13 +192,50 @@ void* rtHandleData(Value handle) {
     return reinterpret_cast<void*>(static_cast<uintptr_t>(obj->internalSlot(kSlotData).rawBits()));
 }
 
+}  // namespace
+
+void* rtHandleData(Value handle) {
+    ObjectHeader* obj = handleCell(handle);
+    if (!obj) return nullptr;
+    return cellDataInThisRealm(obj);
+}
+
+void* rtHandleDataAndBrand(Value handle, const void** brand) {
+    *brand = nullptr;
+    ObjectHeader* obj = handleCell(handle);
+    if (!obj) return nullptr;
+    void* data = cellDataInThisRealm(obj);
+    if (!data) return nullptr;
+    const uint64_t tag = obj->internalSlot(kSlotClassTag).rawBits();
+    if (tag & kHostBrandBit) *brand = reinterpret_cast<const void*>(static_cast<uintptr_t>(tag & ~kHostBrandBit));
+    return data;
+}
+
 bool rtIsHandle(Value handle) { return handleCell(handle) != nullptr; }
 
 const void* rtHandleClassTag(Value handle) {
     ObjectHeader* obj = handleCell(handle);
     if (!obj) return nullptr;
-    return reinterpret_cast<const void*>(
-        static_cast<uintptr_t>(obj->internalSlot(kSlotClassTag).rawBits()));
+    const uint64_t tag = obj->internalSlot(kSlotClassTag).rawBits();
+    if (tag & kHostBrandBit) return nullptr;
+    return reinterpret_cast<const void*>(static_cast<uintptr_t>(tag));
+}
+
+Value rtMakeBrandedHandle(void* data, HandleDestructor dtor, Finalize when, Value prototype,
+                          const void* brand) {
+    const auto bits = reinterpret_cast<uintptr_t>(brand);
+    if (bits == 0 || (bits & kHostBrandBit) != 0) {
+        fatal("native handle: a host brand must be a non-null pointer to a 2-byte-aligned object");
+    }
+    return rtMakeHandle(data, dtor, when, prototype, reinterpret_cast<const void*>(bits | kHostBrandBit));
+}
+
+const void* rtHandleBrand(Value handle) {
+    ObjectHeader* obj = handleCell(handle);
+    if (!obj) return nullptr;
+    const uint64_t tag = obj->internalSlot(kSlotClassTag).rawBits();
+    if ((tag & kHostBrandBit) == 0) return nullptr;
+    return reinterpret_cast<const void*>(static_cast<uintptr_t>(tag & ~kHostBrandBit));
 }
 
 void rtRegisterHeapFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor,

@@ -30,6 +30,7 @@ bronze_add_module(embed
         ../../tests/embed/embed_realm_test.cpp
         ../../tests/embed/embed_global_object_test.cpp
         ../../tests/embed/embed_access_test.cpp
+        ../../tests/embed/embed_host_class_test.cpp
 )
 
 # The same test binary, run again with per-allocation collection forced on —

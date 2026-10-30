@@ -1,9 +1,10 @@
 #include "embed/embed_host_class.h"
 
-#include <mutex>
 #include <span>
 #include <unordered_map>
 
+#include "runtime/fatal.h"
+#include "runtime/native_handle.h"
 #include "runtime/realm.h"
 
 namespace bronze::embed {
@@ -61,35 +62,6 @@ void publishGlobal(const char* name, Value val) {
         Persistent global(gt.value);
         setProperty(global.get(), name, v.get());
     }
-}
-
-struct Brand {
-    const HostClass* cls;
-    HandleDestructor dtor;
-};
-
-std::mutex& brandMutex() {
-    static std::mutex m;
-    return m;
-}
-
-std::unordered_map<const void*, Brand>& brands() {
-    static auto* m = new std::unordered_map<const void*, Brand>();
-    return *m;
-}
-
-void brandedDestroy(void* data) {
-    HandleDestructor dtor = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(brandMutex());
-        auto& m = brands();
-        auto it = m.find(data);
-        if (it != m.end()) {
-            dtor = it->second.dtor;
-            m.erase(it);
-        }
-    }
-    if (dtor) dtor(data);
 }
 
 }  // namespace
@@ -180,18 +152,16 @@ bool HostClass::isInstance(Value val) const {
     return unwrap(val) != nullptr;
 }
 
+// The brand is the cell's own (runtime::rtHandleBrand): the class that made
+// the handle, written into it at make() and gone with it, so an unwrap is two
+// loads and a walk up the lineage, with no table and no lock, on whatever
+// thread holds the handle. A HostClass is a process-lifetime object, so the
+// pointer a cell carries stays valid as long as any cell does.
 void* HostClass::unwrap(Value val) const {
-    void* data = handleData(val);
+    const void* brand = nullptr;
+    void* data = runtime::rtHandleDataAndBrand(val, &brand);
     if (!data) return nullptr;
-    const HostClass* cls = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(brandMutex());
-        auto& m = brands();
-        auto it = m.find(data);
-        if (it == m.end()) return nullptr;
-        cls = it->second.cls;
-    }
-    for (const HostClass* c = cls; c; c = c->base_.load(std::memory_order_acquire)) {
+    for (const auto* c = static_cast<const HostClass*>(brand); c; c = c->base_.load(std::memory_order_acquire)) {
         if (c == this) return data;
     }
     return nullptr;
@@ -208,12 +178,17 @@ Value HostClass::make(void* data, HandleDestructor dtor, Finalize when) const {
         if (isUndefined(p)) return makeHandle(data, dtor, when);
         return makeHandle(data, dtor, when, p);
     }
-    {
-        std::lock_guard<std::mutex> lk(brandMutex());
-        brands()[data] = Brand{this, dtor};
+    // Each make() pairs with exactly one dtor(data), when THIS handle dies:
+    // several live handles may share a payload (a refcounted one counts each),
+    // and each keeps its brand until it dies. (The brand table this replaces
+    // was keyed by the payload: the first of two such handles to die erased
+    // the brand of the other, which then unwrapped to nullptr while alive and
+    // never ran its destructor.) A null dtor registers no finalizer, as
+    // before.
+    if (!isUndefined(p) && !isObject(p)) {
+        fatal("embed: a host class's instance prototype must be a plain object");
     }
-    if (isUndefined(p)) return makeHandle(data, brandedDestroy, when);
-    return makeHandle(data, brandedDestroy, when, p);
+    return runtime::rtMakeBrandedHandle(data, dtor, when, isUndefined(p) ? Value::fromNull() : p, this);
 }
 
 void HostClass::setStatic(const char* name, Value v) const {

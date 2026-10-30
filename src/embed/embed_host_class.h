@@ -1,8 +1,11 @@
 #pragma once
 
 // Canonical host-class wrapper on the embed surface: one constructor function +
-// one prototype PER REALM, with process-wide type-brand verification and
-// base-class lineage walks on unwrap()/isInstance().
+// one prototype PER REALM, with type-brand verification and base-class
+// lineage walks on unwrap()/isInstance(). The brand is carried by each handle
+// (the class that made it, in the cell), so it holds on any thread, needs no
+// lock, and lives exactly as long as the handle; each make() is paired with
+// one destructor call, when that handle dies.
 //
 // Per realm, not per thread, because a prototype is mutable and the realms of
 // one thread must not reach each other's (bronze's intrinsics are shared and

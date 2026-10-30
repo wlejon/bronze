@@ -425,7 +425,8 @@ void* bronze_native_handle_data(uint64_t value, const void* classInfo) {
     std::string what;
     if (rtIsHandle(v)) {
         const auto* other = static_cast<const NativeClassInfo*>(rtHandleClassTag(v));
-        what = other ? ("a " + other->name + " handle") : "an untagged native handle";
+        what = other ? ("a " + other->name + " handle")
+                     : (rtHandleBrand(v) ? "a host class's handle" : "an untagged native handle");
     } else if (v.isUndefined()) {
         what = "undefined (missing argument)";
     } else if (v.isNull()) {
