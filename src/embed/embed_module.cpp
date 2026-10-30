@@ -117,8 +117,9 @@ void collectYoungGarbage() {
 }
 
 HeapPressure heapPressure() {
-    const brass::gc::HeapPressure p = runtime::rtHeap().gc().pressure();
-    return {p.eden_used, p.eden_capacity, p.old_growth, p.full_threshold};
+    const brass::gc::Heap& gc = runtime::rtHeap().gc();
+    const brass::gc::HeapPressure p = gc.pressure();
+    return {p.eden_used, p.eden_capacity, p.old_growth, p.full_threshold, gc.marking(), p.sweeping, p.unswept_blocks};
 }
 
 size_t releaseIdleCompiledBodies() { return brass::Module::release_idle_bodies(); }

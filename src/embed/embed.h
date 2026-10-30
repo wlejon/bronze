@@ -357,12 +357,18 @@ BRONZE_EMBED_API void collectYoungGarbage();
 // How near the heap is to collecting on its own (brass::gc::Heap::pressure):
 // a minor collection when edenUsed reaches edenCapacity (eden's adaptive
 // limit, which shrinks while much of each eden survives), a full one when
-// oldGrowth passes fullThreshold.
+// oldGrowth passes fullThreshold. And where an incremental collection
+// (embed_gc.h) is: a cycle open (marking), or the last one's sweep still to
+// do (sweeping, with unsweptBlocks mature blocks of it left, about a
+// microsecond each).
 struct HeapPressure {
     size_t edenUsed{0};
     size_t edenCapacity{0};
     uint64_t oldGrowth{0};
     uint64_t fullThreshold{0};
+    bool marking{false};
+    bool sweeping{false};
+    size_t unsweptBlocks{0};
 };
 BRONZE_EMBED_API HeapPressure heapPressure();
 
@@ -408,7 +414,10 @@ struct RuntimeTelemetry {
     // Full collections, of all generations. A host that waits for garbage to
     // be proven unreachable rather than forcing a collection of its own
     // watches this advance: after it does, a WeakRef to an old object that
-    // nothing reaches reads back undefined.
+    // nothing reached when that collection started reads back undefined. A
+    // marking cycle (embed_gc.h) counts at its finish but decides what was
+    // unreachable at its start: while heapPressure().marking, wait for the
+    // count to pass the next one.
     uint64_t gcFullCollections{0};
 };
 BRONZE_EMBED_API RuntimeTelemetry getRuntimeTelemetry();

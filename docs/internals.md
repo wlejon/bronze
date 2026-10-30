@@ -260,6 +260,62 @@ delta and runs on one thread. `src/embed/embed.h` states the full contract;
 threads concurrently, and one image entered on two threads at once, each
 hammered under per-allocation collection.
 
+### Collecting between frames
+
+A host with idle time it can see coming (the gap after a frame is presented)
+collects in it rather than at whichever allocation finds a generation full.
+`embed.h` has the young generation's half: `heapPressure()` (eden used
+against its adaptive limit, the old generation's growth against its
+full-collection threshold) and `collectYoungGarbage()`. `embed_gc.h` has the
+old generation's: brass's marking cycle and lazy sweep (brass
+`docs/gc_contract.md` 2.10, 2.11) as four calls on the calling thread's heap,
+
+```cpp
+bronze::embed::startGcCycle();               // a pause: the roots
+bool done = bronze::embed::gcMarkSlice(ns);   // a pause of about ns, each frame
+bronze::embed::finishGcCycle();               // a pause: young generation, roots, the rest
+bool swept = bronze::embed::gcSweepSlice(ns); // each frame, until true
+```
+
+with `heapPressure().marking / sweeping / unsweptBlocks` saying where the heap
+is. The program runs between the steps. Nothing about generated code changes
+for it: the write barrier's value filter widens while a cycle is open (brass),
+and bronze's runtime stores into off-heap tables are either root-table stores
+(visited again at the finish) or go through `gcShadeEdge` (a shape's
+prototype, an edge only a full trace follows).
+
+What a cycle does on bronze's side is what a stop-the-world full collection
+does, at the same points: the runtime's root sources (module and template
+cells, fn slots, global caches, root and user prototype shapes, realm roots,
+host globals, the shadow stack, handles, the weak tables) are visited with a
+full collection's tracer at the start and again at the finish, so a root
+written during the cycle is seen; the post-collection hooks (the
+dynamic-module sweep, the user prototype shapes, the buffer-view and weak
+tables, the elem-cache ident sweep) run once, at the finish, with
+`collecting_full()` true; finalizers run after it. A dynamic (eval / `new
+Function`) module stays marked from the moment the cycle's marker meets one
+of its functions until the sweep after the finish. Two differences a host can
+see: a cycle keeps what was live when it started (an object dropped mid-cycle
+is the next cycle's), and `getRuntimeTelemetry().gcFullCollections` counts the
+cycle at its finish, so a host waiting for an object to be proven dead lets
+one more full collection pass if a cycle was open when it let go.
+
+The finish's pause, measured on bro (2026-10-30, brass 89944b2), from
+`BRASS_GC_LOG`'s phases (the cycle's root time less its start's pause bounds
+the finish's root visit): flying the planet with a cycle always open, 0.15 ms
+(p99 0.37), of which the second root visit is at most about 0.15 ms; a 200 MB
+live heap promoting ~0.4 MB a frame, 2.7 to 5.3 ms, of which the root visit
+is about 0.2 ms and the rest the young generation's evacuation (every
+survivor promoted grey and scanned, 1-3.5 MB; ~4500 dirty cards, 0.6-1.5 ms)
+and draining what it greyed. So the root tables carry no "written since the
+cycle started" bits (the design's second byte per chunk): where the finish is
+long its floor is the evacuation, which is brass's.
+`tests/eval/eval_gc_cycle_test.cpp` drives cycles with JS between every step
+(objects linked and unlinked, globals written, eval and `new Function`
+modules made and dropped, WeakRefs, WeakMaps, FinalizationRegistry), at the
+auto tier and tier 2, also under `BRASS_GC_VERIFY=1` and
+`BRASS_GC_STRESS=incremental`.
+
 ### Realms and lockdown
 
 A thread can hold several realms (`embed::createRealm`), each with its own

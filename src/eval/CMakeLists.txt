@@ -24,6 +24,7 @@ bronze_add_module(eval
         ../../tests/eval/eval_compartment_test.cpp
         ../../tests/eval/eval_code_cache_test.cpp
         ../../tests/eval/eval_runtime_audit_test.cpp
+        ../../tests/eval/eval_gc_cycle_test.cpp
 )
 # The code cache identifies its own binary with dladdr.
 if(NOT WIN32)
