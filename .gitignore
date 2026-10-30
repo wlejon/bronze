@@ -1,4 +1,6 @@
 build/
+build-*/
+build_*/
 vcpkg_installed/
 .vs/
 *.user
