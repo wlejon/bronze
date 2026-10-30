@@ -355,7 +355,8 @@ BRONZE_EMBED_API size_t releaseIdleHeapMemory();
 BRONZE_EMBED_API void collectYoungGarbage();
 
 // How near the heap is to collecting on its own (brass::gc::Heap::pressure):
-// a minor collection when edenUsed reaches edenCapacity, a full one when
+// a minor collection when edenUsed reaches edenCapacity (eden's adaptive
+// limit, which shrinks while much of each eden survives), a full one when
 // oldGrowth passes fullThreshold.
 struct HeapPressure {
     size_t edenUsed{0};
