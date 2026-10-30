@@ -9,12 +9,32 @@
 #include "il/key.h"
 #include "il_abi.h"
 #include <algorithm>
+#include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace il2mir {
+
+namespace {
+
+constexpr uint64_t kPayloadMask = 0x0000FFFFFFFFFFFFULL;
+
+Value* iconst(Builder& b, uint64_t v) {
+    return b.build_iconst_i64(static_cast<int64_t>(v));
+}
+
+// The A/B seam: BRONZE_NO_INDEX_RUN_NUMBERS=1 lowers every copy run as the
+// tested copy (hole test per read, the stores' Number test), without the
+// source's NUMBERS bit or its claim.
+bool index_run_numbers_disabled() {
+    static const bool off = std::getenv("BRONZE_NO_INDEX_RUN_NUMBERS") != nullptr;
+    return off;
+}
+
+}  // namespace
+
 bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
                                            std::unordered_map<uint32_t, Value*>& val_map,
                                            const std::unordered_map<uint32_t, BasicBlock*>& block_map,
@@ -358,6 +378,51 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
                                                                  terms, sget_ptr));
     }
 
+    // THE NUMBERS BIT IN A COPY (`te[0] = me[0]; ... te[15] = me[15]`,
+    // Matrix4.copy): when every store of the run stores one of the run's own
+    // element reads of the source array, and that array's NUMBERS bit is set
+    // (runtime/array.h: every element below `length` is a Number in double
+    // form, no hole), each read is a Number the guard put in bounds. Such a
+    // store needs no hole test, owes no barrier and keeps the target's bit
+    // (il_number_array.cpp, the rule for a store), so the copy is loads and
+    // stores alone. With the bit clear the run is the tested copy below; and
+    // when it reads the whole source (indices 0..N-1 of an N-element array
+    // with no properties object), a pass of that copy has tested every
+    // element, so the cold claim sets the bit for the next visit. Nothing
+    // between the bit test and the last store runs code or allocates: loads,
+    // stores of Numbers, branches.
+    Value* numbers_src = nullptr;
+    bool numbers_claimable = false;
+    uint32_t numbers_src_len = 0;
+    if (!index_run_numbers_disabled() && committed_get_recv_id != UINT32_MAX &&
+        committed_sget_recv_id == UINT32_MAX) {
+        bool eligible = true;
+        std::unordered_set<uint32_t> elem_gets;
+        std::vector<uint8_t> read_at(committed_get_max_idx + 1, 0);
+        for (size_t j = inst_idx; j < committed_end && eligible; ++j) {
+            const BronzeInstruction& inst = blk_ast.instructions[j];
+            uint32_t elem_idx = 0;
+            if (inst.op == BronzeOp::PropGet) {
+                eligible = parse_prop_index(inst, elem_idx) && inst.operands[0] == committed_get_recv_id &&
+                           elem_idx <= committed_get_max_idx;
+                if (eligible) {
+                    elem_gets.insert(inst.result_id);
+                    read_at[elem_idx] = 1;
+                }
+            } else if (inst.op == BronzeOp::PropSet) {
+                eligible = elem_gets.count(inst.operands[1]) != 0;
+            } else if (is_run_local_scalar(inst)) {
+                eligible = false;
+            }
+        }
+        if (eligible) {
+            numbers_src = ensure_type(get_val_by_id(committed_get_recv_id, b, val_map), Type::i64(), b);
+            numbers_src_len = committed_get_max_idx + 1;
+            numbers_claimable = numbers_src_len <= BRONZE_ABI_ARRAY_CLAIM_MAX_LENGTH &&
+                                std::find(read_at.begin(), read_at.end(), 0) == read_at.end();
+        }
+    }
+
     BasicBlock* guard_bb = b.current_block();
     const std::string prefix = "prop_idx_run_" + std::to_string(fn->next_block_id());
     BasicBlock* bb_fast = b.append_block(prefix + "_fast");
@@ -368,6 +433,36 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     b.build_br_if(all_ok, bb_fast, bb_slow);
 
     std::unordered_map<uint32_t, Value*> slow_val_map = val_map;
+
+    // 3a. The copy under the source's NUMBERS bit (above).
+    Value* numbers_src_ptr = nullptr;
+    if (numbers_src) {
+        BasicBlock* bb_num = b.append_block(prefix + "_numbers");
+        BasicBlock* bb_tested = b.append_block(prefix + "_tested");
+        b.position_at_end(bb_fast);
+        numbers_src_ptr = b.build_and(numbers_src, iconst(b, kPayloadMask));
+        Value* bits = b.build_load(Type::i32(), numbers_src_ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
+        Value* has_bit = b.build_ne(b.build_and(bits, b.build_iconst_i32(BRONZE_ABI_ARRAY_BIT_NUMBERS)),
+                                    b.build_iconst_i32(0));
+        b.build_br_if(has_bit, bb_num, bb_tested);
+        b.position_at_end(bb_num);
+        std::unordered_map<uint32_t, Value*> num_vals;
+        for (size_t j = inst_idx; j < committed_end; ++j) {
+            const BronzeInstruction& inst = blk_ast.instructions[j];
+            uint32_t elem_idx = 0;
+            parse_prop_index(inst, elem_idx);
+            apply_loc(inst);
+            if (inst.op == BronzeOp::PropGet) {
+                num_vals[inst.result_id] =
+                    prop_lowering_.load_proven_dense_array_elem(b, get_block, get_head, elem_idx, /*check_hole=*/false);
+            } else if (inst.op == BronzeOp::PropSet) {
+                prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, elem_idx,
+                                                             num_vals.at(inst.operands[1]));
+            }
+        }
+        b.build_br(bb_merge);
+        bb_fast = bb_tested;
+    }
 
     // 3. Fast path: straight-line indexed loads, run-local scalars, and stores.
     b.position_at_end(bb_fast);
@@ -421,7 +516,28 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         for (size_t k = 1; k < non_prim_vals.size(); ++k) {
             any_ref = b.build_or(any_ref, b.build_ugt(non_prim_vals[k], max_num));
         }
-        b.build_br_if(any_ref, bb_barrier, bb_merge);
+        BasicBlock* bb_no_ref = bb_merge;
+        if (numbers_claimable) {
+            // Every stored value is one of the source's elements 0..N-1, and
+            // none was above the Number bits: with the length N and no
+            // properties object the claim's scan cannot fail, so it is made
+            // only then, and an array it would refuse never pays a call.
+            BasicBlock* bb_claim_test = b.append_block(prefix + "_claim_test");
+            BasicBlock* bb_claim = b.append_block(prefix + "_claim_cold");
+            b.position_at_end(bb_claim_test);
+            Value* len = b.build_load(Type::i32(), numbers_src_ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET);
+            Value* props = b.build_load(Type::i64(), numbers_src_ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
+            Value* whole = b.build_and(b.build_eq(len, b.build_iconst_i32(static_cast<int32_t>(numbers_src_len))),
+                                       b.build_eq(props, iconst(b, kUndefinedTag)));
+            b.build_br_if(whole, bb_claim, bb_merge);
+            b.position_at_end(bb_claim);
+            b.build_call("bronze_array_claim_numbers", Type::i32(), {numbers_src});
+            b.build_br(bb_merge);
+            bb_claim->set_cold();
+            bb_no_ref = bb_claim_test;
+            b.position_at_end(bb_fast);
+        }
+        b.build_br_if(any_ref, bb_barrier, bb_no_ref);
         b.position_at_end(bb_barrier);
         prop_lowering_.forget_numbers(b, set_obj);
         for (Value* v : non_prim_vals) {

@@ -1,0 +1,8 @@
+plain 11,22,33
+reshape {"x":11,"z":33,"q":1,"y":22} x,z,q,y
+freeze {"x":1,"y":2,"z":3} TypeError
+proto {"y":22,"z":33} px TypeError,set x 11
+accessor {"x":11,"y":22,"z":"g"} TypeError,set x 11,set z 33
+hole NaN,22,33
+string 11,25,33
+after 11,22,33

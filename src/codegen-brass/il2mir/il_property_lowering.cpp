@@ -392,6 +392,13 @@ void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_a
                                  site ? prop_lowering.site_ptr(b, site) : nullptr);
 }
 
+// The A/B seam: BRONZE_NO_MEMO_DENSE_READ=1 forgets the shape memo at a
+// proven-dense element read, as every read did before.
+bool memo_dense_read_disabled() {
+    static const bool off = std::getenv("BRONZE_NO_MEMO_DENSE_READ") != nullptr;
+    return off;
+}
+
 } // namespace
 
 // Whether a site's layout claim gets the static-slot guard: a named key, in
@@ -732,6 +739,11 @@ bool lower_property_instruction(
                             res_val = prop_lowering.load_proven_dense_array_elem(
                                 b, block, head, *elem_idx, check_hole,
                                 inst_ast.number_bits ? Type::f64() : Type::i64());
+                            // A load from an elements block a dominating guard
+                            // proved in bounds (a hole reads as undefined by a
+                            // select): no call, no allocation, no shape moved,
+                            // so the shape memo stays (il_shape_memo.cpp).
+                            if (!memo_dense_read_disabled()) lowering->memo_keep();
                             return true;
                         }
                         if (!lowering->run_once()) {
