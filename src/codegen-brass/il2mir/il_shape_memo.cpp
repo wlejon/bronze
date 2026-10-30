@@ -1,8 +1,9 @@
 // THE SHAPE MEMO: a receiver's shape, read once and reused by the next guard
 // on the same receiver.
 //
-// Every static-slot site (il_static_slot.cpp) and every inlined method's
-// guard (il_lowering_calls.cpp, `method.ic.is`) asks the same first question
+// Every static-slot site (il_static_slot.cpp) and every inlined method's or
+// accessor's guard (il_lowering_calls.cpp, `method.ic.is`, `accessor.ic.is`)
+// asks the same first question
 // of its receiver — is it a plain object, and what is its shape word — before
 // it compares that word with its own cell or cache way. Lowered site by site,
 // `bp.x ... bp.y ... bp.z` asks it three times of one SSA value: reload the

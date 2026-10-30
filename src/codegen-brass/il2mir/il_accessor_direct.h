@@ -21,8 +21,10 @@ bool accessor_direct_here(IlLowering* lowering, const BronzeInstruction& inst);
 
 // THE ACCESSOR GUARD: whether `recv` is a plain object whose shape the cell
 // pair at `cell` names at the thread's current prototype-mutation epoch. One
-// i1; `accessor.ic.is` is exactly this.
-Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell);
+// i1; `accessor.ic.is` is exactly this. `keyed`, when given, is `recv`'s
+// keyed shape from the shape memo (il_shape_memo.cpp), which the guard then
+// compares instead of reading the receiver's header and shape again.
+Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell, Value* keyed = nullptr);
 
 // What a direct accessor site does on a miss: the ordinary read (`get`) or
 // write (`set`), and the receiver's bits read afresh after it, for the fill.

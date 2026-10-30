@@ -112,19 +112,27 @@ bool accessor_direct_here(IlLowering* lowering, const BronzeInstruction& inst) {
     return true;
 }
 
-Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell) {
+Value* accessor_cell_hit(IlLowering* lowering, Builder& b, Value* recv, uint32_t cell, Value* keyed) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
-    Value* plain = nullptr;
-    Value* ptr = nullptr;
-    Value* shape = nullptr;
-    // A non-object reads a mapped block whose shape word no cell holds.
-    pl.receiver_shape(b, recv, plain, ptr, shape);
     Value* cells = pl.static_cells_addr(b);
     const int32_t off = static_cast<int32_t>(cell * sizeof(uint64_t));
     Value* want = b.build_load(Type::i64(), cells, off);
     Value* at = b.build_load(Type::i64(), cells, off + 8);
     Value* epoch = b.build_load(Type::i64(), tls_block(b), BRONZE_TLS_PROTO_EPOCH_OFF);
-    return b.build_and(plain, b.build_and(b.build_eq(shape, want), b.build_eq(at, epoch)));
+    Value* same_epoch = b.build_eq(at, epoch);
+    if (keyed) {
+        // The receiver's keyed shape (the shape memo's word): a plain
+        // object's shape, else kNotPlainShape (2). A cell's first word is 0,
+        // kRefused (1) or an 8-aligned shape (runtime/accessor_cell.cpp), so
+        // `keyed == cell[0]` already says "plain and that shape".
+        return b.build_and(b.build_eq(keyed, want), same_epoch);
+    }
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    // A non-object reads a mapped block whose shape word no cell holds.
+    pl.receiver_shape(b, recv, plain, ptr, shape);
+    return b.build_and(plain, b.build_and(b.build_eq(shape, want), same_epoch));
 }
 
 Value* lower_accessor_get(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* obj,
