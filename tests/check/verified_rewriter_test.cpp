@@ -1,10 +1,8 @@
 #include <doctest/doctest.h>
 
-#include "check/auto_kernel_rewriter.h"
 #include "check/cegis_superopt.h"
 #include "check/js_source_rewriter.h"
 
-using bronze::check::analyzeAndRewriteLoopToKernel;
 using bronze::check::CegisSuperoptOptions;
 using bronze::check::JsRewriteOptions;
 using bronze::check::rewriteJsSource;
@@ -355,59 +353,5 @@ TEST_CASE("js_source_rewriter (#162): sites are found in the parsed program, nev
         auto rep = rewriteSitesOnly(src, false);
         REQUIRE(rep.rewrites.size() == 1);
         CHECK(rep.rewrittenSource == "function f(x) {\n    let a = x\n    ;(x * x)\n    return a;\n}");
-    }
-}
-
-TEST_CASE("auto_kernel_rewriter (#144): SMT loop-carried dependency prover and @kernel parallelizer") {
-    SUBCASE("proves independent SAXPY TypedArray loop race-free and emits @kernel") {
-        auto rep = analyzeAndRewriteLoopToKernel(R"(
-            function saxpy(out, x, y, a, n) {
-                for (let i = 0; i < n; i++) {
-                    out[i] = a * x[i] + y[i];
-                }
-            }
-        )");
-        CHECK(rep.foundLoop);
-        CHECK(rep.parallelizable);
-        CHECK(rep.provenNoWaw);
-        CHECK(rep.provenNoRaw);
-        CHECK(rep.provenNoWar);
-        CHECK(rep.provenInBounds);
-        CHECK(rep.hazards.empty());
-        CHECK(rep.kernelSource.find("// @kernel") != std::string::npos);
-        CHECK(rep.kernelSource.find("global_tid_x()") != std::string::npos);
-    }
-
-    SUBCASE("refutes prefix-sum loop with concrete RAW dependency witness (i1=0, i2=1, idx=0)") {
-        auto rep = analyzeAndRewriteLoopToKernel(R"(
-            function prefixSum(a, x, n) {
-                for (let i = 0; i < n; i++) {
-                    a[i] = a[i - 1] + x[i];
-                }
-            }
-        )");
-        CHECK(rep.foundLoop);
-        CHECK_FALSE(rep.parallelizable);
-        CHECK_FALSE(rep.provenNoRaw);
-        REQUIRE(!rep.hazards.empty());
-        CHECK(rep.hazards[0].hazardKind == "RAW");
-        CHECK(rep.hazards[0].arrayName == "a");
-        CHECK(rep.hazards[0].iterB == rep.hazards[0].iterA + 1);
-    }
-
-    SUBCASE("refutes constant-index store loop with WAW race witness") {
-        auto rep = analyzeAndRewriteLoopToKernel(R"(
-            function raceStore(out, x, n) {
-                for (let i = 0; i < n; i++) {
-                    out[0] = x[i];
-                }
-            }
-        )");
-        CHECK(rep.foundLoop);
-        CHECK_FALSE(rep.parallelizable);
-        CHECK_FALSE(rep.provenNoWaw);
-        REQUIRE(!rep.hazards.empty());
-        CHECK(rep.hazards[0].hazardKind == "WAW");
-        CHECK(rep.hazards[0].conflictIndex == 0);
     }
 }

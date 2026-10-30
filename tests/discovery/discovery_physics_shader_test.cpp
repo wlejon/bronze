@@ -11,7 +11,6 @@
 #include "check/prove_equiv.h"
 #include "check/static_checker.h"
 #include "check/synth_tests.h"
-#include "codegen-brass/js_gpu_kernel.h"
 
 namespace {
 
@@ -351,110 +350,5 @@ TEST_CASE("Issue #127.3: Cross-Language CPU-JS vs GPU-GLSL/SPIR-V Coordinate Wra
             "glslFractQ8", &err);
         REQUIRE(err.empty());
         CHECK(floorFractBitmask.allEquivalent());
-    }
-}
-
-TEST_CASE("Issue #127.4: 0-ULP CPU-JS <-> GPU-SPIR-V Equivalence Proofs on SDF, PBR & Symplectic Physics Kernels") {
-    SUBCASE("Single-source @shader 3D SDF smooth-union capsule kernel compiles with 0-ULP CPU <-> SPIR-V equivalence") {
-        const std::string sdfSrc = R"(
-// @shader
-function sdfCapsuleSmoothUnion(px, py, pz) {
-    let h = clamp((py + 1.0) * 0.5, 0.0, 1.0);
-    let dy = py + 1.0 - 2.0 * h;
-    let dCapsule = Math.sqrt(px * px + dy * dy + pz * pz) - 0.35;
-    let dSphere = Math.sqrt((px - 0.6) * (px - 0.6) + py * py + pz * pz) - 0.45;
-    let k = 0.25;
-    let u = clamp(0.5 + 0.5 * (dSphere - dCapsule) / k, 0.0, 1.0);
-    return mix(dSphere, dCapsule, u) - k * u * (1.0 - u);
-}
-)";
-        bronze::JsGpuCompileOptions opts;
-        opts.enableRelaxedPrecision = true;
-        auto res = bronze::compileJsGpuKernelSource(sdfSrc, "sdf_capsule.js", opts);
-        INFO(res.errorMessage);
-        REQUIRE(res.ok);
-        CHECK(res.kernelName == "sdfCapsuleSmoothUnion");
-        CHECK(res.hasScalarReturn);
-        CHECK(res.spirvDiagnostics.empty());
-        CHECK(res.cpuGpuProvenEquivalent);
-        CHECK(res.spirvEquivalence.is_equivalent());
-        CHECK(res.memorySafety.is_safe());
-        CHECK(res.singleSourceParityVerified);
-        CHECK(res.maxCpuGpuUlpDiff == 0.0f);
-
-        for (float x : {-1.5f, -0.25f, 0.0f, 0.6f, 1.75f}) {
-            for (float y : {-1.2f, 0.0f, 1.1f}) {
-                for (float z : {-0.8f, 0.0f, 0.9f}) {
-                    float cpuD = res.evalCpu3D(x, y, z);
-                    float gpuD = res.evalSpirv3D(x, y, z);
-                    CHECK(cpuD == gpuD);
-                }
-            }
-        }
-    }
-
-    SUBCASE("Single-source @shader PBR Schlick-GGX direct lighting kernel compiles with 0-ULP CPU <-> SPIR-V equivalence") {
-        const std::string pbrSrc = R"(
-// @shader
-function pbrDirectLighting(ndotl, ndotv, roughness) {
-    let nl = clamp(ndotl, 0.0, 1.0);
-    let nv = clamp(ndotv, 0.0, 1.0);
-    let r = clamp(roughness, 0.05, 1.0);
-    let k = ((r + 1.0) * (r + 1.0)) * 0.125;
-    let g1L = nl / (nl * (1.0 - k) + k);
-    let g1V = nv / (nv * (1.0 - k) + k);
-    let fresnel = 0.04 + (1.0 - 0.04) * smoothstep(0.0, 1.0, 1.0 - nv);
-    return (g1L * g1V * fresnel) * nl;
-}
-)";
-        bronze::JsGpuCompileOptions opts;
-        opts.enableRelaxedPrecision = true;
-        auto res = bronze::compileJsGpuKernelSource(pbrSrc, "pbr_lighting.js", opts);
-        INFO(res.errorMessage);
-        REQUIRE(res.ok);
-        CHECK(res.kernelName == "pbrDirectLighting");
-        CHECK(res.hasScalarReturn);
-        CHECK(res.spirvDiagnostics.empty());
-        CHECK(res.cpuGpuProvenEquivalent);
-        CHECK(res.spirvEquivalence.is_equivalent());
-        CHECK(res.singleSourceParityVerified);
-        CHECK(res.maxCpuGpuUlpDiff == 0.0f);
-        CHECK(res.relaxedPrecisionReport.promoted_count > 0);
-
-        for (float nl : {0.0f, 0.25f, 0.7f, 1.0f}) {
-            for (float nv : {0.1f, 0.5f, 0.9f}) {
-                for (float rough : {0.1f, 0.5f, 0.95f}) {
-                    CHECK(res.evalCpu3D(nl, nv, rough) == res.evalSpirv3D(nl, nv, rough));
-                }
-            }
-        }
-    }
-
-    SUBCASE("GPU compute @kernel damped spring symplectic integrator compiles to verified SPIR-V 1.5 and PTX sm_80") {
-        const std::string springKernelSrc = R"(
-// @kernel
-function stepDampedSprings(pos, vel, target, stiffness, damping, dt, n) {
-    let i = global_tid_x();
-    if (i < n) {
-        let x = pos[i] - target[i];
-        let v = vel[i];
-        let force = -stiffness * x - damping * v;
-        let vNext = v + force * dt;
-        pos[i] = pos[i] + vNext * dt;
-        vel[i] = vNext;
-    }
-}
-)";
-        bronze::GpuCompileOptions opts;
-        opts.ptxSmVersion = 80;
-        auto res = bronze::compileJsGpuKernelSource(springKernelSrc, "spring_kernel.js", opts);
-        INFO(res.errorMessage);
-        REQUIRE(res.ok);
-        CHECK(res.kernelName == "stepDampedSprings");
-        CHECK(res.spirvDiagnostics.empty());
-        CHECK(res.ptxDiagnostics.empty());
-        CHECK(res.equivalence.is_equivalent());
-        CHECK(res.memorySafety.is_safe());
-        CHECK(res.barrierUniformity.is_uniform());
     }
 }

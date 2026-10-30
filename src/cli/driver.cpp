@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "ast/dump.h"
-#include "check/auto_kernel_rewriter.h"
 #include "check/deterministic_check.h"
 #include "check/js_source_rewriter.h"
 #include "check/prove_equiv.h"
@@ -27,7 +26,6 @@
 #include "codegen/backend.h"
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/il2mir/il_spec_profile.h"
-#include "codegen-brass/js_gpu_kernel.h"
 #include "il/il.h"
 #include "il/print.h"
 #include "lex/lexer.h"
@@ -653,9 +651,7 @@ int runDriver(int argc, char** argv) {
 
     if (command == "prove-equiv") return dispatchProveEquivArgs(argc, argv);
     if (command == "synth-tests") return dispatchSynthTestsArgs(argc, argv);
-    if (command == "gpu-compile") return runGpuCompileCli(argc, argv);
     if (command == "optimize") return check::runOptimizeCli(argc, argv);
-    if (command == "auto-kernel") return check::runAutoKernelCli(argc, argv);
 
     if (command == "types" || command == "check") {
         if (argc < 3) return fail("error: missing <file>\n");
