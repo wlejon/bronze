@@ -128,3 +128,16 @@ add_test(NAME oracle-threejs-jit COMMAND bronze_oracle_tests "--test-case=threej
 set_tests_properties(oracle-threejs-jit PROPERTIES LABELS "threejs;jit-milestone")
 add_test(NAME oracle-pixi-jit COMMAND bronze_oracle_tests "--test-case=pixi-jit*")
 set_tests_properties(oracle-pixi-jit PROPERTIES LABELS "pixi;jit-milestone")
+
+# An index run storing young objects far into a large old array, under
+# brass's heap verification (BRASS_GC_VERIFY: a slot naming a young object
+# whose card is clean is fatal). The run's barrier must be given the slot,
+# not the element block, or only the block's first card is dirtied. Not in
+# cases/: it allocates millions of objects to promote the array and force
+# minors, which the suites' every-allocation GC stress runs cannot afford.
+foreach(tier 2 auto)
+    add_test(NAME oracle-gc-verify-index-run-${tier}
+             COMMAND bronze run --tier=${tier} ${CMAKE_CURRENT_SOURCE_DIR}/gc_verify/index_run_barrier.js)
+    set_tests_properties(oracle-gc-verify-index-run-${tier} PROPERTIES LABELS "oracle;gc"
+                         ENVIRONMENT "BRASS_GC_VERIFY=1" PASS_REGULAR_EXPRESSION "^60300\n$")
+endforeach()

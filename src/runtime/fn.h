@@ -169,7 +169,7 @@ struct FunctionHeader {
     // prototype's `constructor` back, and that is a different question: a
     // program may reassign either, and 10.1.1's [[Prototype]] is fixed at
     // class definition and answers whatever it was given.
-    Value parent{Value::fromUndefined()};
+    HeapValue parent{Value::fromUndefined()};
 
     static FunctionHeader* create(Heap& heap, NativeFunctionCode code,
                                   Value env_record = Value::fromUndefined(), uint32_t arity = 0,

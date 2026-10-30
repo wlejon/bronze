@@ -467,7 +467,11 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     // 3. Fast path: straight-line indexed loads, run-local scalars, and stores.
     b.position_at_end(bb_fast);
     std::unordered_map<uint32_t, Value*> fast_get_vals;
+    // A stored value that may be a reference, and the element it went to:
+    // the barrier is given the slot, so a large element block dirties the
+    // card the slot is on rather than its first.
     std::vector<Value*> non_prim_vals;
+    std::vector<uint32_t> non_prim_idx;
     for (size_t j = inst_idx; j < committed_end; ++j) {
         const BronzeInstruction& inst = blk_ast.instructions[j];
         uint32_t elem_idx = 0;
@@ -495,6 +499,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
             prop_lowering_.store_proven_dense_array_elem(b, set_block, set_head, elem_idx, val);
             if (!is_primitive_value(val_id) && !prop_lowering_.is_known_non_ref(val)) {
                 non_prim_vals.push_back(val);
+                non_prim_idx.push_back(elem_idx);
             } else if (!prop_lowering_.is_known_number(val)) {
                 // il_number_array.cpp, the rule for a store.
                 prop_lowering_.forget_numbers_unless_number(b, set_obj, val);
@@ -540,8 +545,9 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         b.build_br_if(any_ref, bb_barrier, bb_no_ref);
         b.position_at_end(bb_barrier);
         prop_lowering_.forget_numbers(b, set_obj);
-        for (Value* v : non_prim_vals) {
-            b.build_call("brass_gc_write_barrier", Type::void_type(), {set_block, v});
+        for (size_t k = 0; k < non_prim_vals.size(); ++k) {
+            Value* slot_addr = prop_lowering_.dense_array_slot_addr(b, set_block, set_head, non_prim_idx[k]);
+            b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, non_prim_vals[k]});
         }
         b.build_br(bb_merge);
     }

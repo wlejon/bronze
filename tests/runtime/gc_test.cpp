@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "runtime/fn.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/string.h"
@@ -232,6 +233,27 @@ TEST_CASE("an old object's store of a young value keeps it alive through a minor
     CHECK(valuesOf(old.get())[0].asString<StringHeader>()->length == 9);
     CHECK(valuesOf(old.get())[1].asString<StringHeader>()->charCodeAt(6) == 't');
     CHECK(valuesOf(old.get())[2].asNumber() == 7.0);
+}
+
+// A function's [[Prototype]] (FunctionHeader::parent, what setPrototypeOf
+// and `class D extends B` write) is a store into a heap object like any
+// other: an old function given a young prototype keeps it through a minor.
+TEST_CASE("an old function's parent store of a young value keeps it alive through a minor collection") {
+    Heap heap;
+    heap.set_gc_stress(false);
+    heap.set_gc_verify(true);  // the missing-barrier check
+    ShadowStackFrame frame;
+
+    Rooted<Value> fn(heap, Value::fromObject(
+                               FunctionHeader::create(heap, nullptr, Value::fromUndefined(), 0,
+                                                      BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE)));
+    heap.collect();
+    REQUIRE_FALSE(heap.is_movable(fn.get().asObject()));
+
+    fn.get().asObject<FunctionHeader>()->parent = Value::fromString(StringHeader::createFromUTF8(heap, "young_parent"));
+    heap.collect_minor();
+    heap.collect_minor();
+    CHECK(Value(fn.get().asObject<FunctionHeader>()->parent).asString<StringHeader>()->length == 12);
 }
 
 TEST_CASE("heap verify passes a clean heap and keeps it live across collections") {
