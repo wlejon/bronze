@@ -92,7 +92,6 @@ struct ThreadModuleState {
     std::vector<ModuleSpan<FnSingletonSlot>> moduleFnSlots;
     std::vector<ModuleSpan<Value>> globalCacheSpans;
     uint64_t moduleEpochCounter = 0;
-    uint64_t currentModuleEpoch = 0;
     std::vector<uint64_t> activeModuleEpochs;
     std::vector<std::unique_ptr<DynamicModule>> dynamicModules;
     std::unordered_map<const void*, DynamicModule*> codeToModule;

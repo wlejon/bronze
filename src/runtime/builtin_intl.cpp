@@ -396,8 +396,12 @@ uint64_t dtfConstructor(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv)
 
     // Install a bound `format` function on the instance so `const f = dtf.format; f(d)`
     // works even without `this`, while `dtf.format(d)` also works directly.
+    // The environment is stored after the allocation, as bind does: a value
+    // passed in would be read before the allocation and could be moved by
+    // the collection it starts.
     FunctionHeader* boundFn = FunctionHeader::create(
-        rtHeap(), dtfFormatMethod, inst.get(), 1, BRONZE_ABI_FN_FLAG_NATIVE);
+        rtHeap(), dtfFormatMethod, Value::fromUndefined(), 1, BRONZE_ABI_FN_FLAG_NATIVE);
+    boundFn->env_record = inst.get();
     boundFn->header.flags = HeapKind::Function;
     Rooted<Value> fnVal{Value::fromObject(boundFn)};
     Rooted<Value> fmtKey{rtMakeString("format")};

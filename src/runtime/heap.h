@@ -203,6 +203,19 @@ inline void gcRememberObject(const void* object) noexcept {
     gc_detail::rememberAnyHeap(reinterpret_cast<uintptr_t>(object));
 }
 
+// The barrier for an edge only a full collection's trace function follows:
+// an object's prototype, held by its root shape in the off-heap arena
+// (heap_trace.cpp traceShapePrototype). Called when an object is given a
+// shape whose root names `proto`: while a marking cycle is open on the heap
+// holding it, the prototype is shaded, since the object may already be
+// marked and a minor collection's trace does not follow the edge. Nothing
+// otherwise.
+inline void gcShadeEdge(Value proto) noexcept {
+    if (!proto.isPointer()) return;
+    const gc_detail::BarrierHeaps& b = gc_detail::t_barrierHeaps;
+    for (uint32_t i = 0; i < b.count; ++i) b.heaps[i]->shade_reference(proto.rawBits());
+}
+
 // Whether `v` names a young object on one of this thread's heaps. A store into
 // an off-heap root table that keeps a remembered set (runtime/root_remset.h)
 // asks this to decide whether the cell goes on the set: only a young

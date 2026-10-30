@@ -48,6 +48,7 @@
 #include "runtime/realm.h"
 #include "runtime/root_remset.h"
 #include "runtime/rt_module_state.h"
+#include "runtime/stack_locals.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
@@ -71,6 +72,22 @@ static thread_local Heap* g_threadHeap = nullptr;
 static thread_local NonMovingArena* g_threadArena = nullptr;
 
 static void releaseThreadDynamicModules();
+
+// The module epochs THIS STACK has begun and not ended, innermost last
+// (runtime/stack_locals.h): what a span registered now belongs to. Per
+// stack, not per thread, since compartments interleave modules on one
+// thread: a compartment's module that ends must not leave the thread's
+// current epoch at another compartment's, or the spans its resumed code
+// registers later (a tier-up's cells) are filed under that epoch and
+// outlive their own module's code. The thread's activeModuleEpochs stays
+// thread-wide: the sweep must keep every suspended stack's modules.
+static thread_local std::vector<uint64_t> t_stackModuleEpochs;
+static std::vector<uint64_t>& stackModuleEpochsRef() { return t_stackModuleEpochs; }
+static const int g_stackModuleEpochsLocal =  // NOLINT: registered for its effect
+    registerStackLocalBox<std::vector<uint64_t>, &stackModuleEpochsRef>();
+static uint64_t stackModuleEpoch() noexcept {
+    return t_stackModuleEpochs.empty() ? 0 : t_stackModuleEpochs.back();
+}
 
 namespace {
 
@@ -158,6 +175,11 @@ Shape* rtRootShapeForPrototype(Value proto) {
     // collection visits WEAKLY: a prototype stays alive while an object built
     // on its shape does (heap_trace.cpp traces it from each), and its shape
     // leaves the table once it dies.
+    //
+    // The caller gives the shape to an object, which may be one a marking
+    // cycle has already scanned (setPrototypeOf): the prototype is reached
+    // only through the shape, so it is shaded here.
+    gcShadeEdge(proto);
     for (Shape* root : g_userPrototypeShapes) {
         if (root->prototype.rawBits() == proto.rawBits()) return root;
     }
@@ -346,27 +368,28 @@ void rtDropRealmFunctionSingletons(uint32_t realmSlot) {
     moduleRemsetSingletonsChanged(s);
 }
 
+// Removes the innermost `epoch` from `epochs`, if it is there.
+static void eraseLastEpoch(std::vector<uint64_t>& epochs, uint64_t epoch) {
+    if (auto it = std::find(epochs.rbegin(), epochs.rend(), epoch); it != epochs.rend()) {
+        epochs.erase(std::next(it).base());
+    }
+}
+
 uint64_t rtBeginModuleEpoch() {
     ThreadModuleState& s = threadModules();
     const uint64_t epoch = ++s.moduleEpochCounter;
     s.activeModuleEpochs.push_back(epoch);
-    s.currentModuleEpoch = epoch;
+    t_stackModuleEpochs.push_back(epoch);
     return epoch;
 }
 
 void rtEndModuleEpoch(uint64_t epoch) {
     if (epoch == 0 || !g_threadModules) return;
-    ThreadModuleState& s = *g_threadModules;
-    if (auto it = std::find(s.activeModuleEpochs.rbegin(), s.activeModuleEpochs.rend(), epoch);
-        it != s.activeModuleEpochs.rend()) {
-        s.activeModuleEpochs.erase(std::next(it).base());
-    }
-    s.currentModuleEpoch = s.activeModuleEpochs.empty() ? 0 : s.activeModuleEpochs.back();
+    eraseLastEpoch(g_threadModules->activeModuleEpochs, epoch);
+    eraseLastEpoch(t_stackModuleEpochs, epoch);
 }
 
-uint64_t rtCurrentModuleEpoch() noexcept {
-    return g_threadModules ? g_threadModules->currentModuleEpoch : 0;
-}
+uint64_t rtCurrentModuleEpoch() noexcept { return stackModuleEpoch(); }
 
 static void dropModuleSpansAndSingletons(ThreadModuleState& s, uint64_t epoch) {
     for (const auto& span : s.moduleFnSlots) {
@@ -452,10 +475,7 @@ void rtPopActiveDynamicToken() noexcept {
     g_threadModules->activeTokens.pop_back();
 }
 
-static void markDynamicModuleSpans(ThreadModuleState& s, DynamicModule* mod, brass::gc::Tracer& t) {
-    if (!mod || mod->marked.load(std::memory_order_relaxed)) return;
-    if (mod->marked.exchange(true, std::memory_order_acq_rel)) return;
-    const uint64_t epoch = mod->epoch;
+static void visitDynamicModuleSpans(ThreadModuleState& s, uint64_t epoch, brass::gc::Tracer& t) {
     for (auto& entry : s.functionSingletons) {
         if (entry.epoch == epoch) {
             t.visit(reinterpret_cast<uint64_t*>(&entry.value));
@@ -477,6 +497,12 @@ static void markDynamicModuleSpans(ThreadModuleState& s, DynamicModule* mod, bra
             }
         }
     }
+}
+
+static void markDynamicModuleSpans(ThreadModuleState& s, DynamicModule* mod, brass::gc::Tracer& t) {
+    if (!mod || mod->marked.load(std::memory_order_relaxed)) return;
+    if (mod->marked.exchange(true, std::memory_order_acq_rel)) return;
+    visitDynamicModuleSpans(s, mod->epoch, t);
 }
 
 void rtTraceDynamicModuleToken(const void* token, brass::gc::Tracer& t) {
@@ -520,8 +546,14 @@ static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
     }
     const bool full = (t.purpose() == brass::gc::Tracer::Purpose::Full) && !s.dynamicModules.empty();
     if (full) {
+        // `marked` is cleared after a full collection's sweep
+        // (sweepDynamicModules), not here: a marking cycle visits the roots
+        // at its start and again at its finish, and a module marked between
+        // (through a function the marker reached) must stay marked. A module
+        // already marked has its spans visited again: they are roots, written
+        // with no barrier, and the finish's visit is what sees those writes.
         for (const auto& mod : s.dynamicModules) {
-            mod->marked.store(false, std::memory_order_relaxed);
+            if (mod->marked.load(std::memory_order_relaxed)) visitDynamicModuleSpans(s, mod->epoch, t);
         }
         for (const auto& mod : s.dynamicModules) {
             if (isEpochActiveOnStack(s, mod->epoch)) {
@@ -620,6 +652,9 @@ static void sweepDynamicModules() {
         retiredOwners.push_back(std::move(mod->owner));
         return true;
     });
+    // Unmarked for the next full collection, which marks from its first root
+    // visit on (visitModuleAndCacheRoots).
+    for (const auto& mod : s.dynamicModules) mod->marked.store(false, std::memory_order_relaxed);
 }
 
 static void registerThreadRootSources(Heap& heap) {
@@ -666,7 +701,7 @@ void bronze_register_value_cells(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
     ThreadModuleState& s = threadModules();
     s.moduleValueCells.push_back(
-        {reinterpret_cast<Value*>(cells), count, s.currentModuleEpoch});
+        {reinterpret_cast<Value*>(cells), count, stackModuleEpoch()});
 }
 
 // The template cells, which only `bronze_template_object` stores into, so a
@@ -677,7 +712,7 @@ void bronze_register_template_cells(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
     ThreadModuleState& s = threadModules();
     s.moduleRememberedCells.push_back(
-        {reinterpret_cast<Value*>(cells), count, s.currentModuleEpoch});
+        {reinterpret_cast<Value*>(cells), count, stackModuleEpoch()});
     moduleRemsetSpanAdded(s, s.moduleRememberedCells.back());
 }
 
@@ -685,7 +720,7 @@ void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
     ThreadModuleState& s = threadModules();
     s.moduleFnSlots.push_back(
-        {reinterpret_cast<FnSingletonSlot*>(cells), count, s.currentModuleEpoch});
+        {reinterpret_cast<FnSingletonSlot*>(cells), count, stackModuleEpoch()});
     moduleRemsetFnSlotsAdded(s, s.moduleFnSlots.back());
 }
 
@@ -701,7 +736,7 @@ void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteInde
         for (uint64_t word : {uint64_t{BRONZE_ABI_METHOD_IC_ENV_WORD},
                               uint64_t{BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD}}) {
             s.moduleRememberedCells.push_back(
-                {reinterpret_cast<Value*>(site + word), 1, s.currentModuleEpoch});
+                {reinterpret_cast<Value*>(site + word), 1, stackModuleEpoch()});
             moduleRemsetSpanAdded(s, s.moduleRememberedCells.back());
         }
     }
@@ -773,7 +808,7 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
                 modIt != s.codeToModule.end()) {
                 fnEpoch = modIt->second->epoch;
             } else {
-                fnEpoch = s.currentModuleEpoch;
+                fnEpoch = stackModuleEpoch();
             }
         }
         s.functionSingletons.push_back(SingletonEntry{code, result, fnEpoch, realm});
@@ -838,7 +873,7 @@ uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t c
             }
         }
         if (!known) {
-            uint64_t spanEpoch = s.currentModuleEpoch;
+            uint64_t spanEpoch = stackModuleEpoch();
             for (const auto* spans : {&s.moduleValueCells, &s.moduleRememberedCells}) {
                 for (const auto& vspan : *spans) {
                     if (vspan.cells + vspan.count == valueCells) {
