@@ -110,6 +110,17 @@ size_t releaseIdleHeapMemory() {
     return heap.gc().release_unused_young();
 }
 
+void collectYoungGarbage() {
+    auto& heap = runtime::rtHeap();
+    if (heap.gc().in_collection()) return;
+    heap.collect_minor();
+}
+
+HeapPressure heapPressure() {
+    const brass::gc::HeapPressure p = runtime::rtHeap().gc().pressure();
+    return {p.eden_used, p.eden_capacity, p.old_growth, p.full_threshold};
+}
+
 size_t releaseIdleCompiledBodies() { return brass::Module::release_idle_bodies(); }
 
 uint64_t relocationEpoch() { return runtime::rtHeap().relocation_epoch(); }

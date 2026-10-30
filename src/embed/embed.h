@@ -348,6 +348,23 @@ BRONZE_EMBED_API void collectGarbage();
 // The same contract as collectGarbage: Persistents survive, raw pointers die.
 BRONZE_EMBED_API size_t releaseIdleHeapMemory();
 
+// A minor collection now: the young generation only. For a host that knows a
+// pause costs nothing at this moment (between frames) and collects ahead of
+// the heap's own trigger, which would otherwise run it at whichever
+// allocation found eden full. The same contract as collectGarbage.
+BRONZE_EMBED_API void collectYoungGarbage();
+
+// How near the heap is to collecting on its own (brass::gc::Heap::pressure):
+// a minor collection when edenUsed reaches edenCapacity, a full one when
+// oldGrowth passes fullThreshold.
+struct HeapPressure {
+    size_t edenUsed{0};
+    size_t edenCapacity{0};
+    uint64_t oldGrowth{0};
+    uint64_t fullThreshold{0};
+};
+BRONZE_EMBED_API HeapPressure heapPressure();
+
 // Gone idle, the compiler's half: the MIR bodies of every program's
 // functions whose code exists (bytecode or native) are dropped. A body is
 // built again from the program's lowered IL, the same as before, when a
