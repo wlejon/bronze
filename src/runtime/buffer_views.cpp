@@ -24,7 +24,9 @@
 #include <cstdint>
 #include <vector>
 
+#include "runtime/fatal.h"
 #include "runtime/heap.h"
+#include "runtime/root_remset.h"
 #include "runtime/typed_array.h"
 
 namespace bronze {
@@ -45,14 +47,49 @@ thread_local std::vector<uint32_t> g_freeRows;
 // Set by the first walk for an untracked buffer's views: every buffer made on
 // this thread afterwards is tracked from its creation.
 thread_local bool g_trackNewBuffers = false;
+// The rows that may hold a young buffer or view (runtime/root_remset.h): a
+// minor visits only these. A row is noted by the two writers below when they
+// store a young object, and leaves once the sweep finds it holds none.
+thread_local runtime::RootIndexSet g_youngRows;
+
+void noteRow(uint32_t index, uint64_t bits) {
+    if (gcHoldsYoung(Value(bits))) g_youngRows.add(index);
+}
+
+void traceRow(brass::gc::Tracer& t, Row& row) {
+    const uint64_t cleared = clearedBits();
+    t.visit_weak(&row.bufferBits, cleared);
+    t.visit_weak(&row.first, cleared);
+    for (uint64_t& view : row.more) t.visit_weak(&view, cleared);
+}
+
+template <typename Young>
+bool rowHoldsYoung(const Row& row, Young young) {
+    if (!row.live) return false;
+    if (young(row.bufferBits) || young(row.first)) return true;
+    for (uint64_t view : row.more) {
+        if (young(view)) return true;
+    }
+    return false;
+}
 
 void traceViewTable(brass::gc::Tracer& t) {
-    const uint64_t cleared = clearedBits();
+    if (runtime::rtRootRemsetPass(t)) {
+        if (runtime::rtRootRemsetVerifying(t)) {
+            const std::string miss = runtime::rtBufferViewRemsetCheck(t.heap());
+            if (!miss.empty()) fatal(miss.c_str());
+        }
+        // Weak: the slots settle after every root has been visited, so the
+        // set is pruned in the sweep, not here.
+        g_youngRows.normalize();
+        for (uint32_t index : g_youngRows.indices()) {
+            if (g_rows[index].live) traceRow(t, g_rows[index]);
+        }
+        runtime::rtRootRemsetStats().rememberedVisits += g_youngRows.size();
+        return;
+    }
     for (Row& row : g_rows) {
-        if (!row.live) continue;
-        t.visit_weak(&row.bufferBits, cleared);
-        t.visit_weak(&row.first, cleared);
-        for (uint64_t& view : row.more) t.visit_weak(&view, cleared);
+        if (row.live) traceRow(t, row);
     }
 }
 
@@ -76,6 +113,16 @@ void sweepViewTable() {
             row.more.pop_back();
         }
     }
+    // The weak slots hold their final words now: a row stays on the set while
+    // it still names a young object. Only the noted rows can (a full
+    // collection leaves none young, and it visited every row anyway).
+    auto young = [](uint64_t bits) { return gcHoldsYoung(Value(bits)); };
+    std::vector<uint32_t> still;
+    for (uint32_t index : g_youngRows.indices()) {
+        if (index < g_rows.size() && rowHoldsYoung(g_rows[index], young)) still.push_back(index);
+    }
+    g_youngRows.clear();
+    for (uint32_t index : still) g_youngRows.add(index);
 }
 
 // Registered on first use, for the cross-TU initialization-order reason
@@ -106,6 +153,7 @@ void trackBufferViews(Heap& heap, ArrayBufferHeader* buf) {
     row.bufferBits = Value::fromObject(buf).rawBits();
     row.first = clearedBits();
     row.live = true;
+    noteRow(index, row.bufferBits);
     buf->viewTable = index;
     buf->bufferFlags |= ArrayBufferHeader::kFlagViewsTracked;
 }
@@ -123,6 +171,7 @@ void registerBufferView(TypedArrayHeader* view) {
     const uint64_t bits = Value::fromObject(view).rawBits();
     if (row.first == clearedBits()) row.first = bits;
     else row.more.push_back(bits);
+    noteRow(buf->viewTable, bits);
 }
 
 bool refreshTrackedViews(ArrayBufferHeader* buf) {
@@ -135,6 +184,23 @@ bool refreshTrackedViews(ArrayBufferHeader* buf) {
         Value(bits).asObject<TypedArrayHeader>()->refreshLength();
     }
     return true;
+}
+
+std::string runtime::rtBufferViewRemsetCheck(const brass::gc::Heap& heap) {
+    g_youngRows.normalize();
+    auto young = [&heap](uint64_t bits) { return heap.holds_young(bits); };
+    for (uint32_t i = 0; i < g_rows.size(); ++i) {
+        ++runtime::rtRootRemsetStats().verifiedCells;
+        if (g_youngRows.contains(i) || !rowHoldsYoung(g_rows[i], young)) continue;
+        const Row& row = g_rows[i];
+        uint64_t bits = row.bufferBits;
+        if (!heap.holds_young(bits)) bits = row.first;
+        for (uint64_t view : row.more) {
+            if (!heap.holds_young(bits)) bits = view;
+        }
+        return runtime::rtRootRemsetMissText("the buffer-view table's rows", i, bits);
+    }
+    return {};
 }
 
 }  // namespace bronze

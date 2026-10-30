@@ -738,7 +738,9 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             Value* tpl_addr = module_data_addr(b, "__bronze_template_cells");
             const size_t tpl_count = std::max<size_t>(1024, static_cast<size_t>(options_.template_site_count) + 128);
             Value* tpl_cells_count = b.build_iconst_i64(static_cast<int64_t>(tpl_count));
-            b.build_call("bronze_register_value_cells", Type::void_type(), {tpl_addr, tpl_cells_count});
+            // Not value cells: only bronze_template_object stores into
+            // these, so a minor visits just the ones it filled young.
+            b.build_call("bronze_register_template_cells", Type::void_type(), {tpl_addr, tpl_cells_count});
             const std::string key_sym = (options_.entry_symbol.empty() || options_.entry_symbol == "main" || options_.entry_symbol == "bronze_main")
                                             ? "bronze_main_key_constants"
                                             : (options_.entry_symbol + "_key_constants");

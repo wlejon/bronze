@@ -90,6 +90,9 @@ bronze_add_module(runtime
         builtin_wrappers.cpp
         inspect.cpp
         rt_state.cpp
+        rt_host_globals.cpp
+        root_remset.cpp
+        rt_module_remset.cpp
         native_handle.cpp
         external_store.cpp
         native_registry.cpp
@@ -226,6 +229,7 @@ bronze_add_module(runtime
         ../../tests/runtime/native_fn_memo_test.cpp
         ../../tests/runtime/call_out_test.cpp
         ../../tests/runtime/root_slots_test.cpp
+        ../../tests/runtime/root_remset_test.cpp
         ../../tests/runtime/class_family_test.cpp
 )
 

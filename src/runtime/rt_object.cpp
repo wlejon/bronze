@@ -36,6 +36,7 @@
 #include "runtime/promise.h"
 #include "runtime/realm.h"
 #include "runtime/regexp.h"
+#include "runtime/root_remset.h"
 #include "runtime/builtin_object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
@@ -833,7 +834,12 @@ uint64_t bronze_template_object(uint64_t cookedBits, uint64_t rawBits, uint64_t*
                        /*defineOwn=*/true);
         rtFreezeObject(cooked.get());
     }
-    if (cell) *cell = cooked.get().rawBits();
+    if (cell) {
+        *cell = cooked.get().rawBits();
+        // The one store into a template cell: a young template object goes on
+        // the module's remembered set (root_remset.h).
+        rtNoteRootCellWrite(cell);
+    }
     return cooked.get().rawBits();
 }
 

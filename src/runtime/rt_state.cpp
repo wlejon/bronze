@@ -46,6 +46,8 @@
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/realm.h"
+#include "runtime/root_remset.h"
+#include "runtime/rt_module_state.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/typed_array.h"
@@ -110,10 +112,44 @@ NonMovingArena& rtArena() {
     return *g_threadArena;
 }
 
+// The two shape tables' remembered sets (runtime/root_remset.h): the entries
+// whose prototype may be young. A root shape's prototype is written once, as
+// the shape is made and before it joins its table, so the push is the only
+// writer either table has.
+static thread_local RootIndexSet g_youngRootShapes;
+static thread_local RootIndexSet g_youngUserPrototypeShapes;
+
+static std::string shapeTablesRemsetCheck(const brass::gc::Heap& heap);
+
+static uint64_t* prototypeSlot(Shape* root) noexcept {
+    return reinterpret_cast<uint64_t*>(&root->prototype);
+}
+
+static void pushRootShape(Shape* root) {
+    g_rootShapes.push_back(root);
+    if (gcHoldsYoung(root->prototype)) {
+        g_youngRootShapes.add(static_cast<uint32_t>(g_rootShapes.size() - 1));
+    }
+}
+
 Shape* rtNewRootShape(Value proto) {
     Shape* root = Shape::createRoot(rtArena(), proto);
-    g_rootShapes.push_back(root);
+    pushRootShape(root);
     return root;
+}
+
+// Every root shape's prototype, strongly: they are the builtins' and are
+// never dropped. A minor pass visits only the ones that may be young.
+static void visitRootShapes(brass::gc::Tracer& t) {
+    auto slotAt = [](uint32_t i) { return prototypeSlot(g_rootShapes[i]); };
+    if (rtRootRemsetPass(t)) {
+        g_youngRootShapes.visitMinor(t, slotAt);
+        return;
+    }
+    for (Shape* root : g_rootShapes) t.visit(prototypeSlot(root));
+    // With the sets off a minor still keeps them current, so they are right
+    // when switched back on.
+    if (t.purpose() == brass::gc::Tracer::Purpose::Minor) g_youngRootShapes.visitMinor(t, slotAt);
 }
 
 Shape* rtRootShapeForPrototype(Value proto) {
@@ -127,6 +163,9 @@ Shape* rtRootShapeForPrototype(Value proto) {
     }
     Shape* root = Shape::createRoot(rtArena(), proto);
     g_userPrototypeShapes.push_back(root);
+    if (gcHoldsYoung(root->prototype)) {
+        g_youngUserPrototypeShapes.add(static_cast<uint32_t>(g_userPrototypeShapes.size() - 1));
+    }
     return root;
 }
 
@@ -139,19 +178,36 @@ size_t rtUserPrototypeShapeCount() {
 // prototype has no other visit that would move it); a full collection holds
 // them weakly and clears a dead one's slot to undefined, and the sweep below
 // then drops that shape.
+// A minor pass visits only the shapes whose prototype may be young (the
+// strong visit is the one a minor needs, and an old prototype needs none).
 static void visitUserPrototypeShapes(brass::gc::Tracer& t) {
+    auto slotAt = [](uint32_t i) { return prototypeSlot(g_userPrototypeShapes[i]); };
+    if (rtRootRemsetPass(t)) {
+        g_youngUserPrototypeShapes.visitMinor(t, slotAt);
+        return;
+    }
     const bool full = t.purpose() == brass::gc::Tracer::Purpose::Full;
     const uint64_t cleared = Value::fromUndefined().rawBits();
     for (Shape* root : g_userPrototypeShapes) {
-        auto* slot = reinterpret_cast<uint64_t*>(&root->prototype);
+        auto* slot = prototypeSlot(root);
         if (full) t.visit_weak(slot, cleared);
         else t.visit(slot);
+    }
+    if (t.purpose() == brass::gc::Tracer::Purpose::Minor) {
+        g_youngUserPrototypeShapes.visitMinor(t, slotAt);
     }
 }
 
 static void sweepUserPrototypeShapes() {
     if (!rtHeap().collecting_full()) return;
     std::erase_if(g_userPrototypeShapes, [](Shape* root) { return root->prototype.isUndefined(); });
+    // The erase shifted the indices the set holds. After a full collection
+    // nothing is young and the rebuild finds the set empty; it rebuilds rather
+    // than clears so that it says so itself.
+    const brass::gc::Heap& gc = rtHeap().gc();
+    g_youngUserPrototypeShapes.rebuild(g_userPrototypeShapes.size(), [&gc](size_t i) {
+        return gc.holds_young(g_userPrototypeShapes[i]->prototype.rawBits());
+    });
 }
 
 static thread_local Shape* g_plainObjectShape = nullptr;
@@ -159,7 +215,7 @@ static thread_local Shape* g_plainObjectShape = nullptr;
 Shape* rtPlainObjectShape() {
     if (!g_plainObjectShape) {
         Shape* shape = Shape::createRoot(rtArena(), rtObjectPrototype());
-        g_rootShapes.push_back(shape);
+        pushRootShape(shape);
         g_plainObjectShape = shape;
         // Published into this thread's ABI block for the inline object
         // creation fast path; shapes are arena storage, immortal and
@@ -174,9 +230,7 @@ Shape* rtCurrentPlainObjectShape() {
 }
 
 void rtRegisterRootShape(Shape* shape) {
-    if (shape) {
-        g_rootShapes.push_back(shape);
-    }
+    if (shape) pushRootShape(shape);
 }
 
 // ---- ABI pins ---------------------------------------------------------------
@@ -213,76 +267,11 @@ static_assert(sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader) >= BRONZE_ABI
 
 // ---- Caches with heap Values ------------------------------------------------
 
-struct SingletonEntry {
-    bronze_fn_code code{nullptr};
-    Value value{Value::fromUndefined()};
-    uint64_t epoch{0};
-    // The realm the singleton belongs to (Realm::slot), 0 for a native's: a
-    // compiled function object carries its realm's mutable state (its own
-    // properties, its `prototype`) and must not be shared between realms,
-    // while the natives are the frozen intrinsics every realm shares.
-    uint32_t realm{0};
-};
-
-// functionSingletonIndex's key: the code pointer and the realm.
-struct SingletonKey {
-    const void* code;
-    uint32_t realm;
-    bool operator==(const SingletonKey& o) const noexcept { return code == o.code && realm == o.realm; }
-};
-struct SingletonKeyHash {
-    size_t operator()(const SingletonKey& k) const noexcept {
-        return std::hash<const void*>()(k.code) ^ (static_cast<size_t>(k.realm) * 0x9E3779B97F4A7C15ull);
-    }
-};
 
 static void eraseSingletonCode(std::unordered_map<SingletonKey, size_t, SingletonKeyHash>& index,
                                const void* code) {
     std::erase_if(index, [code](const auto& kv) { return kv.first.code == code; });
 }
-
-// One {code, value} entry of a module's fn-singleton table. The layout is the
-// ABI's, because generated code reads the two words inline; this declaration
-// exists so the runtime's writes and the collector's walk go through the same
-// description the fast path does.
-struct FnSingletonSlot {
-    bronze_fn_code code{nullptr};
-    Value value{Value::fromUndefined()};
-};
-static_assert(sizeof(FnSingletonSlot) == BRONZE_ABI_FNSLOT_SIZE);
-static_assert(offsetof(FnSingletonSlot, code) == BRONZE_ABI_FNSLOT_CODE_OFFSET);
-static_assert(offsetof(FnSingletonSlot, value) == BRONZE_ABI_FNSLOT_VALUE_OFFSET);
-
-static_assert(sizeof(Value) == sizeof(uint64_t),
-              "module cache spans are registered as raw u64 cells");
-
-template <typename Cell>
-struct ModuleSpan {
-    Cell* cells;
-    uint64_t count;
-    uint64_t epoch;
-};
-
-struct DynamicModule {
-    uint64_t epoch{0};
-    std::shared_ptr<void> owner;
-    std::vector<const void*> codeTokens;
-    std::atomic<bool> marked{false};
-};
-
-struct ThreadModuleState {
-    std::vector<SingletonEntry> functionSingletons;
-    std::unordered_map<SingletonKey, size_t, SingletonKeyHash> functionSingletonIndex;
-    std::vector<ModuleSpan<Value>> moduleValueCells;
-    std::vector<ModuleSpan<FnSingletonSlot>> moduleFnSlots;
-    std::vector<ModuleSpan<Value>> globalCacheSpans;
-    uint64_t moduleEpochCounter = 0;
-    uint64_t currentModuleEpoch = 0;
-    std::vector<uint64_t> activeModuleEpochs;
-    std::vector<std::unique_ptr<DynamicModule>> dynamicModules;
-    std::unordered_map<const void*, DynamicModule*> codeToModule;
-    std::vector<const void*> activeTokens;
-};
 
 static thread_local ThreadModuleState* g_threadModules = nullptr;
 static std::atomic<uint32_t> g_totalDynamicModules{0};
@@ -334,9 +323,12 @@ void rtDropModuleCellsWithin(const void* begin, size_t size) {
         return a >= lo && a < hi;
     };
     std::erase_if(s.moduleValueCells, [&](const ModuleSpan<Value>& sp) { return within(sp.cells); });
+    std::erase_if(s.moduleRememberedCells,
+                  [&](const ModuleSpan<Value>& sp) { return within(sp.cells); });
     std::erase_if(s.moduleFnSlots,
                   [&](const ModuleSpan<FnSingletonSlot>& sp) { return within(sp.cells); });
     std::erase_if(s.globalCacheSpans, [&](const ModuleSpan<Value>& sp) { return within(sp.cells); });
+    moduleRemsetSpansDropped(s);
 }
 
 void rtDropRealmFunctionSingletons(uint32_t realmSlot) {
@@ -351,6 +343,7 @@ void rtDropRealmFunctionSingletons(uint32_t realmSlot) {
         const SingletonEntry& e = s.functionSingletons[i];
         s.functionSingletonIndex[SingletonKey{reinterpret_cast<const void*>(e.code), e.realm}] = i;
     }
+    moduleRemsetSingletonsChanged(s);
 }
 
 uint64_t rtBeginModuleEpoch() {
@@ -401,10 +394,14 @@ static void dropModuleSpansAndSingletons(ThreadModuleState& s, uint64_t epoch) {
     }
     std::erase_if(s.moduleValueCells,
                   [epoch](const ModuleSpan<Value>& sp) { return sp.epoch == epoch; });
+    std::erase_if(s.moduleRememberedCells,
+                  [epoch](const ModuleSpan<Value>& sp) { return sp.epoch == epoch; });
     std::erase_if(s.moduleFnSlots,
                   [epoch](const ModuleSpan<FnSingletonSlot>& sp) { return sp.epoch == epoch; });
     std::erase_if(s.globalCacheSpans,
                   [epoch](const ModuleSpan<Value>& sp) { return sp.epoch == epoch; });
+    moduleRemsetSpansDropped(s);
+    moduleRemsetSingletonsChanged(s);
     rtDropModuleFnSources(epoch);
 }
 
@@ -472,16 +469,12 @@ static void markDynamicModuleSpans(ThreadModuleState& s, DynamicModule* mod, bra
             }
         }
     }
-    for (const auto& span : s.moduleValueCells) {
-        if (span.epoch != epoch) continue;
-        for (uint64_t i = 0; i < span.count; ++i) {
-            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
-        }
-    }
-    for (const auto& span : s.globalCacheSpans) {
-        if (span.epoch != epoch) continue;
-        for (uint64_t i = 0; i < span.count; ++i) {
-            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+    for (const auto* spans : {&s.moduleValueCells, &s.moduleRememberedCells, &s.globalCacheSpans}) {
+        for (const auto& span : *spans) {
+            if (span.epoch != epoch) continue;
+            for (uint64_t i = 0; i < span.count; ++i) {
+                t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+            }
         }
     }
 }
@@ -515,6 +508,16 @@ static bool isDynamicModuleEpoch(const ThreadModuleState& s, uint64_t epoch) noe
 static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
     if (!g_threadModules) return;
     ThreadModuleState& s = *g_threadModules;
+    if (rtRootRemsetPass(t)) {
+        // The shape tables' check rides along here, so that one source of
+        // this file runs every check of its tables once a minor.
+        if (rtRootRemsetVerifying(t)) {
+            const std::string miss = shapeTablesRemsetCheck(t.heap());
+            if (!miss.empty()) fatal(miss.c_str());
+        }
+        moduleTablesVisitMinor(s, t);
+        return;
+    }
     const bool full = (t.purpose() == brass::gc::Tracer::Purpose::Full) && !s.dynamicModules.empty();
     if (full) {
         for (const auto& mod : s.dynamicModules) {
@@ -544,18 +547,62 @@ static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
             }
         }
     }
-    for (const auto& span : s.moduleValueCells) {
-        if (full && isDynamicModuleEpoch(s, span.epoch)) continue;
-        for (uint64_t i = 0; i < span.count; ++i) {
-            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+    for (const auto* spans : {&s.moduleValueCells, &s.moduleRememberedCells, &s.globalCacheSpans}) {
+        for (const auto& span : *spans) {
+            if (full && isDynamicModuleEpoch(s, span.epoch)) continue;
+            for (uint64_t i = 0; i < span.count; ++i) {
+                t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+            }
         }
     }
-    for (const auto& span : s.globalCacheSpans) {
-        if (full && isDynamicModuleEpoch(s, span.epoch)) continue;
-        for (uint64_t i = 0; i < span.count; ++i) {
-            t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
+    // A minor with the sets off (BRONZE_NO_ROOT_REMSET=1) visited everything
+    // above; the sets are still pruned, so they are exact if switched on.
+    if (t.purpose() == brass::gc::Tracer::Purpose::Minor) {
+        s.youngCells.visitMinor(t);
+        s.youngSingletons.visitMinor(
+            t, [&s](uint32_t i) { return reinterpret_cast<uint64_t*>(&s.functionSingletons[i].value); });
+    }
+}
+
+// The shape tables' half of the verification walk (root_remset.h).
+static std::string shapeTablesRemsetCheck(const brass::gc::Heap& heap) {
+    RootRemsetStats& stats = rtRootRemsetStats();
+    struct Table {
+        const char* name;
+        const std::vector<Shape*>* shapes;
+        RootIndexSet* young;
+    };
+    const Table tables[] = {
+        {"the root shapes' prototypes", &g_rootShapes, &g_youngRootShapes},
+        {"the user prototype shapes' prototypes", &g_userPrototypeShapes, &g_youngUserPrototypeShapes},
+    };
+    for (const Table& table : tables) {
+        table.young->normalize();
+        for (size_t i = 0; i < table.shapes->size(); ++i) {
+            const uint64_t bits = (*table.shapes)[i]->prototype.rawBits();
+            ++stats.verifiedCells;
+            if (heap.holds_young(bits) && !table.young->contains(static_cast<uint32_t>(i))) {
+                return rtRootRemsetMissText(table.name, i, bits);
+            }
         }
     }
+    return {};
+}
+
+std::string rtModuleRootsRemsetCheck(const brass::gc::Heap& heap) {
+    std::string miss = shapeTablesRemsetCheck(heap);
+    if (miss.empty() && g_threadModules) miss = moduleTablesRemsetCheck(*g_threadModules, heap);
+    return miss;
+}
+
+void rtNoteRootCellWrite(uint64_t* cell) noexcept {
+    if (g_threadModules && cell) moduleRemsetNoteCell(*g_threadModules, cell);
+}
+
+void rtNoteMethodIcEnvWords(uint64_t* icEntry) noexcept {
+    if (!g_threadModules || !icEntry) return;
+    moduleRemsetNoteCell(*g_threadModules, icEntry + BRONZE_ABI_METHOD_IC_ENV_WORD);
+    moduleRemsetNoteCell(*g_threadModules, icEntry + BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD);
 }
 
 static void sweepDynamicModules() {
@@ -575,44 +622,6 @@ static void sweepDynamicModules() {
     });
 }
 
-// Globals an embedding host registered (host_globals.h) live on the REALM they
-// were registered in (Realm::hostGlobals). A vector of pairs rather than a map:
-// registration happens a handful of times at host startup, and a lookup is a
-// read `bronze_global_get` reaches only for a name the builtin ladder did not
-// answer. These two hold what a host registered before the thread had any
-// realm, which the default realm adopts when it is made.
-static thread_local std::vector<std::pair<std::string, Value>> g_preRealmHostGlobals;
-static thread_local std::vector<std::pair<std::string, std::function<void()>>>
-    g_preRealmLazyHostGlobals;
-
-namespace {
-
-// The tables a registration or a lookup on this thread reads: the current
-// realm's, or the thread's own before any realm exists.
-struct HostGlobalTables {
-    std::vector<std::pair<std::string, Value>>& values;
-    std::vector<std::pair<std::string, std::function<void()>>>& lazy;
-    Realm* realm;
-};
-
-HostGlobalTables hostGlobalTables() {
-    if (Realm* r = bronze::rtHostGlobalRealm()) {
-        return {r->hostGlobals(), r->lazyHostGlobals(), r};
-    }
-    return {g_preRealmHostGlobals, g_preRealmLazyHostGlobals, nullptr};
-}
-
-}  // namespace
-
-void rtAdoptPreRealmHostGlobals(Realm& realm) {
-    for (auto& entry : g_preRealmHostGlobals) realm.hostGlobals().push_back(std::move(entry));
-    for (auto& entry : g_preRealmLazyHostGlobals) {
-        realm.lazyHostGlobals().push_back(std::move(entry));
-    }
-    g_preRealmHostGlobals.clear();
-    g_preRealmLazyHostGlobals.clear();
-}
-
 static void registerThreadRootSources(Heap& heap) {
     {
         ThreadModuleState& s = threadModules();
@@ -620,199 +629,24 @@ static void registerThreadRootSources(Heap& heap) {
         g_heapToModuleState[&heap.gc()] = &s;
         g_heapStateGeneration.fetch_add(1, std::memory_order_release);
     }
-    heap.add_root_source([](const Heap::RootVisitor& visit) {
-        for (Shape* root : g_rootShapes) visit(root->prototype);
-    });
+    heap.add_tracer_source(visitRootShapes);
     heap.add_tracer_source(visitUserPrototypeShapes);
     heap.add_tracer_source(visitModuleAndCacheRoots);
     heap.add_post_collection_hook([]() {
         sweepUserPrototypeShapes();
         sweepDynamicModules();
     });
+    // Not remembered: the realms' globals, module registries and host globals
+    // are written through accessors that hand out the tables themselves
+    // (Realm::hostGlobals, moduleRegistry), there are a handful of entries per
+    // realm, and the array-method table is forty cells.
     heap.add_root_source([](const Heap::RootVisitor& visit) {
-        for (auto& entry : g_preRealmHostGlobals) visit(entry.second);
+        rtVisitPreRealmHostGlobals(visit);
         rtVisitArrayMethodRoots(visit);
         rtVisitRealmRoots(visit);
     });
 }
 
-void rtRegisterHostGlobal(const std::string& name, Value value) {
-    // A name is a native or a host global, never both: `f(1)` compiled as a
-    // direct native call while `f` read as a host value would be two
-    // different things under one name. Refused loudly here and in
-    // rtRegisterNative, whichever comes second.
-    if (rtNativeBareNameRegistered(name)) {
-        fatal(("registerGlobal(\"" + name +
-               "\"): the name is a registered native (embed::registerNative); a name is a "
-               "native or a host global, not both")
-                  .c_str());
-    }
-    // Before the write, unconditionally: a REPLACED name has cells holding
-    // the old value, and a NEW name can have cells too — `performance` is a
-    // builtin until a host provides its own, and every module that read the
-    // builtin cached it.
-    rtInvalidateGlobalCaches();
-    HostGlobalTables t = hostGlobalTables();
-    // A pending lazy name registered for real: its init has nothing left to
-    // do for it (host_globals.h).
-    for (auto it = t.lazy.begin(); it != t.lazy.end(); ++it) {
-        if (it->first == name) {
-            t.lazy.erase(it);
-            break;
-        }
-    }
-    for (auto& entry : t.values) {
-        if (entry.first == name) {
-            entry.second = value;
-            rtDefineHostGlobalOnRealm(t.realm, name, value);
-            return;
-        }
-    }
-    t.values.emplace_back(name, value);
-    // The registry answers the BARE name; a realm's global object is what
-    // `globalThis[name]`, `name in globalThis` and every reflective walk read.
-    // Both, or a host global is invisible to feature detection (realm.h states
-    // the rule and why a builtin name is not written).
-    rtDefineHostGlobalOnRealm(t.realm, name, value);
-}
-
-bool rtHostGlobalLookup(const std::string& name, Value& out) {
-    HostGlobalTables t = hostGlobalTables();
-    for (const auto& entry : t.values) {
-        if (entry.first == name) {
-            if (entry.second.isHole()) {
-                rtForceLazyHostGlobal(name);
-                // The init may have registered names, growing the vector:
-                // read the entry again.
-                for (const auto& again : t.values) {
-                    if (again.first == name) {
-                        out = again.second.isHole() ? Value::fromUndefined() : again.second;
-                        return true;
-                    }
-                }
-                out = Value::fromUndefined();
-                return true;
-            }
-            out = entry.second;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool rtHostGlobalRegistered(const std::string& name) {
-    for (const auto& entry : hostGlobalTables().values) {
-        if (entry.first == name) return true;
-    }
-    return false;
-}
-
-void rtRegisterLazyHostGlobal(const std::string& name, std::function<void()> init) {
-    if (rtNativeBareNameRegistered(name)) {
-        fatal(("registerLazyGlobal(\"" + name +
-               "\"): the name is a registered native (embed::registerNative); a name is a "
-               "native or a host global, not both")
-                  .c_str());
-    }
-    HostGlobalTables t = hostGlobalTables();
-    // Already registered for real: there is nothing to defer.
-    for (const auto& entry : t.values) {
-        if (entry.first == name && !entry.second.isHole()) return;
-    }
-    bool replaced = false;
-    for (auto& pending : t.lazy) {
-        if (pending.first == name) {
-            pending.second = std::move(init);
-            replaced = true;
-            break;
-        }
-    }
-    if (!replaced) t.lazy.emplace_back(name, std::move(init));
-    if (!rtHostGlobalRegistered(name)) {
-        rtInvalidateGlobalCaches();
-        t.values.emplace_back(name, Value::fromHole());
-        rtDefineLazyHostGlobalOnRealm(t.realm, name);
-    }
-}
-
-static thread_local uint32_t g_lazyInitDepth = 0;
-
-bool rtInLazyGlobalInit() { return g_lazyInitDepth != 0; }
-
-void rtForceLazyHostGlobal(const std::string& name) {
-    std::function<void()> init;
-    auto& lazy = hostGlobalTables().lazy;
-    for (auto it = lazy.begin(); it != lazy.end(); ++it) {
-        if (it->first == name) {
-            init = std::move(it->second);
-            lazy.erase(it);
-            break;
-        }
-    }
-    if (!init) return;
-    // The name's accessor goes first, so that the init's module may assign
-    // the global as a plain data property; registered `undefined` until the
-    // init registers what it made.
-    rtRegisterHostGlobal(name, Value::fromUndefined());
-    rtRunAsLazyInit(init);
-}
-
-void rtRunAsLazyInit(const std::function<void()>& init) {
-    ++g_lazyInitDepth;
-    struct Leave {
-        ~Leave() { --g_lazyInitDepth; }
-    } leave;
-    init();
-}
-
-static LazyGlobalAccessorHook g_lazyGlobalAccessorHook = nullptr;
-
-void rtSetLazyGlobalAccessorHook(LazyGlobalAccessorHook hook) { g_lazyGlobalAccessorHook = hook; }
-
-LazyGlobalAccessorHook rtLazyGlobalAccessorHook() { return g_lazyGlobalAccessorHook; }
-
-// The host's CreateDynamicFunction, if it has one (host_globals.h says why the
-// runtime offers the seam at all). Not a root source: whatever the host closed
-// over is the host's to keep alive, and the Values it hands back per call are
-// rooted by the caller like any other builtin result.
-static thread_local DynamicFunctionHost g_dynamicFunctionHost;
-static DynamicFunctionHost g_defaultDynamicFunctionHost;
-
-void rtSetDynamicFunctionHost(DynamicFunctionHost host) {
-    g_dynamicFunctionHost = std::move(host);
-}
-
-void rtSetDefaultDynamicFunctionHost(DynamicFunctionHost host) {
-    g_defaultDynamicFunctionHost = std::move(host);
-}
-
-const DynamicFunctionHost& rtDynamicFunctionHost() {
-    if (g_dynamicFunctionHost) return g_dynamicFunctionHost;
-    return g_defaultDynamicFunctionHost;
-}
-
-// The host's eval, if it has one — the same seam, for `Function`'s sibling.
-static thread_local DynamicEvalHost g_dynamicEvalHost;
-static DynamicEvalHost g_defaultDynamicEvalHost;
-
-void rtSetDynamicEvalHost(DynamicEvalHost host) { g_dynamicEvalHost = std::move(host); }
-
-void rtSetDefaultDynamicEvalHost(DynamicEvalHost host) {
-    g_defaultDynamicEvalHost = std::move(host);
-}
-
-const DynamicEvalHost& rtDynamicEvalHost() {
-    if (g_dynamicEvalHost) return g_dynamicEvalHost;
-    return g_defaultDynamicEvalHost;
-}
-
-// The host's `import()`, if it has one — the seam for the specifier the module
-// graph could not read at compile time.
-static thread_local DynamicImportHost g_dynamicImportHost;
-
-void rtSetDynamicImportHost(DynamicImportHost host) { g_dynamicImportHost = std::move(host); }
-
-const DynamicImportHost& rtDynamicImportHost() { return g_dynamicImportHost; }
 
 // 10.2.9 and 10.2.10, as the one place a function object's two own data
 // properties are filled in. `BRONZE_ABI_FN_NAME_NONE` leaves both absent, which
@@ -835,11 +669,24 @@ void bronze_register_value_cells(uint64_t* cells, uint64_t count) {
         {reinterpret_cast<Value*>(cells), count, s.currentModuleEpoch});
 }
 
+// The template cells, which only `bronze_template_object` stores into, so a
+// minor visits only the ones it filled with a young object (root_remset.h).
+// An image built before this entry existed registers them with
+// `bronze_register_value_cells` instead, and they are visited whole.
+void bronze_register_template_cells(uint64_t* cells, uint64_t count) {
+    if (!cells || count == 0) return;
+    ThreadModuleState& s = threadModules();
+    s.moduleRememberedCells.push_back(
+        {reinterpret_cast<Value*>(cells), count, s.currentModuleEpoch});
+    moduleRemsetSpanAdded(s, s.moduleRememberedCells.back());
+}
+
 void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
     if (!cells || count == 0) return;
     ThreadModuleState& s = threadModules();
     s.moduleFnSlots.push_back(
         {reinterpret_cast<FnSingletonSlot*>(cells), count, s.currentModuleEpoch});
+    moduleRemsetFnSlotsAdded(s, s.moduleFnSlots.back());
 }
 
 void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteIndexes,
@@ -849,12 +696,14 @@ void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteInde
     constexpr uint64_t kSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);
     for (uint64_t k = 0; k < count; ++k) {
         uint64_t* site = icTable + siteIndexes[k] * kSiteWords;
-        s.moduleValueCells.push_back(
-            {reinterpret_cast<Value*>(site + BRONZE_ABI_METHOD_IC_ENV_WORD), 1,
-             s.currentModuleEpoch});
-        s.moduleValueCells.push_back(
-            {reinterpret_cast<Value*>(site + BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD), 1,
-             s.currentModuleEpoch});
+        // Remembered: only the latches in rt_method_call.cpp store an env
+        // word, and each notes the words it wrote (rtNoteMethodIcEnvWords).
+        for (uint64_t word : {uint64_t{BRONZE_ABI_METHOD_IC_ENV_WORD},
+                              uint64_t{BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD}}) {
+            s.moduleRememberedCells.push_back(
+                {reinterpret_cast<Value*>(site + word), 1, s.currentModuleEpoch});
+            moduleRemsetSpanAdded(s, s.moduleRememberedCells.back());
+        }
     }
 }
 
@@ -929,18 +778,20 @@ uint64_t bronze_function_singleton(bronze_fn_code code, uint32_t arity, uint32_t
         }
         s.functionSingletons.push_back(SingletonEntry{code, result, fnEpoch, realm});
         s.functionSingletonIndex.emplace(key, s.functionSingletons.size() - 1);
+        if (gcHoldsYoung(result)) {
+            s.youngSingletons.add(static_cast<uint32_t>(s.functionSingletons.size() - 1));
+        }
     }
     if (slotCell) {
-        *reinterpret_cast<FnSingletonSlot*>(slotCell) = FnSingletonSlot{code, result};
+        auto* slot = reinterpret_cast<FnSingletonSlot*>(slotCell);
+        *slot = FnSingletonSlot{code, result};
+        moduleRemsetNoteCell(s, reinterpret_cast<uint64_t*>(&slot->value));
     }
     return result.rawBits();
 }
 
 }  // extern "C"
 
-const std::vector<std::pair<std::string, Value>>& rtHostGlobalEntries() {
-    return hostGlobalTables().values;
-}
 
 extern "C" {
 
@@ -966,7 +817,10 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
         }
         fatal(("internal: no global named " + keyStr).c_str());
     }
-    if (cacheCell) *cacheCell = resolved.rawBits();
+    if (cacheCell) {
+        *cacheCell = resolved.rawBits();
+        rtNoteRootCellWrite(cacheCell);
+    }
     return resolved.rawBits();
 }
 
@@ -985,13 +839,16 @@ uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t c
         }
         if (!known) {
             uint64_t spanEpoch = s.currentModuleEpoch;
-            for (const auto& vspan : s.moduleValueCells) {
-                if (vspan.cells + vspan.count == valueCells) {
-                    spanEpoch = vspan.epoch;
-                    break;
+            for (const auto* spans : {&s.moduleValueCells, &s.moduleRememberedCells}) {
+                for (const auto& vspan : *spans) {
+                    if (vspan.cells + vspan.count == valueCells) {
+                        spanEpoch = vspan.epoch;
+                        break;
+                    }
                 }
             }
             s.globalCacheSpans.push_back({valueCells, count, spanEpoch});
+            moduleRemsetSpanAdded(s, s.globalCacheSpans.back());
         }
     }
     const std::string& keyStr = rtKeyString(keyIndex);
@@ -1009,7 +866,10 @@ uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t c
     } else if (!rtGlobalThisOwnLookup(keyStr, resolved)) {
         fatal(("internal: no global named " + keyStr).c_str());
     }
-    if (cacheable && cells && slot < count) valueCells[slot] = resolved;
+    if (cacheable && cells && slot < count) {
+        valueCells[slot] = resolved;
+        moduleRemsetNoteCell(s, cells + slot);
+    }
     return resolved.rawBits();
 }
 

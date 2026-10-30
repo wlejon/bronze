@@ -9,6 +9,7 @@
 #include "runtime/realm.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_property.h"
+#include "runtime/root_remset.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape_census.h"
 #include "runtime/tls_block.h"
@@ -396,6 +397,16 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     icEntry[0] = shapeWord;
 }
 
+// Every latch, then the env words it may have written: a young env (or a young
+// primitive-form holder) goes on its module's remembered set, so the next
+// minor forwards it (root_remset.h). On the miss path only, behind a property
+// read; a store of an old env or of undefined costs a range test each.
+void latchMethodIcAndNote(uint64_t* icEntry, Value thisVal, Value fnVal,
+                          const InlineCache& probe, uint32_t keyIndex) {
+    latchMethodIc(icEntry, thisVal, fnVal, probe, keyIndex);
+    rtNoteMethodIcEnvWords(icEntry);
+}
+
 // The site's latched entry, read exactly as the METHOD-CALL site contract
 // (bronze_abi.h) says generated code reads it — every form, both ways — and
 // dispatched on a hit. This is the helper's own hit path: a backend that
@@ -567,7 +578,7 @@ uint64_t bronze_call_method(uint64_t thisBits, uint32_t keyIndex, uint32_t argc,
     recordCallSite("bronze_call_method", fnBits);
 
     Rooted<Value> fnRoot{Value(fnBits)};
-    latchMethodIc(icEntry, thisRoot.get(), fnRoot.get(), scratch.ways[0], keyIndex);
+    latchMethodIcAndNote(icEntry, thisRoot.get(), fnRoot.get(), scratch.ways[0], keyIndex);
 
     return bronze_dynamic_call(fnRoot.get().rawBits(), thisRoot.get().rawBits(), argc, argvBits);
 }
@@ -592,7 +603,7 @@ uint64_t bronze_call_method_spread(uint64_t thisBits, uint32_t keyIndex, uint64_
     recordCallSite("bronze_call_method_spread", fnBits);
 
     Rooted<Value> fnRoot{Value(fnBits)};
-    latchMethodIc(icEntry, thisRoot.get(), fnRoot.get(), scratch.ways[0], keyIndex);
+    latchMethodIcAndNote(icEntry, thisRoot.get(), fnRoot.get(), scratch.ways[0], keyIndex);
 
     return bronze_dynamic_call_spread(fnRoot.get().rawBits(), thisRoot.get().rawBits(),
                                       argsRoot.get().rawBits());

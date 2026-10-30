@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <deque>
+#include <initializer_list>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -22,6 +23,7 @@
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/root_remset.h"
 #include "runtime/rt_state.h"
 #include "runtime/symbol.h"
 
@@ -84,21 +86,63 @@ uint32_t blockIdOf(Value registry) {
     return static_cast<uint32_t>(id);
 }
 
+// The blocks (a registry and its cells) that may hold a young registry,
+// target, token or held value (runtime/root_remset.h): a minor visits only
+// these. Noted by the two writers, init and register; a block leaves once the
+// sweep finds nothing young in it. The pending cleanups and the kept-objects
+// list are transient (a job's worth) and are visited whole.
+thread_local RootIndexSet g_youngBlocks;
+
+void noteBlock(uint32_t block, std::initializer_list<uint64_t> written) {
+    for (uint64_t bits : written) {
+        if (gcHoldsYoung(Value(bits))) {
+            g_youngBlocks.add(block);
+            return;
+        }
+    }
+}
+
+template <typename Young>
+bool blockHoldsYoung(uint32_t block, Young young) {
+    if (block >= g_registries.size() || g_registries[block].isUndefined()) return false;
+    if (young(g_registries[block].rawBits())) return true;
+    for (const Cell& cell : g_cells[block]) {
+        if (young(cell.targetBits) || young(cell.heldValue.rawBits())) return true;
+        if (cell.hasToken && young(cell.tokenBits)) return true;
+    }
+    return false;
+}
+
+void traceBlock(brass::gc::Tracer& t, size_t b) {
+    const uint64_t cleared = Value::fromUndefined().rawBits();
+    if (b < g_registries.size()) {
+        if (g_registries[b].isUndefined()) return;
+        t.visit_weak(reinterpret_cast<uint64_t*>(&g_registries[b]), cleared);
+    }
+    for (Cell& cell : g_cells[b]) {
+        t.visit_weak(&cell.targetBits, cleared);
+        if (cell.hasToken) t.visit_weak(&cell.tokenBits, cleared);
+        t.visit(reinterpret_cast<uint64_t*>(&cell.heldValue));
+    }
+}
+
 // Every reference the tables hold, visited at every collection: the
 // registries, targets and tokens WEAKLY (a dead one reads `undefined`
-// afterwards), the held values and the kept-objects list strongly.
+// afterwards), the held values and the kept-objects list strongly. A minor
+// pass visits only the blocks that may hold a young one.
 void traceWeakTables(brass::gc::Tracer& t) {
-    const uint64_t cleared = Value::fromUndefined().rawBits();
-    for (size_t b = 0; b < g_cells.size(); ++b) {
-        if (b < g_registries.size()) {
-            if (g_registries[b].isUndefined()) continue;
-            t.visit_weak(reinterpret_cast<uint64_t*>(&g_registries[b]), cleared);
+    if (rtRootRemsetPass(t)) {
+        if (rtRootRemsetVerifying(t)) {
+            const std::string miss = rtWeakTableRemsetCheck(t.heap());
+            if (!miss.empty()) fatal(miss.c_str());
         }
-        for (Cell& cell : g_cells[b]) {
-            t.visit_weak(&cell.targetBits, cleared);
-            if (cell.hasToken) t.visit_weak(&cell.tokenBits, cleared);
-            t.visit(reinterpret_cast<uint64_t*>(&cell.heldValue));
+        g_youngBlocks.normalize();
+        for (uint32_t b : g_youngBlocks.indices()) {
+            if (b < g_cells.size()) traceBlock(t, b);
         }
+        rtRootRemsetStats().rememberedVisits += g_youngBlocks.size();
+    } else {
+        for (size_t b = 0; b < g_cells.size(); ++b) traceBlock(t, b);
     }
     for (PendingCleanup& p : g_pending) t.visit(reinterpret_cast<uint64_t*>(&p.heldValue));
     for (Value& kept : g_kept) t.visit(reinterpret_cast<uint64_t*>(&kept));
@@ -144,6 +188,16 @@ void sweepWeakReferences() {
     // rebuilding from it is exact.
     g_keptSeen.clear();
     for (const Value& v : g_kept) g_keptSeen.insert(v.rawBits());
+
+    // The weak slots hold their final words now: a block stays on the set
+    // while it still names a young object.
+    auto young = [](uint64_t bits) { return gcHoldsYoung(Value(bits)); };
+    std::vector<uint32_t> still;
+    for (uint32_t b : g_youngBlocks.indices()) {
+        if (blockHoldsYoung(b, young)) still.push_back(b);
+    }
+    g_youngBlocks.clear();
+    for (uint32_t b : still) g_youngBlocks.add(b);
 }
 
 // Registered on FIRST USE and not at static initialization, for the reason
@@ -221,6 +275,7 @@ void rtFinalizationRegistryInit(Rooted<Value>& self, Rooted<Value>& callback) {
         g_cells.emplace_back();
         g_registries.push_back(self.get());
     }
+    noteBlock(blockId, {self.get().rawBits()});
     auto* obj = self.get().asObject<ObjectHeader>();
     obj->setInternalSlot(RegistrySlot::CleanupCallback, callback.get());
     obj->setInternalSlot(RegistrySlot::CellBlockId,
@@ -240,6 +295,7 @@ void rtFinalizationRegister(Rooted<Value>& registry, Rooted<Value>& target,
     cell.hasToken = !token.get().isUndefined();
     cell.tokenBits = cell.hasToken ? token.get().rawBits() : 0;
     g_cells[block].push_back(cell);
+    noteBlock(block, {cell.targetBits, cell.heldValue.rawBits(), cell.tokenBits});
 }
 
 bool rtFinalizationUnregister(Rooted<Value>& registry, Rooted<Value>& token) {
@@ -339,5 +395,17 @@ size_t rtFinalizationCellCount() {
 }
 
 size_t rtFinalizationPendingCount() { return g_pending.size(); }
+
+std::string rtWeakTableRemsetCheck(const brass::gc::Heap& heap) {
+    g_youngBlocks.normalize();
+    auto young = [&heap](uint64_t bits) { return heap.holds_young(bits); };
+    for (uint32_t b = 0; b < g_cells.size(); ++b) {
+        ++rtRootRemsetStats().verifiedCells;
+        if (g_youngBlocks.contains(b) || !blockHoldsYoung(b, young)) continue;
+        return rtRootRemsetMissText("the FinalizationRegistry blocks", b,
+                                    g_registries[b].rawBits());
+    }
+    return {};
+}
 
 }  // namespace bronze::runtime

@@ -396,8 +396,17 @@
      * `bronze_register_fn_slots` takes `count` {code, value} pairs
      * (BRONZE_ABI_FNSLOT_SIZE bytes each), of which only the value word is a
      * Value — the code word is a raw function pointer the collector must not
-     * touch, and a null one means the slot was never filled. */ \
+     * touch, and a null one means the slot was never filled.
+     *
+     * `bronze_register_template_cells` takes `count` template cells, Value
+     * cells that only `bronze_template_object` stores into. A minor
+     * collection visits a cell of these (and of the fn slots, the global
+     * cache and the method sites' env words) only after a runtime writer has
+     * stored a young object in it (runtime/root_remset.h); a value cell is
+     * visited by every collection, because code may store into it directly
+     * (the module environment cell is written by ModuleEnvSet). */ \
     X(bronze_register_value_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
+    X(bronze_register_template_cells, BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     X(bronze_register_fn_slots,    BRONZE_ABI_VOID, (BRONZE_ABI_MU64, BRONZE_ABI_U64)) \
     /* The calling thread's INSTANCE of the module's writable tables, the
      * entry's first call (before any registration above, which it feeds).

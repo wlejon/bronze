@@ -203,6 +203,19 @@ inline void gcRememberObject(const void* object) noexcept {
     gc_detail::rememberAnyHeap(reinterpret_cast<uintptr_t>(object));
 }
 
+// Whether `v` names a young object on one of this thread's heaps. A store into
+// an off-heap root table that keeps a remembered set (runtime/root_remset.h)
+// asks this to decide whether the cell goes on the set: only a young
+// reference has to be visited by the next minor collection.
+inline bool gcHoldsYoung(Value v) noexcept {
+    if (!v.isPointer()) return false;
+    const gc_detail::BarrierHeaps& b = gc_detail::t_barrierHeaps;
+    for (uint32_t i = 0; i < b.count; ++i) {
+        if (b.heaps[i]->holds_young(v.rawBits())) return true;
+    }
+    return false;
+}
+
 // A Value that lives inside a heap object: assigning to it applies the write
 // barrier. Every Value field of a heap struct, and every accessor that hands
 // out a heap object's Value array, uses this type, so an ordinary assignment
