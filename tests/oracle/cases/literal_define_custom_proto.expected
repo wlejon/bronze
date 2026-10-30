@@ -1,0 +1,13 @@
+proto first true P  x:1wec ro:2wec
+proto last true  x:3wec ro:4wec
+assigned P set x 5 x:absent ro:absent P ro
+quoted  true x
+ignored true y
+null true 2
+shorthand true __proto__ true
+computed true __proto__ true
+method true __proto__ function
+deep Q  x:8wec ro:9wec
+spread  x:10wec ro:11wec
+proxy  x:12wec ro:13wec
+proxy assignment trap set z z:absent

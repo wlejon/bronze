@@ -132,17 +132,7 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
     // accessors, then every field initializer — public and private alike — in
     // definition order (lower_private.cpp says why the order is observable).
     //
-    // The base is named the way inference names it — by the heritage
-    // expression's identifier, which the module linker renamed, rather than by
-    // the parser's `superName` — because that is the name its class table is
-    // keyed by (types/class_layout.cpp, `ClassCollector::make`).
-    std::string baseBinding = superName;
-    if (superClass != nullptr) {
-        const auto* id = dynamic_cast<const ast::Ident*>(superClass);
-        baseBinding = id != nullptr ? id->name : std::string();
-    }
-    std::vector<ast::StmtPtr> fieldStmts =
-        buildFieldInitStatements(methods, privateElements, baseBinding, hasSuper, span);
+    std::vector<ast::StmtPtr> fieldStmts = buildFieldInitStatements(methods, privateElements, span);
 
     // The copy is what lets the field initializers be spliced in without
     // editing the tree inference read, and the map is what stops that costing
@@ -426,31 +416,18 @@ std::optional<Lowerer::Value> Lowerer::lowerClass(const std::string& name,
                 initVal = Value{emitConstUndefined(ilFn), il::Type::Dynamic};
             }
             if (!initVal) return std::nullopt;
-            auto initBoxed = boxValueIfNeeded(*initVal, ilFn);
-            il::Instruction setInst;
-            setInst.op = il::Op::ElemSet;
-            setInst.type = il::Type::Void;
-            setInst.result = il::kNoValue;
-            setInst.operands = {ctorVal->id, keyBoxed.id, initBoxed.id};
-            setInst.immI32 = 0;
-            emitInst(ilFn, setInst);
+            // DefineField on the constructor (7.3.33), not a [[Set]]: a static
+            // setter a base class declares is not run for it.
+            emitDefineElemWrite(*ctorVal, keyBoxed, *initVal, span, ilFn);
         } else {
             std::optional<Value> initVal;
             if (m.init) {
-                initVal = lowerExpr(*m.init, ilFn);
+                initVal = lowerNamedEvaluation(*m.init, m.name, ilFn);
             } else {
                 initVal = Value{emitConstUndefined(ilFn), il::Type::Dynamic};
             }
             if (!initVal) return std::nullopt;
-            auto initBoxed = boxValueIfNeeded(*initVal, ilFn);
-            il::Instruction setInst;
-            setInst.op = il::Op::PropSet;
-            setInst.type = il::Type::Void;
-            setInst.result = il::kNoValue;
-            setInst.operands = {ctorVal->id, initBoxed.id};
-            setInst.keyIndex = getKeyConstantIndex(m.name);
-            setInst.icIndex = icSiteCounter_++;
-            emitInst(ilFn, setInst);
+            emitDefineWrite(*ctorVal, m.name, *initVal, span, ilFn);
         }
     }
 

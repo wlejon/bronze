@@ -24,7 +24,8 @@
 // a build that forgets the first half.
 namespace bronze::il {
 
-inline constexpr uint32_t kFormatVersion = 11;
+// 12: `object.proto`, and prop.set / elem.set carry kWriteDefine (il.h).
+inline constexpr uint32_t kFormatVersion = 12;
 
 std::string serializeModule(const Module& module);
 

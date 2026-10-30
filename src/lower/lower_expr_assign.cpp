@@ -16,6 +16,16 @@ namespace bronze::lower {
 
 std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
                                                        il::Function& ilFn) {
+    // A class field's synthesized statement is a definition, never any of the
+    // assignments below (lower_class_fields.cpp).
+    if (const auto* mem = dynamic_cast<const ast::MemberAccess*>(bin->lhs.get());
+        mem != nullptr && mem->isFieldDefine) {
+        return lowerFieldDefinition(*mem, *bin->rhs, ilFn);
+    }
+    if (const auto* idx = dynamic_cast<const ast::IndexAccess*>(bin->lhs.get());
+        idx != nullptr && idx->isFieldDefine) {
+        return lowerComputedFieldDefinition(*idx, *bin->rhs, ilFn);
+    }
     if (nativeManifest_) {
         if (auto nativeAssign = tryLowerNativeAssignment(bin, ilFn)) {
             return nativeAssign;
@@ -28,9 +38,6 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         // reached through the class-evaluation record rather than the
         // prototype chain (lower_private.cpp).
         if (mem->isPrivate) return lowerPrivateAssignment(bin, ilFn);
-        // A field definition the class desugar could not prove a plain write
-        // (lower_class_fields.cpp).
-        if (mem->isFieldDefine) return lowerFieldDefinition(*mem, *bin->rhs, ilFn);
         auto objVal = lowerExpr(*mem->object, ilFn);
         if (!objVal) return std::nullopt;
         auto objBoxed = boxValueIfNeeded(*objVal, ilFn);

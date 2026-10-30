@@ -109,6 +109,18 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
             continue;
         }
 
+        // `__proto__: v` (B.3.1 / 13.2.5.5 step 6): the one spelling that is not
+        // a property. The value is evaluated without NamedEvaluation (step 5
+        // sets isProtoSetter, which skips it) and becomes the prototype when
+        // it is an object or null. A computed, shorthand or method `__proto__`
+        // is an ordinary own property and takes the define below.
+        if (!prop.computed() && !prop.shorthand && !prop.isMethod && prop.key == "__proto__") {
+            auto protoOpt = lowerExpr(*prop.value, ilFn);
+            if (!protoOpt) return std::nullopt;
+            emitContainerOp(il::Op::ObjectLitProto, Value{res, il::Type::Dynamic}, *protoOpt, ilFn);
+            continue;
+        }
+
         // A computed key is evaluated BEFORE its value, and the properties in
         // source order, so the two lowerings interleave exactly as ECMA-262
         // 13.2.5.5 evaluates them. Getting this backwards is observable the
@@ -161,17 +173,18 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
         if (!valOpt) return std::nullopt;
         auto valBoxed = boxValueIfNeeded(*valOpt, ilFn);
 
-        // No strict flag on either spelling: a literal DEFINES a property
-        // on an object it has just created (13.2.5.5 CreateDataProperty),
-        // which cannot be refused and is not a reference at all — so there is
-        // no strict-mode refusal that could fire here.
+        // A DEFINITION, not an assignment, on either spelling: 13.2.5.5 is
+        // CreateDataPropertyOrThrow on the object just created, so an
+        // `Object.prototype` setter or read-only property of the same name is
+        // never consulted (il.h kWriteDefine). It is not a reference either,
+        // so no strictness enters into it.
         if (keyBoxed) {
             il::Instruction setInst;
             setInst.op = il::Op::ElemSet;
             setInst.type = il::Type::Void;
             setInst.result = il::kNoValue;
             setInst.operands = {res, keyBoxed->id, valBoxed.id};
-            setInst.immI32 = 0;
+            setInst.immI32 = il::kWriteDefine;
             emitInst(ilFn, setInst);
         } else {
             uint32_t keyIdx = getKeyConstantIndex(prop.key);
@@ -184,6 +197,7 @@ std::optional<Lowerer::Value> Lowerer::lowerObjectLit(const ast::ObjectLit* objL
             setInst.operands = {res, valBoxed.id};
             setInst.keyIndex = keyIdx;
             setInst.icIndex = icIdx;
+            setInst.immI32 = il::kWriteDefine;
             emitInst(ilFn, setInst);
         }
     }

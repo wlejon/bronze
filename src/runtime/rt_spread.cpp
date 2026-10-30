@@ -185,6 +185,23 @@ void appendIterable(Rooted<Value>& out, Rooted<Value>& src) {
 // `Object.assign(Object.freeze(o), {a: 1})` used to answer by doing nothing.
 constexpr bool kSpreadWriteThrows = true;
 
+// And the two copies are not the same WRITE. CopyDataProperties (a literal's
+// `...src`, a rest pattern's object) is CreateDataPropertyOrThrow — it
+// defines, so an inherited setter on the target's chain never runs; 20.1.2.1
+// Object.assign is Set, which runs it. One walk over the source serves both,
+// so which keys are copied and in what order is decided once.
+enum class CopyWrite { Assign, Define };
+
+// One key's write into `target`, by the copy's kind.
+void writeKey(Rooted<Value>& target, Rooted<Value>& key, Rooted<Value>& val, CopyWrite mode) {
+    if (mode == CopyWrite::Define) {
+        bronze_elem_define(target.get().rawBits(), key.get().rawBits(), val.get().rawBits());
+        return;
+    }
+    bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
+                    kSpreadWriteThrows);
+}
+
 // A copy into a String exotic TARGET that 10.4.3 forbids.
 bool stringTargetRefuses(Value stringData, const std::string& key) {
     return rtStringDataWriteRefused(stringData, key, kSpreadWriteThrows);
@@ -199,7 +216,8 @@ bool stringTargetRefuses(Value stringData, const std::string& key) {
 // 10.4.3.5 defines an index enumerable, so `Object.assign({}, "ab")` is two
 // properties and not three, and it is one place that decides that.
 bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
-                           Rooted<Value>& stringTarget, const std::string& keyText) {
+                           Rooted<Value>& stringTarget, const std::string& keyText,
+                           CopyWrite mode) {
     StringOwnProperty own;
     if (!rtStringDataOwnProperty(stringData.get(), keyText, own)) return true;
     Rooted<Value> val{own.value};
@@ -208,8 +226,7 @@ bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
         return false;
     }
     Rooted<Value> key{rtMakeString(keyText)};
-    bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                    kSpreadWriteThrows);
+    writeKey(target, key, val, mode);
     return true;
 }
 
@@ -218,20 +235,29 @@ bool copyStringOwnProperty(Rooted<Value>& target, Rooted<Value>& stringData,
 // object ToObject would box it into answer from the same characters, which is
 // why this takes the [[StringData]] and never a wrapper.
 void spreadStringSource(Rooted<Value>& target, Rooted<Value>& stringData,
-                        Rooted<Value>& stringTarget) {
+                        Rooted<Value>& stringTarget, CopyWrite mode) {
     const uint32_t length = stringData.get().asString<StringHeader>()->getLength();
     for (uint32_t i = 0; i < length; ++i) {
-        if (!copyStringOwnProperty(target, stringData, stringTarget, std::to_string(i))) return;
+        if (!copyStringOwnProperty(target, stringData, stringTarget, std::to_string(i), mode)) {
+            return;
+        }
     }
-    copyStringOwnProperty(target, stringData, stringTarget, "length");
+    copyStringOwnProperty(target, stringData, stringTarget, "length", mode);
 }
 
 // One own enumerable property, copied into `target` under the same key. The
 // key is an arena-interned shape string, so it is copied into the heap first:
 // the result holds ordinary JS strings, never pointers into the shape arena.
-void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name) {
+void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name,
+                  CopyWrite mode) {
     Rooted<Value> key{name.isSymbol() ? name.toValue() : rtKeyAsValue(name.string())};
     Rooted<Value> val{source.get().asObject<ObjectHeader>()->getProp(rtHeap(), key)};
+    if (mode == CopyWrite::Define) {
+        // The name is the source shape's interned key, which is the form a
+        // definition wants; the target's kind is the define's own question.
+        rtCreateDataPropertyOrThrow(target, name, val, /*ic=*/nullptr);
+        return;
+    }
     // A proxy target's [[Set]] is its `set` trap; a direct shape write here
     // would be exactly the bypass the proxy exists to prevent.
     if (target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
@@ -264,7 +290,15 @@ void copyProperty(Rooted<Value>& target, Rooted<Value>& source, PropertyKey name
                        name.isSymbol() ? "<symbol>" : rtUtf8Chars(name.string()));
 }
 
+void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode);
+
 }  // namespace
+
+// 20.1.2.1 Object.assign's copy of one source: the walk `{ ...src }` makes,
+// with each key ASSIGNED (Set) rather than defined.
+void rtObjectAssignCopy(Rooted<Value>& target, Rooted<Value>& src) {
+    copyOwnEnumerable(target, src, CopyWrite::Assign);
+}
 
 extern "C" {
 
@@ -408,13 +442,23 @@ void bronze_array_spread(uint64_t arrBits, uint64_t srcBits) {
 //   bronze can now make, for the reason builtin_object.cpp's `ownKeysOf` does
 //   not build one: nothing is the COMPLETE answer rather than the one bronze
 //   can reach, so allocating an object to read no keys off it buys nothing.
+//
+// The literal's copy DEFINES (CreateDataPropertyOrThrow): an `Object.prototype`
+// setter for a key the source carries is not run, and the key becomes own.
 void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     recordHelperCall("bronze_object_spread");
-    Value srcVal(srcBits);
-    if (srcVal.isUndefined() || srcVal.isNull()) return;
-
     Rooted<Value> target{Value(objBits)};
-    Rooted<Value> src{srcVal};
+    Rooted<Value> src{Value(srcBits)};
+    copyOwnEnumerable(target, src, CopyWrite::Define);
+}
+
+}  // extern "C"
+
+namespace {
+
+void copyOwnEnumerable(Rooted<Value>& target, Rooted<Value>& src, CopyWrite mode) {
+    const Value srcVal = src.get();
+    if (srcVal.isUndefined() || srcVal.isNull()) return;
 
     // Asked once, outside the loops: only `Object.assign` with a primitive
     // string target ever produces one, and every other spread in the program
@@ -426,7 +470,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
     }
 
     if (srcVal.isString()) {
-        spreadStringSource(target, src, stringTarget);
+        spreadStringSource(target, src, stringTarget, mode);
         return;
     }
     if (!srcVal.isObject()) return;  // a number, a boolean or a symbol: nothing to copy
@@ -445,8 +489,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{src.get().asObject<ArrayHeader>()->getElem(i)};
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            kSpreadWriteThrows);
+            writeKey(target, key, val, mode);
             // The write can now refuse, and copying the next index after that
             // raised would be the runtime continuing past an exception — which
             // `rtThrow` answers by killing the process, not by overwriting the
@@ -465,8 +508,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             Rooted<Value> key{rtKeyAsValue(named)};
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            kSpreadWriteThrows);
+            writeKey(target, key, val, mode);
         }
         return;
     }
@@ -488,8 +530,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             // exception.
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            kSpreadWriteThrows);
+            writeKey(target, key, val, mode);
         }
         return;
     }
@@ -521,8 +562,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             if (!present || !found.enumerable) continue;
             Rooted<Value> val{
                 Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            kSpreadWriteThrows);
+            writeKey(target, key, val, mode);
         }
         return;
     }
@@ -541,7 +581,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
                 stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
                 return;
             }
-            copyProperty(target, propsRoot, name);
+            copyProperty(target, propsRoot, name, mode);
         }
         return;
     }
@@ -568,8 +608,7 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             }
             Rooted<Value> key{Value::fromDouble(static_cast<double>(i))};
             Rooted<Value> val{Value(bronze_elem_get(src.get().rawBits(), key.get().rawBits()))};
-            bronze_elem_set(target.get().rawBits(), key.get().rawBits(), val.get().rawBits(),
-                            kSpreadWriteThrows);
+            writeKey(target, key, val, mode);
         }
     }
     // Own enumerable keys of BOTH kinds: 7.3.25 CopyDataProperties takes
@@ -590,12 +629,16 @@ void bronze_object_spread(uint64_t objBits, uint64_t srcBits) {
             stringTargetRefuses(stringTarget.get(), rtUtf8Chars(name.string()))) {
             return;
         }
-        copyProperty(target, src, name);
+        copyProperty(target, src, name, mode);
         // `copyProperty` reads with Get, so a source property that is an
         // accessor runs user code. Copying the next one after that threw would
         // be the runtime continuing past an exception.
     }
 }
+
+}  // namespace
+
+extern "C" {
 
 // `const { a, ...others } = src` — a fresh object holding every own
 // enumerable property of `src` except the ones the pattern already named.
@@ -660,7 +703,7 @@ uint64_t bronze_object_rest(uint64_t srcBits, uint64_t excludedBits) {
             }
         }
         if (skip) continue;
-        copyProperty(out, src, name);
+        copyProperty(out, src, name, CopyWrite::Define);
     }
     return out.get().rawBits();
 }

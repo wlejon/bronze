@@ -188,6 +188,20 @@
     X(bronze_super_set,           BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_super_elem_set,      BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_prop_set,            BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64, BRONZE_ABI_BOOL)) \
+    /* CreateDataPropertyOrThrow (7.3.7, runtime/rt_prop_define.cpp): the store\
+     * of an object literal's properties, a spread's copies and a class's\
+     * fields, which DEFINES and never walks the prototype chain — no inherited\
+     * setter runs, no inherited read-only property refuses. `_prop_` takes a\
+     * registered key and the site's own inline-cache entry (null: none), which\
+     * only this helper ever fills; `_elem_` takes a key value and runs\
+     * ToPropertyKey on it. A refusal (a non-extensible receiver, a\
+     * non-configurable own property) is a TypeError in any mode. */ \
+    X(bronze_prop_define,         BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_U64, BRONZE_ABI_MU64)) \
+    X(bronze_elem_define,         BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U64)) \
+    /* An object literal's `__proto__: v` (13.2.5.5, B.3.1): the fresh\
+     * object's [[SetPrototypeOf]](v) when v is an object or null, else\
+     * nothing. */ \
+    X(bronze_object_literal_proto, BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_U64)) \
     /* The out-of-line halves of the inline property paths, for code built\
      * to be small (the JIT's lower tiers). `_poly_scan` is a read's scan of\
      * its site's ways 1..N-1 after a way-0 miss: the address of the slot to\

@@ -146,7 +146,7 @@ uint64_t objectAssign(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     Rooted<Value> target{toObjectForAssign(args[0])};
     for (uint32_t i = 1; i < args.count(); ++i) {
         Rooted<Value> src{args[i]};
-        bronze_object_spread(target.get().rawBits(), src.get().rawBits());
+        rtObjectAssignCopy(target, src);
     }
     return target.get().rawBits();
 }
@@ -165,19 +165,10 @@ uint64_t objectFromEntries(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
                                                   Value::fromDouble(0.0).rawBits()))};
             Rooted<Value> v{Value(bronze_elem_get(pair.get().rawBits(),
                                                   Value::fromDouble(1.0).rawBits()))};
-            Rooted<Value> propKey{rtToPropertyKey(k)};
-            if (!propKey.get().isString() && !propKey.get().isSymbol()) {
-                // A number (or other primitive) key: rtToPropertyKey hands it
-                // back as is, so the index path, which owns ToString for it,
-                // stores it. `{}` inherits no property a primitive key names,
-                // so the set is the CreateDataProperty the spec asks for.
-                bronze_elem_set(out.get().rawBits(), propKey.get().rawBits(), v.get().rawBits(),
-                                /*strict=*/true);
-                continue;
-            }
-            out.get().asObject<ObjectHeader>()->setProp(rtHeap(), rtArena(), propKey, v,
-                                                        /*ic=*/nullptr, /*enumerable=*/true,
-                                                        /*defineOwn=*/true);
+            // 20.1.2.7.1 step c is CreateDataPropertyOrThrow: a define, so an
+            // `Object.prototype` setter (an index one included) is not run.
+            // The helper runs ToPropertyKey itself.
+            bronze_elem_define(out.get().rawBits(), k.get().rawBits(), v.get().rawBits());
         }
     });
     return out.get().rawBits();

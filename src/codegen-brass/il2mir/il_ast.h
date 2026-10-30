@@ -169,8 +169,19 @@ enum class BronzeOp {
     MethodSlotFn,
     ClosureIs,
     ClosureEnv,
+    // `prop.set` / `elem.set` in kWriteDefine mode (il.h): CreateDataPropertyOrThrow.
+    // Their own ops here so that no assignment fast path — a static slot, an
+    // accessor call, an index run, a typed store — can match one by its op.
+    PropDefine,
+    ElemDefine,
+    ObjectLitProto,
     Unknown
 };
+
+// The write mode a PropDefine hands the shared set lowering in place of a
+// strict flag: il.h kWriteDefine (il_to_brass_ast.cpp asserts they agree).
+// Every helper choice keyed off the mode routes it to bronze_prop_define.
+inline constexpr uint32_t kDefineWriteMode = 2;
 
 struct BronzeBlockTarget {
     uint32_t block_id = 0;

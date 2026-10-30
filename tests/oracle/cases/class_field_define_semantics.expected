@@ -1,0 +1,10 @@
+own prototype  a:1wec b:2wec c:3wec
+base prototype  a:4wec b:5wec c:3wec
+Object.prototype  op:namedwec ro:read-onlywec op2:computedwec
+static  s:staticwec t:static computedwec op:static opwec
+names fn arrow sfn
+replaces accessor  x:fieldwec
+non-configurable true
+non-extensible true
+overwrite z:fieldwec
+restored undefined undefined

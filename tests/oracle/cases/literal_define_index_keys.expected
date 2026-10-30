@@ -1,0 +1,6 @@
+literal f10,f11,f12 0:10wec 1:11wec 2:12wec
+spread array  0:awec 1:bwec
+spread string  0:xwec 1:ywec
+class  0:field 0wec 2:field 2wec
+assignment setter 1 assigned 1:absent
+restored undefined undefined

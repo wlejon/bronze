@@ -97,6 +97,14 @@ bool rtArrayMemberUnimplemented(const std::string& key);
 PropertyKey rtInternPropertyKey(Value keyVal);
 bool rtHasOwnPropertyNamed(Rooted<Value>& self, Value key);
 
+// 7.3.7 CreateDataPropertyOrThrow (rt_prop_define.cpp): the store of every
+// object-literal property, class field and spread copy — a DEFINITION, which
+// never walks the prototype chain. `name` must already be interned; `ic` is a
+// define site's own entry or null, never an assignment site's. Returns false
+// when it threw.
+bool rtCreateDataPropertyOrThrow(Rooted<Value>& target, PropertyKey name, Rooted<Value>& value,
+                                 InlineCache* ic);
+
 // A property read on a PRIMITIVE receiver (rt_prop_primitive.cpp): a string
 // reaches `String.prototype` and a boolean `Boolean.prototype` by the ordinary
 // prototype walk, while a number's and a symbol's members are still handed out

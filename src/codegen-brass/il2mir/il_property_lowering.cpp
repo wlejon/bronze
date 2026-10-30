@@ -368,6 +368,8 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
 void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
                            Value* val, const IcSite& site) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    // The strict flag of an assignment, or kDefineWriteMode for a PropDefine:
+    // the helper the miss calls is chosen by it (lower_prop_set).
     const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
     // The same sites the read inlines (see PropGet) get the inline
     // own-slot store, less the writes to an object this function just
@@ -647,6 +649,7 @@ bool is_property_il_op(BronzeOp op) {
     switch (op) {
         case BronzeOp::PropGet:
         case BronzeOp::PropSet:
+        case BronzeOp::PropDefine:
         case BronzeOp::PropDelete:
         case BronzeOp::MethodDef:
         case BronzeOp::MethodDefComputed:
@@ -803,6 +806,19 @@ bool lower_property_instruction(
                                                     miss);
                 return true;
             }
+            lower_prop_set_cached(lowering, inst_ast, b, obj_val, val, site);
+            return true;
+        }
+
+        // A DEFINITION (il_ast.h PropDefine): the site's own cache — its
+        // inline own-slot store and, in a constructor, its inline transition —
+        // then bronze_prop_define. None of the assignment's other paths: an
+        // index key's element store, an accessor call and a static-slot guard
+        // each answer what a [[Set]] finds on the chain.
+        case BronzeOp::PropDefine: {
+            Value* obj_val = ensure_type(get_opd(0), Type::i64());
+            Value* val = ensure_type(get_opd(1), Type::i64());
+            const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
             lower_prop_set_cached(lowering, inst_ast, b, obj_val, val, site);
             return true;
         }

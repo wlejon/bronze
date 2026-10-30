@@ -424,7 +424,7 @@ std::optional<Lowerer::Value> Lowerer::lowerPrivateIn(const ast::Expr& nameExpr,
 // private ones by position and there is only one order to keep.
 std::vector<ast::StmtPtr> Lowerer::buildFieldInitStatements(
     const std::vector<ast::ClassMethod>& methods, const std::vector<PrivateElement>& elements,
-    const std::string& superName, bool hasSuper, Span span) {
+    Span span) {
     std::vector<ast::StmtPtr> out;
 
     // `this.<slot> = <value>` as a DEFINITION: `isPrivateDefine` names the
@@ -493,13 +493,18 @@ std::vector<ast::StmtPtr> Lowerer::buildFieldInitStatements(
             idx->span = thisExpr->span;
             idx->object = std::move(thisExpr);
             idx->index = ast::cloneExpr(*m.keyExpr);
+            idx->isFieldDefine = true;
             target = std::move(idx);
         } else {
+            // Always a definition (7.3.33 DefineField): whether a [[Set]]
+            // would have agreed turns on every prototype the instance's chain
+            // reaches, Object.prototype included, which no pass over this
+            // module's text can bound.
             auto memAccess = std::make_unique<ast::MemberAccess>();
             memAccess->span = thisExpr->span;
             memAccess->object = std::move(thisExpr);
             memAccess->property = m.name;
-            memAccess->isFieldDefine = !fieldSetIsDefinition(methods, superName, hasSuper, m.name);
+            memAccess->isFieldDefine = true;
             target = std::move(memAccess);
         }
         auto bin = std::make_unique<ast::Binary>();

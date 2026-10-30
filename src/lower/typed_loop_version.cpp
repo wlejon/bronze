@@ -263,6 +263,10 @@ private:
             for (uint32_t i = 0; i < blk.instructions.size(); ++i) {
                 const il::Instruction& inst = blk.instructions[i];
                 if (inst.op != il::Op::ElemGet && inst.op != il::Op::ElemSet) continue;
+                // A definition is not the store a typed view's element write
+                // is: it throws for an index past the view where the Set
+                // discards (10.4.5.3 vs 10.4.5.5).
+                if (il::isDefineWrite(inst)) continue;
                 if (inst.operands.size() < 2 || !invariantReceiver(inst.operands[0])) continue;
                 const il::ValueId idx = numberSource(fn_, defs, inst.operands[1], /*allowI32=*/true);
                 if (idx == il::kNoValue) continue;

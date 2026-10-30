@@ -524,16 +524,16 @@ private:
                               il::Function& ilFn);
     std::vector<ast::StmtPtr> buildFieldInitStatements(
         const std::vector<ast::ClassMethod>& methods,
-        const std::vector<PrivateElement>& elements, const std::string& superName,
-        bool hasSuper, Span span);
-    bool fieldSetIsDefinition(const std::vector<ast::ClassMethod>& methods,
-                              const std::string& superName, bool hasSuper,
-                              const std::string& field);
-    // Whether the program can install a property on a prototype other than by
-    // writing it: lower_class_fields.cpp. Computed once, on first ask.
-    std::optional<bool> reshapesPrototypes_;
+        const std::vector<PrivateElement>& elements, Span span);
+    // lower_class_fields.cpp: a public field's DefineField, by name or by key
+    // value, and a static field's on the constructor.
     std::optional<Value> lowerFieldDefinition(const ast::MemberAccess& mem, const ast::Expr& rhs,
                                               il::Function& ilFn);
+    std::optional<Value> lowerComputedFieldDefinition(const ast::IndexAccess& idx,
+                                                      const ast::Expr& rhs, il::Function& ilFn);
+    void emitDefineWrite(Value target, const std::string& key, Value value, Span span,
+                         il::Function& ilFn);
+    void emitDefineElemWrite(Value target, Value key, Value value, Span span, il::Function& ilFn);
     // --- lower_derived_ctor.cpp: the receiver binding before super() ---
     void emitRaisingHelper(const char* symbol, const std::vector<il::ValueId>& args, Span span,
                            il::Function& ilFn);

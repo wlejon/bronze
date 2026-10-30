@@ -558,6 +558,13 @@ enum class Op : uint8_t {
     // verifier sees that proved: first in a block whose single predecessor
     // ends in `br (closure.is f, @T), <this block>, ...`. Loads only.
     ClosureEnv,
+    // object.proto obj, v. An object literal's `__proto__: v` (13.2.5.5 step
+    // 6, B.3.1): the fresh object's [[SetPrototypeOf]](v) when v is an object
+    // or null, nothing otherwise. Not a property write: the literal's other
+    // properties are DEFINES (prop.set's kWriteDefine), which would make an
+    // own `__proto__` of this one. Only the colon form with a written name
+    // reaches here; a computed, shorthand or method `__proto__` is a define.
+    ObjectLitProto,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

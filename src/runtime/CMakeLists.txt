@@ -120,6 +120,7 @@ bronze_add_module(runtime
         rt_array_holes.cpp
         rt_prop_symbol.cpp
         rt_prop_write.cpp
+        rt_prop_define.cpp
         rt_method_call.cpp
         static_shape.cpp
         transition_run.cpp

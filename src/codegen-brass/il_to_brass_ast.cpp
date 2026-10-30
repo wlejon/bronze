@@ -11,6 +11,9 @@
 
 namespace bronze::codegen {
 
+static_assert(il2mir::kDefineWriteMode == static_cast<uint32_t>(il::kWriteDefine),
+              "the backend's define mode must be the IL's");
+
 namespace {
 
 constexpr il2mir::BronzeType mapType(il::Type t) noexcept {
@@ -230,6 +233,24 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::PropSet:
+            if (il::isDefineWrite(inst)) {
+                // A definition keeps only what its own lowering consumes: the
+                // key, its cache entry, and a transition run it may stand in
+                // (a run's publish refuses any chain that could tell a define
+                // from an assignment). Never a static slot or an accessor
+                // target, which describe an ASSIGNMENT's answer — the verifier
+                // refuses a define that carries either (il/verifier.cpp).
+                out.op = il2mir::BronzeOp::PropDefine;
+                out.imm_i64 = il2mir::kDefineWriteMode;
+                out.index = inst.keyIndex;
+                out.depth = inst.icIndex;
+                out.ic_index = inst.icIndex;
+                out.is_mono = inst.icMonomorphic;
+                out.run_cell = inst.transitionRunCell;
+                out.run_length = inst.transitionRunLength;
+                out.run_slot = inst.transitionRunSlot;
+                break;
+            }
             out.op = il2mir::BronzeOp::PropSet;
             out.index = inst.keyIndex;
             out.depth = inst.icIndex;
@@ -250,7 +271,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             break;
         case il::Op::ElemGet: out.op = il2mir::BronzeOp::ElemGet; break;
         case il::Op::ElemSet:
-            out.op = il2mir::BronzeOp::ElemSet;
+            out.op = il::isDefineWrite(inst) ? il2mir::BronzeOp::ElemDefine : il2mir::BronzeOp::ElemSet;
             out.index = static_cast<uint32_t>(inst.immI32);
             break;
         case il::Op::ElemGetTyped:
@@ -420,6 +441,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::ArrayAppend: out.op = il2mir::BronzeOp::ArrayAppend; break;
         case il::Op::ArraySpread: out.op = il2mir::BronzeOp::ArraySpread; break;
         case il::Op::ObjectSpread: out.op = il2mir::BronzeOp::ObjectSpread; break;
+        case il::Op::ObjectLitProto: out.op = il2mir::BronzeOp::ObjectLitProto; break;
         case il::Op::ObjectRest: out.op = il2mir::BronzeOp::ObjectRest; break;
         case il::Op::DynamicCallSpread: out.op = il2mir::BronzeOp::DynamicCallSpread; break;
         case il::Op::MethodCall:

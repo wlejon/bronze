@@ -55,11 +55,11 @@ TEST_CASE("a property write carries the mode of the code it is written in") {
     const std::string sloppy = lowerToIl("const p = { a: 0 };\np.a = 1;\n");
     const std::string strict = lowerToIl("\"use strict\";\nconst p = { a: 0 };\np.a = 1;\n");
 
-    // The object literal's own definition is unflagged in BOTH: a literal
-    // defines a property on an object it has just created, which cannot be
-    // refused and is not a reference for strictness to be a property of.
-    CHECK(has(sloppy, "prop.set %0, 0, %2, 0, 0\n"));
-    CHECK(has(strict, "prop.set %1, 1, %3, 0, 0\n"));
+    // The object literal's own property is a DEFINITION in both (il.h
+    // kWriteDefine, 2): CreateDataPropertyOrThrow on an object it has just
+    // created, not a reference for strictness to be a property of.
+    CHECK(has(sloppy, "prop.set %0, 0, %2, 0, 2\n"));
+    CHECK(has(strict, "prop.set %1, 1, %3, 0, 2\n"));
     // The assignment after it is the only instruction that differs.
     CHECK(has(sloppy, "prop.set %0, 0, %4, 1, 0\n"));
     CHECK(has(strict, "prop.set %1, 1, %5, 1, 1\n"));
@@ -92,6 +92,24 @@ TEST_CASE("every write form carries it, and a read carries nothing") {
     // And `delete` carries it, because 13.5.1.2 step 5.b turns a refusal into
     // a TypeError on the same rule.
     CHECK(has(il, "%16: bool = prop.delete %5, 2, 1\n"));
+}
+
+TEST_CASE("literal properties and class fields are definitions, __proto__ is not a property") {
+    const std::string il = lowerToIl(
+        "const k = \"x\";\n"
+        "const p = {};\n"
+        "const o = { [k]: 1, __proto__: p };\n"
+        "class C { f = 1; [k] = 2; static s = 3; }\n");
+    // A computed key's definition: `elem.set` in mode 2.
+    CHECK(has(il, "elem.set %4, %5, %7, 2\n"));
+    // `__proto__: p` sets the prototype; it is no write at all.
+    CHECK(has(il, "object.proto %4, %3\n"));
+    // Both instance fields (in the constructor), whatever the chain holds, and
+    // the static one on the constructor: all mode 2.
+    const std::string ctor = functionBody(il, "func C(");
+    CHECK(has(ctor, "prop.set %1, 2, %3, 0, 2\n"));
+    CHECK(has(ctor, "elem.set %1, %4, %6, 2\n"));
+    CHECK(has(il, "prop.set %9, 3, %11, 1, 2\n"));
 }
 
 TEST_CASE("a sloppy delete is flagged 0") {

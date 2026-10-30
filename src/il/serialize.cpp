@@ -384,7 +384,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
 
 void readInstruction(Reader& r, Instruction& inst) {
     const uint8_t op = r.u8();
-    if (op > static_cast<uint8_t>(Op::ClosureEnv)) r.fail("bad op");
+    if (op > static_cast<uint8_t>(Op::ObjectLitProto)) r.fail("bad op");
     inst.op = static_cast<Op>(op);
     inst.type = r.type();
     const uint64_t m = r.var();

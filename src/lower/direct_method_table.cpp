@@ -216,6 +216,8 @@ void DirectMethodTable::resolveAccessors(il::Module& ilModule) const {
         for (auto& block : fn.blocks) {
             for (auto& inst : block.instructions) {
                 if (inst.op != il::Op::PropGet && inst.op != il::Op::PropSet) continue;
+                // A definition never reaches a setter, so no accessor answers it.
+                if (il::isDefineWrite(inst)) continue;
                 if (inst.staticSlot != il::Instruction::kNoStaticSlot ||
                     inst.directTarget != il::Instruction::kNoDirectTarget) {
                     continue;

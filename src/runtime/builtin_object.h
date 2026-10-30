@@ -4,6 +4,7 @@
 
 #include "abi/bronze_abi.h"
 #include "runtime/gc.h"
+#include "runtime/property_key.h"
 #include "runtime/value.h"
 
 // The seam between the two halves of the `Object` namespace.
@@ -93,6 +94,18 @@ uint64_t rtObjectGetOwnPropertySymbols(uint64_t, uint64_t, uint32_t argc, const 
 // (a target that is not an object, a descriptor that is not one, a `get` that
 // is not callable) are thrown either way.
 bool rtObjectDefineOwnProperty(uint32_t argc, const uint64_t* argv, bool throwOnRefusal);
+
+// The same internal method handed the COMPLETE data descriptor 7.3.7
+// CreateDataPropertyOrThrow builds ({ value, writable, enumerable,
+// configurable: true }), a refusal raised as a TypeError. `name` must already
+// be interned. The general case of rtCreateDataPropertyOrThrow
+// (rt_prop_define.cpp), which answers the plain-object cases before this.
+bool rtDefineDataPropertyComplete(Rooted<Value>& self, PropertyKey name, Rooted<Value>& value);
+
+// 20.1.2.1 Object.assign's copy of ONE source into `target` (rt_spread.cpp):
+// the own-enumerable walk an object spread makes, each key ASSIGNED (Set,
+// throwing) where the spread defines it.
+void rtObjectAssignCopy(Rooted<Value>& target, Rooted<Value>& src);
 
 // The four descriptor members themselves, in the shape the namespace table
 // installs them in.

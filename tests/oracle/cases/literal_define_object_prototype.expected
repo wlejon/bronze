@@ -1,0 +1,23 @@
+plain f1,f2,f3 p,q,r q:2wec
+shorthand  q:7wec
+computed f4 q:4wec
+computed literal f5 q:5wec
+quoted f6 q:6wec
+method  function m q
+accessor own setter 1 own getter q:accessor
+read-only w:1wec w:2wec w:3wec 4
+read-only assignment w:absent inherited w
+setter assignment setter q 6 q:absent
+strict f8,f9 q:8wec w:9wec
+strict assignment true
+data then accessor q:accessor later getter
+accessor then data q:2wec
+data twice  q,w q:3wec
+setter then data  q:4wec w:6wec
+spread src getter q:from getterwec w:src wwec
+spread then prop  q:2wec
+rest  q:10wec w:11wec
+assign setter q 12 q:absent
+assign read-only true
+fromEntries  q:14wec w:15wec
+restored undefined undefined

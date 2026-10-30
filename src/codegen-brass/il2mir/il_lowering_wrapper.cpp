@@ -74,8 +74,9 @@ bool IlLowering::emit_wrapper(const BronzeFunction& fn_ast, Module& mod, const s
             for (const auto& blk : fn_ast.blocks) {
                 for (const auto& inst : blk.instructions) {
                     if (inst.op == BronzeOp::PropGet || inst.op == BronzeOp::PropSet ||
-                        inst.op == BronzeOp::MethodCall || inst.op == BronzeOp::ElemGet ||
-                        inst.op == BronzeOp::ElemSet) {
+                        inst.op == BronzeOp::PropDefine || inst.op == BronzeOp::MethodCall ||
+                        inst.op == BronzeOp::ElemGet || inst.op == BronzeOp::ElemSet ||
+                        inst.op == BronzeOp::ElemDefine) {
                         if (!inst.operands.empty() && inst.operands[0] == param0_id) {
                             param0_is_this = true;
                             break;

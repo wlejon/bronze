@@ -454,6 +454,24 @@ bool IlLowering::lower_instruction(
             break;
         }
 
+        case BronzeOp::ObjectLitProto: {
+            Value* obj = ensure_type(get_opd(0), Type::i64(), b);
+            Value* val = ensure_type(get_opd(1), Type::i64(), b);
+            b.build_call("bronze_object_literal_proto", Type::void_type(), {obj, val});
+            break;
+        }
+
+        // A computed key's definition: the helper, always. The element-store
+        // paths (typed views, dense arrays, the per-thread store cache) are all
+        // an assignment's and none of them may answer a define.
+        case BronzeOp::ElemDefine: {
+            Value* obj = ensure_type(get_opd(0), Type::i64(), b);
+            Value* key = ensure_type(get_opd(1), Type::i64(), b);
+            Value* val = ensure_type(get_opd(2), Type::i64(), b);
+            b.build_call("bronze_elem_define", Type::void_type(), {obj, key, val});
+            break;
+        }
+
         case BronzeOp::ObjectRest: {
             Value* src = ensure_type(get_opd(0), Type::i64(), b);
             Value* excl = ensure_type(get_opd(1), Type::i64(), b);

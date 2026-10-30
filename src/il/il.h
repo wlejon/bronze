@@ -325,6 +325,22 @@ inline bool elemGetCoerces(const Instruction& inst) {
     return inst.op == Op::ElemGetTyped && (inst.immI32 & kElemKindMask) == kElemKindPlainArrayF64;
 }
 
+// The WRITE MODE `prop.set` and `elem.set` carry in `immI32`. An assignment is
+// sloppy (0) or strict (1), the refusal rule 13.15.2 applies; a DEFINITION (2)
+// is CreateDataPropertyOrThrow — an object literal's properties, a class's
+// fields — which never walks the prototype chain, so no inherited setter runs
+// and no inherited read-only property refuses. The two must never share a
+// path that could answer one with the other: every consumer that keys a fast
+// path off a `prop.set` asks `isDefineWrite` first (the backend lowers a define
+// to its own ops, il_to_brass_ast.cpp).
+inline constexpr int32_t kWriteSloppy = 0;
+inline constexpr int32_t kWriteStrict = 1;
+inline constexpr int32_t kWriteDefine = 2;
+
+inline bool isDefineWrite(const Instruction& inst) {
+    return (inst.op == Op::PropSet || inst.op == Op::ElemSet) && inst.immI32 == kWriteDefine;
+}
+
 // Which copy of a guarded numeric region a block belongs to
 // (src/lower/guard_region.h). The pass duplicates a region into a FAST copy
 // whose numbers are carried as `f64` and leaves the original blocks as the SLOW

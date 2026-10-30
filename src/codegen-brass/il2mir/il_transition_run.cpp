@@ -104,7 +104,12 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
                                           uint32_t* cont_counter) {
     const auto& insts = blk_ast.instructions;
     const BronzeInstruction& first = insts[inst_idx];
-    if (first.op != BronzeOp::PropSet || first.run_cell == BronzeInstruction::kNoTransitionRun) return false;
+    // An assignment's adds and a literal's or a class's definitions alike: on
+    // the chain the publish admits — no setter, read-only property or trap for
+    // any key, all of them absent — a [[Set]] and a CreateDataProperty store
+    // the same property, so one fast copy serves both.
+    const auto is_write = [](BronzeOp op) { return op == BronzeOp::PropSet || op == BronzeOp::PropDefine; };
+    if (!is_write(first.op) || first.run_cell == BronzeInstruction::kNoTransitionRun) return false;
     // A block run once calls its helpers (run_once): a guard is only size.
     if (run_once_) return false;
     auto refuse = [&](const std::string& why) {
@@ -124,7 +129,7 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     std::vector<uint32_t> proven_numbers;  // checked unboxes' operands
     for (size_t j = inst_idx; j < end; ++j) {
         const BronzeInstruction& inst = insts[j];
-        if (inst.op == BronzeOp::PropSet && inst.operands.size() == 2 && inst.operands[0] == recv_id) {
+        if (is_write(inst.op) && inst.operands.size() == 2 && inst.operands[0] == recv_id) {
             if (defined.count(inst.operands[1]) == 0 && inst.operands[1] == recv_id) return refuse("stores its receiver");
             sites.push_back(j);
         } else if (between(inst, defined)) {

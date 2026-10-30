@@ -181,6 +181,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
         if (idx->object) res->object = cloneExpr(*idx->object, origins);
         if (idx->index) res->index = cloneExpr(*idx->index, origins);
         res->optional = idx->optional;
+        res->isFieldDefine = idx->isFieldDefine;
         return res;
     }
     if (const auto* c = dynamic_cast<const Call*>(&expr)) {
@@ -270,6 +271,7 @@ ExprPtr cloneExprNode(const Expr& expr, CloneOrigins* origins) {
             if (p.value) prop.value = cloneExpr(*p.value, origins);
             prop.coverInitialized = p.coverInitialized;
             prop.isMethod = p.isMethod;
+            prop.shorthand = p.shorthand;
             prop.accessor = p.accessor;
             res->props.push_back(std::move(prop));
         }

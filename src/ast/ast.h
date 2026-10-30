@@ -276,12 +276,11 @@ struct MemberAccess final : Expr {
     // The difference is the brand check — a definition installs the element,
     // a write requires it to be there already.
     bool isPrivateDefine = false;
-    // A public field DEFINITION (7.3.6 CreateDataPropertyOrThrow, which is a
-    // [[DefineOwnProperty]]) rather than a [[Set]]. The two differ only where
-    // the prototype chain carries an accessor or a read-only property of the
-    // name, so lowering sets this on the field statements it synthesizes only
-    // where it cannot rule that out (lower_private.cpp); a plain write keeps
-    // its inline cache. Never set by the parser, like the flag above.
+    // A public field DEFINITION (7.3.33 DefineField: CreateDataPropertyOrThrow,
+    // a [[DefineOwnProperty]]) rather than a [[Set]]: no setter or read-only
+    // property on the prototype chain is consulted. Set on every public field
+    // statement lowering synthesizes (lower_private.cpp), never by the parser,
+    // like the flag above.
     bool isFieldDefine = false;
     void accept(Visitor& v) const override;
 };
@@ -290,6 +289,9 @@ struct IndexAccess final : Expr {
     ExprPtr object;
     ExprPtr index;
     bool optional = false;
+    // A COMPUTED public field's definition (`[k] = v`): MemberAccess's
+    // `isFieldDefine` for a key that is a value. Lowering-synthesized only.
+    bool isFieldDefine = false;
     void accept(Visitor& v) const override;
 };
 
@@ -454,6 +456,11 @@ struct ObjectProp {
     // 10.2.9 makes the first one's `.name` the key and the second one's `g`.
     // Nothing downstream can tell the two apart from the FunctionExpr alone.
     bool isMethod = false;
+    // `{ x }` — a shorthand IdentifierReference. It defines `x` like `x: x`
+    // except for one name: B.3.1 makes only `__proto__: v` (colon form, not
+    // computed, not shorthand, not a method) set the prototype, so a shorthand
+    // `{ __proto__ }` defines an own property called `__proto__`.
+    bool shorthand = false;
     // `get k() {}` / `set k(v) {}`. The property is then an ACCESSOR whose
     // `value` is the getter or the setter function; the two halves of one name
     // are one property, which is a fact only the runtime can enforce.

@@ -674,6 +674,7 @@ ExprPtr Parser::parseObjectLit() {
                 ident->span = nameTok.span;
                 ident->name = prop.key;
                 prop.value = std::move(ident);
+                prop.shorthand = true;
             } else {
                 if (!expect(TokenKind::Colon, "':' after property key")) return nullptr;
                 prop.value = parseAssign();

@@ -316,7 +316,8 @@ uint32_t argv_block_words(const IlLowering* lowering, const BronzeFunction& fn_a
                 widest = inst.param_count;
             }
             // A transition run stages its keys for the publish (il_transition_run.cpp).
-            if (inst.op == BronzeOp::PropSet && inst.run_cell != BronzeInstruction::kNoTransitionRun &&
+            if ((inst.op == BronzeOp::PropSet || inst.op == BronzeOp::PropDefine) &&
+                inst.run_cell != BronzeInstruction::kNoTransitionRun &&
                 inst.run_length > widest) {
                 widest = inst.run_length;
             }

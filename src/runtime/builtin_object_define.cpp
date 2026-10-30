@@ -572,6 +572,21 @@ static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const Decoded
     return applyDecodedDescriptor(holder, name, d, value, getter, setter, throwOnRefusal);
 }
 
+// 7.3.7 CreateDataPropertyOrThrow's general case (rt_prop_define.cpp takes the
+// plain-object cases before reaching here): the complete descriptor
+// { value, writable, enumerable, configurable: true } through the receiver's
+// own [[DefineOwnProperty]], a refusal raised.
+bool rtDefineDataPropertyComplete(Rooted<Value>& self, PropertyKey name, Rooted<Value>& value) {
+    DecodedDescriptor d;
+    d.hasValue = true;
+    d.hasWritable = d.wantWritable = true;
+    d.hasEnumerable = d.wantEnumerable = true;
+    d.hasConfigurable = d.wantConfigurable = true;
+    Rooted<Value> noGetter{Value::fromUndefined()};
+    Rooted<Value> noSetter{Value::fromUndefined()};
+    return applyToReceiver(self, name, d, value, noGetter, noSetter, /*throwOnRefusal=*/true);
+}
+
 // ECMA-262 6.2.6.5 ToPropertyDescriptor followed by 10.1.6.3, which is what
 // `Object.defineProperty` and `Reflect.defineProperty` are each a thin wrapper
 // over. The errors of the DECODE — a non-object target, a descriptor that is

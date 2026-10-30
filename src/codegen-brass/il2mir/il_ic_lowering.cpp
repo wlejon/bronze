@@ -430,7 +430,10 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
 void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_t key_index, Value* val,
                                                  uint32_t imm, const IcSite& site, bool val_is_primitive,
                                                  bool with_transition) {
-    const bool compact = small_forms_ && in_process_ && spec_ && spec_->has_feedback();
+    // The counted helper is the assignment's; a definition's miss is
+    // bronze_prop_define's whatever the tier (lower_prop_set).
+    const bool compact = small_forms_ && in_process_ && spec_ && spec_->has_feedback() &&
+                         imm != kDefineWriteMode;
     const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
@@ -510,6 +513,13 @@ void PropertyLoweringHelper::lower_prop_set(Builder& b, Value* obj, uint32_t key
     // The fourth operand is the site pointer and nothing else: a site the
     // module has no table entry for passes null, never an index.
     Value* entry = ic_entry ? ic_entry : b.build_iconst_i64(0);
+    if (imm == kDefineWriteMode) {
+        // A definition's miss: never the assignment's helper or its stub,
+        // whose chain walk would run an inherited setter. The entry is this
+        // site's own, which only bronze_prop_define fills.
+        b.build_call("bronze_prop_define", Type::void_type(), {obj, runtime_key(b, key_index), val, entry});
+        return;
+    }
     Value* strict_val = b.build_iconst_i32(imm != 0 ? 1 : 0);
     const char* callee = ic_entry && ic_stubs_ ? kPropSetStub : "bronze_prop_set";
     b.build_call(callee, Type::void_type(), {obj, runtime_key(b, key_index), val, entry, strict_val});
