@@ -1,0 +1,8 @@
+loop [ true, true ]
+pair same 0
+unused 100
+ints true
+forms true 7 2
+meta function 0 random
+contexts true true 50 true true 7
+mean true true

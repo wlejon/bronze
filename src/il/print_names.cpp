@@ -83,6 +83,7 @@ const char* opName(Op op) {
         case Op::ElemGetTyped: return "elem.get.typed";
         case Op::ElemSetTyped: return "elem.set.typed";
         case Op::MathUnary: return "math.unary";
+        case Op::MathRandom: return "math.random";
         case Op::DynamicCall: return "call.dynamic";
         case Op::FunctionRef: return "func.ref";
         case Op::Construct: return "new";

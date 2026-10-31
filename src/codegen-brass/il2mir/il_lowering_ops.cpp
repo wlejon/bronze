@@ -376,6 +376,7 @@ bool is_ops_il_op(BronzeOp op) {
         case BronzeOp::ConstUndefined:
         case BronzeOp::ConstNull:
         case BronzeOp::MathUnary:
+        case BronzeOp::MathRandom:
         case BronzeOp::GetNewTarget:
         case BronzeOp::Add:
         case BronzeOp::Sub:
@@ -491,6 +492,13 @@ bool lower_ops_instruction(
                 default: break;
             }
             res_val = b.build_call(fn, Type::f64(), {op0});
+            return true;
+        }
+
+        case BronzeOp::MathRandom: {
+            // The native's own generator (builtin_math.cpp), so the sequence
+            // is one whichever form each call site took.
+            res_val = b.build_call("bronze_math_random_f64", Type::f64(), {});
             return true;
         }
 

@@ -290,6 +290,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.op = il2mir::BronzeOp::MathUnary;
             out.imm_i64 = inst.immI32;
             break;
+        case il::Op::MathRandom:
+            out.op = il2mir::BronzeOp::MathRandom;
+            break;
 
         // --- Dynamic Calls & Objects ---
         case il::Op::DynamicCall:

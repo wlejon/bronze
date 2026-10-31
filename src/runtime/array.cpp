@@ -1,6 +1,7 @@
 #include "runtime/array.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <utility>
 
 #include "abi/bronze_abi.h"
@@ -13,6 +14,13 @@
 namespace bronze {
 
 namespace {
+
+// Measurement seam: BRONZE_NO_BULK_ARRAY_GROW=1 copies a growing block slot
+// by slot through the per-store barrier, as before.
+bool bulkGrowCopy() {
+    static const bool on = std::getenv("BRONZE_NO_BULK_ARRAY_GROW") == nullptr;
+    return on;
+}
 
 // Replace self's element block with one of `new_capacity` entries, copying
 // the live prefix across. Allocation can collect and move both the array
@@ -43,13 +51,24 @@ void setCapacity(Heap& heap, Rooted<Value>& self, uint32_t new_capacity) {
     // Read through the const accessor: copying the elements across changes
     // none of them, so NUMBERS stays what it was.
     const Value* old_slots = std::as_const(*arr).elementsData();
-    if (old_slots) {
-        for (; i < arr->length && i < new_capacity; ++i) {
-            slots[i] = old_slots[i];
+    if (bulkGrowCopy()) {
+        // The block is new, so one bulk barrier over the copied run is all
+        // the collector needs (gcCopyValues), and a hole is not a reference,
+        // so the fill needs none; a per-slot barrier was most of a growth.
+        if (old_slots) {
+            i = arr->length < new_capacity ? arr->length : new_capacity;
+            gcCopyValues(block, slots, old_slots, i);
         }
-    }
-    for (; i < new_capacity; ++i) {
-        slots[i] = Value::fromHole();
+        gcFillValues(block, slots + i, Value::fromHole(), new_capacity - i);
+    } else {
+        if (old_slots) {
+            for (; i < arr->length && i < new_capacity; ++i) {
+                slots[i] = old_slots[i];
+            }
+        }
+        for (; i < new_capacity; ++i) {
+            slots[i] = Value::fromHole();
+        }
     }
 
     arr->elements = Value::fromObject(block);

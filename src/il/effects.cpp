@@ -124,6 +124,11 @@ bool canThrow(const Instruction& inst) {
         case Op::ElemSetTyped:
         // A machine-number math kernel: no coercion ladder, no user code.
         case Op::MathUnary:
+        // The generator's next value: no argument to coerce, no user code.
+        // (Deliberately NOT in canCollect's list, though it allocates
+        // nothing: an op that answers no to both reads as pure, re-run on a
+        // fast copy's bailout, and a second draw is not the same program.)
+        case Op::MathRandom:
         // One aligned load from the module's own template-slot table, at an
         // address the compiler already proved in range.
         case Op::TemplateCached:

@@ -122,6 +122,7 @@ enum class BronzeOp {
     MathImul,
     SuperSet,
     MathUnary,
+    MathRandom,
     DynamicImport,
     ModuleNamespace,
     ObjectKeys,

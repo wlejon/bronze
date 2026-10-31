@@ -607,6 +607,8 @@
     X(bronze_string_char_code_at, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_sin_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_cos_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
+    X(bronze_math_sincos_f64,     BRONZE_ABI_VOID, (BRONZE_ABI_F64, BRONZE_ABI_VPTR)) \
+    X(bronze_math_random_f64,     BRONZE_ABI_F64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_math_min2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64)) \
     X(bronze_math_max2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64)) \
     /* Method call IC runtime helpers: property lookup + IC update + dispatch. */ \

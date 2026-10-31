@@ -368,8 +368,14 @@ TEST_CASE("Oracle differential test suite") {
                 std::string code;
                 res.codeReadOk = readFileBytes(oracleCase.entry, code);
                 if (res.codeReadOk) {
-                    res.hasNonDeterminism =
-                        readsTheClock(code) || code.find("Math.random") != std::string::npos;
+                    // A case about Math.random itself (its lowering, a patched
+                    // Math.random) may call it when its first line says
+                    // that no drawn value reaches its output, as the three.js
+                    // oracle's uuid section does. The clock stays banned.
+                    const bool drawsUnpinned =
+                        code.rfind("// oracle: Math.random drawn, no drawn value printed\n", 0) == 0;
+                    res.hasNonDeterminism = readsTheClock(code) ||
+                        (!drawsUnpinned && code.find("Math.random") != std::string::npos);
                 }
 
                 std::filesystem::path expectedPath = oracleCase.entry;

@@ -565,6 +565,13 @@ enum class Op : uint8_t {
     // own `__proto__` of this one. Only the colon form with a written name
     // reaches here; a computed, shorthand or method `__proto__` is a define.
     ObjectLitProto,
+    // a: f64 = math.random. A call INFERENCE PROVED reaches the pristine
+    // builtin `Math.random` with no arguments: the runtime's generator called
+    // directly (bronze_math_random_f64), the same state and the same bits the
+    // native answers with, without the global read, the method-call cache and
+    // the native-call entry. Not pure: every one advances the generator, so it
+    // is never merged, hoisted or dropped. Cannot throw and allocates nothing.
+    MathRandom,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

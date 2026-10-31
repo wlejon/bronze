@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <vector>
@@ -313,6 +314,26 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
         inst.type = il::Type::F64;
         inst.result = res;
         inst.operands = {l.id, r.id};
+        emitInst(ilFn, inst);
+        return Value{res, il::Type::F64};
+    }
+
+    // `Math.random()` on the PROVEN pristine builtin, with no arguments: one
+    // call to the runtime's generator (il_op.h, math.random) in place of the
+    // global read, the method-call cache and the native-call entry, which were
+    // all but a few of its ~470 instructions. With arguments it stays a call,
+    // since they are still evaluated. BRONZE_NO_MATH_RANDOM_OP=1 is the A/B
+    // seam: every site takes the ordinary call.
+    if (const auto* mathMem = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
+        mathMem != nullptr && !mathMem->optional && !call->optional && call->args.empty() &&
+        mathMem->property == "random" && pristineMathCall(*call) &&
+        std::getenv("BRONZE_NO_MATH_RANDOM_OP") == nullptr) {
+        recordCall(call->span.file, true, "");
+        il::ValueId res = ilFn.valueCount++;
+        il::Instruction inst;
+        inst.op = il::Op::MathRandom;
+        inst.type = il::Type::F64;
+        inst.result = res;
         emitInst(ilFn, inst);
         return Value{res, il::Type::F64};
     }

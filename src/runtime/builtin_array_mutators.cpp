@@ -2,7 +2,20 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_roots.h"
 
+#include <cstdlib>
+
 namespace bronze::runtime {
+
+namespace {
+
+// Measurement seam: BRONZE_NO_PUSH_GROW_FAST=1 sends a push that has to grow
+// the block through arrayPush, as before.
+bool pushGrowFastDisabled() {
+    static const bool off = std::getenv("BRONZE_NO_PUSH_GROW_FAST") != nullptr;
+    return off;
+}
+
+}  // namespace
 
 extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     Value self(thisBits);
@@ -17,6 +30,20 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
             }
             arr->length += argc;
             return Value::fromDouble(arr->length).rawBits();
+        }
+        // One value past capacity: the growth arrayPush would reach through
+        // setElem, without its generic preamble (toObject, IsArray, the
+        // extensibility check, rooting argv). An array whose properties are
+        // undefined is extensible and has no sealed or frozen level (both
+        // live in that object, integrity.cpp), and it has no own property
+        // at `length`, so the write is the same element store arrayPush
+        // makes. setElemSlow roots the array and the value across the
+        // allocation, and throws the same RangeError at the size limit.
+        if (argc == 1 && arr->properties.isUndefined() && !pushGrowFastDisabled()) {
+            Rooted<Value> root{Value(thisBits)};
+            Rooted<Value> val{Value(argv[0])};
+            arr->setElemSlow(rtHeap(), arr->length, val);
+            return Value::fromDouble(root.get().asObject<ArrayHeader>()->length).rawBits();
         }
     }
     return arrayPush(0, thisBits, argc, argv);

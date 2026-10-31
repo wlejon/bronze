@@ -250,15 +250,18 @@ Xoshiro256pp& prng() {
     return g;
 }
 
-uint64_t mathRandom(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+double randomUnit() {
     // 53 bits — a double's whole mantissa — over 2^53, which is every
     // representable double in [0, 1) with equal spacing and no rounding step
     // that could produce exactly 1.0. The bits taken are the HIGH ones: this
     // generator's output is uniform in every bit, but taking the top is what
     // keeps the conversion correct if the generator is ever replaced by one
     // whose low bits are weaker.
-    const double x = static_cast<double>(prng().next() >> 11) / 9007199254740992.0;
-    return Value::fromDouble(x).rawBits();
+    return static_cast<double>(prng().next() >> 11) / 9007199254740992.0;
+}
+
+uint64_t mathRandom(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return Value::fromDouble(randomUnit()).rawBits();
 }
 
 uint64_t mathSumPrecise(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
@@ -398,6 +401,15 @@ thread_local Value g_mathObject = Value::fromUndefined();
 
 extern "C" double bronze_math_sin_f64(double x) { return brass_det_sin(x); }
 extern "C" double bronze_math_cos_f64(double x) { return brass_det_cos(x); }
+// Both kernels' answers from one argument reduction: out[0] is
+// bronze_math_sin_f64(x)'s bits, out[1] bronze_math_cos_f64(x)'s. Compiled
+// code calls it where a sine and a cosine of one value are both taken
+// (brass's sincos_fuse; three.js's setFromEuler).
+extern "C" void bronze_math_sincos_f64(double x, void* out) { brass_det_sincos(x, static_cast<double*>(out)); }
+
+// `math.random` (il_op.h): a proven `Math.random()` call compiled to this, the
+// native's own generator, so the two forms draw from one sequence.
+extern "C" double bronze_math_random_f64() { return randomUnit(); }
 
 // Exactly ECMA-262 21.3.2.25/21.3.2.24 for two number arguments, phrased so a
 // pass over {a, b} matches the variadic natives' fold: NaN anywhere wins, and
