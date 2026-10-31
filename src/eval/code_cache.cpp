@@ -1,6 +1,7 @@
 #include "eval/code_cache.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -395,6 +396,27 @@ uint64_t diskBytes(uint64_t size) { return (size + kAllocUnit - 1) / kAllocUnit 
 // of it, so that the stores after it do not each walk the directory again.
 uint64_t lowWater(uint64_t maxBytes) { return maxBytes - maxBytes / 8; }
 
+// A cache file's key as its name spells it: 32 hex digits.
+using KeyName = std::array<char, 32>;
+
+// The key of a cache file named `<32 hex digits><ext>`, or false for a name
+// the cache does not write.
+bool keyOfName(const std::string& name, const char* ext, KeyName& key) {
+    const size_t extLen = std::strlen(ext);
+    if (name.size() != key.size() + extLen) return false;
+    if (name.compare(key.size(), extLen, ext) != 0) return false;
+    for (size_t i = 0; i < key.size(); ++i) {
+        const char c = name[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        key[i] = c;
+    }
+    return true;
+}
+
+std::filesystem::path cacheFile(const std::string& dir, const KeyName& key, const char* ext) {
+    return std::filesystem::path(dir) / (std::string(key.data(), key.size()) + ext);
+}
+
 // Walks `dir` and, when everything the cache keeps there (entries, their warm
 // lists, writes in progress) takes more than `maxBytes` on disk, deletes the
 // least recently used entries, each with its warm list, until it takes no more
@@ -402,55 +424,65 @@ uint64_t lowWater(uint64_t maxBytes) { return maxBytes - maxBytes / 8; }
 // just stored, which stays: asked at each removal, not once for the walk, as
 // a store made while the walk runs moves it on (and names its key before its
 // entry appears, protectKey). Returns what the directory takes afterwards.
+//
+// The walk keeps each file as a fixed-size record (its key, not a
+// std::filesystem::path) and builds a path only for a file it deletes. It runs
+// on its own thread, so what it allocates lands in that thread's malloc arena
+// and stays resident after it returns: a path per file, with its component
+// list, was some 30 MB on a full cache of 55,000 files, which a process that
+// stored one entry kept for the rest of its life. As records the walk holds a
+// couple of megabytes. A file whose name the cache does not write is left
+// alone and not counted.
 uint64_t trimDir(const std::string& dir, uint64_t maxBytes, const std::function<bool(const std::string&)>& kept) {
     struct Item {
-        std::filesystem::path entry;  // <key>.bzc
+        KeyName key;                  // <key>.bzc
         uint64_t bytes = 0;           // the entry and its warm list
         std::filesystem::file_time_type mtime;
     };
+    struct Warm {
+        KeyName key;                  // <key>.bzw
+        uint64_t bytes = 0;
+    };
     std::vector<Item> items;
-    std::vector<std::pair<std::filesystem::path, uint64_t>> warm;
+    std::vector<Warm> warm;
     uint64_t total = 0;
     std::error_code ec;
     const auto now = std::filesystem::file_time_type::clock::now();
     for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
         std::error_code e2;
         if (!entry.is_regular_file(e2)) continue;
-        const auto& p = entry.path();
         const auto mtime = entry.last_write_time(e2);
         if (e2) continue;
         const uint64_t size = entry.file_size(e2);
         if (e2) continue;
-        const std::string name = p.filename().string();
+        const std::string name = entry.path().filename().string();
         if (name.find(".tmp") != std::string::npos) {
             // A writer that died between write and rename; a live one's bytes
             // are about to be an entry.
             if (now - mtime > std::chrono::minutes(10)) {
-                std::filesystem::remove(p, e2);
+                std::filesystem::remove(entry.path(), e2);
             } else {
                 total += diskBytes(size);
             }
             continue;
         }
-        if (p.extension() == kWarmExt) {
-            warm.emplace_back(p, diskBytes(size));
-            continue;
+        KeyName key;
+        if (keyOfName(name, kWarmExt, key)) {
+            warm.push_back({key, diskBytes(size)});
+        } else if (keyOfName(name, kExt, key)) {
+            items.push_back({key, diskBytes(size), mtime});
         }
-        if (p.extension() != kExt) continue;
-        items.push_back({p, diskBytes(size), mtime});
     }
     // Each warm list is charged to its entry; one whose entry is gone goes.
-    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.entry < b.entry; });
-    for (auto& [path, bytes] : warm) {
-        std::filesystem::path owner = path;
-        owner.replace_extension(kExt);
-        auto it = std::lower_bound(items.begin(), items.end(), owner,
-                                   [](const Item& a, const std::filesystem::path& b) { return a.entry < b; });
-        if (it != items.end() && it->entry == owner) {
-            it->bytes += bytes;
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.key < b.key; });
+    for (const Warm& w : warm) {
+        auto it = std::lower_bound(items.begin(), items.end(), w.key,
+                                   [](const Item& a, const KeyName& b) { return a.key < b; });
+        if (it != items.end() && it->key == w.key) {
+            it->bytes += w.bytes;
         } else {
             std::error_code e2;
-            std::filesystem::remove(path, e2);
+            std::filesystem::remove(cacheFile(dir, w.key, kWarmExt), e2);
         }
     }
     for (const Item& item : items) total += item.bytes;
@@ -459,11 +491,10 @@ uint64_t trimDir(const std::string& dir, uint64_t maxBytes, const std::function<
     std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.mtime < b.mtime; });
     for (const auto& item : items) {
         if (total <= target) break;
-        if (kept(item.entry.stem().string())) continue;
+        if (kept(std::string(item.key.data(), item.key.size()))) continue;
         std::error_code e2;
-        if (!std::filesystem::remove(item.entry, e2)) continue;
-        std::filesystem::path w = item.entry;
-        std::filesystem::remove(w.replace_extension(kWarmExt), e2);
+        if (!std::filesystem::remove(cacheFile(dir, item.key, kExt), e2)) continue;
+        std::filesystem::remove(cacheFile(dir, item.key, kWarmExt), e2);
         total -= item.bytes;
     }
     return total;
