@@ -265,3 +265,18 @@ TEST_CASE("collectGarbage during an open cycle finishes it, and the heap's state
     CHECK(num("U.length === 1001 && U[1000].late && U[999].i === 999 ? 1 : 0") == 1.0);
     run("delete globalThis.U; undefined;");
 }
+
+TEST_CASE("startGcHelperThreads makes the helpers once, and collections run on them after") {
+    const unsigned helpers = embed::startGcHelperThreads();
+    // Again: the pool is there, none added.
+    CHECK(embed::startGcHelperThreads() == helpers);
+    run("globalThis.H = []; for (let i = 0; i < 20000; i++) H.push({ i, a: [i] }); undefined;");
+    embed::collectYoungGarbage();
+    startCycle();
+    while (!markSlice(1'000'000)) {}
+    if (embed::heapPressure().marking) embed::finishGcCycle();
+    embed::collectGarbage();
+    CHECK(embed::startGcHelperThreads() == helpers);
+    CHECK(num("H.length === 20000 && H[19999].a[0] === 19999 ? 1 : 0") == 1.0);
+    run("delete globalThis.H; undefined;");
+}

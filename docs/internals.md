@@ -316,6 +316,16 @@ modules made and dropped, WeakRefs, WeakMaps, FinalizationRegistry), at the
 auto tier and tier 2, also under `BRASS_GC_VERIFY=1` and
 `BRASS_GC_STRESS=incremental`.
 
+The collector's helper threads (the ones a parallel minor collection copies
+on and a slice or full collection marks on, parked between collections) are
+created by the first collection that wants them, inside its pause: about
+0.1 ms a thread, which made bro's first parallel minor 3.9 ms on eight
+threads against 3.0 on one. `embed::startGcHelperThreads()` (brass
+`Heap::start_helper_threads`) creates them now, for a host that has a moment
+when that costs nothing; bro calls it once for the main thread, after its
+boot. It is a call and not a default because a worker's heap seldom collects
+in parallel and would otherwise hold seven parked threads of its own.
+
 ### Realms and lockdown
 
 A thread can hold several realms (`embed::createRealm`), each with its own

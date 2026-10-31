@@ -23,4 +23,6 @@ void finishGcCycle() { runtime::rtHeap().gc().finish_marking(); }
 
 bool gcSweepSlice(uint64_t budgetNs) { return runtime::rtHeap().gc().sweep_slice(budgetNs); }
 
+unsigned startGcHelperThreads() { return runtime::rtHeap().gc().start_helper_threads(); }
+
 }  // namespace bronze::embed

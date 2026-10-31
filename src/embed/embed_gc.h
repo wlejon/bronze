@@ -64,4 +64,14 @@ BRONZE_EMBED_API void finishGcCycle();
 // once nothing is left (at once when nothing was).
 BRONZE_EMBED_API bool gcSweepSlice(uint64_t budgetNs);
 
+// Creates the collector's parked helper threads now (brass
+// Heap::start_helper_threads), the ones a parallel minor collection copies
+// and a mark slice or full collection marks on, rather than in the pause of
+// the first collection that wants them: some 0.1 ms a thread, 0.7 ms of an
+// eight-thread first minor. For a host that knows a moment when that costs
+// nothing, once (after its boot, before its first timed frame); a heap that
+// never collects in parallel never needs them. Returns how many helpers
+// exist. Not from inside a collection.
+BRONZE_EMBED_API unsigned startGcHelperThreads();
+
 }  // namespace bronze::embed
