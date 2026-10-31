@@ -26,7 +26,9 @@
 // What a cycle keeps is what was live when it started plus what was made
 // since (floating garbage is the next cycle's). The heap keeps its own
 // triggers while a cycle is open: old-generation growth past its threshold
-// finishes the cycle at that allocation, and collectGarbage finishes it and
+// finishes the cycle at that allocation (the threshold plus brass's
+// HeapConfig::cycle_headroom while a cycle marks, which heapPressure()
+// reports as fullThreshold meanwhile), and collectGarbage finishes it and
 // then runs a whole collection, so a host that stops slicing never makes the
 // heap fail, only pause where it would have anyway.
 
