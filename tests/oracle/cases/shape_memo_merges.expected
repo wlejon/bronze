@@ -1,0 +1,58 @@
+warm 128500
+Base ifElse delete 1:7:undefined:2
+Base ifElse plain 1:2:1:2
+Base ifElse accessor 1:7:1:acc
+Base ifElse proto 1:7:1:pb
+Base ifElse add 1:7:readd:2
+Base ifElse widen 1:7:wide:2
+Base armEdit delete 1:undefined:2:undefined
+Base armEdit add 1:1:2:e
+Base armEdit getter 1:1:gb:undefined
+Base armEdit none 1:1:2:undefined
+Base loop 1,7,2;1,7,lb;undefined,7,lb;undefined,7,lb;
+Base loop proto 1,7,2;1,7,2;1,7,pb2;pa,7,pb2;
+Base writes freeze TypeError:5:2
+Base writes readonly TypeError:6:2
+Base writes setter sa:7 6
+Base writes plain 6:7
+Base sw 0 1:1:1:2
+Base sw 1 1:7:undefined:swb
+Base sw 2 1:2:1:2
+Base sw 3 1:-1:1:2
+Base tried throw 1:caught:undefined:2:undefined
+Base tried 1:NaN:1
+Base same 1:7:undefined
+Base same2 1:7:sb
+Sub ifElse delete 1:7:undefined:2
+Sub ifElse plain 1:2:1:2
+Sub ifElse accessor 1:7:1:acc
+Sub ifElse proto 1:7:1:pb
+Sub ifElse add 1:7:readd:2
+Sub ifElse widen 1:7:wide:2
+Sub armEdit delete 1:undefined:2:undefined
+Sub armEdit add 1:1:2:e
+Sub armEdit getter 1:1:gb:undefined
+Sub armEdit none 1:1:2:undefined
+Sub loop 1,7,2;1,7,lb;undefined,7,lb;undefined,7,lb;
+Sub loop proto 1,7,2;1,7,2;1,7,pb2;pa,7,pb2;
+Sub writes freeze TypeError:5:2
+Sub writes readonly TypeError:6:2
+Sub writes setter sa:7 6
+Sub writes plain 6:7
+Sub sw 0 1:1:1:2
+Sub sw 1 1:7:undefined:swb
+Sub sw 2 1:2:1:2
+Sub sw 3 1:-1:1:2
+Sub tried throw 1:caught:undefined:2:undefined
+Sub tried 1:NaN:1
+Sub same 1:7:undefined
+Sub same2 1:7:sb
+param act 1:undefined:2
+param getter 1:1:pg
+param plain x:x:y
+param proxy pa:pa:pb
+gen 1|undefined:5|late
+gen neg neg 1
+borrow oa:7:oa:ob
+borrow arr ra:rb:ra:rb
+borrow frozen fa:fa:fb:undefined
