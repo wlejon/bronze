@@ -46,6 +46,7 @@ Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
                          hostGlobals_.count("Float32Array") != 0;
     staticShapesDisabled_ = staticShapeSeamDisabled();
     familyGuardDisabled_ = familyGuardSeamDisabled();
+    keyOwnerGuessDisabled_ = keyOwnerGuessSeamDisabled();
     unboxedFieldsDisabled_ = unboxedFieldSeamDisabled();
     numericArithDisabled_ =
         numericArithSeamDisabled() || !assumeNoBigInt ||

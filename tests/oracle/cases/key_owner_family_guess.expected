@@ -1,0 +1,12 @@
+payload:a | payload:b | payload:c | plain | same-order | payload:a | getter | other-ctor | undefined | undefined | undefined | undefined | undefined | nullproto | payload:a | payload:b | payload:c | plain | same-order | payload:a | getter | other-ctor | undefined | undefined | undefined | undefined | undefined | nullproto | payload:a | payload:b | payload:c | plain | same-order | payload:a | getter | other-ctor | undefined | undefined | undefined | undefined | undefined | nullproto
+payload:d
+undefined
+redefined
+payload:e
+frozen true
+payload:e
+write-leaf write-leaf
+readonly true
+write-leaf
+proto
+undefined true

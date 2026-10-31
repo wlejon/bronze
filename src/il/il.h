@@ -191,6 +191,17 @@ struct Instruction {
     static constexpr uint32_t kNoFamily = 0xFFFFFFFFu;
     uint32_t familyLo = kNoFamily;
     uint32_t familySpan = 0;
+    // PropGet/PropSet with a `staticSlot`: the receiver's class is a GUESS (a
+    // parameter's agreeing callers, a key's sole owning class, an identity the
+    // interprocedural pass guessed), so the guard can miss on a receiver of any
+    // kind, one with an accessor for this key included, and the miss runs the
+    // generic get or set. The guard makes the site itself sound. What it does
+    // NOT give is the fact the IL passes read off a proven claim, that the key
+    // is a data property of this receiver (no getter to run, a store then a
+    // read gives the stored value): `il::provenStaticSlot` is the question
+    // those passes ask. `{get p() {...}, set p(v) {...}}` passed where a class
+    // instance was guessed is the case: `n.p = v; return n.p` must call both.
+    bool staticSlotGuessed = false;
     // PropSet: the FIRST site of a TRANSITION RUN (lower/transition_runs.h), a
     // stretch of writes that adds `transitionRunSites` keys to one receiver
     // with nothing between them that can run user code, throw, or read the
@@ -264,6 +275,13 @@ struct Instruction {
     //                     (il_lowering_direct.h, lower_method_slot_inline).
     static constexpr int32_t kMethodRecvArray = 1;
     static constexpr int32_t kMethodOwnCallee = 2;
+    // StrictEq `immI32`: a DISPATCH test (lower_keyed_field_store.cpp), whose
+    // true edge is correct exactly when the operands are the same String and
+    // whose false edge is correct for ANY operands. So a backend may answer it
+    // by comparing bits alone — false for two equal Strings at different
+    // addresses — and the interpreter's full `===` is right too. Nothing may
+    // learn `a !== b` from its false edge.
+    static constexpr int32_t kStrictEqIdentityDispatch = 1;
     uint32_t envDepth = 0;           // EnvGet/EnvSet: parent hops
     uint32_t envIndex = 0;           // EnvGet/EnvSet: slot within that environment
     bool envImmutable = false;       // EnvGet: slot is an initialized immutable binding
@@ -339,6 +357,13 @@ inline constexpr int32_t kWriteDefine = 2;
 
 inline bool isDefineWrite(const Instruction& inst) {
     return (inst.op == Op::PropSet || inst.op == Op::ElemSet) && inst.immI32 == kWriteDefine;
+}
+
+// A static-slot claim on a receiver whose class is PROVEN, which is what an IL
+// pass needs before it treats the key as a plain data property of that
+// receiver (Instruction::staticSlotGuessed says why a guessed one is not).
+inline bool provenStaticSlot(const Instruction& inst) {
+    return inst.staticSlot != Instruction::kNoStaticSlot && !inst.staticSlotGuessed;
 }
 
 // Which copy of a guarded numeric region a block belongs to

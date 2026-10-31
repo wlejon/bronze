@@ -253,6 +253,13 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     mod->set_deterministic_fp(mod_det_fp);
     mod->set_allow_fp_reassociation(options_.allow_fp_reassociation && !mod_det_fp);
     mod->set_pinned_tls_register(options_.pin_tls_register);
+    // bronze finds a JS frame's roots through its stack maps alone: the runtime
+    // roots its C++ frames by handle (Rooted, RootedArgs, RootedBlock) and
+    // scans no stack conservatively, compartment fibers included. So the
+    // allocator's zeroing of dead registers and slots at every call, which is
+    // for a host that does scan conservatively, is nothing here
+    // (brass Module::precise_stack_roots; BRASS_NO_PRECISE_ROOTS=1 restores it).
+    mod->set_precise_stack_roots(true);
     // Every loop backedge compares the stack pointer with the block's
     // stack_limit, the word every prologue checks too, so arming one
     // interrupt (runtime/tls_block.h) stops a runaway loop as well as the

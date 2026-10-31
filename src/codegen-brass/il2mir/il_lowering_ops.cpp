@@ -742,7 +742,15 @@ bool lower_ops_instruction(
             } else {
                 op0 = lowering->ensure_type(op0, Type::i64(), b);
                 op1 = lowering->ensure_type(op1, Type::i64(), b);
-                res_val = lower_dynamic_strict_eq(b, op0, op1, lowering->run_once());
+                // il.h kStrictEqIdentityDispatch (1): either answer for two
+                // operands with different bits is a correct path, so the bits
+                // decide; one compare in place of the String arm's loads.
+                constexpr int64_t kIdentityDispatch = 1;
+                if (inst_ast.imm_i64 == kIdentityDispatch) {
+                    res_val = b.build_eq(op0, op1);
+                } else {
+                    res_val = lower_dynamic_strict_eq(b, op0, op1, lowering->run_once());
+                }
             }
             return true;
         }

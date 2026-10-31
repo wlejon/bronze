@@ -152,7 +152,10 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::CmpEq: out.op = il2mir::BronzeOp::CmpEq; break;
         case il::Op::CmpNe: out.op = il2mir::BronzeOp::CmpNe; break;
         case il::Op::NumTruthy: out.op = il2mir::BronzeOp::NumTruthy; break;
-        case il::Op::StrictEq: out.op = il2mir::BronzeOp::StrictEq; break;
+        case il::Op::StrictEq:
+            out.op = il2mir::BronzeOp::StrictEq;
+            out.imm_i64 = inst.immI32;
+            break;
         case il::Op::LooseEq: out.op = il2mir::BronzeOp::LooseEq; break;
         case il::Op::RelLt: out.op = il2mir::BronzeOp::RelLt; break;
         case il::Op::RelGt: out.op = il2mir::BronzeOp::RelGt; break;

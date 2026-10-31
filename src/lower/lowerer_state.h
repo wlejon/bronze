@@ -181,6 +181,10 @@ struct StaticSlotSite {
     uint32_t cellIndex = 0;
     uint32_t familyLo = il::Instruction::kNoFamily;
     uint32_t familySpan = 0;
+    // The receiver's class was GUESSED (a parameter's callers, a key's owner, an
+    // identity the interprocedural pass guessed), not proven: the guard may
+    // miss on a receiver of any kind. il::Instruction::staticSlotGuessed.
+    bool guessed = false;
 };
 
 // The body being lowered is a COROUTINE (a generator, an async function, an

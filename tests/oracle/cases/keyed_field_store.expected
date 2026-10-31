@@ -1,0 +1,16 @@
+axes x=27 y=28 z=29
+built x=x! y=y! z=z!
+others 0=zero x=x! y=y! z=z! w=4 X=5 =6 xx=7 1.5=frac sym
+order recv,key,rhs,toString fromObj
+plain y=0 x=9 z=8
+sub x=0 y=0 z=3 q=2
+frozen true
+frozen x=1 y=1 z=1
+nonwritable true
+nonwritable x=10 y=2 z=3
+accessor via-setter g direct
+protosetter via-setter,c:3 a=A b=2
+big a=A b=B c=C d=D e=E f=F g=G
+compound x=23 y=25 z=27
+value val val
+protonames x=1 y=2 z=3 constructor=c toString=t true

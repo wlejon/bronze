@@ -333,7 +333,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                     const il::ValueId val = inst.operands[1];
                     const uint32_t key = inst.keyIndex;
                     const bool hasStaticSlot =
-                        inst.staticSlot != il::Instruction::kNoStaticSlot;
+                        il::provenStaticSlot(inst);
 
                     if (!hasStaticSlot &&
                         !isKnownPlainObject(target, fn, defs, module, ctorCache)) {
@@ -507,7 +507,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                 const bool isAcc = keyMayBeAccessor(isAccessorKey, key, inst, protoPatchFree);
                 if (!isArrIdx && !isAcc) {
                     const bool hasStaticSlot =
-                        inst.staticSlot != il::Instruction::kNoStaticSlot;
+                        il::provenStaticSlot(inst);
                     if (!hasStaticSlot &&
                         !isKnownPlainObject(recv, fn, defs, module, ctorCache)) {
                         ++i;

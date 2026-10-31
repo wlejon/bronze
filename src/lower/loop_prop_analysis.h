@@ -78,7 +78,8 @@ inline bool keyMayBeAccessor(const std::vector<uint8_t>& isAccessorKey, uint32_t
                              bool protoPatchFree) {
     if (key >= isAccessorKey.size() || isAccessorKey[key] == kPlainKey) return false;
     if (isAccessorKey[key] == kInstanceAccessorKey) return true;
-    return !(protoPatchFree && inst.staticSlot != il::Instruction::kNoStaticSlot);
+    // Only a PROVEN claim says the receiver is the class (il.h staticSlotGuessed).
+    return !(protoPatchFree && il::provenStaticSlot(inst));
 }
 
 bool isProvablyNonNullish(il::ValueId val, const il::Function& fn,

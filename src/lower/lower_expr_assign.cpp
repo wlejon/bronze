@@ -389,6 +389,10 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
             emitPinFieldBarrier(*idxAccess->object, keyStrings_[*literalKey], stored, ilFn);
         }
         Value storedBoxed = boxValueIfNeeded(stored, ilFn);
+        if (!literalKey && !curVal &&
+            emitKeyedFieldStore(*idxAccess, objBoxed, *idxBoxed, storedBoxed, ilFn)) {
+            return storedBoxed;
+        }
 
         il::Instruction setInst;
         if (literalKey) {

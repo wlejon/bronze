@@ -17,6 +17,7 @@
 // here is always the primitive that step produced.
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -47,6 +48,13 @@ const std::string g_emptyKey;
 const KeyInfo g_emptyKeyInfo{};
 
 thread_local std::vector<StringHeader*> g_keyHeaders;
+
+// BRONZE_NO_KEY_HASH_MEMO=1: a key header's hash is left to whoever asks first,
+// as before (rtKeyHeader).
+bool keyHashMemoDisabled() {
+    static const bool off = std::getenv("BRONZE_NO_KEY_HASH_MEMO") != nullptr;
+    return off;
+}
 
 // Mirrors g_keyHeaders' storage into the TLS block (bronze_abi_tls.h,
 // key_header_tbl), which generated code's inline `box.str` reads. Called after
@@ -103,6 +111,15 @@ StringHeader* rtKeyHeader(uint32_t index) {
             // characters, which is every lookup of a property that is there.
             hdr = StringHeader::adoptIntoArena(
                 rtArena(), StringHeader::createFromUTF8InArena(rtArena(), std::string_view(str)));
+            // The hash memoized now, once a key: the inline `===` rejects two
+            // Strings with different bits by their memoized hashes and calls
+            // the contents compare otherwise (il_lowering_ops.cpp
+            // lower_dynamic_strict_eq), and a key constant compared against
+            // another key — a `switch` on a string, a computed store split on
+            // its key (lower_keyed_field_store.cpp) — is that pair. hash()
+            // memoizes the same bits every time it runs, so asking early
+            // changes no answer.
+            if (!keyHashMemoDisabled()) hdr->hash();
             g_keyHeaders[index] = hdr;
         }
     }

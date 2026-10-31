@@ -4,7 +4,7 @@ bronze_add_module(lower
             lower_static_call_plan.cpp lower_closure_param_proof.cpp
             lower_class.cpp lower_control.cpp lower_expr.cpp lower_expr_assign.cpp lower_expr_binary.cpp lower_expr_cond.cpp lower_generator.cpp
             lower_update.cpp lower_private.cpp lower_class_fields.cpp lower_derived_ctor.cpp derived_ctor_plan.cpp lower_typed_elem.cpp lower_typed_elem_proof.cpp lower_typed_elem_loop_sanitize.cpp bigint_reach.cpp
-            lower_concat_chain.cpp lower_define_props.cpp
+            lower_concat_chain.cpp lower_define_props.cpp lower_keyed_field_store.cpp lower_key_owner_guess.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_build.cpp
             guard_region_runs.cpp guard_region_numbers.cpp typed_loop_version.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp inline_small.cpp inline_guarded.cpp transition_runs.cpp
             lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp direct_method_guess.cpp

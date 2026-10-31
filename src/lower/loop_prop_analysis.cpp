@@ -418,7 +418,7 @@ bool isProvablyNonNullishImpl(il::ValueId val, const il::Function& fn,
             return false;
 
         case il::Op::PropGet: {
-            if (inst.staticSlot == il::Instruction::kNoStaticSlot ||
+            if (!il::provenStaticSlot(inst) ||
                 inst.keyIndex >= module.keyConstants.size()) {
                 return false;
             }
@@ -430,7 +430,7 @@ bool isProvablyNonNullishImpl(il::ValueId val, const il::Function& fn,
                     for (const auto& i : b.instructions) {
                         if ((i.op == il::Op::PropSet || i.op == il::Op::DefineOwnAttr) &&
                             i.keyIndex == inst.keyIndex) {
-                            if (i.staticSlot != il::Instruction::kNoStaticSlot &&
+                            if (il::provenStaticSlot(i) &&
                                 i.staticSlot != inst.staticSlot) {
                                 continue;
                             }
@@ -839,7 +839,7 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
             const bool isAcc = keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree);
             if (isAcc) return true;
             if (keyIndex == lengthKeyIndex) {
-                if (inst.staticSlot == il::Instruction::kNoStaticSlot &&
+                if (!il::provenStaticSlot(inst) &&
                     !isKnownPlainObject(inst.operands[0], fn, defs, module, ctorCache)) {
                     return true;
                 }
@@ -965,7 +965,7 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
         // A read of an accessor key is a call to the getter.
         case il::Op::PropGet:
             if (keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree)) return true;
-            if (protoPatchFree && inst.staticSlot != il::Instruction::kNoStaticSlot) {
+            if (protoPatchFree && il::provenStaticSlot(inst)) {
                 return false;
             }
             if (keyIndex == lengthKeyIndex &&

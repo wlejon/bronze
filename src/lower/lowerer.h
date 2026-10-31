@@ -235,6 +235,13 @@ private:
     std::optional<StaticSlotSite> claimStaticSlot(const ast::Expr& receiver,
                                                   const std::string& key, bool forWrite);
     void stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver);
+    // lower_key_owner_guess.cpp: the family a key's sole owning class subtree
+    // names, guessed for a receiver read out of another class's field.
+    types::ShapeClassId keyOwnerGuessAt(const ast::Expr& receiver, const std::string& key);
+    types::ShapeClassId keyOwnerFamily(const std::string& key);
+    static bool keyOwnerGuessSeamDisabled();
+    bool keyOwnerGuessDisabled_ = false;
+    std::unordered_map<std::string, types::ShapeClassId> keyOwnerCache_;
     void reportClassLayouts();
     il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;
     const types::Signature* provenSignature(uint32_t moduleFnIndex) const;
@@ -646,6 +653,10 @@ private:
     std::optional<Value> lowerDefinePropertiesLiteral(const ast::Call* call,
                                                       const ast::MemberAccess& callee,
                                                       il::Function& ilFn);
+
+    // --- lower_keyed_field_store.cpp: `o[k] = v` split into named field stores ---
+    bool emitKeyedFieldStore(const ast::IndexAccess& idxAccess, Value objBoxed, Value keyBoxed,
+                             Value storedBoxed, il::Function& ilFn);
 
     // --- lower_expr_binary.cpp: binary operators ---
     std::optional<Value> lowerBinary(const ast::Binary* bin, il::Function& ilFn);

@@ -25,7 +25,8 @@
 namespace bronze::il {
 
 // 12: `object.proto`, and prop.set / elem.set carry kWriteDefine (il.h).
-inline constexpr uint32_t kFormatVersion = 12;
+// 13: prop.get / prop.set carry staticSlotGuessed (il.h).
+inline constexpr uint32_t kFormatVersion = 13;
 
 std::string serializeModule(const Module& module);
 

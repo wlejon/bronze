@@ -767,8 +767,12 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
         // A CELL is not on offer, for the reason the next paragraph gives: it
         // pins the first shape and misses on every other one forever, which is
         // the wrong trade for a class that was guessed rather than watched.
-        const types::ShapeClassId guess =
+        types::ShapeClassId guess =
             inference_->guessedParamShapeAt(&inferenceExpr(receiver));
+        // Or the class subtree that alone declares the key, for a receiver read
+        // out of another class's field (lower_key_owner_guess.cpp). Guarded the
+        // same way, so as sound and as cheap to be wrong about.
+        if (guess == types::kNoShapeClass) guess = keyOwnerGuessAt(receiver, key);
         if (familyGuardDisabled_ || guess == types::kNoShapeClass) return std::nullopt;
         const uint32_t guessed = inference_->classLayouts.slotOf(guess, key);
         if (guessed == types::ClassLayoutTable::kNoSlot) return std::nullopt;
@@ -783,6 +787,7 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
         site.cellIndex = 0;
         site.familyLo = fam->familyIndex;
         site.familySpan = fam->familySpan;
+        site.guessed = true;
         return site;
     }
 
@@ -816,6 +821,7 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
         site.cellIndex = 0;
         site.familyLo = fam->familyIndex;
         site.familySpan = fam->familySpan;
+        site.guessed = true;
         return site;
     }
     return StaticSlotSite{slot, staticSiteCounter_++};
@@ -831,6 +837,7 @@ void Lowerer::stampStaticSlot(il::Instruction& inst, const ast::Expr& receiver) 
             inst.staticCellIndex = site->cellIndex;
             inst.familyLo = site->familyLo;
             inst.familySpan = site->familySpan;
+            inst.staticSlotGuessed = site->guessed;
             verdict.emittedClaim = true;
             verdict.familyGuard = site->familyLo != il::Instruction::kNoFamily;
         } else if (!il::parseIndexKey(keyStrings_[inst.keyIndex])) {

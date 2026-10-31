@@ -15,6 +15,7 @@
 // initialize on it afterwards.
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -140,20 +141,97 @@ bool fillFromTypedArray(Rooted<Value>& view, ElementKind kind, Rooted<Value>& so
     return true;
 }
 
-// 23.2.5.1.4 InitializeTypedArrayFromList and 23.2.5.1.5
-// InitializeTypedArrayFromArrayLike.
-bool fillFromArrayLike(Rooted<Value>& view, ElementKind kind, Rooted<Value>& source) {
-    if (isArray(source.get())) {
-        const uint32_t length = source.get().asObject<ArrayHeader>()->length;
-        if (!fillFromLength(view, kind, length)) return false;
-        for (uint32_t i = 0; i < length; ++i) {
-            Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
-            // The store's conversion is the element kind's, so a Number in a
-            // BigInt view's source array is the TypeError 7.1.13 names rather
-            // than a truncation.
-            rtTypedArraySetElement(view, i, elem.get());
+// How many leading elements of the Array `source` were stored into the fresh
+// `view` of `length` elements by a direct copy: every element of the run is a
+// Number in double form (`Value::isNumber`, so no hole, no Int32 box, nothing
+// with a valueOf). For such an element the per-element step below —
+// Get(source, i), ToNumber, IntegerIndexedElementSet — reads the element,
+// converts nothing and runs no user code, so nothing between two stores can
+// move the array, change its elements, or detach the view: the whole run is
+// those steps done in order, minus a root, a ToNumber call and a kind lookup
+// per element. three.js builds every BufferAttribute this way
+// (`new Float32Array(array)`), about 200 instructions an element before.
+// A BigInt view keeps the general loop: a Number there is 7.1.13's TypeError.
+// BRONZE_NO_TA_NUMBER_RUN=1 (read once a process) copies nothing here, so
+// every element takes the general loop as it always did.
+uint32_t fillFromNumberRun(Rooted<Value>& view, ElementKind kind, Rooted<Value>& source, uint32_t length) {
+    static const bool off = std::getenv("BRONZE_NO_TA_NUMBER_RUN") != nullptr;
+    if (off || isBigIntElementKind(kind)) return 0;
+    const ArrayHeader* src = source.get().asObject<ArrayHeader>();
+    auto* dst = view.get().asObject<TypedArrayHeader>();
+    // fillFromLength allocated the view and nothing since has run user code,
+    // so both lengths are the ones read before it; asked anyway, because a
+    // store past the window would be out of bounds rather than discarded.
+    if (src->length < length || dst->length < length) return 0;
+    const Value* elems = src->elementsData();
+    if (elems == nullptr) return 0;
+    uint32_t i = 0;
+    if (kind == ElementKind::Float32) {
+        // TypedArrayHeader::set's own Float32 store, without its kind tests.
+        uint8_t* bytes = dst->bytes();
+        for (; i < length && elems[i].isNumber(); ++i) {
+            const auto f = static_cast<float>(elems[i].asNumber());
+            std::memcpy(bytes + static_cast<size_t>(i) * sizeof f, &f, sizeof f);
         }
-        return true;
+        return i;
+    }
+    for (; i < length && elems[i].isNumber(); ++i) dst->set(i, elems[i].asNumber());
+    return i;
+}
+
+// Whether every one of the Array `source`'s first `length` elements sits in its
+// dense elements block as a primitive that is not a Symbol: a value whose
+// ToNumber / ToBigInt runs no user code (a String's or a BigInt's may throw,
+// at the same step either way). Such an array, read element by element while
+// converting, is the same program as 23.2.5.1 step 6's IteratorToList
+// followed by the conversions: nothing between two reads can change what the
+// next one sees. A hole is not one (its Get walks the prototype chain, which
+// may hold a getter), nor an object (its valueOf may rewrite the array: `[1,
+// {valueOf() { a[2] = 9; return 2; }}, 3]` must give 1,2,3, the list having
+// been taken first), nor an array whose elements are not a dense block (an
+// index accessor).
+bool primitiveElements(const Value& source, uint32_t length) {
+    const ArrayHeader* src = source.asObject<ArrayHeader>();
+    if (src->length < length) return false;
+    const Value* elems = src->elementsData();
+    if (elems == nullptr) return length == 0;
+    for (uint32_t i = 0; i < length; ++i) {
+        const Value v = elems[i];
+        if (v.isHole() || v.isObject() || v.isSymbol()) return false;
+    }
+    return true;
+}
+
+// 23.2.5.1.4 InitializeTypedArrayFromList over `list`, an Array whose
+// elements are read live while converting: the iterator path's own private
+// list, which no user code can reach, or an Array primitiveElements accepts.
+bool fillFromList(Rooted<Value>& view, ElementKind kind, Rooted<Value>& list) {
+    const uint32_t length = list.get().asObject<ArrayHeader>()->length;
+    if (!fillFromLength(view, kind, length)) return false;
+    // The run of leading elements that are Numbers in double form, stored
+    // straight from the elements block (fillFromNumberRun says why that is
+    // the same program); the loop below takes over at the first element
+    // that is not one, with the conversion that may run user code.
+    uint32_t i = fillFromNumberRun(view, kind, list, length);
+    for (; i < length; ++i) {
+        Rooted<Value> elem{list.get().asObject<ArrayHeader>()->getElem(i)};
+        // The store's conversion is the element kind's, so a Number in a
+        // BigInt view's source array is the TypeError 7.1.13 names rather
+        // than a truncation.
+        rtTypedArraySetElement(view, i, elem.get());
+    }
+    return true;
+}
+
+// 23.2.5.1 steps 5-6: InitializeTypedArrayFromList over IteratorToList, or
+// 23.2.5.1.5 InitializeTypedArrayFromArrayLike when there is no iterator.
+bool fillFromArrayLike(Rooted<Value>& view, ElementKind kind, Rooted<Value>& source) {
+    // An Array of primitives skips the list: reading it live is the same
+    // program (primitiveElements). Any other Array takes the iterator path
+    // below, which takes the list first, as the spec does.
+    if (isArray(source.get()) &&
+        primitiveElements(source.get(), source.get().asObject<ArrayHeader>()->length)) {
+        return fillFromList(view, kind, source);
     }
 
     // 23.2.5.1 step 5: usingIterator is GetMethod(object, @@iterator), and when
@@ -184,7 +262,7 @@ bool fillFromArrayLike(Rooted<Value>& view, ElementKind kind, Rooted<Value>& sou
         Rooted<Value> item{Value(bronze_iter_value(rec.get().rawBits()))};
         bronze_array_append(collected.get().rawBits(), item.get().rawBits());
     }
-    return fillFromArrayLike(view, kind, collected);
+    return fillFromList(view, kind, collected);
 }
 
 // The constructor `C` a static or a species algorithm was handed, as the view
