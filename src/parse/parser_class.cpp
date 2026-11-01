@@ -298,7 +298,16 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         // `*m() {}` / `*[expr]() {}` — a generator method
         if (check(TokenKind::Star)) {
             const Token& star = advance();
-            if (check(TokenKind::LBracket)) {
+            if (check(TokenKind::NumberLiteral)) {
+                // A numeric name is ToString of its value (15.7, 13.2.5.5): the
+                // runtime's formatting, so the literal is the key expression.
+                member.keyExpr = parsePrimary();
+                if (!member.keyExpr) {
+                    ok = false;
+                    break;
+                }
+                member.name.clear();
+            } else if (check(TokenKind::LBracket)) {
                 advance();  // '['
                 member.keyExpr = parseAssign();
                 if (!member.keyExpr ||
@@ -338,9 +347,9 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             methods.push_back(std::move(member));
             continue;
         }
-        if (check(TokenKind::LBracket)) {
+        if (check(TokenKind::LBracket) || check(TokenKind::NumberLiteral)) {
             // Check for TypeScript index signature: `[key: string]: ValueType;`
-            if (typescript_ && isIdentifierName(peek(1).kind) &&
+            if (typescript_ && check(TokenKind::LBracket) && isIdentifierName(peek(1).kind) &&
                 peek(2).kind == TokenKind::Colon) {
                 advance();  // '['
                 advance();  // key name
@@ -362,12 +371,23 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                 continue;
             }
             const Span keySpan = peek().span;
-            advance();  // '['
-            member.keyExpr = parseAssign();
-            if (!member.keyExpr ||
-                !expect(TokenKind::RBracket, "']' after computed class member name")) {
-                ok = false;
-                break;
+            if (check(TokenKind::NumberLiteral)) {
+                // `7() {}`, `0x10 = 1;`, `2n() {}`: a numeric name is ToString
+                // of its value (15.7, 13.2.5.5), the runtime's formatting, so
+                // the literal is the key expression of a computed member.
+                member.keyExpr = parsePrimary();
+                if (!member.keyExpr) {
+                    ok = false;
+                    break;
+                }
+            } else {
+                advance();  // '['
+                member.keyExpr = parseAssign();
+                if (!member.keyExpr ||
+                    !expect(TokenKind::RBracket, "']' after computed class member name")) {
+                    ok = false;
+                    break;
+                }
             }
             member.name.clear();
             if (check(TokenKind::LParen) || check(TokenKind::Less)) {
@@ -436,7 +456,16 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
             const Span asyncKwSpan = advance().span;  // `async`
             if (check(TokenKind::Star)) {
                 advance();  // `*`
-                if (check(TokenKind::LBracket)) {
+                if (check(TokenKind::NumberLiteral)) {
+                    // A numeric name is ToString of its value (15.7, 13.2.5.5): the
+                    // runtime's formatting, so the literal is the key expression.
+                    member.keyExpr = parsePrimary();
+                    if (!member.keyExpr) {
+                        ok = false;
+                        break;
+                    }
+                    member.name.clear();
+                } else if (check(TokenKind::LBracket)) {
                     advance();  // '['
                     member.keyExpr = parseAssign();
                     if (!member.keyExpr ||
@@ -476,7 +505,16 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
                 continue;
             }
             Span asyncSpan = asyncKwSpan;
-            if (check(TokenKind::LBracket)) {
+            if (check(TokenKind::NumberLiteral)) {
+                // A numeric name is ToString of its value (15.7, 13.2.5.5): the
+                // runtime's formatting, so the literal is the key expression.
+                member.keyExpr = parsePrimary();
+                if (!member.keyExpr) {
+                    ok = false;
+                    break;
+                }
+                member.name.clear();
+            } else if (check(TokenKind::LBracket)) {
                 advance();  // '['
                 member.keyExpr = parseAssign();
                 if (!member.keyExpr ||
@@ -519,7 +557,8 @@ bool Parser::parseClassBodyCommon(const std::string& name, const ast::Expr* supe
         // `get`, and only a following name makes this an accessor.
         if (check(TokenKind::Identifier) && (peek().text == "get" || peek().text == "set") &&
             (isIdentifierName(peek(1).kind) || peek(1).kind == TokenKind::StringLiteral ||
-             peek(1).kind == TokenKind::PrivateName || peek(1).kind == TokenKind::LBracket)) {
+             peek(1).kind == TokenKind::NumberLiteral || peek(1).kind == TokenKind::PrivateName ||
+             peek(1).kind == TokenKind::LBracket)) {
             const ast::AccessorKind kind =
                 peek().text == "get" ? ast::AccessorKind::Getter : ast::AccessorKind::Setter;
             advance();  // 'get' / 'set'

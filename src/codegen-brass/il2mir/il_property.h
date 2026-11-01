@@ -306,6 +306,29 @@ public:
     void forget_numbers(Builder& b, Value* obj);
     // The same, only when `val` (a boxed i64) is tagged above the Number range.
     void forget_numbers_unless_number(Builder& b, Value* obj, Value* val);
+    // THE ARRAY INDEX HAZARD as generated code meets it (il_number_array.cpp;
+    // bronze_abi_tls.h, array_index_hazard): an i32, 1 while no prototype
+    // anywhere could answer an array index, so a hole is `undefined` and a
+    // store into a hole or at `length` is the array's own.
+    Value* index_hazard_clear(Builder& b);
+    // The tag mask a dense-array guard ANDs the `elements` word with: the
+    // object tag's mask while the hazard is clear, 0 once it is set
+    // (bronze_abi_tls.h, array_elems_tag_mask).
+    Value* index_hazard_tag_mask(Builder& b);
+    // The hazard word itself, an i64: 0 while clear, 0xFFFFFFFF once set, so
+    // an index OR'd with it is below no 32-bit bound.
+    Value* index_hazard_word(Builder& b);
+    // An element `elem` loaded from an Array's block: a non-hole goes to `done`
+    // as itself, a hole to `done` as `undefined` while the hazard is clear and
+    // to `slow` (no arguments) otherwise, from a block named cold.
+    // A new block, with the builder left on the one it was emitting.
+    BasicBlock* append_block_keeping_position(Builder& b, const std::string& name);
+    void finish_hole_read(Builder& b, Value* elem, BasicBlock* done, BasicBlock* slow, const std::string& prefix);
+    // In front of an inline store into slot `slot` of the elements block
+    // `block`: an element there goes to `store`, a hole to `store` while the
+    // hazard is clear and to `slow` otherwise.
+    void branch_on_hole_store(Builder& b, Value* block, Value* slot, BasicBlock* store, BasicBlock* slow,
+                              const std::string& prefix);
     // Whether `val` is a Number in double form by construction: an f64, a box
     // of one, or a constant at or below the Number range.
     bool is_known_number(Value* val) const;
@@ -332,7 +355,9 @@ public:
     bool is_known_non_ref(Value* val) const;
 
     // Guard for an Array read/write run over constant indices `0..max_index`:
-    // sets `out_ok`, `out_block` and `out_head`.
+    // sets `out_ok`, `out_block` and `out_head`. It also requires the array
+    // index hazard clear (through the TLS tag mask, at no cost), since what
+    // it licenses reads a hole as `undefined` and stores over one unlooked.
     void emit_dense_array_guard(Builder& b, Value* obj, uint32_t max_index, bool writable,
                                 Value*& out_ok, Value*& out_block, Value*& out_head);
 

@@ -1,0 +1,11 @@
+warm 3880000
+readHole 7
+readRun 10 7 30
+sumNums 87
+writeAt false 4
+push 2 false 2
+shift 0
+fillRun false 1 3 4
+matrix 71
+log get1,get1,get1,set1=5,set1=3,get1,set1=2,set1=2,get1,
+after delete undefined 180

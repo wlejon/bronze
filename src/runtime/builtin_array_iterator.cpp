@@ -27,6 +27,7 @@
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/typed_array.h"
@@ -134,10 +135,10 @@ bool rtArrayIteratorStep(Rooted<Value>& self, Value& produced) {
         return true;
     }
     // 23.1.5.2.1 reads with Get, so a HOLE iterates as `undefined` rather
-    // than being skipped — the same rule the for-of cursor follows. The
-    // generic read is `Get(array, ToString(index))`, trap and all.
-    Rooted<Value> elem{isArray(target.get()) ? target.get().asObject<ArrayHeader>()->getElem(at)
-                                             : rtArrayLikeElement(target, at)};
+    // than being skipped — the same rule the for-of cursor follows — or as
+    // what the chain holds at that index (rtArrayIndexGet). The generic read
+    // is `Get(array, ToString(index))`, trap and all.
+    Rooted<Value> elem{isArray(target.get()) ? rtArrayIndexGet(target.get(), at) : rtArrayLikeElement(target, at)};
     if (kind == Values) {
         produced = elem.get();
     } else {

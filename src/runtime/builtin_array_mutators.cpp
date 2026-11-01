@@ -21,7 +21,12 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
     Value self(thisBits);
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
         ArrayHeader* arr = self.asObject<ArrayHeader>();
-        if ((arr->head_offset + arr->length + argc <= arr->capacity) && arr->properties.isUndefined()) {
+        // An append writes past the end, which is a Set the chain may take
+        // (a setter at that index): only a chain holding no index lets the
+        // block take it directly.
+        const bool chainClear = !rtArrayChainHoldsIndex(self);
+        if ((arr->head_offset + arr->length + argc <= arr->capacity) && arr->properties.isUndefined() &&
+            chainClear) {
             // Appends: NUMBERS survives when every value is a Number.
             HeapValue* dst = arr->elementsKeepingNumbers() + arr->length;
             for (uint32_t i = 0; i < argc; ++i) {
@@ -39,7 +44,7 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
         // at `length`, so the write is the same element store arrayPush
         // makes. setElemSlow roots the array and the value across the
         // allocation, and throws the same RangeError at the size limit.
-        if (argc == 1 && arr->properties.isUndefined() && !pushGrowFastDisabled()) {
+        if (argc == 1 && arr->properties.isUndefined() && chainClear && !pushGrowFastDisabled()) {
             Rooted<Value> root{Value(thisBits)};
             Rooted<Value> val{Value(argv[0])};
             arr->setElemSlow(rtHeap(), arr->length, val);
@@ -53,7 +58,9 @@ uint64_t arrayPush(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     RootedArgs args(argc, argv);
     Rooted<Value> self{toObject(Value(thisBits), "push")};
     if (self.get().isUndefined()) return Value::fromUndefined().rawBits();
-    if (isArray(self.get())) {
+    // 23.1.3.23's Set(O, len + i, E) per value: an array whose chain holds an
+    // index takes the generic walk below, which asks the chain for each.
+    if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
         if (args.count() > 0 && !requireExtensible(self.get(), "push")) {
             return Value::fromUndefined().rawBits();
         }
@@ -210,7 +217,10 @@ uint64_t arrayUnshift(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
         if (n == 0) return Value::fromDouble(lengthOf(self.get())).rawBits();
         if (!requireExtensible(self.get(), "unshift")) return Value::fromUndefined().rawBits();
     }
-    if (isArray(self.get()) && !rtArrayHolesSeeChain(self.get())) {
+    // Unshift writes past the old end as well as into the holes it moves
+    // over, so the block moves as it stands only while no chain holds an
+    // index at all.
+    if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
         const uint32_t n = args.count();
         ArrayHeader* arr = self.get().asObject<ArrayHeader>();
         if (arr->head_offset >= n) {
@@ -308,7 +318,10 @@ uint64_t arrayFill(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     uint32_t end = args.count() > 2 && !args[2].isUndefined()
                        ? relativeIndex(toInteger(rtToNumber(args[2])), len)
                        : len;
-    if (isArray(self.get()) && self.get().asObject<ArrayHeader>()->length == len &&
+    // A hole in the range is a Set the chain may take, so the block is filled
+    // in place only when no hole there could see the chain.
+    if (isArray(self.get()) && !rtArrayHolesSeeChain(self.get()) &&
+        self.get().asObject<ArrayHeader>()->length == len &&
         self.get().asObject<ArrayHeader>()->head_offset + len <=
             self.get().asObject<ArrayHeader>()->capacity &&
         (len == 0 || self.get().asObject<ArrayHeader>()->elementsData() != nullptr)) {
@@ -350,7 +363,12 @@ uint64_t arraySplice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 
     Rooted<Value> removed{rtArraySpeciesCreate(self, 0)};
 
-    if (isArray(self.get()) && isArray(removed.get()) && !rtArrayHolesSeeChain(self.get()) &&
+    // Growing writes past the old end, a Set the chain may take, so a splice
+    // that grows needs a chain holding no index; one that does not needs only
+    // no hole that could see it.
+    const bool grows = insertCount > deleteCount;
+    if (isArray(self.get()) && isArray(removed.get()) &&
+        !(grows ? rtArrayChainHoldsIndex(self.get()) : rtArrayHolesSeeChain(self.get())) &&
         self.get().asObject<ArrayHeader>()->length == len &&
         self.get().asObject<ArrayHeader>()->head_offset + len <=
             self.get().asObject<ArrayHeader>()->capacity &&

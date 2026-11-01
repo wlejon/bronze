@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "runtime/fatal.h"
+#include "runtime/fn.h"
 #include "runtime/object.h"
 #include "runtime/rt_state.h"
 #include "runtime/slot_repr.h"
@@ -29,6 +30,21 @@ Shape* Shape::createRoot(NonMovingArena& arena, Value proto) {
         auto* hdr = proto.asObject<HeapObjectHeader>();
         if (HeapKind::carriesShape(hdr->flags)) {
             markObjectAsPrototype(arena, reinterpret_cast<ObjectHeader*>(hdr));
+        } else if (hdr->flags == HeapKind::Function) {
+            // A function answers a key from its statics object, so that is
+            // what is marked: its index keys are scanned now and its adds trip
+            // the hazard from here on (object.h). %Function.prototype% is the
+            // prototype of intrinsics, which is why this is not a trip. A
+            // function with no statics object yet holds no key now, and one
+            // it is given later is not watched: the one gap, for a program
+            // that makes a function some array's prototype and then gives the
+            // function an index-named property.
+            const Value props = reinterpret_cast<FunctionHeader*>(hdr)->properties;
+            if (props.isObject()) markObjectAsPrototype(arena, props.asObject<ObjectHeader>());
+        } else {
+            // An array or a proxy on a chain answers indices through no shape
+            // the add trip could watch (object.h).
+            tripArrayIndexHazard("a prototype that is no shape-carrying object");
         }
     }
     return root;
@@ -65,6 +81,9 @@ static std::vector<Shape*> chainOf(Shape* shape) {
 void Shape::markObjectAsPrototype(NonMovingArena& arena, ObjectHeader* obj) {
     Shape* protoShape = obj ? obj->shape : nullptr;
     if (!protoShape || protoShape->used_as_prototype) return;
+    // From here every add to the object trips the hazard itself, so what it
+    // holds already is what has to be asked about now.
+    noteObjectBecomingPrototype(obj);
     // A dictionary shape is already private to the object, and no set-site
     // entry is ever filled with one — marking it in place is the private copy.
     if (protoShape->isDictionary()) {
@@ -206,6 +225,9 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     // marked when some object first becomes a prototype, which can be long
     // after its transitions were built by unrelated objects.
     if (used_as_prototype) next_shape->used_as_prototype = true;
+    // Every add to a shape-mode object passes here, so this is where an index
+    // key reaching a prototype is seen (dictionary adds: dictDefine).
+    noteKeyAddedToPrototype(used_as_prototype, stored);
     ++g_shapeTransitions;
     return next_shape;
 }

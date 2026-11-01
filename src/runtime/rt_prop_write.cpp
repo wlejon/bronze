@@ -57,6 +57,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
+#include "runtime/tls_block.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 
@@ -206,19 +207,7 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
 
     if (hdr->flags == HeapKind::Array) {
         if (ki.isElemIndex) {
-            const uint32_t idx = ki.elemIndex;
-            const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, idx);
-            if (refusal != SetRefusal::None) {
-                rtReportSetRefusal(refusal, strict, rtKeyString(keyIndex));
-                return;
-            }
-            Rooted<Value> val(valVal);
-            if (idx > reinterpret_cast<ArrayHeader*>(hdr)->length) {
-                Rooted<Value> arrRoot(objVal);
-                reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, idx + 1);
-                hdr = arrRoot.get().asObject<HeapObjectHeader>();
-            }
-            reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
+            rtArrayIndexSet(objVal, ki.elemIndex, valVal, strict);
             return;
         }
         if (ki.isLength) {
@@ -486,6 +475,34 @@ void bronze_method_def(uint64_t objBits, uint32_t keyIndex, uint64_t valBits) {
 // symbol, which is every key the class grammar bronze reads can produce. A key
 // of any other type is a bug in that grammar rather than a program error, so it
 // is fatal by name rather than converted.
+namespace {
+
+// 10.2.9 SetFunctionName for a MethodDefinition whose name is COMPUTED
+// (`[k]() {}`, `get [k]() {}`, and `get 4() {}` / `5() {}`, which the parser
+// hands over as computed keys): the name is the evaluated key — a symbol's
+// as "[description]" — behind the accessor's "get " / "set ". Only known
+// here, so the function the closure made carries the parser's placeholder
+// until now. A value that is not one of bronze's own closures is left alone.
+void nameComputedMethod(Value fnVal, Value key, const char* prefix) {
+    if (!fnVal.isObject() || fnVal.asObject<HeapObjectHeader>()->flags != HeapKind::Function) return;
+    std::string name;
+    if (key.isSymbol()) {
+        const StringHeader* desc = key.asSymbol<SymbolHeader>()->description;
+        if (desc) name = "[" + rtUtf8Chars(desc) + "]";
+    } else if (key.isString()) {
+        name = rtUtf8Chars(key.asString<StringHeader>());
+    } else {
+        return;
+    }
+    if (prefix) name = std::string(prefix) + " " + name;
+    Rooted<Value> fnRoot{fnVal};
+    Rooted<Value> nameVal{rtMakeString(name)};
+    const PropertyKey interned = rtInternPropertyKey(nameVal.get());
+    fnRoot.get().asObject<FunctionHeader>()->name = interned.string();
+}
+
+}  // namespace
+
 void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t valBits) {
     recordElemCall("bronze_method_def_computed", objBits, keyBits);
     Value objVal(objBits);
@@ -502,6 +519,8 @@ void bronze_method_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t val
     objVal = objRoot0.get();
     Value keyVal = keyRoot.get();
     Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
+    nameComputedMethod(val.get(), key.get(), nullptr);
+    objVal = objRoot0.get();
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {
@@ -584,6 +603,9 @@ void bronze_accessor_def_computed(uint64_t objBits, uint64_t keyBits, uint64_t g
     objVal = objRoot0.get();
     Value keyVal = keyRoot.get();
     Rooted<Value> key{keyVal.isString() || keyVal.isSymbol() ? keyVal : rtElemKeyAsString(keyVal)};
+    nameComputedMethod(getter.get(), key.get(), "get");
+    nameComputedMethod(setter.get(), key.get(), "set");
+    objVal = objRoot0.get();
 
     HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
     if (hdr->flags == HeapKind::Function) {
@@ -638,7 +660,11 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             HeapObjectHeader* hdr = objVal.asObject<HeapObjectHeader>();
             if (hdr->flags == HeapKind::Array) {
                 auto* arr = reinterpret_cast<ArrayHeader*>(hdr);
-                if (idx < arr->length && idx < arr->capacity && !arr->properties.isObject()) {
+                // A hole is no own element, so a store into one asks the chain
+                // (rtArrayIndexSet below) unless the hazard says no chain can
+                // answer (object.h).
+                if (idx < arr->length && idx < arr->capacity && !arr->properties.isObject() &&
+                    (rtTls()->array_index_hazard == 0 || !arr->elementsKeepingNumbers()[idx].isHole())) {
                     // In bounds, so NUMBERS survives a Number (runtime/array.h).
                     if (valBits > kNumberMaxBits) arr->forgetNumbers();
                     arr->elementsKeepingNumbers()[idx] = Value(valBits);
@@ -787,18 +813,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             uint32_t u = static_cast<uint32_t>(d);
             if (static_cast<double>(u) == d) {
                 if (hdr->flags == HeapKind::Array) {
-                    const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, u);
-                    if (refusal != SetRefusal::None) {
-                        rtReportSetRefusal(refusal, strict, std::to_string(u));
-                        return;
-                    }
-                    Rooted<Value> val{Value(valBits)};
-                    if (u > reinterpret_cast<ArrayHeader*>(hdr)->length) {
-                        Rooted<Value> arrRoot(objVal);
-                        reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, u + 1);
-                        hdr = arrRoot.get().asObject<HeapObjectHeader>();
-                    }
-                    reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), u, val);
+                    rtArrayIndexSet(objVal, u, Value(valBits), strict);
                     return;
                 }
                 if (hdr->flags == TypedArrayHeader::kFlags) {
@@ -829,18 +844,7 @@ void bronze_elem_set(uint64_t objBits, uint64_t idxBits, uint64_t valBits, bool 
             rtReportSetRefusal(rtArrayNamedSet(arrRoot, key, val), strict, keyText);
             return;
         }
-        const SetRefusal refusal = rtArrayElementWriteRefusal(objVal, idx);
-        if (refusal != SetRefusal::None) {
-            rtReportSetRefusal(refusal, strict, std::to_string(idx));
-            return;
-        }
-        Rooted<Value> val{Value(valBits)};
-        if (idx > reinterpret_cast<ArrayHeader*>(hdr)->length) {
-            Rooted<Value> arrRoot(objVal);
-            reinterpret_cast<ArrayHeader*>(hdr)->setLength(rtHeap(), arrRoot, idx + 1);
-            hdr = arrRoot.get().asObject<HeapObjectHeader>();
-        }
-        reinterpret_cast<ArrayHeader*>(hdr)->setElem(rtHeap(), idx, val);
+        rtArrayIndexSet(objVal, idx, Value(valBits), strict);
         return;
     }
     if (hdr->flags == TypedArrayHeader::kFlags) {

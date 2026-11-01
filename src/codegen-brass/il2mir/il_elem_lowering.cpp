@@ -11,7 +11,6 @@
 #include "il_property.h"
 #include <brass/mir/function.hpp>
 #include <cmath>
-#include <cstdlib>
 #include <string>
 
 namespace il2mir {
@@ -288,8 +287,8 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     Value* header_low = b.build_load(Type::i32(), ptr, 0);
     b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kArrayHeaderLow)), bb_array, bb_ta_check);
 
-    // An Array: an in-bounds element, a hole reading as undefined (the
-    // helper's answer too). Past the length the helper decides.
+    // An Array: an in-bounds element, a hole by the hole rule
+    // (il_number_array.cpp). Past the length the helper decides.
     b.position_at_end(bb_array);
     Value* length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_LENGTH_OFFSET));
     b.build_br_if(b.build_ult(idx.i64, length), bb_array_load, bb_slow);
@@ -299,8 +298,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
     Value* elem = b.build_load_indexed(Type::i64(), block, b.build_add(idx.i64, head), 8,
                                        static_cast<int32_t>(kBronzeHdrBytes));
-    Value* is_hole = b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS));
-    b.build_br(bb_merge, {b.build_select(is_hole, iconst(b, kUndefinedTag), elem)});
+    finish_hole_read(b, elem, bb_merge, bb_slow, prefix);
 
     b.position_at_end(bb_ta_check);
     b.build_br_if(b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow)), bb_ta, bb_slow);
@@ -389,8 +387,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         Value* head = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_HEAD_OFFSET));
         Value* elem = b.build_load_indexed(Type::i64(), block, b.build_add(idx.i64, head), 8,
                                            static_cast<int32_t>(kBronzeHdrBytes));
-        Value* is_hole = b.build_eq(elem, iconst(b, BRONZE_ABI_HOLE_BITS));
-        b.build_br(bb_merge, {b.build_select(is_hole, iconst(b, kUndefinedTag), elem)});
+        finish_hole_read(b, elem, bb_merge, bb_slow, prefix);
 
         b.position_at_end(bb_slow);
         b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
@@ -521,10 +518,15 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
     Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
     Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(slot, capacity));
-    b.build_br_if(b.build_and(in_bounds, no_props), bb_array_store, bb_slow);
+    BasicBlock* bb_array_slot = append_block_keeping_position(b, prefix + "_array_slot");
+    b.build_br_if(b.build_and(in_bounds, no_props), bb_array_slot, bb_slow);
+
+    // A hole by the hole rule (il_number_array.cpp).
+    b.position_at_end(bb_array_slot);
+    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+    branch_on_hole_store(b, block, slot, bb_array_store, bb_slow, prefix);
 
     b.position_at_end(bb_array_store);
-    Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
     b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
     // Every reference, and every value that is not a Number, is tagged above the Number range.
     b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), bb_barrier, bb_merge);
@@ -652,10 +654,14 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         Value* props = b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
         Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
         Value* in_bounds = b.build_and(b.build_ult(idx.i64, length), b.build_ult(slot, capacity));
-        b.build_br_if(b.build_and(in_bounds, no_props), bb_array_store, bb_slow);
+        BasicBlock* bb_array_slot = append_block_keeping_position(b, prefix + "_array_slot");
+        b.build_br_if(b.build_and(in_bounds, no_props), bb_array_slot, bb_slow);
+
+        b.position_at_end(bb_array_slot);
+        Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
+        branch_on_hole_store(b, block, slot, bb_array_store, bb_slow, prefix);
 
         b.position_at_end(bb_array_store);
-        Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
         // A boxed f64 is a primitive Number, never a heap reference, so no write barrier is needed.
         b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64_bits(b, val_f64));
         b.build_br(bb_merge);
@@ -845,7 +851,9 @@ void PropertyLoweringHelper::emit_dense_array_guard(Builder& b, Value* obj, uint
         Value* hdr_ok = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kArrayHeaderLow));
         Value* is_array = is_obj_val ? b.build_and(is_obj_val, hdr_ok) : hdr_ok;
         Value* elems = b.build_load(Type::i64(), base, BRONZE_ABI_ARRAY_ELEMS_OFFSET);
-        Value* has_elems = b.build_eq(b.build_and(elems, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
+        // A run reads a hole as `undefined` and stores over one, so the hole
+        // rule's TLS tag mask (il_number_array.cpp) fails it once tripped.
+        Value* has_elems = b.build_eq(b.build_and(elems, index_hazard_tag_mask(b)), iconst(b, kObjectTagBits));
         Value* raw_block = b.build_and(elems, iconst(b, kPayloadMask));
         Value* raw_head = b.build_zext_i64(b.build_load(Type::i32(), base, BRONZE_ABI_ARRAY_HEAD_OFFSET));
         block = b.build_add(raw_block, b.build_shl(raw_head, iconst(b, 3)));

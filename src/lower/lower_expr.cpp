@@ -285,6 +285,9 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             setInst.operands = {cookedArr, strId};
             setInst.keyIndex = getKeyConstantIndex(std::to_string(i));
             setInst.icIndex = icSiteCounter_++;
+            // Defined, not assigned (13.2.8.4 GetTemplateObject), like an
+            // array literal's elements (il.h kWriteLiteralElement).
+            setInst.immI32 = il::kWriteLiteralElement;
             emitInst(ilFn, setInst);
         }
 
@@ -314,6 +317,9 @@ std::optional<Lowerer::Value> Lowerer::lowerExpr(const ast::Expr& expr, il::Func
             setInst.operands = {rawArr, strId};
             setInst.keyIndex = getKeyConstantIndex(std::to_string(i));
             setInst.icIndex = icSiteCounter_++;
+            // Defined, not assigned (13.2.8.4 GetTemplateObject), like an
+            // array literal's elements (il.h kWriteLiteralElement).
+            setInst.immI32 = il::kWriteLiteralElement;
             emitInst(ilFn, setInst);
         }
 

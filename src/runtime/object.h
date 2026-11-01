@@ -41,6 +41,32 @@ enum class SetRefusal {
 uint64_t protoMutationEpoch() noexcept;
 void bumpProtoMutationEpoch() noexcept;
 
+// THE ARRAY INDEX HAZARD (bronze_abi_tls.h, array_index_hazard): set, for good,
+// the first time any object that is or becomes a prototype could answer an
+// array index — an index-like key added to a marked prototype, an object
+// holding one marked, or a link that is no ordinary object (a proxy, an array,
+// a typed array, a function, a String wrapper) put on a chain. Until then no
+// chain anywhere holds an index, so generated code may read a hole as
+// `undefined` and write a hole or an append without asking the chain; after,
+// those (and only those) go to the runtime, which asks precisely
+// (rt_array_holes.cpp). Sticky because it is eager: clearing it would need the
+// whole-program scan the epoch latch does lazily, and a program that put an
+// index on a prototype pays only on its holes and appends.
+void tripArrayIndexHazard(const char* why) noexcept;
+// Whether `key` is a string a holder could answer an array index for: one
+// that reads as a non-negative integer (the test is broader than an array
+// index, which only makes the hazard trip more often, never less).
+bool keyCouldBeArrayIndex(PropertyKey key) noexcept;
+// The trip for an add of `key` to an object whose shape is `shape`: owed only
+// when that object is a prototype.
+// The trip for an object about to be marked as a prototype: a typed array or
+// a String wrapper (which answer indices from their data), or one already
+// holding an index-like own key. Allocates nothing on the GC heap.
+void noteObjectBecomingPrototype(const struct ObjectHeader* obj) noexcept;
+inline void noteKeyAddedToPrototype(bool usedAsPrototype, PropertyKey key) noexcept {
+    if (usedAsPrototype && keyCouldBeArrayIndex(key)) tripArrayIndexHazard("index key added to a prototype");
+}
+
 // How many ways of a site the runtime may consult and install into: all of
 // them, or one under BRONZE_NO_POLY_IC=1. Generated code reads the same flag
 // from the TLS block, so the two halves of a site cannot disagree about how

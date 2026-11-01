@@ -278,17 +278,27 @@ std::unique_ptr<ast::FunctionExpr> Parser::parseAccessorMember(ast::AccessorKind
     } else if (check(TokenKind::StringLiteral)) {
         const Token& sTok = advance();
         outName = decodeStringLiteral(sTok.text.substr(1, sTok.text.size() - 2), sTok.span);
+    } else if (check(TokenKind::NumberLiteral)) {
+        // `get 4() {}`, `set 0x10(v) {}`, `get 1n() {}`: the name is
+        // ToString of the literal's value (13.2.5.5, 7.1.19), which is the
+        // runtime's number and bignum formatting, so the literal becomes the
+        // key expression and the accessor is defined as a computed one is —
+        // the same route a numeric data key or method already takes.
+        if (!outKeyExpr) {
+            error((std::string("unsupported construct: a numeric ") + word + " name here").c_str());
+            return nullptr;
+        }
+        *outKeyExpr = parsePrimary();
+        if (!*outKeyExpr) return nullptr;
+        outName = isGetter ? "get computed" : "set computed";
     } else if (isIdentifierName(peek().kind) || check(TokenKind::PrivateName)) {
         // A PrivateName reaches here only from a class body: an object
         // literal's `get`/`set` lookahead does not admit one, so `{ get #x() {}
         // }` never becomes an accessor and is refused where it is written.
         outName = std::string(advance().text);
     } else {
-        // A numeric accessor name lands here with the object literal's own
-        // rule: the name is ToString(Number), which is the runtime's
-        // formatter and not something the parser may reimplement.
         error((std::string("expected a ") + word +
-               " name: an identifier or a string literal")
+               " name: an identifier, a string or numeric literal, or a computed name")
                   .c_str());
         return nullptr;
     }

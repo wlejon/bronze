@@ -7,8 +7,15 @@
 #include "runtime/fatal.h"
 #include "runtime/fn.h"
 #include "runtime/proxy.h"
+#include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/slot_repr.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 namespace bronze {
 
@@ -88,6 +95,52 @@ static_assert(BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_ST
                   BRONZE_ABI_TAG_OBJECT % 2 == 1,
               "an epoch must never read as a heap header");
 void bumpProtoMutationEpoch() noexcept { runtime::rtTls()->proto_epoch += BRONZE_ABI_PROTO_EPOCH_STEP; }
+
+void tripArrayIndexHazard(const char* why) noexcept {
+    bronze_tls_block* tls = runtime::rtTls();
+    if (tls->array_index_hazard != 0) return;
+    tls->array_index_hazard = 0xFFFFFFFFu;  // bronze_abi_tls.h: an index OR'd with it passes no bound
+    tls->array_elems_tag_mask = 0;  // bronze_abi_tls.h: every dense-array guard now fails
+    // The diagnosis for a program that runs slower than expected on its holes
+    // and appends: which event made generated code stop answering them alone.
+    static const bool trace = [] {
+        const char* env = std::getenv("BRONZE_TRACE_INDEX_HAZARD");
+        return env && env[0] && env[0] != '0';
+    }();
+    if (trace) std::fprintf(stderr, "[bronze] array index hazard: %s\n", why);
+}
+
+void noteObjectBecomingPrototype(const ObjectHeader* obj) noexcept {
+    if (!obj) return;
+    if (obj->header.flags == HeapKind::TypedArray) {
+        tripArrayIndexHazard("a typed array made a prototype");
+        return;
+    }
+    // `String.prototype` is itself a wrapper, of "", which holds no index.
+    if (Value data; runtime::rtStringWrapperData(Value::fromObject(const_cast<ObjectHeader*>(obj)), data) &&
+                    data.isString() && data.asString<StringHeader>()->getLength() > 0) {
+        tripArrayIndexHazard("a String wrapper made a prototype");
+        return;
+    }
+    if (!obj->shape) return;
+    for (StringHeader* key : runtime::rtOwnStringKeysOrdered(obj, /*enumerableOnly=*/false)) {
+        if (keyCouldBeArrayIndex(PropertyKey::forString(key))) {
+            tripArrayIndexHazard("an object holding an index key made a prototype");
+            return;
+        }
+    }
+}
+
+bool keyCouldBeArrayIndex(PropertyKey key) noexcept {
+    const StringHeader* s = key.string();
+    if (!s) return false;
+    const std::string text = runtime::rtUtf8Chars(s);
+    if (text.empty()) return false;
+    for (const char c : text) {
+        if (c < '0' || c > '9') return false;
+    }
+    return true;
+}
 
 namespace {
 

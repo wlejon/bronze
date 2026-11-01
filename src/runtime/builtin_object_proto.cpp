@@ -651,7 +651,97 @@ uint64_t objectProtoSetProto(uint64_t, uint64_t thisBits, uint32_t argc, const u
 
 namespace {
 
+// Annex B.2.2.2 / B.2.2.3, __defineGetter__(P, getter) / __defineSetter__(P,
+// setter): ToObject(this), the function's callability, then
+// DefinePropertyOrThrow(O, ToPropertyKey(P), { [[Get]] or [[Set]]: fn,
+// enumerable, configurable }) — Object.defineProperty's own path, so a
+// refusal (a non-configurable property, a non-extensible object, a proxy
+// trap's false) is its TypeError and an index key trips what any accessor
+// define trips.
+uint64_t annexBDefineAccessor(uint64_t thisBits, uint32_t argc, const uint64_t* argv, const char* field,
+                              const char* method) {
+    Rooted<Value> self{Value(thisBits)};
+    if (self.get().isNull() || self.get().isUndefined()) {
+        return rtThrowTypeError(std::string("Object.prototype.") + method + " called on null or undefined")
+            .rawBits();
+    }
+    Rooted<Value> obj{rtToObject(self.get())};
+    Rooted<Value> key{argc > 0 ? Value(argv[0]) : Value::fromUndefined()};
+    Rooted<Value> fn{argc > 1 ? Value(argv[1]) : Value::fromUndefined()};
+    if (!rtIsCallableValue(fn.get())) {
+        return rtThrowTypeError(std::string("Object.prototype.") + method + ": Expecting function").rawBits();
+    }
+    Rooted<Value> desc{Value(bronze_create_object())};
+    Rooted<Value> fieldKey{rtMakeString(field)};
+    bronze_elem_set(desc.get().rawBits(), fieldKey.get().rawBits(), fn.get().rawBits(), /*strict=*/false);
+    Rooted<Value> yes{Value::fromBool(true)};
+    for (const char* flag : {"enumerable", "configurable"}) {
+        Rooted<Value> flagKey{rtMakeString(flag)};
+        bronze_elem_set(desc.get().rawBits(), flagKey.get().rawBits(), yes.get().rawBits(), /*strict=*/false);
+    }
+    key.set(rtToPropertyKey(key));
+    const uint64_t args[3] = {obj.get().rawBits(), key.get().rawBits(), desc.get().rawBits()};
+    rtObjectDefineProperty(0, 0, 3, args);
+    return BRONZE_ABI_UNDEFINED_BITS;
+}
+
+uint64_t objectProtoDefineGetter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return annexBDefineAccessor(thisBits, argc, argv, "get", "__defineGetter__");
+}
+
+uint64_t objectProtoDefineSetter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return annexBDefineAccessor(thisBits, argc, argv, "set", "__defineSetter__");
+}
+
+// Annex B.2.2.4 / B.2.2.5, __lookupGetter__(P) / __lookupSetter__(P): the
+// chain walked from ToObject(this) by [[GetOwnProperty]] and
+// [[GetPrototypeOf]] (Object.getOwnPropertyDescriptor's and
+// Object.getPrototypeOf's paths, so a proxy's traps run): the first own
+// property found answers — its getter or setter if it is an accessor,
+// `undefined` if it is data — and the end of the chain answers `undefined`.
+uint64_t annexBLookupAccessor(uint64_t thisBits, uint32_t argc, const uint64_t* argv, const char* field,
+                              const char* method) {
+    Rooted<Value> self{Value(thisBits)};
+    if (self.get().isNull() || self.get().isUndefined()) {
+        return rtThrowTypeError(std::string("Object.prototype.") + method + " called on null or undefined")
+            .rawBits();
+    }
+    Rooted<Value> holder{rtToObject(self.get())};
+    Rooted<Value> key{argc > 0 ? Value(argv[0]) : Value::fromUndefined()};
+    key.set(rtToPropertyKey(key));
+    Rooted<Value> getKey{rtMakeString("get")};
+    Rooted<Value> setKey{rtMakeString("set")};
+    Rooted<Value> fieldKey{rtMakeString(field)};
+    for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        const uint64_t gopd[2] = {holder.get().rawBits(), key.get().rawBits()};
+        Rooted<Value> desc{Value(rtObjectGetOwnPropertyDescriptor(0, 0, 2, gopd))};
+        if (desc.get().isObject()) {
+            bool enumerable = false;
+            const bool accessor = rtOwnPropertyOf(desc, getKey.get(), enumerable) ||
+                                  rtOwnPropertyOf(desc, setKey.get(), enumerable);
+            if (!accessor) return BRONZE_ABI_UNDEFINED_BITS;
+            return bronze_elem_get(desc.get().rawBits(), fieldKey.get().rawBits());
+        }
+        const uint64_t gpo[1] = {holder.get().rawBits()};
+        holder.set(Value(objectGetPrototypeOf(0, 0, 1, gpo)));
+        if (!holder.get().isObject()) return BRONZE_ABI_UNDEFINED_BITS;
+    }
+    return rtThrowRangeError("Maximum prototype chain depth exceeded").rawBits();
+}
+
+uint64_t objectProtoLookupGetter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return annexBLookupAccessor(thisBits, argc, argv, "get", "__lookupGetter__");
+}
+
+uint64_t objectProtoLookupSetter(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    return annexBLookupAccessor(thisBits, argc, argv, "set", "__lookupSetter__");
+}
+
 const NativeMethod kObjectProtoMethods[] = {
+    {"__defineGetter__", objectProtoDefineGetter, 2, 2},
+    {"__defineSetter__", objectProtoDefineSetter, 2, 2},
+    {"__lookupGetter__", objectProtoLookupGetter, 1, 1},
+    {"__lookupSetter__", objectProtoLookupSetter, 1, 1},
     {"hasOwnProperty", objectProtoHasOwnProperty, 1, 1},
     {"isPrototypeOf", objectProtoIsPrototypeOf, 1, 1},
     {"propertyIsEnumerable", objectProtoPropertyIsEnumerable, 1, 1},
@@ -708,13 +798,11 @@ void rtInstallObjectProtoMethods(Rooted<Value>& proto) {
     }
 }
 
-// Every 20.1.3 member bronze knows about is now built (`__proto__` was the
-// list's last entry), so a full-chain miss really is an absent property. The
-// function stays because the miss path calls it for every receiver kind, and
-// the next unbuilt member belongs here rather than in a new mechanism —
-// `__defineGetter__` and its three Annex B siblings stay deliberately
-// unlisted as well as unbuilt: nothing in them is a name a program should be
-// reaching for.
+// Every 20.1.3 member is now built, `__proto__` and the four Annex B
+// accessor methods included, so a full-chain miss really is an absent
+// property. The function stays because the miss path calls it for every
+// receiver kind, and the next unbuilt member belongs here rather than in a
+// new mechanism.
 void rtObjectProtoCheckMissingMember(const std::string&) {}
 
 // The rest of the chain, for a receiver whose members bronze answers from a C

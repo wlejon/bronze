@@ -263,7 +263,7 @@ std::vector<StringHeader*> rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly
 
 // `a.foo = v`, creating the side object on first use. Allocates and may run an
 // inherited setter, so the array arrives through a root.
-SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val);
+SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, bool askChain = true);
 
 // `delete a.foo`, whose false is 13.5.1's — a non-configurable property, which
 // only `Object.seal` and `Object.freeze` create here.
@@ -301,6 +301,39 @@ bool rtArrayHolesSeeChain(Value arr);
 // array as `this`. Both may run user code (a proxy, a getter).
 bool rtArrayInheritedHas(Rooted<Value>& arr, uint32_t index);
 Value rtArrayInheritedGet(Rooted<Value>& arr, uint32_t index);
+
+// [[Get]] of `index` on an array: its own element, else (a hole, or past the
+// length) the chain's answer when the chain could hold one, else `undefined`.
+// Allocates and may run user code only on that inherited path; the receiver
+// needs no root from the caller.
+Value rtArrayIndexGet(Value arr, uint32_t index);
+
+// The chain half of 10.1.9.1 OrdinarySet for an index the array does NOT own
+// (a hole, or at or past `length`), asked only when rtArrayChainHoldsIndex
+// says the chain could answer. True when the chain decided the write: a setter
+// ran (with the array as `this`), an inherited non-writable element or a
+// setter-less accessor refused it (reported per `strict`), a proxy's [[Set]]
+// took it, or a typed array's absent index made it a silent success; `ok` is
+// the boolean [[Set]] answers. False when the write lands on the array as an
+// own element, which the caller then makes (its own refusals included).
+bool rtArrayInheritedSet(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val, bool strict, bool& ok);
+
+// The same walk for a NAMED key (no index, not `length`) the array does not
+// own: true when the chain took the write — a setter run with the array as
+// `this` (Object.prototype's `__proto__` among them), a non-writable data
+// property refusing it, a proxy's [[Set]] — with its refusal in `refusal`;
+// false when the write lands on the array as its own property.
+bool rtArrayInheritedNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, SetRefusal& refusal);
+
+// An own element write: the array's own refusals (frozen, sealed,
+// non-extensible), then the store, growing `length` past it. No chain is
+// asked — this is CreateDataProperty's half, and what the chain walk lands on.
+SetRefusal rtArrayOwnIndexWrite(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val);
+
+// `a[index] = v` in full (10.1.9.1 on an array receiver): the chain for an
+// index the array does not own, else the own write; a refusal is reported per
+// `strict`. Allocates; the receiver needs no root from the caller.
+void rtArrayIndexSet(Value arr, uint32_t index, Value val, bool strict);
 
 // `undefined` for a name that is not an implemented method, so the property
 // path can fall through to the unimplemented-member table and then to the

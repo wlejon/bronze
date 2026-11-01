@@ -30,6 +30,7 @@
 #include <string>
 
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
 #include "runtime/exception.h"
 #include "runtime/gc.h"
 #include "runtime/integrity.h"
@@ -55,7 +56,20 @@ std::vector<StringHeader*> rtArrayOwnNamedKeys(Value arrVal, bool enumerableOnly
     return rtOwnStringKeysOrdered(props.asObject<ObjectHeader>(), enumerableOnly);
 }
 
-SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val) {
+SetRefusal rtArrayNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, bool askChain) {
+    // 10.1.9.2: a name the array does not own is asked of its chain first. The
+    // box has a null prototype (storage, not a link), so its own write would
+    // never see an inherited setter — which is how `a.__proto__ = p` made an
+    // own property named `__proto__` rather than running Object.prototype's
+    // setter. A define onto the array (askChain false: the chain already
+    // answered) skips the walk.
+    if (askChain) {
+        OwnPropertyDetail own;
+        if (!rtOwnPropertyOf(arr, key.get(), own)) {
+            SetRefusal refusal = SetRefusal::None;
+            if (rtArrayInheritedNamedSet(arr, key, val, refusal)) return refusal;
+        }
+    }
     ArrayHeader::ensureProperties(rtHeap(), rtArena(), arr);
     Rooted<Value> props{arr.get().asObject<ArrayHeader>()->properties};
     SetRefusal refusal = SetRefusal::None;
@@ -83,6 +97,30 @@ bool rtArrayNamedDelete(Value arrVal, PropertyKey name) {
     // the state `delete` wants, and 13.5.1 answers true for it.
     if (!props.isObject()) return true;
     return props.asObject<ObjectHeader>()->deleteProperty(rtArena(), name);
+}
+
+SetRefusal rtArrayOwnIndexWrite(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val) {
+    const SetRefusal refusal = rtArrayElementWriteRefusal(arr.get(), index);
+    if (refusal != SetRefusal::None) return refusal;
+    if (index > arr.get().asObject<ArrayHeader>()->length) {
+        ArrayHeader::setLength(rtHeap(), arr, index + 1);
+    }
+    arr.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, val);
+    return SetRefusal::None;
+}
+
+void rtArrayIndexSet(Value arrVal, uint32_t index, Value v, bool strict) {
+    Rooted<Value> arr{arrVal};
+    Rooted<Value> val{v};
+    // 10.1.9.1: an own element is written in place; an index the array does
+    // not own asks the chain first, which only a chain holding an index can
+    // answer (rt_array_holes.cpp).
+    if (!arr.get().asObject<ArrayHeader>()->hasElem(index) && rtArrayChainHoldsIndex(arr.get())) {
+        bool ok = true;
+        if (rtArrayInheritedSet(arr, index, val, strict, ok)) return;
+    }
+    const SetRefusal refusal = rtArrayOwnIndexWrite(arr, index, val);
+    if (refusal != SetRefusal::None) rtReportSetRefusal(refusal, strict, std::to_string(index));
 }
 
 SetRefusal rtArraySetLength(Rooted<Value>& arr, Value newLenVal) {

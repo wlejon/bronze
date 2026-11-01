@@ -183,6 +183,9 @@ enum class BronzeOp {
 // strict flag: il.h kWriteDefine (il_to_brass_ast.cpp asserts they agree).
 // Every helper choice keyed off the mode routes it to bronze_prop_define.
 inline constexpr uint32_t kDefineWriteMode = 2;
+// il.h kWriteLiteralElement: an array literal's element store, an
+// assignment's `PropSet` whose miss defines (bronze_prop_define).
+inline constexpr uint32_t kLiteralElementWriteMode = 3;
 
 struct BronzeBlockTarget {
     uint32_t block_id = 0;

@@ -354,6 +354,15 @@ inline bool elemGetCoerces(const Instruction& inst) {
 inline constexpr int32_t kWriteSloppy = 0;
 inline constexpr int32_t kWriteStrict = 1;
 inline constexpr int32_t kWriteDefine = 2;
+// An ARRAY LITERAL's element (`[a, b]`'s `0` and `1`): CreateDataProperty on
+// the fresh array, which is an assignment's `prop.set` in every path the
+// backend gives one — the literal's index stores are the dense-array fast
+// paths' own — except its miss, which defines rather than sets (bronze_prop_
+// define). The fresh array's slots are holes until written, and a [[Set]]
+// into a hole asks the chain, so a setter on `Object.prototype[1]` would
+// otherwise run for `[x, y]`. Not a define (isDefineWrite) for that reason:
+// the fast paths stay.
+inline constexpr int32_t kWriteLiteralElement = 3;
 
 inline bool isDefineWrite(const Instruction& inst) {
     return (inst.op == Op::PropSet || inst.op == Op::ElemSet) && inst.immI32 == kWriteDefine;

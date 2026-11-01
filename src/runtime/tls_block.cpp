@@ -93,6 +93,8 @@ static_assert(offsetof(bronze_tls_block, realm_slot) == BRONZE_TLS_REALM_SLOT_OF
 static_assert(offsetof(bronze_tls_block, array_hole_epoch) == BRONZE_TLS_ARRAY_HOLE_EPOCH_OFF);
 static_assert(offsetof(bronze_tls_block, key_header_tbl) == BRONZE_TLS_KEY_HEADER_TBL_OFF);
 static_assert(offsetof(bronze_tls_block, key_header_count) == BRONZE_TLS_KEY_HEADER_COUNT_OFF);
+static_assert(offsetof(bronze_tls_block, array_index_hazard) == BRONZE_TLS_ARRAY_INDEX_HAZARD_OFF);
+static_assert(offsetof(bronze_tls_block, array_elems_tag_mask) == BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF);
 // The inline-allocation window is the collector's young bump region in place
 // (heap.cpp, bind_thread): brass's {top, end} pair.
 static_assert(offsetof(bronze_tls_block, alloc_limit) ==
@@ -153,6 +155,8 @@ thread_local bronze_tls_block g_tls_block = {
     /*array_hole_epoch=*/0,
     /*key_header_tbl=*/nullptr,
     /*key_header_count=*/0,
+    /*array_index_hazard=*/0,
+    /*array_elems_tag_mask=*/0xFFFF000000000000ULL,
 };
 
 namespace {

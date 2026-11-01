@@ -1,0 +1,35 @@
+arr proto set true
+arr own __proto__ false
+arr method hi
+arr proto null true
+arr same proto 1
+obj proto true
+fn proto true
+arr __proto__ get true
+inherited named setter 7,true own=false
+defineGetter 42 10
+lookupGetter 42
+lookupSetter function
+lookup data undefined
+lookup missing undefined
+lookup inherited function
+desc {"get":"fn","enumerable":true,"configurable":true}
+define non-callable threw TypeError
+define on frozen threw TypeError
+lengths 2,1
+lookup proto __proto__ function
+lit four,x,sixteen,f,big,seven,eight
+class c4,9,s6,c2
+names get 4|get 16|get 1
+objproto read x
+objproto hole y
+arrproto in [ true, 'z', 2 ]
+__proto__ arr [ true, 'z', '0,1' ]
+__proto__ obj [ true, 1, '' ]
+__proto__ computed [ true, 1 ]
+__proto__ get true
+defineGetter [ 5, 'function' ]
+ta proto [ 9, true ]
+arr as proto [ 7, true ]
+args proto [ 6, true ]
+proxy proto [ 'P', true, 'g3,h3' ]

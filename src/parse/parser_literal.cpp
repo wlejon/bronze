@@ -699,23 +699,14 @@ ExprPtr Parser::parseObjectLit() {
             if (!prop.value) return nullptr;
             obj->props.push_back(std::move(prop));
         } else if (check(TokenKind::NumberLiteral)) {
-            const Token& numTok = advance();
-            if (hasBigIntSuffix(numTok.text)) {
-                // 13.2.5.5 makes the key ToPropertyKey of the literal's value,
-                // which for a BigInt is its decimal ToString — `{1n: 0}` has
-                // the key "1". Refused by name rather than computed, because
-                // computing it needs the arbitrary-precision decimal
-                // conversion and the parser may not depend on the runtime's
-                // bignum. `{[1n]: 0}` is the spelling that already works.
-                diags_.error(numTok.span,
-                             "unsupported: a BigInt literal as an object property key (write "
-                             "[" + std::string(numTok.text) + "] to compute the key)");
-                return nullptr;
-            }
-            auto lit = std::make_unique<NumberLit>();
-            lit->span = numTok.span;
-            if (!decodeNumericLiteral(numTok.text, numTok.span, lit->value)) return nullptr;
-            prop.keyExpr = std::move(lit);
+            // 13.2.5.5 makes the key ToPropertyKey of the literal's value: a
+            // Number's ToString, or for a BigInt its decimal ToString (`{1n:
+            // 0}` has the key "1"). Both are the runtime's formatting, not the
+            // parser's, so the literal is kept as the key expression and the
+            // key is computed from it as `[1n]` would be.
+            const Token& numTok = peek();
+            prop.keyExpr = parsePrimary();
+            if (!prop.keyExpr) return nullptr;
             if (check(TokenKind::LParen)) {
                 auto method = parseMethodTail(methodName("computed"), numTok.span, homeName, &objectUsesSuper);
                 if (!method) return nullptr;

@@ -410,8 +410,9 @@ TEST_CASE("a BigInt literal with a fraction, an exponent or a leading zero is na
     CHECK(parseAndDump("let a = 10N;").find("lowercase 'n'") != std::string::npos);
     CHECK(parseAndDump("let a = 0b12n;").find("invalid digit '2'") != std::string::npos);
     CHECK(parseAndDump("let a = 1_n;").find("must appear between two digits") != std::string::npos);
-    // `{1n: 0}` needs the arbitrary-precision decimal conversion to know its
-    // key, which the parser may not depend on — so it is refused by name.
-    CHECK(parseAndDump("let o = {1n: 0};").find("as an object property key") != std::string::npos);
+    // `{1n: 0}` is a valid key (its decimal digits, "1"): it takes the
+    // computed-key path, which converts it at run time
+    // (oracle numeric_accessor_names.js covers the keys it gives).
+    CHECK(parseAndDump("let o = {1n: 0};").rfind("ERRORS:", 0) == std::string::npos);
 }
 

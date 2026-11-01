@@ -288,6 +288,7 @@ ObjectHeader* ObjectHeader::dictDefine(Heap& heap, NonMovingArena& arena, Rooted
         // an epoch bump per insert would retire every proto-hit cache in the
         // program once per `cache[id] = v`.
         if (obj->shape->used_as_prototype) bumpProtoMutationEpoch();
+        noteKeyAddedToPrototype(obj->shape->used_as_prototype, stored);
     }
 
     const uint32_t needed = d.nextSlot;

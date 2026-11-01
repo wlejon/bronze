@@ -332,6 +332,12 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
                                         "(Array.prototype.sort)")
                     .rawBits();
             }
+            // A hole written back is a Set the chain may take (a setter at
+            // that index), which the full write asks.
+            if (!self.get().asObject<ArrayHeader>()->hasElem(i) && rtArrayChainHoldsIndex(self.get())) {
+                rtArrayIndexSet(self.get(), i, getAt(sorted, i), /*strict=*/true);
+                continue;
+            }
             setAt(self, i, getAt(sorted, i));
         }
         // Step 9: the tail past the items is DELETED, which is what moves the

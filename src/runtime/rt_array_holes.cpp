@@ -23,13 +23,20 @@
 // which lives in the arena and so cannot move under the latch.
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 #include "abi/bronze_abi.h"
 #include "runtime/array.h"
+#include "runtime/builtin_object.h"
+#include "runtime/fatal.h"
 #include "runtime/gc.h"
+#include "runtime/integrity.h"
+#include "runtime/proxy.h"
+#include "runtime/typed_array.h"
 #include "runtime/native_base.h"
 #include "runtime/object.h"
+#include "runtime/profile.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
@@ -126,7 +133,39 @@ Value prototypeOf(Value arr) {
 
 // Allocates nothing on the GC heap — a fast path with a raw header in hand may
 // ask it.
+namespace {
+
+bool chainHoldsIndexLatched(Value arr);
+
+// BRONZE_CHECK_INDEX_HAZARD=1: while the hazard is clear, the latch's scan is
+// run anyway and a chain it finds holding an index is a fatal error — the
+// test that every way an index reaches a prototype trips the hazard
+// (object.h), which generated code relies on without asking.
+bool checkHazard() {
+    static const bool on = [] {
+        const char* env = std::getenv("BRONZE_CHECK_INDEX_HAZARD");
+        return env && env[0] && env[0] != '0';
+    }();
+    return on;
+}
+
+}  // namespace
+
 bool rtArrayChainHoldsIndex(Value arr) {
+    // The hazard clear means no prototype anywhere holds an index, so no chain
+    // does: one load, and the answer generated code also acts on.
+    if (bronze_tls_block_addr()->array_index_hazard == 0) {
+        if (BRONZE_UNLIKELY(checkHazard()) && chainHoldsIndexLatched(arr)) {
+            fatal("internal: an array's chain holds an index but the array index hazard is clear");
+        }
+        return false;
+    }
+    return chainHoldsIndexLatched(arr);
+}
+
+namespace {
+
+bool chainHoldsIndexLatched(Value arr) {
     if (!hasCustomPrototype(arr)) return ordinaryChainHoldsIndex();
     const Value proto = rtExoticSubclassPrototype(arr);
     if (!proto.isObject()) return false;
@@ -141,6 +180,8 @@ bool rtArrayChainHoldsIndex(Value arr) {
     g_customLatch = {first, epoch, holds};
     return holds;
 }
+
+}  // namespace
 
 bool rtArrayHolesSeeChain(Value arr) {
     if (!rtArrayChainHoldsIndex(arr)) return false;
@@ -165,6 +206,93 @@ Value rtArrayInheritedGet(Rooted<Value>& arr, uint32_t index) {
     // form every holder of a named key stores.
     Rooted<Value> key{rtMakeString(std::to_string(index))};
     return rtGetWithReceiver(proto, key, arr);
+}
+
+Value rtArrayIndexGet(Value arr, uint32_t index) {
+    const ArrayHeader* a = arr.asObject<ArrayHeader>();
+    if (index < a->length) {
+        const Value v = a->elementsData()[index];
+        if (!v.isHole()) return v;
+    }
+    if (!rtArrayChainHoldsIndex(arr)) return Value::fromUndefined();
+    Rooted<Value> root{arr};
+    return rtArrayInheritedGet(root, index);
+}
+
+bool rtArrayInheritedSet(Rooted<Value>& arr, uint32_t index, Rooted<Value>& val, bool strict, bool& ok) {
+    ok = true;
+    Rooted<Value> key{rtMakeString(std::to_string(index))};
+    Rooted<Value> holder{prototypeOf(arr.get())};
+    for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        // Step 2.a's end of the chain: absent everywhere, so the write is the
+        // array's own.
+        if (!holder.get().isObject()) return false;
+        const uint16_t kind = holder.get().asObject<HeapObjectHeader>()->flags;
+        if (kind == HeapKind::Proxy) {
+            // 10.5.9: the trap (or the target's [[Set]]) decides, with the array
+            // as the receiver; a forward that reaches the end lands on the
+            // array through CreateDataProperty, never back here
+            // (rtOrdinarySetWithReceiver).
+            ok = rtProxySet(holder.get(), key.get(), val.get(), strict, arr.get());
+            return true;
+        }
+        if (kind == HeapKind::TypedArray) {
+            // 10.4.5.5 with a receiver that is not the view: an index the view
+            // does not have makes the write a silent success, and one it has is
+            // OrdinarySet over a writable element, which lands on the receiver.
+            return index >= holder.get().asObject<TypedArrayHeader>()->length;
+        }
+        OwnPropertyDetail found;
+        if (rtOwnPropertyOf(holder, key.get(), found)) {
+            if (found.accessor) {
+                // Step 3: the setter, with the array as `this` (or the refusal
+                // of an accessor without one).
+                const SetRefusal refusal = rtOrdinarySetWithReceiver(holder, key, val, arr);
+                ok = refusal == SetRefusal::None;
+                if (!ok) rtReportSetRefusal(refusal, strict, std::to_string(index));
+                return true;
+            }
+            // Step 2.a: a writable data property is shadowed by the array's own
+            // element; a non-writable one refuses the write (unless its holder
+            // is hardened, which shadows instead: lockdown.h).
+            if (found.writable || rtIsHardened(holder.get())) return false;
+            ok = false;
+            rtReportSetRefusal(SetRefusal::NotWritable, strict, std::to_string(index));
+            return true;
+        }
+        const uint64_t call[1] = {holder.get().rawBits()};
+        holder.set(Value(objectGetPrototypeOf(0, 0, 1, call)));
+    }
+    return false;
+}
+
+bool rtArrayInheritedNamedSet(Rooted<Value>& arr, Rooted<Value>& key, Rooted<Value>& val, SetRefusal& refusal) {
+    refusal = SetRefusal::None;
+    Rooted<Value> holder{prototypeOf(arr.get())};
+    for (uint32_t depth = 0; depth <= ObjectHeader::kMaxPrototypeDepth; ++depth) {
+        if (!holder.get().isObject()) return false;
+        if (holder.get().asObject<HeapObjectHeader>()->flags == HeapKind::Proxy) {
+            // 10.5.9 with the array as the receiver; a forward that reaches
+            // the end defines onto the array (rtOrdinarySetWithReceiver), never
+            // back here. Non-strict: the caller reports a false per its mode.
+            const bool ok = rtProxySet(holder.get(), key.get(), val.get(), /*strict=*/false, arr.get());
+            if (!ok) refusal = SetRefusal::NotWritable;
+            return true;
+        }
+        OwnPropertyDetail found;
+        if (rtOwnPropertyOf(holder, key.get(), found)) {
+            if (found.accessor) {
+                refusal = rtOrdinarySetWithReceiver(holder, key, val, arr);
+                return true;
+            }
+            if (found.writable || rtIsHardened(holder.get())) return false;
+            refusal = SetRefusal::NotWritable;
+            return true;
+        }
+        const uint64_t call[1] = {holder.get().rawBits()};
+        holder.set(Value(objectGetPrototypeOf(0, 0, 1, call)));
+    }
+    return false;
 }
 
 }  // namespace bronze::runtime

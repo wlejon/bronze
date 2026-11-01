@@ -156,7 +156,19 @@ bool stepFast(IterRecordHeader* rec) {
         case IterRecordHeader::Array: {
             auto* arr = rec->target.asObject<ArrayHeader>();
             if (i >= arr->length) return false;
-            rec->current = arr->getElem(i);
+            // 23.1.5.2.1's Get: a hole is what the chain holds at the index,
+            // which only a chain holding one can make other than `undefined`
+            // (rt_array_holes.cpp). That read can run a getter, so the record
+            // is reached again through its root afterwards (every caller
+            // re-reads it from its own root, too).
+            if (!arr->hasElem(i) && rtArrayChainHoldsIndex(rec->target)) {
+                Rooted<Value> recRoot{Value::fromObject(rec)};
+                Rooted<Value> elem{rtArrayIndexGet(rec->target, i)};
+                rec = recRoot.get().asObject<IterRecordHeader>();
+                rec->current = elem.get();
+            } else {
+                rec->current = arr->getElem(i);
+            }
             rec->cursor = Value::fromDouble(static_cast<double>(i + 1));
             return true;
         }

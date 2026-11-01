@@ -20,6 +20,7 @@
 #include <string>
 
 #include "abi/bronze_abi.h"
+#include "runtime/array.h"
 #include "runtime/builtin_object.h"
 #include "runtime/dictionary.h"
 #include "runtime/exception.h"
@@ -135,6 +136,21 @@ void bronze_prop_define(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, u
                 obj->setSlot(ic->cached_slot, Value(valBits));
                 return;
             }
+        }
+    }
+    // An array literal's element (il.h kWriteLiteralElement) on the fresh
+    // array, or a class field named by an index on an Array subclass: an own
+    // element, defined where it is with no chain asked. Only an array with no
+    // named-property box, so no integrity level can refuse it.
+    if (objVal.isObject() && objVal.asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+        !objVal.asObject<ArrayHeader>()->properties.isObject()) {
+        const KeyInfo& ki = rtKeyInfo(keyIndex);
+        if (ki.isElemIndex) {
+            Rooted<Value> arr{objVal};
+            Rooted<Value> val{Value(valBits)};
+            const SetRefusal refusal = rtArrayOwnIndexWrite(arr, ki.elemIndex, val);
+            if (refusal != SetRefusal::None) rtReportSetRefusal(refusal, /*strict=*/true, std::to_string(ki.elemIndex));
+            return;
         }
     }
     StringHeader* keyHeader = rtKeyHeader(keyIndex);

@@ -31,6 +31,7 @@
 #include "runtime/namespace.h"
 #include "runtime/proxy.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
@@ -394,6 +395,37 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
             for (StringHeader* named : rtArrayOwnNamedKeys(src.get())) {
                 Rooted<Value> key{rtKeyAsValue(named)};
                 out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, key);
+            }
+            // Then the chain's enumerable string keys (14.7.5.6 visits
+            // inherited ones too): `Array.prototype` has none of its own, but
+            // `Object.prototype[1] = v`, `Object.prototype.k = v` or a custom
+            // prototype can, and until this step an array's for-in reported
+            // none of them. A key the array owns shadows it — an element that
+            // is there, a named property, the non-enumerable `length` — and a
+            // hole does not. The walk reads arena keys only, so it allocates
+            // nothing; the appends below do, through the root.
+            std::vector<StringHeader*> inherited;
+            {
+                const uint64_t call[1] = {src.get().rawBits()};
+                const Value proto(objectGetPrototypeOf(0, 0, 1, call));
+                if (proto.isObject() && HeapKind::carriesShape(proto.asObject<HeapObjectHeader>()->flags) &&
+                    !chainHasProxyLink(proto.asObject<ObjectHeader>()) &&
+                    proto.asObject<HeapObjectHeader>()->flags != ProxyHeader::kFlags) {
+                    collectChainStringKeys(proto.asObject<ObjectHeader>(), inherited);
+                }
+            }
+            for (StringHeader* key : inherited) {
+                const std::string text = rtUtf8Chars(key);
+                if (text == "length") continue;
+                uint32_t index = 0;
+                Rooted<Value> keyVal{rtKeyAsValue(key)};
+                if (rtValueToElementIndex(keyVal.get(), index)) {
+                    if (src.get().asObject<ArrayHeader>()->hasElem(index)) continue;
+                } else {
+                    PropertyInfo own;
+                    if (rtArrayOwnNamed(src.get(), key, own)) continue;
+                }
+                out.get().asObject<ArrayHeader>()->setElem(rtHeap(), at++, keyVal);
             }
         }
         // A typed array carries a shape: its named own properties (a subclass

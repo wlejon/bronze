@@ -88,9 +88,10 @@ typedef struct bronze_tls_block {
      * hold no array-index key (0 when it was not, which no live epoch is).
      * A hole reads through the chain (10.4.2 leaves it to OrdinaryGet), so
      * this is what lets an array with no box treat a hole as `undefined`
-     * and as absent without asking: the inline `shift` arm requires it to
-     * equal proto_epoch, as the runtime's fast paths do
-     * (rt_array_holes.cpp, rtArrayChainHoldsIndex). */
+     * and as absent without asking. The runtime's latch, consulted only once
+     * array_index_hazard (below) is set (rt_array_holes.cpp,
+     * rtArrayChainHoldsIndex); generated code reads the hazard instead,
+     * which is never stale. */
     uint64_t array_hole_epoch;
     /* This thread's interned key headers, indexed by global key id
      * (rt_key.cpp's per-thread table, mirrored here after every change of
@@ -103,6 +104,27 @@ typedef struct bronze_tls_block {
      * Null / 0 on a thread that has interned nothing. */
     uint64_t* key_header_tbl;
     uint64_t key_header_count;
+    /* 0xFFFFFFFF once any object that is (or became) a prototype could answer an
+     * array index: an index-like key added to one, one holding such a key
+     * marked as a prototype, or a link that is no ordinary object put on a
+     * chain (runtime/object.h, tripArrayIndexHazard). Sticky. While it is 0
+     * no chain holds an index, so a hole reads as `undefined` and a store
+     * into a hole or at `length` lands on the array without asking the
+     * chain; generated code's element paths test it only on a hole or an
+     * append (and once per dense-array guard), and send those to the
+     * runtime when it is set, which then asks the chain precisely
+     * (rt_array_holes.cpp). The set value is all ones in the low 32 bits so
+     * an inline push or shift folds it into a bound it tests anyway (an
+     * index OR'd with it is below no capacity; it is below no length). */
+    uint64_t array_index_hazard;
+    /* The same fact in the form a dense-array guard spends it: the tag mask
+     * the guard ANDs an array's `elements` word with before asking for the
+     * object tag — 0xFFFF000000000000 while the hazard is clear, 0 once it
+     * is set, which no tag compare passes. The guard was going to AND with a
+     * mask anyway, so taking it from here (one memory operand) is the whole
+     * of what the hazard costs it; a separate load and test of the word
+     * above was +2.8% instructions on three_math. Set with it, never apart. */
+    uint64_t array_elems_tag_mask;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -141,6 +163,8 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_ARRAY_HOLE_EPOCH_OFF          264
 #define BRONZE_TLS_KEY_HEADER_TBL_OFF            272
 #define BRONZE_TLS_KEY_HEADER_COUNT_OFF          280
+#define BRONZE_TLS_ARRAY_INDEX_HAZARD_OFF        288
+#define BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF      296
 
 /*
  * ---- the pinned register -----------------------------------------------

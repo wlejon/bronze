@@ -11,6 +11,8 @@
 
 namespace bronze::codegen {
 
+static_assert(il2mir::kLiteralElementWriteMode == static_cast<uint32_t>(il::kWriteLiteralElement),
+              "the array literal element write mode is one number on both sides");
 static_assert(il2mir::kDefineWriteMode == static_cast<uint32_t>(il::kWriteDefine),
               "the backend's define mode must be the IL's");
 

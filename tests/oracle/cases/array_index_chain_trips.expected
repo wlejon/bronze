@@ -1,0 +1,27 @@
+assign later: undefined false undefined false len=3 | P1 true P4 true len=3
+defineProperty: D1 true undefined false len=3
+defineProperties: DS1 true DS4 true len=3
+Object.assign: A1 true A4 true len=3
+Reflect.set: R1 true undefined false len=3
+Reflect.defineProperty: undefined false RD4 true len=3
+__defineGetter__: DG1 true undefined false len=3
+string key 1: S1 true undefined false len=3
+non-index keys: undefined false undefined false len=3
+setPrototypeOf obj: O1 true O4 true len=3
+__proto__ =: U1 true undefined false len=3 true
+Object.create chain: undefined false C4 true len=3
+deep later: undefined false undefined false len=3 | deep true undefined false len=3
+class static accessor: static1 true undefined false len=3
+class proto accessor: cls1 true undefined false len=3
+class proto method numeric: function true undefined
+typed array proto: 8 true 11 true len=3
+arguments proto: g1 true undefined false len=3
+array proto: q1 true q4 true len=3
+proxy proto: PX1 true undefined false g1,h1,g4,h4,
+store into hole, setter: set5set6 own=false g
+store past end, non-writable: false ro 3
+store past end, non-writable strict: TypeError 3
+writable inherited data shadows: true own inh
+delete restores: P true undefined false len=3 | undefined false undefined false len=3
+Object.prototype: undefined false OP4 true len=3 OP4 | undefined false undefined false len=3
+

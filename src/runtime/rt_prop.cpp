@@ -204,7 +204,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             }
             const KeyInfo& ki = rtKeyInfo(keyIndex);
             if (ki.isElemIndex) {
-                return reinterpret_cast<const ArrayHeader*>(fastHdr)->getElem(ki.elemIndex).rawBits();
+                return rtArrayIndexGet(objVal, ki.elemIndex).rawBits();
             }
             if (ki.isLength) {
                 return Value::fromDouble(reinterpret_cast<const ArrayHeader*>(fastHdr)->length).rawBits();
@@ -303,7 +303,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
         Rooted<Value> recv{objVal};
         ArrayHeader* arr = recv.get().asObject<ArrayHeader>();
         if (keyStr == "length") return Value::fromDouble(arr->length).rawBits();
-        if (rtKeyAsIndex(keyStr, idx)) return arr->getElem(idx).rawBits();
+        if (rtKeyAsIndex(keyStr, idx)) return rtArrayIndexGet(recv.get(), idx).rawBits();
         // A named own property: a match array's `index`, an `arguments`
         // object's `callee`, or anything a program assigned. Read BEFORE the
         // prototype methods, because an own property SHADOWS an inherited one —
@@ -631,9 +631,11 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
                 const auto* arr = reinterpret_cast<const ArrayHeader*>(hdr);
                 if (idx < arr->length) {
                     const Value v = arr->elementsData()[idx];
-                    return v.isHole() ? BRONZE_ABI_UNDEFINED_BITS : v.rawBits();
+                    if (!v.isHole()) return v.rawBits();
                 }
-                return BRONZE_ABI_UNDEFINED_BITS;
+                // A hole or past the length: the chain's answer (10.1.8.1),
+                // which is `undefined` while no chain holds an index.
+                return rtArrayIndexGet(objVal, idx).rawBits();
             }
             if (hdr->flags == TypedArrayHeader::kFlags) {
                 const auto* view = reinterpret_cast<const TypedArrayHeader*>(hdr);
@@ -742,7 +744,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
                 uint32_t u = static_cast<uint32_t>(d);
                 if (static_cast<double>(u) == d) {
                     if (hdr->flags == HeapKind::Array) {
-                        return reinterpret_cast<ArrayHeader*>(hdr)->getElem(u).rawBits();
+                        return rtArrayIndexGet(objVal, u).rawBits();
                     }
                     if (hdr->flags == TypedArrayHeader::kFlags) {
                         return rtTypedArrayElement(objVal, u).rawBits();
@@ -751,7 +753,7 @@ static uint64_t elemGetHelperBody(uint64_t objBits, uint64_t idxBits) {
             }
         }
         if (hdr->flags == HeapKind::Array && rtValueToElementIndex(Value(idxBits), idx)) {
-            return reinterpret_cast<ArrayHeader*>(hdr)->getElem(idx).rawBits();
+            return rtArrayIndexGet(objVal, idx).rawBits();
         }
         if (hdr->flags == TypedArrayHeader::kFlags && rtValueToElementIndex(Value(idxBits), idx)) {
             // Out of range is `undefined`, not an error — 10.4.5.4 again.

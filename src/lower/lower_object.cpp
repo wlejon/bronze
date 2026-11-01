@@ -388,8 +388,9 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
         uint32_t keyIdx = getKeyConstantIndex(std::to_string(i));
         uint32_t icIdx = icSiteCounter_++;
 
-        // Sloppy for the reason the object literal's writes are: an array
-        // literal's elements are defined on a fresh array, never assigned.
+        // An array literal's elements are DEFINED on the fresh array, never
+        // assigned (13.2.4.1's CreateDataPropertyOrThrow), so no inherited
+        // setter runs for them (il.h kWriteLiteralElement).
         il::Instruction setInst;
         setInst.op = il::Op::PropSet;
         setInst.type = il::Type::Void;
@@ -397,6 +398,7 @@ std::optional<Lowerer::Value> Lowerer::lowerArrayLit(const ast::ArrayLit* arrLit
         setInst.operands = {res, elemBoxed.id};
         setInst.keyIndex = keyIdx;
         setInst.icIndex = icIdx;
+        setInst.immI32 = il::kWriteLiteralElement;
         emitInst(ilFn, setInst);
     }
     return Value{res, il::Type::Dynamic};

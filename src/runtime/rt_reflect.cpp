@@ -286,6 +286,23 @@ SetRefusal rtOrdinarySetWithReceiver(Rooted<Value>& target, Rooted<Value>& key,
                     /*configurable=*/true);
                 return refusal;
             }
+            // An ARRAY receiver's index is defined as its own element, not
+            // written with [[Set]]: the chain has already been asked (this
+            // is where an array's own chain walk, rtArrayInheritedSet, lands
+            // through a proxy's forward), and asking it again would arrive
+            // back here.
+            uint32_t index = 0;
+            if (receiver.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+                if (rtValueToElementIndex(key.get(), index)) return rtArrayOwnIndexWrite(receiver, index, val);
+                // A named key the same way: its own property, the chain
+                // (rtArrayInheritedNamedSet) not asked again.
+                Rooted<Value> keyAsKey{key.get().isSymbol() ? key.get() : rtElemKeyAsString(key.get())};
+                if (!keyAsKey.get().isSymbol() &&
+                    rtUtf8Chars(keyAsKey.get().asString<StringHeader>()) == "length") {
+                    return rtArraySetLength(receiver, val.get());
+                }
+                return rtArrayNamedSet(receiver, keyAsKey, val, /*askChain=*/false);
+            }
             bronze_elem_set(receiver.get().rawBits(), key.get().rawBits(),
                             val.get().rawBits(), /*strict=*/false);
             return SetRefusal::None;
@@ -411,6 +428,19 @@ static uint64_t reflectSet(uint64_t, uint64_t, uint32_t argc, const uint64_t* ar
         const bool ok =
             rtProxySet(target.get(), key.get(), val.get(), /*strict=*/false, receiver.get());
         return Value::fromBool(ok).rawBits();
+    }
+
+    // An array's own [[Set]] of an index it does not own asks its chain, which
+    // the walk below (stopping at a kind with no shape) cannot.
+    uint32_t index = 0;
+    if (receiver.get().rawBits() == target.get().rawBits() && target.get().isObject() &&
+        target.get().asObject<HeapObjectHeader>()->flags == HeapKind::Array &&
+        rtValueToElementIndex(key.get(), index)) {
+        if (!target.get().asObject<ArrayHeader>()->hasElem(index) && rtArrayChainHoldsIndex(target.get())) {
+            bool ok = true;
+            if (rtArrayInheritedSet(target, index, val, /*strict=*/false, ok)) return Value::fromBool(ok).rawBits();
+        }
+        return Value::fromBool(rtArrayOwnIndexWrite(target, index, val) == SetRefusal::None).rawBits();
     }
 
     // 28.1.13 answers the BOOLEAN [[Set]] returned, which is exactly the

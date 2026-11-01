@@ -1,0 +1,43 @@
+literal: 1 2 3 | 
+map: 10 12 14 | 
+filter: 5 6 7 | 
+slice: 5 6 7 | 
+concat: 5 6 7 8 | 
+from: 5 6 7 | 
+from iter: 5 6 7 | 
+of: 1 2 3 | 
+split: a b c | 
+keys: a b c | 
+entries: a 1 | 
+values: 1 2 | 
+match: ab a b | 
+matchAll: 1 3 | 
+splice ret: 1 2 3 | 
+flat: 1 2 3 | 
+flatMap: 1 1 2 2 | 
+spread: 5 6 7 | 
+rest: 1 2 3 | 
+args rest: 1 2 3 | 
+arguments: 1 2 3 | 
+toSorted: 5 6 7 | 
+toReversed: 7 6 5 | 
+with: 5 9 7 | 
+toSpliced: 4 5 6 7 | 
+JSON.parse: 1 2 3 | 
+fill new: <hole> <hole> <hole> | set0,set1,set2,
+array ctor: 1 2 3 | 
+array ctor n: <hole> <hole> <hole> | 
+getOwnPropertyNames: x y z | 
+Reflect.ownKeys: x y | 
+str iter: a b c | 
+typed to array: 1 2 3 | 
+map entries: 1 2 | 
+groupBy: 1 2 3 | 
+promise all: skip| 
+template raw: a b c | 
+regexp exec: xy x y | 
+sort holes: 1 <hole> inh1 | set1,
+copy: 0 <hole> 2 | set1,
+push new: <hole> <hole> <hole> | set0,set1,set2,
+assign idx: | set0,set1,
+

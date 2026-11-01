@@ -19,6 +19,8 @@
 #include "il_lowering_ops.h"
 #include "il_property.h"
 #include <brass/mir/function.hpp>
+#include <brass/mir/module.hpp>
+#include <cstdlib>
 #include <string>
 
 namespace il2mir {
@@ -125,6 +127,68 @@ void PropertyLoweringHelper::forget_numbers_unless_number(Builder& b, Value* obj
                                  b.build_iconst_i32(-1));
     Value* bits = b.build_load(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET);
     b.build_store(Type::i32(), ptr, BRONZE_ABI_ARRAY_BITS_OFFSET, b.build_and(bits, mask));
+}
+
+// THE HOLE RULE. A hole is no own element, so its read continues up the chain
+// and a store into it (or at `length`) is a Set the chain may take: a setter,
+// a non-writable element, a proxy (10.1.8.1, 10.1.9.1). The runtime asks the
+// chain; generated code asks only the hazard, which says whether any chain
+// could answer, and only on a hole or an append — an element that is there is
+// read and written exactly as before. A dense-array guard asks it for the
+// reads and writes it licenses (emit_dense_array_guard), since those treat a
+// hole as `undefined` or store over one without looking — through the tag
+// mask it ANDs the elements word with, which the TLS block holds and a set
+// hazard zeroes, so the question costs the guard nothing (a separate load and
+// test of the hazard there was +2.8% instructions on three_math).
+namespace {
+
+Value* tls_block_word(Builder& b, int32_t off) {
+    Module* mod = b.current_block()->parent()->parent();
+    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+    return b.build_load(Type::i64(), tls, off);
+}
+
+}  // namespace
+
+Value* PropertyLoweringHelper::index_hazard_tag_mask(Builder& b) {
+    return tls_block_word(b, BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF);
+}
+
+Value* PropertyLoweringHelper::index_hazard_word(Builder& b) {
+    return tls_block_word(b, BRONZE_TLS_ARRAY_INDEX_HAZARD_OFF);
+}
+
+Value* PropertyLoweringHelper::index_hazard_clear(Builder& b) {
+    return b.build_eq(tls_block_word(b, BRONZE_TLS_ARRAY_INDEX_HAZARD_OFF), b.build_iconst_i64(0));
+}
+
+// append_block moves the builder onto the new block; these callers are still
+// emitting the block that branches to it.
+BasicBlock* PropertyLoweringHelper::append_block_keeping_position(Builder& b, const std::string& name) {
+    BasicBlock* here = b.current_block();
+    BasicBlock* added = b.append_block(name);
+    b.position_at_end(here);
+    return added;
+}
+
+void PropertyLoweringHelper::finish_hole_read(Builder& b, Value* elem, BasicBlock* done, BasicBlock* slow,
+                                              const std::string& prefix) {
+    BasicBlock* bb_hole = append_block_keeping_position(b, prefix + "_hole_cold");
+    Value* is_hole = b.build_eq(elem, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
+    b.build_br_if(is_hole, bb_hole, {}, done, {elem});
+    b.position_at_end(bb_hole);
+    b.build_br_if(index_hazard_clear(b), done, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))}, slow, {});
+}
+
+void PropertyLoweringHelper::branch_on_hole_store(Builder& b, Value* block, Value* slot, BasicBlock* store,
+                                                  BasicBlock* slow, const std::string& prefix) {
+    BasicBlock* bb_hole = append_block_keeping_position(b, prefix + "_hole_cold");
+    Value* old = b.build_load_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes));
+    Value* is_hole = b.build_eq(old, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
+    b.build_br_if(is_hole, bb_hole, store);
+    b.position_at_end(bb_hole);
+    b.build_br_if(index_hazard_clear(b), store, slow);
 }
 
 bool PropertyLoweringHelper::is_known_number(Value* val) const {

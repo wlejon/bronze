@@ -68,8 +68,13 @@ inline Value rtArrayLikeGetElement(Rooted<Value>& src, uint32_t index) {
 // extensible, every element writable and configurable — so its block takes
 // the change directly; one with a box may be sealed, frozen or non-extensible
 // (the level lives on the box), and the full write or delete is what refuses.
+//
+// An index the array does not own (a hole, or past the end) is a Set the
+// chain may take — a setter, a non-writable element, a proxy — so it reaches
+// the full write whenever the chain could hold an index.
 inline void rtArrayLikeSetElement(Rooted<Value>& src, uint32_t index, Rooted<Value>& val) {
-    if (isArray(src.get()) && !src.get().asObject<ArrayHeader>()->properties.isObject()) {
+    if (isArray(src.get()) && !src.get().asObject<ArrayHeader>()->properties.isObject() &&
+        (src.get().asObject<ArrayHeader>()->hasElem(index) || !rtArrayChainHoldsIndex(src.get()))) {
         src.get().asObject<ArrayHeader>()->setElem(rtHeap(), index, val.get());
         return;
     }

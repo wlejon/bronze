@@ -566,7 +566,12 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         Value* max_slot = b.build_add(max_end_idx, arr_head);
         Value* props = b.build_load(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_PROPS_OFFSET);
         Value* no_props = b.build_ne(b.build_and(props, iconst(b, kTagMask)), iconst(b, kObjectTagBits));
-        Value* arr_in_bounds = b.build_and(b.build_ult(max_end_idx, arr_len), b.build_ult(max_slot, arr_cap));
+        // The stores land over whatever is there, a hole included, so the
+        // hazard must be clear (il_number_array.cpp, the hole rule): its word
+        // OR'd into the index is below no length once it is set.
+        Value* hazard = prop_lowering_.index_hazard_word(b);
+        Value* arr_in_bounds =
+            b.build_and(b.build_ult(b.build_or(max_end_idx, hazard), arr_len), b.build_ult(max_slot, arr_cap));
         b.build_br_if(b.build_and(arr_in_bounds, no_props), bb_arr_store, bb_slow);
 
         b.position_at_end(bb_arr_store);

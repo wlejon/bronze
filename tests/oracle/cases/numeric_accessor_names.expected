@@ -1,0 +1,14 @@
+values four,x,hex,oct,bin,sep,exp,half,frac,big,y,zero,data3,data9
+keys 0,2,3,4,5,7,9,15,16,1000,1e+21,0.5,2.5,two,bigSet
+lit names get 4|get 16|get 1e+21|get 0.5|get 7|get 0
+lit set names set 2|set 7
+descriptor function,,true,true
+class c4,9,s6,sv,c2,c32,s8,m9,g10,f13,s14
+class plain plain get,plain set 1,static getter named get
+class names get 4|set 5|get 6|set 6|get 2|get 32
+class enumerable false
+class proto keys 2,4,5,9,10,11,12,32,constructor,get,set
+computed names get x|set s|get [tag]|"get "|get 2
+class computed names get x|xq|[tag]|"set "
+async a11
+async gen ag12

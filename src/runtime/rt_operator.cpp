@@ -273,7 +273,12 @@ bool hasNamedProperty(Rooted<Value>& objRoot, const std::string& key) {
             // which is the whole reason `in` exists on an array. A HOLE is not
             // one either — `delete a[1]` takes index 1 out of the own keys
             // without moving `length`.
-            if (rtIsIntegerLikeKey(key, index) && arr->hasElem(index)) return true;
+            if (rtIsIntegerLikeKey(key, index)) {
+                if (arr->hasElem(index)) return true;
+                // A hole or an index past the end is answered by the chain
+                // (10.1.7.1), which only a chain holding an index can do.
+                if (rtArrayChainHoldsIndex(objRoot.get())) return rtArrayInheritedHas(objRoot, index);
+            }
             // A named own property — one a program wrote, or a match array's
             // `index`. Asked of the same storage the READ answers from, so `in`
             // and `a.k` cannot disagree; the string allocates, so the header
