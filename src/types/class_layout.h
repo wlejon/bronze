@@ -37,6 +37,11 @@ namespace bronze::types {
 struct ClassLayout {
     std::string name;       // the binding the class is declared under
     std::string superName;  // resolved base class name; empty when no `extends`
+    // `class X extends (expr)`: there IS a base, and no name for it, so
+    // `superName` is empty without the class being a root. Method dispatch
+    // (flow_dispatch.cpp) must not read such a class as one whose lookup ends
+    // at its own methods.
+    bool superUnknown = false;
     ShapeClassId shapeClass = kNoShapeClass;
 
     // The own instance properties in the order the runtime's shape transition

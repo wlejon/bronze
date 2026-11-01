@@ -889,6 +889,83 @@ std::map<std::string, std::map<std::string, std::map<std::string, Type>>> Method
     return out;
 }
 
+namespace {
+
+// Every spelling that can give an object that already exists a new
+// [[Prototype]]: Object/Reflect.setPrototypeOf read off anything (an alias
+// `const sp = Object.setPrototypeOf` is a read too), the `__proto__` accessor
+// by name, and the string "__proto__" a computed key or a JSON text could
+// carry. A Proxy is named as well: its traps answer getPrototypeOf and get for
+// an object the flow pass typed as the target.
+class ProtoMutationScan final : public Walker {
+public:
+    using Walker::visit;
+    bool found = false;
+
+    // `Object` and `Reflect` are read only as `Object.keys`-style static
+    // members below; any other reading of them (an alias, a computed member,
+    // `globalThis.Reflect`) could reach a mutating member under another
+    // spelling. A Proxy's traps answer getPrototypeOf and get for an object
+    // the flow pass typed as the target.
+    void visit(const ast::Ident& n) override {
+        if (n.name == "Proxy" || n.name == "Reflect" || n.name == "Object") found = true;
+    }
+    // A substring, not the whole literal: the text JSON.parse is handed
+    // ('{"__proto__": ...}') makes an own "__proto__" key that a copy loop or
+    // Object.assign then writes through the setter.
+    void visit(const ast::StringLit& n) override {
+        if (n.value.find("__proto__") != std::string::npos ||
+            n.value.find("setPrototypeOf") != std::string::npos) {
+            found = true;
+        }
+    }
+    void visit(const ast::MemberAccess& n) override {
+        if (mutating(n.property) || n.property == "Reflect" || n.property == "Proxy") found = true;
+
+        if (const auto* id = dynamic_cast<const ast::Ident*>(n.object.get())) {
+            if (id->name == "Reflect" && n.property == "set") found = true;
+            if (id->name == "Object" || id->name == "Reflect") return;
+        }
+        Walker::visit(n);
+    }
+    // Object.assign(target, src) [[Set]]s each of src's own keys on target, so
+    // a source holding an own "__proto__" (JSON.parse, a computed literal key)
+    // re-parents target. A fresh literal target is already a classless
+    // receiver to dispatch; any other target is not.
+    void visit(const ast::Call& n) override {
+        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(n.callee.get())) {
+
+            const auto* id = dynamic_cast<const ast::Ident*>(m->object.get());
+            const ast::Expr* target = n.args.empty() ? nullptr : n.args[0].get();
+            if (id != nullptr && id->name == "Object" && m->property == "assign" &&
+                dynamic_cast<const ast::ObjectLit*>(target) != nullptr) {
+                for (const auto& a : n.args) a->accept(*this);
+                return;
+            }
+        }
+        Walker::visit(n);
+    }
+
+private:
+    // The members that re-parent an existing object or construct one from
+    // another prototype: setPrototypeOf (Object, Reflect), the __proto__
+    // accessor, Reflect.set (a computed write the audit never sees; matched
+    // on its receiver above, `set` being every class's method name),
+    // Reflect.construct (C's constructor on an object made from F's
+    // prototype), and assign (see the Call rule).
+    static bool mutating(const std::string& p) {
+        return p == "__proto__" || p == "setPrototypeOf" || p == "construct" || p == "assign";
+    }
+};
+
+}  // namespace
+
+bool scanProtoMutation(const ast::Module& module) {
+    ProtoMutationScan scan;
+    scan.visit(module);
+    return scan.found;
+}
+
 void scanMethodEscapes(const ast::Module& module, const MethodTable& table, MethodPoison& out) {
     LiteralNameScan names;
     names.visit(module);

@@ -161,4 +161,8 @@ struct MethodPoison {
 void scanMethodEscapes(const ast::Module& module, const MethodTable& table,
                        MethodPoison& out);
 
+// Whether the program names a way to change an existing object's prototype
+// (method_ident.cpp says which spellings count).
+bool scanProtoMutation(const ast::Module& module);
+
 }  // namespace bronze::types

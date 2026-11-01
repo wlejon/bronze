@@ -180,8 +180,32 @@ bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
     return isMathMethodReturningNumber(ma->property);
 }
 
+// A module binding a module-level function can rebind, read or written in the
+// module top level: the top level's flow-sensitive type for it goes stale at
+// every call it makes (flow.h `reboundByModuleFns`).
+bool FlowAnalyzer::staleAtTopLevel(const std::string& name) const {
+    return scope_.moduleTopLevel && mod_.soundDispatch && mod_.reboundByModuleFns.count(name) != 0 &&
+           mod_.moduleScopeNames.count(name) != 0;
+}
+
+// What the top level may hold for such a name: the value it wrote, joined with
+// every write the program's functions make to the binding — the table
+// `assign` joins those into from inside a function, which is the whole set by
+// the round that records (a write that arrives later moves the table, and the
+// round loop walks again). With value flow off there is no table, so Dynamic.
+Type FlowAnalyzer::staleJoin(const std::string& name, Type t) const {
+    if (!mod_.valueFlow) return Type::dynamic();
+    const auto it = mod_.moduleBindings.find(name);
+    const bool present = it != mod_.moduleBindings.end();
+    if (InferMemo* memo = mod_.rec()) {
+        memo->noteBinding(name, present, present ? it->second : Type::dynamic());
+    }
+    return present ? join(t, it->second) : t;
+}
+
 void FlowAnalyzer::declare(const std::string& name, Type t) {
     scope_.eraseSideTables(name);
+    if (staleAtTopLevel(name)) t = staleJoin(name, t);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
     } else {
@@ -235,6 +259,7 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
         }
     }
     scope_.eraseSideTables(name);
+    if (staleAtTopLevel(name)) t = staleJoin(name, t);
     if (scope_.isCell(name)) {
         scope_.cells[name] = join(scope_.cells[name], t);
         return;
@@ -837,6 +862,8 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     scope.parent = args.parent;
     scope.thisClass = args.thisClass;
     scope.methodIndex = args.methodIndex;
+    scope.thisMethod = args.thisMethod;
+    scope.thisFromNew = args.thisFromNew;
     scope.ctorIndex = args.ctorIndex;
     scope.moduleTopLevel = args.moduleTopLevel;
     // The same union lowering builds: a name assigned inside a `try` lives in

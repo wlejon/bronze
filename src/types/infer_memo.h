@@ -62,6 +62,7 @@ public:
         ClassReach,  // whether a named class has been reached/constructed
         ObjectLitTable,  // module-scope object literal method/setter/var tables
         NestedFn,    // a non-escaping nested function declaration's signature
+        ProtoWrites, // whether the audit refuted a computed write (dispatchBounded)
     };
     enum class Contrib : uint8_t {
         FnParam,
@@ -130,6 +131,7 @@ public:
     void noteClassReach(uint32_t index, uint32_t version);
     void noteObjectLitTable(uint32_t version);
     void noteNestedFn(uint32_t index, uint32_t version);
+    void noteProtoWrites(bool refuted);
 
     // ---- effects -------------------------------------------------------------
 

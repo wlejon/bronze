@@ -55,17 +55,13 @@ Units unitsOf(const StringHeader* s) { return rtStringUnits(s); }
 Value stringFromUnits(const Units& units) { return rtStringFromUnits(units); }
 
 Units thisUnits(Value self, const char* method) {
-    // 22.1.3.35 thisStringValue: a primitive string, or a String OBJECT's
-    // [[StringData]] — `String.prototype.indexOf.call(new String("ab"), "b")`
-    // searches the characters the wrapper wraps, which is the whole reason the
-    // wrapper is worth having a slot for.
+    // 22.1.3's RequireObjectCoercible plus ToString: `String.prototype.
+    // toUpperCase.call(123)` is "123", a String object reads as its characters
+    // through its toString, and only null or undefined is a TypeError.
     Value str;
-    if (!rtThisStringValue(self, str)) {
-        // 22.1.3's RequireObjectCoercible plus ToString: a String.prototype
-        // method reached with a `this` that is neither is a catchable
-        // TypeError.
+    if (!rtStringMethodThis(self, str)) {
         rtThrowTypeError(std::string("String.prototype.") + method +
-                         " called on a value that is not a string");
+                         " called on null or undefined");
     }
     return unitsOf(str.asString<StringHeader>());
 }
@@ -236,8 +232,8 @@ Value directSlice(const Rooted<Value>& strRoot, uint32_t start, uint32_t end) {
 uint64_t stringCharAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value selfVal;
-    if (!rtThisStringValue(Value(thisBits), selfVal)) {
-        return rtThrowTypeError("String.prototype.charAt called on a value that is not a string")
+    if (!rtStringMethodThis(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.charAt called on null or undefined")
             .rawBits();
     }
     Rooted<Value> str{selfVal};
@@ -253,8 +249,8 @@ uint64_t stringCharAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 uint64_t stringAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value selfVal;
-    if (!rtThisStringValue(Value(thisBits), selfVal)) {
-        return rtThrowTypeError("String.prototype.at called on a value that is not a string")
+    if (!rtStringMethodThis(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.at called on null or undefined")
             .rawBits();
     }
     Rooted<Value> str{selfVal};
@@ -278,9 +274,9 @@ uint64_t stringAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* ar
 uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value self;
-    if (!rtThisStringValue(Value(thisBits), self)) {
+    if (!rtStringMethodThis(Value(thisBits), self)) {
         return rtThrowTypeError(
-                   "String.prototype.charCodeAt called on a value that is not a string")
+                   "String.prototype.charCodeAt called on null or undefined")
             .rawBits();
     }
     // The index conversion runs 7.1.4 and so may call user code, which
@@ -309,9 +305,9 @@ uint64_t stringCharCodeAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint
 uint64_t stringCodePointAt(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value self;
-    if (!rtThisStringValue(Value(thisBits), self)) {
+    if (!rtStringMethodThis(Value(thisBits), self)) {
         return rtThrowTypeError(
-                   "String.prototype.codePointAt called on a value that is not a string")
+                   "String.prototype.codePointAt called on null or undefined")
             .rawBits();
     }
     // As in charCodeAt: the header is only valid after the index conversion,
@@ -334,8 +330,8 @@ uint64_t stringCodePointAt(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 uint64_t stringIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value selfVal;
-    if (!rtThisStringValue(Value(thisBits), selfVal)) {
-        return rtThrowTypeError("String.prototype.indexOf called on a value that is not a string")
+    if (!rtStringMethodThis(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.indexOf called on null or undefined")
             .rawBits();
     }
     Rooted<Value> self{selfVal};
@@ -351,9 +347,9 @@ uint64_t stringIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_
 uint64_t stringLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value selfVal;
-    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+    if (!rtStringMethodThis(Value(thisBits), selfVal)) {
         return rtThrowTypeError(
-                   "String.prototype.lastIndexOf called on a value that is not a string")
+                   "String.prototype.lastIndexOf called on null or undefined")
             .rawBits();
     }
     Rooted<Value> self{selfVal};
@@ -391,8 +387,8 @@ uint64_t stringLastIndexOf(uint64_t, uint64_t thisBits, uint32_t argc, const uin
 uint64_t stringIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value selfVal;
-    if (!rtThisStringValue(Value(thisBits), selfVal)) {
-        return rtThrowTypeError("String.prototype.includes called on a value that is not a string")
+    if (!rtStringMethodThis(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.includes called on null or undefined")
             .rawBits();
     }
     Rooted<Value> self{selfVal};
@@ -407,9 +403,9 @@ uint64_t stringIncludes(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 uint64_t stringStartsWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value selfVal;
-    if (!rtThisStringValue(Value(thisBits), selfVal)) {
+    if (!rtStringMethodThis(Value(thisBits), selfVal)) {
         return rtThrowTypeError(
-                   "String.prototype.startsWith called on a value that is not a string")
+                   "String.prototype.startsWith called on null or undefined")
             .rawBits();
     }
     Rooted<Value> self{selfVal};
@@ -424,8 +420,8 @@ uint64_t stringStartsWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint
 uint64_t stringEndsWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value selfVal;
-    if (!rtThisStringValue(Value(thisBits), selfVal)) {
-        return rtThrowTypeError("String.prototype.endsWith called on a value that is not a string")
+    if (!rtStringMethodThis(Value(thisBits), selfVal)) {
+        return rtThrowTypeError("String.prototype.endsWith called on null or undefined")
             .rawBits();
     }
     Rooted<Value> self{selfVal};
@@ -446,8 +442,8 @@ uint64_t stringEndsWith(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 uint64_t stringSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value strVal;
-    if (!rtThisStringValue(Value(thisBits), strVal)) {
-        return rtThrowTypeError("String.prototype.slice called on a value that is not a string").rawBits();
+    if (!rtStringMethodThis(Value(thisBits), strVal)) {
+        return rtThrowTypeError("String.prototype.slice called on null or undefined").rawBits();
     }
     Rooted<Value> strRoot{strVal};
     double startArg = 0.0;
@@ -470,8 +466,8 @@ uint64_t stringSlice(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 uint64_t stringSubstring(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value strVal;
-    if (!rtThisStringValue(Value(thisBits), strVal)) {
-        return rtThrowTypeError("String.prototype.substring called on a value that is not a string").rawBits();
+    if (!rtStringMethodThis(Value(thisBits), strVal)) {
+        return rtThrowTypeError("String.prototype.substring called on null or undefined").rawBits();
     }
     Rooted<Value> strRoot{strVal};
     double startArg = 0.0;
@@ -495,8 +491,8 @@ uint64_t stringSubstring(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
 uint64_t stringSubstr(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Value strVal;
-    if (!rtThisStringValue(Value(thisBits), strVal)) {
-        return rtThrowTypeError("String.prototype.substr called on a value that is not a string").rawBits();
+    if (!rtStringMethodThis(Value(thisBits), strVal)) {
+        return rtThrowTypeError("String.prototype.substr called on null or undefined").rawBits();
     }
     Rooted<Value> strRoot{strVal};
     double startArg = 0.0;
@@ -659,7 +655,12 @@ uint64_t stringCaseImpl(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
 
 uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Units self = thisUnits(Value(thisBits), "split");
+    // Step 1 only: step 2 hands the receiver UNCONVERTED to a separator's
+    // [Symbol.split], and the ToString of step 3 waits until after it.
+    Rooted<Value> receiver{Value(thisBits)};
+    if (receiver.get().isNull() || receiver.get().isUndefined()) {
+        rtThrowTypeError("String.prototype.split called on null or undefined");
+    }
     if (args[0].isObject()) {
         // 22.1.3.23 step 2: a separator carrying its own `[Symbol.split]`
         // decides the whole algorithm, and the literal-string walk below never
@@ -671,17 +672,21 @@ uint64_t stringSplit(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
         if (rtPatternMethod(separator, PatternSymbol::Split, splitter)) {
             // Step 2.b passes the LIMIT along, so the method sees both
             // arguments the call site wrote.
-            Rooted<Value> str{stringFromUnits(self)};
             Rooted<Value> limit{args[1]};
-            return rtCallPatternMethod(splitter, separator, str, limit, /*argCount=*/2).rawBits();
+            return rtCallPatternMethod(splitter, separator, receiver, limit, /*argCount=*/2)
+                .rawBits();
         }
         // A RegExp separator is a different algorithm entirely (22.2.6.14
         // SplitMatcher, which also yields the separator's captures), so it is
         // handed to the module that owns the matcher.
-        if (rtIsRegExp(args[0])) return rtStringSplitWithRegExp(thisBits, argc, argv);
+        if (rtIsRegExp(args[0])) {
+            Rooted<Value> str{rtValueToString(receiver.get())};
+            return rtStringSplitWithRegExp(str.get().rawBits(), argc, argv);
+        }
         // An object separator lacking [Symbol.split] falls through to
         // ToString(separator) below per 22.1.3.23.
     }
+    Units self = thisUnits(receiver.get(), "split");
 
     // Step 4, and it runs BEFORE the separator is looked at — which is the
     // whole reason `"abc".split(undefined, 0)` is `[]` and not `["abc"]`: the
@@ -782,8 +787,14 @@ uint64_t stringIsWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_
 
 // 22.1.3.31 toWellFormed
 uint64_t stringToWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
-    Value selfVal(thisBits);
-    Units self = thisUnits(selfVal, "toWellFormed");
+    // Converted once and rooted: the receiver may be an object whose toString
+    // runs user code, and the answer below can be the converted string itself.
+    Value coerced;
+    if (!rtStringMethodThis(Value(thisBits), coerced)) {
+        rtThrowTypeError("String.prototype.toWellFormed called on null or undefined");
+    }
+    Rooted<Value> str{coerced};
+    Units self = unitsOf(str.get().asString<StringHeader>());
     const size_t len = self.size();
     bool hasLone = false;
     for (size_t i = 0; i < len; ++i) {
@@ -800,11 +811,7 @@ uint64_t stringToWellFormed(uint64_t, uint64_t thisBits, uint32_t, const uint64_
             break;
         }
     }
-    if (!hasLone) {
-        Value str;
-        rtThisStringValue(selfVal, str);
-        return str.rawBits();
-    }
+    if (!hasLone) return str.get().rawBits();
     Units out;
     out.reserve(len);
     for (size_t i = 0; i < len; ++i) {
@@ -832,8 +839,11 @@ uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     // Rooted, because this is the one member that answers with its RECEIVER
     // rather than with a freshly built string: the form argument's ToString can
     // be user code, and an unrooted receiver read afterwards is a moved one.
-    Rooted<Value> selfVal{Value(thisBits)};
-    thisUnits(selfVal.get(), "normalize");
+    Value coerced;
+    if (!rtStringMethodThis(Value(thisBits), coerced)) {
+        rtThrowTypeError("String.prototype.normalize called on null or undefined");
+    }
+    Rooted<Value> selfVal{coerced};
 
     std::string form = "NFC";
     if (args.count() > 0 && !args[0].isUndefined()) {
@@ -857,8 +867,7 @@ uint64_t stringNormalize(uint64_t, uint64_t thisBits, uint32_t argc, const uint6
     // read in place: a string whose every unit is under the form's bound is
     // already normalized, and the answer is the receiver itself -- which is
     // most strings, and every Latin-1 one under NFC.
-    Value str;
-    rtThisStringValue(selfVal.get(), str);
+    const Value str = selfVal.get();
     const StringHeader* header = str.asString<StringHeader>();
     const bool trivial =
         header->isLatin1()

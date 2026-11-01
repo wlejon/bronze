@@ -563,11 +563,13 @@ bool FieldAudit::settle() {
             c.refuted = true;
             c.reach = Reach::Class;
             ++computedRefuted_;
+            if (!c.isDelete) ++computedWriteRefuted_;
             continue;
         }
         c.refuted = true;
         c.reach = Reach::Program;
         ++computedRefuted_;
+        if (!c.isDelete) ++computedWriteRefuted_;
         refuseAll(why);
     }
 

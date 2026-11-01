@@ -17,28 +17,6 @@
 namespace bronze::types {
 namespace {
 
-bool isNonClassExpr(const ast::Expr* e) {
-    if (e == nullptr) return false;
-    if (const auto* id = ast::exactAs<const ast::Ident*>(e)) {
-        static const char* kNonClassIdents[] = {
-            "Math", "Object", "Array", "Number", "String", "Boolean", "Symbol",
-            "Reflect", "JSON", "console", "document", "window", "performance",
-            "navigator", "self", "gl", "array", "dst", "src", "elements", "te",
-            "target", "out", "data", "buffer", "list", "stack", "queue", "nodes",
-            "items", "cache", "bindings", "actions", "tracks", "curves", "points",
-            "faces", "bones", "lights", "cameras", "materials", "geometries",
-            "textures", "objects", "children", "parents", "coords", "weights",
-            "times", "samples", "table", "map", "dict"
-        };
-        for (const char* nid : kNonClassIdents) {
-            if (id->name == nid) return true;
-        }
-    }
-    return ast::exactAs<const ast::ArrayLit*>(e) || ast::exactAs<const ast::ObjectLit*>(e) ||
-           ast::exactAs<const ast::NumberLit*>(e) || ast::exactAs<const ast::StringLit*>(e) ||
-           ast::exactAs<const ast::BoolLit*>(e) || ast::exactAs<const ast::RegExpLit*>(e);
-}
-
 // How one class-layout refusal of a number field read is named in the report:
 // the receiver, the property, and which condition failed. The receiver is the
 // declared class name when there is one and the shape's own rendering when
@@ -51,50 +29,6 @@ std::string classRefusalKey(const InferenceResult& result, ShapeClassId cls,
         cl != nullptr ? cl->name : result.shapes.describe(cls);
     return receiver + "." + field + ": " +
            result.classLayouts.fieldValueRefusal(cls, field);
-}
-
-// `BRONZE_NO_PARAM_CLASS_GUESS=1` stops the parameter shape claim being made at
-// all, which puts every method parameter's property sites back on the inline
-// cache. Compile-time, like the static-shape and family-guard seams, because
-// what it gates is a SHAPE OF EMITTED CODE.
-bool paramClassGuessOff() {
-    static const bool off = std::getenv("BRONZE_NO_PARAM_CLASS_GUESS") != nullptr;
-    return off;
-}
-
-// This site's contribution to what class parameter `i` receives.
-//
-// Only an argument that NAMES a class says anything: a `Dynamic` argument is
-// the absence of an observation, not an observation of absence, and the guard
-// this feeds decides the question at run time for whatever the argument
-// actually is. Two callers naming different classes leave an object with no
-// class, which is how "the callers disagree" is spelled, and no claim is made.
-void contributeShape(ModuleContext& mod, uint32_t index, const MethodInfo& target, size_t i,
-                     const std::vector<Type>& args) {
-    if (paramClassGuessOff()) return;
-    if (i >= args.size() || i >= target.observedParamShapes.size()) return;
-    if (!args[i].is(TypeKind::Object) || args[i].shapeClass() == kNoShapeClass) return;
-    mod.contribute(InferMemo::Contrib::MethodShape, index, static_cast<uint32_t>(i),
-                   Type::object(args[i].shapeClass()));
-}
-
-// A parameter's contribution to a method's join, under pin optimism's rule for
-// a Dynamic argument (see `methodCall`).
-void contributeMethodArg(ModuleContext& mod, uint32_t index, const MethodInfo& target, size_t i,
-                         const std::vector<Type>& args) {
-    const auto param = static_cast<uint32_t>(i);
-    if (i < args.size()) {
-        if (target.hasDefault.size() > i && target.hasDefault[i] && args[i].is(TypeKind::Undefined)) {
-            return;
-        }
-        if (mod.pinOptimism() && args[i].is(TypeKind::Dynamic)) {
-            mod.contribute(InferMemo::Contrib::MethodSkipped, index, param, Type::dynamic());
-            return;
-        }
-        mod.contribute(InferMemo::Contrib::MethodParam, index, param, args[i]);
-    } else if (target.hasDefault.size() > i && !target.hasDefault[i]) {
-        mod.contribute(InferMemo::Contrib::MethodParam, index, param, Type::undefined());
-    }
 }
 
 }  // namespace
@@ -546,7 +480,15 @@ Type FlowAnalyzer::exprForOperator(const ast::Expr& e) {
         }
         if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&e)) {
             if (lastMember_ == m && !m->optional && !m->isPrivate && mod_.interprocIdent) {
-                if (const ClassLayout* cl = receiverClass(lastMemberBase_)) {
+                // The getter's answer is spent as a value, so the getter this
+                // read runs must be the class's: a receiver that does not bound
+                // the dispatch may reach another class's getter of the name.
+                const ClassLayout* cl = receiverClass(lastMemberBase_);
+                const ReceiverForm form = ast::exactAs<const ast::ThisExpr*>(m->object.get())
+                                              ? ReceiverForm::This
+                                              : ReceiverForm::Value;
+                if (cl != nullptr && !dispatchBounded(lastMemberBase_, form, cl)) cl = nullptr;
+                if (cl != nullptr) {
                     const std::string backing =
                         mod_.methods.getterBackingField(cl->name, m->property);
                     if (!backing.empty()) {
@@ -734,8 +676,11 @@ Type FlowAnalyzer::call(const ast::Call& c) {
             }
         }
         if (objLitSetterRet.has_value()) return *objLitSetterRet;
-        if (hadMemberBase && isNonClassExpr(member->object.get())) return Type::dynamic();
-        return methodCall(member->property, receiver, args, spreadArgs);
+        if (hadMemberBase && receiverNamesNoClass(member->object.get())) return Type::dynamic();
+        const ReceiverForm form = ast::exactAs<const ast::ThisExpr*>(member->object.get()) != nullptr
+                                      ? ReceiverForm::This
+                                      : ReceiverForm::Value;
+        return methodCall(member->property, receiver, args, spreadArgs, form);
     }
     if (objLitSetterRet.has_value() && !pinnedReturn) return *objLitSetterRet;
     // `super.m(...)`. The receiver is this method's `this` — a subclass instance
@@ -765,7 +710,8 @@ Type FlowAnalyzer::call(const ast::Call& c) {
             }
             return Type::dynamic();
         }
-        return methodCall(sup->property, Type::object(base->shapeClass), args, spreadArgs);
+        return methodCall(sup->property, Type::object(base->shapeClass), args, spreadArgs,
+                          ReceiverForm::Super);
     }
 
     if (const auto it = mod_.nestedFnByCall.find(&c); it != mod_.nestedFnByCall.end()) {
@@ -814,135 +760,6 @@ Type FlowAnalyzer::call(const ast::Call& c) {
     if (InferMemo* memo = mod_.rec()) memo->noteFunction(index, callee.version);
     return !callee.signature.returnType.is(TypeKind::Never) ? callee.signature.returnType
                                                             : callee.bodyReturn;
-}
-
-// One `recv.name(...)`.
-//
-// The contribution is the whole mechanism: every method this call can reach
-// joins the argument types at this site into its `observedParams`, and
-// `widenSignatures` folds those into the signature the method's body is then
-// analysed under. Everything else here is the discipline that keeps the join
-// from speaking for callers it never saw.
-Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
-                              const std::vector<Type>& args, bool spreadArgs) {
-    if (!mod_.interprocIdent) return Type::dynamic();
-    // Nothing has reached this receiver yet. The call-graph fixpoint has not
-    // finished; a round that read this as "unproven" would be poisoning the name
-    // on evidence that does not exist.
-    if (receiver.is(TypeKind::Never)) return Type::never();
-    // No class declares a method by this name, so no parameter of any modelled
-    // method is at stake — this is a call on a builtin, on host code, or on a
-    // function a property happens to hold.
-    if (!mod_.methods.isMethodName(name)) return Type::dynamic();
-
-    if (receiver.is(TypeKind::Array) || receiver.is(TypeKind::TypedArray) ||
-        receiver.is(TypeKind::Number) || receiver.is(TypeKind::String) ||
-        receiver.is(TypeKind::Bool) || receiver.is(TypeKind::Null) ||
-        receiver.is(TypeKind::Undefined) ||
-        (receiver.is(TypeKind::Object) &&
-         (receiver.shapeClass() == kNoShapeClass ||
-          mod_.result->classLayouts.byShapeClass(receiver.shapeClass()) == nullptr))) {
-        return Type::dynamic();
-    }
-    if (lastMember_ != nullptr && lastMemberBase_ == receiver &&
-        isNonClassExpr(lastMember_->object.get())) {
-        return Type::dynamic();
-    }
-
-    const ClassLayout* cls = receiverClass(receiver);
-    if (cls == nullptr) {
-        const auto* decls = mod_.methods.declarationsOf(name);
-        if (decls == nullptr || decls->empty()) return Type::dynamic();
-        if (spreadArgs) {
-            for (const uint32_t index : *decls) {
-                const MethodInfo& target = mod_.methods.methods()[index];
-                if (mod_.ctorParamTypes) {
-                    const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
-                    if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
-                        memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
-                    }
-                    if (!mod_.ctors.isClassReached(target.className)) continue;
-                }
-                mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
-                mod_.methodPoison.add(index, "an argument list is spread at a call site");
-            }
-            return Type::dynamic();
-        }
-        auto contributeArgs = [&](uint32_t index, const MethodInfo& target) {
-            mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
-            for (size_t i = 0; i < target.observedParams.size(); ++i) {
-                contributeShape(mod_, index, target, i, args);
-                contributeMethodArg(mod_, index, target, i, args);
-            }
-        };
-        for (const uint32_t index : *decls) {
-            MethodInfo& target = mod_.methods.methods()[index];
-            if (mod_.ctorParamTypes) {
-                const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
-                if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
-                    memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
-                }
-                if (!mod_.ctors.isClassReached(target.className)) continue;
-            }
-            // A target declaring more parameters than this site passes is
-            // reached all the same: the call does not pick its method by
-            // arity, so each omitted parameter without a default receives
-            // `undefined` here (contributeMethodArg). Skipping such a target
-            // left its join to the other sites, and a parameter typed `number`
-            // from them read `undefined` as NaN.
-            contributeArgs(index, target);
-        }
-        if (record_) ++mod_.unboundedMethodCalls;
-        return Type::dynamic();
-    }
-    std::vector<uint32_t> targets;
-    mod_.methods.reachableFrom(cls->name, name, targets);
-    if (targets.empty()) return Type::dynamic();
-
-    if (spreadArgs) {
-        for (const uint32_t index : targets) {
-            mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
-            mod_.methodPoison.add(index, "an argument list is spread at a call site");
-        }
-        return Type::dynamic();
-    }
-
-    // As in the unbounded-receiver path above — under pin optimism a Dynamic
-    // argument does not poison the join, and the parameter is marked so the fold
-    // can charge for it.
-    Type ret = Type::never();
-    bool everyTargetSpeaks = true;
-    for (const uint32_t index : targets) {
-        const MethodInfo& target = mod_.methods.methods()[index];
-        mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
-        for (size_t i = 0; i < target.observedParams.size(); ++i) {
-            contributeShape(mod_, index, target, i, args);
-            contributeMethodArg(mod_, index, target, i, args);
-        }
-        if (InferMemo* memo = mod_.rec()) {
-            memo->noteMethod(index, target.version, mod_.methodPoison.poisons(index));
-        }
-        if (mod_.methodPoison.poisons(index)) {
-            everyTargetSpeaks = false;
-            continue;
-        }
-        ret = join(ret, target.signature.returnType);
-    }
-    // The value: what every method this dispatch can reach returns. An identity
-    // out of here is as good as the dispatch that chose it, which is a guess —
-    // so it travels as one. `return this` is the case that pays: three.js
-    // methods chain, and `v.copy(u).add(w)` is two sites, not one.
-    if (!everyTargetSpeaks) return Type::dynamic();
-    if (ret.is(TypeKind::Never)) return Type::never();
-    if (ret.is(TypeKind::Object) && ret.shapeClass() != kNoShapeClass) {
-        return ret.builtHere() && !mod_.result->classLayouts.isExtended(ret.shapeClass())
-                   ? Type::objectNotBuiltHere(ret.shapeClass())
-                   : Type::objectIdentityOnly(ret.shapeClass());
-    }
-    // Only an identity is worth carrying out of an optimistic dispatch. A
-    // primitive return type would be a claim about a VALUE, which is what
-    // `Type::objectIdentityOnly` exists to keep this mechanism out of.
-    return Type::dynamic();
 }
 
 }  // namespace bronze::types

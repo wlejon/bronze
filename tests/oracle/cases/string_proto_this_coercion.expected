@@ -1,0 +1,49 @@
+at: number="2" negzero=undefined nan="a" bool="r" array="b" object="b" wrapper="r" wrapperOwn="W" prim="r" null=TypeError undefined=TypeError symbol=TypeError string="s"
+charAt: number="3" negzero="" nan="N" bool="u" array="," object="c" wrapper="a" wrapperOwn="N" prim="i" null=TypeError undefined=TypeError symbol=TypeError string="T"
+charCodeAt: number=49 negzero=48 nan=78 bool=116 array=97 object=65 wrapper=87 wrapperOwn=79 prim=80 null=TypeError undefined=TypeError symbol=TypeError string=32
+codePointAt: number=50 negzero=undefined nan=97 bool=114 array=98 object=98 wrapper=114 wrapperOwn=87 prim=114 null=TypeError undefined=TypeError symbol=TypeError string=115
+concat: number="12345678000|1" negzero="0|1" nan="NaN|1" bool="true|1" array="ab,cd|1" object="Abc Def|1" wrapper="Wrap|1" wrapperOwn="OWN|1" prim="Prim:string|1" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing |1"
+endsWith: number=true negzero=true nan=false bool=false array=false object=false wrapper=false wrapperOwn=false prim=false null=TypeError undefined=TypeError symbol=TypeError string=false
+includes: number=false negzero=false nan=false bool=false array=true object=true wrapper=false wrapperOwn=false prim=false null=TypeError undefined=TypeError symbol=TypeError string=false
+indexOf: number=3 negzero=-1 nan=-1 bool=-1 array=-1 object=-1 wrapper=-1 wrapperOwn=-1 prim=-1 null=TypeError undefined=TypeError symbol=TypeError string=-1
+isWellFormed: number=true negzero=true nan=true bool=true array=true object=true wrapper=true wrapperOwn=true prim=true null=TypeError undefined=TypeError symbol=TypeError string=true
+lastIndexOf: number=-1 negzero=-1 nan=-1 bool=3 array=-1 object=5 wrapper=-1 wrapperOwn=-1 prim=-1 null=TypeError undefined=TypeError symbol=TypeError string=-1
+localeCompare: number=0 negzero=0 nan=0 bool=0 array=0 object=0 wrapper=0 wrapperOwn=0 prim=0 null=TypeError undefined=TypeError symbol=TypeError string=0
+match: number=null negzero=null nan=["NaN"] bool=["true"] array=["ab"] object=["Abc"] wrapper=["Wrap"] wrapperOwn=["OWN"] prim=["Prim"] null=TypeError undefined=TypeError symbol=TypeError string=["sTr"]
+matchAll: number=["1","2","3","4","5","6","7","8","0","0","0"] negzero=["0"] nan=[] bool=[] array=[] object=[] wrapper=[] wrapperOwn=[] prim=[] null=TypeError undefined=TypeError symbol=TypeError string=[]
+normalize: number="12345678000" negzero="0" nan="NaN" bool="true" array="ab,cd" object="Abc Def" wrapper="Wrap" wrapperOwn="OWN" prim="Prim:string" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing "
+padEnd: number="12345678000***" negzero="0*************" nan="NaN***********" bool="true**********" array="ab,cd*********" object="Abc Def*******" wrapper="Wrap**********" wrapperOwn="OWN***********" prim="Prim:string***" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing *****"
+padStart: number="---12345678000" negzero="-------------0" nan="-----------NaN" bool="----------true" array="---------ab,cd" object="-------Abc Def" wrapper="----------Wrap" wrapperOwn="-----------OWN" prim="---Prim:string" null=TypeError undefined=TypeError symbol=TypeError string="----- sTr ing "
+repeat: number="1234567800012345678000" negzero="00" nan="NaNNaN" bool="truetrue" array="ab,cdab,cd" object="Abc DefAbc Def" wrapper="WrapWrap" wrapperOwn="OWNOWN" prim="Prim:stringPrim:string" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing  sTr ing "
+replace: number="12345678000" negzero="0" nan="NaN" bool="truE" array="ab,cd" object="Abc DEf" wrapper="Wrap" wrapperOwn="OWN" prim="Prim:string" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing "
+replaceAll: number="12345678000" negzero="0" nan="N_N" bool="true" array="_b,cd" object="Abc Def" wrapper="Wr_p" wrapperOwn="OWN" prim="Prim:string" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing "
+search: number=0 negzero=0 nan=-1 bool=-1 array=-1 object=-1 wrapper=-1 wrapperOwn=-1 prim=-1 null=TypeError undefined=TypeError symbol=TypeError string=-1
+slice: number="234567800" negzero="" nan="a" bool="ru" array="b,c" object="bc De" wrapper="ra" wrapperOwn="W" prim="rim:strin" null=TypeError undefined=TypeError symbol=TypeError string="sTr ing"
+split: number=["12345678000"] negzero=["0"] nan=["NaN"] bool=["tru",""] array=["ab,cd"] object=["Abc D","f"] wrapper=["Wrap"] wrapperOwn=["OWN"] prim=["Prim:string"] null=TypeError undefined=TypeError symbol=TypeError string=[" sTr ing "]
+splitRe: number=["12345678000"] negzero=["0"] nan=["NaN"] bool=["tru",""] array=["ab","cd"] object=["Abc D","f"] wrapper=["Wrap"] wrapperOwn=["OWN"] prim=["Prim:string"] null=TypeError undefined=TypeError symbol=TypeError string=[" sTr ing "]
+startsWith: number=true negzero=false nan=false bool=false array=false object=false wrapper=false wrapperOwn=false prim=false null=TypeError undefined=TypeError symbol=TypeError string=false
+substr: number="234" negzero="" nan="aN" bool="rue" array="b,c" object="bc " wrapper="rap" wrapperOwn="WN" prim="rim" null=TypeError undefined=TypeError symbol=TypeError string="sTr"
+substring: number="23" negzero="" nan="aN" bool="ru" array="b," object="bc" wrapper="ra" wrapperOwn="WN" prim="ri" null=TypeError undefined=TypeError symbol=TypeError string="sT"
+toLowerCase: number="12345678000" negzero="0" nan="nan" bool="true" array="ab,cd" object="abc def" wrapper="wrap" wrapperOwn="own" prim="prim:string" null=TypeError undefined=TypeError symbol=TypeError string=" str ing "
+toUpperCase: number="12345678000" negzero="0" nan="NAN" bool="TRUE" array="AB,CD" object="ABC DEF" wrapper="WRAP" wrapperOwn="OWN" prim="PRIM:STRING" null=TypeError undefined=TypeError symbol=TypeError string=" STR ING "
+toLocaleLowerCase: number="12345678000" negzero="0" nan="nan" bool="true" array="ab,cd" object="abc def" wrapper="wrap" wrapperOwn="own" prim="prim:string" null=TypeError undefined=TypeError symbol=TypeError string=" str ing "
+toLocaleUpperCase: number="12345678000" negzero="0" nan="NAN" bool="TRUE" array="AB,CD" object="ABC DEF" wrapper="WRAP" wrapperOwn="OWN" prim="PRIM:STRING" null=TypeError undefined=TypeError symbol=TypeError string=" STR ING "
+toWellFormed: number="12345678000" negzero="0" nan="NaN" bool="true" array="ab,cd" object="Abc Def" wrapper="Wrap" wrapperOwn="OWN" prim="Prim:string" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing "
+trim: number="12345678000" negzero="0" nan="NaN" bool="true" array="ab,cd" object="Abc Def" wrapper="Wrap" wrapperOwn="OWN" prim="Prim:string" null=TypeError undefined=TypeError symbol=TypeError string="sTr ing"
+trimEnd: number="12345678000" negzero="0" nan="NaN" bool="true" array="ab,cd" object="Abc Def" wrapper="Wrap" wrapperOwn="OWN" prim="Prim:string" null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing"
+trimStart: number="12345678000" negzero="0" nan="NaN" bool="true" array="ab,cd" object="Abc Def" wrapper="Wrap" wrapperOwn="OWN" prim="Prim:string" null=TypeError undefined=TypeError symbol=TypeError string="sTr ing "
+iterator: number=iter<"1","2","3","4","5","6","7","8","0","0","0"> negzero=iter<"0"> nan=iter<"N","a","N"> bool=iter<"t","r","u","e"> array=iter<"a","b",",","c","d"> object=iter<"A","b","c"," ","D","e","f"> wrapper=iter<"W","r","a","p"> wrapperOwn=iter<"O","W","N"> prim=iter<"P","r","i","m",":","s","t","r","i","n","g"> null=TypeError undefined=TypeError symbol=TypeError string=iter<" ","s","T","r"," ","i","n","g"," ">
+toString: number=TypeError negzero=TypeError nan=TypeError bool=TypeError array=TypeError object=TypeError wrapper="Wrap" wrapperOwn="wrapped" prim=TypeError null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing "
+valueOf: number=TypeError negzero=TypeError nan=TypeError bool=TypeError array=TypeError object=TypeError wrapper="Wrap" wrapperOwn="wrapped" prim=TypeError null=TypeError undefined=TypeError symbol=TypeError string=" sTr ing "
+object toString calls: 36
+1 true yyxyz
+this,arg,this,arg,this,arg
+replace:object:R
+split:object:3
+search:object
+match:object
+receiver conversions: 0
+xyz one2one2one
+this,search,replacement
+true true true
+113278

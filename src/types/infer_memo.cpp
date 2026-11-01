@@ -139,6 +139,10 @@ void InferMemo::noteObjectLitTable(uint32_t version) {
     note(factKey(FactKind::ObjectLitTable, 0, 0), FactValue{Type::never(), version});
 }
 
+void InferMemo::noteProtoWrites(bool refuted) {
+    note(factKey(FactKind::ProtoWrites, 0, 0), FactValue{Type::never(), refuted ? 1u : 0u});
+}
+
 void InferMemo::noteNestedFn(uint32_t index, uint32_t version) {
     note(factKey(FactKind::NestedFn, index, 0), FactValue{Type::never(), version});
 }
@@ -272,6 +276,8 @@ InferMemo::FactValue InferMemo::current(const ModuleContext& mod, const Scope* p
             return FactValue{Type::never(), mod.objectLitTableVersion};
         case FactKind::NestedFn:
             return FactValue{Type::never(), mod.nestedFns[a].version};
+        case FactKind::ProtoWrites:
+            return FactValue{Type::never(), mod.fieldAudit.computedWriteRefuted() ? 1u : 0u};
     }
     return FactValue{Type::dynamic(), ~uint64_t{0}};
 }

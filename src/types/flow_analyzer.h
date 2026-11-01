@@ -33,6 +33,10 @@ struct LoopParts {
     bool conditionFirst = true;  // false for do-while
 };
 
+// How a call's receiver was written, which is part of what decides whether its
+// class bounds the dispatch (flow_dispatch.cpp `dispatchBounded`).
+enum class ReceiverForm : uint8_t { Value, This, Super };
+
 // Walks one function body in source order carrying `name -> Type`
 // flow-sensitively, per binding. Constructed fresh per pass; the `Scope` it
 // works on outlives it, because the env-backed cells have to survive the flow
@@ -185,9 +189,17 @@ private:
     // The arguments of `recv.name(...)` contributed to every method the call can
     // reach, and the type its dispatch produces. See method_ident.h.
     Type methodCall(const std::string& name, Type receiver, const std::vector<Type>& args,
-                    bool spreadArgs);
+                    bool spreadArgs, ReceiverForm form);
+    // Whether a receiver of `cls`'s class limits a call or a property write to
+    // that class's members (flow_dispatch.cpp), and whether a member call on
+    // the expression `e` can reach no class method at all.
+    bool dispatchBounded(Type receiver, ReceiverForm form, const ClassLayout* cls);
+    bool receiverNamesNoClass(const ast::Expr* e) const;
+    bool staleAtTopLevel(const std::string& name) const;
+    Type staleJoin(const std::string& name, Type t) const;
     void notePropertyWrite(const std::string& propName, Type receiver,
-                           Type valType = Type::dynamic());
+                           Type valType = Type::dynamic(),
+                           ReceiverForm form = ReceiverForm::Value);
     void noteStaticMethodAccess(const ast::MemberAccess& m, Type base);
     std::optional<Type> callObjectLitSetter(const ast::Call& c, const ast::MemberAccess* member,
                                             Type receiver, const std::vector<Type>& args,

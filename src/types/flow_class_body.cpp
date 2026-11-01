@@ -249,6 +249,25 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
     args.isGenerator = isGenerator;
     args.thisClass = thisClass;
     args.methodIndex = methodIndex;
+    // A method's own body, or an arrow nested in one (it is handed the
+    // enclosing `thisClass`). A constructor's `this` is the object `super()`
+    // returned, which a base constructor can replace, so it never qualifies.
+    const auto* fe = dynamic_cast<const ast::FunctionExpr*>(&site);
+    if (thisClass != kNoShapeClass && ctorIndex == kNoCtor) {
+        if (methodIndex != kNoMethod) {
+            args.thisMethod = methodIndex;
+        } else if (fe != nullptr && fe->isArrow) {
+            args.thisMethod = scope_.thisMethod;
+        }
+    }
+    // A BASE class's constructor is the exception: no `super()` runs, so its
+    // `this` is the object `new` made, an instance of the class or a subclass.
+    if (thisClass != kNoShapeClass && ctorIndex != kNoCtor) {
+        const ClassLayout* cl = mod_.result->classLayouts.byShapeClass(thisClass);
+        args.thisFromNew = cl != nullptr && cl->superName.empty() && !cl->superUnknown;
+    } else if (fe != nullptr && fe->isArrow) {
+        args.thisFromNew = scope_.thisFromNew;
+    }
     args.ctorIndex = ctorIndex;
     args.moduleTopLevel = false;
     const Type ret = analyzeFunction(mod_, args).returnType;
@@ -339,7 +358,8 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
     }
 }
 
-void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver, Type valType) {
+void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver, Type valType,
+                                     ReceiverForm form) {
     if (!mod_.interprocIdent || !mod_.valueFlow || propName.empty()) return;
     if (receiver.is(TypeKind::Never)) return;
     if (receiver.is(TypeKind::Array) || receiver.is(TypeKind::TypedArray) ||
@@ -348,10 +368,16 @@ void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver,
         receiver.is(TypeKind::Undefined)) {
         return;
     }
+    // The setters this write can run: those of the receiver's class family
+    // when the receiver bounds the dispatch (flow_dispatch.cpp), every setter
+    // of the name otherwise. An object literal's shape is not a class, but
+    // `{ __proto__: euler }.x = v` runs Euler's setter all the same, so under
+    // the sound rule it bounds nothing either.
     const ClassLayout* cl = nullptr;
     if (receiver.is(TypeKind::Object) && receiver.shapeClass() != kNoShapeClass) {
         cl = mod_.result->classLayouts.byShapeClass(receiver.shapeClass());
-        if (cl == nullptr) return;
+        if (cl == nullptr && !mod_.soundDispatch) return;
+        if (cl != nullptr && !dispatchBounded(receiver, form, cl)) cl = nullptr;
     }
     const auto& setters = mod_.methods.setters();
     for (uint32_t i = 0; i < setters.size(); ++i) {

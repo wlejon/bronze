@@ -302,6 +302,13 @@ bool rtBigIntWrapperData(Value v, Value& out);
 // primitive itself, or a wrapper's slot. False for anything else, which the
 // caller reports as the TypeError those clauses name.
 bool rtThisStringValue(Value self, Value& out);
+// The receiver of every String.prototype member except toString and valueOf
+// (which are thisStringValue above): 22.1.3's RequireObjectCoercible, then
+// ToString. A primitive string is itself, with no call. Null and undefined
+// answer false, for the caller to report as a TypeError. Anything else is
+// converted, which can run user code (an object's toString or
+// @@toPrimitive), so the caller roots `out` before it allocates.
+bool rtStringMethodThis(Value self, Value& out);
 bool rtThisBooleanValue(Value self, Value& out);
 bool rtThisNumberValue(Value self, Value& out);
 bool rtThisSymbolValue(Value self, Value& out);

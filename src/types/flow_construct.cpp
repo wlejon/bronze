@@ -10,6 +10,14 @@
 #include "types/walk.h"
 
 namespace bronze::types {
+namespace {
+
+ReceiverForm receiverForm(const ast::MemberAccess& m) {
+    return ast::exactAs<const ast::ThisExpr*>(m.object.get()) != nullptr ? ReceiverForm::This
+                                                                         : ReceiverForm::Value;
+}
+
+}  // namespace
 
 void FlowAnalyzer::markClassReached(const std::string& className) {
     if (!mod_.ctorParamTypes) return;
@@ -529,7 +537,7 @@ Type FlowAnalyzer::unary(const ast::Unary& u) {
         } else if (const auto* m = ast::exactAs<const ast::MemberAccess*>(u.operand.get())) {
             if (!m->isPrivate) {
                 notePropertyWrite(m->property, lastMember_ == m ? lastMemberBase_ : Type::dynamic(),
-                                  result);
+                                  result, receiverForm(*m));
             }
         }
     }
@@ -547,7 +555,8 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
             if (const auto* m = ast::exactAs<const ast::MemberAccess*>(b.lhs.get())) {
                 if (!m->isPrivate) {
                     notePropertyWrite(m->property,
-                                      lastMember_ == m ? lastMemberBase_ : Type::dynamic(), rhs);
+                                      lastMember_ == m ? lastMemberBase_ : Type::dynamic(), rhs,
+                                      receiverForm(*m));
                     if (!m->optional) {
                         if (const auto* clsId = ast::exactAs<const ast::Ident*>(m->object.get())) {
                             if (mod_.ctors.isClassName(clsId->name)) {
@@ -601,7 +610,7 @@ Type FlowAnalyzer::binary(const ast::Binary& b) {
             (m != nullptr && lastMember_ == m) ? lastMemberBase_ : Type::dynamic();
         const Type result = compoundResult(plain, current, rhs);
         if (m != nullptr && !m->isPrivate) {
-            notePropertyWrite(m->property, receiver, result);
+            notePropertyWrite(m->property, receiver, result, receiverForm(*m));
         }
         if (id != nullptr) assign(id->name, result);
         return result;

@@ -55,6 +55,12 @@ public:
 
     uint32_t computedSiteCount() const { return static_cast<uint32_t>(computed_.size()); }
     uint32_t computedRefutedCount() const { return computedRefuted_; }
+    // Whether a computed WRITE (not a delete) was refuted at any reach: its key
+    // could be "__proto__" and its value an object, which changes the
+    // receiver's prototype through Object.prototype's __proto__ setter. Method
+    // dispatch reads this (FlowAnalyzer::dispatchBounded) — a class-proven
+    // receiver no longer bounds which class's method a call reaches.
+    bool computedWriteRefuted() const { return computedWriteRefuted_ != 0; }
     std::map<std::string, uint32_t> computedKeyTypes() const;
     std::map<std::string, uint32_t> computedReceiverTypes() const;
 
@@ -109,6 +115,7 @@ private:
     std::vector<Write> writes_;
     std::vector<Computed> computed_;
     uint32_t computedRefuted_ = 0;
+    uint32_t computedWriteRefuted_ = 0;
     // Looked up for every expression of every round (observe), and never
     // walked in order.
     std::unordered_map<const ast::Expr*, Type> rhsTypes_;

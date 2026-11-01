@@ -62,14 +62,23 @@ using string_regexp::unitsOf;
 
 namespace {
 
-// The receiver as a string, or a TypeError. Every member here is defined on
-// `String.prototype`, so a `this` that is neither a string nor a String object
-// is 22.1.3's RequireObjectCoercible failure and not something to compute over.
-bool requireString(Value self, const char* method, Value& out) {
-    if (rtThisStringValue(self, out)) return true;
+// Step 1 of every member here: RequireObjectCoercible(this). The receiver
+// stays as it came, because step 2 hands it UNCONVERTED to a pattern's
+// [Symbol.*] method; the ToString of step 3 is `coerceReceiver`, after that
+// dispatch, so a receiver's toString runs only when the member's own
+// algorithm does.
+bool requireCoercible(Value self, const char* method) {
+    if (!self.isNull() && !self.isUndefined()) return true;
     rtThrowTypeError(std::string("String.prototype.") + method +
-                     " called on a value that is not a string");
+                     " called on null or undefined");
     return false;
+}
+
+// Step 3: S = ToString(O), in place. A primitive string is itself.
+void coerceReceiver(Rooted<Value>& self) {
+    Value str;
+    rtStringMethodThis(self.get(), str);
+    self.set(str);
 }
 
 // The RegExp a pattern argument denotes, made if the argument was not one.
@@ -171,17 +180,15 @@ bool requireGlobalPattern(Rooted<Value>& arg, const char* method) {
 
 uint64_t stringSearch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value selfVal;
-    if (!requireString(Value(thisBits), "search", selfVal)) {
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> self{selfVal};
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireCoercible(self.get(), "search")) return Value::fromUndefined().rawBits();
     Rooted<Value> arg{args[0]};
     Rooted<Value> searcher;
     // 22.1.3.22 step 2.
     if (rtPatternMethod(arg, PatternSymbol::Search, searcher)) {
         return rtCallPatternMethod(searcher, arg, self, self, /*argCount=*/1).rawBits();
     }
+    coerceReceiver(self);
 
     if (!rtIsRegExp(args[0])) {
         // Step 3 creates a RegExp from the argument, so a string argument is
@@ -206,17 +213,15 @@ uint64_t stringSearch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t
 
 uint64_t stringMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value selfVal;
-    if (!requireString(Value(thisBits), "match", selfVal)) {
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> self{selfVal};
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireCoercible(self.get(), "match")) return Value::fromUndefined().rawBits();
     Rooted<Value> arg{args[0]};
     Rooted<Value> matcher;
     // 22.1.3.13 step 2.
     if (rtPatternMethod(arg, PatternSymbol::Match, matcher)) {
         return rtCallPatternMethod(matcher, arg, self, self, /*argCount=*/1).rawBits();
     }
+    coerceReceiver(self);
 
     Rooted<Value> re{patternArgument(args[0], "")};
     return rtRegExpMatch(re, self).rawBits();
@@ -224,11 +229,8 @@ uint64_t stringMatch(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
 
 uint64_t stringMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value selfVal;
-    if (!requireString(Value(thisBits), "matchAll", selfVal)) {
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> self{selfVal};
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireCoercible(self.get(), "matchAll")) return Value::fromUndefined().rawBits();
     Rooted<Value> arg{args[0]};
     // Step 2.a-b, ahead of the dispatch.
     if (!requireGlobalPattern(arg, "matchAll")) return Value::fromUndefined().rawBits();
@@ -237,6 +239,7 @@ uint64_t stringMatchAll(uint64_t, uint64_t thisBits, uint32_t argc, const uint64
     if (rtPatternMethod(arg, PatternSymbol::MatchAll, matcher)) {
         return rtCallPatternMethod(matcher, arg, self, self, /*argCount=*/1).rawBits();
     }
+    coerceReceiver(self);
 
     // Steps 4-5: a non-RegExp argument becomes a `g` pattern, and the operation
     // is then 22.2.6.9 on it — which clones, so the iterator's cursor is its
@@ -260,10 +263,12 @@ template <bool All>
 uint64_t replaceLiteral(Rooted<Value>& self, Rooted<Value>& searchValue,
                         Rooted<Value>& replaceValue) {
     const Units input = unitsOf(self.get());
+    // 22.1.3.19 step 4 (searchString) comes before step 6 (the replacement's
+    // ToString); both can run user code, so the order is observable.
+    const Units needle = unitsOf(rtValueToString(searchValue.get()));
     const bool replacerIsFunction = isCallable(replaceValue.get());
     Rooted<Value> replacement{replacerIsFunction ? replaceValue.get()
                                                  : rtValueToString(replaceValue.get())};
-    const Units needle = unitsOf(rtValueToString(searchValue.get()));
 
     Units out;
     out.reserve(input.size());
@@ -300,11 +305,8 @@ template <bool All>
 uint64_t stringReplacePattern(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     const char* method = All ? "replaceAll" : "replace";
-    Value selfVal;
-    if (!requireString(Value(thisBits), method, selfVal)) {
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> self{selfVal};
+    Rooted<Value> self{Value(thisBits)};
+    if (!requireCoercible(self.get(), method)) return Value::fromUndefined().rawBits();
     Rooted<Value> arg{args[0]};
     // 22.1.3.20 step 2.a-b, ahead of the dispatch. `replace` has no such step:
     // replacing the FIRST match is something any pattern can do.
@@ -318,6 +320,7 @@ uint64_t stringReplacePattern(uint64_t, uint64_t thisBits, uint32_t argc, const 
     if (rtPatternMethod(arg, PatternSymbol::Replace, replacer)) {
         return rtCallPatternMethod(replacer, arg, self, replaceValue, /*argCount=*/2).rawBits();
     }
+    coerceReceiver(self);
 
     if (rtIsRegExp(args[0])) {
         Rooted<Value> re{args[0]};
@@ -390,11 +393,9 @@ Value rtCallPatternMethod(Rooted<Value>& method, Rooted<Value>& receiver, Rooted
 
 uint64_t rtStringSplitWithRegExp(uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
-    Value selfVal;
-    if (!requireString(Value(thisBits), "split", selfVal)) {
-        return Value::fromUndefined().rawBits();
-    }
-    Rooted<Value> self{selfVal};
+    // The caller (stringSplit) has already converted the receiver: this is
+    // step 3's S, a string.
+    Rooted<Value> self{Value(thisBits)};
     Rooted<Value> re{args[0]};
     return rtRegExpSplit(re, self, args[1]).rawBits();
 }

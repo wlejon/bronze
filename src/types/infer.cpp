@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "ast/assigned.h"
 #include "ast/queries.h"
 #include "ast/query_walk.h"
 #include "types/ctor_ident.h"
@@ -692,6 +693,12 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     mod.literalFieldsAnywhere = std::getenv("BRONZE_NO_LITERAL_FIELD_TYPES") == nullptr;
     mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
     mod.methodParamTypes = std::getenv("BRONZE_NO_METHOD_PARAM_TYPES") == nullptr;
+    mod.soundDispatch = std::getenv("BRONZE_UNSOUND_METHOD_DISPATCH") == nullptr;
+    for (const ast::FunctionDecl* decl : split.decls) {
+        for (const auto& name : ast::getDeeplyReboundNames(decl->body)) {
+            mod.reboundByModuleFns.insert(name);
+        }
+    }
     // The two pin modes. `--pins` is the targeted one and needs no env var;
     // `BRONZE_UNSOUND_PINS` stays as the degenerate "pin everything" form the
     // ceiling probe was measured with, so that number remains reproducible.
@@ -700,6 +707,13 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     if (mod.interprocIdent) {
         mod.methods.build(module);
         scanMethodEscapes(module, mod.methods, mod.methodPoison);
+        mod.protoMutable = scanProtoMutation(module);
+        for (const ClassLayout& cl : result.classLayouts.all()) {
+            if (cl.superUnknown ||
+                (!cl.superName.empty() && result.classLayouts.byName(cl.superName) == nullptr)) {
+                mod.unresolvedBase = true;
+            }
+        }
     }
     mod.ctorParamTypes = std::getenv("BRONZE_NO_CTOR_PARAM_TYPES") == nullptr;
     if (mod.ctorParamTypes || mod.methodParamTypes) {

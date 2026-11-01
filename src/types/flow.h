@@ -112,6 +112,16 @@ struct Scope {
     // enclosing class of a `super.m()` call, and the stats row that attributes a
     // still-dynamic identifier receiver to the reason its parameter was refused.
     uint32_t methodIndex = kNoMethod;
+    // The class method whose `this` this body sees: the method itself, or the
+    // method an arrow function is nested in (15.3.4). `kNoMethod` in a
+    // constructor, an accessor, a field initializer and every other body. A
+    // call on `this` here dispatches from an object whose chain holds the
+    // method's class prototype, unless the method escaped (MethodPoison), which
+    // is what lets that receiver bound the call (flow_dispatch.cpp).
+    uint32_t thisMethod = kNoMethod;
+    // A base class's constructor, or an arrow nested in one: `this` is the
+    // object `new` made for the class or a subclass (flow_dispatch.cpp).
+    bool thisFromNew = false;
     // The class CONSTRUCTOR this body is, when it is one. A parameter's default
     // is evaluated in this scope, and its type is one of the constructor's call
     // sites (types/ctor_ident.h) — so the walk that evaluates the default needs
@@ -197,6 +207,24 @@ struct ModuleContext {
     // Whether pin optimism is in force at all, in either mode.
     bool pinOptimism() const { return unsoundPins || pins != nullptr; }
     uint32_t unboundedMethodCalls = 0;
+    // Whether a call's receiver may bound its dispatch only when the receiver
+    // is a FACT (flow_dispatch.cpp `dispatchBounded`). Off under
+    // `BRONZE_UNSOUND_METHOD_DISPATCH=1`, which restores the earlier rule —
+    // any receiver identity, guessed or not, bounded the methods a call's
+    // arguments were joined into — for measuring what the sound rule costs.
+    bool soundDispatch = true;
+    // The program names a way to change an existing object's prototype
+    // (scanProtoMutation); dispatchBounded then bounds nothing.
+    bool protoMutable = false;
+    // Some class's `extends` names no class this table holds (a function, a
+    // parameter, an expression): its prototype chain may pass through any
+    // class's prototype, so `this` in a method bounds nothing.
+    bool unresolvedBase = false;
+    // Every name a module-level function (or anything nested in one) can
+    // rebind. The module top level is a separate body whose bindings those
+    // functions write, so its flow-sensitive view of such a name goes stale
+    // at every call: it holds them as `Dynamic` (flow.cpp `declare`).
+    std::unordered_set<std::string> reboundByModuleFns;
 
     // ---- interprocedural identity for constructors (ctor_ident.h) -----------
 
@@ -368,6 +396,8 @@ struct FunctionAnalysisArgs {
     bool isGenerator = false;
     ShapeClassId thisClass = kNoShapeClass;
     uint32_t methodIndex = kNoMethod;
+    uint32_t thisMethod = kNoMethod;
+    bool thisFromNew = false;
     uint32_t ctorIndex = kNoCtor;
     bool moduleTopLevel = false;
 };

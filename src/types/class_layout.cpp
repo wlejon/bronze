@@ -514,6 +514,7 @@ void ClassLayoutTable::build(const ast::Module& module, ShapeClassTable& shapes)
         ClassLayout cl;
         cl.name = f.name;
         cl.superName = f.superName;
+        cl.superUnknown = f.hasSuperExpr;
         classes_.push_back(std::move(cl));
         byName_.emplace(f.name, classes_.size() - 1);
     }

@@ -94,9 +94,9 @@ uint64_t stringIterNext(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) 
 uint64_t stringIterator(uint64_t, uint64_t thisBits, uint32_t, const uint64_t*) {
     Rooted<Value> self{Value(thisBits)};
     Value data;
-    if (!rtThisStringValue(self.get(), data)) {
+    if (!rtStringMethodThis(self.get(), data)) {
         return rtThrowTypeError(
-                   "String.prototype[Symbol.iterator] called on a value that is not a string")
+                   "String.prototype[Symbol.iterator] called on null or undefined")
             .rawBits();
     }
     Rooted<Value> str{data};

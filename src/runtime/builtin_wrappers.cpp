@@ -355,6 +355,19 @@ bool rtThisStringValue(Value self, Value& out) {
     return rtStringWrapperData(self, out);
 }
 
+bool rtStringMethodThis(Value self, Value& out) {
+    if (self.isString()) {
+        out = self;
+        return true;
+    }
+    if (self.isNull() || self.isUndefined()) return false;
+    // ToString, not thisStringValue: a String wrapper goes through ToPrimitive
+    // like any object, so an own `toString` on it is honoured, and a Symbol
+    // throws its TypeError from here.
+    out = rtValueToString(self);
+    return true;
+}
+
 bool rtThisBooleanValue(Value self, Value& out) {
     if (self.isBool()) {
         out = self;
