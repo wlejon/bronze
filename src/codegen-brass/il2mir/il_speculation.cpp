@@ -33,8 +33,8 @@ uint32_t arm_kind_mask() {
 
 bool should_arm(uint8_t raw_kind, uint32_t misses, bool ran) {
     // BRONZE_SPEC_ARM_KINDS=<mask>: arm only the kinds whose bit is set (1
-    // arith, 2 property, 4 call target, 8 poly property), the per-kind A/B.
-    // Arith sites are not armed by default. Arming them once cost nbody time
+    // arith, 2 property, 4 call target, 8 poly property); the deopt-stress
+    // oracle arms all four (tests/oracle/CMakeLists.txt). Arith sites are not armed by default. Arming them once cost nbody time
     // because brass's register allocator kept every guard state value live to
     // the guard's exit block at the end of the function (176 spill slots in
     // nbody's advance armed against 118 unarmed); brass now ends that
@@ -90,13 +90,7 @@ std::shared_ptr<SpecFeedback> make_spec_feedback() {
 void SpecSiteEmitter::begin_function(bool can_deopt, std::string_view name) {
     fn_name_ = name;
     occurrences_.clear();
-    // BRONZE_SPEC_NO_GUARDS=1: the sites and their counts, but no guards
-    // (the lowering A/B: every function lowers as if it could not deopt).
-    static const bool no_guards = [] {
-        const char* v = std::getenv("BRONZE_SPEC_NO_GUARDS");
-        return v && v[0] == '1';
-    }();
-    sites_.begin_function(can_deopt && !no_guards, name);
+    sites_.begin_function(can_deopt, name);
 }
 
 std::optional<uint32_t> SpecSiteEmitter::peek_profile(SpecKind kind, std::string_view tag) const {
@@ -139,19 +133,13 @@ void SpecSiteEmitter::emit_branch(Builder& b, Value* hit, BasicBlock* fast, Basi
 
 void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {
     // BRONZE_SPEC_TRACE=1: one line per function copy with guards.
-    // BRONZE_SPEC_NO_ARM=1: arm nothing (the guards-vs-branches A/B).
     // BRONZE_SPEC_TRACE=2: also one line per armed site (its id is the
     // guard= a brass tier log names on a deopt).
     static const int trace = [] {
         const char* v = std::getenv("BRONZE_SPEC_TRACE");
         return v && (v[0] == '1' || v[0] == '2') ? v[0] - '0' : 0;
     }();
-    static const bool no_arm = [] {
-        const char* v = std::getenv("BRONZE_SPEC_NO_ARM");
-        return v && v[0] == '1';
-    }();
     brass::ArmSpeculationOptions options;
-    options.arm_none = no_arm;
     options.trace = trace;
     // What survives of the reads' out-of-line scans goes back inline.
     options.after_function = [](Function& fn) { expand_ic_stubs(fn); };

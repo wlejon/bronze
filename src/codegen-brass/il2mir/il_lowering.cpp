@@ -618,9 +618,8 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
     Builder b(mod);
     b.set_function(fn);
     // The lowering spells every tag, offset and limit inline; one of each per
-    // block is enough (BRONZE_NO_CONST_REUSE=1 for the A/B).
-    static const bool no_const_reuse = std::getenv("BRONZE_NO_CONST_REUSE") != nullptr;
-    b.set_const_reuse(!no_const_reuse);
+    // block is enough.
+    b.set_const_reuse(true);
     // Every function carries guards (il_speculation.h), a coroutine body
     // too: brass's coroutine lowering keeps its suspend states out of the
     // guards' resume ids and adds the frame, and anything it reloads, to

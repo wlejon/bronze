@@ -271,13 +271,11 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // tier-up first copies it: a large program's load lowers what its start
     // needs, not every function it has. Tier 1 compiles everything before
     // running anyway. A speculation profile names every site of the
-    // program, so a run writing one lowers them all. BRONZE_EAGER_MIR=1 is
-    // the A/B seam.
+    // program, so a run writing one lowers them all.
     {
-        const char* eager = std::getenv("BRONZE_EAGER_MIR");
         const char* profileOut = std::getenv("BRONZE_SPEC_PROFILE_OUT");
         backend.setLazyBodies((tier == ExecutionTier::Auto || tier == ExecutionTier::Tier0_Interpreter) &&
-                              !(eager && std::string_view(eager) == "1") && !(profileOut && *profileOut));
+                              !(profileOut && *profileOut));
     }
 
     bool hasEscapable = !module.censusSites.empty() && !module.censusOutPath.empty();
@@ -307,10 +305,9 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // globals and caches, as a worker running the same script does.
     // Speculation (il2mir/il_speculation.h): the inline fast paths count
     // their misses here, and tier 2 arms the guards of the ones that stayed
-    // cold. BRONZE_NO_SPECULATION=1 lowers them as plain branches (the A/B
-    // seam; the fast paths themselves stay).
+    // cold.
     std::shared_ptr<brass::SpecFeedback> spec;
-    if (const char* off = std::getenv("BRONZE_NO_SPECULATION"); !off || std::string_view(off) != "1") {
+    {
         spec = il2mir::make_spec_feedback();
         backend.setSpecFeedback(spec);
         // The lowered code holds the counters' addresses: the program owns

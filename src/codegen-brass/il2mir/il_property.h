@@ -240,9 +240,6 @@ public:
     // profile is feedback-driven but not in-process.
     void set_in_process(bool on) noexcept { in_process_ = on; }
     [[nodiscard]] bool in_process() const noexcept { return in_process_; }
-    // Whether a feedback-driven module that runs here takes the small forms
-    // (the scan and the misses out of line); off, BRONZE_IC_FULL=1.
-    void set_small_forms(bool on) noexcept { small_forms_ = on; }
     // Whether the helper calls of lower_prop_get / lower_prop_set (and the
     // misses of the inline paths) go through kPropGetStub / kPropSetStub,
     // which the module then defines (emit_direct_stubs).
@@ -422,7 +419,6 @@ private:
     bool inline_sets_ = true;
     bool feedback_driven_ = false;
     bool in_process_ = false;
-    bool small_forms_ = true;
     bool ic_stubs_ = false;
     const std::vector<std::string>* key_names_ = nullptr;
     bool enable_inlined_fastpaths_ = true;

@@ -107,12 +107,6 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     // (kPolyScanHelper) and the miss a counted helper, which is what keeps a
     // read to about forty instructions; tier 2 expands the scan back inline
     // (il_ic_stub.h), so its code is what the inline form always was.
-    // BRONZE_NO_POLY_SCAN=1: no poly block, a way-0 miss calls the helper
-    // (the A/B seam).
-    static const bool no_poly_scan_env = [] {
-        const char* v = std::getenv("BRONZE_NO_POLY_SCAN");
-        return v && v[0] == '1';
-    }();
     // The scan goes where a site can turn out polymorphic: every read under
     // the tiered pipeline, and in an AOT build only the reads its profile
     // saw miss way 0 past the cold fills. A plain AOT build's inline reads
@@ -124,8 +118,8 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     // Object3D.updateMatrix meets a Scene, a Mesh and a bare Object3D in one
     // frame, and the helper installs each new shape at way 0, so without the
     // scan every one of them after the first missed into the helper.
-    bool no_poly_scan = no_poly_scan_env;
-    if (!no_poly_scan && !in_process_ && !expect_poly) {
+    bool no_poly_scan = false;
+    if (!in_process_ && !expect_poly) {
         const std::optional<uint32_t> way0 =
             spec_ ? spec_->peek_profile(SpecKind::Property, key_tag(key_index)) : std::nullopt;
         no_poly_scan = !way0 || !SpecSiteEmitter::profile_says_polymorphic(*way0);
@@ -133,7 +127,7 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
         // next read of the same key keeps its own.
         if (no_poly_scan && spec_) spec_->skip_site(SpecKind::PolyProperty, key_tag(key_index));
     }
-    const bool compact = small_forms_ && !no_poly_scan && in_process_ && spec_ && spec_->has_feedback();
+    const bool compact = !no_poly_scan && in_process_ && spec_ && spec_->has_feedback();
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
     const std::string prefix = "ic_get_" + std::to_string(fn->next_block_id());
@@ -432,7 +426,7 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
                                                  bool with_transition) {
     // The counted helper is the assignment's; a definition's miss is
     // bronze_prop_define's whatever the tier (lower_prop_set).
-    const bool compact = small_forms_ && in_process_ && spec_ && spec_->has_feedback() &&
+    const bool compact = in_process_ && spec_ && spec_->has_feedback() &&
                          imm != kDefineWriteMode && imm != kLiteralElementWriteMode;
     const bool need_barrier = !val_is_primitive && !is_known_non_ref(val);
     BasicBlock* bb_current = b.current_block();

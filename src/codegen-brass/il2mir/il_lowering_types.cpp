@@ -68,14 +68,6 @@ IlLowering::IlLowering(const TranslatorOptions& options, DiagnosticReporter* dia
     // (it replaces the module delta every site read), where a shared key map
     // address or guard constant would join every guard's state for nothing.
     prop_lowering_.set_table_base_fn([this](Builder& b) { return hoisted(b, Hoist::IcTable); });
-    // BRONZE_IC_FULL=1: every inline path in full everywhere, the lowering
-    // before the small forms and run-once code (the A/B seam).
-    static const bool full = [] {
-        const char* v = std::getenv("BRONZE_IC_FULL");
-        return v && v[0] == '1';
-    }();
-    small_forms_ = !full;
-    prop_lowering_.set_small_forms(small_forms_);
 }
 
 Value* IlLowering::ensure_type(Value* val, Type target_type, Builder& b) {

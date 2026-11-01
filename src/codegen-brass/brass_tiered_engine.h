@@ -138,7 +138,7 @@ private:
     // (which stops this program's background compiler, whose installs the
     // image observes), then the MIR module, then the image the code refers to,
     // then the speculation counters every tier's code increments in place
-    // (il2mir/il_speculation.h; null under BRONZE_NO_SPECULATION=1).
+    // (il2mir/il_speculation.h).
     std::shared_ptr<brass::SpecFeedback> specFeedback_;
     std::unique_ptr<TieredProgramImage> image_;
     std::unique_ptr<brass::Module> mirModule_;

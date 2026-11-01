@@ -244,7 +244,6 @@ private:
     Value* hoisted_[static_cast<size_t>(Hoist::Count)] = {};
     bool run_once_ = false;
     bool protected_block_ = false;
-    bool small_forms_ = true;
     std::unordered_set<uint32_t> run_once_blocks_;
     std::unordered_set<uint32_t> loop_blocks_;
     bool in_loop_ = false;

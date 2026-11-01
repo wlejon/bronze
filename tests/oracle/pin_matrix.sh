@@ -14,7 +14,8 @@
 #
 # Env: BRONZE=<path to bronze.exe> (default build/dev/src/cli/bronze.exe)
 #      SEAMS="BRONZE_NO_X BRONZE_NO_Y" — RUN-time seams, swept singly and
-#        together as environment variables over one built executable.
+#        together as environment variables over one built executable (none
+#        by default).
 #      CSEAMS="BRONZE_NO_Z" — COMPILE-time seams. A seam that changes what the
 #        backend EMITS is read by the compiler, not by the program, so setting
 #        it in the run environment is a no-op and a matrix that swept it there
@@ -25,7 +26,7 @@ set -u
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRONZE="${BRONZE:-$root/build/dev/src/cli/bronze.exe}"
-SEAMS="${SEAMS:-BRONZE_NO_INLINE_ROOTS BRONZE_NO_STRICT_EQ_INLINE BRONZE_NO_ELEM_INLINE}"
+SEAMS="${SEAMS:-}"
 CSEAMS="${CSEAMS:-}"
 work="${TMPDIR:-/tmp}/bronze_pin_matrix"
 mkdir -p "$work"
@@ -62,8 +63,10 @@ for name in "$@"; do
             envs+=("$seam+stress:$seam=1 BRONZE_GC_STRESS=1")
             all="$all $seam=1"
         done
-        envs+=("all-seams:$all")
-        envs+=("all-seams+stress:$all BRONZE_GC_STRESS=1")
+        if [ -n "$all" ]; then
+            envs+=("all-seams:$all")
+            envs+=("all-seams+stress:$all BRONZE_GC_STRESS=1")
+        fi
 
         for spec in "${envs[@]}"; do
             label="${spec%%:*}"

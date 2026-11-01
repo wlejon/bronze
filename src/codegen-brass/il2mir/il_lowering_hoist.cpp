@@ -517,7 +517,6 @@ void IlLowering::analyze_function(const BronzeFunction& fn_ast) {
         }
     }
 
-    if (!small_forms_) return;
     for (const auto& blk : fn_ast.blocks) {
         for (const auto& inst : blk.instructions) {
             if (inst.op == BronzeOp::CreateObject && inst.result_id != UINT32_MAX) fresh_objects_.insert(inst.result_id);

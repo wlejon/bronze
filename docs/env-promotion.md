@@ -205,55 +205,6 @@ So promotion is left ON in the instrumented build, because the two cannot
 disagree: an observed slot is not promoted, and an unobserved slot has nothing
 to report.
 
-## The one thing that changes besides speed
-
-The entry load is **speculative**: it reads the slot on a path that might not
-have accessed it, and it reads it without the access guards. Both are the static
-plan's claim — the same one `BRONZE_ELIDE_ENV_GUARDS` rests on, and
-`llvm_env.cpp` says at length what licenses it.
-
-What it costs is tripwire ORDER. If a lowering bug ever produced a record of the
-wrong kind, a promoted function faults at the entry load instead of reaching
-`bronze_env_access_failed`'s fatal. The guard itself is untouched and still armed
-at every access site that survives the region, and under
-`BRONZE_ELIDE_ENV_GUARDS=1` there was no tripwire on that path to begin with.
-This is recorded rather than fixed: placing the entry load behind a guard of its
-own would put the guard back in the preheader, which is where LICM was already
-hoisting it.
-
-## Env vars
-
-The compile-time seams below were part of the historical LLVM backend pass.
-
-| var | effect |
-|---|---|
-| `BRONZE_NO_ENV_PROMOTION=1` | *(historical)* **the seam.** The LLVM pass was bypassed; the emitted code was what the unpromoted compiler produced. |
-| `BRONZE_ENV_PROMOTION_STATS=1` | *(historical)* printed static counts and the region-end histogram to stderr after the pipeline joined. |
-| `BRONZE_DUMP_LLVM_IR=<prefix>` | *(historical)* dumped LLVM IR at `<prefix>.post.ll`. |
-
-## Reading the counters
-
-```
-$ BRONZE_ENV_PROMOTION_STATS=1 bronze build bench/env_slot_kernel.js -o es.exe \
-      --pins bench/pins/env-slot-kernel.pins
-[envpromote] functions=7 keys=35 regions=8 (loop=7 fn=1) slots=8 loadsElided=10 \
-  storesElided=12 entryLoads=8 writeBacks=15
-[envpromote] region-end unknown-call=15 env-helper=0 indirect-call=0 \
-  aliasing-memory=0 aliasing-env-slot=0 record-not-invariant=0 loop-shape=0 \
-  heap-value-store=0 no-benefit=7
-```
-
-The counter exists for the reason `llvm_repr.h` gives for its own: every arm is
-conditional on a proof, so a stage that proves nothing emits exactly the code it
-replaced and the whole suite still passes. The site count is the only thing
-separating "the fast arm is correct" from "the fast arm is ever taken".
-
-`loadsElided` and `storesElided` are counted where the pass runs, which is
-before unswitching and unrolling duplicate a loop body — so they are smaller than
-the per-iteration counts a `.post.ll` shows, and the two are not the same
-measurement. The histogram counts REFUSALS, not regions: one key can be refused
-at function scope and then promoted at loop scope, and both are recorded.
-
 ## What R3 does not build, and hands on
 
 - **A callee summary that is finer than "touches a record".** A call to a defined

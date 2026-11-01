@@ -125,8 +125,8 @@ void trackDynamicProgram(const std::shared_ptr<BrassTieredProgram>& program) {
 // when the host stops its compiles or the process exits. The next run that
 // hits the entry hands the list to the program's warmer, which builds those
 // functions' Tier-0 bytecode on threads of its own while the program starts.
-// BRASS_BYTECODE_WARM=0 turns both off (a BRONZE_* switch would be part of
-// the cache key); BRASS_BYTECODE_WARM_THREADS sets the warmer's threads.
+// BRASS_BYTECODE_WARM_THREADS sets the warmer's threads (a BRONZE_* name
+// would be part of the cache key).
 constexpr std::chrono::milliseconds kWarmWindow{3000};
 constexpr size_t kWarmMaxNames = 20000;
 
@@ -142,14 +142,6 @@ static std::vector<WarmRecord>& warmRecords() {
     return *list;
 }
 
-bool warmEnabled() {
-    static const bool on = [] {
-        const char* v = std::getenv("BRASS_BYTECODE_WARM");
-        return !(v && v[0] == '0');
-    }();
-    return on;
-}
-
 unsigned warmThreads() {
     const char* v = std::getenv("BRASS_BYTECODE_WARM_THREADS");
     const int n = v ? std::atoi(v) : 0;
@@ -158,8 +150,7 @@ unsigned warmThreads() {
 
 void armWarmList(const std::shared_ptr<BrassTieredProgram>& program, const std::string& dir,
                  const cache::Digest& key, bool hit) {
-    if (!program || dir.empty() || program->tier() != ExecutionTier::Auto || !program->mirModule() ||
-        !warmEnabled()) {
+    if (!program || dir.empty() || program->tier() != ExecutionTier::Auto || !program->mirModule()) {
         return;
     }
     {
