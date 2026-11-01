@@ -94,8 +94,6 @@ bool pinBarriersEnabled();
 //   - the INDEX of a `numeric-elements` element access. In-bounds is a claim
 //     about a READ as much as a write, so there is no write to hold it at, and
 //     a bounds check on the store is the guard the pin exists to delete.
-//   - `BRONZE_UNSOUND_PINS`, the blanket measurement mode, which pins every
-//     Array receiver in the program and has never been a supported build.
 //
 // This is why the manifest is an explicit per-(class, field) list and never a
 // heuristic.

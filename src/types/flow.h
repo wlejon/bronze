@@ -193,26 +193,14 @@ struct ModuleContext {
     bool interprocIdent = false;
     // `BRONZE_NO_METHOD_PARAM_TYPES` controls method parameter typing with primitive types.
     bool methodParamTypes = false;
-    // `BRONZE_UNSOUND_PINS` — the pin CEILING PROBE, kept for measurement
-    // continuity. The degenerate "pin everything" mode: field-type claims are
-    // spent WITHOUT the builtHere / per-class / program-wide-audit proofs, and
-    // Array/TypedArray field kinds survive a read, for every class and every
-    // field. Unsound by design and known to miscompile programs that hold
-    // objects in arrays; `pins` below is the targeted form that replaced it.
-    bool unsoundPins = false;
     // The `--pins` manifest, or null. Named (class, field) pairs — and only
-    // those — spend the same claims the probe spent everywhere. See
-    // types/pins.h for what a pin promises and who is meant to enforce it.
+    // those — spend field-type claims without the builtHere / per-class /
+    // program-wide-audit proofs. See types/pins.h for what a pin promises and
+    // who is meant to enforce it.
     const PinManifest* pins = nullptr;
-    // Whether pin optimism is in force at all, in either mode.
-    bool pinOptimism() const { return unsoundPins || pins != nullptr; }
+    // Whether pin optimism is in force at all.
+    bool pinOptimism() const { return pins != nullptr; }
     uint32_t unboundedMethodCalls = 0;
-    // Whether a call's receiver may bound its dispatch only when the receiver
-    // is a FACT (flow_dispatch.cpp `dispatchBounded`). Off under
-    // `BRONZE_UNSOUND_METHOD_DISPATCH=1`, which restores the earlier rule —
-    // any receiver identity, guessed or not, bounded the methods a call's
-    // arguments were joined into — for measuring what the sound rule costs.
-    bool soundDispatch = true;
     // The program names a way to change an existing object's prototype
     // (scanProtoMutation); dispatchBounded then bounds nothing.
     bool protoMutable = false;

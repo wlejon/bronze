@@ -246,11 +246,7 @@ bool get_preloaded_ta_cursor(IlLowering* lowering, uint32_t obj_id, Builder& b,
                              Value*& out_data, Value*& out_len) {
     out_data = nullptr;
     out_len = nullptr;
-    static const bool unsound_pins = [] {
-        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
-        return env && env[0] && env[0] != '0';
-    }();
-    if (!lowering || unsound_pins || !lowering->prop_lowering().enable_inlined_fastpaths()) {
+    if (!lowering || !lowering->prop_lowering().enable_inlined_fastpaths()) {
         return false;
     }
     auto vit = val_map.find(obj_id);

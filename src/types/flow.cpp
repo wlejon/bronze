@@ -184,7 +184,7 @@ bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
 // module top level: the top level's flow-sensitive type for it goes stale at
 // every call it makes (flow.h `reboundByModuleFns`).
 bool FlowAnalyzer::staleAtTopLevel(const std::string& name) const {
-    return scope_.moduleTopLevel && mod_.soundDispatch && mod_.reboundByModuleFns.count(name) != 0 &&
+    return scope_.moduleTopLevel && mod_.reboundByModuleFns.count(name) != 0 &&
            mod_.moduleScopeNames.count(name) != 0;
 }
 

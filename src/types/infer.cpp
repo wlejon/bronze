@@ -693,16 +693,12 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     mod.literalFieldsAnywhere = std::getenv("BRONZE_NO_LITERAL_FIELD_TYPES") == nullptr;
     mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
     mod.methodParamTypes = std::getenv("BRONZE_NO_METHOD_PARAM_TYPES") == nullptr;
-    mod.soundDispatch = std::getenv("BRONZE_UNSOUND_METHOD_DISPATCH") == nullptr;
     for (const ast::FunctionDecl* decl : split.decls) {
         for (const auto& name : ast::getDeeplyReboundNames(decl->body)) {
             mod.reboundByModuleFns.insert(name);
         }
     }
-    // The two pin modes. `--pins` is the targeted one and needs no env var;
-    // `BRONZE_UNSOUND_PINS` stays as the degenerate "pin everything" form the
-    // ceiling probe was measured with, so that number remains reproducible.
-    mod.unsoundPins = std::getenv("BRONZE_UNSOUND_PINS") != nullptr;
+    // Pins come from the `--pins` manifest alone.
     mod.pins = pins != nullptr && !pins->empty() ? pins : nullptr;
     if (mod.interprocIdent) {
         mod.methods.build(module);

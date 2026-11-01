@@ -1,6 +1,6 @@
 // Kernel isolation: Matrix4.multiplyMatrices ns/call, via the real vendored
 // three.js class. It times its own loop through bench/harness.js and reports
-// ns_per_iter over 20M calls. Used by the BRONZE_UNSOUND_PINS ceiling probe.
+// ns_per_iter over 20M calls.
 
 import { Matrix4 } from '../tests/oracle/threejs/three/math/Matrix4.js';
 import { measure } from './harness.js';

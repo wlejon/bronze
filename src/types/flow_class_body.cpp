@@ -376,7 +376,6 @@ void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver,
     const ClassLayout* cl = nullptr;
     if (receiver.is(TypeKind::Object) && receiver.shapeClass() != kNoShapeClass) {
         cl = mod_.result->classLayouts.byShapeClass(receiver.shapeClass());
-        if (cl == nullptr && !mod_.soundDispatch) return;
         if (cl != nullptr && !dispatchBounded(receiver, form, cl)) cl = nullptr;
     }
     const auto& setters = mod_.methods.setters();

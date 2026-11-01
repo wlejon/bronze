@@ -408,11 +408,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         return number;
     }
 
-    static const bool unsound_pins = [] {
-        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
-        return env && env[0] && env[0] != '0';
-    }();
-    if (unsound_pins || elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
+    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
         return b.build_bitcast_f64_i64(lower_elem_get(b, obj, index));
     }
 
@@ -675,11 +671,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         return;
     }
 
-    static const bool unsound_pins = [] {
-        const char* env = std::getenv("BRONZE_UNSOUND_PINS");
-        return env && env[0] && env[0] != '0';
-    }();
-    if (unsound_pins || elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
+    if (elem_kind < BRONZE_ABI_TA_KIND_INT8 || elem_kind > BRONZE_ABI_TA_KIND_FLOAT64) {
         lower_elem_set(b, obj, index, box_f64_bits(b, val_f64), strict);
         return;
     }

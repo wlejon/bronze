@@ -64,29 +64,6 @@ void contributeMethodArg(ModuleContext& mod, uint32_t index, const MethodInfo& t
     }
 }
 
-// The rule `BRONZE_UNSOUND_METHOD_DISPATCH=1` restores, kept only so the sound
-// rule's cost can be measured: these receivers contributed NOTHING, so a
-// `target.set("5")` on a Vector3 left `Vector3.set`'s `x` typed by its other
-// callers. A list of variable names is not evidence about a value.
-bool isNonClassExprUnsound(const ast::Expr* e) {
-    if (const auto* id = ast::exactAs<const ast::Ident*>(e)) {
-        static const char* kNonClassIdents[] = {
-            "Math", "Object", "Array", "Number", "String", "Boolean", "Symbol",
-            "Reflect", "JSON", "console", "document", "window", "performance",
-            "navigator", "self", "gl", "array", "dst", "src", "elements", "te",
-            "target", "out", "data", "buffer", "list", "stack", "queue", "nodes",
-            "items", "cache", "bindings", "actions", "tracks", "curves", "points",
-            "faces", "bones", "lights", "cameras", "materials", "geometries",
-            "textures", "objects", "children", "parents", "coords", "weights",
-            "times", "samples", "table", "map", "dict"
-        };
-        for (const char* nid : kNonClassIdents) {
-            if (id->name == nid) return true;
-        }
-    }
-    return false;
-}
-
 bool isLiteralExpr(const ast::Expr* e) {
     return ast::exactAs<const ast::ArrayLit*>(e) || ast::exactAs<const ast::ObjectLit*>(e) ||
            ast::exactAs<const ast::NumberLit*>(e) || ast::exactAs<const ast::StringLit*>(e) ||
@@ -103,7 +80,6 @@ bool isLiteralExpr(const ast::Expr* e) {
 // `v`'s chain, so it goes down the unbounded path like any classless object.
 bool FlowAnalyzer::receiverNamesNoClass(const ast::Expr* e) const {
     if (e == nullptr) return false;
-    if (!mod_.soundDispatch) return isLiteralExpr(e) || isNonClassExprUnsound(e);
     if (isLiteralExpr(e)) return ast::exactAs<const ast::ObjectLit*>(e) == nullptr;
     const auto* id = ast::exactAs<const ast::Ident*>(e);
     if (id == nullptr || resolvesToUserBinding(id->name)) return false;
@@ -131,7 +107,6 @@ bool FlowAnalyzer::receiverNamesNoClass(const ast::Expr* e) const {
 // bounds nothing. Nor does any class whose `extends` the analysis could not
 // resolve: its methods' lookup continues into a chain no table describes.
 bool FlowAnalyzer::dispatchBounded(Type receiver, ReceiverForm form, const ClassLayout* cls) {
-    if (!mod_.soundDispatch) return true;
     // An object's prototype can change after it was made: the program names
     // setPrototypeOf / __proto__ (method_ident.cpp, scanProtoMutation), or a
     // computed write the audit could not prove harmless may write the key
@@ -192,16 +167,11 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
     // A primitive or an array reaches a builtin prototype, which holds a class
     // method only through a value read of it (a poison). An object with no
     // class — two classes joined, a Proxy — or an object literal's shape takes
-    // the unbounded path below under the sound rule.
+    // the unbounded path below.
     if (receiver.is(TypeKind::Array) || receiver.is(TypeKind::TypedArray) ||
         receiver.is(TypeKind::Number) || receiver.is(TypeKind::String) ||
         receiver.is(TypeKind::Bool) || receiver.is(TypeKind::Null) ||
         receiver.is(TypeKind::Undefined)) {
-        return Type::dynamic();
-    }
-    if (!mod_.soundDispatch && receiver.is(TypeKind::Object) &&
-        (receiver.shapeClass() == kNoShapeClass ||
-         mod_.result->classLayouts.byShapeClass(receiver.shapeClass()) == nullptr)) {
         return Type::dynamic();
     }
     if (lastMember_ != nullptr && lastMemberBase_ == receiver &&
@@ -271,7 +241,7 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
         // shape guard and drop every value claim — and never a primitive.
         // `this.children[i].clone()` is the site that pays: its value is what
         // `addChild`'s join hears, and its fields are read behind a cell.
-        if (!mod_.soundDispatch || !everyTargetSpeaks) return Type::dynamic();
+        if (!everyTargetSpeaks) return Type::dynamic();
         if (ret.is(TypeKind::Object) && ret.shapeClass() != kNoShapeClass) {
             return ret.builtHere() && !mod_.result->classLayouts.isExtended(ret.shapeClass())
                        ? Type::objectNotBuiltHere(ret.shapeClass())

@@ -13,8 +13,8 @@
 #   - `Quaternion.x/y/z/w` and `Euler.x/y/z/order` are ACCESSORS over the
 #     underscore fields, not slots; the underscore fields are what is pinned.
 #   - `Object3D.children`, `.position`, `.matrix` and every other object- or
-#     array-of-objects field are absent on purpose. Pinning those is exactly
-#     what broke `mesh_churn_2k` under the blanket `BRONZE_UNSOUND_PINS` flag.
+#     array-of-objects field are absent on purpose: pinning those breaks
+#     `mesh_churn_2k`.
 
 # --- Matrix3 / Matrix4: a dense 9- or 16-element array of doubles ------------
 Matrix3.elements: numeric-elements

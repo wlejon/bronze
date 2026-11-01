@@ -281,20 +281,8 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             // IL ops behind it (`ilTypeOf`). A `string` or `bool` field type
             // would have to carry its own program-wide invariant to be a proof,
             // and would buy a calling convention nothing consumes.
-            // Probe: an Array/TypedArray field keeps its kind across the
-            // read (it is an identity-grade claim here, spent only on the
-            // element form), and the three primitive proofs below are
-            // skipped. See flow.h `unsoundPins`.
-            if (mod_.unsoundPins &&
-                (field.is(TypeKind::Array) || field.is(TypeKind::TypedArray))) {
-                return field;
-            }
             if (!field.is(TypeKind::Number)) return Type::dynamic();
             if (record_) ++mod_.result->fieldAudit.numberFieldReads;
-            if (mod_.unsoundPins) {
-                if (record_) mod_.result->provenFieldReads.insert(m);
-                return field;
-            }
             const bool classFamilyValidated =
                 mod_.methodParamTypes &&
                 mod_.result->classLayouts.familyMemberOf(base.shapeClass()) != nullptr;
