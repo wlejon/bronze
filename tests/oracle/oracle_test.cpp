@@ -689,16 +689,16 @@ TEST_CASE("Oracle tiers test suite") {
         const std::string& id = caseFiles[i].id;
         const TierRuns& res = results[i];
         SUBCASE(id.c_str()) {
-            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + id).c_str());
+            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + id));
             for (size_t t = 0; t < kTiers.size(); ++t) {
                 const std::string where = id + " at --tier=" + kTiers[t];
-                CHECK_MESSAGE(!res.plain[t].timedOut, ("timed out: " + where).c_str());
+                CHECK_MESSAGE(!res.plain[t].timedOut, ("timed out: " + where));
                 CHECK_MESSAGE(res.plain[t].exitCode == 0,
                               ("exit " + std::to_string(res.plain[t].exitCode) + ": " + where +
                                "\n" + res.plain[t].errors).c_str());
                 CHECK_MESSAGE(res.expected == res.plain[t].output,
                               ("output differs from the pinned expectation: " + where).c_str());
-                CHECK_MESSAGE(!res.gc[t].timedOut, ("timed out (gc-stress): " + where).c_str());
+                CHECK_MESSAGE(!res.gc[t].timedOut, ("timed out (gc-stress): " + where));
                 CHECK_MESSAGE(res.expected == res.gc[t].output,
                               ("output differs from the pinned expectation (gc-stress): " + where +
                                "\n" + res.gc[t].errors).c_str());
@@ -779,11 +779,11 @@ TEST_CASE("Oracle spec-profile suite") {
     for (size_t i = 0; i < caseFiles.size(); ++i) {
         const ProfileRun& res = results[i];
         SUBCASE(caseFiles[i].id.c_str()) {
-            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + caseFiles[i].id).c_str());
+            REQUIRE_MESSAGE(res.expectedReadOk, ("Missing pinned expectation for " + caseFiles[i].id));
             CHECK_MESSAGE(res.profiled.output == res.expected, "the profiling run differs from the pinned bytes");
-            REQUIRE_MESSAGE(res.buildStatus == 0, ("build with --spec-profile failed: " + res.buildErr).c_str());
+            REQUIRE_MESSAGE(res.buildStatus == 0, ("build with --spec-profile failed: " + res.buildErr));
             CHECK_MESSAGE(!res.built.timedOut, "the built program timed out");
-            CHECK_MESSAGE(res.built.exitCode == 0, ("exit " + std::to_string(res.built.exitCode)).c_str());
+            CHECK_MESSAGE(res.built.exitCode == 0, ("exit " + std::to_string(res.built.exitCode)));
             CHECK_MESSAGE(res.built.output == res.expected,
                           ("built with its profile, output differs from the pinned expectation\n" +
                            res.built.errors).c_str());
@@ -863,7 +863,7 @@ TEST_CASE("threejs milestone: unmodified r160 compiles and its scene graph holds
         REQUIRE(std::filesystem::exists(exePath));
 
         RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
-        CHECK_MESSAGE(!run.timedOut, ("three.js case did not finish within the timeout" + mode).c_str());
+        CHECK_MESSAGE(!run.timedOut, ("three.js case did not finish within the timeout" + mode));
         if (run.ran) {
             CHECK_MESSAGE(run.exitCode == 0,
                           ("three.js exited with code " + std::to_string(run.exitCode) + mode).c_str());
@@ -923,7 +923,7 @@ TEST_CASE("pixi milestone: unmodified v8.19.0 compiles and its scene graph holds
         REQUIRE(std::filesystem::exists(exePath));
 
         RunResult run = runWithTimeout(exePath.string(), /*gcStress=*/false);
-        CHECK_MESSAGE(!run.timedOut, ("pixi case did not finish within the timeout" + mode).c_str());
+        CHECK_MESSAGE(!run.timedOut, ("pixi case did not finish within the timeout" + mode));
         if (run.ran) {
             CHECK_MESSAGE(run.exitCode == 0,
                           ("pixi exited with code " + std::to_string(run.exitCode) + mode).c_str());
@@ -967,18 +967,18 @@ void checkJitMilestone(const char* name, const std::filesystem::path& entry,
                        uint32_t compileAllowanceMs) {
     const std::string what = std::string(name) + " (jit)";
     RunResult run = runInJit(entry, /*gcStress=*/false, runTimeoutMs + compileAllowanceMs, hostGlobals);
-    CHECK_MESSAGE(!run.timedOut, (what + " did not finish within the timeout").c_str());
+    CHECK_MESSAGE(!run.timedOut, (what + " did not finish within the timeout"));
     if (run.ran) {
         CHECK_MESSAGE(run.exitCode == 0,
                       (what + " exited with code " + std::to_string(run.exitCode) + "\n" + run.errors).c_str());
-        CHECK_MESSAGE(expected == run.output, (what + " output differs from the pinned expectation").c_str());
+        CHECK_MESSAGE(expected == run.output, (what + " output differs from the pinned expectation"));
         CHECK_MESSAGE(jitDiagnostics(run.errors).empty(),
                       (what + " printed JIT diagnostics:\n" + jitDiagnostics(run.errors)).c_str());
     }
 
     RunResult stressed =
         runInJit(entry, /*gcStress=*/true, gcStressRunTimeoutMs + compileAllowanceMs, hostGlobals);
-    CHECK_MESSAGE(!stressed.timedOut, (what + " did not finish within the timeout (gc-stress)").c_str());
+    CHECK_MESSAGE(!stressed.timedOut, (what + " did not finish within the timeout (gc-stress)"));
     if (stressed.ran) {
         CHECK_MESSAGE(stressed.exitCode == 0,
                       (what + " exited with code " + std::to_string(stressed.exitCode) + " (gc-stress)\n" +
@@ -1033,9 +1033,9 @@ TEST_CASE("deep recursion on a raised stack limit ends in a RangeError at every 
                                 oracle::quoted(js.string());
         const RunResult run = oracle::runCommand(cmd);
         const std::string where = std::string("--tier=") + tier;
-        CHECK_MESSAGE(!run.timedOut, ("timed out: " + where).c_str());
-        CHECK_MESSAGE(run.exitCode == 0, (where + runSummary(run)).c_str());
-        CHECK_MESSAGE(run.output == expected, (where + ": " + run.output + runSummary(run)).c_str());
+        CHECK_MESSAGE(!run.timedOut, ("timed out: " + where));
+        CHECK_MESSAGE(run.exitCode == 0, (where + runSummary(run)));
+        CHECK_MESSAGE(run.output == expected, (where + ": " + run.output + runSummary(run)));
     }
 }
 
