@@ -1,24 +1,23 @@
 // Pristine Math.sin/cos/sqrt/abs/floor/ceil on a typed f64 are inlined
 // (il_lowering_ops.cpp MathUnary): sqrt/abs/floor/ceil to the machine's exact
-// instructions, sin/cos to the runtime's kernels (bronze_math_*_f64, the
-// platform's libm). Each result is compared to the same call reached through a
-// computed key and through an alias, neither of which is inlined: those must
-// agree to the bit, being one machine's one libm. sin and cos are printed to
-// 12 significant digits, since each platform's libm has its own last bit.
+// instructions, sin/cos to the runtime's own kernels (bronze_math_*_f64, brass's
+// fdlibm, V8's bits; a C library's sin differs from node's in the last bit on a
+// few percent of inputs: Math.sin(2.5) is ...564, glibc's ...565). Each result
+// is printed in full and compared to the same call reached through a computed
+// key and through an alias, neither of which is inlined.
 
 const inputs = [0, -0, 2.5, 1, -1, 0.5, 3.141592653589793, 1e-300, -1e-300,
   1e22, -1e22, 1e300, 2 ** 53, 2 ** 53 + 2, 99, 99.5, 1e6 + 0.25, 1e9,
   Infinity, -Infinity, NaN, 0.1, 0.7, 1.5707963267948966, 4.71238898038469,
   6.283185307179586, -2.5, 123456.789, 5e-324, 1.7976931348623157e308];
 
-function p12(v) { return Number.isFinite(v) && v !== 0 ? +v.toPrecision(12) : v; }
 function fs(x) { return [Math.sin(x), Math.cos(x), Math.sqrt(x), Math.abs(x), Math.floor(x), Math.ceil(x)]; }
 const names = ["sin", "cos", "sqrt", "abs", "floor", "ceil"];
 const alias = { sin: Math.sin, cos: Math.cos };
 let bad = 0;
 for (const x of inputs) {
   const r = fs(+x);
-  const line = r.map((v, k) => Object.is(v, -0) ? "-0" : String(k < 2 ? p12(v) : v)).join(" ");
+  const line = r.map((v) => Object.is(v, -0) ? "-0" : String(v)).join(" ");
   console.log(String(x), line);
   for (let k = 0; k < names.length; k++) if (!Object.is(r[k], Math[names[k]](x))) { bad++; console.log("dyn differs", names[k], x); }
   if (!Object.is(r[0], alias.sin(x)) || !Object.is(r[1], alias.cos(x))) { bad++; console.log("alias differs", x); }
@@ -34,7 +33,7 @@ for (let i = 0; i < 20000; i++) {
   s += a; c += b;
   if (!Object.is(a, Math[sinKey](x))) mism++;
 }
-console.log(s.toFixed(9), c.toFixed(9), mism, bad);
+console.log(s, c, mism, bad);
 
 // Non-numbers keep their coercions: the inline needs a typed double.
 console.log(Math.sin("0.5"), Math.cos(null), Math.sqrt([16]), Math.abs({ valueOf() { return -3; } }),

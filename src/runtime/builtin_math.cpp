@@ -17,6 +17,8 @@
 #include <random>
 #include <string>
 
+#include <brass/runtime/fast_trig.hpp>
+
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -390,11 +392,24 @@ thread_local Value g_mathObject = Value::fromUndefined();
 // ---- The direct-dispatch surface (bronze_abi.h) -----------------------------
 //
 // The scalar kernels first: generated code's fast path calls them on
-// already-unboxed doubles, and they are the platform's libm. `sqrt` and `abs`
-// have no kernel because they are single instructions.
+// already-unboxed doubles, and the function objects below call the same
+// ones, so every tier answers alike. `sqrt` and `abs` have no kernel because
+// they are single instructions.
+//
+// sin and cos are brass's trig runtime (brass/runtime/fast_trig.hpp): V8's
+// fdlibm-derived ieee754::sin/cos, so Math.sin and Math.cos give node's bits,
+// and faster than the platform libm's, which saves and restores the FP
+// environment on every call.
 
-extern "C" double bronze_math_sin_f64(double x) { return std::sin(x); }
-extern "C" double bronze_math_cos_f64(double x) { return std::cos(x); }
+extern "C" double bronze_math_sin_f64(double x) { return brass::math::sin_f64(x); }
+extern "C" double bronze_math_cos_f64(double x) { return brass::math::cos_f64(x); }
+// Both kernels' answers from one argument reduction: out[0] is
+// bronze_math_sin_f64(x)'s bits, out[1] bronze_math_cos_f64(x)'s. Compiled
+// code calls it where a sine and a cosine of one value are both taken
+// (brass's sincos_fuse; three.js's setFromEuler).
+extern "C" void bronze_math_sincos_f64(double x, void* out) {
+    brass::math::sincos_f64(x, static_cast<double*>(out));
+}
 
 // `math.random` (il_op.h): a proven `Math.random()` call compiled to this, the
 // native's own generator, so the two forms draw from one sequence.

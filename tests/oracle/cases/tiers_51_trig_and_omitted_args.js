@@ -32,9 +32,7 @@ for (let i = 0; i < 20000; i++) {
 }
 console.log(acc.toFixed(12), strs);
 console.log(Math.sin(-0), 1 / Math.sin(-0), Math.cos(NaN), Math.sin(Infinity), viaLocalSin(Math, undefined));
-// To 12 digits: each platform's libm has its own last bit.
-console.log([Math.sin(1e10), Math.cos(1e22), Math.sin(1e300), Math.cos(-823551), Math.cos(42.5)]
-  .map((v) => +v.toPrecision(12)).join(' '));
+console.log(Math.sin(1e10), Math.cos(1e22), Math.sin(1e300), Math.cos(-823551), Math.cos(42.5));
 console.log(viaLocal(Math, { valueOf() { return 1; } }), viaLocalSin(Math, null), viaLocalSin(Math, '0.5'));
 
 class A {
