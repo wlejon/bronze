@@ -6,7 +6,6 @@
 // pinned below: null (coerces to +0, so `null >= 0` is TRUE — null must
 // never take the undefined shortcut), strings, BigInt, and objects whose
 // valueOf runs user code that must still fire exactly once per compare.
-// Seam: BRONZE_NO_UNDEF_REL=1 routes every one of these back to the helper.
 
 function d(v) { return v; } // launder through a call so inference keeps Dynamic
 

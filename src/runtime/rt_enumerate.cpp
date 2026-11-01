@@ -304,21 +304,10 @@ uint64_t emptyKeyArray() {
 // hit skips the chain walk, the per-level key-vector allocations, and the
 // O(keys^2) cross-level dedup that made three.js's per-mesh-per-frame
 // enumerations (1.8M a run on `many_meshes`) the third-largest helper cost.
-//
-// Seam: BRONZE_NO_ENUM_CACHE=1 disables both probe and fill, so one binary
-// A/Bs the cache against the walk it replaces.
 struct EnumCacheEntry {
     uint64_t epoch = 0;
     std::vector<StringHeader*> keys;
 };
-
-bool enumCacheEnabled() {
-    static const bool disabled = [] {
-        const char* env = std::getenv("BRONZE_NO_ENUM_CACHE");
-        return env != nullptr && std::strcmp(env, "1") == 0;
-    }();
-    return !disabled;
-}
 
 std::unordered_map<Shape*, EnumCacheEntry>& enumCache() {
     static thread_local std::unordered_map<Shape*, EnumCacheEntry> cache;
@@ -481,7 +470,7 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     // everything below.
     Shape* cacheShape = nullptr;
     const uint64_t epochNow = protoMutationEpoch();
-    if (enumCacheEnabled() && holder->shape && holder->chainIsCacheable()) {
+    if (holder->shape && holder->chainIsCacheable()) {
         cacheShape = holder->shape;
         auto& cache = enumCache();
         if (auto it = cache.find(cacheShape);

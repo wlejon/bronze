@@ -81,15 +81,14 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
         return Value::fromUndefined().rawBits();
     }
     uint32_t i = 0;
-    // The number-elements fast loop (seam: BRONZE_NO_TA_SET_FAST=1): while
-    // every element IS a number, ToNumber is an identity and no user code can
+    // The number-elements fast loop: while every element IS a number, ToNumber is an identity and no user code can
     // run — so nothing allocates, the raw headers stay valid for the whole
     // run, and the per-element root the spec-shaped loop below opens defends
     // nothing. three.js reaches this path per draw, copying a matrix's plain
     // `elements` array into a uniform upload buffer. The first non-number
     // element (a hole reads as `undefined` and is one) resumes the rooted
     // loop AT that element with every spec'd conversion intact.
-    if (rtTls()->ta_set_fast_enabled != 0) {
+    {
         const auto* srcArr = source.get().asObject<ArrayHeader>();
         auto* dst = self.get().asObject<TypedArrayHeader>();
         const Value* elems = srcArr->elementsData();

@@ -9,6 +9,7 @@
 #include "runtime/ic_log.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shape_census.h"
 #include "runtime/string.h"
 #include "runtime/tls_block.h"
 
@@ -158,25 +159,11 @@ StringHeader* elemCacheInternKey(StringHeader* live) {
 
 void elemCachePublish() noexcept {
     // Where generated code finds the table, published once per thread from
-    // Heap's constructor — the same first touch that reads the BRONZE_NO_*
-    // environment, so the base and the seam word that gates reading it are set
-    // together and can never disagree. A thread that has not reached that
-    // point sees a null base, which is the inline path's first refusal and
-    // costs it the helper it already had.
+    // Heap's constructor, the thread's first touch of the runtime. A thread
+    // that has not reached that point sees a null base, which is the inline
+    // path's first refusal and costs it the helper it already had.
     rtTls()->elem_cache_tbl = reinterpret_cast<uint64_t*>(g_elemCache);
     rtTls()->elem_set_cache_tbl = reinterpret_cast<uint64_t*>(g_elemSetCache);
-}
-
-bool elemCacheEnabled() noexcept {
-    return rtTls()->elem_ic_enabled != 0;
-}
-
-bool elemAbsentEnabled() noexcept {
-    return rtTls()->elem_absent_enabled != 0;
-}
-
-bool elemKeyIcEnabled() noexcept {
-    return rtTls()->elem_key_ic_enabled != 0;
 }
 
 void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept {
@@ -200,8 +187,10 @@ void elemCacheSweepIdent(uintptr_t lo, uintptr_t hi) noexcept {
 
 ElemProbe elemCacheProbe(Value objVal, Value key) {
     ElemProbe probe;
-    if (!elemCacheEnabled()) {
-        recordElemIcMiss("seam_disabled", objVal.rawBits(), key.rawBits());
+    // Census mode keeps every computed read reaching the helpers it records
+    // in (shape_census.h).
+    if (censusFillsSuppressed()) {
+        recordElemIcMiss("census", objVal.rawBits(), key.rawBits());
         return probe;
     }
     // PLAIN receivers only, and that is a scope decision rather than a
@@ -261,7 +250,7 @@ ElemProbe elemCacheProbe(Value objVal, Value key) {
     // hit, even one the shape or epoch questions below are about to refuse:
     // the invariant is about the KEY pair only, and the entry's shape words
     // answer for themselves on the next probe.
-    if (kind == ElemKeyKind::String && elemKeyIcEnabled()) {
+    if (kind == ElemKeyKind::String) {
         e.key_ident = key.rawBits();
     }
 
@@ -328,10 +317,6 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
     // receivers — but the entry is copied verbatim, so the assertion is worth
     // the branch rather than the trust.
     if (filled.isArrayMethod()) return;
-    if (filled.isAbsent() && !elemAbsentEnabled()) {
-        recordElemIcMiss("absent_seam_disabled", 0, 0);
-        return;
-    }
     // The key has to become immortal before an entry can name it, and for an
     // ABSENT key that is the whole risk: a present key is already a shape key
     // somewhere, an absent one need exist nowhere. `elemCacheInternKey`
@@ -355,39 +340,12 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
     // read site will ever present, so the word goes to zero rather than
     // carrying a pointer the sweep would have to chase for nothing.
     probe.entry->key_ident =
-        (probe.kind == ElemKeyKind::String && elemKeyIcEnabled())
+        probe.kind == ElemKeyKind::String
             ? Value::fromString(liveKey).rawBits()
             : 0;
 }
 
-namespace {
-
-// Per thread and direct-mapped, for the read table's reasons: a Shape is
-// process-wide but an entry's validity is asked against the per-thread proto
-// epoch, and a collision costs a fill rather than a wrong answer.
-
-thread_local uint8_t g_elemSetIcEnabled = 1;
-
-}  // namespace
-
-bool elemSetCacheEnabled() noexcept {
-    return g_elemSetIcEnabled != 0;
-}
-
-void elemSetCacheSetEnabled(bool on) noexcept {
-    g_elemSetIcEnabled = on ? 1u : 0u;
-}
-
-void elemSetCacheReadSeam() noexcept {
-    const char* env = std::getenv("BRONZE_NO_ELEM_SET_IC");
-    elemSetCacheSetEnabled(!(env && std::strcmp(env, "1") == 0));
-}
-
 ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
-    if (!elemSetCacheEnabled()) {
-        recordElemIcMiss("set_seam_disabled", objVal.rawBits(), key.rawBits());
-        return nullptr;
-    }
     // PLAIN receivers only, and for the read table's reason rather than a
     // narrower one: every other kind answers a computed store from somewhere
     // that is not the shape walk — an element block, a typed view's window, a
@@ -427,7 +385,7 @@ ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
 
     ElemSetCacheEntry& e = g_elemSetCache[bucketOf(shape, witness, kElemSetCacheEntries)];
     if (keyMatches(e, kind, witness, key)) {
-        if (kind == ElemKeyKind::String && elemKeyIcEnabled()) {
+        if (kind == ElemKeyKind::String) {
             e.key_ident = key.rawBits();
         }
         return &e;
@@ -467,7 +425,7 @@ ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key) {
     e.witness = witness;
     e.kind = kind;
     e.key = interned;
-    e.key_ident = (kind == ElemKeyKind::String && elemKeyIcEnabled()) ? key.rawBits() : 0;
+    e.key_ident = kind == ElemKeyKind::String ? key.rawBits() : 0;
     return &e;
 }
 

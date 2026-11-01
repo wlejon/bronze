@@ -98,10 +98,8 @@ for (const n of [0, 1, 9]) {
 const base = [{ v: 100 }];
 console.log('recv', sum(base.concat(objs(9))), base.length);
 
-// --- the seam changes where the slots live and nothing else -----------------
-// Re-run the widest of the shapes above after a deliberate churn, so the run
-// under BRONZE_NO_INLINE_ROOTS=1 (every block on the C heap) and the run
-// without it (the first eight slots inline) have to agree byte for byte.
+// --- after a churn -----------------------------------------------------------
+// Re-run the widest of the shapes above after a deliberate churn.
 let churn = null;
 for (let i = 0; i < 200; i = i + 1) churn = { i: i, prev: churn };
 console.log('churn', churn.i, churn.prev.i);

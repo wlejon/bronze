@@ -41,12 +41,12 @@ bool rtRequireCollection(Value self, bool isSet, const char* method) {
 namespace {
 
 uint64_t collectionGet(uint64_t thisBits, uint32_t argc, const uint64_t* argv, bool isSet) {
-    // The allocation-free prologue (seam: BRONZE_NO_MAP_FAST=1): a hit or a
-    // miss against a valid index runs no allocation anywhere, so the rooted
-    // copy of the arguments below defends nothing on this path. A stale or
-    // absent index — and every receiver the brand check refuses — falls
-    // through to the full path and its exact answers.
-    if (rtTls()->map_fast_enabled != 0 && argc >= 1) {
+    // The allocation-free prologue: a hit or a miss against a valid index runs
+    // no allocation anywhere, so the rooted copy of the arguments below
+    // defends nothing on this path. A stale or absent index — and every
+    // receiver the brand check refuses — falls through to the full path and
+    // its exact answers.
+    if (argc >= 1) {
         Value selfV{Value(thisBits)};
         if (isSet ? rtIsSetKind(selfV) : rtIsMapKind(selfV)) {
             auto* map = selfV.asObject<MapHeader>();
@@ -68,8 +68,8 @@ uint64_t collectionGet(uint64_t thisBits, uint32_t argc, const uint64_t* argv, b
 
 uint64_t collectionHas(uint64_t thisBits, uint32_t argc, const uint64_t* argv, bool isSet) {
     // As the `get` fast prologue: no allocation on a valid-index probe, so no
-    // roots. Seam: BRONZE_NO_MAP_FAST=1.
-    if (rtTls()->map_fast_enabled != 0 && argc >= 1) {
+    // roots.
+    if (argc >= 1) {
         Value selfV{Value(thisBits)};
         if (isSet ? rtIsSetKind(selfV) : rtIsMapKind(selfV)) {
             auto* map = selfV.asObject<MapHeader>();

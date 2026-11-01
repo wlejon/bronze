@@ -36,7 +36,7 @@
  * The unused ways of a write site cost BSS and nothing else.
  *
  * Generated code compares the receiver's shape against way 0, then — only on
- * a way-0 miss, and only while `poly_ic_enabled` — against ways 1..N-1, and
+ * a way-0 miss — against ways 1..N-1, and
  * the matched way's entry pointer is what the rest of the fast path reads.
  * The helper installs with move-to-front: a fresh entry lands at way 0 and
  * pushes the others down, so the last shape to miss is the first one checked
@@ -376,11 +376,6 @@
  * reads the string's flags word (offsets below) and takes the helper when the
  * hash has not been memoized yet — the helper's first probe memoizes it.
  *
- * Seam: BRONZE_NO_ELEM_KEY_IC=1 gates the LATCH side (fills write 0, hits do
- * not re-latch), so an old-style run and a new one are one binary: with the
- * seam off, no ident is ever non-zero and the inline string arm can only
- * miss into the helper it always took.
- *
  * The bucket function is splitmix64's finalizer applied twice, and generated
  * code must reproduce it EXACTLY: a probe that hashes differently from the
  * fill does not answer wrongly, it simply never hits, which is a silent
@@ -612,10 +607,7 @@
  * object; a future codegen (stage R2) asks "is the slot this site loads a
  * double" once per guard, against a word it has already loaded the shape for.
  * Slots at or above BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT are never given the
- * representation, so a clear bit is always a truthful "boxed".
- *
- * Zero on every shape when BRONZE_NO_SLOT_REPR=1, which is the seam: with it
- * set no shape node is ever created double and this word is dead. */
+ * representation, so a clear bit is always a truthful "boxed". */
 #define BRONZE_ABI_SHAPE_DOUBLESLOTS_OFFSET 64
 #define BRONZE_ABI_SHAPE_DOUBLE_SLOT_LIMIT  64
 

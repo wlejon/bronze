@@ -43,10 +43,6 @@ namespace bronze::runtime {
 
 void rtInstallAbsentEntry(InlineCacheSite* site, Value objVal, const std::string& keyStr) {
     if (!site) return;
-    // The seam. Gating only the INSTALL is the whole of BRONZE_NO_NEG_IC=1:
-    // with no absent entry ever written, generated code's absent arm is
-    // unreachable and every absent read takes the helper it always took.
-    if (!rtNegativeIcEnabled()) return;
     // Census mode suppresses every latch so all traffic keeps reaching the
     // helpers it records in (shape_census.h).
     if (censusFillsSuppressed()) return;
@@ -60,7 +56,7 @@ void rtInstallAbsentEntry(InlineCacheSite* site, Value objVal, const std::string
     auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
     if (!obj->chainIsCacheable()) return;
 
-    if (InlineCache* into = site->slotForInstall(obj->shape, rtIcWayLimit())) {
+    if (InlineCache* into = site->slotForInstall(obj->shape)) {
         into->fillAbsent(obj->shape);
     }
 }

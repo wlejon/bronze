@@ -158,7 +158,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             // inline path refuses. Scanned again rather than passed in,
             // because the helper is entered from paths that never ran the
             // inline scan at all.
-            if (site) ic = site->find(fastObj->shape, rtIcWayLimit());
+            if (site) ic = site->find(fastObj->shape);
             if (ic && ic->describesAbsent(fastObj->shape)) {
                 return BRONZE_ABI_UNDEFINED_BITS;
             }
@@ -196,7 +196,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
                 }
             }
         } else if (fastHdr->flags == HeapKind::Array) {
-            if (ic && ic->isArrayMethod() && rtTls()->array_method_ic_enabled != 0) {
+            if (ic && ic->isArrayMethod()) {
                 const auto* arr = reinterpret_cast<const ArrayHeader*>(fastHdr);
                 if (!arr->properties.isObject()) {
                     return rtTls()->array_method_tbl[ic->cached_slot];
@@ -238,7 +238,7 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             objVal = self.get();
             if (proto.isObject()) {
                 auto* holder = proto.asObject<ObjectHeader>();
-                InlineCache* hit = site->find(holder->shape, rtIcWayLimit());
+                InlineCache* hit = site->find(holder->shape);
                 if (hit && hit->describesOwn(holder->shape)) {
                     return holder->getSlot(hit->cached_slot).rawBits();
                 }
@@ -329,7 +329,7 @@ static uint64_t propGetByName(Value objVal, const std::string& keyStr, StringHea
                 // Way 0, always: generated code's array arm looks there and
                 // nowhere else, and InlineCacheSite::slotForInstall keeps a
                 // sentinel it finds at way 0 from being shifted away.
-                if (ic && rtTls()->array_method_ic_enabled != 0 &&
+                if (ic && !censusFillsSuppressed() &&
                     !recv.get().asObject<ArrayHeader>()->properties.isObject()) {
                     ic->ways[0].fillArrayMethod(methodId);
                 }

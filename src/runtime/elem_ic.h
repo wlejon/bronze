@@ -146,22 +146,6 @@ void elemCacheFill(const ElemProbe& probe, StringHeader* liveKey, const InlineCa
 // constructor, which is the per-thread first touch.
 void elemCachePublish() noexcept;
 
-// BRONZE_NO_ELEM_IC=1. Read through the per-thread ABI block like every other
-// seam, so one binary can A/B.
-bool elemCacheEnabled() noexcept;
-
-// BRONZE_NO_ELEM_ABSENT=1, the ABSENT half. Its own seam because the present
-// half is chunk 3's and has to stay measurable alone: with this off, an absent
-// pair falls back to the walk it always took and every present pair is
-// untouched.
-bool elemAbsentEnabled() noexcept;
-
-// BRONZE_NO_ELEM_KEY_IC=1, the string-key IDENTITY latch. Latch-side, like
-// the method-IC seams: with it off no fill or hit ever writes a non-zero
-// `key_ident`, so the inline string arm can only miss into the helper it
-// always took, and one binary A/Bs the mechanism against its own absence.
-bool elemKeyIcEnabled() noexcept;
-
 // Clear every `key_ident` that points into the collected heap — the range
 // [lo, hi) is the heap's whole reservation. Registered by Heap's
 // constructor as a post-collection hook, and running it inside the pause is
@@ -239,20 +223,6 @@ static_assert((kElemSetCacheEntries & (kElemSetCacheEntries - 1)) == 0,
 // Never allocates on the heap and never runs user code, so the caller may hold
 // a raw receiver across it.
 ElemSetCacheEntry* elemSetCacheEntryFor(Value objVal, Value key);
-
-// BRONZE_NO_ELEM_SET_IC=1. With it off, `elemSetCacheEntryFor` refuses every
-// pair, so every computed store falls back to the uncached `setProp` walk it
-// always took and one binary A/Bs the mechanism against its own absence.
-bool elemSetCacheEnabled() noexcept;
-
-// The flag lives here rather than in the per-thread ABI block because no
-// generated code consults it: this cache has no inline arm, only a runtime one.
-// `elemSetCacheReadSeam` reads the environment and is called from Heap's
-// constructor, so this seam is settled at the same per-thread first touch as
-// every other BRONZE_NO_*; the setter is what a test uses to ask about the
-// mechanism regardless of the ambient setting.
-void elemSetCacheReadSeam() noexcept;
-void elemSetCacheSetEnabled(bool on) noexcept;
 
 // The arena copy of `live` this table will key an entry on, or null when the
 // key budget is spent.

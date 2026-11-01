@@ -5,10 +5,8 @@
 // store is a Number, it stores the eight bytes with no test at all -- into a
 // double slot and into a boxed slot alike, because a Number Value's bits ARE
 // the canonical double the double slot promises. Every line below is a way for
-// that identity to be false, and every one of them prints the same bytes under
-// BRONZE_SLOT_REPR_OBSERVED=1 (every eligible field born a double slot), under
-// BRONZE_NO_SLOT_REPR=1 (none of them ever), under the default, and with
-// BRONZE_NO_REPR_CODEGEN=1 compiled in (the R1 sequence emitted instead).
+// that identity to be false, and every one of them prints the same bytes
+// whether its fields are double slots or boxed ones.
 //
 // Deliberately printed as booleans and exact literals: an expectation derived
 // by hand from ECMA-262 is only worth having if it can be read off the spec,

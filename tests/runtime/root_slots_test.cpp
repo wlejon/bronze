@@ -34,21 +34,6 @@ using namespace bronze::runtime;
 
 namespace {
 
-// `rtHeap()` first, and not incidentally: runtime start-up is LAZY and it is
-// what reads the BRONZE_NO_* environment, so a flag set before the first heap
-// touch is put back by it. The same trap chunk 3 hit and chunk 4 re-hit.
-struct InlineRootsOn {
-    InlineRootsOn() {
-        (void)rtHeap();
-        saved = bronze_tls_block_addr()->inline_roots_enabled;
-        bronze_tls_block_addr()->inline_roots_enabled = 1;
-    }
-    ~InlineRootsOn() { bronze_tls_block_addr()->inline_roots_enabled = saved; }
-
-private:
-    uint64_t saved = 0;
-};
-
 // An object with one own property holding a number, so a slot that survives a
 // collection can be shown to still name a LIVE object and not merely a
 // plausible address.
@@ -90,7 +75,6 @@ std::vector<uint64_t> unrootedArgv(uint32_t argc, double base) {
 
 TEST_CASE("an argument block holds its slots inline until it cannot") {
     ShadowStackFrame frame;
-    InlineRootsOn seam;
 
     for (uint32_t argc : {0u, 1u, 7u, 8u}) {
         std::vector<uint64_t> argv(argc, Value::fromDouble(1.0).rawBits());
@@ -114,48 +98,8 @@ TEST_CASE("an argument block holds its slots inline until it cannot") {
     }
 }
 
-TEST_CASE("the seam puts every block back on the C heap without changing an answer") {
-    ShadowStackFrame frame;
-    InlineRootsOn seam;
-
-    bronze_tls_block_addr()->inline_roots_enabled = 0;
-    CHECK_FALSE(inlineRootsEnabled());
-
-    // Not one, not eight: with the seam down the inline buffer is not used at
-    // any width, which is what makes the A/B reproduce the pre-chunk shape.
-    for (uint32_t n : {1u, 4u, 8u}) {
-        RootValueBlock block(n);
-        CAPTURE(n);
-        CHECK_FALSE(block.usesInlineStorage());
-    }
-    // A zero-width block still needs a non-null address and still allocates
-    // nothing, seam or no seam — malloc(0) is allowed to answer null.
-    RootValueBlock empty(0);
-    CHECK(empty.usesInlineStorage());
-
-    // And a frame's list starts with no capacity at all, so its first push
-    // allocates the way push_back did.
-    {
-        RootSlotList list;
-        CHECK(list.capacity() == 0);
-        CHECK_FALSE(list.usesInlineStorage());
-    }
-
-    // The answers are unchanged; only where the slots live changed.
-    Rooted<Value> a{tagged(11.0)};
-    const uint64_t argv[3] = {a.get().rawBits(), Value::fromDouble(2.0).rawBits(),
-                              Value::fromUndefined().rawBits()};
-    RootedArgs args(3, argv);
-    rtHeap().collect();
-    CHECK(tagOf(args[0]) == 11.0);
-    CHECK(args[1].asNumber() == 2.0);
-    CHECK(args[2].isUndefined());
-    CHECK(args[9].isUndefined());
-}
-
 TEST_CASE("a frame's slot list grows past its inline buffer and keeps every root") {
     ShadowStackFrame outer;
-    InlineRootsOn seam;
 
     {
         RootSlotList list;
@@ -193,7 +137,6 @@ TEST_CASE("a frame's slot list grows past its inline buffer and keeps every root
 
 TEST_CASE("an argument block is a real root across a collection at every width") {
     ShadowStackFrame frame;
-    InlineRootsOn seam;
 
     for (uint32_t argc : {1u, 8u, 9u, 64u}) {
         CAPTURE(argc);
@@ -217,7 +160,6 @@ TEST_CASE("an argument block is a real root across a collection at every width")
 
 TEST_CASE("blocks nest, and an outer one survives everything the inner ones do") {
     ShadowStackFrame frame;
-    InlineRootsOn seam;
 
     // The recursion a builtin re-entering JS re-entering the builtin makes:
     // an outer block live while inner blocks are built, filled, collected
@@ -246,7 +188,6 @@ TEST_CASE("blocks nest, and an outer one survives everything the inner ones do")
 
 TEST_CASE("a runtime-built block starts undefined and stays rooted at every width") {
     ShadowStackFrame frame;
-    InlineRootsOn seam;
 
     for (uint32_t n : {0u, 1u, 8u, 9u, 33u}) {
         CAPTURE(n);
@@ -271,7 +212,6 @@ TEST_CASE("a frame that outgrew its buffer is still the frame the collector walk
     // The end-to-end shape: many roots open at once, forcing the frame's list
     // onto the heap, and a collection that has to find every one of them.
     ShadowStackFrame frame;
-    InlineRootsOn seam;
 
     std::vector<Rooted<Value>> roots;
     roots.reserve(kRootSlotsInline * 4);

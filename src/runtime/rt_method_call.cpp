@@ -34,7 +34,6 @@ namespace {
 // registered value cell exactly as word 3 is (bronze_register_method_ic_cells
 // registers both), which is what keeps the copy current across a flip.
 void displaceMethodWay0(uint64_t* icEntry, uint64_t newWord0) {
-    if (!rtPolyMethodIcEnabled()) return;
     const uint64_t w0 = icEntry[0];
     if (w0 == 0 || w0 == newWord0) return;
     if (w0 & BRONZE_ABI_METHOD_IC_EXOTIC_BIT) return;
@@ -76,8 +75,8 @@ static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE
 //   Typed arrays: the native-member memo (runtime/native_fn_memo.h) answers
 //   (kind, key) with the interned ladder native and nothing else — a fill is
 //   refused for anything that is not one — so `memo == callee` proves the
-//   read answered from the C ladder. A memo that has not filled (or is
-//   disabled by BRONZE_NO_FN_SINGLETON_CACHE) simply never latches here.
+//   read answered from the C ladder. A memo that has not filled simply never
+//   latches here.
 //
 //   A Map, a Set and the weak pair are ordinary objects with a real prototype
 //   and take the ordinary shape-guarded method IC like any class instance.
@@ -99,7 +98,6 @@ static_assert(BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * 8 < BRONZE_ABI_IC_SITE_SIZE
 // walk that filled it, so `rtStringPrototype` here is a fetch and not a build.
 bool latchPrimitiveMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal,
                             const InlineCache& probe) {
-    if (!rtExoticMethodIcEnabled()) return false;
     if (!thisVal.isString()) return false;
     if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent() || probe.realDepth() != 0) {
         return false;
@@ -125,7 +123,6 @@ bool latchPrimitiveMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal,
 
 bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Value fnVal,
                          const FunctionHeader* fn, const InlineCache& probe, uint32_t keyIndex) {
-    if (!rtExoticMethodIcEnabled()) return false;
     // The original env rule, verbatim: only a callee that can be called with
     // undefined may have its env omitted from the entry. Every latchable
     // native satisfies it (rtNativeFunction creates env-free), but the latch
@@ -318,7 +315,7 @@ bool latchFunctionStaticsMethodIc(uint64_t* icEntry, Value fnRecvVal, Value call
 // — and everything here is loads and stores, never an allocation.
 void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCache& probe,
                    uint32_t keyIndex) {
-    if (!icEntry || rtTls()->method_call_ic_enabled == 0) return;
+    if (!icEntry || censusFillsSuppressed()) return;
     if (!fnVal.isObject()) return;
     // Another realm's function is called through bronze_dynamic_call every
     // time, which enters its realm (realm.h, CalleeRealmScope); a cached
@@ -370,7 +367,6 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
         return;
     }
     if (probe.realDepth() == 0) {
-        if (!rtEnvMethodIcEnabled()) return;
         displaceMethodWay0(icEntry, shapeWord);
         icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = 0;
         icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] =
@@ -384,10 +380,9 @@ void latchMethodIc(uint64_t* icEntry, Value thisVal, Value fnVal, const InlineCa
     // at is current. An env-free callee (or one whose env is itself — the
     // self-reference bronze_create_function writes for a capture-free
     // function, which its code never reads) is called with undefined; one
-    // carrying an env caches it, which BRONZE_NO_ENV_METHOD_IC turns off.
+    // carrying an env caches it.
     const bool envFree = !fn->needsEnv() || fn->env_record.isUndefined() ||
                          fn->env_record.rawBits() == fnVal.rawBits();
-    if (!envFree && !rtEnvMethodIcEnabled()) return;
     displaceMethodWay0(icEntry, shapeWord);
     icEntry[BRONZE_ABI_METHOD_IC_CODE_WORD] = reinterpret_cast<uint64_t>(fn->code);
     icEntry[BRONZE_ABI_METHOD_IC_ARITY_WORD] = directArityWord(fn);
@@ -423,7 +418,7 @@ void latchMethodIcAndNote(uint64_t* icEntry, Value thisVal, Value fnVal,
 // the contract names (Function test and TypeError included).
 bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint64_t* argv,
                  uint64_t& result) {
-    if (!icEntry || rtTls()->method_call_ic_enabled == 0) return false;
+    if (!icEntry) return false;
     const uint64_t w0 = icEntry[0];
     if (w0 == 0) return false;
     const Value thisVal(thisBits);
@@ -522,8 +517,7 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
             return dispatchDirect(icEntry, BRONZE_ABI_METHOD_IC_EPOCH_WORD);
         }
         // WAY 1 holds a plain-receiver DIRECT entry and nothing else.
-        if (rtPolyMethodIcEnabled() &&
-            icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] == shapeWord) {
+        if (icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] == shapeWord) {
             return dispatchDirect(icEntry + BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD,
                                   BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD);
         }

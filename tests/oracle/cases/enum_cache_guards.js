@@ -7,8 +7,7 @@
 // Deliberately absent: deleting a not-yet-visited key DURING a loop. Bronze
 // enumerates a snapshot taken at loop entry (rt_enumerate.cpp's header states
 // it), so it visits such a key where a spec engine must not — a pinned-vs-node
-// case cannot hold both. The seam A/B (BRONZE_NO_ENUM_CACHE=1) covers that
-// corner instead: cache on and off build the same snapshot by construction.
+// case cannot hold both.
 
 function keysOf(o) {
   const seen = [];

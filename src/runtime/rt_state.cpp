@@ -744,21 +744,6 @@ void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteInde
 
 }  // extern "C"
 
-static thread_local bool g_envMethodIcEnabled = true;
-
-void rtSetEnvMethodIcEnabled(bool enabled) { g_envMethodIcEnabled = enabled; }
-bool rtEnvMethodIcEnabled() noexcept { return g_envMethodIcEnabled; }
-
-static thread_local bool g_exoticMethodIcEnabled = true;
-
-void rtSetExoticMethodIcEnabled(bool enabled) { g_exoticMethodIcEnabled = enabled; }
-bool rtExoticMethodIcEnabled() noexcept { return g_exoticMethodIcEnabled; }
-
-static thread_local bool g_polyMethodIcEnabled = true;
-
-void rtSetPolyMethodIcEnabled(bool enabled) { g_polyMethodIcEnabled = enabled; }
-bool rtPolyMethodIcEnabled() noexcept { return g_polyMethodIcEnabled; }
-
 // ---- the interned-native table, as the memo in front of it sees it --------
 
 uint32_t rtFunctionSingletonIndexOf(bronze_fn_code code) {

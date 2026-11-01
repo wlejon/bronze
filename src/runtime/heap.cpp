@@ -224,7 +224,9 @@ Heap::Heap() : gc_(std::make_unique<brass::gc::Heap>(bronzeHeapConfig())) {
     if (envIsOne("BRONZE_GC_POISON")) set_gc_poison(true);
     if (envIsOne("BRONZE_HEAP_VERIFY")) set_gc_verify(true);
 
-    runtime::rtReadThreadSeams();
+    // The computed-read cache's table address, published at the thread's first
+    // touch of the runtime, before any generated code on it can probe it.
+    runtime::elemCachePublish();
 
     // The ident sweep runs inside every collection of THIS heap: an address is
     // reused only across a collection, so clearing every heap ident before the
@@ -388,11 +390,7 @@ void Heap::bind_thread() {
     // brass's object header for an inline allocation, size left zero
     // (bronze_abi_tls.h, gc_cell_header).
     tls->gc_cell_header = static_cast<uint64_t>(gc_detail::layoutIds().cell) << 32;
-    // BRONZE_NO_INLINE_ALLOC=1: the window stays 0/0, no size fits, and every
-    // allocation takes its helper — the A/B seam for the inline path.
-    if (!envIsOne("BRONZE_NO_INLINE_ALLOC")) {
-        gc_->bind_allocation_buffer(reinterpret_cast<brass::gc::Heap::AllocationBuffer*>(&tls->alloc_cursor));
-    }
+    gc_->bind_allocation_buffer(reinterpret_cast<brass::gc::Heap::AllocationBuffer*>(&tls->alloc_cursor));
     bound_ = true;
 }
 

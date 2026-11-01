@@ -1,5 +1,4 @@
 #include "runtime/native_fn_memo.h"
-#include "runtime/tls_block.h"
 
 #include "runtime/fn.h"
 #include "runtime/heap.h"
@@ -36,10 +35,6 @@ thread_local CodeMemoEntry g_codeMemo[kCodeMemoEntries];
 
 }  // namespace
 
-bool rtNativeMemoEnabled() noexcept {
-    return rtTls()->fn_singleton_cache_enabled != 0;
-}
-
 namespace {
 
 // The vector's answer, or a fresh object when it has none. The name is
@@ -61,7 +56,7 @@ Value internedOrCreate(bronze_fn_code code, uint32_t arity, const char* name, ui
 }  // namespace
 
 Value rtNativeSingleton(bronze_fn_code code, uint32_t arity, const char* name, uint32_t length) {
-    if (!code || !rtNativeMemoEnabled()) return internedOrCreate(code, arity, name, length);
+    if (!code) return internedOrCreate(code, arity, name, length);
     CodeMemoEntry& e =
         g_codeMemo[static_cast<uint32_t>(mix64(reinterpret_cast<uintptr_t>(code))) &
                    (kCodeMemoEntries - 1)];

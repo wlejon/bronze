@@ -32,7 +32,6 @@ bronze_add_module(runtime
         tls_block.cpp
         heap.cpp
         heap_trace.cpp
-        thread_seams.cpp
         gc.cpp
         env.cpp
         string.cpp

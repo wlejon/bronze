@@ -38,20 +38,6 @@
 
 namespace bronze::runtime {
 
-// THE SEAM, runtime half. `BRONZE_NO_FN_STATICS_IC=1` stops both fills below,
-// so that one binary A/Bs the whole mechanism: codegen's half of the same
-// variable (llvm_prop_get.cpp, llvm_method_call.cpp) stops emitting the statics
-// arms, and this stops warming entries those arms would be the only readers of.
-// Gating only codegen would leave the fill running and let a statics entry
-// evict a plain-object way, which is a difference between the arms that is not
-// the thing being measured.
-static uint32_t g_fnStaticsIcEnabled = 1u;
-
-void fnStaticsIcReadSeam() noexcept {
-    const char* env = std::getenv("BRONZE_NO_FN_STATICS_IC");
-    g_fnStaticsIcEnabled = (env != nullptr && std::strcmp(env, "1") == 0) ? 0u : 1u;
-}
-
 // May a shape-keyed inline-cache entry describe this (function receiver,
 // statics box) pair at all? Two fills ask it: the property READ's
 // `installStaticsCacheEntry` below, and the method call's
@@ -91,7 +77,6 @@ void fnStaticsIcReadSeam() noexcept {
 // entry must not do is survive into a case where the answer does NOT come from
 // a key-to-slot map, and the refusals above are exactly those cases.
 bool rtStaticsBoxCacheable(Value fnVal, const ObjectHeader* box) noexcept {
-    if (g_fnStaticsIcEnabled == 0) return false;
     if (box == nullptr || box->shape == nullptr || !box->shape->readCacheable()) return false;
     // The intrinsic-constructor gate. `rtIntrinsicConstructorName` is true for
     // exactly the receivers `rtGlobalConstructorMember` can answer for — both
@@ -124,7 +109,7 @@ void installStaticsCacheEntry(Value fnVal, InlineCacheSite* site, ObjectHeader* 
                               const PropertyInfo& own) {
     if (site == nullptr || own.accessor) return;
     if (!rtStaticsBoxCacheable(fnVal, propsObj)) return;
-    if (InlineCache* into = site->slotForInstall(propsObj->shape, rtIcWayLimit())) {
+    if (InlineCache* into = site->slotForInstall(propsObj->shape)) {
         into->fill(propsObj->shape, own.slot, /*depth=*/0);
     }
 }

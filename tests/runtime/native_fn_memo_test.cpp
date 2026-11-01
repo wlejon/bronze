@@ -49,25 +49,10 @@ uint64_t probeCodeB(uint64_t, uint64_t, uint32_t, const uint64_t*) {
     return BRONZE_ABI_NULL_BITS;
 }
 
-struct MemoOn {
-    // `rtHeap()` first: start-up is lazy and it is what reads the BRONZE_NO_*
-    // environment, so a flag set before the first touch is put back by it.
-    MemoOn() {
-        (void)rtHeap();
-        saved = bronze_tls_block_addr()->fn_singleton_cache_enabled;
-        bronze_tls_block_addr()->fn_singleton_cache_enabled = 1;
-    }
-    ~MemoOn() { bronze_tls_block_addr()->fn_singleton_cache_enabled = saved; }
-
-private:
-    uint64_t saved = 0;
-};
-
 }  // namespace
 
 TEST_CASE("the memo answers with the object the helper interned, not another one") {
     ShadowStackFrame frame;
-    MemoOn memo;
 
     // Rooted: under BRONZE_GC_STRESS the allocations below collect, and an
     // unrooted copy of the first answer keeps the address it moved away from,
@@ -93,7 +78,6 @@ TEST_CASE("the memo answers with the object the helper interned, not another one
 
 TEST_CASE("the first creation names the object and a later call cannot rename it") {
     ShadowStackFrame frame;
-    MemoOn memo;
 
     // A THIRD code pointer, so no earlier case in this binary has interned it
     // nameless: interning is per thread for the thread's life. Its body is a
@@ -120,7 +104,6 @@ TEST_CASE("the first creation names the object and a later call cannot rename it
 
 TEST_CASE("a collection moves the function object and the memo still answers") {
     ShadowStackFrame frame;
-    MemoOn memo;
 
     (void)rtNativeSingleton(probeCodeA, 1, nullptr, 0);
     rtHeap().collect();
@@ -137,7 +120,6 @@ TEST_CASE("a collection moves the function object and the memo still answers") {
 
 TEST_CASE("an index whose code pointer no longer matches answers nothing") {
     ShadowStackFrame frame;
-    MemoOn memo;
 
     (void)rtNativeSingleton(probeCodeA, 1, nullptr, 0);
     const uint32_t idx = rtFunctionSingletonIndexOf(probeCodeA);
@@ -149,16 +131,4 @@ TEST_CASE("an index whose code pointer no longer matches answers nothing") {
     // exactly that situation, and the answer is undefined rather than B.
     CHECK(rtFunctionSingletonAt(idx, probeCodeB).isUndefined());
     CHECK(rtFunctionSingletonAt(idx + 100000u, probeCodeA).isUndefined());
-}
-
-TEST_CASE("the seam makes the memo miss without changing what it would answer") {
-    ShadowStackFrame frame;
-    MemoOn memo;
-
-    const Value warm = rtNativeSingleton(probeCodeA, 1, nullptr, 0);
-
-    bronze_tls_block_addr()->fn_singleton_cache_enabled = 0;
-    // The singleton answer is the helper's either way — the seam removes the
-    // shortcut, never the interning.
-    CHECK(rtNativeSingleton(probeCodeA, 1, nullptr, 0).rawBits() == warm.rawBits());
 }

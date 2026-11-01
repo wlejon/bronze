@@ -8,10 +8,9 @@
 // `bronze_tls_block_addr` is the ABI: generated code calls it once per
 // function prologue and LLVM CSEs the result, so from that side the call is
 // paid once and hoisted out of every loop. The runtime's own side is the
-// opposite shape — a dozen one-line predicates (`elemCacheEnabled`,
-// `rtIcWayLimit`, `directCalloutEnabled`, the root-block seam) each fetch the
-// block, read one word and return, and every one of those fetches was a call
-// through the DLL's own export thunk. The chunk-4 sampler measured
+// opposite shape — one-line readers (the interrupt word, the stack limit, the
+// allocation cursor) each fetch the block, read one word and return, and every
+// one of those fetches was a call through the DLL's own export thunk. The chunk-4 sampler measured
 // `bronze_tls_block_addr` at 0.94 % of the `many_meshes` frame, which is what
 // a call that should have been three instructions costs at that rate.
 //
@@ -30,11 +29,6 @@ extern thread_local bronze_tls_block g_tls_block;
 inline bronze_tls_block* rtTls() noexcept {
     return &g_tls_block;
 }
-
-// Reads every BRONZE_NO_* seam into the calling thread's block
-// (thread_seams.cpp). Heap's constructor calls it, so it runs at a thread's
-// first touch of the runtime.
-void rtReadThreadSeams();
 
 // ---- the stack limit and interrupts ------------------------------------------
 //

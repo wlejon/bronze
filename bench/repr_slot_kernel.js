@@ -1,10 +1,8 @@
 // The per-slot representation, hammered.
 //
 // Every field below is pinned `number` (bench/pins/repr-slot-kernel.pins), so
-// under BRONZE_NO_SLOT_REPR unset every one of them is born a DOUBLE slot and
-// every store in the loop goes through the representation store path. With the
-// seam set they are ordinary boxed slots and this is the same program on the
-// storage model bronze had before the stage. The checksum must be identical.
+// every one of them is born a DOUBLE slot and every store in the loop goes
+// through the representation store path.
 //
 // `Bag` is deliberately not `Vec`: one class whose four fields all fit the
 // inline slots, one whose fields spill into the out-of-line block, so both

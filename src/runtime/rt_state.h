@@ -131,31 +131,4 @@ void rtDropModuleCellsWithin(const void* begin, size_t size);
 // the thread's and shared).
 void rtDropRealmFunctionSingletons(uint32_t realmSlot);
 
-// BRONZE_NO_ENV_METHOD_IC=1 (read where every other seam is, heap.cpp's TLS
-// init) gates the INSTALL of the two env-capable method-IC forms — the
-// env-carrying direct latch and the own-slot latch — and nothing else, so one
-// binary A/Bs the mechanism: with the seam down the helper latches exactly
-// the env-free entries it always did, and the generated hit path, which
-// handles all three forms unconditionally, simply never sees the new two.
-void rtSetEnvMethodIcEnabled(bool enabled);
-bool rtEnvMethodIcEnabled() noexcept;
-
-// BRONZE_NO_EXOTIC_METHOD_IC=1 (read beside the seam above) gates the INSTALL
-// of the exotic-receiver method-IC form — the kind-guarded direct entry an
-// Array or collection (Map/Set/WeakMap/WeakSet) receiver latches — and nothing
-// else. Latch-side only, for the same reason the env seam is: the generated
-// hit path's exotic arm can only match an entry this latch wrote, so with the
-// seam down the arm is dead and the helper serves every exotic receiver, which
-// is exactly the pre-mechanism behaviour.
-void rtSetExoticMethodIcEnabled(bool enabled);
-bool rtExoticMethodIcEnabled() noexcept;
-
-// BRONZE_NO_POLY_METHOD_IC=1 gates way-1 DISPLACEMENT at the method-call
-// latch — with it down, an overwritten way-0 entry is simply lost, exactly
-// the pre-poly behaviour — and nothing else: the generated way-1 compare can
-// only match a shape the displacement wrote, so an empty way 1 keeps the arm
-// dead. Latch-side for the same one-binary A/B reason the two seams above.
-void rtSetPolyMethodIcEnabled(bool enabled);
-bool rtPolyMethodIcEnabled() noexcept;
-
 }  // namespace bronze::runtime

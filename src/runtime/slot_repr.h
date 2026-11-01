@@ -41,14 +41,10 @@
 // WHERE A DOUBLE SLOT COMES FROM. Only from an ELIGIBLE key whose first store
 // is a number. Eligibility is the compiler's `--pins` manifest, handed over at
 // module init as a list of names (`bronze_register_slot_repr`): a field pinned
-// `number` on a class whose layout the compilation proved. Under
-// `BRONZE_SLOT_REPR_OBSERVED=1` every key is eligible instead, which is the
-// unpinned "first store was a double" policy — implemented, off by default,
-// because an unpinned program has no promise to hold the store paths to and a
-// key that alternates costs a shape split each time it turns over.
-//
-// THE SEAM. `BRONZE_NO_SLOT_REPR=1` makes `slotReprEnabled()` false, no shape
-// node is ever created double, and every `double_slots` word stays zero.
+// `number` on a class whose layout the compilation proved. An unpinned key is
+// never eligible: an unpinned program has no promise to hold the store paths
+// to, and a key that alternates would cost a shape split each time it turned
+// over.
 
 #include <cstdint>
 
@@ -92,23 +88,11 @@ inline Value slotReprCanonicalize(Value v) noexcept {
 
 namespace bronze::runtime {
 
-// THE SEAM. False under `BRONZE_NO_SLOT_REPR=1`; read once per process and
-// cached, so asking is a load off a global.
-bool slotReprEnabled() noexcept;
-// `BRONZE_SLOT_REPR_OBSERVED=1`: every key is eligible, not only the pinned
-// ones. Implies `slotReprEnabled`.
-bool slotReprObservesUnpinned() noexcept;
-
-// Testing seams. `slotReprSetEnabledForTesting` overrides the env var for the
-// life of the process; `slotReprResetForTesting` also forgets every registered
-// eligible key and zeroes the counters.
-void slotReprSetEnabledForTesting(bool enabled) noexcept;
-void slotReprSetObservesUnpinnedForTesting(bool enabled) noexcept;
+// For tests: forgets every registered eligible key and zeroes the counters.
 void slotReprResetForTesting();
 
 // May a slot first installed under `key` be born double? The pinned-name list
-// `bronze_register_slot_repr` handed over, or everything under the observed
-// policy. Asked once per shape NODE CREATION — a cold path — so a linear scan
+// `bronze_register_slot_repr` handed over. Asked once per shape NODE CREATION — a cold path — so a linear scan
 // over the (few dozen) registered names is the whole implementation.
 bool slotReprEligible(PropertyKey key) noexcept;
 

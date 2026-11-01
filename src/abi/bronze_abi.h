@@ -390,21 +390,11 @@ typedef struct bronze_code_range {
  *    object fits — it can never collect — and every miss falls back to the
  *    allocating helper, which collects when it must. Under a stress mode the
  *    collector keeps the window empty so every allocation reaches it. Zero/
- *    zero is the initial and the BRONZE_NO_INLINE_ALLOC=1 state: the
- *    unsigned subtraction limit-cursor is then 0, no size fits, and the fast
- *    path is dormant.
+ *    zero is the initial state: the unsigned subtraction limit-cursor is
+ *    then 0, no size fits, and the fast path is dormant.
  *
  *  - plain_shape: the plain object root shape pointer for inline object
  *    creation.
- *
- *  - inline_call_enabled / array_method_ic_enabled /
- *    inline_overflow_set_enabled / inline_accessor_enabled / poly_ic_enabled
- *    / negative_ic_enabled: the inline fast-path enable flags, 1 by default,
- *    each set to 0 per thread under its BRONZE_NO_* environment variable
- *    (BRONZE_NO_INLINE_CALL, BRONZE_NO_ARRAY_METHOD_IC,
- *    BRONZE_NO_INLINE_OVERFLOW_SET, BRONZE_NO_INLINE_ACCESSOR,
- *    BRONZE_NO_POLY_IC, BRONZE_NO_NEG_IC) so one binary can A/B test each
- *    inline path against its helper.
  */
 
 #include "abi/bronze_abi_tls.h"

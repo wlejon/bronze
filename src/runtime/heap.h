@@ -428,9 +428,8 @@ public:
 
     // Makes this the calling thread's heap for generated code and brass's
     // runtime: brass's current heap (its interpreters' roots and memory checks),
-    // and — unless BRONZE_NO_INLINE_ALLOC=1 — the inline-allocation window in
-    // the thread's bronze_tls_block, which becomes this heap's young bump
-    // region. rtHeap() calls it once per thread.
+    // and the inline-allocation window in the thread's bronze_tls_block, which
+    // becomes this heap's young bump region. rtHeap() calls it once per thread.
     void bind_thread();
 
 private:

@@ -24,27 +24,8 @@
 // onto the shadow stack for the block's lifetime, the only allocation between
 // a copy and its rooting is still C++'s and never the bronze heap's, and a
 // block is still sized once and never resized.
-//
-// Seam: BRONZE_NO_INLINE_ROOTS=1 makes every block take the heap even when it
-// would fit inline, which reproduces the old shape in the same binary.
 
 namespace bronze {
-
-// Whether a block may use its inline storage. Read once per block, from the
-// thread's own ABI word through runtime/tls_block.h's inline accessor — this
-// path cannot afford the call that `bronze_tls_block_addr` used to be, which
-// is why that accessor exists.
-//
-// The word is lowered by Heap's constructor, which runs on a thread's FIRST
-// touch of the runtime — so the entry frame an embed API function opens before
-// that touch reads the default and keeps its inline storage even with the seam
-// down. That is one frame per thread out of the millions the A/B is about, and
-// it is stated here rather than worked around because the alternative — a
-// second, earlier place that reads the environment — is a second answer to
-// "what is this seam set to".
-inline bool inlineRootsEnabled() noexcept {
-    return runtime::g_tls_block.inline_roots_enabled != 0;
-}
 
 // How many slot POINTERS a shadow-stack frame holds inline.
 //
@@ -82,16 +63,7 @@ void recordRootBlockSpill(uint32_t count) noexcept;
 // through `data()` every time — and to every root already pushed.
 class RootSlotList {
 public:
-    RootSlotList() noexcept {
-        if (!inlineRootsEnabled()) {
-            // The seam, and it has to be spelled this way rather than as a
-            // branch inside push(): what the A/B has to reproduce is a list
-            // that owns no inline storage at all, so the very first push
-            // allocates the way push_back did.
-            slots_ = nullptr;
-            capacity_ = 0;
-        }
-    }
+    RootSlotList() noexcept = default;
 
     ~RootSlotList() {
         if (slots_ != inline_) std::free(slots_);
@@ -151,19 +123,11 @@ private:
 class RootValueBlock {
 public:
     explicit RootValueBlock(uint32_t count) : count_(count) {
-        if (count <= kRootBlockInline && inlineRootsEnabled()) {
+        if (count <= kRootBlockInline) {
             slots_ = inline_;
             return;
         }
-        if (count > kRootBlockInline) recordRootBlockSpill(count);
-        // A zero-length block still needs a non-null, never-dereferenced
-        // address for `data()`; malloc(0) may answer null, so the inline
-        // buffer stands in and the destructor's `!= inline_` test frees
-        // nothing.
-        if (count == 0) {
-            slots_ = inline_;
-            return;
-        }
+        recordRootBlockSpill(count);
         slots_ = static_cast<Value*>(std::malloc(sizeof(Value) * count));
         if (!slots_) blockAllocationFailed(count);
     }

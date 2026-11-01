@@ -76,14 +76,14 @@ bool requireWeakCollection(Value self, const char* method) {
 // ---- the methods ------------------------------------------------------------
 
 uint64_t weakMapGet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    // The allocation-free prologue (seam: BRONZE_NO_MAP_FAST=1), and the
+    // The allocation-free prologue, and the
     // hottest lookup the runtime serves: three.js's renderer keeps its
     // per-object state in a WeakMap it consults per object per frame. An
     // OBJECT key against a valid index probes with no allocation anywhere, so
     // the rooted argument copy defends nothing; a symbol key (whose
     // CanBeHeldWeakly answer consults the registry), a stale index, and every
     // refused receiver fall through to the full path and its exact answers.
-    if (rtTls()->map_fast_enabled != 0 && argc >= 1) {
+    if (argc >= 1) {
         Value selfV{Value(thisBits)};
         Value keyV{Value(argv[0])};
         if (isWeakCollection(selfV) && keyV.isObject()) {
@@ -136,8 +136,8 @@ uint64_t weakSetAdd(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
 }
 
 uint64_t weakMapHas(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
-    // As weakMapGet's fast prologue. Seam: BRONZE_NO_MAP_FAST=1.
-    if (rtTls()->map_fast_enabled != 0 && argc >= 1) {
+    // As weakMapGet's fast prologue.
+    if (argc >= 1) {
         Value selfV{Value(thisBits)};
         Value keyV{Value(argv[0])};
         if (isWeakCollection(selfV) && keyV.isObject()) {

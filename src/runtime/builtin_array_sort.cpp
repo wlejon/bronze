@@ -57,44 +57,65 @@ void setAt(Rooted<Value>& arr, uint32_t i, Value v) {
     arr.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, val);
 }
 
-// 23.1.3.30.2 CompareArrayElements. -1 / 0 / +1; a comparator's throw
-// propagates through the sort, before any write-back has begun.
-int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn,
-                    const DirectCallee& direct) {
-    const bool xu = x.get().isUndefined();
-    const bool yu = y.get().isUndefined();
+// ---- the merge engine --------------------------------------------------------
+//
+// A Rooted per element per comparison would be a TLS read, a frame push and a
+// frame pop each: three.js's render list is a 5,000-element sort with a user
+// comparator every frame, ~61,000 comparisons. So the engine roots THREE slots
+// once per sort and assigns into them: a rooted slot's Value can be
+// overwritten freely, the collector reads it through the frame either way, and
+// no rooting-contract rule says a slot must die with its expression. Element
+// reads and the in-range destination write re-derive their ArrayHeader
+// through the roots AFTER every window where user code can run (the
+// comparator, and a ToNumber/ToString that reaches a valueOf), and the
+// destination write is in place by construction — both buffers are presized
+// to itemCount, so no growth edge exists for the merge to cross.
+struct SortSlots {
+    Rooted<Value> a;
+    Rooted<Value> b;
+    Rooted<Value> answer;
+};
+
+// 23.1.3.30.2 CompareArrayElements over the slots' `a` and `b`. -1 / 0 / +1; a
+// comparator's throw propagates through the sort, before any write-back has
+// begun.
+int compareElements(SortSlots& s, Rooted<Value>& comparefn, const DirectCallee& direct) {
+    const bool xu = s.a.get().isUndefined();
+    const bool yu = s.b.get().isUndefined();
     // Steps 1-3: undefined sorts to the END, and two undefineds do not move
     // relative to each other — the comparator is never consulted about one.
     if (xu && yu) return 0;
     if (xu) return 1;
     if (yu) return -1;
     if (!comparefn.get().isUndefined()) {
-        Value block[2] = {x.get(), y.get()};
+        Value block[2] = {s.a.get(), s.b.get()};
         // The comparator was bound ONCE, before the first merge: what
         // `bronze_dynamic_call` would re-derive per comparison — object,
         // function rather than proxy, arity reached — is a fact about a value
-        // the sort holds and nothing can change under it. On three.js's render
-        // list that ladder ran 54,000 times a frame for one answer.
-        // `call_out.h` says what the binding may and may not cache.
-        Rooted<Value> answer{
-            direct.bound()
-                ? Value(direct.call(comparefn, BRONZE_ABI_UNDEFINED_BITS, 2,
-                                    reinterpret_cast<const uint64_t*>(block)))
-                : Value(bronze_dynamic_call(comparefn.get().rawBits(),
-                                            BRONZE_ABI_UNDEFINED_BITS, 2,
-                                            reinterpret_cast<const uint64_t*>(block)))};
+        // the sort holds and nothing can change under it. `call_out.h` says
+        // what the binding may and may not cache.
+        s.answer = direct.bound()
+                       ? Value(direct.call(comparefn, BRONZE_ABI_UNDEFINED_BITS, 2,
+                                           reinterpret_cast<const uint64_t*>(block)))
+                       : Value(bronze_dynamic_call(comparefn.get().rawBits(),
+                                                   BRONZE_ABI_UNDEFINED_BITS, 2,
+                                                   reinterpret_cast<const uint64_t*>(block)));
+        const Value ans = s.answer.get();
         // Step 4.b-4.d: ToNumber, with NaN read as "equal" rather than as an
         // ordering — which is what keeps a garbage comparator from making the
-        // sort loop forever.
-        const double v = rtToNumber(answer.get());
+        // sort loop forever. A number answer — the whole population for a
+        // well-typed comparator — is its own ToNumber; anything else keeps the
+        // spec'd conversion, through the root, because a valueOf can run and
+        // allocate.
+        const double v = ans.isNumber() ? ans.asNumber() : rtToNumber(ans);
         if (v < 0) return -1;
         if (v > 0) return 1;
         return 0;
     }
     // Steps 5-9: ToString on BOTH (through ToPrimitive, so an object element
     // runs its own toString and can throw), then a code-unit comparison.
-    Rooted<Value> xs{rtToStringValue(x)};
-    Rooted<Value> ys{rtToStringValue(y)};
+    Rooted<Value> xs{rtToStringValue(s.a)};
+    Rooted<Value> ys{rtToStringValue(s.b)};
     const StringHeader* a = xs.get().asString<StringHeader>();
     const StringHeader* b = ys.get().asString<StringHeader>();
     if (a->lessThan(*b)) return -1;
@@ -105,87 +126,9 @@ int compareElements(Rooted<Value>& x, Rooted<Value>& y, Rooted<Value>& comparefn
 // One merge of src[lo, mid) and src[mid, hi) into dst[lo, hi). Stability is
 // the `<= 0` below: on a tie the LEFT run's element goes first, and the left
 // run is the one that came first in the input.
-void mergeRuns(Rooted<Value>& src, Rooted<Value>& dst, uint32_t lo, uint32_t mid, uint32_t hi,
-               const DirectCallee& direct,
+void mergeRuns(SortSlots& s, Rooted<Value>& src, Rooted<Value>& dst, uint32_t lo,
+               uint32_t mid, uint32_t hi, const DirectCallee& direct,
                Rooted<Value>& comparefn) {
-    uint32_t i = lo;
-    uint32_t j = mid;
-    for (uint32_t k = lo; k < hi; ++k) {
-        bool takeLeft;
-        if (i >= mid) {
-            takeLeft = false;
-        } else if (j >= hi) {
-            takeLeft = true;
-        } else {
-            Rooted<Value> a{getAt(src, i)};
-            Rooted<Value> b{getAt(src, j)};
-            takeLeft = compareElements(a, b, comparefn, direct) <= 0;
-        }
-        setAt(dst, k, getAt(src, takeLeft ? i++ : j++));
-    }
-}
-
-// ---- the hoisted-roots merge engine (seam: BRONZE_NO_SORT_FAST=1) ----------
-//
-// The loop above pays four Rooted constructions per comparison — `a`, `b`,
-// compareElements' `answer`, and setAt's `val` — and each is a TLS read, a
-// frame push and a frame pop. three.js's render list is a 5,000-element sort
-// with a user comparator every frame, ~61,000 comparisons, and the chunk-6
-// sampler put ~1.5 ms of a 45 ms frame in exactly this churn (the whole sort
-// path was 2.5 ms/frame inclusive against ~1.0 ms of actual comparator).
-//
-// So the fast engine roots THREE slots once per sort and assigns into them:
-// a rooted slot's Value can be overwritten freely, the collector reads it
-// through the frame either way, and no rooting-contract rule says a slot must
-// die with its expression. Element reads and the in-range destination write
-// re-derive their ArrayHeader through the roots AFTER every window where user
-// code can run (the comparator, and a ToNumber/ToString that reaches a
-// valueOf), and the destination write is in place by construction — both
-// buffers are presized to itemCount, so no growth edge exists for the merge
-// to cross. Comparison semantics (23.1.3.30.2) are byte-identical to
-// compareElements above; the number-answer case just skips the out-of-line
-// rtToNumber call a number never needed.
-struct SortSlots {
-    Rooted<Value> a;
-    Rooted<Value> b;
-    Rooted<Value> answer;
-};
-
-int compareElementsFast(SortSlots& s, Rooted<Value>& comparefn, const DirectCallee& direct) {
-    const bool xu = s.a.get().isUndefined();
-    const bool yu = s.b.get().isUndefined();
-    if (xu && yu) return 0;
-    if (xu) return 1;
-    if (yu) return -1;
-    if (!comparefn.get().isUndefined()) {
-        Value block[2] = {s.a.get(), s.b.get()};
-        s.answer = direct.bound()
-                       ? Value(direct.call(comparefn, BRONZE_ABI_UNDEFINED_BITS, 2,
-                                           reinterpret_cast<const uint64_t*>(block)))
-                       : Value(bronze_dynamic_call(comparefn.get().rawBits(),
-                                                   BRONZE_ABI_UNDEFINED_BITS, 2,
-                                                   reinterpret_cast<const uint64_t*>(block)));
-        const Value ans = s.answer.get();
-        // A number answer — the whole population for a well-typed comparator —
-        // is its own ToNumber; anything else keeps the spec'd conversion,
-        // through the root, because a valueOf can run and allocate.
-        const double v = ans.isNumber() ? ans.asNumber() : rtToNumber(ans);
-        if (v < 0) return -1;
-        if (v > 0) return 1;
-        return 0;
-    }
-    Rooted<Value> xs{rtToStringValue(s.a)};
-    Rooted<Value> ys{rtToStringValue(s.b)};
-    const StringHeader* a = xs.get().asString<StringHeader>();
-    const StringHeader* b = ys.get().asString<StringHeader>();
-    if (a->lessThan(*b)) return -1;
-    if (b->lessThan(*a)) return 1;
-    return 0;
-}
-
-void mergeRunsFast(SortSlots& s, Rooted<Value>& src, Rooted<Value>& dst, uint32_t lo,
-                   uint32_t mid, uint32_t hi, const DirectCallee& direct,
-                   Rooted<Value>& comparefn) {
     uint32_t i = lo;
     uint32_t j = mid;
     for (uint32_t k = lo; k < hi; ++k) {
@@ -198,7 +141,7 @@ void mergeRunsFast(SortSlots& s, Rooted<Value>& src, Rooted<Value>& dst, uint32_
             auto* sh = src.get().asObject<ArrayHeader>();
             s.a = sh->getElem(i);
             s.b = sh->getElem(j);
-            takeLeft = compareElementsFast(s, comparefn, direct) <= 0;
+            takeLeft = compareElements(s, comparefn, direct) <= 0;
         }
         // Both headers re-derived here, AFTER the comparator window; the
         // destination write is in place (k < itemCount == dst's length), so
@@ -226,20 +169,13 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     const bool isArr = isArray(self.get());
     const uint32_t len = isArr ? self.get().asObject<ArrayHeader>()->length : rtArrayLikeLength(self);
 
-    const bool fastEngine = rtTls()->sort_fast_enabled != 0;
-
     // SortIndexedProperties with SKIP-HOLES: what is sorted is the elements
     // that are THERE. A hole is not an undefined — undefined is in the list
     // and sorts to its end; a hole is absent from it and reappears after the
     // items, as the deletes at the bottom.
     //
-    // The fast engine presizes the snapshot to `len`: the appends below then
-    // never grow, where the growing shape reallocated-and-copied its way up
-    // the doubling ladder once per sort — a dozen allocations per frame on a
-    // render list, all of them GC pressure the sort itself caused.
-    Rooted<Value> list{fastEngine
-                           ? Value::fromObject(ArrayHeader::create(rtHeap(), len > 4 ? len : 4))
-                           : Value(bronze_create_array(0))};
+    // The snapshot is presized to `len`, so the appends below never grow it.
+    Rooted<Value> list{Value::fromObject(ArrayHeader::create(rtHeap(), len > 4 ? len : 4))};
     // A hole the chain answers is an item (HasProperty), which the generic
     // read takes.
     if (isArr && !rtArrayChainHoldsIndex(self.get())) {
@@ -262,14 +198,9 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     // length: O(n log n), stable, and no recursion for a comparator to blow
     // the C++ stack through.
     //
-    // The fast engine takes the scratch at length `itemCount` directly: every
-    // full merge pass writes every slot of its destination before anything
-    // reads it, so the undefined-fill below only exists to establish the
-    // length the legacy setAt appends needed.
-    Rooted<Value> scratch{Value(bronze_create_array(fastEngine ? itemCount : 0))};
-    if (!fastEngine) {
-        for (uint32_t i = 0; i < itemCount; ++i) setAt(scratch, i, Value::fromUndefined());
-    }
+    // The scratch is taken at length `itemCount` directly: every full merge
+    // pass writes every slot of its destination before anything reads it.
+    Rooted<Value> scratch{Value(bronze_create_array(itemCount))};
 
     // Bound once for the whole sort, and only once: a comparator cannot turn
     // into something else between two comparisons, so the guard ladder
@@ -284,14 +215,10 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     // says. Before this, the window BETWEEN two comparator calls reported the
     // enclosing constructor's new.target to a `valueOf` the constructor never
     // constructed.
-    //
-    // Deliberately OUTSIDE the seam: it is a correctness fix that stands on
-    // its own, and BRONZE_NO_DIRECT_CALLOUT=1 has to be a pure performance A/B
-    // — a seam that also moved an answer could not be used to measure one.
     NewTargetScope sortTargetScope(Value::fromUndefined());
 
-    // The fast engine's three slots, rooted once for the whole sort — the
-    // merge loops assign into them instead of opening roots per comparison.
+    // Three slots, rooted once for the whole sort — the merge loops assign
+    // into them instead of opening roots per comparison.
     SortSlots slots;
 
     Rooted<Value>* src = &list;
@@ -300,11 +227,7 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
         for (uint32_t lo = 0; lo < itemCount; lo += 2 * width) {
             const uint32_t mid = lo + width < itemCount ? lo + width : itemCount;
             const uint32_t hi = lo + 2 * width < itemCount ? lo + 2 * width : itemCount;
-            if (fastEngine) {
-                mergeRunsFast(slots, *src, *dst, lo, mid, hi, direct, comparefn);
-            } else {
-                mergeRuns(*src, *dst, lo, mid, hi, direct, comparefn);
-            }
+            mergeRuns(slots, *src, *dst, lo, mid, hi, direct, comparefn);
             // A comparator that threw ends the SORT, not just the merge — and
             // the receiver has not been written, so the array the catch sees
             // is the array the program had.

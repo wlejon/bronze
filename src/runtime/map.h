@@ -136,8 +136,7 @@ struct MapHeader {
     static uint32_t find(Heap& heap, Rooted<Value>& self, Rooted<Value>& key);
 
     // The allocation-free half of `find`, for a lookup that wants to skip the
-    // rooted prologue entirely (seam: BRONZE_NO_MAP_FAST=1, checked by the
-    // CALLER so the seam covers the whole fast prologue). Answers true — with
+    // rooted prologue entirely. Answers true — with
     // `slot` set to the entry index or UINT32_MAX for a miss — only when the
     // probe provably cannot allocate: the map is empty, or the index is
     // present and both its epoch and its anchor still agree that nothing has

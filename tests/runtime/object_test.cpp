@@ -422,53 +422,24 @@ TEST_CASE("a site holds several shapes, and the fifth rotates the oldest out") {
     // The fifth evicts the least recently installed -- way 3, which is objs[0].
     CHECK(objs[4]->getProp(heap, key, &site).asNumber() == 5.0);
     CHECK(site.ways[0].cached_shape == objs[4]->shape);
-    CHECK(site.find(objs[0]->shape, BRONZE_ABI_IC_WAYS) == nullptr);
+    CHECK(site.find(objs[0]->shape) == nullptr);
     for (uint32_t i = 1; i < 5; ++i) {
-        CHECK(site.find(objs[i]->shape, BRONZE_ABI_IC_WAYS) != nullptr);
+        CHECK(site.find(objs[i]->shape) != nullptr);
     }
 
     // Re-reading a shape a way already names must REWRITE that way rather than
     // evict three healthy entries to say the same thing about a fourth.
-    InlineCache* before = site.find(objs[2]->shape, BRONZE_ABI_IC_WAYS);
+    InlineCache* before = site.find(objs[2]->shape);
     CHECK(objs[2]->getProp(heap, key, &site).asNumber() == 3.0);
-    CHECK(site.find(objs[2]->shape, BRONZE_ABI_IC_WAYS) == before);
+    CHECK(site.find(objs[2]->shape) == before);
     for (uint32_t i = 1; i < 5; ++i) {
-        CHECK(site.find(objs[i]->shape, BRONZE_ABI_IC_WAYS) != nullptr);
+        CHECK(site.find(objs[i]->shape) != nullptr);
     }
 
     // Every answer is still the receiver's own, whatever the ways hold.
     for (uint32_t i = 0; i < 5; ++i) {
         CHECK(objs[i]->getProp(heap, key, &site).asNumber() == static_cast<double>(i) + 1.0);
     }
-}
-
-TEST_CASE("BRONZE_NO_POLY_IC narrows a site to one way, reader and writer alike") {
-    NonMovingArena arena;
-    Heap heap;
-    ShadowStackFrame frame;
-
-    Rooted<Value> key(Value::fromString(StringHeader::createFromUTF8(heap, "v")));
-    Rooted<Value> pad(Value::fromString(StringHeader::createFromUTF8(heap, "pad")));
-    Rooted<Value> zero(Value::fromDouble(0));
-    Rooted<Value> one(Value::fromDouble(1));
-    Rooted<Value> two(Value::fromDouble(2));
-
-    Rooted<ObjectHeader*> a(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
-    Rooted<ObjectHeader*> b(ObjectHeader::create(heap, arena, Shape::createRoot(arena)));
-    b.set(b.get()->setProp(heap, arena, pad, zero));
-    a.set(a.get()->setProp(heap, arena, key, one));
-    b.set(b.get()->setProp(heap, arena, key, two));
-
-    bronze_tls_block_addr()->poly_ic_enabled = 0;
-    InlineCacheSite site{};
-    CHECK(a.get()->getProp(heap, key, &site).asNumber() == 1.0);
-    CHECK(b.get()->getProp(heap, key, &site).asNumber() == 2.0);
-    // The second install overwrote the first rather than moving into way 1: the
-    // seam has to narrow the WRITER as well, or ways the reader will not look
-    // at would fill with entries the seam is supposed to have prevented.
-    CHECK(site.ways[0].cached_shape == b.get()->shape);
-    CHECK(site.ways[1].cached_shape == nullptr);
-    bronze_tls_block_addr()->poly_ic_enabled = 1;
 }
 
 TEST_CASE("an absent read is recorded, and the epoch is what retires it") {
@@ -667,18 +638,18 @@ TEST_CASE("a property read fills and hits the site its caller brings") {
     InlineCacheSite siteStorage{};
     InlineCacheSite* site = &siteStorage;
     auto* entry = reinterpret_cast<uint64_t*>(site);
-    CHECK(site->find(inst.get()->shape, rtIcWayLimit()) == nullptr);
+    CHECK(site->find(inst.get()->shape) == nullptr);
 
     // A read with no site answers and leaves the site untouched: nothing else
     // is filled on its behalf.
     CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, nullptr))
               .asNumber() == 1.0);
-    CHECK(site->find(inst.get()->shape, rtIcWayLimit()) == nullptr);
+    CHECK(site->find(inst.get()->shape) == nullptr);
 
     // The read fills the caller's site at the depth the walk found the holder.
     CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, entry))
               .asNumber() == 1.0);
-    InlineCache* way = site->find(inst.get()->shape, rtIcWayLimit());
+    InlineCache* way = site->find(inst.get()->shape);
     REQUIRE(way != nullptr);
     CHECK(way->realDepth() == 1);
     CHECK(way->describes(inst.get()->shape));
@@ -699,7 +670,7 @@ TEST_CASE("a property read fills and hits the site its caller brings") {
     CHECK(inst.get()->shape != shapeBefore);
     CHECK(Value(bronze_prop_get(Value::fromObject(inst.get()).rawBits(), keyIndex, entry))
               .asNumber() == 3.0);
-    InlineCache* ownWay = site->find(inst.get()->shape, rtIcWayLimit());
+    InlineCache* ownWay = site->find(inst.get()->shape);
     REQUIRE(ownWay != nullptr);
     CHECK(ownWay->realDepth() == 0);
 
@@ -707,7 +678,7 @@ TEST_CASE("a property read fills and hits the site its caller brings") {
     // prototype mutation retires it through the epoch: `describes` refuses
     // the way until a walk refills it.
     Rooted<ObjectHeader*> other(ObjectHeader::create(heap, arena, shapeBefore));
-    InlineCache* protoWay = site->find(shapeBefore, rtIcWayLimit());
+    InlineCache* protoWay = site->find(shapeBefore);
     REQUIRE(protoWay != nullptr);
     CHECK(protoWay->describes(shapeBefore));
     Rooted<Value> unrelatedKey(runtime::rtMakeString("keySiteOther"));
@@ -716,7 +687,7 @@ TEST_CASE("a property read fills and hits the site its caller brings") {
     CHECK_FALSE(protoWay->describes(shapeBefore));
     CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex, entry))
               .asNumber() == 2.0);
-    CHECK(site->find(shapeBefore, rtIcWayLimit())->describes(shapeBefore));
+    CHECK(site->find(shapeBefore)->describes(shapeBefore));
 
     // A SECOND site for the same key starts empty: sites are the caller's,
     // never shared by key.
@@ -724,8 +695,8 @@ TEST_CASE("a property read fills and hits the site its caller brings") {
     CHECK(Value(bronze_prop_get(Value::fromObject(other.get()).rawBits(), keyIndex,
                                 reinterpret_cast<uint64_t*>(&otherSite)))
               .asNumber() == 2.0);
-    CHECK(otherSite.find(shapeBefore, rtIcWayLimit()) != nullptr);
-    CHECK(otherSite.find(inst.get()->shape, rtIcWayLimit()) == nullptr);
+    CHECK(otherSite.find(shapeBefore) != nullptr);
+    CHECK(otherSite.find(inst.get()->shape) == nullptr);
 }
 
 TEST_CASE("Object.setPrototypeOf and __proto__ on Array update prototype properly") {

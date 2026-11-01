@@ -23,20 +23,12 @@ using namespace bronze;
 
 namespace {
 
-// The eligible-name registry and the seam are process-wide, and doctest runs
-// every case in one process — so a case that registered `x` and left would give
-// an unrelated case's `x` a double slot. Every case opens with one of these.
+// The eligible-name registry is process-wide, and doctest runs every case in
+// one process — so a case that registered `x` and left would give an unrelated
+// case's `x` a double slot. Every case opens with one of these.
 struct ReprScope {
-    ReprScope() {
-        runtime::slotReprResetForTesting();
-        runtime::slotReprSetEnabledForTesting(true);
-        runtime::slotReprSetObservesUnpinnedForTesting(false);
-    }
-    ~ReprScope() {
-        runtime::slotReprResetForTesting();
-        runtime::slotReprSetEnabledForTesting(true);
-        runtime::slotReprSetObservesUnpinnedForTesting(false);
-    }
+    ReprScope() { runtime::slotReprResetForTesting(); }
+    ~ReprScope() { runtime::slotReprResetForTesting(); }
 };
 
 // Registers `name` as a pinned-number field, the way
@@ -400,41 +392,6 @@ TEST_CASE("an accessor never takes a double slot") {
     // The accessor pair takes slots 1 and 2; only the pinned data slot is a
     // double.
     CHECK(shape->double_slots == 1u);
-}
-
-TEST_CASE("the seam turns the whole mechanism off") {
-    ReprScope scope;
-    ShadowStackFrame frame;
-    Heap& heap = runtime::rtHeap();
-    pin("x");
-    runtime::slotReprSetEnabledForTesting(false);
-
-    Rooted<Value> obj{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(),
-                                                             freshRoot()))};
-    setProp(heap, obj, "x", Value::fromDouble(1.5));
-    Shape* shape = obj.get().asObject<ObjectHeader>()->shape;
-    CHECK(shape->double_slots == 0u);
-    CHECK(shape->repr == SlotRepr::Boxed);
-    CHECK_FALSE(shape->hasDoubleSlots());
-    CHECK(getProp(heap, obj, "x").asNumber() == 1.5);
-
-    // And nothing to take back: a non-number store is an ordinary slot write.
-    const uint64_t before = runtime::slotReprCounters().generalizations;
-    setProp(heap, obj, "x", Value::fromNull());
-    CHECK(runtime::slotReprCounters().generalizations == before);
-    CHECK(obj.get().asObject<ObjectHeader>()->shape == shape);
-}
-
-TEST_CASE("the observed-unpinned policy makes every key eligible") {
-    ReprScope scope;
-    ShadowStackFrame frame;
-    Heap& heap = runtime::rtHeap();
-    runtime::slotReprSetObservesUnpinnedForTesting(true);
-
-    Rooted<Value> obj{Value::fromObject(ObjectHeader::create(heap, runtime::rtArena(),
-                                                             freshRoot()))};
-    setProp(heap, obj, "nothing_pinned_this", Value::fromDouble(1.5));
-    CHECK(obj.get().asObject<ObjectHeader>()->shape->slotIsDouble(0));
 }
 
 TEST_CASE("a set-site cache filled with a double slot says so") {

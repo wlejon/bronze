@@ -133,7 +133,7 @@ public:
     // is created (`parent->double_slots | this node's bit`) and never changed —
     // shape nodes are immutable, and this word is the reason the collector can
     // answer "which of your slots must I not trace" with one load instead of a
-    // walk. Always zero on a dictionary shape and under BRONZE_NO_SLOT_REPR=1.
+    // walk. Always zero on a dictionary shape.
     uint64_t double_slots{0};
     // The representation of the ONE slot this node owns. `double_slots` cannot
     // say which node introduced a bit, and both the generalization rebuild and

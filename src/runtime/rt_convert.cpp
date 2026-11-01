@@ -617,8 +617,7 @@ static_assert(BRONZE_ABI_NUMBER_MAX_BITS <
 bool bronze_strict_eq(uint64_t aBits, uint64_t bBits) {
     // The attribution for this chunk's fast/slow split: with the inline arms
     // emitted, the only `===` that arrives here has a String or a BigInt on
-    // the left, so this count IS the residue and BRONZE_NO_STRICT_EQ_INLINE=1
-    // measures what the arms took away.
+    // the left, so this count IS the residue.
     recordHelperCall("bronze_strict_eq");
     Value a(aBits);
     Value b(bBits);

@@ -77,16 +77,6 @@ constexpr size_t kDescFieldCount = 6;
 constexpr const char* kDescFieldNames[kDescFieldCount] = {"enumerable", "configurable", "value",
                                                           "writable",   "get",          "set"};
 
-// BRONZE_NO_DESC_FIELDS=1 puts the decode back on a freshly built name and the
-// pair of generic calls, so one binary A/Bs the whole of the above.
-bool descFieldFastPath() {
-    static const bool enabled = []() {
-        const char* env = std::getenv("BRONZE_NO_DESC_FIELDS");
-        return !(env && std::strcmp(env, "1") == 0);
-    }();
-    return enabled;
-}
-
 // The field's name as the immortal arena string the key registry holds for it.
 // The registry is per-thread and so is this memo of it; an arena string never
 // moves and is never freed, so holding the header is the same promise
@@ -138,7 +128,7 @@ Value readField(Rooted<Value>& desc, DescField field, bool ordinary, bool& prese
     // to evaluate the two in — so a raw `desc.get()` beside the call could be
     // the address the collector had just moved away from.
     const PropertyKey name = descFieldKey(field);
-    if (ordinary && descFieldFastPath()) {
+    if (ordinary) {
         Value out;
         switch (lookupField(desc.get(), name, out)) {
             case FieldFound::Present:
@@ -151,9 +141,7 @@ Value readField(Rooted<Value>& desc, DescField field, bool ordinary, bool& prese
                 break;
         }
     }
-    Rooted<Value> key{descFieldFastPath()
-                          ? name.toValue()
-                          : rtMakeString(kDescFieldNames[static_cast<size_t>(field)])};
+    Rooted<Value> key{name.toValue()};
     present = bronze_has_property(key.get().rawBits(), desc.get().rawBits());
     if (!present) return Value::fromUndefined();
     return desc.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);

@@ -29,6 +29,7 @@
 #include "runtime/string.h"
 #include "runtime/symbol.h"
 #include "runtime/value.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -75,48 +76,10 @@ Value warm(Rooted<Value>& obj, Value key, int times = 4) {
     return last;
 }
 
-// Every test below asks whether the MECHANISM works, so each one turns it on
-// regardless of the ambient BRONZE_NO_ELEM_IC — an env var that switches a
-// cache off must not be able to turn a suite red, and the seam's own effect is
-// pinned by the last test here and by the oracle case, which is seam-invariant
-// because it asserts answers rather than mechanism. Restores on the way out so
-// one failure cannot leak a setting into the next test.
-struct SeamOn {
-    // `rtHeap()` first, and not incidentally: runtime start-up is LAZY and it
-    // is what reads the BRONZE_NO_* environment. Setting the flag before the
-    // first heap touch means start-up runs afterwards and puts the env's answer
-    // back, which made this depend on whether some earlier test in the binary
-    // had already woken the runtime.
-    SeamOn() {
-        (void)rtHeap();
-        saved = bronze_tls_block_addr()->elem_ic_enabled;
-        savedAbsent = bronze_tls_block_addr()->elem_absent_enabled;
-        savedNeg = bronze_tls_block_addr()->negative_ic_enabled;
-        bronze_tls_block_addr()->elem_ic_enabled = 1;
-        bronze_tls_block_addr()->elem_absent_enabled = 1;
-        // The absent half of this table is filled by the SAME
-        // `rtInstallAbsentEntry` the named negative IC uses, so
-        // BRONZE_NO_NEG_IC=1 switches it off too — an ambient one would make
-        // the absence tests below fail for a reason that is not their subject.
-        bronze_tls_block_addr()->negative_ic_enabled = 1;
-    }
-    ~SeamOn() {
-        bronze_tls_block_addr()->elem_ic_enabled = saved;
-        bronze_tls_block_addr()->elem_absent_enabled = savedAbsent;
-        bronze_tls_block_addr()->negative_ic_enabled = savedNeg;
-    }
-
-private:
-    uint64_t saved = 0;
-    uint64_t savedAbsent = 0;
-    uint64_t savedNeg = 0;
-};
-
 }  // namespace
 
 TEST_CASE("a warm computed read is answered by the cache and not by the walk") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "position", Value::fromDouble(7.0));
@@ -142,7 +105,6 @@ TEST_CASE("a warm computed read is answered by the cache and not by the walk") {
 
 TEST_CASE("a number key naming a string property is cached without materialising the key") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     // The three.js bucket this table was written for: integer-like own names
     // read with a number.
@@ -161,7 +123,6 @@ TEST_CASE("a number key naming a string property is cached without materialising
 
 TEST_CASE("an entry is about one KEY, not merely one shape") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     // The failure a property site never has to think about: one shape, two
     // keys. An entry keyed on the shape alone would answer `beta` with alpha's
@@ -187,7 +148,6 @@ TEST_CASE("an entry is about one KEY, not merely one shape") {
 
 TEST_CASE("an entry names a SLOT, so every receiver of the shape reads its own") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> a{plainObject()};
     Rooted<Value> b{plainObject()};
@@ -208,18 +168,26 @@ TEST_CASE("an entry names a SLOT, so every receiver of the shape reads its own")
 
 TEST_CASE("the entry survives collections, because it holds nothing the collector moves") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
-    Rooted<Value> obj{plainObject()};
-    put(obj, "uniform", Value::fromDouble(5.0));
-    CHECK(warm(obj, str("uniform")).asNumber() == 5.0);
-
-    const uint64_t before = obj.get().rawBits();
-    const bool young = rtHeap().is_movable(obj.get().asObject());
+    // The root's slot is on the C++ heap, the receiver made and warmed in a
+    // frame of its own and its address kept hidden: a stack word naming it
+    // would pin it in place (stack_scrub.h).
+    auto objRoot = bronze::test::heapRooted<Rooted<Value>>();
+    Rooted<Value>& obj = *objRoot;
+    bool young = false;
+    const uint64_t before = bronze::test::fromOwnFrame([&] {
+        obj.set(plainObject());
+        put(obj, "uniform", Value::fromDouble(5.0));
+        CHECK(warm(obj, str("uniform")).asNumber() == 5.0);
+        young = rtHeap().is_movable(obj.get().asObject());
+        return bronze::test::hideBits(obj.get().rawBits());
+    });
+    bronze::test::scrubStack();
     rtHeap().collect();
     // A young receiver really does move (an old one stays put); the shape it
     // points at does not, and the entry is about the shape.
-    CHECK((obj.get().rawBits() != before) == young);
+    CHECK((bronze::test::fromOwnFrame([&] { return bronze::test::hideBits(obj.get().rawBits()); }) != before) ==
+          young);
 
     Rooted<Value> key{str("uniform")};
     const ElemProbe probe = elemCacheProbe(obj.get(), key.get());
@@ -236,7 +204,6 @@ TEST_CASE("the entry survives collections, because it holds nothing the collecto
 
 TEST_CASE("a shape change retires the entry rather than answering from it") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "first", Value::fromDouble(1.0));
@@ -253,7 +220,6 @@ TEST_CASE("a shape change retires the entry rather than answering from it") {
 
 TEST_CASE("a proven-absent computed read arms the cache and answers undefined from it") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "present", Value::fromDouble(1.0));
@@ -272,7 +238,6 @@ TEST_CASE("a proven-absent computed read arms the cache and answers undefined fr
 
 TEST_CASE("an absent entry is retired by the key appearing, on the object and above it") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     SUBCASE("an own add transitions the shape") {
         Rooted<Value> obj{plainObject()};
@@ -304,7 +269,6 @@ TEST_CASE("an absent entry is retired by the key appearing, on the object and ab
 
 TEST_CASE("an absent entry survives collection, because it holds nothing movable") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "present", Value::fromDouble(1.0));
@@ -321,26 +285,8 @@ TEST_CASE("an absent entry survives collection, because it holds nothing movable
     CHECK(elemGet(obj, str("gone")).isUndefined());
 }
 
-TEST_CASE("the absent seam narrows this table without touching the present half") {
-    ShadowStackFrame frame;
-    SeamOn seam;
-    bronze_tls_block_addr()->elem_absent_enabled = 0;
-
-    Rooted<Value> obj{plainObject()};
-    put(obj, "here", Value::fromDouble(3.0));
-
-    CHECK(warm(obj, str("here")).asNumber() == 3.0);
-    Rooted<Value> present{str("here")};
-    CHECK(elemCacheProbe(obj.get(), present.get()).hit);
-
-    CHECK(warm(obj, str("nowhere")).isUndefined());
-    Rooted<Value> absent{str("nowhere")};
-    CHECK_FALSE(elemCacheProbe(obj.get(), absent.get()).hit);
-}
-
 TEST_CASE("the arena key table deduplicates, so a repeated absent key is copied once") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> a{str("repeated")};
     StringHeader* first = elemCacheInternKey(a.get().asString<StringHeader>());
@@ -354,7 +300,6 @@ TEST_CASE("the arena key table deduplicates, so a repeated absent key is copied 
 
 TEST_CASE("a key kind with no string form is refused before anything is recorded") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "x", Value::fromDouble(1.0));
@@ -371,7 +316,6 @@ TEST_CASE("a key kind with no string form is refused before anything is recorded
 
 TEST_CASE("a boolean key is a name, and gets its own kind") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "false", str("F"));
@@ -389,31 +333,6 @@ TEST_CASE("a boolean key is a name, and gets its own kind") {
     CHECK(other.witness == 1);
 }
 
-TEST_CASE("BRONZE_NO_ELEM_IC turns the table off without changing an answer") {
-    ShadowStackFrame frame;
-    SeamOn seam;
-
-    Rooted<Value> obj{plainObject()};
-    put(obj, "seam", Value::fromDouble(11.0));
-    CHECK(warm(obj, str("seam")).asNumber() == 11.0);
-
-    bronze_tls_block_addr()->elem_ic_enabled = 0;
-    CHECK_FALSE(elemCacheEnabled());
-    Rooted<Value> k{str("seam")};
-    const ElemProbe off = elemCacheProbe(obj.get(), k.get());
-    CHECK_FALSE(off.hit);
-    // No entry offered means no fill either, so the seam is off for both halves.
-    CHECK(off.entry == nullptr);
-    // The read is unchanged; only where the answer came from changed.
-    CHECK(elemGet(obj, str("seam")).asNumber() == 11.0);
-
-    bronze_tls_block_addr()->elem_ic_enabled = 1;
-    CHECK(elemCacheEnabled());
-    CHECK(warm(obj, str("seam")).asNumber() == 11.0);
-    Rooted<Value> k2{str("seam")};
-    CHECK(elemCacheProbe(obj.get(), k2.get()).hit);
-}
-
 // ---------------------------------------------------------------------------
 // The computed-STORE cache. Same division of labour as above: the oracle case
 // pins the ANSWERS a program can see, and these ask the table whether the
@@ -421,18 +340,6 @@ TEST_CASE("BRONZE_NO_ELEM_IC turns the table off without changing an answer") {
 // the right place and would pass the oracle case unchanged.
 
 namespace {
-
-struct SetSeamOn {
-    SetSeamOn() {
-        (void)rtHeap();
-        saved = elemSetCacheEnabled();
-        elemSetCacheSetEnabled(true);
-    }
-    ~SetSeamOn() { elemSetCacheSetEnabled(saved); }
-
-private:
-    bool saved = true;
-};
 
 // `o[k] = v` as generated code reaches it.
 void elemSet(Rooted<Value>& obj, Value key, Value val) {
@@ -460,7 +367,6 @@ uint32_t slotOf(Rooted<Value>& obj, const char* name) {
 
 TEST_CASE("a warm computed store is answered by the store cache and not by the walk") {
     ShadowStackFrame frame;
-    SetSeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "x", Value::fromDouble(0.0));
@@ -487,7 +393,6 @@ TEST_CASE("a warm computed store is answered by the store cache and not by the w
 
 TEST_CASE("a store entry is about one KEY, not merely one shape") {
     ShadowStackFrame frame;
-    SetSeamOn seam;
 
     // One shape, two keys — the case a named set SITE never has to think
     // about, because its key is a constant the compiler baked in. An entry
@@ -515,7 +420,6 @@ TEST_CASE("a store entry is about one KEY, not merely one shape") {
 
 TEST_CASE("an evicted store entry forgets the slot it used to name") {
     ShadowStackFrame frame;
-    SetSeamOn seam;
 
     // The table is direct-mapped, so a collision re-points an entry from one
     // pair to another — and the re-point MUST clear the entry's answer.
@@ -549,7 +453,6 @@ TEST_CASE("an evicted store entry forgets the slot it used to name") {
 
 TEST_CASE("a store entry survives collections, because it holds nothing the collector moves") {
     ShadowStackFrame frame;
-    SetSeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "z", Value::fromDouble(0.0));
@@ -573,7 +476,6 @@ TEST_CASE("a store entry survives collections, because it holds nothing the coll
 
 TEST_CASE("a number key is cached for a store without materialising the key") {
     ShadowStackFrame frame;
-    SetSeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     put(obj, "2960", Value::fromDouble(0.0));
@@ -592,31 +494,9 @@ TEST_CASE("a number key is cached for a store without materialising the key") {
 
 TEST_CASE("a symbol key is offered no store entry") {
     ShadowStackFrame frame;
-    SetSeamOn seam;
 
     Rooted<Value> obj{plainObject()};
     Rooted<Value> desc{str("s")};
     Rooted<Value> sym{rtMakeSymbol(desc.get())};
     CHECK(elemSetCacheEntryFor(obj.get(), sym.get()) == nullptr);
-}
-
-TEST_CASE("BRONZE_NO_ELEM_SET_IC turns the store table off without changing an answer") {
-    ShadowStackFrame frame;
-    SetSeamOn seam;
-
-    Rooted<Value> obj{plainObject()};
-    put(obj, "seam", Value::fromDouble(0.0));
-    warmSet(obj, str("seam"), Value::fromDouble(11.0));
-    Rooted<Value> k{str("seam")};
-    CHECK(elemSetCacheEntryFor(obj.get(), k.get()) != nullptr);
-
-    elemSetCacheSetEnabled(false);
-    CHECK_FALSE(elemSetCacheEnabled());
-    Rooted<Value> k2{str("seam")};
-    // No entry offered means no hit and no fill, so the seam is the whole
-    // mechanism and not a slower road to the same table.
-    CHECK(elemSetCacheEntryFor(obj.get(), k2.get()) == nullptr);
-    // The store is unchanged; only where the slot number came from changed.
-    elemSet(obj, str("seam"), Value::fromDouble(12.0));
-    CHECK(elemGet(obj, str("seam")).asNumber() == 12.0);
 }

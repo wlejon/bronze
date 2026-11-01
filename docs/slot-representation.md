@@ -91,8 +91,6 @@ object is a named fatal, not a fault somewhere else.
 
 | var | effect |
 |---|---|
-| `BRONZE_NO_SLOT_REPR=1` | **the seam.** No shape node is ever created double, and every `double_slots` word stays zero. |
-| `BRONZE_SLOT_REPR_OBSERVED=1` | every key becomes eligible, not only the pinned ones — the unpinned "first store was a double" policy. Implemented, **off by default**: an unpinned program has no promise to hold its store paths to, and a name that alternates costs a shape split each time it turns over. |
 | `BRONZE_SLOT_REPR_STATS=1` | prints the creation-side counters at exit: eligible names, shape nodes born double vs boxed, number stores refused for an ineligible name, generalizations, and the stores that reached a double slot through the helper. Costs a normal run nothing — every counter is incremented on a cold path. |
 | `BRONZE_SLOT_REPR_CENSUS=1` | adds **per-(shape, slot) representation stability**: for every slot of every shape the run touched, how many stores were Numbers, how many were not, and how many reads. Turns on the shape census's latch suppression (`docs/shape-census.md`) so that inline-cache hit traffic is visible, so a census run is **counts, never times**. |
 
@@ -101,7 +99,6 @@ object is a named fatal, not a fault somewhere else.
 
 ```
 === slot representation ===
-  seam            : on
   eligible names  : 7
   shape nodes     : 10 double, 328 boxed
   refused         : 20 (number store, name not eligible)
@@ -144,8 +141,7 @@ The last line is the candidate set for widening the manifest:
   boxed slots whose every store was a number: N (M accesses) — candidates for a wider manifest
 ```
 
-A boxed slot whose every observed store was a Number is a slot a wider manifest,
-or `BRONZE_SLOT_REPR_OBSERVED` turned into a policy with a proof behind it,
+A boxed slot whose every observed store was a Number is a slot a wider manifest
 could claim. `three_math` under its full manifest answers **0** — there is
 nothing left to claim, which is what a complete manifest looks like from here.
 `bench/object_graph.js`, which has no manifest at all, answers **11 slots over

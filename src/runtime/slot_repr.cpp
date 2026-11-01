@@ -68,8 +68,6 @@ std::map<std::pair<const Shape*, uint32_t>, SlotRec>& censusTable() {
 // rather than a namespace-scope one so that a runtime translation unit whose
 // static initialization runs before this one cannot observe it half-built.
 struct Config {
-    bool enabled = true;
-    bool observesUnpinned = false;
     bool stats = false;
     bool census = false;
 };
@@ -77,8 +75,6 @@ struct Config {
 Config& config() {
     static Config c = [] {
         Config out;
-        out.enabled = !envIsOne("BRONZE_NO_SLOT_REPR");
-        out.observesUnpinned = out.enabled && envIsOne("BRONZE_SLOT_REPR_OBSERVED");
         out.stats = envIsOne("BRONZE_SLOT_REPR_STATS");
         out.census = envIsOne("BRONZE_SLOT_REPR_CENSUS");
         if (out.stats || out.census) std::atexit(slotReprReport);
@@ -111,14 +107,7 @@ std::string shapeDesc(const Shape* sh) {
 
 }  // namespace
 
-bool slotReprEnabled() noexcept { return config().enabled; }
-bool slotReprObservesUnpinned() noexcept { return config().observesUnpinned; }
 bool slotReprCensusEnabled() noexcept { return config().census; }
-
-void slotReprSetEnabledForTesting(bool enabled) noexcept { config().enabled = enabled; }
-void slotReprSetObservesUnpinnedForTesting(bool enabled) noexcept {
-    config().observesUnpinned = enabled;
-}
 
 void slotReprResetForTesting() {
     {
@@ -159,7 +148,6 @@ uint32_t slotReprEligibleCount() noexcept {
 
 bool slotReprEligible(PropertyKey key) noexcept {
     if (!key.valid() || key.isSymbol()) return false;
-    if (config().observesUnpinned) return true;
     std::shared_lock<std::shared_mutex> lock(eligibleNamesMutex());
     for (StringHeader* name : eligibleNames()) {
         if (PropertyKey::forString(name).matches(key)) return true;
@@ -194,14 +182,11 @@ void slotReprReport() {
     const SlotReprCounters& c = slotReprCounters();
     std::fprintf(stderr,
                  "\n=== slot representation ===\n"
-                 "  seam            : %s%s\n"
                  "  eligible names  : %u\n"
                  "  shape nodes     : %llu double, %llu boxed\n"
                  "  refused         : %llu (number store, name not eligible)\n"
                  "  generalizations : %llu store%s over %llu node%s\n"
                  "  helper stores   : %llu into a double slot\n",
-                 slotReprEnabled() ? "on" : "off (BRONZE_NO_SLOT_REPR=1)",
-                 slotReprObservesUnpinned() ? " + observed-unpinned" : "",
                  slotReprEligibleCount(),
                  static_cast<unsigned long long>(c.double_nodes),
                  static_cast<unsigned long long>(c.boxed_nodes),
@@ -277,7 +262,6 @@ extern "C" {
 void bronze_register_slot_repr(const uint32_t* fields, uint32_t count, const uint32_t* keyMap) {
     recordHelperCall("bronze_register_slot_repr");
     if (fields == nullptr || keyMap == nullptr || count == 0) return;
-    if (!slotReprEnabled()) return;
     for (uint32_t i = 0; i < count; ++i) {
         slotReprRegisterName(rtKeyHeader(keyMap[fields[i]]));
     }

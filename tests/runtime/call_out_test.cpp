@@ -28,6 +28,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -57,34 +58,10 @@ uint64_t callWith(const DirectCallee& direct, Rooted<Value>& callee, double a, d
     return direct.call(callee, Value::fromUndefined().rawBits(), 2, argv);
 }
 
-// Every test below asks whether the MECHANISM works, so each one turns it on
-// regardless of the ambient BRONZE_NO_DIRECT_CALLOUT — an env var that switches
-// dispatch off must not be able to turn a suite red, and the seam's own effect
-// is pinned by the last test here. The oracle case stays seam-invariant because
-// it asserts answers rather than mechanism. Restores on the way out so one
-// failure cannot leak a setting into the next test.
-struct SeamOn {
-    // `rtHeap()` first, and not incidentally: runtime start-up is LAZY and it
-    // is what reads the BRONZE_NO_* environment. Setting the flag before the
-    // first heap touch means start-up runs afterwards and puts the env's answer
-    // back, which made this depend on whether some earlier test in the binary
-    // had already woken the runtime.
-    SeamOn() {
-        (void)rtHeap();
-        saved = bronze_tls_block_addr()->direct_callout_enabled;
-        bronze_tls_block_addr()->direct_callout_enabled = 1;
-    }
-    ~SeamOn() { bronze_tls_block_addr()->direct_callout_enabled = saved; }
-
-private:
-    uint64_t saved = 0;
-};
-
 }  // namespace
 
 TEST_CASE("DirectCallee binds an ordinary function and calls its code") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     Rooted<Value> fn{movableFunction(2)};
     DirectCallee direct;
@@ -99,7 +76,6 @@ TEST_CASE("DirectCallee binds an ordinary function and calls its code") {
 
 TEST_CASE("DirectCallee refuses every callee the generic path would have to re-check") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
     DirectCallee direct;
 
@@ -138,20 +114,26 @@ TEST_CASE("DirectCallee refuses every callee the generic path would have to re-c
 
 TEST_CASE("a bound callee is re-read through its root, so it may move between bind and call") {
     ShadowStackFrame frame;
-    SeamOn seam;
 
-    Rooted<Value> fn{movableFunction(2)};
-    const uint64_t before = fn.get().rawBits();
-
+    // The root's slot is on the C++ heap, the function made and bound in a
+    // frame of its own and its address kept hidden: a stack word naming it
+    // would pin it in place (stack_scrub.h).
+    auto fnRoot = bronze::test::heapRooted<Rooted<Value>>();
+    Rooted<Value>& fn = *fnRoot;
     DirectCallee direct;
-    REQUIRE(direct.bind(fn.get(), 2));
+    const uint64_t before = bronze::test::fromOwnFrame([&] {
+        fn.set(movableFunction(2));
+        REQUIRE(direct.bind(fn.get(), 2));
+        return bronze::test::hideBits(fn.get().rawBits());
+    });
 
     // The collection a comparator's own allocation would have caused, at a
     // moment the test picks. A semispace copy relocates everything live, so the
     // function object the binding was made against is now at a different
     // address and its `code`/`env_record` fields live somewhere new.
+    bronze::test::scrubStack();
     rtHeap().collect();
-    CHECK(fn.get().rawBits() != before);
+    CHECK(bronze::test::fromOwnFrame([&] { return bronze::test::hideBits(fn.get().rawBits()); }) != before);
 
     // The binding is still good, because it never held the address.
     CHECK(direct.bound());
@@ -160,23 +142,4 @@ TEST_CASE("a bound callee is re-read through its root, so it may move between bi
     // And again, so a second relocation is covered too.
     rtHeap().collect();
     CHECK(Value(callWith(direct, fn, 1.0, 2.0)).asNumber() == 3.0);
-}
-
-TEST_CASE("BRONZE_NO_DIRECT_CALLOUT refuses every binding") {
-    ShadowStackFrame frame;
-    SeamOn seam;
-
-    Rooted<Value> fn{movableFunction(2)};
-
-    bronze_tls_block_addr()->direct_callout_enabled = 0;
-    DirectCallee off;
-    CHECK_FALSE(off.bind(fn.get(), 2));
-    CHECK_FALSE(off.bound());
-
-    // The seam is read per `bind` and not once at startup, so turning it back
-    // on is enough — no cached "we already decided" anywhere.
-    bronze_tls_block_addr()->direct_callout_enabled = 1;
-    DirectCallee on;
-    CHECK(on.bind(fn.get(), 2));
-    CHECK(Value(callWith(on, fn, 5.0, 6.0)).asNumber() == 11.0);
 }

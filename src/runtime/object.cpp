@@ -56,9 +56,8 @@ void ObjectHeader::setSlotWithRepr(uint32_t index, Value val) {
 // tree for. Everything here is a condition the double edge would otherwise have
 // to be sound without:
 //
-//   - the seam is on, and the key is one the pins manifest made eligible
-//     (slot_repr.h). An unpinned name has no promise behind it, so its slot
-//     stays boxed unless BRONZE_SLOT_REPR_OBSERVED says otherwise.
+//   - the key is one the pins manifest made eligible (slot_repr.h). An
+//     unpinned name has no promise behind it, so its slot stays boxed.
 //   - the value in hand is a Number. A double slot born from an `undefined`
 //     initialization would generalize on its very first real store.
 //   - a plain, enumerable, writable, configurable DATA property. The other
@@ -68,7 +67,6 @@ void ObjectHeader::setSlotWithRepr(uint32_t index, Value val) {
 static SlotRepr desiredSlotRepr(PropertyKey key, Value val, bool enumerable, bool accessor,
                                 bool writable, bool configurable) {
     if (accessor || !enumerable || !writable || !configurable) return SlotRepr::Boxed;
-    if (!runtime::slotReprEnabled()) return SlotRepr::Boxed;
     if (!slotReprAcceptsValue(val)) return SlotRepr::Boxed;
     if (!runtime::slotReprEligible(key)) {
         ++runtime::slotReprMutableCounters().refused_ineligible;
@@ -350,7 +348,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
     // key-representation change cannot desynchronise the open-coded fast path
     // in codegen-llvm — it compares a shape pointer and nothing else, and a
     // shape that gained a symbol-keyed transition is a different pointer.
-    InlineCache* ic = site ? site->find(shape, rtIcWayLimit()) : nullptr;
+    InlineCache* ic = site ? site->find(shape) : nullptr;
     if (ic && ic->describesAbsent(shape)) return Value::fromUndefined();
     if (ic && ic->describes(shape)) {
         if (ic->isAccessor()) {
@@ -399,7 +397,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
                 bool crossedDictionary = false;
                 if (site && shape && shape->readCacheable() && !runtime::censusFillsSuppressed() &&
                     (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
-                    if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
+                    if (InlineCache* into = site->slotForInstall(shape)) {
                         into->fillAccessor(shape, info.slot, depth);
                     }
                 }
@@ -424,7 +422,7 @@ Value ObjectHeader::getProp(Heap& heap, Rooted<Value>& key, InlineCacheSite* sit
             bool crossedDictionary = false;
             if (site && shape && shape->readCacheable() && !runtime::censusFillsSuppressed() &&
                 (depth == 0 || cachedProtoHolder(depth, crossedDictionary) == holder)) {
-                if (InlineCache* into = site->slotForInstall(shape, rtIcWayLimit())) {
+                if (InlineCache* into = site->slotForInstall(shape)) {
                     into->fill(shape, info.slot, depth);
                 }
             }

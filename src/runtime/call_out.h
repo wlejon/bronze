@@ -43,13 +43,8 @@ namespace bronze::runtime {
 // call's new.target is, and every one of these calls IS a plain call, so the
 // hoisted answer is the correct one; the per-call shape was reporting a
 // constructor's new.target to a function the constructor never constructed.
-// The hoist is therefore NOT under the seam — the caller does it
-// unconditionally — so `BRONZE_NO_DIRECT_CALLOUT=1` measures dispatch and
-// nothing else, and both settings answer identically. `array_sort_callout`
-// pins the answer.
-//
-// Seam: BRONZE_NO_DIRECT_CALLOUT=1 makes `bind` always refuse, so every
-// call-out falls back to `bronze_dynamic_call` and one binary can A/B.
+// The caller does the hoist unconditionally. `array_sort_callout` pins the
+// answer.
 class DirectCallee {
 public:
     // True when `callee` is an ordinary function object that `argc` arguments
@@ -62,7 +57,6 @@ public:
     // fn.h explains why, and the helper reads it the same way.
     bool bind(Value callee, uint32_t argc) noexcept {
         bound_ = false;
-        if (!directCalloutEnabled()) return false;
         if (!callee.isObject()) return false;
         HeapObjectHeader* hdr = callee.asObject<HeapObjectHeader>();
         if (hdr->flags != HeapKind::Function) return false;
@@ -85,10 +79,6 @@ public:
     }
 
 private:
-    static bool directCalloutEnabled() noexcept {
-        return rtTls()->direct_callout_enabled != 0;
-    }
-
     bool bound_ = false;
 };
 

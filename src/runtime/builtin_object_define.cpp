@@ -56,14 +56,6 @@ using namespace descriptor_internal;
 
 namespace {
 
-static bool shapeDefineEnabled() {
-    static const bool enabled = []() {
-        const char* env = std::getenv("BRONZE_NO_SHAPE_DEFINE");
-        return !(env && std::strcmp(env, "1") == 0);
-    }();
-    return enabled;
-}
-
 // A key as text, for a diagnostic. `Symbol(desc)` for a symbol, which is the
 // only spelling one has (20.4.3.3.1) and is not a conversion a program could
 // have performed itself.
@@ -158,7 +150,7 @@ static bool applyDecodedDescriptor(Rooted<Value>& target, PropertyKey name,
     const bool enumerable = hasEnumerable ? wantEnumerable : (present && current.enumerable);
     const bool configurable =
         hasConfigurable ? wantConfigurable : (present && current.configurable);
-    if (shapeDefineEnabled() && obj->shape && !obj->shape->isDictionary()) {
+    if (obj->shape && !obj->shape->isDictionary()) {
         // The same lookup the defaults above already made: this branch is
         // reached only when the shape is not a dictionary, which is exactly the
         // case `present` answered with `lookupProperty`. Asking twice is a

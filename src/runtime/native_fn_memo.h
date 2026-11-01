@@ -40,8 +40,6 @@
 // source; this is not scanned, and never needs to be. An entry that has gone
 // stale (a module unload renumbers the vector) is caught by
 // `rtFunctionSingletonAt`'s identity check and refilled.
-//
-// Seam: BRONZE_NO_FN_SINGLETON_CACHE=1 makes the memo always miss.
 
 namespace bronze::runtime {
 
@@ -53,9 +51,6 @@ namespace bronze::runtime {
 // records no name at all (rt_builtins.h says when that is the right call);
 // the text is interned as a key only when an object is actually made.
 Value rtNativeSingleton(bronze_fn_code code, uint32_t arity, const char* name, uint32_t length);
-
-// BRONZE_NO_FN_SINGLETON_CACHE=1, read through the per-thread ABI block.
-bool rtNativeMemoEnabled() noexcept;
 
 // Declared here rather than in rt_state.h because these two are the memo's
 // window onto the interned-native vector and have no other caller.

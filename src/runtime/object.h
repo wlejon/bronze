@@ -67,21 +67,6 @@ inline void noteKeyAddedToPrototype(bool usedAsPrototype, PropertyKey key) noexc
     if (usedAsPrototype && keyCouldBeArrayIndex(key)) tripArrayIndexHazard("index key added to a prototype");
 }
 
-// How many ways of a site the runtime may consult and install into: all of
-// them, or one under BRONZE_NO_POLY_IC=1. Generated code reads the same flag
-// from the TLS block, so the two halves of a site cannot disagree about how
-// wide it is.
-inline uint32_t rtIcWayLimit() noexcept {
-    return runtime::rtTls()->poly_ic_enabled != 0 ? BRONZE_ABI_IC_WAYS : 1u;
-}
-
-// May the runtime install NEGATIVE entries? Read at every install and nowhere
-// else: with the flag down no absent entry exists, so generated code's absent
-// arm is dead and costs the fast path nothing to leave in.
-inline bool rtNegativeIcEnabled() noexcept {
-    return runtime::rtTls()->negative_ic_enabled != 0;
-}
-
 // A monomorphic property cache: four plain words, none of which the collector
 // has to touch. `cached_depth` is how many prototype links to follow from the
 // receiver before reading `cached_slot` — 0 for an own property, so this one
@@ -232,11 +217,9 @@ struct InlineCache {
 struct InlineCacheSite {
     InlineCache ways[BRONZE_ABI_IC_WAYS];
 
-    // The entry describing `receiverShape`, or null. `limit` is how many ways
-    // may be consulted: 1 under BRONZE_NO_POLY_IC=1, which is what makes the
-    // seam a real A/B rather than a slower path to the same answer.
-    InlineCache* find(const Shape* receiverShape, uint32_t limit) noexcept {
-        for (uint32_t i = 0; i < limit && i < BRONZE_ABI_IC_WAYS; ++i) {
+    // The entry describing `receiverShape`, or null.
+    InlineCache* find(const Shape* receiverShape) noexcept {
+        for (uint32_t i = 0; i < BRONZE_ABI_IC_WAYS; ++i) {
             if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
         }
         return nullptr;
@@ -256,9 +239,8 @@ struct InlineCacheSite {
     // plain one are rare; sites where the shift would have cost one is rarer
     // still, and the alternative is an arm that reads four ways on every
     // `arr.push`.
-    InlineCache* slotForInstall(const Shape* receiverShape, uint32_t limit) noexcept {
-        const uint32_t ways_n = limit < BRONZE_ABI_IC_WAYS ? limit : BRONZE_ABI_IC_WAYS;
-        if (ways_n == 0) return nullptr;
+    InlineCache* slotForInstall(const Shape* receiverShape) noexcept {
+        constexpr uint32_t ways_n = BRONZE_ABI_IC_WAYS;
         for (uint32_t i = 0; i < ways_n; ++i) {
             if (ways[i].isRealShape() && ways[i].cached_shape == receiverShape) return &ways[i];
         }

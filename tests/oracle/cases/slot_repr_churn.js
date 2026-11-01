@@ -1,11 +1,9 @@
 // Stage R1's storage model, from a program's side.
 //
 // Nothing here mentions a representation, and that is the point: whether a slot
-// holds a raw double or a boxed Value must be invisible. Under
-// BRONZE_SLOT_REPR_OBSERVED=1 every field below is born a double slot and the
-// non-number stores generalize; under the default only a --pins manifest can do
-// that, and there is none; under BRONZE_NO_SLOT_REPR=1 no slot is ever a
-// double. The three runs must print the same bytes.
+// holds a raw double or a boxed Value must be invisible. Only a --pins
+// manifest makes a field a double slot, and the run with one must print the
+// same bytes as the run without.
 
 class Vec {
   constructor(x, y, z) {

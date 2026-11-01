@@ -1,9 +1,8 @@
 // The string-key identity latch of the computed-read cache (elem_ic.h's
 // `key_ident`, the inline arm in llvm_elem_cache.cpp): every guard story the
 // one-compare mechanism stands on, pinned byte for byte. The case must answer
-// identically with BRONZE_NO_ELEM_KEY_IC=1, with every other seam off, and
-// under BRONZE_GC_STRESS=1 — the ident sweep is the soundness story, and
-// stress makes every loop below cross collections.
+// identically under BRONZE_GC_STRESS=1 — the ident sweep is the soundness
+// story, and stress makes every loop below cross collections.
 
 // --- 1. the latch itself: one key object, presented repeatedly --------------
 const attrs = { position: 10, normal: 20, uv: 30 };
