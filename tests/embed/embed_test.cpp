@@ -26,6 +26,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/value.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 
@@ -189,16 +190,22 @@ TEST_CASE("a registered host global overrides a runtime builtin") {
 }
 
 TEST_CASE("Persistent keeps a heap value alive and current across a collection") {
-    embed::Persistent p{embed::fromUtf8("persistent_payload")};
-    const uint64_t before = p.get().rawBits();
+    // Made in a frame of its own, its address kept hidden: a stack word
+    // naming the string would pin it in place (stack_scrub.h).
+    embed::Persistent p;
+    const uint64_t before = test::fromOwnFrame([&] {
+        p.set(embed::fromUtf8("persistent_payload"));
+        return test::hideBits(p.get().rawBits());
+    });
 
+    test::scrubStack();
     runtime::rtHeap().collect();
 
     Value after = p.get();
     CHECK(after.isString());
-    // A semispace survivor is always COPIED to the other space, so the handle
+    // A young survivor is COPIED out of the young generation, so the handle
     // proving it tracked the move is the address having changed.
-    CHECK(after.rawBits() != before);
+    CHECK(test::hideBits(after.rawBits()) != before);
     CHECK(embed::toUtf8(after) == "persistent_payload");
 }
 
@@ -227,7 +234,10 @@ TEST_CASE("bits round-trip through a Persistent") {
 
 TEST_CASE("a native handle's finalizer runs when the cell dies and not while rooted") {
     int destroyed = 0;
-    {
+    // In a frame of its own, and the stack scrubbed before the collection
+    // that should find the cell dead: a stale word naming it would keep it
+    // (stack_scrub.h).
+    test::inOwnFrame([&] {
         embed::Persistent keep{embed::makeHandle(
             &destroyed, [](void* p) { ++*static_cast<int*>(p); })};
         CHECK(embed::handleData(keep.get()) == &destroyed);
@@ -237,11 +247,12 @@ TEST_CASE("a native handle's finalizer runs when the cell dies and not while roo
         // ran nothing.
         CHECK(destroyed == 0);
         CHECK(embed::handleData(keep.get()) == &destroyed);
-    }
+    });
 
     // The root is gone; the next collection proves the cell dead and the
     // sweep runs the destructor — exactly once, however many collections
     // follow.
+    test::scrubStack();
     runtime::rtHeap().collect();
     CHECK(destroyed == 1);
     runtime::rtHeap().collect();
@@ -502,32 +513,41 @@ TEST_CASE("a job runs in the embedder's context where it was subscribed") {
 }
 
 TEST_CASE("promise settlement after GC pressure") {
-    embed::Persistent p{embed::createPromise()};
-    embed::Persistent payload{embed::fromUtf8("survived_gc_data")};
-
+    // Made in a frame of its own, the addresses kept hidden: a stack word
+    // naming the promise or the payload would pin it in place
+    // (stack_scrub.h).
+    embed::Persistent p;
+    embed::Persistent payload;
+    embed::Persistent fn;
     std::string received;
-    embed::Persistent fn{embed::makeFunction(
-        [&received](embed::Value, std::span<const embed::Value> args) -> embed::Value {
-            received = args.empty() ? "" : embed::toUtf8(args[0]);
-            return embed::undefined();
-        },
-        1)};
-
-    embed::Persistent thenMethod{embed::getProperty(p.get(), "then")};
-    embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn.get()});
-
-    const uint64_t promiseBitsBefore = p.get().rawBits();
-    const uint64_t payloadBitsBefore = payload.get().rawBits();
     auto& heap = runtime::rtHeap();
-    const bool promiseYoung = heap.is_movable(p.get().asObject());
-    const bool payloadYoung = heap.is_movable(payload.get().asString());
+    struct Before {
+        uint64_t promise, payload;
+        bool promiseYoung, payloadYoung;
+    };
+    const Before before = test::fromOwnFrame([&] {
+        p.set(embed::createPromise());
+        payload.set(embed::fromUtf8("survived_gc_data"));
+        fn.set(embed::makeFunction(
+            [&received](embed::Value, std::span<const embed::Value> args) -> embed::Value {
+                received = args.empty() ? "" : embed::toUtf8(args[0]);
+                return embed::undefined();
+            },
+            1));
+        embed::Persistent thenMethod{embed::getProperty(p.get(), "then")};
+        embed::call(thenMethod.get(), p.get(), std::vector<embed::Value>{fn.get()});
+        return Before{test::hideBits(p.get().rawBits()), test::hideBits(payload.get().rawBits()),
+                      heap.is_movable(p.get().asObject()), heap.is_movable(payload.get().asString())};
+    });
 
     // Force GC collection before settling.
+    test::scrubStack();
     heap.collect();
 
     // The collection relocates young objects and leaves old ones in place.
-    CHECK((p.get().rawBits() != promiseBitsBefore) == promiseYoung);
-    CHECK((payload.get().rawBits() != payloadBitsBefore) == payloadYoung);
+    auto hidden = [](const embed::Persistent& h) { return test::fromOwnFrame([&] { return test::hideBits(h.get().rawBits()); }); };
+    CHECK((hidden(p) != before.promise) == before.promiseYoung);
+    CHECK((hidden(payload) != before.payload) == before.payloadYoung);
     CHECK(embed::isPromise(p.get()));
 
     // Force another collection.
@@ -707,17 +727,22 @@ TEST_CASE("setElement fills an Array, length and all") {
 }
 
 TEST_CASE("a host-built typed array survives collections and round-trips through a call") {
-    embed::Persistent view{embed::createTypedArray(embed::elements::Int32, 4)};
-    for (uint32_t i = 0; i < 4; ++i) {
-        view.set(embed::setElement(view.get(), i, embed::fromDouble((i + 1) * 3.0)));
-    }
-
-    const uint64_t bitsBefore = view.get().rawBits();
+    // Made in a frame of its own, its address kept hidden: a stack word naming
+    // it would pin it in place (stack_scrub.h).
+    embed::Persistent view;
+    const uint64_t bitsBefore = test::fromOwnFrame([&] {
+        view.set(embed::createTypedArray(embed::elements::Int32, 4));
+        for (uint32_t i = 0; i < 4; ++i) {
+            view.set(embed::setElement(view.get(), i, embed::fromDouble((i + 1) * 3.0)));
+        }
+        return test::hideBits(view.get().rawBits());
+    });
+    test::scrubStack();
     runtime::rtHeap().collect();
     runtime::rtHeap().collect();
     // A moving collector relocated it and the Persistent answers the new
     // address: the identity survived, the pointer did not.
-    CHECK(view.get().rawBits() != bitsBefore);
+    CHECK(test::fromOwnFrame([&] { return test::hideBits(view.get().rawBits()); }) != bitsBefore);
     CHECK(embed::isTypedArray(view.get()));
 
     embed::TypedArrayInfo info = embed::typedArrayInfo(view.get());
@@ -907,18 +932,23 @@ struct DeferredProbe {
 
 TEST_CASE("a Deferred handle destructor waits for the drain and may make embed calls") {
     DeferredProbe probe;
-    embed::makeHandle(
-        &probe,
-        [](void* p) {
-            auto* state = static_cast<DeferredProbe*>(p);
-            state->freed++;
-            // The whole point of Deferred: this ALLOCATES on the bronze heap,
-            // which an InSweep destructor must never do.
-            state->echoed = embed::toUtf8(embed::fromUtf8("allocated in a finalizer"));
-        },
-        embed::Finalize::Deferred);
+    // Made in a frame of its own, the stack scrubbed before the collection:
+    // a stale word naming the handle would keep it (stack_scrub.h).
+    test::inOwnFrame([&] {
+        embed::makeHandle(
+            &probe,
+            [](void* p) {
+                auto* state = static_cast<DeferredProbe*>(p);
+                state->freed++;
+                // The whole point of Deferred: this ALLOCATES on the bronze heap,
+                // which an InSweep destructor must never do.
+                state->echoed = embed::toUtf8(embed::fromUtf8("allocated in a finalizer"));
+            },
+            embed::Finalize::Deferred);
+    });
     // The handle value was dropped on the floor above, so the collection
     // proves it dead — and the destructor still must NOT have run yet.
+    test::scrubStack();
     embed::collectGarbage();
     CHECK(probe.freed == 0);
     CHECK(embed::finalizersPending());
@@ -937,13 +967,17 @@ TEST_CASE("a Deferred handle destructor waits for the drain and may make embed c
 
 TEST_CASE("drainMicrotasks runs deferred finalizers, and InSweep still runs in the sweep") {
     DeferredProbe deferred;
-    embed::makeHandle(
-        &deferred,
-        [](void* p) { static_cast<DeferredProbe*>(p)->freed++; },
-        embed::Finalize::Deferred);
     DeferredProbe inSweep;
-    embed::makeHandle(&inSweep, [](void* p) { static_cast<DeferredProbe*>(p)->freed++; });
+    // Made in a frame of its own (stack_scrub.h).
+    test::inOwnFrame([&] {
+        embed::makeHandle(
+            &deferred,
+            [](void* p) { static_cast<DeferredProbe*>(p)->freed++; },
+            embed::Finalize::Deferred);
+        embed::makeHandle(&inSweep, [](void* p) { static_cast<DeferredProbe*>(p)->freed++; });
+    });
 
+    test::scrubStack();
     embed::collectGarbage();
     // The default ran inside the collection, exactly as before this enum
     // existed; the deferred one is still waiting on the checkpoint.
@@ -981,7 +1015,9 @@ TEST_CASE("setProperty defines named properties on an Array") {
 
 TEST_CASE("Object.setPrototypeOf on a handle keeps handleData and the finalizer") {
     int destroyed = 0;
-    {
+    // In a frame of its own, the stack scrubbed before the collection that
+    // should find the handle dead (stack_scrub.h).
+    test::inOwnFrame([&] {
         embed::Persistent handle{embed::makeHandle(
             &destroyed, [](void* p) { ++*static_cast<int*>(p); })};
 
@@ -1011,9 +1047,10 @@ TEST_CASE("Object.setPrototypeOf on a handle keeps handleData and the finalizer"
         CHECK(embed::handleData(handle.get()) == &destroyed);
         CHECK(embed::toUtf8(embed::getProperty(handle.get(), "kind")) == "wrapped");
         CHECK(destroyed == 0);
-    }
+    });
     // Dictionary mode changed nothing about liveness: the destructor fires
     // when the cell dies, exactly once.
+    test::scrubStack();
     runtime::rtHeap().collect();
     CHECK(destroyed == 1);
     runtime::rtHeap().collect();
@@ -1042,7 +1079,9 @@ TEST_CASE("isSymbol answers for symbol primitives and nothing else") {
 
 TEST_CASE("a handle born on a prototype is a class instance") {
     int freed = 0;
-    {
+    // In a frame of its own, the stack scrubbed before the collection that
+    // should find the handle dead (stack_scrub.h).
+    test::inOwnFrame([&] {
         // The class: a host constructor, its shared methods on the prototype
         // the READ mints (setProperty refuses `prototype` by name; getProperty
         // answers the real slot-backed object, and it is plain).
@@ -1089,15 +1128,18 @@ TEST_CASE("a handle born on a prototype is a class instance") {
             CHECK(bronze_instanceof(inst.get().rawBits(), ctor.get().rawBits()));
         }
         CHECK(freed == 0);
-    }
+    });
     // Being a class instance changed nothing about the handle's death.
+    test::scrubStack();
     runtime::rtHeap().collect();
     CHECK(freed == 1);
 }
 
 TEST_CASE("construct on a host constructor births instances on its prototype") {
     int freed = 0;
-    {
+    // In a frame of its own, the stack scrubbed before the collection that
+    // should find the handle dead (stack_scrub.h).
+    test::inOwnFrame([&] {
         // Filled after the prototype is read; the ctor body reads it through
         // the shared_ptr so the capture and the decoration can happen in
         // either order.
@@ -1147,7 +1189,8 @@ TEST_CASE("construct on a host constructor births instances on its prototype") {
             CHECK(bronze_instanceof(handle.get().rawBits(), ctor.get().rawBits()));
         }
         CHECK(freed == 0);
-    }
+    });
+    test::scrubStack();
     runtime::rtHeap().collect();
     CHECK(freed == 1);
 }
@@ -1315,7 +1358,9 @@ TEST_CASE("createExternalArrayBuffer reads host bytes in place and shares a live
     const float seed = 3.5f;
     std::memcpy(probe.bytes, &seed, sizeof seed);
 
-    {
+    // In a frame of its own, the stack scrubbed before the collections that
+    // should find the buffers dead (stack_scrub.h).
+    test::inOwnFrame([&] {
         embed::Persistent buffer{embed::createExternalArrayBuffer(
             probe.bytes, 16,
             [](void*, uint8_t* bytes) {
@@ -1346,10 +1391,11 @@ TEST_CASE("createExternalArrayBuffer reads host bytes in place and shares a live
         embed::Persistent secondView{
             embed::createTypedArrayView(embed::elements::Float32, second.get(), 0, 4)};
         CHECK(embed::toDouble(embed::getElement(secondView.get(), 1)) == 9.0);
-    }
+    });
 
     // Both buffers dropped: the store's LAST reference goes at the deferred
     // drain — never mid-collection — and the governing deleter runs once.
+    test::scrubStack();
     embed::collectGarbage();
     embed::drainFinalizers();
     embed::collectGarbage();
@@ -1469,7 +1515,9 @@ TEST_CASE("bronze_native_wrap makes a tagged handle the class's destructor recla
     REQUIRE(tag != nullptr);
 
     const int freedBefore = embedTestProbeFreed;
-    {
+    // In a frame of its own, the stack scrubbed before the collection that
+    // should find the handle dead (stack_scrub.h).
+    test::inOwnFrame([&] {
         ShadowStackFrame frame;
         embed::Persistent handle{Value{bronze_native_wrap(embedTestProbeNew(4.5), tag)}};
         CHECK(embed::isObject(handle.get()));
@@ -1482,7 +1530,8 @@ TEST_CASE("bronze_native_wrap makes a tagged handle the class's destructor recla
         CHECK(embed::isNull(Value{bronze_native_wrap(nullptr, tag)}));
         embed::collectGarbage();
         CHECK(embedTestProbeFreed == freedBefore);
-    }
+    });
+    test::scrubStack();
     embed::collectGarbage();
     embed::drainFinalizers();
     embed::collectGarbage();

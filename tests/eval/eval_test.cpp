@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "../stack_scrub.h"
 #include "../test_temp_dir.h"
 #include "eval/eval.h"
 #include "embed/embed.h"
@@ -870,17 +871,18 @@ TEST_CASE("dynamic eval and Function modules are reclaimed when unreachable and 
 // entered directly (TieredEngineConfig::livesForProcess). A freeable one's
 // functions carry no DIRECT_CALL flag and are swept as before, after a caller
 // that does enter directly has called them hot.
-TEST_CASE("only a retained program's functions are entered directly, and a freeable one is still swept") {
-    installDefaultDynamicHooks();
+namespace {
+
+// The evals of the test below, in a frame of their own: the collector reads
+// the stack conservatively, and a result's Value left in the frame that
+// collects would keep the freeable program's function, and its module, alive
+// (stack_scrub.h).
+BRONZE_TEST_NOINLINE void evalRetainedAndFreeable(ExecutionTier tier, size_t baseline) {
     auto flagsOf = [](Value v) -> uint32_t {
         REQUIRE(v.isObject());
         return v.asObject<FunctionHeader>()->function_flags;
     };
-    for (ExecutionTier tier : {ExecutionTier::Tier2_Optimized, ExecutionTier::Auto}) {
-        CAPTURE(static_cast<int>(tier));
-        runtime::rtHeap().collect();
-        const size_t baseline = runtime::rtDynamicModuleCount();
-
+    {
         EvalOptions freeable;
         freeable.tier = tier;
         embed::CallResult f = evalScript("globalThis.__dynInc = function(x) { return x + 1; };", freeable);
@@ -910,6 +912,19 @@ TEST_CASE("only a retained program's functions are entered directly, and a freea
 
         embed::CallResult drop = evalScript("delete globalThis.__dynInc; delete globalThis.__keptSum; undefined;");
         REQUIRE(!drop.thrown);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("only a retained program's functions are entered directly, and a freeable one is still swept") {
+    installDefaultDynamicHooks();
+    for (ExecutionTier tier : {ExecutionTier::Tier2_Optimized, ExecutionTier::Auto}) {
+        CAPTURE(static_cast<int>(tier));
+        runtime::rtHeap().collect();
+        const size_t baseline = runtime::rtDynamicModuleCount();
+        evalRetainedAndFreeable(tier, baseline);
+        bronze::test::scrubStack();
         runtime::rtHeap().collect();
         CHECK(runtime::rtDynamicModuleCount() == baseline);
     }

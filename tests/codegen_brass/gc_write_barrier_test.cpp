@@ -20,6 +20,8 @@
 #include <memory>
 #include <vector>
 
+#include "../stack_scrub.h"
+
 using namespace bronze;
 
 namespace {
@@ -27,22 +29,31 @@ namespace {
 // A heap of the test's own with one old block of Values and young values to
 // store into it: the barrier generated code calls (brass_gc_write_barrier)
 // must dirty the old block's card exactly when a young reference lands in it.
+//
+// The block is rooted from the C++ heap, not the stack: a young object a
+// stack word names is pinned young, and this one must be promoted.
 struct BarrierHeap {
     Heap heap;
     ShadowStackFrame frame;
-    Rooted<Value> old;
+    std::unique_ptr<Rooted<Value>> oldRoot;
 
-    BarrierHeap() : old(heap, Value::fromUndefined()) {
+    BarrierHeap() : oldRoot(std::make_unique<Rooted<Value>>(heap, Value::fromUndefined())) {
         heap.set_gc_stress(false);
-        auto* block = heap.allocate(sizeof(Value) * 4, Tag::Object);
-        block->flags = HeapKind::ValueBlock;
-        old.set(Value::fromObject(block));
-        for (int i = 0; i < 4; ++i) slots()[i] = Value::fromUndefined();
+        makeBlock(*this);
+        bronze::test::scrubStack();
         heap.collect();  // promotes the block
     }
 
-    HeapValue* slots() { return old.get().asObject<HeapObjectHeader>()->payload<HeapValue>(); }
-    uintptr_t oldAddress() { return reinterpret_cast<uintptr_t>(old.get().asObject()); }
+    BRONZE_TEST_NOINLINE static void makeBlock(BarrierHeap& h) {
+        auto* block = h.heap.allocate(sizeof(Value) * 4, Tag::Object);
+        block->flags = HeapKind::ValueBlock;
+        h.oldRoot->set(Value::fromObject(block));
+        for (int i = 0; i < 4; ++i) h.slots()[i] = Value::fromUndefined();
+    }
+
+    Rooted<Value>& old() { return *oldRoot; }
+    HeapValue* slots() { return old().get().asObject<HeapObjectHeader>()->payload<HeapValue>(); }
+    uintptr_t oldAddress() { return reinterpret_cast<uintptr_t>(old().get().asObject()); }
     bool cardDirty() {
         const brass::gc::Heap& gc = heap.gc();
         return gc.card_table_base()[(oldAddress() - gc.old_base()) >> brass::gc::kCardShift] ==
@@ -55,29 +66,39 @@ struct BarrierHeap {
 // with the tagged object and the stored value.
 void storeWithBarrier(BarrierHeap& h, size_t index, Value v) {
     reinterpret_cast<uint64_t*>(h.slots())[index] = v.rawBits();
-    brass_gc_write_barrier(h.old.get().rawBits(), v.rawBits());
+    brass_gc_write_barrier(h.old().get().rawBits(), v.rawBits());
+}
+
+// A fresh young string stored into slot `index` with the barrier, and its
+// address masked, so that no word of the caller's frame names it (and pins
+// it in place) when the minor collection runs.
+constexpr uint64_t kMaskOut = 0x5A5A5A5A5A5A5A5AULL;
+BRONZE_TEST_NOINLINE uint64_t storeFreshYoung(BarrierHeap& h, size_t index, const char* text) {
+    const Value young = h.youngString(text);
+    REQUIRE(h.heap.is_movable(young.asObject()));
+    storeWithBarrier(h, index, young);
+    return young.rawBits() ^ kMaskOut;
 }
 
 }  // namespace
 
 TEST_CASE("write barrier - an old object storing a young reference dirties its card") {
     BarrierHeap h;
-    REQUIRE_FALSE(h.heap.is_movable(h.old.get().asObject()));
+    REQUIRE_FALSE(h.heap.is_movable(h.old().get().asObject()));
     h.heap.collect_minor();
     REQUIRE_FALSE(h.cardDirty());
 
-    const Value young = h.youngString("young");
-    REQUIRE(h.heap.is_movable(young.asObject()));
-    storeWithBarrier(h, 0, young);
+    const uint64_t youngMasked = storeFreshYoung(h, 0, "young");
     CHECK(h.cardDirty());
 
     // The minor collection finds the young string through the card, moves it
     // and updates the slot.
     h.heap.set_gc_verify(true);
+    bronze::test::scrubStack();
     h.heap.collect_minor();
     const Value moved = h.slots()[0];
     CHECK(moved.isString());
-    CHECK(moved.rawBits() != young.rawBits());
+    CHECK(moved.rawBits() != (youngMasked ^ kMaskOut));
     CHECK(moved.asString<StringHeader>()->length == 5);
 }
 
@@ -98,7 +119,7 @@ TEST_CASE("write barrier - ignores young-to-young and old-to-old stores") {
     h.heap.collect_minor();
 
     // Old into old: a reference, but nothing a minor collection moves.
-    storeWithBarrier(h, 0, h.old.get());
+    storeWithBarrier(h, 0, h.old().get());
     CHECK_FALSE(h.cardDirty());
 
     // Young into young: the young object is scanned by the minor collection
@@ -124,7 +145,7 @@ TEST_CASE("write barrier - HeapValue stores and bulk copies are barriered") {
 
     h.heap.collect_minor();
     Value run[2] = {h.youngString("copied"), Value::fromDouble(2.0)};
-    gcCopyValues(h.old.get().asObject(), h.slots() + 1, run, 2);
+    gcCopyValues(h.old().get().asObject(), h.slots() + 1, run, 2);
     CHECK(h.cardDirty());
     h.heap.collect_minor();
     CHECK(h.slots()[1].asString<StringHeader>()->length == 6);

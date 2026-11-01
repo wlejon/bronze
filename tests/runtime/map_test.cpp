@@ -28,6 +28,7 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/string.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 
@@ -257,12 +258,19 @@ TEST_CASE("the relocation epoch counts objects moved, not cycles finished") {
 
     // Allocation alone must not move it: an object that has never been copied
     // still lives where its hash says it does.
-    Rooted<Value> kept{Value::fromObject(ObjectHeader::create(heap, arena,
-                                                              Shape::createRoot(arena)))};
+    // The roots' slots are on the C++ heap and the objects made in frames of
+    // their own: a stack word naming a young object pins it, and a pinned
+    // object does not move (stack_scrub.h).
+    auto keptRoot = bronze::test::heapRooted<Rooted<Value>>();
+    Rooted<Value>& kept = *keptRoot;
+    bronze::test::inOwnFrame([&] {
+        kept.set(Value::fromObject(ObjectHeader::create(heap, arena, Shape::createRoot(arena))));
+    });
     CHECK(heap.relocation_epoch() == 0);
 
     // A collection with a live object moves that object, so the epoch moves by
     // at least one and the map's index is stale by construction.
+    bronze::test::scrubStack();
     heap.collect();
     const uint64_t afterFirst = heap.relocation_epoch();
     CHECK(afterFirst >= 1);
@@ -273,9 +281,12 @@ TEST_CASE("the relocation epoch counts objects moved, not cycles finished") {
 
     // And it counts moves rather than cycles: the first object is old now and
     // stays put, so a second collection moves only the new young one...
-    Rooted<Value> second{Value::fromObject(ObjectHeader::create(heap, arena,
-                                                               Shape::createRoot(arena)))};
+    auto second = bronze::test::heapRooted<Rooted<Value>>();
+    bronze::test::inOwnFrame([&] {
+        second->set(Value::fromObject(ObjectHeader::create(heap, arena, Shape::createRoot(arena))));
+    });
     const Value keptBefore = kept.get();
+    bronze::test::scrubStack();
     heap.collect();
     CHECK(kept.get() == keptBefore);
     const uint64_t afterSecond = heap.relocation_epoch();

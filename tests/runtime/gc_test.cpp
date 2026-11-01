@@ -16,9 +16,15 @@
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/value.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
+using bronze::test::fromOwnFrame;
+using bronze::test::heapRooted;
+using bronze::test::hideBits;
+using bronze::test::inOwnFrame;
+using bronze::test::scrubStack;
 
 namespace {
 
@@ -189,25 +195,34 @@ TEST_CASE("a minor collection moves rooted young objects and a full one keeps th
     heap.set_gc_stress(false);
     ShadowStackFrame frame;
 
-    (void)StringHeader::createFromUTF8(heap, "unrooted_garbage_string_data");
-    Rooted<Value> str(heap, Value::fromString(StringHeader::createFromUTF8(heap, "rooted_surviving_string")));
-    Rooted<Value> obj(heap, Value::fromObject(valueBlock(heap, 2)));
-    valuesOf(obj.get())[0] = str.get();
-    valuesOf(obj.get())[1] = Value::fromDouble(999.888);
+    // Roots on the C++ heap, filled in a frame of their own: a stack word
+    // naming an object pins it (stack_scrub.h).
+    auto str = heapRooted<Rooted<Value>>(heap);
+    auto obj = heapRooted<Rooted<Value>>(heap);
+    inOwnFrame([&] {
+        (void)StringHeader::createFromUTF8(heap, "unrooted_garbage_string_data");
+        str->set(Value::fromString(StringHeader::createFromUTF8(heap, "rooted_surviving_string")));
+        obj->set(Value::fromObject(valueBlock(heap, 2)));
+        valuesOf(obj->get())[0] = str->get();
+        valuesOf(obj->get())[1] = Value::fromDouble(999.888);
+    });
+    auto hidden = [&] { return fromOwnFrame([&] { return hideBits(obj->get().rawBits()); }); };
 
-    const Value before = obj.get();
+    const uint64_t before = hidden();
     const uint64_t epoch = heap.relocation_epoch();
+    scrubStack();
     heap.collect_minor();
-    CHECK(obj.get() != before);
+    CHECK(hidden() != before);
     CHECK(heap.relocation_epoch() != epoch);
 
+    scrubStack();
     heap.collect();
-    CHECK_FALSE(heap.is_movable(obj.get().asObject()));
-    auto* s = str.get().asString<StringHeader>();
+    CHECK_FALSE(heap.is_movable(obj->get().asObject()));
+    auto* s = str->get().asString<StringHeader>();
     CHECK(s->charCodeAt(0) == 'r');
     CHECK(s->length == 23);
-    CHECK(valuesOf(obj.get())[0] == str.get());
-    CHECK(valuesOf(obj.get())[1].asNumber() == 999.888);
+    CHECK(valuesOf(obj->get())[0] == str->get());
+    CHECK(valuesOf(obj->get())[1].asNumber() == 999.888);
 }
 
 TEST_CASE("an old object's store of a young value keeps it alive through a minor collection") {
@@ -216,8 +231,14 @@ TEST_CASE("an old object's store of a young value keeps it alive through a minor
     heap.set_gc_verify(true);  // the missing-barrier check
     ShadowStackFrame frame;
 
-    Rooted<Value> old(heap, Value::fromObject(valueBlock(heap, 4)));
-    for (int i = 0; i < 4; ++i) valuesOf(old.get())[i] = Value::fromUndefined();
+    // Promoted by the full collection: no stack word may name it then.
+    auto oldRoot = heapRooted<Rooted<Value>>(heap);
+    Rooted<Value>& old = *oldRoot;
+    inOwnFrame([&] {
+        old.set(Value::fromObject(valueBlock(heap, 4)));
+        for (int i = 0; i < 4; ++i) valuesOf(old.get())[i] = Value::fromUndefined();
+    });
+    scrubStack();
     heap.collect();
     REQUIRE_FALSE(heap.is_movable(old.get().asObject()));
 
@@ -244,9 +265,13 @@ TEST_CASE("an old function's parent store of a young value keeps it alive throug
     heap.set_gc_verify(true);  // the missing-barrier check
     ShadowStackFrame frame;
 
-    Rooted<Value> fn(heap, Value::fromObject(
-                               FunctionHeader::create(heap, nullptr, Value::fromUndefined(), 0,
-                                                      BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE)));
+    auto fnRoot = heapRooted<Rooted<Value>>(heap);
+    Rooted<Value>& fn = *fnRoot;
+    inOwnFrame([&] {
+        fn.set(Value::fromObject(FunctionHeader::create(heap, nullptr, Value::fromUndefined(), 0,
+                                                        BRONZE_ABI_FN_FLAGS_ORDINARY | BRONZE_ABI_FN_FLAG_NATIVE)));
+    });
+    scrubStack();
     heap.collect();
     REQUIRE_FALSE(heap.is_movable(fn.get().asObject()));
 
@@ -359,41 +384,56 @@ TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
     const size_t initialUserProtoCount = rtUserPrototypeShapeCount();
 
     // 1. Create temporary prototype objects and root shapes.
+    // Each made in a frame of its own, and the stack scrubbed before every
+    // collection that should reclaim one: a stack word naming a prototype
+    // keeps it (stack_scrub.h).
     heap.set_gc_stress(false);
-    for (int i = 0; i < 50; ++i) {
-        Rooted<Value> proto{Value(bronze_create_object())};
-        Shape* shape = rtRootShapeForPrototype(proto.get());
-        CHECK(shape != nullptr);
-    }
+    inOwnFrame([&] {
+        for (int i = 0; i < 50; ++i) {
+            Rooted<Value> proto{Value(bronze_create_object())};
+            Shape* shape = rtRootShapeForPrototype(proto.get());
+            CHECK(shape != nullptr);
+        }
+    });
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 50);
 
     // 2. Run GC. All 50 temporary prototypes are unreferenced and should be reclaimed.
+    scrubStack();
     heap.collect();
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount);
 
     // 3. A prototype kept alive by a Rooted survives GC, and its shape is preserved.
-    Rooted<Value> liveProto{Value(bronze_create_object())};
-    Shape* liveShape = rtRootShapeForPrototype(liveProto.get());
+    auto liveProtoRoot = heapRooted<Rooted<Value>>();
+    Rooted<Value>& liveProto = *liveProtoRoot;
+    Shape* liveShape = fromOwnFrame([&] {
+        liveProto.set(Value(bronze_create_object()));
+        return rtRootShapeForPrototype(liveProto.get());
+    });
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 1);
 
+    scrubStack();
     heap.collect();
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 1);
-    CHECK(rtRootShapeForPrototype(liveProto.get()) == liveShape);
+    CHECK(fromOwnFrame([&] { return rtRootShapeForPrototype(liveProto.get()); }) == liveShape);
 
     // 4. A prototype kept alive via an object instance created with it survives GC.
-    Rooted<Value> liveInstance;
-    {
+    auto liveInstanceRoot = heapRooted<Rooted<Value>>();
+    Rooted<Value>& liveInstance = *liveInstanceRoot;
+    inOwnFrame([&] {
         Rooted<Value> protoObj{Value(bronze_create_object())};
         Shape* pShape = rtRootShapeForPrototype(protoObj.get());
         liveInstance.set(Value::fromObject(ObjectHeader::create(heap, arena, pShape)));
-    }
+    });
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 2);
 
+    scrubStack();
     heap.collect();
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount + 2);
-    auto* instObj = liveInstance.get().asObject<ObjectHeader>();
-    CHECK(instObj->shape != nullptr);
-    CHECK(instObj->shape->prototypeValue().isObject());
+    inOwnFrame([&] {
+        auto* instObj = liveInstance.get().asObject<ObjectHeader>();
+        CHECK(instObj->shape != nullptr);
+        CHECK(instObj->shape->prototypeValue().isObject());
+    });
 
     // 5. Minor collections keep every prototype, however unreachable.
     liveProto.set(Value::fromUndefined());
@@ -402,6 +442,7 @@ TEST_CASE("user prototype shapes are reclaimed on GC when prototypes die") {
 
     // 6. Clear roots and collect again; everything should be swept.
     liveInstance.set(Value::fromUndefined());
+    scrubStack();
     heap.collect();
     CHECK(rtUserPrototypeShapeCount() == initialUserProtoCount);
     heap.set_gc_stress(wasStress);

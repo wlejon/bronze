@@ -69,32 +69,23 @@
 // one module image entered on two threads at once.
 //
 // THE GC CONTRACT, which every function below is written against: the heap is
-// a moving generational collector, so any allocation may relocate any heap
-// value in sight. A `Value` held in a plain C++ variable is current only until
-// the next allocating call; a value that must survive one — or survive between
-// frames — lives in a `Persistent`. Functions here that allocate say so, and
-// the ones that take a receiver and allocate return its post-call address.
+// a moving generational collector, but a collection never moves or frees what
+// the collecting thread's stack and registers name. Before every collection
+// brass reads each word of the thread's stacks (and the callee-saved
+// registers), pins in place every young object a word names, and, when it
+// marks the old generation, marks every old one (brass docs/gc_contract.md
+// 2.5). So a `Value` held in a plain C++ local is current, and its object
+// alive, across any allocating call, and the order a call's arguments are
+// evaluated in does not matter:
 //
-// THE TRAP IN THAT RULE, because "the next allocating call" is easy to read as
-// "the next statement": ARGUMENTS TO ONE CALL ARE EVALUATED IN UNSPECIFIED
-// ORDER. So
+//     setElement(obj, 3, fromUtf8("x"));        // fine, either order
 //
-//     setElement(obj.get(), 3, fromUtf8("x"));   // WRONG
-//
-// is already broken, in one statement: a compiler is free to read `obj.get()`
-// first and then run the allocation that moves `obj`, and the receiver the
-// call gets is a pre-collection address. MSVC happens to evaluate right to
-// left and clang left to right, so this is a bug that passes every test on one
-// platform and faults on another — and only once the heap is full enough that
-// the dead address stops landing in mapped memory. Build the allocating
-// argument in its OWN statement, into a Persistent, and pass slot reads only:
-//
-//     Persistent v{fromUtf8("x")};
-//     setElement(obj.get(), 3, v.get());        // right
-//
-// Nothing on this side of the boundary can rescue a caller who gets this
-// wrong: by the time a function here roots its receiver, it is rooting bits
-// that already name freed memory.
+// A `Persistent` is for a value held where no stack names it: in heap memory
+// (a member of a C++ object, a container, a static), across frames (between
+// two calls from the host, in a callback registered for later). The scan is
+// conservative: a stale word left in a dead frame can keep an object alive a
+// little longer, so the moment a weak target is cleared or a finalizer runs
+// is not exact (as JavaScript leaves it). Functions here that allocate say so.
 //
 // ---- THE TWO BOUNDARIES ----------------------------------------------------
 //
@@ -249,8 +240,8 @@ BRONZE_EMBED_API void setInterpretedFrameWalker(runtime::InterpretedFrameWalker 
 //    user code: record it and act later (HTML queues a task), never call back
 //    into JS from here.
 //
-// `promise` and `reason` are raw Values, current only until the next
-// allocation: a hook that keeps them puts them in Persistents first.
+// `promise` and `reason` are raw Values, current for the hook's call: a hook
+// that keeps them past it puts them in Persistents.
 enum class PromiseRejectionOperation : uint32_t { Unhandled = 0, Handled = 1 };
 using PromiseRejectionHook = void (*)(PromiseRejectionOperation op, Value promise, Value reason);
 BRONZE_EMBED_API void setPromiseRejectionHook(PromiseRejectionHook hook);
@@ -441,8 +432,9 @@ BRONZE_EMBED_API CompiledBodyStats getCompiledBodyStats();
 // `drainMicrotasks()` once per frame, after the frame's calls into compiled
 // code and before presenting.
 //
-// Draining RUNS USER CODE and ALLOCATES, so every Value the host holds across
-// one must live in a Persistent. It is safe to call with an empty queue, and
+// Draining RUNS USER CODE and ALLOCATES: a Value the host holds in a local
+// stays current across it, one it keeps in heap memory lives in a Persistent
+// (the GC contract above). It is safe to call with an empty queue, and
 // safe to call from a stack with no bronze frame on it.
 BRONZE_EMBED_API void drainMicrotasks();
 
@@ -591,7 +583,8 @@ BRONZE_EMBED_API void setDynamicImportHook(DynamicImportHook hook);
 // A host callable, invoked when compiled JS calls the wrapping function
 // object. `args` points at GC-ROOTED slots the collector updates in place, so
 // the span stays current across anything the callback does; `thisValue` is a
-// plain copy, current at entry — re-root it before allocating.
+// plain copy, which as a local stays current across the callback's
+// allocations (the GC contract above).
 //
 // To throw into JS, call one of the throw helpers below. Their exception is
 // the only one that may leave a callback: generated code unwinds it to the
@@ -646,9 +639,7 @@ BRONZE_EMBED_API Value makeArray(uint32_t length = 0);
 // spell it. On a function the definition lands where a class `static` member's
 // would; `name`, `length` and `prototype` are slot-backed or non-writable
 // (10.2.9, 10.2.10, 10.2.4) and are refused by name, loudly — hard errors
-// over a property the reads would then lie about. ALLOCATES and may move
-// `obj`: the return value is the receiver's post-call address, and any OTHER
-// Value the host holds must be re-read from a Persistent.
+// over a property the reads would then lie about. ALLOCATES; returns `obj`.
 BRONZE_EMBED_API Value setProperty(Value obj, std::string_view key, Value v);
 
 // Delete an own property from `obj`. Returns true if deletion succeeded or property was absent.
@@ -691,8 +682,8 @@ BRONZE_EMBED_API Value freeze(Value obj);
 // throws is handled the way `call` handles a throw: it is caught at the host
 // boundary and the read answers undefined (a host
 // accessor has no JS frame to propagate into). MAY ALLOCATE and MAY RUN USER
-// CODE (a getter), so every other Value the host holds must be re-read from a
-// Persistent afterwards.
+// CODE (a getter); the host's local Values stay current across it (the GC
+// contract above).
 BRONZE_EMBED_API Value getProperty(Value obj, std::string_view key);
 
 // `obj[3]` spelled from the host — the numeric key takes the same path a
@@ -880,7 +871,7 @@ BRONZE_EMBED_API Value fromBool(bool b);
 // UTF-8 in, heap string out, decoded as the WHATWG decoder does: each
 // maximal ill-formed subpart (a byte that cannot lead, a sequence cut short or
 // broken, an overlong, an encoded surrogate, past U+10FFFF) is U+FFFD.
-// ALLOCATES — root the result before the next allocating call.
+// ALLOCATES.
 BRONZE_EMBED_API Value fromUtf8(std::string_view utf8);
 
 // ToNumber over primitives (an object here is the hard error rt_convert.cpp

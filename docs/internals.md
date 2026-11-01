@@ -213,6 +213,15 @@ runs.
 `src/embed` is the host-facing C++ API: run a compiled program in-process,
 register host globals, wrap native functions and objects, hold GC-safe
 handles across frames (`Persistent`, RAII `HandleScope`, `EscapableHandleScope`, `Local<T>`).
+A raw `Value` in a C++ local needs none of them: before each collection brass
+reads the thread's stacks and callee-saved registers conservatively, pins in
+place every young object a word names and, in a collection that marks the old
+generation, marks every old one named (brass `docs/gc_contract.md` 2.5). So a
+local stays current and alive across any allocating call, whatever order a
+call's arguments are evaluated in, and a handle is needed only for a value
+held in heap memory or across frames. A stale word left in a dead frame can
+keep an object a little longer, so when a weak target clears or a finalizer
+runs is not exact (`tests/embed/embed_raw_value_test.cpp`).
 The bro engine's `src/bronze_host/` is a complete
 worked example — a browser-shaped global set (`document`, canvas, WebGL2,
 timers, rAF) backed by a real engine.

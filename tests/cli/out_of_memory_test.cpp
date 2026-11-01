@@ -75,21 +75,30 @@ std::string buildAndRunSmallHeap(const std::string& name, const std::string& sou
 }  // namespace
 
 TEST_CASE("an exhausted heap throws a catchable RangeError and the program goes on") {
+    // The first fill runs in a function of its own, and a deep recursion then
+    // writes over the stack it and the failed allocation used: the collector
+    // reads the stack conservatively, and one stale word there naming the
+    // dropped array would keep all of it alive through the second fill.
     const std::string out = buildAndRunSmallHeap("oom_catch",
-        "let hold = [];\n"
-        "let caught = null;\n"
-        "try {\n"
-        "  for (let i = 0; i < 100000000; i++) hold.push({ i, pair: [i, i + 1], tag: 'x' + (i & 1023) });\n"
-        "} catch (e) { caught = e; }\n"
-        "console.log('range=' + (caught instanceof RangeError));\n"
-        "console.log('message=' + (caught && caught.message));\n"
-        "const held = hold.length;\n"
-        "console.log('held=' + (held > 100000));\n"
+        "function fill() {\n"
+        "  let hold = [];\n"
+        "  let caught = null;\n"
+        "  try {\n"
+        "    for (let i = 0; i < 100000000; i++) hold.push({ i, pair: [i, i + 1], tag: 'x' + (i & 1023) });\n"
+        "  } catch (e) { caught = e; }\n"
+        "  console.log('range=' + (caught instanceof RangeError));\n"
+        "  console.log('message=' + (caught && caught.message));\n"
+        "  const held = hold.length;\n"
+        "  console.log('held=' + (held > 100000));\n"
         // What was built before the failure is intact.
-        "let ok = true;\n"
-        "for (let i = 0; i < held; i += 9973) if (hold[i].i !== i || hold[i].pair[1] !== i + 1) ok = false;\n"
-        "console.log('intact=' + ok);\n"
-        "hold = null;\n"
+        "  let ok = true;\n"
+        "  for (let i = 0; i < held; i += 9973) if (hold[i].i !== i || hold[i].pair[1] !== i + 1) ok = false;\n"
+        "  console.log('intact=' + ok);\n"
+        "  return held;\n"
+        "}\n"
+        "function scrub(n, a, b, c, d) { return n === 0 ? a + b + c + d : scrub(n - 1, n, n, n, n) + 0; }\n"
+        "const held = fill();\n"
+        "scrub(2000, 0, 0, 0, 0);\n"
         // Let go, and the heap is usable again: a second fill of half the size.
         "let again = [];\n"
         "for (let i = 0; i < (held >> 1); i++) again.push({ i });\n"

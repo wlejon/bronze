@@ -36,6 +36,7 @@
 #include "runtime/shape.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -204,19 +205,27 @@ TEST_CASE("a DataView's buffer is forwarded, and its window survives collection"
     NonMovingArena arena;
     Shape* shape = Shape::createRoot(arena, Value::fromNull());
 
-    Rooted<Value> buf(Value::fromObject(ArrayBufferHeader::create(heap, shape, 32)));
-    Rooted<Value> view(Value::fromObject(DataViewHeader::create(heap, shape, buf, 8, 16)));
-    const uintptr_t before = reinterpret_cast<uintptr_t>(view.get().asObject<DataViewHeader>());
-    view.get().asObject<DataViewHeader>()->bytes()[0] = 0xAB;
-    view.get().asObject<DataViewHeader>()->bytes()[15] = 0xCD;
-
-    // Something unreachable, so the collection has work to do and the survivors
-    // land at different addresses.
-    ArrayBufferHeader::create(heap, shape, 1024);
+    // The roots' slots are on the C++ heap and the objects made in a frame of
+    // their own, the view's address kept hidden: a stack word naming them
+    // would pin them in place (stack_scrub.h).
+    auto bufRoot = bronze::test::heapRooted<Rooted<Value>>();
+    auto viewRoot = bronze::test::heapRooted<Rooted<Value>>();
+    Rooted<Value>& view = *viewRoot;
+    const uint64_t before = bronze::test::fromOwnFrame([&] {
+        bufRoot->set(Value::fromObject(ArrayBufferHeader::create(heap, shape, 32)));
+        view.set(Value::fromObject(DataViewHeader::create(heap, shape, *bufRoot, 8, 16)));
+        view.get().asObject<DataViewHeader>()->bytes()[0] = 0xAB;
+        view.get().asObject<DataViewHeader>()->bytes()[15] = 0xCD;
+        // Something unreachable, so the collection has work to do and the
+        // survivors land at different addresses.
+        ArrayBufferHeader::create(heap, shape, 1024);
+        return bronze::test::hideBits(reinterpret_cast<uintptr_t>(view.get().asObject<DataViewHeader>()));
+    });
+    bronze::test::scrubStack();
     heap.collect();
 
     auto* v = view.get().asObject<DataViewHeader>();
-    CHECK(reinterpret_cast<uintptr_t>(v) != before);
+    CHECK(bronze::test::hideBits(reinterpret_cast<uintptr_t>(v)) != before);
     CHECK(v->byteOffset == 8);
     CHECK(v->byteLength == 16);
     // The address is RECOMPUTED from the buffer Value, which is the whole GC

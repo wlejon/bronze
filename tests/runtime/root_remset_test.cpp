@@ -28,6 +28,7 @@
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
 #include "runtime/weak_ref.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 using namespace bronze::runtime;
@@ -99,13 +100,21 @@ TEST_CASE("a quiet minor visits no remembered cell, and one write costs about on
     CHECK(visits() == before);
 
     // One template object, written through its one writer into one cell of
-    // a 2048-cell table.
-    Rooted<Value> cooked{Value(bronze_create_array(1))};
-    Rooted<Value> raw{Value(bronze_create_array(1))};
-    bronze_template_object(cooked.get().rawBits(), raw.get().rawBits(), &g_templateCells[700]);
+    // a 2048-cell table. Its roots are on the C++ heap and it is made in a
+    // frame of its own: an object a stack word names is pinned young and
+    // never ages out (stack_scrub.h).
+    auto cookedRoot = bronze::test::heapRooted<Rooted<Value>>();
+    auto rawRoot = bronze::test::heapRooted<Rooted<Value>>();
+    Rooted<Value>& cooked = *cookedRoot;
+    const bool wasYoung = bronze::test::fromOwnFrame([&] {
+        cooked.set(Value(bronze_create_array(1)));
+        rawRoot->set(Value(bronze_create_array(1)));
+        bronze_template_object(cooked.get().rawBits(), rawRoot->get().rawBits(), &g_templateCells[700]);
+        return gcHoldsYoung(Value(g_templateCells[700]));
+    });
     CHECK(rtRootRemsetCheck().empty());
-    const bool wasYoung = gcHoldsYoung(Value(g_templateCells[700]));
     before = visits();
+    bronze::test::scrubStack();
     rtHeap().collect_minor();
     if (wasYoung && !rtHeap().gc_stress()) {
         // That cell, and at most a handful of others the template object's
@@ -118,6 +127,7 @@ TEST_CASE("a quiet minor visits no remembered cell, and one write costs about on
 
     // Two more minors age the object out of the young generation (tenure age
     // 2), and the cell leaves the set: the next quiet minor visits nothing.
+    bronze::test::scrubStack();
     rtHeap().collect_minor();
     rtHeap().collect_minor();
     CHECK_FALSE(gcHoldsYoung(Value(g_templateCells[700])));

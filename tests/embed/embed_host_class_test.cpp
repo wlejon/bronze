@@ -20,6 +20,7 @@
 #include "embed/embed_host_class.h"
 #include "runtime/heap.h"
 #include "runtime/rt_state.h"
+#include "../stack_scrub.h"
 
 using namespace bronze;
 
@@ -60,10 +61,15 @@ void installClasses() {
 
 }  // namespace
 
+// The handles of each case live in a frame of its own, and the stack is
+// scrubbed before the collection that should find them dead: the collector
+// reads the stack conservatively, and a stale word naming a handle would keep
+// it (stack_scrub.h).
+
 TEST_CASE("HostClass brands survive collections and follow a three-level lineage") {
     installClasses();
     const int before = Counted::live;
-    {
+    test::inOwnFrame([&] {
         embed::Persistent leaf(leafClass().createInstance(std::make_unique<Counted>(7)));
         embed::Persistent other(otherClass().createInstance(std::make_unique<Counted>(8)));
         // Young, then promoted, then old across a full collection: the brand
@@ -88,7 +94,8 @@ TEST_CASE("HostClass brands survive collections and follow a three-level lineage
         CHECK(baseClass().unwrap(bareHandle.get()) == nullptr);
         CHECK(!leafClass().isInstance(embed::fromDouble(1.0)));
         CHECK(Counted::live == before + 2);
-    }
+    });
+    test::scrubStack();
     runtime::rtHeap().collect();
     CHECK(Counted::live == before);
 }
@@ -109,22 +116,24 @@ TEST_CASE("each HostClass handle's destructor runs once, when that handle dies")
         --static_cast<Shared*>(p)->refs;
         ++destroyed;
     };
-    {
+    test::inOwnFrame([&] {
         ++shared.refs;
         embed::Persistent a(leafClass().make(&shared, release));
-        {
+        test::inOwnFrame([&] {
             ++shared.refs;
             embed::Persistent b(midClass().make(&shared, release));
             CHECK(midClass().unwrap(b.get()) == &shared);
             CHECK(leafClass().unwrap(b.get()) == nullptr);  // b is a mid, not a leaf
-        }
+        });
+        test::scrubStack();
         runtime::rtHeap().collect();
         CHECK(destroyed == 1);
         CHECK(shared.refs == 1);
         // The handle still alive is still its class's.
         CHECK(leafClass().unwrap(a.get()) == &shared);
         CHECK(baseClass().unwrap(a.get()) == &shared);
-    }
+    });
+    test::scrubStack();
     runtime::rtHeap().collect();
     CHECK(destroyed == 2);
     CHECK(shared.refs == 0);
@@ -134,22 +143,29 @@ TEST_CASE("many young HostClass handles: every destructor runs, survivors keep t
     installClasses();
     const int before = Counted::live;
     constexpr int kCount = 20000;
-    embed::Persistent keep(embed::makeArray(0));
-    for (int i = 0; i < kCount; ++i) {
-        embed::Persistent h(leafClass().createInstance(std::make_unique<Counted>(i)));
-        if (i % 97 == 0) keep.set(embed::setElement(keep.get(), static_cast<uint32_t>(i / 97), h.get()));
-    }
+    embed::Persistent keep;
+    test::inOwnFrame([&] {
+        keep.set(embed::makeArray(0));
+        for (int i = 0; i < kCount; ++i) {
+            embed::Persistent h(leafClass().createInstance(std::make_unique<Counted>(i)));
+            if (i % 97 == 0) keep.set(embed::setElement(keep.get(), static_cast<uint32_t>(i / 97), h.get()));
+        }
+    });
+    test::scrubStack();
     runtime::rtHeap().collect_minor();
     runtime::rtHeap().collect();
     const int kept = (kCount + 96) / 97;
     CHECK(Counted::live == before + kept);
-    for (int k = 0; k < kept; ++k) {
-        embed::Value v = embed::getElement(keep.get(), static_cast<uint32_t>(k));
-        auto* c = static_cast<Counted*>(baseClass().unwrap(v));
-        REQUIRE(c != nullptr);
-        CHECK(c->value == k * 97);
-    }
+    test::inOwnFrame([&] {
+        for (int k = 0; k < kept; ++k) {
+            embed::Value v = embed::getElement(keep.get(), static_cast<uint32_t>(k));
+            auto* c = static_cast<Counted*>(baseClass().unwrap(v));
+            REQUIRE(c != nullptr);
+            CHECK(c->value == k * 97);
+        }
+    });
     keep.set(embed::undefined());
+    test::scrubStack();
     runtime::rtHeap().collect();
     CHECK(Counted::live == before);
 }
