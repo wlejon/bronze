@@ -1,7 +1,5 @@
 #include <doctest/doctest.h>
 
-#include <brass/verify/smt_equiv.hpp>
-
 #include <chrono>
 #include <iostream>
 #include <random>
@@ -78,67 +76,22 @@ void checkDifferentialEquivalence(
 
 }  // namespace
 
-TEST_CASE("brass regex DFA JIT: verify_mir_equivalence proves Unopt MIR == Superopt MIR") {
+TEST_CASE("brass regex DFA JIT: a plan's module carries every kernel") {
     auto pat = compileOk("[a-zA-Z_][a-zA-Z0-9_]*|[0-9]+", "");
     REQUIRE(regex::hasJitFastPath(*pat));
     REQUIRE(pat->jitPlan != nullptr);
 
-    regex::RegexJitPlan::waitForKernels();
     const auto stats = pat->jitPlan->stats();
     CHECK(stats.nfa_states >= 4);
     CHECK(stats.dfa_states >= 3);
-    // The shared kernels run the SMT passes only under BRONZE_SMT_OPT=1
-    // (regex_jit.cpp); what they elide is proven on opt_mod below.
 
-    auto unopt_mod = regex::RegexJitPlan::buildMirModule(
+    auto mod = regex::RegexJitPlan::buildMirModule(
         pat->jitPlan->transitionTable().data(),
         pat->jitPlan->numDfaStates());
-    auto opt_mod = regex::RegexJitPlan::buildMirModule(
-        pat->jitPlan->transitionTable().data(),
-        pat->jitPlan->numDfaStates());
-
-    brass::SmtGuardElimStats guard_stats{};
-    brass::SuperoptStats superopt_stats{};
-    regex::RegexJitPlan::optimizeMirModule(*opt_mod, &guard_stats, &superopt_stats);
-
-    CHECK(superopt_stats.masks_elided >= 1);
-
-    const char* proven_fn_names[] = {
-        "regex_dfa_table_step",
-        "regex_dfa_step_specialized",
-        "regex_dfa_utf16_step",
-        "regex_dfa_scan_bytes",
-    };
-
-    brass::verify::EquivOptions eq_opts;
-    eq_opts.loop_unroll_bound = 0;
-
-    for (const char* name : proven_fn_names) {
-        const brass::Function* f_unopt = unopt_mod->get_function(name);
-        const brass::Function* f_opt = opt_mod->get_function(name);
-        REQUIRE(f_unopt != nullptr);
-        REQUIRE(f_opt != nullptr);
-
-        auto eq = brass::verify::verify_mir_equivalence(*f_unopt, *f_opt, eq_opts);
-        INFO("Function: ", std::string(name), " diagnostic: ", eq.diagnostic);
-        CHECK(eq.status == brass::verify::EquivStatus::ProvenEquivalent);
-    }
-
-    const char* full_loop_fn_names[] = {
-        "regex_dfa_match_at",
-        "regex_dfa_search",
-    };
-
-    for (const char* name : full_loop_fn_names) {
-        const brass::Function* f_unopt = unopt_mod->get_function(name);
-        const brass::Function* f_opt = opt_mod->get_function(name);
-        REQUIRE(f_unopt != nullptr);
-        REQUIRE(f_opt != nullptr);
-
-        auto eq = brass::verify::verify_mir_equivalence(*f_unopt, *f_opt, eq_opts);
-        INFO("Function: ", std::string(name), " diagnostic: ", eq.diagnostic);
-        CHECK_FALSE(eq.is_counterexample());
-        CHECK(eq.status != brass::verify::EquivStatus::Unsupported);
+    for (const char* name : {"regex_dfa_table_step", "regex_dfa_step_specialized", "regex_dfa_utf16_step",
+                             "regex_dfa_scan_bytes", "regex_dfa_match_at", "regex_dfa_search"}) {
+        INFO("Function: ", std::string(name));
+        CHECK(mod->get_function(name) != nullptr);
     }
 }
 

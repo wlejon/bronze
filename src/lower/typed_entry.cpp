@@ -178,8 +178,6 @@ bool typedSignatureAt(const il::Module& module, const std::vector<const il::Inst
 }
 
 void applyTypedEntries(il::Module& module, TypedEntryStats* stats) {
-    static const bool disabled = envFlag("BRONZE_NO_TYPED_ENTRIES");
-    if (disabled) return;
     TypedEntryStats local;
     TypedEntryStats& st = stats != nullptr ? *stats : local;
 

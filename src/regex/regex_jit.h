@@ -3,8 +3,6 @@
 #include <brass/codegen/grammar_builder.hpp>
 #include <brass/codegen/kernel_jit.hpp>
 #include <brass/mir/module.hpp>
-#include <brass/mir/smt_guard_elim.hpp>
-#include <brass/mir/superopt.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -66,11 +64,6 @@ using RegexDfaSearchFn = int64_t (*)(
 struct RegexJitStats {
     uint32_t nfa_states = 0;
     uint32_t dfa_states = 0;
-    uint32_t smt_guards_eliminated = 0;
-    uint32_t superopt_masks_elided = 0;
-    uint32_t superopt_extensions_elided = 0;
-    uint32_t superopt_dags_synthesized = 0;
-    uint32_t superopt_solver_queries = 0;
 };
 
 // Holds the deterministic state table (256 transitions per state, laid out for
@@ -91,8 +84,7 @@ public:
 
     const std::vector<int32_t>& transitionTable() const noexcept { return transition_table_; }
     const std::vector<int32_t>& acceptTable() const noexcept { return accept_table_; }
-    // The plan's own counts, with the shared kernels' proof counts once they
-    // are built (zero before).
+    // The plan's NFA and DFA state counts.
     RegexJitStats stats() const noexcept;
 
     // Attempts to execute `matchAt` via the native JIT kernel.
@@ -112,18 +104,12 @@ public:
         const int32_t* transition_table = nullptr,
         int32_t num_states = 0);
 
-    // Runs `brass::run_smt_guard_elimination` and `brass::run_mir_superopt` on a regex MIR module.
-    static void optimizeMirModule(
-        brass::Module& mod,
-        brass::SmtGuardElimStats* guard_stats = nullptr,
-        brass::SuperoptStats* superopt_stats = nullptr);
-
     // Compiles a `Pattern` into a `RegexJitPlan` if it uses only regular constructs
     // within state limits; returns nullptr if the pattern requires fallback.
     static std::unique_ptr<RegexJitPlan> tryCompile(const Pattern& pattern);
 
-    // The DFA kernels every plan runs are one generic module, proven and
-    // compiled once per process (the solver passes take a few hundred ms). The
+    // The DFA kernels every plan runs are one generic module, compiled once
+    // per process. The
     // first plan starts that on a thread of its own and never waits for it:
     // until the kernels are in, a plan answers false from tryMatchAt /
     // trySearch and the interpreter matches, with the same result. This

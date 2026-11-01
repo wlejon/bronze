@@ -43,7 +43,6 @@ Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
     if (stats_ && sources_) stats_->setSourceSet(sources_);
     typedElemDisabled_ = hostGlobals_.count("Float64Array") != 0 ||
                          hostGlobals_.count("Float32Array") != 0;
-    keyOwnerGuessDisabled_ = keyOwnerGuessSeamDisabled();
     numericArithDisabled_ =
         !assumeNoBigInt ||
         bigIntMayReach(astModule, hostGlobals ? *hostGlobals

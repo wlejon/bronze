@@ -15,22 +15,9 @@ namespace bronze::runtime {
 
 namespace {
 
-// -1: not read yet. Per thread, like every other runtime switch, so a test
-// can flip it without reaching into another thread's collections.
-thread_local int8_t t_enabled = -1;
 thread_local RootRemsetStats t_stats;
 
 }  // namespace
-
-bool rtRootRemsetEnabled() noexcept {
-    if (t_enabled < 0) {
-        const char* v = std::getenv("BRONZE_NO_ROOT_REMSET");
-        t_enabled = (v && *v && std::strcmp(v, "0") != 0) ? 0 : 1;
-    }
-    return t_enabled != 0;
-}
-
-void rtSetRootRemsetEnabled(bool enabled) noexcept { t_enabled = enabled ? 1 : 0; }
 
 RootRemsetStats& rtRootRemsetStats() noexcept { return t_stats; }
 

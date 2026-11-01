@@ -22,11 +22,6 @@ constexpr size_t kMaxLoopInstructions = 200;
 constexpr int32_t kKindFloat32 = BRONZE_ABI_TA_KIND_FLOAT32;
 constexpr int32_t kKindFloat64 = BRONZE_ABI_TA_KIND_FLOAT64;
 
-bool disabled() {
-    static const bool off = std::getenv("BRONZE_NO_TYPED_LOOP_VERSIONS") != nullptr;
-    return off;
-}
-
 bool tracing() {
     static const bool on = std::getenv("BRONZE_TYPED_LOOP_VERSION_TRACE") != nullptr;
     return on;
@@ -829,7 +824,6 @@ private:
 }  // namespace
 
 bool applyTypedLoopVersions(il::Module& module) {
-    if (disabled()) return false;
     bool any = false;
     for (auto& fn : module.functions) {
         if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) continue;

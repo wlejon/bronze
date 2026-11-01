@@ -9,22 +9,18 @@
 // reads the same entry the helper would: present and nonzero, it is the
 // answer; past the count or 0 (not interned on this thread yet), the helper
 // runs and interns it, and the next evaluation hits.
-//
-// BRONZE_NO_INLINE_BOX_STR_KEY=1 keeps every literal on the helper.
 
 #include "il_lowering_ops.h"
 #include "il_abi.h"
-#include <cstdlib>
 
 namespace il2mir {
 
 Value* lower_box_str_key(Builder& b, Value* key_id) {
-    static const bool disabled = std::getenv("BRONZE_NO_INLINE_BOX_STR_KEY") != nullptr;
     BasicBlock* cur = b.current_block();
     Module* mod = cur->parent()->parent();
     // Without the pinned TLS register the block's address is itself a call;
     // the helper is then no dearer.
-    if (disabled || !mod || !mod->pinned_tls_register()) {
+    if (!mod || !mod->pinned_tls_register()) {
         return b.build_call("bronze_box_str_key", Type::i64(), {key_id});
     }
     const std::string prefix = "boxkey_" + std::to_string(cur->parent()->next_block_id());

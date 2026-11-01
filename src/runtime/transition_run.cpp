@@ -44,16 +44,6 @@ namespace bronze::runtime {
 
 namespace {
 
-// The A/B seam: BRONZE_NO_TRANSITION_RUNS=1 never publishes, so every run
-// keeps its slow copy, which is the code a build without runs emits.
-bool runsDisabled() {
-    static const bool off = [] {
-        const char* v = std::getenv("BRONZE_NO_TRANSITION_RUNS");
-        return v && v[0] == '1';
-    }();
-    return off;
-}
-
 bool plainData(const Shape* node) {
     return node->enumerable && node->writable && node->configurable && !node->accessor;
 }
@@ -89,7 +79,7 @@ extern "C" {
 void bronze_transition_run_publish(uint64_t objBits, uint64_t startBits, uint64_t* cells, const uint64_t* keys,
                                    uint32_t count, uint32_t firstSlot) {
     recordHelperCall("bronze_transition_run_publish");
-    if (cells == nullptr || censusFillsSuppressed() || runsDisabled()) return;
+    if (cells == nullptr || censusFillsSuppressed()) return;
     uint64_t& counter = cells[BRONZE_ABI_TRANSITION_RUN_COUNT];
     const uint64_t publishes = counter >> BRONZE_ABI_TRANSITION_RUN_COUNT_SHIFT;
     if (publishes >= BRONZE_ABI_TRANSITION_RUN_PUBLISH_LIMIT) return;

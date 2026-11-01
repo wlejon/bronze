@@ -51,8 +51,7 @@ bool inlineGuardedEnabled(const InlineGuardedOptions& options);
 // `guesses` (direct_method_table.h, `closureGuesses`), when given, names for
 // a call site whose receiver may hold its callee in an own slot the functions
 // whose closures it may hold; each is copied in behind a test of the slot's
-// closure (inline_guarded.cpp, "own callees"). BRONZE_NO_INLINE_CLOSURES=1
-// builds without them.
+// closure (inline_guarded.cpp, "own callees").
 using ClosureGuesses = std::unordered_map<uint32_t, std::vector<uint32_t>>;
 bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags,
                           std::vector<uint32_t>* changed = nullptr, const ClosureGuesses* guesses = nullptr);

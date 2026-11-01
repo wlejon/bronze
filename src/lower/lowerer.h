@@ -231,8 +231,6 @@ private:
     // names, guessed for a receiver read out of another class's field.
     types::ShapeClassId keyOwnerGuessAt(const ast::Expr& receiver, const std::string& key);
     types::ShapeClassId keyOwnerFamily(const std::string& key);
-    static bool keyOwnerGuessSeamDisabled();
-    bool keyOwnerGuessDisabled_ = false;
     std::unordered_map<std::string, types::ShapeClassId> keyOwnerCache_;
     void reportClassLayouts();
     il::Type mergeParamType(const ast::Stmt& mergePoint, const std::string& name) const;

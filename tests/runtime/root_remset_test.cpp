@@ -246,24 +246,3 @@ TEST_CASE("a cell written behind its writer's back is named by the verification 
     g_templateCells[900] = kUndefined;
     CHECK(rtRootRemsetCheck().empty());
 }
-
-TEST_CASE("BRONZE_NO_ROOT_REMSET's switch visits everything and keeps the sets exact") {
-    ShadowStackFrame frame;
-    registerTables();
-    settle();
-
-    rtSetRootRemsetEnabled(false);
-    Rooted<Value> cooked{Value(bronze_create_array(1))};
-    Rooted<Value> raw{Value(bronze_create_array(1))};
-    bronze_template_object(cooked.get().rawBits(), raw.get().rawBits(), &g_templateCells[1500]);
-    rtHeap().collect_minor();
-    CHECK(g_templateCells[1500] == cooked.get().rawBits());
-    rtSetRootRemsetEnabled(true);
-
-    // Switched back on mid-run, the sets still hold what the writers noted
-    // and the minors pruned.
-    CHECK(rtRootRemsetCheck().empty());
-    rtHeap().collect_minor();
-    CHECK(g_templateCells[1500] == cooked.get().rawBits());
-    CHECK(rtRootRemsetCheck().empty());
-}

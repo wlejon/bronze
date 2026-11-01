@@ -49,13 +49,6 @@ const KeyInfo g_emptyKeyInfo{};
 
 thread_local std::vector<StringHeader*> g_keyHeaders;
 
-// BRONZE_NO_KEY_HASH_MEMO=1: a key header's hash is left to whoever asks first,
-// as before (rtKeyHeader).
-bool keyHashMemoDisabled() {
-    static const bool off = std::getenv("BRONZE_NO_KEY_HASH_MEMO") != nullptr;
-    return off;
-}
-
 // Mirrors g_keyHeaders' storage into the TLS block (bronze_abi_tls.h,
 // key_header_tbl), which generated code's inline `box.str` reads. Called after
 // every change of the vector's data pointer or size; a store into an existing
@@ -119,7 +112,7 @@ StringHeader* rtKeyHeader(uint32_t index) {
             // its key (lower_keyed_field_store.cpp) — is that pair. hash()
             // memoizes the same bits every time it runs, so asking early
             // changes no answer.
-            if (!keyHashMemoDisabled()) hdr->hash();
+            hdr->hash();
             g_keyHeaders[index] = hdr;
         }
     }

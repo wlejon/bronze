@@ -152,11 +152,8 @@ bool fillFromTypedArray(Rooted<Value>& view, ElementKind kind, Rooted<Value>& so
 // per element. three.js builds every BufferAttribute this way
 // (`new Float32Array(array)`), about 200 instructions an element before.
 // A BigInt view keeps the general loop: a Number there is 7.1.13's TypeError.
-// BRONZE_NO_TA_NUMBER_RUN=1 (read once a process) copies nothing here, so
-// every element takes the general loop as it always did.
 uint32_t fillFromNumberRun(Rooted<Value>& view, ElementKind kind, Rooted<Value>& source, uint32_t length) {
-    static const bool off = std::getenv("BRONZE_NO_TA_NUMBER_RUN") != nullptr;
-    if (off || isBigIntElementKind(kind)) return 0;
+    if (isBigIntElementKind(kind)) return 0;
     const ArrayHeader* src = source.get().asObject<ArrayHeader>();
     auto* dst = view.get().asObject<TypedArrayHeader>();
     // fillFromLength allocated the view and nothing since has run user code,

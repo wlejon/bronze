@@ -65,9 +65,7 @@ namespace bronze::lower {
 // big, which sits inside a handler's region, or which is a guarded region's
 // SLOW copy is left alone.
 //
-// THE SEAM is `BRONZE_NO_TYPED_LOOP_VERSIONS=1`, read once per process: with
-// it set the pass changes nothing. `BRONZE_TYPED_LOOP_VERSION_TRACE=1` prints
-// one line per loop versioned.
+// `BRONZE_TYPED_LOOP_VERSION_TRACE=1` prints one line per loop versioned.
 bool applyTypedLoopVersions(il::Module& module);
 
 }  // namespace bronze::lower

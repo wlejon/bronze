@@ -50,10 +50,9 @@ void recordRootBlockSpill(uint32_t count) noexcept {
 }
 
 void RootSlotList::growAndPush(Value* slot) {
-    // Doubling from the inline capacity, and from 8 when the seam took the
-    // inline storage away — the same geometric shape std::vector had, so the
-    // A/B compares two allocation policies rather than two growth curves.
-    const uint32_t next = capacity_ == 0 ? 8u : capacity_ * 2u;
+    // Doubling from the inline capacity: a geometric growth, so a deep frame
+    // reallocates a logarithmic number of times.
+    const uint32_t next = capacity_ * 2u;
     if (slots_ == inline_) recordRootFrameSpill(count_);
 
     auto* grown = static_cast<Value**>(std::malloc(sizeof(Value*) * next));

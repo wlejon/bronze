@@ -797,24 +797,16 @@ struct SharedRegexJitKernels {
     brass::codegen::KernelFunction search_kf;
     RegexDfaMatchAtFn match_at_fn = nullptr;
     RegexDfaSearchFn search_fn = nullptr;
-    brass::SmtGuardElimStats guard_stats{};
-    brass::SuperoptStats superopt_stats{};
 
     SharedRegexJitKernels() {
         mod = RegexJitPlan::buildMirModule();
-        // The SMT passes prove away one redundant UTF-16 mask and cost some
+        // No SMT passes: they prove away one redundant UTF-16 mask for some
         // 200 ms of solver time, in every process that compiles a regex and
-        // again at its exit, which joins this thread. They run here only
-        // when asked, as in the module backend (brass_backend.cpp);
-        // regex_jit_test proves what they would elide either way.
-        const char* smtOpt = std::getenv("BRONZE_SMT_OPT");
-        const bool smtOptEnabled = smtOpt && std::string_view(smtOpt) == "1";
-        if (smtOptEnabled) RegexJitPlan::optimizeMirModule(*mod, &guard_stats, &superopt_stats);
-
+        // again at its exit, which joins this thread.
         brass::codegen::KernelOptions kopts;
         kopts.enable_optimizations = true;
-        kopts.enable_smt_guard_elim = smtOptEnabled;
-        kopts.enable_superopt = smtOptEnabled;
+        kopts.enable_smt_guard_elim = false;
+        kopts.enable_superopt = false;
         kopts.enable_unroll = false;
         kopts.enable_vectorize = false;
         jit = std::make_unique<brass::codegen::KernelJit>(kopts);
@@ -827,7 +819,7 @@ struct SharedRegexJitKernels {
 };
 
 // Built once, on a thread of its own (RegexJitPlan::waitForKernels): the page
-// thread that compiles the first regex never waits on the solver.
+// thread that compiles the first regex never waits on the kernel compile.
 struct KernelBuild {
     std::atomic<const SharedRegexJitKernels*> ready{nullptr};
     std::unique_ptr<SharedRegexJitKernels> kernels;
@@ -890,29 +882,6 @@ std::unique_ptr<brass::Module> RegexJitPlan::buildMirModule(
     return mod;
 }
 
-void RegexJitPlan::optimizeMirModule(
-    brass::Module& mod,
-    brass::SmtGuardElimStats* guard_stats,
-    brass::SuperoptStats* superopt_stats) {
-    for (brass::Function* fn : mod.functions()) {
-        if (fn) fn->rebuild_cfg_predecessors();
-    }
-
-    brass::SmtGuardElimOptions gopts;
-    gopts.stats = guard_stats;
-    brass::run_smt_guard_elimination(mod, gopts);
-
-    brass::SuperoptOptions sopts;
-    sopts.stats = superopt_stats;
-    brass::run_mir_superopt(mod, sopts);
-
-    for (brass::Function* fn : mod.functions()) {
-        if (fn) {
-            fn->rebuild_cfg_predecessors();
-        }
-    }
-}
-
 std::unique_ptr<RegexJitPlan> RegexJitPlan::tryCompile(const Pattern& pattern) {
     if (!pattern.root) {
         return nullptr;
@@ -953,17 +922,7 @@ void RegexJitPlan::waitForKernels() {
     b.cv.wait(lock, [&b] { return b.ready.load(std::memory_order_acquire) != nullptr; });
 }
 
-RegexJitStats RegexJitPlan::stats() const noexcept {
-    RegexJitStats s = stats_;
-    if (const SharedRegexJitKernels* k = readyKernels()) {
-        s.smt_guards_eliminated = static_cast<uint32_t>(k->guard_stats.guards_proven_eliminated);
-        s.superopt_masks_elided = k->superopt_stats.masks_elided;
-        s.superopt_extensions_elided = k->superopt_stats.extensions_elided;
-        s.superopt_dags_synthesized = k->superopt_stats.dags_synthesized;
-        s.superopt_solver_queries = k->superopt_stats.solver_queries;
-    }
-    return s;
-}
+RegexJitStats RegexJitPlan::stats() const noexcept { return stats_; }
 
 bool RegexJitPlan::tryMatchAt(UnitsView input, size_t at, MatchResult& out, ExecStatus& status) const {
     const SharedRegexJitKernels* k = supported_ ? readyKernels() : nullptr;

@@ -23,18 +23,10 @@
 // the guess is made only where a value flows from one class's slot to another
 // class's key. A receiver the program built some other way (a parameter, an
 // array element, a call's result) keeps whatever the existing arms decide.
-//
-// BRONZE_NO_KEY_OWNER_GUESS=1 turns it off for A/B.
 
 #include "lower/lowerer.h"
 
-#include <cstdlib>
-
 namespace bronze::lower {
-
-bool Lowerer::keyOwnerGuessSeamDisabled() {
-    return std::getenv("BRONZE_NO_KEY_OWNER_GUESS") != nullptr;
-}
 
 types::ShapeClassId Lowerer::keyOwnerFamily(const std::string& key) {
     if (auto it = keyOwnerCache_.find(key); it != keyOwnerCache_.end()) return it->second;
@@ -77,7 +69,6 @@ types::ShapeClassId Lowerer::keyOwnerFamily(const std::string& key) {
 }
 
 types::ShapeClassId Lowerer::keyOwnerGuessAt(const ast::Expr& receiver, const std::string& key) {
-    if (keyOwnerGuessDisabled_) return types::kNoShapeClass;
     const auto* ma = dynamic_cast<const ast::MemberAccess*>(&receiver);
     if (ma == nullptr || ma->isPrivate || ma->optional || ma->object == nullptr) {
         return types::kNoShapeClass;

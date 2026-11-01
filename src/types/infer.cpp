@@ -675,7 +675,6 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // walked, for the same reason the class table is: the flow pass reads them
     // on every round, and a table that filled in as it went would answer
     // differently on the probe rounds and the recording round.
-    mod.literalFieldsAnywhere = std::getenv("BRONZE_NO_LITERAL_FIELD_TYPES") == nullptr;
     for (const ast::FunctionDecl* decl : split.decls) {
         for (const auto& name : ast::getDeeplyReboundNames(decl->body)) {
             mod.reboundByModuleFns.insert(name);
@@ -921,15 +920,13 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
             InferenceResult::FieldAuditReport::ResidueSite{r.reason, r.count, r.representativeSite});
     }
 
-    if (std::getenv("BRONZE_NO_LITERAL_SLOTS") == nullptr) {
-        for (const auto& [cls, fields] : mod.objectLitFields) {
-            if (mod.objectLitUnclosed.count(cls) != 0) continue;
-            const auto& keys = result.shapes.at(cls).properties;
-            const bool named = std::none_of(keys.begin(), keys.end(), [](const std::string& k) {
-                return k == "__proto__" || couldBeNumericKey(k);
-            });
-            if (named && !keys.empty()) result.literalLayouts.emplace(cls, keys);
-        }
+    for (const auto& [cls, fields] : mod.objectLitFields) {
+        if (mod.objectLitUnclosed.count(cls) != 0) continue;
+        const auto& keys = result.shapes.at(cls).properties;
+        const bool named = std::none_of(keys.begin(), keys.end(), [](const std::string& k) {
+            return k == "__proto__" || couldBeNumericKey(k);
+        });
+        if (named && !keys.empty()) result.literalLayouts.emplace(cls, keys);
     }
 
     result.moduleSignatures.reserve(mod.functions.size());

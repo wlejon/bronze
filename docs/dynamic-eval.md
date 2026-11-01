@@ -52,7 +52,7 @@ Execution on the calling thread (BrassTieredProgram::run)
 
 The pipeline tiers translate the program without running the MIR optimizer over it, so a program starts running as soon as it is translated. The optimizer runs where the code is hot: on each function the pipeline tiers up and on each OSR entry, with the same passes the whole-program tier runs (`BrassBackend::tierUpPasses`, handed to `MultiTierPipeline::set_tier2_passes`), over a copy of the function holding the bodies of the functions it calls, for inlining. `Tier2_Optimized` and ahead-of-time builds optimize the whole program.
 
-Optimizing compiles, of every program in the process, run on brass's one compile pool (`brass::runtime::CompilePool::shared()`): a quarter of the machine's hardware threads, between one and four, started with the first compile queued (`BRASS_JIT_THREADS` overrides the size). A program being destroyed drops its queued compiles and waits out its running ones; `stopBackgroundCompiles()` does that for every retained program, and at exit the pool shuts down.
+Optimizing compiles, of every program in the process, run on brass's one compile pool (`brass::runtime::CompilePool::shared()`): a quarter of the machine's hardware threads, between one and eight, started with the first compile queued. A program being destroyed drops its queued compiles and waits out its running ones; `stopBackgroundCompiles()` does that for every retained program, and at exit the pool shuts down.
 
 A function's pointer — what a closure holds, what descriptors and source tables point at — is its lazy stub in every pipeline tier (`MultiTierPipeline::function_address`), so pointers compare equal whichever tier made them, and the stub reaches whatever code the function currently has.
 

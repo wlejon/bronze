@@ -106,9 +106,7 @@ bool is_bits_identity_constant(const Value* v) {
     // boxed for its default): its bits are one of the two Boolean values, which
     // no Number, String or BigInt has, so `===` against it is the bits'
     // compare exactly as against a Boolean constant.
-    // BRONZE_NO_STRICT_EQ_BOXED_BOOL=1 keeps it on the general path.
-    static const bool no_boxed_bool = std::getenv("BRONZE_NO_STRICT_EQ_BOXED_BOOL") != nullptr;
-    if (no_boxed_bool || def->opcode() != brass::Opcode::or_ || def->operand_count() != 2) return false;
+    if (def->opcode() != brass::Opcode::or_ || def->operand_count() != 2) return false;
     const Value* lhs = def->operand(0);
     const Value* rhs = def->operand(1);
     const brass::Instruction* zext = lhs->is_instruction() ? lhs->defining_instruction() : nullptr;
@@ -335,15 +333,12 @@ Value* box_f64_bits(Builder& b, Value* f) {
 // BigInts and the hole read memory or are the helper's.
 Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only) {
     if (helper_only) return b.build_and(b.build_call("bronze_unbox_bool", Type::i32(), {v}), b.build_iconst_i32(1));
-    // BRONZE_NO_TRUTHY_BOOL_FIRST=1: no Boolean arm ahead of the classifier.
-    // Compile-time, like the other shape-of-code seams.
-    static const bool no_bool_first = std::getenv("BRONZE_NO_TRUTHY_BOOL_FIRST") != nullptr;
     BasicBlock* cur = b.current_block();
     const std::string prefix = "truthy_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* slow = b.append_block(prefix + "_slow");
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i32());
-    BasicBlock* classify = no_bool_first ? nullptr : b.append_block(prefix + "_classify");
+    BasicBlock* classify = b.append_block(prefix + "_classify");
     b.position_at_end(cur);
 
     auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
@@ -354,11 +349,9 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only) {
     // exactly kBoolTag | 0 and kBoolTag | 1, so `v - kBoolTag < 2` is "v is a
     // Boolean" and its low bit is its answer; every other value falls through
     // to the classifier unchanged.
-    if (classify) {
-        Value* is_bool = b.build_ult(b.build_sub(v, bits(kBoolTag)), bits(2));
-        b.build_br_if(is_bool, merge, {b.build_and(b.build_trunc_i32(v), b.build_iconst_i32(1))}, classify, {});
-        b.position_at_end(classify);
-    }
+    Value* is_bool = b.build_ult(b.build_sub(v, bits(kBoolTag)), bits(2));
+    b.build_br_if(is_bool, merge, {b.build_and(b.build_trunc_i32(v), b.build_iconst_i32(1))}, classify, {});
+    b.position_at_end(classify);
     Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
     // |x| in [1, +Inf] bits: neither a zero nor a NaN.
     Value* abs = b.build_and(v, bits(0x7FFFFFFFFFFFFFFFULL));
@@ -765,13 +758,11 @@ bool lower_ops_instruction(
                 constexpr int64_t kIdentityDispatch = 1;
                 // A string literal on either side (il_box_str_key.cpp); the
                 // helper-only form of a run-once block keeps its one call.
-                // BRONZE_NO_STRICT_EQ_STR_LITERAL=1 keeps the general lowering.
-                static const bool no_str_literal = std::getenv("BRONZE_NO_STRICT_EQ_STR_LITERAL") != nullptr;
                 const bool lit0 = lowering->is_string_literal(inst_ast.operands[0]);
                 const bool lit1 = lowering->is_string_literal(inst_ast.operands[1]);
                 if (inst_ast.imm_i64 == kIdentityDispatch) {
                     res_val = b.build_eq(op0, op1);
-                } else if (!no_str_literal && !lowering->run_once() && (lit0 || lit1) &&
+                } else if (!lowering->run_once() && (lit0 || lit1) &&
                            !is_bits_identity_constant(op0) && !is_bits_identity_constant(op1)) {
                     res_val = lit1 ? lower_strict_eq_string_literal(b, op0, op1)
                                    : lower_strict_eq_string_literal(b, op1, op0);

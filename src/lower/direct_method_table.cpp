@@ -158,10 +158,7 @@ void DirectMethodTable::resolve(il::Module& ilModule) const {
 }
 
 void DirectMethodTable::resolveAccessors(il::Module& ilModule) const {
-    // BRONZE_NO_DIRECT_ACCESSOR=1: every accessor site keeps the cache's
-    // dispatch. Compile-time for the reason `resolve` gives.
-    static const bool disabled = std::getenv("BRONZE_NO_DIRECT_ACCESSOR") != nullptr;
-    if (disabled || accessorSites_.empty() || classAccessors_.empty()) return;
+    if (accessorSites_.empty() || classAccessors_.empty()) return;
 
     // The nearest class at or above `className` that names `key` at all: an
     // accessor there is the guess, a method there (which a prototype holds

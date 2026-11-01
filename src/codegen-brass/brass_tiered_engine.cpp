@@ -259,11 +259,8 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
     // each is unobservable); measured, a third of mesh_churn_2k's steady
     // state under either tier went there. Tier 0 keeps the runtime path, as
     // a stub entered natively compiles its function and tier 0 promises none
-    // is; Tier 1 keeps it too, unmeasured. BRONZE_NO_JIT_DIRECT_ENTRY=1 is
-    // the A/B seam.
-    const char* noDirect = std::getenv("BRONZE_NO_JIT_DIRECT_ENTRY");
-    const bool nativeEntries = (tier == ExecutionTier::Tier2_Optimized || tier == ExecutionTier::Auto) &&
-                               !(noDirect && std::string_view(noDirect) == "1");
+    // is; Tier 1 keeps it too, unmeasured.
+    const bool nativeEntries = tier == ExecutionTier::Tier2_Optimized || tier == ExecutionTier::Auto;
     const bool entersDirectly = nativeEntries && config_.livesForProcess;
     backend.setDirectCallSites(nativeEntries);
     if (entersDirectly) backend.setDirectJsCalls(true);
@@ -343,9 +340,6 @@ std::unique_ptr<BrassTieredProgram> BrassTieredEngine::compile(
         pipeline.set_tier2_front_pass([spec](brass::Module& copy) {
             if (spec) {
                 il2mir::apply_tier2_speculation(copy, *spec);
-            }
-            if (const char* smt = std::getenv("BRONZE_JIT_SMT_OPT"); smt && std::string_view(smt) == "1") {
-                il2mir::run_smt_optimizations(copy);
             }
         });
         if (spec) {

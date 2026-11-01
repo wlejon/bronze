@@ -25,14 +25,6 @@ Value* iconst(Builder& b, uint64_t v) {
     return b.build_iconst_i64(static_cast<int64_t>(v));
 }
 
-// The A/B seam: BRONZE_NO_INDEX_RUN_NUMBERS=1 lowers every copy run as the
-// tested copy (hole test per read, the stores' Number test), without the
-// source's NUMBERS bit or its claim.
-bool index_run_numbers_disabled() {
-    static const bool off = std::getenv("BRONZE_NO_INDEX_RUN_NUMBERS") != nullptr;
-    return off;
-}
-
 }  // namespace
 
 bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& inst_idx, Builder& b, Function* fn,
@@ -394,7 +386,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
     Value* numbers_src = nullptr;
     bool numbers_claimable = false;
     uint32_t numbers_src_len = 0;
-    if (!index_run_numbers_disabled() && committed_get_recv_id != UINT32_MAX &&
+    if (committed_get_recv_id != UINT32_MAX &&
         committed_sget_recv_id == UINT32_MAX) {
         bool eligible = true;
         std::unordered_set<uint32_t> elem_gets;

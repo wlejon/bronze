@@ -44,9 +44,6 @@
 // its region), a block with two or more edges in, and every block of a
 // coroutine body (a suspension lets other code run before the resume) start
 // with an empty memo.
-//
-// THE SEAM is `BRONZE_NO_SHAPE_MEMO=1`: every site computes its own keyed
-// shape, which is the code before this.
 
 #include "il_lowering.h"
 #include <cstdlib>
@@ -59,11 +56,6 @@ namespace {
 // More receivers than this alive at once is a function the memo's join
 // parameters would cost more in than they save; the oldest is dropped.
 constexpr size_t kMemoCap = 6;
-
-bool memo_disabled_by_env() {
-    static const bool off = std::getenv("BRONZE_NO_SHAPE_MEMO") != nullptr;
-    return off;
-}
 
 // An instruction that performs no shape-changing operation on any object
 // and runs no code that could: see the header.
@@ -102,7 +94,7 @@ void IlLowering::memo_begin_function(const BronzeFunction& fn_ast) {
     shape_memo_at_end_.clear();
     memo_preds_.clear();
     memo_handler_blocks_.clear();
-    shape_memo_off_ = memo_disabled_by_env() || fn_ast.is_coroutine_body();
+    shape_memo_off_ = fn_ast.is_coroutine_body();
     if (shape_memo_off_) return;
     for (const BronzeBlock& blk : fn_ast.blocks) {
         if (blk.handler_id != UINT32_MAX) memo_handler_blocks_.insert(blk.handler_id);

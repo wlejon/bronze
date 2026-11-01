@@ -144,17 +144,10 @@ void apply_tier2_speculation(Module& mod, const SpecFeedback& feedback) {
     // What survives of the reads' out-of-line scans goes back inline.
     options.after_function = [](Function& fn) { expand_ic_stubs(fn); };
     // A site left a branch is laid out as a profile would lay it out: the
-    // counts before tier-up are this run's profile. BRONZE_SPEC_NO_COLD=1
-    // keeps every unarmed slow path in line (the layout A/B).
-    static const bool no_cold = [] {
-        const char* v = std::getenv("BRONZE_SPEC_NO_COLD");
-        return v && v[0] == '1';
-    }();
-    if (!no_cold) {
-        options.cold_slow = [](uint8_t kind, uint32_t misses, bool) {
-            return slow_is_cold(static_cast<SpecKind>(kind), misses);
-        };
-    }
+    // counts before tier-up are this run's profile.
+    options.cold_slow = [](uint8_t kind, uint32_t misses, bool) {
+        return slow_is_cold(static_cast<SpecKind>(kind), misses);
+    };
     brass::arm_speculation_sites(mod, feedback, options);
 }
 

@@ -690,16 +690,11 @@ private:
 
 }  // namespace
 
-bool inlineGuardedEnabled(const InlineGuardedOptions& options) {
-    // BRONZE_NO_INLINE_GUARDED=1 builds the same program without it, at
-    // every tier and in every image: the A/B switch every inline path in
-    // this compiler has.
-    return options.on && std::getenv("BRONZE_NO_INLINE_GUARDED") == nullptr;
-}
+bool inlineGuardedEnabled(const InlineGuardedOptions& options) { return options.on; }
 
 bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector<uint32_t>* changed,
                           const ClosureGuesses* guesses) {
-    Inliner inliner(module, std::getenv("BRONZE_NO_INLINE_CLOSURES") ? nullptr : guesses);
+    Inliner inliner(module, guesses);
     bool any = false;
     for (size_t f = 0; f < module.functions.size(); ++f) {
         if (inliner.inlineInto(static_cast<uint32_t>(f)) == 0) continue;

@@ -91,14 +91,6 @@ struct FnFacts {
 }  // namespace
 
 void markTransitionRuns(il::Module& module) {
-    // The A/B seam, read by the compiler: BRONZE_NO_TRANSITION_RUNS=1 marks
-    // nothing, so every write lowers alone (the runtime reads it too, and
-    // then never publishes).
-    static const bool off = [] {
-        const char* v = std::getenv("BRONZE_NO_TRANSITION_RUNS");
-        return v && v[0] == '1';
-    }();
-    if (off) return;
     for (il::Function& fn : module.functions) {
         if (fn.isExternal || fn.blocks.empty()) continue;
         // The `this` parameter (il.h Function::params: [__env] [__this] ...)
@@ -199,13 +191,6 @@ void markTransitionRuns(il::Module& module) {
 }
 
 void assignDefineAddCells(il::Module& module) {
-    // The A/B seam, read by the compiler: BRONZE_NO_DEFINE_ADD_CACHE=1 gives
-    // no site cells, so every define is the helper alone.
-    static const bool off = [] {
-        const char* v = std::getenv("BRONZE_NO_DEFINE_ADD_CACHE");
-        return v && v[0] == '1';
-    }();
-    if (off) return;
     for (il::Function& fn : module.functions) {
         if (fn.isExternal) continue;
         for (il::Block& block : fn.blocks) {

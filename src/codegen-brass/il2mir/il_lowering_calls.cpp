@@ -437,15 +437,11 @@ bool lower_call_instruction(
         // asks the shape memo for the receiver's keyed shape and leaves the
         // memo standing: the inlined body's own static sites on `this` (the
         // getter's `this._x`, the setter's store and `_onChangeCallback`) then
-        // pay only their cell compare. BRONZE_NO_ACCESSOR_MEMO=1 is the seam:
-        // the guard reads the receiver afresh and the memo is forgotten.
+        // pay only their cell compare.
         case BronzeOp::AccessorIcIs: {
-            static const bool no_accessor_memo = std::getenv("BRONZE_NO_ACCESSOR_MEMO") != nullptr;
             Value* recv = ensure_type(get_opd(0), Type::i64());
             if (!accessor_direct_here(lowering, inst_ast)) {
                 res_val = b.build_iconst_i32(0);
-            } else if (no_accessor_memo) {
-                res_val = accessor_cell_hit(lowering, b, recv, inst_ast.static_cell);
             } else {
                 res_val = accessor_cell_hit(lowering, b, recv, inst_ast.static_cell,
                                             lowering->memo_keyed(b, inst_ast.operands[0], recv));

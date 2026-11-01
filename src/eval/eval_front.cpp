@@ -234,10 +234,6 @@ cache::Digest programKey(std::string_view processMaterial, const EvalOptions& op
     k.field("|natives");
     k.field(in.manifestJson);
     k.field(in.pinsText);
-    // The lowered IL differs with it (lowerProgram). Today it follows only
-    // BRONZE_NO_INLINE_GUARDED, which the environment's fields carry too;
-    // named here so a policy that ever varies it by input keys it.
-    k.field(lower::inlineGuardedEnabled(inlineGuardedFor(in)) ? "inline-guarded" : "no-inline-guarded");
     k.field(entryText);
     return k.finish();
 }

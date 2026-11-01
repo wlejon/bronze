@@ -322,12 +322,10 @@ std::optional<Lowerer::Value> Lowerer::lowerCall(const ast::Call* call, il::Func
     // call to the runtime's generator (il_op.h, math.random) in place of the
     // global read, the method-call cache and the native-call entry, which were
     // all but a few of its ~470 instructions. With arguments it stays a call,
-    // since they are still evaluated. BRONZE_NO_MATH_RANDOM_OP=1 is the A/B
-    // seam: every site takes the ordinary call.
+    // since they are still evaluated.
     if (const auto* mathMem = dynamic_cast<const ast::MemberAccess*>(call->callee.get());
         mathMem != nullptr && !mathMem->optional && !call->optional && call->args.empty() &&
-        mathMem->property == "random" && pristineMathCall(*call) &&
-        std::getenv("BRONZE_NO_MATH_RANDOM_OP") == nullptr) {
+        mathMem->property == "random" && pristineMathCall(*call)) {
         recordCall(call->span.file, true, "");
         il::ValueId res = ilFn.valueCount++;
         il::Instruction inst;

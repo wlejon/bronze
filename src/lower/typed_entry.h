@@ -68,9 +68,7 @@ namespace bronze::lower {
 // Runs LAST, after the guarded regions: the unboxed arguments at a call site
 // are, almost always, values a fast copy made unboxed.
 //
-// THE SEAM is `BRONZE_NO_TYPED_ENTRIES=1`, read once per process: with it set
-// no entry is built and the module is what it was. `BRONZE_TYPED_ENTRY_STATS=1`
-// prints one line of counters to stderr.
+// `BRONZE_TYPED_ENTRY_STATS=1` prints one line of counters to stderr.
 
 struct TypedEntryStats {
     uint32_t sitesDirect = 0;     // method calls with a direct target

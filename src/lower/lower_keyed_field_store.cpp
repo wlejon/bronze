@@ -40,11 +40,6 @@
 // claimStaticSlot will not claim for a write; and any program compiled with
 // --pins, whose field barriers a named store would have to run where the
 // computed store never did.
-//
-// THE SEAM is `BRONZE_NO_KEYED_FIELD_STORE=1`, read by the compiler once per
-// process.
-
-#include <cstdlib>
 
 #include "lower/lowerer.h"
 
@@ -57,16 +52,11 @@ namespace {
 // fields where a key would pay a long chain of compares before its store.
 constexpr size_t kMaxFields = 4;
 
-bool keyedFieldStoreDisabled() {
-    static const bool off = std::getenv("BRONZE_NO_KEYED_FIELD_STORE") != nullptr;
-    return off;
-}
-
 }  // namespace
 
 bool Lowerer::emitKeyedFieldStore(const ast::IndexAccess& idxAccess, Value objBoxed, Value keyBoxed,
                                   Value storedBoxed, il::Function& ilFn) {
-    if (keyedFieldStoreDisabled() || inference_ == nullptr || pins_ != nullptr) return false;
+    if (inference_ == nullptr || pins_ != nullptr) return false;
     const types::Type keyType = inferredType(*idxAccess.index);
     if (!keyType.is(types::TypeKind::Dynamic) && !keyType.is(types::TypeKind::String)) return false;
     const types::Type recvType = inferredType(*idxAccess.object);

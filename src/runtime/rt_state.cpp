@@ -164,9 +164,6 @@ static void visitRootShapes(brass::gc::Tracer& t) {
         return;
     }
     for (Shape* root : g_rootShapes) t.visit(prototypeSlot(root));
-    // With the sets off a minor still keeps them current, so they are right
-    // when switched back on.
-    if (t.purpose() == brass::gc::Tracer::Purpose::Minor) g_youngRootShapes.visitMinor(t, slotAt);
 }
 
 Shape* rtRootShapeForPrototype(Value proto) {
@@ -214,9 +211,6 @@ static void visitUserPrototypeShapes(brass::gc::Tracer& t) {
         auto* slot = prototypeSlot(root);
         if (full) t.visit_weak(slot, cleared);
         else t.visit(slot);
-    }
-    if (t.purpose() == brass::gc::Tracer::Purpose::Minor) {
-        g_youngUserPrototypeShapes.visitMinor(t, slotAt);
     }
 }
 
@@ -586,13 +580,6 @@ static void visitModuleAndCacheRoots(brass::gc::Tracer& t) {
                 t.visit(reinterpret_cast<uint64_t*>(&span.cells[i]));
             }
         }
-    }
-    // A minor with the sets off (BRONZE_NO_ROOT_REMSET=1) visited everything
-    // above; the sets are still pruned, so they are exact if switched on.
-    if (t.purpose() == brass::gc::Tracer::Purpose::Minor) {
-        s.youngCells.visitMinor(t);
-        s.youngSingletons.visitMinor(
-            t, [&s](uint32_t i) { return reinterpret_cast<uint64_t*>(&s.functionSingletons[i].value); });
     }
 }
 

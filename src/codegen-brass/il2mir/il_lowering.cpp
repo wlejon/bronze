@@ -255,8 +255,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     // also reads every stack conservatively and pins what a word names, so a
     // dead register or slot that still names an object keeps it for that
     // collection; bronze takes that over the allocator's zeroing of the dead
-    // ones at every call (brass Module::precise_stack_roots;
-    // BRASS_NO_PRECISE_ROOTS=1 restores the zeroing).
+    // ones at every call (brass Module::precise_stack_roots).
     mod->set_precise_stack_roots(true);
     // Every loop backedge compares the stack pointer with the block's
     // stack_limit, the word every prologue checks too, so arming one

@@ -6,17 +6,6 @@
 
 namespace bronze::runtime {
 
-namespace {
-
-// Measurement seam: BRONZE_NO_PUSH_GROW_FAST=1 sends a push that has to grow
-// the block through arrayPush, as before.
-bool pushGrowFastDisabled() {
-    static const bool off = std::getenv("BRONZE_NO_PUSH_GROW_FAST") != nullptr;
-    return off;
-}
-
-}  // namespace
-
 extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     Value self(thisBits);
     if (self.isObject() && self.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
@@ -44,7 +33,7 @@ extern "C" uint64_t bronze_array_push(uint64_t, uint64_t thisBits, uint32_t argc
         // at `length`, so the write is the same element store arrayPush
         // makes. setElemSlow roots the array and the value across the
         // allocation, and throws the same RangeError at the size limit.
-        if (argc == 1 && arr->properties.isUndefined() && chainClear && !pushGrowFastDisabled()) {
+        if (argc == 1 && arr->properties.isUndefined() && chainClear) {
             Rooted<Value> root{Value(thisBits)};
             Rooted<Value> val{Value(argv[0])};
             arr->setElemSlow(rtHeap(), arr->length, val);

@@ -124,11 +124,11 @@ void trackDynamicProgram(const std::shared_ptr<BrassTieredProgram>& program) {
 // (for kWarmWindow after the first), and the list is stored beside its entry
 // when the host stops its compiles or the process exits. The next run that
 // hits the entry hands the list to the program's warmer, which builds those
-// functions' Tier-0 bytecode on threads of its own while the program starts.
-// BRASS_BYTECODE_WARM_THREADS sets the warmer's threads (a BRONZE_* name
-// would be part of the cache key).
+// functions' Tier-0 bytecode on kWarmThreads threads of its own while the
+// program starts.
 constexpr std::chrono::milliseconds kWarmWindow{3000};
 constexpr size_t kWarmMaxNames = 20000;
+constexpr unsigned kWarmThreads = 2;
 
 struct WarmRecord {
     std::weak_ptr<BrassTieredProgram> program;
@@ -140,12 +140,6 @@ static std::mutex g_warmMutex;
 static std::vector<WarmRecord>& warmRecords() {
     static auto* list = new std::vector<WarmRecord>();
     return *list;
-}
-
-unsigned warmThreads() {
-    const char* v = std::getenv("BRASS_BYTECODE_WARM_THREADS");
-    const int n = v ? std::atoi(v) : 0;
-    return n > 0 ? static_cast<unsigned>(n) : 2u;
 }
 
 void armWarmList(const std::shared_ptr<BrassTieredProgram>& program, const std::string& dir,
@@ -164,7 +158,7 @@ void armWarmList(const std::shared_ptr<BrassTieredProgram>& program, const std::
     brass::runtime::BytecodeWarmer& warmer = program->dispatchTable().pipeline().bytecode_warmer();
     if (hit) {
         std::vector<std::string> names = cache::loadWarmList(dir, key);
-        if (!names.empty()) warmer.warm(*program->mirModule(), std::move(names), warmThreads());
+        if (!names.empty()) warmer.warm(*program->mirModule(), std::move(names), kWarmThreads);
     }
     warmer.start_recording(kWarmWindow, kWarmMaxNames);
 }

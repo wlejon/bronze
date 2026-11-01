@@ -101,14 +101,6 @@ void addClaims(std::vector<RegionPlan::NumberClaim>& into, const std::vector<Reg
 
 }  // namespace
 
-bool numberArraysDisabled() {
-    static const bool off = [] {
-        const char* env = std::getenv("BRONZE_NO_NUMBER_ARRAYS");
-        return env != nullptr && std::strcmp(env, "1") == 0;
-    }();
-    return off;
-}
-
 void planNumberWindows(const il::Function& fn, const std::vector<std::string>& keys,
                        const std::vector<il::Type>& types, RegionPlan& plan) {
     plan.numberWindowsOf.assign(fn.blocks.size(), {});
@@ -116,7 +108,6 @@ void planNumberWindows(const il::Function& fn, const std::vector<std::string>& k
         const std::vector<uint32_t>& points = plan.splitsOf[b];
         std::vector<RegionPlan::NumberWindow>& out = plan.numberWindowsOf[b];
         out.assign(points.size(), RegionPlan::NumberWindow{});
-        if (numberArraysDisabled()) continue;
         const il::Block& block = fn.blocks[b];
 
         // Groups of points sharing one set of claims, left to right: a point

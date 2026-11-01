@@ -96,7 +96,7 @@ struct InferenceResult {
     // class is the literal's slot N, which is what `staticSlotAt` answers for a
     // receiver typed by one. A layout claim like a class's: the runtime checks
     // it before publishing a site's cell, so a wrong one is a guard that never
-    // hits. `BRONZE_NO_LITERAL_SLOTS=1` leaves this empty.
+    // hits.
     std::unordered_map<ShapeClassId, std::vector<std::string>> literalLayouts;
 
     // Why an identifier that names a METHOD PARAMETER is still dynamic, for the

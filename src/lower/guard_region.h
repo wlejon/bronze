@@ -453,10 +453,6 @@ bool pureInFastCopy(const il::Instruction& inst, const std::vector<il::Type>& ty
 // thing that sets it is a claim; neither can turn a claimed array's element
 // into a non-Number inside the window. A claim is never moved by a later pass
 // (il2mir does not hoist it).
-//
-// THE SEAM is `BRONZE_NO_NUMBER_ARRAYS=1`, read by the compiler once: no window
-// is planned and the pass emits what it emitted before this rule.
-bool numberArraysDisabled();
 
 // Fills `plan.numberWindowsOf` for every region block, from the points and
 // candidates the selection settled. Writes nothing else.

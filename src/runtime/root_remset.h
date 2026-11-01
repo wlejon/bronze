@@ -30,9 +30,6 @@
 // forwards. So under brass's verification (BRASS_GC_VERIFY=1, or
 // BRONZE_HEAP_VERIFY=1) a minor also reads every cell it skips and stops the
 // process naming the table and cell if one holds a young address.
-//
-// BRONZE_NO_ROOT_REMSET=1 makes a minor visit every cell again (the sets are
-// still kept, and visited too, so the switch can flip mid-run), for A/B.
 
 #include <algorithm>
 #include <cstddef>
@@ -44,17 +41,10 @@
 
 namespace bronze::runtime {
 
-// Whether minor collections visit only the remembered cells (the default) or
-// every cell (BRONZE_NO_ROOT_REMSET=1). Per thread; read from the
-// environment at the thread's first ask.
-bool rtRootRemsetEnabled() noexcept;
-void rtSetRootRemsetEnabled(bool enabled) noexcept;
-
-// Whether a root source called with `t` may visit only its remembered cells:
-// a minor pass (which a full collection's first phase is too) with the sets
-// on.
+// Whether a root source called with `t` visits only its remembered cells: a
+// minor pass (which a full collection's first phase is too).
 inline bool rtRootRemsetPass(const brass::gc::Tracer& t) noexcept {
-    return t.purpose() == brass::gc::Tracer::Purpose::Minor && rtRootRemsetEnabled();
+    return t.purpose() == brass::gc::Tracer::Purpose::Minor;
 }
 
 // Whether a minor pass with `t` must also check the cells it skips.
@@ -62,7 +52,7 @@ inline bool rtRootRemsetVerifying(const brass::gc::Tracer& t) noexcept {
     return t.heap().verifying();
 }
 
-// The thread's counters, for tests and the A/B: cumulative, never reset.
+// The thread's counters, for tests: cumulative, never reset.
 struct RootRemsetStats {
     // Cells visited from a remembered set by minor passes.
     uint64_t rememberedVisits = 0;
