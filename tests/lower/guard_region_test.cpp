@@ -161,8 +161,6 @@ std::string body(const il::Module& module) {
     return at == std::string::npos ? text : text.substr(at);
 }
 
-bool seamIsOn() { return guardedRegionsDisabled(); }
-
 }  // namespace
 
 TEST_CASE("is.number round-trips through the canonical text") {
@@ -254,7 +252,6 @@ TEST_CASE("the verifier refuses a malformed is.number") {
 }
 
 TEST_CASE("a two-read loop becomes a fast copy, two guards and two trampolines") {
-    if (seamIsOn()) return;
     il::Module module = oneFunction(twoReadLoop());
     GuardRegionStats stats;
     REQUIRE(applyGuardedRegions(module, &stats));
@@ -327,7 +324,6 @@ TEST_CASE("a two-read loop becomes a fast copy, two guards and two trampolines")
 }
 
 TEST_CASE("a closure holding a string is refused whole") {
-    if (seamIsOn()) return;
     il::Function fn = twoReadLoop();
     // `%14` is now a string, so the component that reaches both adds can never
     // be a Number and the guard would fail every iteration. Refused STATICALLY:
@@ -342,7 +338,6 @@ TEST_CASE("a closure holding a string is refused whole") {
 }
 
 TEST_CASE("a block with a handler is refused") {
-    if (seamIsOn()) return;
     il::Function fn = twoReadLoop();
     fn.blocks[2].handler = 4;
     fn.blocks[4].params.clear();
@@ -357,7 +352,6 @@ TEST_CASE("a block with a handler is refused") {
 }
 
 TEST_CASE("a header with two outside predecessors is refused, not mis-duplicated") {
-    if (seamIsOn()) return;
     il::Function fn = twoReadLoop();
     // A second way into the loop, which is what a `for` with a conditional
     // initialiser lowers to. There is no single edge to convert the promoted
@@ -381,7 +375,6 @@ TEST_CASE("a header with two outside predecessors is refused, not mis-duplicated
 }
 
 TEST_CASE("more guards than arithmetic is under the floor") {
-    if (seamIsOn()) return;
     il::Function fn = twoReadLoop();
     // `t = o.a + o.b`: two unproven reads for one add, so the hoisted test is a
     // test per operation, which is what the backend's own inline arm already
@@ -397,7 +390,6 @@ TEST_CASE("more guards than arithmetic is under the floor") {
 }
 
 TEST_CASE("a candidate a pin already proved gets no guard of its own") {
-    if (seamIsOn()) return;
     il::Function fn = twoReadLoop();
     il::Instruction pin;
     pin.op = il::Op::PinGuard;
@@ -421,7 +413,6 @@ TEST_CASE("a candidate a pin already proved gets no guard of its own") {
 }
 
 TEST_CASE("the inner loop of a nest is the one duplicated") {
-    if (seamIsOn()) return;
     il::Function fn;
     fn.name = "nest";
     fn.params = {{"o", il::Type::Dynamic}, {"n", il::Type::F64}};
@@ -496,7 +487,6 @@ std::string functionText(const il::Module& module, const std::string& name) {
 }  // namespace
 
 TEST_CASE("sumProps carries its accumulator as an f64 in both inference modes") {
-    if (seamIsOn()) return;
     for (int mode = 0; mode < 2; ++mode) {
         DiagnosticSink diags;
         SourceBuffer buf("test.ts", "");
@@ -521,7 +511,6 @@ TEST_CASE("sumProps carries its accumulator as an f64 in both inference modes") 
 }
 
 TEST_CASE("the fast header's accumulator parameter is an f64") {
-    if (seamIsOn()) return;
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     auto module = inferAndLower(kSumProps, diags, buf);
@@ -555,44 +544,12 @@ TEST_CASE("the fast header's accumulator parameter is an f64") {
     CHECK(f64Params >= 4);
 }
 
-TEST_CASE("with the seam on, sumProps is exactly the IL it always was") {
-    // The A/B that makes the seam a bisection tool rather than a comment: the
-    // same process lowers the same source twice, and the only difference is
-    // whether the pass ran.
+TEST_CASE("sumProps gets a guarded region") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     auto module = inferAndLower(kSumProps, diags, buf);
     REQUIRE(module.has_value());
     const std::string text = functionText(*module, "sumProps");
 
-    if (seamIsOn()) {
-        CHECK(text.find("is.number") == std::string::npos);
-        CHECK(text ==
-              "func sumProps(%0: dynamic, %1: dynamic) -> f64 {\n"
-              "  b0:\n"
-              "    %2: f64 = const.f64 0\n"
-              "    %3: f64 = const.f64 0\n"
-              "    jump b1(%2, %3)\n"
-              "  b1(%4: f64, %5: f64):\n"
-              "    %8: dynamic = box.f64 %5\n"
-              "    %9: bool = rel.lt %8, %1\n"
-              "    br %9, b2, b4(%4, %5)\n"
-              "  b2:\n"
-              "    %12: dynamic = prop.get %0, 1, 0\n"
-              "    %13: dynamic = box.f64 %4\n"
-              "    %14: dynamic = add %13, %12\n"
-              "    %15: dynamic = prop.get %0, 2, 1\n"
-              "    %16: dynamic = add %14, %15\n"
-              "    %17: f64 = unbox.f64 %16\n"
-              "    jump b3(%17, %5)\n"
-              "  b3(%10: f64, %11: f64):\n"
-              "    %18: f64 = const.f64 1\n"
-              "    %19: f64 = add %11, %18\n"
-              "    jump b1(%10, %19)\n"
-              "  b4(%6: f64, %7: f64):\n"
-              "    ret %6\n"
-              "}\n");
-    } else {
-        CHECK(text.find("is.number") != std::string::npos);
-    }
+    CHECK(text.find("is.number") != std::string::npos);
 }

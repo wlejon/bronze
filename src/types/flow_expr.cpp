@@ -126,7 +126,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         suppressObjectLitSetterReach_ = suppressHere;
         noteStaticMethodAccess(*m, base);
         suppressObjectLitSetterReach_ = savedSuppress;
-        if (!m->optional && !m->isPrivate && mod_.valueFlow) {
+        if (!m->optional && !m->isPrivate) {
             if (const auto* id = ast::exactAs<const ast::Ident*>(m->object.get())) {
                 if (mod_.ctors.isClassName(id->name)) {
                     const std::string key = id->name + "." + m->property;
@@ -284,7 +284,6 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
             if (!field.is(TypeKind::Number)) return Type::dynamic();
             if (record_) ++mod_.result->fieldAudit.numberFieldReads;
             const bool classFamilyValidated =
-                mod_.methodParamTypes &&
                 mod_.result->classLayouts.familyMemberOf(base.shapeClass()) != nullptr;
             if (!base.builtHere() && !classFamilyValidated) {
                 if (record_) ++mod_.result->fieldAudit.refusedNotBuiltHere;
@@ -427,7 +426,7 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         return value;
     }
     if (const auto* f = ast::exactAs<const ast::FunctionExpr*>(&e)) {
-        if (!record_ && !mod_.auditSettled && mod_.interprocIdent && mod_.valueFlow) {
+        if (!record_ && !mod_.auditSettled) {
             const uint32_t sIdx = mod_.methods.setterIndexOfNode(f);
             if (sIdx != kNoMethod) {
                 const SetterInfo& s = mod_.methods.setters()[sIdx];
@@ -467,7 +466,7 @@ Type FlowAnalyzer::exprForOperator(const ast::Expr& e) {
             return Type::undefined();
         }
         if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&e)) {
-            if (lastMember_ == m && !m->optional && !m->isPrivate && mod_.interprocIdent) {
+            if (lastMember_ == m && !m->optional && !m->isPrivate) {
                 // The getter's answer is spent as a value, so the getter this
                 // read runs must be the class's: a receiver that does not bound
                 // the dispatch may reach another class's getter of the name.
@@ -604,7 +603,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
                 }
             }
         }
-        if (member->property == "stringify" && mod_.interprocIdent && !args.empty()) {
+        if (member->property == "stringify" && !args.empty()) {
             const Type arg0 = args[0];
             bool canHaveToJSON =
                 !arg0.is(TypeKind::Never) && !arg0.is(TypeKind::Number) &&
@@ -640,13 +639,11 @@ Type FlowAnalyzer::call(const ast::Call& c) {
                 if (const auto* decls = mod_.methods.declarationsOf("toJSON")) {
                     for (const uint32_t idx : *decls) {
                         const MethodInfo& target = mod_.methods.methods()[idx];
-                        if (mod_.ctorParamTypes) {
-                            const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
-                            if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
-                                memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
-                            }
-                            if (!mod_.ctors.isClassReached(target.className)) continue;
+                        const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
+                        if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
+                            memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
                         }
+                        if (!mod_.ctors.isClassReached(target.className)) continue;
                         mod_.contribute(InferMemo::Contrib::MethodReached, idx, 0, Type::never());
                     }
                 }
@@ -684,7 +681,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         if (sup->fromStatic || sup->fromObjectLiteral || sup->propertyExpr != nullptr) return Type::dynamic();
         const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
         if (here == nullptr || here->superName.empty()) {
-            if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {
+            if (mod_.methods.isMethodName(sup->property)) {
                 mod_.methodPoison.addDeclarations(mod_.methods, sup->property,
                                                  "a `super` call whose base class is unknown");
             }
@@ -692,7 +689,7 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         }
         const ClassLayout* base = mod_.result->classLayouts.byName(here->superName);
         if (base == nullptr) {
-            if (mod_.interprocIdent && mod_.methods.isMethodName(sup->property)) {
+            if (mod_.methods.isMethodName(sup->property)) {
                 mod_.methodPoison.addDeclarations(mod_.methods, sup->property,
                                                  "a `super` call whose base class is unknown");
             }

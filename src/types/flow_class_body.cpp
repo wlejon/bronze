@@ -74,7 +74,7 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
             expr(*p.keyExpr);
         }
         const bool skipNsGetter = o.isModuleNamespace && !record_ && !mod_.auditSettled &&
-                                  mod_.valueFlow && p.accessor == ast::AccessorKind::Getter;
+                                  p.accessor == ast::AccessorKind::Getter;
         const bool suppress = scope_.moduleTopLevel && !p.keyExpr && !isSpread &&
                               p.accessor == ast::AccessorKind::None &&
                               ast::exactAs<const ast::Ident*>(p.value.get()) != nullptr;
@@ -196,19 +196,10 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
         }
         if (self.plainParams && !mod_.methodPoison.poisons(methodIndex)) {
             for (size_t i = 0; i < paramTypes.size() && i < self.signature.params.size(); ++i) {
-                const Type proven = self.signature.params[i];
-                if (mod_.methodParamTypes) {
-                    paramTypes[i] = proven;
-                } else {
-                    if (proven.is(TypeKind::Object) && proven.shapeClass() != kNoShapeClass) {
-                        paramTypes[i] = Type::objectIdentityOnly(proven.shapeClass());
-                    } else if (proven.is(TypeKind::Never)) {
-                        paramTypes[i] = proven;
-                    }
-                }
+                paramTypes[i] = self.signature.params[i];
             }
         }
-    } else if (mod_.interprocIdent) {
+    } else {
         const uint32_t sIdx =
             mod_.methods.setterIndexOfNode(dynamic_cast<const ast::FunctionExpr*>(&site));
         if (sIdx != kNoMethod) {
@@ -217,7 +208,7 @@ Type FlowAnalyzer::analyzeNested(const ast::Node& site, const std::string& decla
                 if (InferMemo* memo = mod_.rec()) {
                     memo->noteSetter(sIdx, s.version);
                 }
-                if (s.plainParams && !paramTypes.empty() && mod_.methodParamTypes) {
+                if (s.plainParams && !paramTypes.empty()) {
                     paramTypes[0] = s.paramType;
                 }
             } else if (s.className.empty()) {
@@ -295,7 +286,7 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
         }
     }
     const bool checkClassReach =
-        !record_ && !mod_.auditSettled && mod_.ctorParamTypes && mod_.valueFlow && !className.empty();
+        !record_ && !mod_.auditSettled && !className.empty();
     if (checkClassReach) {
         const uint32_t classIdx = mod_.ctors.classIndexOf(className);
         if (classIdx != kNoCtor) {
@@ -312,11 +303,9 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
         }
         const ShapeClassId receiver = m.isStatic ? kNoShapeClass : owner;
         if (m.fn) {
-            const uint32_t index =
-                mod_.interprocIdent ? mod_.methods.indexOfNode(m.fn.get()) : kNoMethod;
-            const uint32_t ctorIndex =
-                mod_.ctorParamTypes ? mod_.ctors.indexOfNode(m.fn.get()) : kNoCtor;
-            if (!record_ && !mod_.auditSettled && mod_.interprocIdent && mod_.valueFlow) {
+            const uint32_t index = mod_.methods.indexOfNode(m.fn.get());
+            const uint32_t ctorIndex = mod_.ctors.indexOfNode(m.fn.get());
+            if (!record_ && !mod_.auditSettled) {
                 if (index != kNoMethod) {
                     const MethodInfo& self = mod_.methods.methods()[index];
                     if (InferMemo* memo = mod_.rec()) {
@@ -360,7 +349,7 @@ void FlowAnalyzer::analyzeClassBody(const std::string& className,
 
 void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver, Type valType,
                                      ReceiverForm form) {
-    if (!mod_.interprocIdent || !mod_.valueFlow || propName.empty()) return;
+    if (propName.empty()) return;
     if (receiver.is(TypeKind::Never)) return;
     if (receiver.is(TypeKind::Array) || receiver.is(TypeKind::TypedArray) ||
         receiver.is(TypeKind::Number) || receiver.is(TypeKind::String) ||
@@ -389,7 +378,7 @@ void FlowAnalyzer::notePropertyWrite(const std::string& propName, Type receiver,
 }
 
 void FlowAnalyzer::noteStaticMethodAccess(const ast::MemberAccess& m, Type base) {
-    if (!mod_.interprocIdent || !mod_.valueFlow || m.isPrivate || m.property.empty()) return;
+    if (m.isPrivate || m.property.empty()) return;
     if (base.is(TypeKind::Never)) return;
     if (base.is(TypeKind::Object)) {
         if (base.shapeClass() != kNoShapeClass) {
@@ -479,7 +468,7 @@ void FlowAnalyzer::noteStaticMethodAccess(const ast::MemberAccess& m, Type base)
 std::optional<Type> FlowAnalyzer::callObjectLitSetter(
     const ast::Call& c, const ast::MemberAccess* member, Type receiver,
     const std::vector<Type>& args, bool spreadArgs) {
-    if (c.optional || !mod_.interprocIdent || !mod_.valueFlow) return std::nullopt;
+    if (c.optional) return std::nullopt;
     std::vector<uint32_t> targets;
     if (member != nullptr && !member->optional && !member->isPrivate && !member->property.empty()) {
         if (receiver.is(TypeKind::Object) && receiver.shapeClass() != kNoShapeClass &&
@@ -547,7 +536,7 @@ std::optional<Type> FlowAnalyzer::callObjectLitSetter(
 
 std::vector<Type> FlowAnalyzer::ctorParamTypes(uint32_t ctorIndex, size_t count) const {
     std::vector<Type> out(count, Type::dynamic());
-    if (!mod_.ctorParamTypes || ctorIndex == kNoCtor) return out;
+    if (ctorIndex == kNoCtor) return out;
     const CtorInfo& self = mod_.ctors.ctors()[ctorIndex];
     if (InferMemo* memo = mod_.rec()) {
         memo->noteCtor(ctorIndex, self.version, mod_.ctorPoison.poisons(self.className));
@@ -563,7 +552,7 @@ void FlowAnalyzer::noteIdentRefusal(const ast::Ident& id, Type resolved) {
     if (!record_) return;
     if (!resolved.is(TypeKind::Dynamic)) return;
 
-    if (mod_.interprocIdent && scope_.methodIndex != kNoMethod) {
+    if (scope_.methodIndex != kNoMethod) {
         const MethodInfo& self = mod_.methods.methods()[scope_.methodIndex];
         bool isParam = false;
         for (const auto& p : self.fn->params) {

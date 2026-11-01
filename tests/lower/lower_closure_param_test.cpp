@@ -162,11 +162,7 @@ TEST_CASE("a generator's parameters are bound by a resume edge, not by the call"
     CHECK(header(il, "g").find("f64") == std::string::npos);
 }
 
-TEST_CASE("BRONZE_NO_CLOSURE_PARAM_PROOF is the A/B seam and it is read once") {
-    // The seam is a static local, so a test cannot flip it mid-process. What
-    // this pins is the shape the seam switches between: with the proof off the
-    // header is the one every case above that REFUSES already produces, which
-    // is what makes those cases the seam's own regression test.
+TEST_CASE("a closure whose name escapes into an alias keeps a dynamic parameter") {
     const auto il = lowerToText(
         "function make() {\n"
         "  function g(x) { return x + 1; }\n"

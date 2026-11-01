@@ -37,12 +37,6 @@ enum class PinKind : uint8_t {
     NumberOrNullish,
 };
 
-// Whether this build emits WRITE BARRIERS for the claims below. On unless
-// `BRONZE_NO_PIN_BARRIERS=1`, which restores the pre-stage-B1 behaviour: a
-// violated pin is undefined behaviour again. It is the A/B seam for the
-// barriers' cost and is read once per invocation.
-bool pinBarriersEnabled();
-
 // The `--pins` manifest: per-(class, field) declarations inference is told to
 // believe.
 //

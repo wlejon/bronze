@@ -177,7 +177,7 @@ void setEnvFlag(const char* name, const char* val) {
 }
 }  // namespace
 
-TEST_CASE("Differential equivalence across default, --no-infer, no-guarded-regions, no-pin-barriers, and gc-stress") {
+TEST_CASE("Differential equivalence across default, --no-infer, and gc-stress") {
     const char* workload =
         "function compute(n) {"
         "  const obj = JSON.parse('{\"pts\":[{\"x\":1,\"y\":2},{\"x\":3,\"y\":4}],\"tag\":\"alpha-42-beta\"}');"
@@ -209,18 +209,6 @@ TEST_CASE("Differential equivalence across default, --no-infer, no-guarded-regio
     setEnvFlag("BRONZE_NO_INFER", nullptr);
     REQUIRE(!rNoInfer.thrown);
     CHECK(embed::toUtf8(rNoInfer.value) == expected);
-
-    setEnvFlag("BRONZE_NO_GUARDED_REGIONS", "1");
-    embed::CallResult rNoGr = evalScript(workload);
-    setEnvFlag("BRONZE_NO_GUARDED_REGIONS", nullptr);
-    REQUIRE(!rNoGr.thrown);
-    CHECK(embed::toUtf8(rNoGr.value) == expected);
-
-    setEnvFlag("BRONZE_NO_PIN_BARRIERS", "1");
-    embed::CallResult rNoPin = evalScript(workload);
-    setEnvFlag("BRONZE_NO_PIN_BARRIERS", nullptr);
-    REQUIRE(!rNoPin.thrown);
-    CHECK(embed::toUtf8(rNoPin.value) == expected);
 
     const bool prevStress = runtime::rtHeap().gc_stress();
     runtime::rtHeap().set_gc_stress(true);

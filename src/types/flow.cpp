@@ -69,13 +69,13 @@ void FlowAnalyzer::runParamDefaults(const std::vector<ast::Param>& params) {
             // signature, so `constructor(k = 0, m = k + 1)` types `m` from
             // whatever `k` is known to hold — which is the same fixpoint value,
             // one round behind, and therefore still monotone.
-            if (scope_.ctorIndex != kNoCtor && mod_.ctorParamTypes) {
+            if (scope_.ctorIndex != kNoCtor) {
                 auto& info = mod_.ctors.ctors()[scope_.ctorIndex];
                 if (i < info.observedParams.size()) {
                     mod_.contribute(InferMemo::Contrib::CtorParam, scope_.ctorIndex,
                                     static_cast<uint32_t>(i), t);
                 }
-            } else if (scope_.methodIndex != kNoMethod && mod_.methodParamTypes) {
+            } else if (scope_.methodIndex != kNoMethod) {
                 auto& info = mod_.methods.methods()[scope_.methodIndex];
                 if (i < info.observedParams.size()) {
                     mod_.contribute(InferMemo::Contrib::MethodParam, scope_.methodIndex,
@@ -115,7 +115,7 @@ std::pair<uint32_t, Type> FlowAnalyzer::outerCell(const std::string& name) const
 }
 
 Type FlowAnalyzer::lookup(const std::string& name) const {
-    if (mod_.valueFlow && mod_.lazyModuleVars.count(name) != 0) {
+    if (mod_.lazyModuleVars.count(name) != 0) {
         if (!suppressFnReach_) {
             if (mod_.reachedModuleVars.insert(name).second) {
                 ++mod_.persistentWrites;
@@ -141,19 +141,17 @@ Type FlowAnalyzer::lookup(const std::string& name) const {
     // function's scope has no parent, and the module top level is a separate
     // body. See `ModuleContext::moduleBindings` for why the answer is an
     // identity and never a value.
-    if (mod_.valueFlow) {
-        const auto it = mod_.moduleBindings.find(name);
-        const bool present = it != mod_.moduleBindings.end();
-        if (InferMemo* memo = mod_.rec()) {
-            memo->noteBinding(name, present, present ? it->second : Type::dynamic());
-        }
-        if (present) {
-            const Type held = it->second;
-            if (held.is(TypeKind::Object) && held.shapeClass() != kNoShapeClass) {
-                return mod_.uniqueModuleConsts.count(name) != 0
-                           ? held
-                           : Type::objectIdentityOnly(held.shapeClass());
-            }
+    const auto it = mod_.moduleBindings.find(name);
+    const bool present = it != mod_.moduleBindings.end();
+    if (InferMemo* memo = mod_.rec()) {
+        memo->noteBinding(name, present, present ? it->second : Type::dynamic());
+    }
+    if (present) {
+        const Type held = it->second;
+        if (held.is(TypeKind::Object) && held.shapeClass() != kNoShapeClass) {
+            return mod_.uniqueModuleConsts.count(name) != 0
+                       ? held
+                       : Type::objectIdentityOnly(held.shapeClass());
         }
     }
     if ((name == "Infinity" || name == "NaN") && mod_.moduleScopeNames.count(name) == 0) {
@@ -192,9 +190,8 @@ bool FlowAnalyzer::staleAtTopLevel(const std::string& name) const {
 // every write the program's functions make to the binding — the table
 // `assign` joins those into from inside a function, which is the whole set by
 // the round that records (a write that arrives later moves the table, and the
-// round loop walks again). With value flow off there is no table, so Dynamic.
+// round loop walks again).
 Type FlowAnalyzer::staleJoin(const std::string& name, Type t) const {
-    if (!mod_.valueFlow) return Type::dynamic();
     const auto it = mod_.moduleBindings.find(name);
     const bool present = it != mod_.moduleBindings.end();
     if (InferMemo* memo = mod_.rec()) {
@@ -253,7 +250,7 @@ void FlowAnalyzer::restoreDeclarations(const ScopeSave& saved) {
 }
 
 void FlowAnalyzer::assign(const std::string& name, Type t) {
-    if (mod_.valueFlow && mod_.lazyModuleVars.count(name) != 0) {
+    if (mod_.lazyModuleVars.count(name) != 0) {
         if (mod_.reachedModuleVars.insert(name).second) {
             ++mod_.persistentWrites;
         }
@@ -285,7 +282,7 @@ void FlowAnalyzer::assign(const std::string& name, Type t) {
     // program shares, so a write anywhere widens it and none narrows it. That
     // is what makes the table part of the outer fixpoint rather than a record
     // of whichever body was walked last.
-    if (mod_.valueFlow && mod_.moduleScopeNames.count(name) != 0) {
+    if (mod_.moduleScopeNames.count(name) != 0) {
         Type& slot = mod_.moduleBindings[name];
         const Type joined = join(slot, t);
         if (joined != slot) ++mod_.persistentWrites;
@@ -385,7 +382,7 @@ void FlowAnalyzer::seedHoistedVars(const std::vector<const ast::Stmt*>& body) {
         // name is one cell for the whole function, which `lookup` finds
         // without a declaration.
         if (scope_.env.count(name) != 0 || scope_.isCell(name)) continue;
-        if (scope_.moduleTopLevel && !record_ && !mod_.auditSettled && mod_.valueFlow &&
+        if (scope_.moduleTopLevel && !record_ && !mod_.auditSettled &&
             mod_.lazyModuleVars.count(name) != 0 && mod_.reachedModuleVars.count(name) == 0) {
             continue;
         }
@@ -457,7 +454,7 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
             declarePattern(*v->pattern);
             return;
         }
-        if (scope_.moduleTopLevel && mod_.valueFlow && mod_.lazyModuleVars.count(v->name) != 0) {
+        if (scope_.moduleTopLevel && mod_.lazyModuleVars.count(v->name) != 0) {
             if (!record_ && !mod_.auditSettled && mod_.reachedModuleVars.count(v->name) == 0) {
                 if (InferMemo* memo = mod_.rec()) {
                     memo->noteBinding(v->name, false, Type::never());
@@ -487,7 +484,7 @@ void FlowAnalyzer::dispatch(const ast::Stmt& s, uint32_t depth) {
         return;
     }
     if (const auto* e = ast::exactAs<const ast::ExprStmt*>(&s)) {
-        if (scope_.moduleTopLevel && !record_ && !mod_.auditSettled && mod_.valueFlow) {
+        if (scope_.moduleTopLevel && !record_ && !mod_.auditSettled) {
             if (const auto* bin = ast::exactAs<const ast::Binary*>(e->expr.get());
                 bin != nullptr && bin->op == ast::BinaryOp::Assign) {
                 const ast::Expr* cur = bin->lhs.get();
@@ -947,7 +944,7 @@ FunctionOutcome walkFunction(ModuleContext& mod, const FunctionAnalysisArgs& arg
     // where most of what they hold is decided — `const _vector = new Vector3()`
     // is a statement of this body and of no other. Writes from inside functions
     // reach the table through `assign`; this is the other half.
-    if (args.moduleTopLevel && mod.valueFlow) {
+    if (args.moduleTopLevel) {
         for (const Env* half : {&scope.env, &scope.cells}) {
             for (const auto& [name, t] : *half) {
                 if (mod.moduleScopeNames.count(name) == 0) continue;

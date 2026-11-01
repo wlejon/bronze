@@ -7,8 +7,6 @@
 // nothing else; `guard_region_build.cpp` performs what it decided.
 
 #include <algorithm>
-#include <cstdlib>
-#include <cstring>
 #include <optional>
 #include <string>
 #include <utility>
@@ -145,21 +143,13 @@ std::vector<ReadRun> findReadRuns(const il::Block& block, const std::vector<std:
 
 }  // namespace
 
-bool regionRunGuardsDisabled() {
-    static const bool off = [] {
-        const char* env = std::getenv("BRONZE_NO_REGION_RUN_GUARDS");
-        return env != nullptr && std::strcmp(env, "1") == 0;
-    }();
-    return off;
-}
-
 uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::string>& keys,
                             const std::vector<il::Type>& types, il::BlockId block,
                             std::vector<Candidate>& candidates, RegionPlan& plan) {
     std::vector<uint32_t>& points = plan.splitsOf[block];
     std::vector<RegionPlan::RunGuard>& guards = plan.runGuardsOf[block];
     guards.assign(points.size(), RegionPlan::RunGuard{});
-    if (regionRunGuardsDisabled() || points.size() < 2) return 0;
+    if (points.size() < 2) return 0;
 
     const il::Block& src = fn.blocks[block];
     const std::vector<ReadRun> runs = findReadRuns(src, keys, types, plan.isCandidate);

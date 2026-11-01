@@ -128,9 +128,8 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                 out += " handler b" + std::to_string(block.handler);
             }
             // Only when the block is in a region's copy, so the dump of a
-            // program the guarded-region pass did not touch — and every dump
-            // under `BRONZE_NO_GUARDED_REGIONS=1` — is byte-identical to what
-            // it was before copy classes existed.
+            // program the guarded-region pass did not touch is byte-identical
+            // to what it was before copy classes existed.
             if (block.copyClass != CopyClass::Shared) {
                 out += block.copyClass == CopyClass::Fast ? " [fast " : " [slow ";
                 out += std::to_string(block.copyRegion) + "]";

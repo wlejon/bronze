@@ -101,12 +101,6 @@ bool DirectMethodTable::isMethodSealedOnSubclasses(uint32_t icIndex) const {
 }
 
 void DirectMethodTable::resolve(il::Module& ilModule) const {
-    // BRONZE_NO_DIRECT_METHOD=1. Compile-time, exactly like the static-shape
-    // and family-guard seams and for the same reason: what it gates is a SHAPE
-    // OF EMITTED CODE, and a runtime toggle would have to be a load and a
-    // branch on the fast path it exists to measure.
-    static const bool disabled = std::getenv("BRONZE_NO_DIRECT_METHOD") != nullptr;
-    if (disabled) return;
     if (sites_.empty() || classMethods_.empty()) return;
 
     // The nearest declaration of `method` at or above `className` — the up-half

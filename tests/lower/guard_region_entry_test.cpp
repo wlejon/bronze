@@ -133,8 +133,6 @@ size_t countOf(const std::string& text, const std::string& needle) {
     return n;
 }
 
-bool seamIsOn() { return guardedRegionsDisabled(); }
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -142,7 +140,6 @@ bool seamIsOn() { return guardedRegionsDisabled(); }
 // ---------------------------------------------------------------------------
 
 TEST_CASE("two parameter candidates become one two-guard chain to one trampoline") {
-    if (seamIsOn()) return;
     // `function f(a, b) { return a * b + a; }` with nothing proven. There is no
     // loop, so the region is the whole function: block 0 is a synthesised
     // preheader, the fast copy is the entry, and a failing guard lands in the
@@ -201,7 +198,6 @@ TEST_CASE("two parameter candidates become one two-guard chain to one trampoline
 // ---------------------------------------------------------------------------
 
 TEST_CASE("two checked unboxes of one value share one guard and become one raw unbox") {
-    if (seamIsOn()) return;
     // What `p * p` compiles to once `*` takes the numeric arm: the multiply is
     // already an `f64`, and what is boxed is the operand of each coercion. The
     // guard is spent on `%0` ONCE and both unboxes are deleted — their result
@@ -255,7 +251,6 @@ TEST_CASE("two checked unboxes of one value share one guard and become one raw u
 // ---------------------------------------------------------------------------
 
 TEST_CASE("three candidates defined before the first use coalesce, a fourth takes the next point") {
-    if (seamIsOn()) return;
     // Three unproven reads feeding an add chain, then a fourth read after it.
     // The rule is "the first promoted use of ANY unassigned candidate, and
     // everything defined by then": one chain of three tests at index 3, one
@@ -317,7 +312,6 @@ TEST_CASE("three candidates defined before the first use coalesce, a fourth take
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a function with a loop gets the loop region and never an entry region") {
-    if (seamIsOn()) return;
     // Straight-line promotable arithmetic in `b0`, and a counted loop after it.
     // The entry region is refused SILENTLY — a loop function is not an
     // entry-region opportunity the pass declined, it is a different question —
@@ -378,7 +372,6 @@ TEST_CASE("a function with a loop gets the loop region and never an entry region
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a generator's coroutine body is refused whatever its arithmetic looks like") {
-    if (seamIsOn()) return;
     il::Function fn;
     fn.name = "g.body";
     fn.params = {{"__env", il::Type::Dynamic}, {"a", il::Type::Dynamic}};
@@ -445,7 +438,6 @@ TEST_CASE("lowering marks every coroutine body, generator and async alike") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a pin standing in front of the first use elides that candidate's guard") {
-    if (seamIsOn()) return;
     il::Function fn;
     fn.name = "pinned";
     fn.params = {{"o", il::Type::Dynamic}};
@@ -536,7 +528,6 @@ function multiplyMatrices(a, b, out) {
 }  // namespace
 
 TEST_CASE("the mat4 kernel gets one guard chain, one trampoline and thirty-two raw unboxes") {
-    if (seamIsOn()) return;
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     auto module = parseAndLower(kMul4, diags, buf);
@@ -601,19 +592,12 @@ TEST_CASE("the mat4 kernel gets one guard chain, one trampoline and thirty-two r
     CHECK_FALSE(diags.hasErrors());
 }
 
-TEST_CASE("with the seam on the mat4 kernel is the IL it always was") {
+TEST_CASE("the mat4 kernel gets a guarded region") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     auto module = parseAndLower(kMul4, diags, buf);
     REQUIRE(module.has_value());
     const std::string text = functionText(*module, "multiplyMatrices");
 
-    if (seamIsOn()) {
-        CHECK(text.find("is.number") == std::string::npos);
-        CHECK(text.find(", raw") == std::string::npos);
-        // One block, and the hundred and twenty-eight coercions still in it.
-        CHECK(countOf(text, "  b") == 1);
-    } else {
-        CHECK(text.find("is.number") != std::string::npos);
-    }
+    CHECK(text.find("is.number") != std::string::npos);
 }

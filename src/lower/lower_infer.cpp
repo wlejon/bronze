@@ -466,11 +466,9 @@ bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span spa
         // statements or `applyProvenSignature` already typed never reaches
         // this line, so a proven parameter carries no `pinned` mark and no
         // caller checks it — the proof is the licence (types/pins.h, B1).
-        if (types::pinBarriersEnabled()) {
-            fn.params[i + base].pinned = true;
-            fn.params[i + base].pinKeyIndex = getKeyConstantIndex(
-                "param " + Lowerer::manifestOwnerName(fn.name) + "(" + p.name + "): number");
-        }
+        fn.params[i + base].pinned = true;
+        fn.params[i + base].pinKeyIndex = getKeyConstantIndex(
+            "param " + Lowerer::manifestOwnerName(fn.name) + "(" + p.name + "): number");
     }
 
     if (pins_->returnPinned(fn.name)) {
@@ -490,11 +488,9 @@ bool Lowerer::applySignaturePins(const std::vector<ast::Param>& params, Span spa
             // Same licence, same reason: only a return the manifest typed is
             // held to the manifest. The arm below is a return the convention
             // ALREADY typed f64, which is a proof and needs no barrier.
-            if (types::pinBarriersEnabled()) {
-                fn.returnPinned = true;
-                fn.returnPinKeyIndex =
-                    getKeyConstantIndex("return " + Lowerer::manifestOwnerName(fn.name) + ": number");
-            }
+            fn.returnPinned = true;
+            fn.returnPinKeyIndex =
+                getKeyConstantIndex("return " + Lowerer::manifestOwnerName(fn.name) + ": number");
         } else if (fn.returnType != il::Type::F64) {
             diags_.error(span, "pin 'return " + fn.name +
                                    ": number' cannot be honoured: the convention already types "
@@ -549,22 +545,6 @@ std::string Lowerer::propBailReason(const ast::Expr& expr) const {
     return "unknown";
 }
 
-bool Lowerer::staticShapeSeamDisabled() {
-    return std::getenv("BRONZE_NO_STATIC_SHAPES") != nullptr;
-}
-
-bool Lowerer::familyGuardSeamDisabled() {
-    return std::getenv("BRONZE_NO_FAMILY_GUARD") != nullptr;
-}
-
-bool Lowerer::unboxedFieldSeamDisabled() {
-    return std::getenv("BRONZE_NO_UNBOXED_FIELDS") != nullptr;
-}
-
-bool Lowerer::numericArithSeamDisabled() {
-    return std::getenv("BRONZE_NO_NUMERIC_ARITH") != nullptr;
-}
-
 // Is this expression a read of a field the write audit certified, on a receiver
 // this compilation watched being made?
 //
@@ -574,18 +554,14 @@ bool Lowerer::numericArithSeamDisabled() {
 // correct however the claim came about. This asks for the narrower fact, which
 // is the one that carries a proof about the bits.
 bool Lowerer::provenFieldRead(const ast::Expr& e) const {
-    if (inference_ == nullptr || unboxedFieldsDisabled_) return false;
+    if (inference_ == nullptr) return false;
     return inference_->provenFieldReads.count(&inferenceExpr(e)) != 0;
 }
 
 // Is this expression a read of a field a `--pins number-or-nullish` entry
 // covers?
-//
-// Gated by the same seam the raw unbox is: `BRONZE_NO_UNBOXED_FIELDS` turns
-// both back into the boxed reads they were, so one switch bisects every
-// unboxing claim lowering makes about a field.
 bool Lowerer::nullishNumberFieldRead(const ast::Expr& e) const {
-    if (inference_ == nullptr || unboxedFieldsDisabled_) return false;
+    if (inference_ == nullptr) return false;
     return inference_->nullishNumberFieldReads.count(&inferenceExpr(e)) != 0;
 }
 
@@ -654,9 +630,6 @@ void Lowerer::buildClassFamilyTable() {
 // the first is a claim about an array the slot points AT, and the second
 // admits `null` and `undefined`, neither of which is a double.
 void Lowerer::buildSlotReprTable() {
-    // Not gated on the runtime seam: BRONZE_NO_SLOT_REPR is read by the
-    // PROGRAM, not by the compiler, so one object file has to A/B both ways.
-    // The runtime declines the registration when the seam is down.
     if (pins_ == nullptr || inference_ == nullptr) return;
     std::set<std::string> names;
     for (const types::ClassLayout& cl : inference_->classLayouts.all()) {
@@ -689,7 +662,7 @@ void Lowerer::buildSlotReprTable() {
 std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr& receiver,
                                                                 const std::string& key,
                                                                 bool forWrite) {
-    if (staticShapesDisabled_ || inference_ == nullptr) return std::nullopt;
+    if (inference_ == nullptr) return std::nullopt;
 
     // `this` inside a method of a class SOMEBODY EXTENDS is the one receiver
     // whose static class is not its runtime shape. `Object3D.updateMatrixWorld`
@@ -727,7 +700,7 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
             // runtime confirms name by name before it stamps the shape.
             const types::ClassLayout* fam =
                 inference_->classLayouts.familyMemberOf(t.shapeClass());
-            if (familyGuardDisabled_ || fam == nullptr) return std::nullopt;
+            if (fam == nullptr) return std::nullopt;
             // A write needs the slot to be WRITABLE, and the stamp only stands
             // for the attributes the class declared. `Object.defineProperty(
             // this, 'id', {value: n})` declares a non-writable one, and a bare
@@ -773,7 +746,7 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
         // out of another class's field (lower_key_owner_guess.cpp). Guarded the
         // same way, so as sound and as cheap to be wrong about.
         if (guess == types::kNoShapeClass) guess = keyOwnerGuessAt(receiver, key);
-        if (familyGuardDisabled_ || guess == types::kNoShapeClass) return std::nullopt;
+        if (guess == types::kNoShapeClass) return std::nullopt;
         const uint32_t guessed = inference_->classLayouts.slotOf(guess, key);
         if (guessed == types::ClassLayoutTable::kNoSlot) return std::nullopt;
         const types::ClassLayout* fam = inference_->classLayouts.familyMemberOf(guess);
@@ -811,7 +784,7 @@ std::optional<Lowerer::StaticSlotSite> Lowerer::claimStaticSlot(const ast::Expr&
     if (recvType.identityOnly()) {
         const types::ClassLayout* fam =
             inference_->classLayouts.familyMemberOf(recvType.shapeClass());
-        if (familyGuardDisabled_ || fam == nullptr) return std::nullopt;
+        if (fam == nullptr) return std::nullopt;
         if (forWrite && slot < fam->fieldWritable.size() && !fam->fieldWritable[slot]) {
             return std::nullopt;
         }

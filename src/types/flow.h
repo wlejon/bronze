@@ -188,11 +188,6 @@ struct ModuleContext {
     // an escape is a fact about the program text, and a call on a receiver whose
     // class is not proven stays unproven, because a receiver's type only widens.
     MethodPoison methodPoison;
-    // `BRONZE_NO_INTERPROC_IDENT` turns the whole mechanism off, leaving every
-    // method's parameters on the uniform dynamic convention.
-    bool interprocIdent = false;
-    // `BRONZE_NO_METHOD_PARAM_TYPES` controls method parameter typing with primitive types.
-    bool methodParamTypes = false;
     // The `--pins` manifest, or null. Named (class, field) pairs — and only
     // those — spend field-type claims without the builtHere / per-class /
     // program-wide-audit proofs. See types/pins.h for what a pin promises and
@@ -225,10 +220,6 @@ struct ModuleContext {
     // binding having been read — which is what decides whether a `new` this
     // pass cannot name has to contribute to anything at all.
     CtorEscapeFacts ctorEscapes;
-    // `BRONZE_NO_CTOR_PARAM_TYPES` turns the mechanism off, leaving every
-    // constructor's parameters on the uniform dynamic convention and the field
-    // harvest purely syntactic.
-    bool ctorParamTypes = false;
     // How far each `new <a value>(...)` site could be bounded. Counted on the
     // recording pass only, like every other statistic.
     uint32_t unnamedNewSubtree = 0;
@@ -270,9 +261,6 @@ struct ModuleContext {
     std::set<std::string> lazyModuleVars;
     std::set<std::string> reachedModuleVars;
     std::set<std::string> walkedModuleVars;
-    // `BRONZE_NO_VALUE_FLOW` turns the table off, leaving every module-scope
-    // read `Dynamic` as it was.
-    bool valueFlow = false;
 
     // ---- closed object-literal array elements -------------------------------
 

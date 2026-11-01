@@ -57,9 +57,6 @@ struct MethodInfo {
     // not name — fails the compare and takes the inline cache it takes today.
     // A wrong guess costs a miss, which is the same trade `Type::
     // objectIdentityOnly` records, spent here without widening any type.
-    //
-    // `BRONZE_NO_PARAM_CLASS_GUESS=1` stops the claim being made (read in
-    // flow_expr.cpp, where the contribution is).
     std::vector<Type> observedParamShapes;
     std::vector<Type> paramShapes;
     // Moves whenever `signature` or `paramShapes` does (types/infer_memo.h).

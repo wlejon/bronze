@@ -47,8 +47,7 @@ struct FunctionOutcome;
 //
 // `BRONZE_INFER_CHECK=1` walks every call the memo would have replayed and
 // compares the two, which is how a read this file does not know about shows
-// up: as a named internal error instead of a wrong type. `BRONZE_NO_INFER_MEMO=1`
-// turns the memo off.
+// up: as a named internal error instead of a wrong type.
 class InferMemo {
 public:
     enum class FactKind : uint8_t {

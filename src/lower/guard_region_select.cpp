@@ -702,14 +702,6 @@ bool isCheckedUnboxOf(const il::Instruction& inst, const std::vector<il::Type>& 
     return src < types.size() && types[src] == il::Type::Dynamic;
 }
 
-bool guardedRegionsDisabled() {
-    static const bool off = [] {
-        const char* env = std::getenv("BRONZE_NO_GUARDED_REGIONS");
-        return env != nullptr && std::strcmp(env, "1") == 0;
-    }();
-    return off;
-}
-
 void guardRegionStatsReport(const GuardRegionStats& s) {
     const char* env = std::getenv("BRONZE_GUARDED_REGION_STATS");
     if (env == nullptr || std::strcmp(env, "1") != 0) return;
@@ -954,7 +946,6 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* statsOut) {
     GuardRegionStats local;
     GuardRegionStats& stats = statsOut != nullptr ? *statsOut : local;
-    if (guardedRegionsDisabled()) return false;
     // A `--census` build is an INSTRUMENT: what it measures is where lowering
     // ran out of static answers, and a pass that changes which values reach an
     // operator changes the readings. It is off there for the same reason a

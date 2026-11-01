@@ -77,7 +77,7 @@ bool runPass(ModuleContext& mod, const ModuleSplit& split, bool record) {
     mod.nestedCells.clear();
     for (uint32_t i = 0; i < mod.functions.size(); ++i) {
         FunctionInfo& fn = mod.functions[i];
-        if (!record && !mod.auditSettled && mod.valueFlow && !fn.reached) continue;
+        if (!record && !mod.auditSettled && !fn.reached) continue;
         std::vector<const ast::Stmt*> body;
         body.reserve(fn.decl->body.size());
         for (const auto& s : fn.decl->body) body.push_back(s.get());
@@ -200,13 +200,11 @@ bool foldFunctionAndClassReachability(ModuleContext& mod) {
             changed = true;
         }
     }
-    if (mod.ctorParamTypes) {
-        for (auto& c : mod.ctors.classReach()) {
-            if (!c.reached && c.observedReached) {
-                c.reached = true;
-                ++c.version;
-                changed = true;
-            }
+    for (auto& c : mod.ctors.classReach()) {
+        if (!c.reached && c.observedReached) {
+            c.reached = true;
+            ++c.version;
+            changed = true;
         }
     }
     return changed;
@@ -222,12 +220,10 @@ bool foldFunctionAndClassReachability(ModuleContext& mod) {
 // round that reports "changed".
 bool foldMethodReachability(ModuleContext& mod) {
     bool changed = foldFunctionAndClassReachability(mod);
-    if (!mod.interprocIdent) return changed;
     for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
         auto& m = mod.methods.methods()[i];
         bool mChanged = false;
-        const bool clsReached =
-            !mod.ctorParamTypes || !mod.valueFlow || mod.ctors.isClassReached(m.className);
+        const bool clsReached = mod.ctors.isClassReached(m.className);
         if (!m.reached &&
             (m.observedReached || (clsReached && mod.methodPoison.poisons(i)))) {
             m.reached = true;
@@ -276,7 +272,6 @@ bool foldMethodReachability(ModuleContext& mod) {
 }
 
 bool widenMethods(ModuleContext& mod) {
-    if (!mod.interprocIdent) return false;
     bool changed = foldMethodReachability(mod);
     for (uint32_t i = 0; i < mod.methods.methods().size(); ++i) {
         auto& m = mod.methods.methods()[i];
@@ -337,7 +332,6 @@ bool widenMethods(ModuleContext& mod) {
 // widening has to be part of the fixpoint so that the round which discovers it
 // is the round that reports "changed".
 bool widenCtors(ModuleContext& mod) {
-    if (!mod.ctorParamTypes) return false;
     bool changed = false;
     for (auto& c : mod.ctors.ctors()) {
         const bool speaks = c.plainParams && !mod.ctorPoison.poisons(c.className);
@@ -355,7 +349,6 @@ bool widenCtors(ModuleContext& mod) {
 }
 
 bool finalizeUnreachedCtors(ModuleContext& mod) {
-    if (!mod.ctorParamTypes) return false;
     bool changed = false;
     for (auto& c : mod.ctors.ctors()) {
         for (auto& param : c.signature.params) {
@@ -373,14 +366,9 @@ bool finalizeUnreachedCtors(ModuleContext& mod) {
 // they stand. This is the one road from a typed parameter to a typed FIELD:
 // `this.x = x` says nothing until `x` does.
 bool refineFieldHarvest(ModuleContext& mod, InferenceResult& result) {
-    if (!mod.ctorParamTypes && !mod.methodParamTypes) return false;
-    const auto ctorOracle = mod.ctorParamTypes ? mod.ctors.harvestOracle()
-                                               : std::map<std::string, std::map<std::string, Type>>();
-    if (mod.methodParamTypes) {
-        const auto methodOracle = mod.methods.harvestOracle();
-        return result.classLayouts.reharvestFieldTypes(ctorOracle, &methodOracle);
-    }
-    return result.classLayouts.reharvestFieldTypes(ctorOracle, nullptr);
+    const auto ctorOracle = mod.ctors.harvestOracle();
+    const auto methodOracle = mod.methods.harvestOracle();
+    return result.classLayouts.reharvestFieldTypes(ctorOracle, &methodOracle);
 }
 
 // After the fixpoint settles: a parameter still at `Never` is one no call site
@@ -407,7 +395,6 @@ bool finalizeUnreachedMethods(ModuleContext& mod) {
             changed = true;
         }
     }
-    if (!mod.interprocIdent) return changed;
     for (auto& m : mod.methods.methods()) {
         if (!m.reached) {
             m.unreached = true;
@@ -586,7 +573,6 @@ private:
 // bodies too also finds the bindings that are assigned inside a function rather
 // than at the top level, which a top-level-only seed could not see.
 uint32_t primeFixpoint(ModuleContext& mod, const ModuleSplit& split, InferenceResult& result) {
-    if (!mod.valueFlow) return 0;
     uint32_t rounds = 0;
     for (uint32_t iter = 0; iter <= kMaxCallGraphIterations; ++iter) {
         ++rounds;
@@ -685,14 +671,11 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     // Whole-program and syntactic, like the two above, and read at lowering
     // rather than during the fixpoint: nothing it proves depends on a type.
     result.moduleLiterals.scan(module);
-    // Interprocedural identity, off behind its seam. Both halves are built
-    // before any body is walked, for the same reason the class table is: the
-    // flow pass reads them on every round, and a table that filled in as it went
-    // would answer differently on the probe rounds and the recording round.
-    mod.valueFlow = std::getenv("BRONZE_NO_VALUE_FLOW") == nullptr;
+    // Interprocedural identity. Both halves are built before any body is
+    // walked, for the same reason the class table is: the flow pass reads them
+    // on every round, and a table that filled in as it went would answer
+    // differently on the probe rounds and the recording round.
     mod.literalFieldsAnywhere = std::getenv("BRONZE_NO_LITERAL_FIELD_TYPES") == nullptr;
-    mod.interprocIdent = std::getenv("BRONZE_NO_INTERPROC_IDENT") == nullptr;
-    mod.methodParamTypes = std::getenv("BRONZE_NO_METHOD_PARAM_TYPES") == nullptr;
     for (const ast::FunctionDecl* decl : split.decls) {
         for (const auto& name : ast::getDeeplyReboundNames(decl->body)) {
             mod.reboundByModuleFns.insert(name);
@@ -700,35 +683,28 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     }
     // Pins come from the `--pins` manifest alone.
     mod.pins = pins != nullptr && !pins->empty() ? pins : nullptr;
-    if (mod.interprocIdent) {
-        mod.methods.build(module);
-        scanMethodEscapes(module, mod.methods, mod.methodPoison);
-        mod.protoMutable = scanProtoMutation(module);
-        for (const ClassLayout& cl : result.classLayouts.all()) {
-            if (cl.superUnknown ||
-                (!cl.superName.empty() && result.classLayouts.byName(cl.superName) == nullptr)) {
-                mod.unresolvedBase = true;
-            }
+    mod.methods.build(module);
+    scanMethodEscapes(module, mod.methods, mod.methodPoison);
+    mod.protoMutable = scanProtoMutation(module);
+    for (const ClassLayout& cl : result.classLayouts.all()) {
+        if (cl.superUnknown ||
+            (!cl.superName.empty() && result.classLayouts.byName(cl.superName) == nullptr)) {
+            mod.unresolvedBase = true;
         }
     }
-    mod.ctorParamTypes = std::getenv("BRONZE_NO_CTOR_PARAM_TYPES") == nullptr;
-    if (mod.ctorParamTypes || mod.methodParamTypes) {
-        if (mod.ctorParamTypes) {
-            mod.ctors.build(module);
-            scanCtorEscapes(module, mod.ctors, mod.ctorPoison, mod.ctorEscapes);
-            for (auto& cr : mod.ctors.classReach()) {
-                if (mod.ctorPoison.poisons(cr.className) &&
-                    cr.className.find('.') == std::string::npos) {
-                    cr.reached = true;
-                }
-            }
+    mod.ctors.build(module);
+    scanCtorEscapes(module, mod.ctors, mod.ctorPoison, mod.ctorEscapes);
+    for (auto& cr : mod.ctors.classReach()) {
+        if (mod.ctorPoison.poisons(cr.className) &&
+            cr.className.find('.') == std::string::npos) {
+            cr.reached = true;
         }
-        // The field harvest starts from the parameter signatures, which are all
-        // `Never` here. That is the bottom of the same lattice everything else
-        // in the loop below climbs, so the whole sequence is monotone from the
-        // first round rather than from the second.
-        refineFieldHarvest(mod, result);
     }
+    // The field harvest starts from the parameter signatures, which are all
+    // `Never` here. That is the bottom of the same lattice everything else
+    // in the loop below climbs, so the whole sequence is monotone from the
+    // first round rather than from the second.
+    refineFieldHarvest(mod, result);
     for (uint32_t i = 0; i < split.decls.size(); ++i) {
         const ast::FunctionDecl* decl = split.decls[i];
         FunctionInfo fn;
@@ -763,10 +739,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     }
     buildNestedFnTable(module, mod);
 
-    // The incremental rounds (types/infer_memo.h): on unless switched off, and
-    // under BRONZE_INFER_CHECK every replay is walked as well and compared.
+    // The incremental rounds (types/infer_memo.h); under BRONZE_INFER_CHECK
+    // every replay is walked as well and compared.
     InferMemo memo(std::getenv("BRONZE_INFER_CHECK") != nullptr);
-    if (std::getenv("BRONZE_NO_INFER_MEMO") == nullptr) mod.memo = &memo;
+    mod.memo = &memo;
 
     support::PhaseTimer timer(support::timingsEnabled(), 4);
     timer.mark("setup");
@@ -845,7 +821,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         }
     }
 
-    if (mod.ctorParamTypes) {
+    {
         auto& rep = result.ctorParams;
         rep.valueEscapes = mod.ctorEscapes.valueEscapes;
         rep.valueEscapeReason = mod.ctorEscapes.valueEscapeReason;
@@ -889,7 +865,7 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
         }
     }
 
-    if (mod.interprocIdent) {
+    {
         auto& rep = result.methodParams;
         rep.classes = static_cast<uint32_t>(result.classLayouts.all().size());
         rep.methods = static_cast<uint32_t>(mod.methods.methods().size());

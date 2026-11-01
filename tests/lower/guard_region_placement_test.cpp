@@ -100,8 +100,6 @@ size_t countOf(const std::string& text, const std::string& needle) {
     return n;
 }
 
-bool seamIsOn() { return guardedRegionsDisabled(); }
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -109,7 +107,6 @@ bool seamIsOn() { return guardedRegionsDisabled(); }
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a value used only in blocks its definition dominates is guarded at the block's end") {
-    if (seamIsOn()) return;
     // `const a = o.k; return c ? a * a : a + a;` — the read is in the header and
     // every use of it is in a `switch`/`if` arm below. There is no promoted use
     // in the header at all, so the guard cannot go in front of one; it goes in
@@ -175,7 +172,6 @@ TEST_CASE("a value used only in blocks its definition dominates is guarded at th
 }
 
 TEST_CASE("an end-of-block candidate defined before the block's first use joins that point") {
-    if (seamIsOn()) return;
     // Two candidates in the header. `%4` has a use there, so its point is in
     // front of that use; `%3` has none, so its point would be the end of the
     // block. It does not get one: it is already defined at the earlier point,
@@ -208,7 +204,6 @@ TEST_CASE("an end-of-block candidate defined before the block's first use joins 
 }
 
 TEST_CASE("an end-of-block candidate defined after that point takes a second split") {
-    if (seamIsOn()) return;
     // The same two candidates in the other order: the read whose uses are all
     // below now comes AFTER the header's own promoted use, so it does not exist
     // at that point and cannot be tested there. Two points, and that is forced
@@ -236,7 +231,6 @@ TEST_CASE("an end-of-block candidate defined after that point takes a second spl
 }
 
 TEST_CASE("a promoted use the definition does not dominate is still refused") {
-    if (seamIsOn()) return;
     // `b3` has no predecessor. An entry region is EVERY block of the function,
     // reachable or not, and dominance is not defined over a block the entry
     // cannot reach — so there is no point in `b0` that reaches `b3`'s use of
@@ -272,7 +266,6 @@ TEST_CASE("a promoted use the definition does not dominate is still refused") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("an entry region splits below its header when the split block dominates what it reaches") {
-    if (seamIsOn()) return;
     // The shape a DEFAULTED PARAMETER makes, which is `Quaternion.setFromEuler`:
     // the header only chooses whether the default runs, and the body — the read
     // whose uses are all in the arms below — lives in the join. The join is not
@@ -310,7 +303,6 @@ TEST_CASE("an entry region splits below its header when the split block dominate
 }
 
 TEST_CASE("an entry region refuses a split block that does not dominate what it reaches") {
-    if (seamIsOn()) return;
     // `b1` holds the only split and does not dominate `b3`, which it reaches.
     // `b3` reads `%2`, defined in the header — and with no split in the header
     // the header's slow copy is orphaned and pruned, while `b3`'s survives on

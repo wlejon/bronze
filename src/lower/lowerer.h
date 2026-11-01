@@ -182,7 +182,6 @@ private:
     std::optional<il::MathUnaryFn> mathUnaryCallFn(const ast::Call& call) const;
 
     // --- lower_typed_elem.cpp: proven typed-array element access ---
-    static bool typedElemSeamDisabled();
     std::optional<uint32_t> typedElemAccessKind(const ast::Expr& e, bool coercing = false) const;
     uint32_t typedElemProofFlags(const ast::IndexAccess& idx, uint32_t elemKind) const;
     bool provenIntegralIndexExpr(const ast::Expr& e, const ast::IndexAccess& site, int depth) const;
@@ -206,12 +205,6 @@ private:
                           il::Function& ilFn);
     const std::vector<ast::StmtPtr>* currentBodyStmts_ = nullptr;
     bool typedElemDisabled_ = false;
-    bool staticShapesDisabled_ = false;
-    static bool staticShapeSeamDisabled();
-    bool familyGuardDisabled_ = false;
-    static bool familyGuardSeamDisabled();
-    bool unboxedFieldsDisabled_ = false;
-    static bool unboxedFieldSeamDisabled();
     std::vector<ProvenParamPlan> provenClosureParams_;
     // A deque, not a vector: currentFnParamFacts_ points into one plan while a
     // nested body pushes the next, and a vector that grows copies its maps
@@ -224,7 +217,6 @@ private:
     void planFunctionParamFacts(const std::vector<ast::Param>& params,
                                 const std::vector<ast::StmtPtr>& stmts);
     bool numericArithDisabled_ = false;
-    static bool numericArithSeamDisabled();
     bool provenFieldRead(const ast::Expr& e) const;
     Value emitRawUnbox(Value boxed, il::Function& ilFn);
     bool nullishNumberFieldRead(const ast::Expr& e) const;
@@ -368,7 +360,6 @@ private:
                     bool assigning = false);
     bool envSlotIsLexical(uint32_t depth, uint32_t index) const;
     bool envSlotDefiniteInit(uint32_t depth, uint32_t index) const;
-    static bool definiteInitDisabled();
     SlotImmutability envSlotImmutability(uint32_t depth, uint32_t index) const;
     bool envSlotIsF64(uint32_t depth, uint32_t index) const;
     void planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
@@ -423,7 +414,6 @@ private:
                                  const std::vector<ast::StmtPtr>& stmts);
     void applyProvenClosureParams(const ast::Node& site, const std::vector<ast::Param>& params,
                                   il::Function& fn) const;
-    static bool closureParamProofDisabled();
     bool findStableFunctionCallee(const std::string& name, uint32_t& envHops,
                                   uint32_t& fnIndex) const;
     std::optional<Value> lowerDirectCall(const ast::Call* call, uint32_t calleeIdx,

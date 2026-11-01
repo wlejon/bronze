@@ -4,8 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
-#include <cstring>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -21,14 +19,6 @@
 #include "lower/lowerer.h"
 
 namespace bronze::lower {
-
-bool Lowerer::closureParamProofDisabled() {
-    static const bool disabled = [] {
-        const char* env = std::getenv("BRONZE_NO_CLOSURE_PARAM_PROOF");
-        return env != nullptr && std::strcmp(env, "1") == 0;
-    }();
-    return disabled;
-}
 
 namespace {
 
@@ -394,7 +384,7 @@ void Lowerer::initModuleBufferDetachFree() {
 
 void Lowerer::planFunctionParamFacts(const std::vector<ast::Param>& params,
                                      const std::vector<ast::StmtPtr>& stmts) {
-    if (closureParamProofDisabled() || fnParamFactsStack_.empty()) return;
+    if (fnParamFactsStack_.empty()) return;
 
     const bool isTopLevel = (&stmts == &astModule_.body);
     if (isTopLevel && inference_ == nullptr) return;
@@ -564,7 +554,7 @@ void Lowerer::planFunctionParamFacts(const std::vector<ast::Param>& params,
 // it types the closures a factory calls, not the closure the factory hands out.
 void Lowerer::planClosureParamNumbers(const std::vector<ast::Param>& params,
                                       const std::vector<ast::StmtPtr>& stmts) {
-    if (inference_ == nullptr || closureParamProofDisabled()) return;
+    if (inference_ == nullptr) return;
     // `lowerFunctionBody` opened this body's frame before calling in.
     if (provenClosureParams_.empty()) return;
 

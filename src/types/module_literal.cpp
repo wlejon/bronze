@@ -545,18 +545,7 @@ bool inlineShape(const ast::FunctionExpr& fn, const InlineContext& ctx,
 
 }  // namespace
 
-bool moduleLiteralDevirtDisabled() {
-    return std::getenv("BRONZE_NO_MODULE_LITERAL_DEVIRT") != nullptr;
-}
-
-bool moduleLiteralInlineDisabled() {
-    return moduleLiteralDevirtDisabled() ||
-           std::getenv("BRONZE_NO_MODULE_LITERAL_INLINE") != nullptr;
-}
-
 void ModuleLiteralFacts::scan(const ast::Module& module) {
-    if (moduleLiteralDevirtDisabled()) return;
-
     ReferenceScan refs;
     module.accept(refs);
     // Compiled ahead of time, bronze refuses `eval` outright; the check is here
@@ -612,8 +601,6 @@ void ModuleLiteralFacts::scan(const ast::Module& module) {
             if (refs.deletedKeys.count(key) != 0) continue;
             forward_[decl->name][key] = *backing;
         }
-
-        if (moduleLiteralInlineDisabled()) continue;
 
         InlineContext ctx;
         ctx.entries = &entries;

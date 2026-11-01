@@ -1,30 +1,10 @@
 
 #include "types/pins.h"
 
-#include <cstdlib>
 #include <cstring>
 #include <sstream>
 
 namespace bronze::types {
-
-// BRONZE_NO_PIN_BARRIERS: `1` emits no write barrier for any pin, which is
-// exactly the behaviour every stage before B1 shipped — a violated claim is
-// undefined behaviour again. It is the A/B seam for the barriers' cost, read
-// ONCE per invocation and nowhere else, so both columns of a measurement come
-// out of one compiler binary.
-//
-// It is asked here rather than at each emitter because there are five of them
-// (env slot, field, element, call site, boxed wrapper) and a seam that has to
-// be remembered five times is a seam that will be forgotten once. Everything
-// downstream keys off the `pinned` marks lowering writes, and with the seam on
-// lowering writes none.
-bool pinBarriersEnabled() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("BRONZE_NO_PIN_BARRIERS");
-        return !(env != nullptr && std::strcmp(env, "1") == 0);
-    }();
-    return enabled;
-}
 
 namespace {
 

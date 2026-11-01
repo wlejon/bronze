@@ -244,21 +244,10 @@ bool paramDefaultsBuildFunctions(const std::vector<Param>* params) {
     return false;
 }
 
-// BRONZE_NO_DEFINITE_REACH=1, the A/B seam for stage E4's half of this: with
-// it the scan is stage E3's again — literal initializers only, and a stop at
-// the first statement that could call anything.
-bool reachWideningDisabled() {
-    static const bool disabled = [] {
-        const char* env = std::getenv("BRONZE_NO_DEFINITE_REACH");
-        return env != nullptr && std::strcmp(env, "1") == 0;
-    }();
-    return disabled;
-}
-
 std::vector<std::string> definitelyAssigned(const std::vector<const Stmt*>& stmts,
                                             const std::vector<Param>* params) {
     std::vector<std::string> names;
-    const bool widen = !reachWideningDisabled() && !paramDefaultsBuildFunctions(params);
+    const bool widen = !paramDefaultsBuildFunctions(params);
 
     // Everything the scan may not walk past. It starts as every hoisted
     // `function` of this list — all of them created, over this record, before

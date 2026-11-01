@@ -30,16 +30,6 @@
 
 namespace {
 
-// `BRONZE_NO_PIN_BARRIERS=1` is a MEASUREMENT instrument, not a contract
-// configuration: it puts the compiler back where stage E5 left it, where a
-// violating write is undefined behaviour. Every case below that asserts a
-// barrier is asserting the thing the seam removes, so under the seam they are
-// skipped rather than inverted — there is no second correct answer to check
-// against, and the seam is read once per process so one run cannot have both.
-// The cases that assert an ABSENCE stay on: a proof is still a licence with
-// the seam set, and "no barrier here" had better not depend on it.
-bool barriersOff() { return !bronze::types::pinBarriersEnabled(); }
-
 std::filesystem::path workDir() {
     std::filesystem::path dir = bronze_test::tempDir() / "bronze_pin_barrier";
     std::error_code ec;
@@ -125,7 +115,6 @@ const char* kReport =
 // ---- env-slot pins ----------------------------------------------------------
 
 TEST_CASE("a violating write to a pinned env slot throws a TypeError naming the slot") {
-    if (barriersOff()) return;
     const std::string src = std::string(kReport) +
                             "function makeState() {\n"
                             "  let cur = 0;\n"
@@ -177,7 +166,6 @@ TEST_CASE("a slot the fixpoint proved carries no barrier") {
 // ---- field pins -------------------------------------------------------------
 
 TEST_CASE("a violating write to a pinned field throws a TypeError naming the field") {
-    if (barriersOff()) return;
     const std::string src = std::string(kReport) +
                             "class Vec { constructor(x) { this.x = x; } }\n"
                             "function put(v, y) { v.x = y; }\n"
@@ -200,7 +188,6 @@ TEST_CASE("a violating write to a pinned field throws a TypeError naming the fie
 }
 
 TEST_CASE("a nullish-widened field admits null and undefined and refuses a string") {
-    if (barriersOff()) return;
     const std::string src = std::string(kReport) +
                             "class Node { constructor() { this.limit = null; } }\n"
                             "function put(n, y) { n.limit = y; }\n"
@@ -222,7 +209,6 @@ TEST_CASE("a nullish-widened field admits null and undefined and refuses a strin
 }
 
 TEST_CASE("a numeric-elements field refuses a non-array and its elements refuse a non-number") {
-    if (barriersOff()) return;
     const std::string src =
         std::string(kReport) +
         "class M { constructor() { this.elements = [1, 2, 3]; } }\n"
@@ -268,7 +254,6 @@ TEST_CASE("a field store the compiler already typed f64 carries no barrier") {
 // ---- signature pins ---------------------------------------------------------
 
 TEST_CASE("a violating argument through the boxed wrapper throws and names the parameter") {
-    if (barriersOff()) return;
     // `apply` reaches `scale` through a function VALUE, so the call is the
     // uniform one and the boxed wrapper is the door the argument comes
     // through. Before this stage the wrapper ran ToNumber and `scale('4')`
@@ -289,7 +274,6 @@ TEST_CASE("a violating argument through the boxed wrapper throws and names the p
 }
 
 TEST_CASE("a violating return throws and names the return pin") {
-    if (barriersOff()) return;
     const std::string src = std::string(kReport) +
                             "function pick(flag) {\n"
                             "  if (flag) { return 'boom'; }\n"
@@ -345,7 +329,6 @@ TEST_CASE("a pinned element read on the right of a store reads raw") {
 }
 
 TEST_CASE("a guarded element store spends its guard on the raw store") {
-    if (barriersOff()) return;
     // The value here IS dynamic — it arrives through a parameter two call sites
     // disagree about — so the barrier is emitted. What it leaves behind is a
     // proof: `pin.guard` throws on anything but a Number, so the store on its
@@ -379,7 +362,6 @@ TEST_CASE("a guarded element store spends its guard on the raw store") {
 }
 
 TEST_CASE("a violation mid-run is caught by a try in the SAME function") {
-    if (barriersOff()) return;
     // The barrier raises by LEAVING for the block's handler rather than by
     // merging back and letting an exception check catch it (llvm_pin.h), and
     // this is the case that says the handler it leaves for is the right one:
@@ -427,10 +409,9 @@ TEST_CASE("a violation mid-run is caught by a try in the SAME function") {
     CHECK(out.find("after 1,2,9,8") != std::string::npos);
 }
 
-// ---- the seam ---------------------------------------------------------------
+// ---- the message -------------------------------------------------------------
 
 TEST_CASE("the pin text a barrier names reads back as a line of the manifest") {
-    if (barriersOff()) return;
     // The message exists to be grepped for in the file that caused it, so the
     // module linker's `modN.` prefix must not be in it. One module here, so
     // the names are bare; `tests/modules` covers the prefixed form.
@@ -457,7 +438,6 @@ TEST_CASE("the pin text a barrier names reads back as a line of the manifest") {
 }
 
 TEST_CASE("a store through a dynamic receiver to a pinned field emits a pin barrier") {
-    if (barriersOff()) return;
     const std::string src = std::string(kReport) +
                             "class Point { constructor(x) { this.x = x; } }\n"
                             "function setField(obj, val) { obj.x = val; }\n"
@@ -479,7 +459,6 @@ TEST_CASE("a store through a dynamic receiver to a pinned field emits a pin barr
 }
 
 TEST_CASE("an untyped dynamic receiver write to a pinned slot name throws TypeError") {
-    if (barriersOff()) return;
     const std::string src = std::string(kReport) +
                             "class Point { constructor(x) { this.x = x; } }\n"
                             "function writeX(dyn, val) {\n"

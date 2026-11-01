@@ -40,7 +40,6 @@ bool Lowerer::pinSatisfiedStatically(Value val, il::PinBarrier kind) {
 
 bool Lowerer::emitPinGuard(Value val, const std::string& pinText, il::PinBarrier kind,
                            il::Function& ilFn) {
-    if (!types::pinBarriersEnabled()) return false;
     if (pinSatisfiedStatically(val, kind)) return false;
     // The barrier tests the BOXED form, because that is the one word the
     // shape questions are asked of — and because it is the word the store
@@ -144,7 +143,6 @@ void Lowerer::emitPinFieldBarrier(const ast::Expr& receiver, const std::string& 
     // this store support?". One call here rather than six beside the barrier's
     // callers, so a store path added later cannot get one and not the other.
     emitCensusFieldRecord(receiver, key, val, ilFn);
-    if (!types::pinBarriersEnabled()) return;
     std::string pinText;
     const types::PinKind* pin = pinnedFieldAt(receiver, key, &pinText);
     if (pin == nullptr) return;

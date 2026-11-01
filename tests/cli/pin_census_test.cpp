@@ -432,22 +432,19 @@ TEST_CASE("a wrong inference is a TypeError naming the census's own line") {
     const std::string out = buildWithPins("interlock_violate", violatingSrc, run.manifestPath,
                                           /*allowObserved=*/false, &status, &err);
     REQUIRE_MESSAGE(status == 0, err);
-    if (bronze::types::pinBarriersEnabled()) {
-        CHECK(out.find("slot true") != std::string::npos);
-        // The message reads back as A LINE OF THE MANIFEST THE CENSUS WROTE,
-        // which is what closes the loop from a throw in the field to the file
-        // that caused it (stage B1's HANDOFF (d), item 2). WHICH line is not
-        // asserted: `render`'s pinned parameter is contradicted at the boxed
-        // wrapper, before the slot it would have been stored into, and either
-        // barrier firing first is the same correct answer.
-        const auto open = out.find("pin '");
-        REQUIRE(open != std::string::npos);
-        const auto close = out.find('\'', open + 5);
-        REQUIRE(close != std::string::npos);
-        const std::string named = out.substr(open + 5, close - open - 5);
-        CHECK(holds(entriesOf(run.manifest), named));
-    }
-    // And the program is still running afterwards, whatever the seam says.
+    CHECK(out.find("slot true") != std::string::npos);
+    // The message reads back as A LINE OF THE MANIFEST THE CENSUS WROTE,
+    // which is what closes the loop from a throw in the field to the file
+    // that caused it. WHICH line is not asserted: `render`'s pinned parameter
+    // is contradicted at the boxed wrapper, before the slot it would have been
+    // stored into, and either barrier firing first is the same correct answer.
+    const auto open = out.find("pin '");
+    REQUIRE(open != std::string::npos);
+    const auto close = out.find('\'', open + 5);
+    REQUIRE(close != std::string::npos);
+    const std::string named = out.substr(open + 5, close - open - 5);
+    CHECK(holds(entriesOf(run.manifest), named));
+    // And the program is still running afterwards.
     CHECK(out.find("alive 3") != std::string::npos);
 }
 

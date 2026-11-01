@@ -33,11 +33,7 @@
 // guarded region at. Every refusal returns nullopt and the caller emits the
 // fold it always emitted, so the predicate is free to be narrow and a case it
 // misses is a case that is merely as fast as it was.
-//
-// THE SEAM is `BRONZE_NO_CONCAT_CHAIN=1`, read by the COMPILER once per
-// process, because what it isolates is the emitted code.
 
-#include <cstdlib>
 #include <optional>
 #include <vector>
 
@@ -144,19 +140,10 @@ void flattenAddSpine(const ast::Binary& bin, std::vector<const ast::Expr*>& out)
     out.push_back(bin.rhs.get());
 }
 
-// The seam, read once per compiler process: what it isolates is the emitted
-// code, so a run-time flag could not change it. File-local rather than a
-// `Lowerer` member because nothing outside this file consults it.
-bool concatChainSeamDisabled() {
-    static const bool off = std::getenv("BRONZE_NO_CONCAT_CHAIN") != nullptr;
-    return off;
-}
-
 }  // namespace
 
 std::optional<Lowerer::Value> Lowerer::lowerAddChain(const ast::Binary* bin,
                                                      il::Function& ilFn) {
-    if (concatChainSeamDisabled()) return std::nullopt;
 
     std::vector<const ast::Expr*> operands;
     flattenAddSpine(*bin, operands);

@@ -4,8 +4,7 @@
 // A refusal is a decision not to CLAIM a slot; it is never a change of
 // behaviour. Each block below is ordinary JavaScript whose answer is fixed by
 // the language, and the point of the case is that the answer does not move
-// either way — whether the class is modelled or refused, and whether the
-// mechanism is on or off (BRONZE_NO_STATIC_SHAPES).
+// whether the class is modelled or refused.
 //
 // Blocks 2, 3, 4, 6 and 7 are the ones that are NOT refusals, each for a reason
 // worth pinning: a define with a data descriptor is a shape transition like any

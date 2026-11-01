@@ -192,7 +192,7 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
                                      const std::vector<const ast::Stmt*>& body,
                                      const il::Function& ilFn,
                                      EnvScopeInfo& info) const {
-    if (inference_ == nullptr || unboxedFieldsDisabled_) return;
+    if (inference_ == nullptr) return;
     const std::string& functionName = ilFn.name;
 
     // The candidates: this body's own top-level `let`/`const` with an
@@ -374,23 +374,21 @@ void Lowerer::planEnvSlotNumberTypes(const std::vector<ast::Param>& params,
                 // opposite: a slot whose writes the fixpoint could not type,
                 // admitted because the manifest promised. The promise is what
                 // gets held (types/pins.h, stage B1).
-                if (types::pinBarriersEnabled()) {
-                    const uint32_t slot = info.slotOf.at(name);
-                    if (info.slotIsPinned.size() < info.slotNames.size()) {
-                        info.slotIsPinned.assign(info.slotNames.size(), false);
-                        info.slotPinText.assign(info.slotNames.size(), std::string());
-                    }
-                    // The LAST dotted component, because that is the spelling
-                    // the manifest uses (the linker's `mod1.` prefix is not in
-                    // the file), and the message exists to be grepped for in
-                    // the file.
-                    const auto dot = functionName.rfind('.');
-                    const std::string owner = dot == std::string::npos
-                                                  ? functionName
-                                                  : functionName.substr(dot + 1);
-                    info.slotIsPinned[slot] = true;
-                    info.slotPinText[slot] = "function " + owner + "." + name + ": number";
+                const uint32_t slot = info.slotOf.at(name);
+                if (info.slotIsPinned.size() < info.slotNames.size()) {
+                    info.slotIsPinned.assign(info.slotNames.size(), false);
+                    info.slotPinText.assign(info.slotNames.size(), std::string());
                 }
+                // The LAST dotted component, because that is the spelling
+                // the manifest uses (the linker's `mod1.` prefix is not in
+                // the file), and the message exists to be grepped for in
+                // the file.
+                const auto dot = functionName.rfind('.');
+                const std::string owner = dot == std::string::npos
+                                              ? functionName
+                                              : functionName.substr(dot + 1);
+                info.slotIsPinned[slot] = true;
+                info.slotPinText[slot] = "function " + owner + "." + name + ": number";
             }
         }
     }

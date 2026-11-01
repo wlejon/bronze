@@ -98,8 +98,6 @@ size_t countOf(const std::string& text, const std::string& needle) {
     return n;
 }
 
-bool seamIsOn() { return guardedRegionsDisabled() || regionRunGuardsDisabled(); }
-
 // The `applyMatrix4` shape: read, consume, read, consume. Each read's first
 // promoted use is the `add` right after it, so coalescing gives one point per
 // read and has nothing to coalesce; two `add`s per read keep the region over the
@@ -122,7 +120,6 @@ il::Function interleavedReads(uint32_t secondKey, il::ValueId secondReceiver) {
 }  // namespace
 
 TEST_CASE("a run of constant-index reads off one receiver takes one guard point") {
-    if (seamIsOn()) return;
     // Every read is on `%0` and every key is an index, so the whole block is one
     // run: one `is.dense_array` in front of the first read, the reads and their
     // arithmetic under it, and the four `is.number`s after the last read.
@@ -154,7 +151,6 @@ TEST_CASE("a run of constant-index reads off one receiver takes one guard point"
 }
 
 TEST_CASE("a read off another receiver ends the run rather than joining it") {
-    if (seamIsOn()) return;
     // `a[0] + a[1] + b[2] + a[3]`. One `is.dense_array` cannot answer for two
     // objects, and the reads after `b[2]` are not the reads the claim was made
     // about — so the run stops in front of it and every point stands.
@@ -173,7 +169,6 @@ TEST_CASE("a read off another receiver ends the run rather than joining it") {
 }
 
 TEST_CASE("a NAMED read on the run's own receiver ends it") {
-    if (seamIsOn()) return;
     // `a[0] + a[1] + a.k + a[3]`. `is.dense_array` says an INDEX is answered out
     // of the element block; it says nothing about a name, and `a.k` may be an
     // accessor. Merging past it would let the slow copy run that getter a second
@@ -192,7 +187,6 @@ TEST_CASE("a NAMED read on the run's own receiver ends it") {
 }
 
 TEST_CASE("a store between two reads ends the run") {
-    if (seamIsOn()) return;
     // `a[0], a[1], a[2]` merged into one run, then `a.k = t`, then `a[3]`.
     //
     // The store is the boundary and it is a soundness one, not a heuristic: the

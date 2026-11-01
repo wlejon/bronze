@@ -134,12 +134,4 @@ private:
     std::map<std::string, std::map<std::string, ModuleLiteralInline>> inline_;
 };
 
-// THE SEAM: `BRONZE_NO_MODULE_LITERAL_DEVIRT=1` leaves both tables empty, and
-// every accessor read and every method call is the call it was.
-bool moduleLiteralDevirtDisabled();
-
-// The narrower seam: `BRONZE_NO_MODULE_LITERAL_INLINE=1` leaves only the
-// method table empty, so accessor forwarding stays and no body moves.
-bool moduleLiteralInlineDisabled();
-
 }  // namespace bronze::types

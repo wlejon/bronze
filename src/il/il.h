@@ -641,7 +641,7 @@ struct Module {
     // at the moment the storage decision has to be made. Over-application is
     // sound — the runtime generalizes a slot whose promise a store breaks — so
     // a name shared with an unpinned class costs a shape split at worst.
-    // Empty without a manifest, and empty under BRONZE_NO_SLOT_REPR=1.
+    // Empty without a manifest.
     std::vector<uint32_t> slotReprFields;
     // THE PIN CENSUS SITE TABLE (`--census`, src/runtime/pin_census.h). One
     // entry per site lowering created, handed to the runtime at module init so

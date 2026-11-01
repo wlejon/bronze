@@ -851,10 +851,6 @@ bool isSealedDirectMethodCall(const il::Instruction& inst, const il::Module& mod
 }
 
 bool inlineSmallFunctions(il::Module& module, const DirectMethodTable* directMethods) {
-    if (std::getenv("BRONZE_NO_INLINE_SMALL") != nullptr) {
-        return false;
-    }
-
     std::vector<uint8_t> fnHasLoop(module.functions.size(), 0);
     bool anyLoop = false;
     for (size_t i = 0; i < module.functions.size(); ++i) {

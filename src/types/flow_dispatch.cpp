@@ -20,15 +20,6 @@
 namespace bronze::types {
 namespace {
 
-// `BRONZE_NO_PARAM_CLASS_GUESS=1` stops the parameter shape claim being made at
-// all, which puts every method parameter's property sites back on the inline
-// cache. Compile-time, like the static-shape and family-guard seams, because
-// what it gates is a SHAPE OF EMITTED CODE.
-bool paramClassGuessOff() {
-    static const bool off = std::getenv("BRONZE_NO_PARAM_CLASS_GUESS") != nullptr;
-    return off;
-}
-
 // This site's contribution to what class parameter `i` receives.
 //
 // Only an argument that NAMES a class says anything: a `Dynamic` argument is
@@ -38,7 +29,6 @@ bool paramClassGuessOff() {
 // class, which is how "the callers disagree" is spelled, and no claim is made.
 void contributeShape(ModuleContext& mod, uint32_t index, const MethodInfo& target, size_t i,
                      const std::vector<Type>& args) {
-    if (paramClassGuessOff()) return;
     if (i >= args.size() || i >= target.observedParamShapes.size()) return;
     if (!args[i].is(TypeKind::Object) || args[i].shapeClass() == kNoShapeClass) return;
     mod.contribute(InferMemo::Contrib::MethodShape, index, static_cast<uint32_t>(i),
@@ -154,7 +144,6 @@ bool FlowAnalyzer::dispatchBounded(Type receiver, ReceiverForm form, const Class
 // from speaking for callers it never saw.
 Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
                               const std::vector<Type>& args, bool spreadArgs, ReceiverForm form) {
-    if (!mod_.interprocIdent) return Type::dynamic();
     // Nothing has reached this receiver yet. The call-graph fixpoint has not
     // finished; a round that read this as "unproven" would be poisoning the name
     // on evidence that does not exist.
@@ -187,13 +176,11 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
         if (spreadArgs) {
             for (const uint32_t index : *decls) {
                 const MethodInfo& target = mod_.methods.methods()[index];
-                if (mod_.ctorParamTypes) {
-                    const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
-                    if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
-                        memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
-                    }
-                    if (!mod_.ctors.isClassReached(target.className)) continue;
+                const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
+                if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
+                    memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
                 }
+                if (!mod_.ctors.isClassReached(target.className)) continue;
                 mod_.contribute(InferMemo::Contrib::MethodReached, index, 0, Type::never());
                 mod_.methodPoison.add(index, "an argument list is spread at a call site");
             }
@@ -210,13 +197,11 @@ Type FlowAnalyzer::methodCall(const std::string& name, Type receiver,
         bool everyTargetSpeaks = true;
         for (const uint32_t index : *decls) {
             MethodInfo& target = mod_.methods.methods()[index];
-            if (mod_.ctorParamTypes) {
-                const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
-                if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
-                    memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
-                }
-                if (!mod_.ctors.isClassReached(target.className)) continue;
+            const uint32_t cIdx = mod_.ctors.classIndexOf(target.className);
+            if (InferMemo* memo = mod_.rec(); memo != nullptr && cIdx != kNoCtor) {
+                memo->noteClassReach(cIdx, mod_.ctors.classReach()[cIdx].version);
             }
+            if (!mod_.ctors.isClassReached(target.className)) continue;
             // A target declaring more parameters than this site passes is
             // reached all the same: the call does not pick its method by
             // arity, so each omitted parameter without a default receives

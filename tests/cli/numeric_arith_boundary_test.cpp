@@ -88,15 +88,9 @@ std::string il(const std::string& name, const char* source, bool withHostGlobals
     return out;
 }
 
-// The A/B seam is read from the environment on every call, so a run with it
-// set has one correct answer for every case here and it is the other one.
-// Skipping beats inverting: there is no second contract to assert.
-bool seamOff() { return std::getenv("BRONZE_NO_NUMERIC_ARITH") != nullptr; }
-
 }  // namespace
 
 TEST_CASE("no host boundary: the numeric arm needs no flag") {
-    if (seamOff()) return;
     const std::string out = il("standalone", kMixedOperands, /*withHostGlobals=*/false,
                                /*assumeNoBigInt=*/false);
     CHECK(out.find("f64 = mul") != std::string::npos);
@@ -110,7 +104,6 @@ TEST_CASE("no host boundary: the numeric arm needs no flag") {
 }
 
 TEST_CASE("a host-globals manifest is a boundary: the arm needs the promise") {
-    if (seamOff()) return;
     const std::string bare = il("hosted", kMixedOperands, /*withHostGlobals=*/true,
                                 /*assumeNoBigInt=*/false);
     CHECK(bare.find("dynamic = mul") != std::string::npos);
@@ -123,7 +116,6 @@ TEST_CASE("a host-globals manifest is a boundary: the arm needs the promise") {
 }
 
 TEST_CASE("a BigInt spelled in the program refuses the arm on either side") {
-    if (seamOff()) return;
     // No boundary, so nothing to promise — and the scan still says no.
     const std::string standalone = il("bigint_standalone", kMixedOperandsWithBigInt,
                                       /*withHostGlobals=*/false, /*assumeNoBigInt=*/false);

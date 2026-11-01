@@ -152,15 +152,6 @@ void Lowerer::recordStableFunctionSlot(size_t scopeIndex, uint32_t slot, uint32_
 // function.
 bool Lowerer::findStableFunctionCallee(const std::string& name, uint32_t& envHops,
                                        uint32_t& fnIndex) const {
-    // The A/B seam, in the house style of `BRONZE_NO_DIRECT_METHOD`: `1` refuses
-    // every edge and leaves the rest of the compiler alone, so the two columns
-    // of a measurement come out of one binary and can be interleaved.
-    static const bool disabled = [] {
-        const char* env = std::getenv("BRONZE_NO_CLOSURE_EDGE");
-        return env != nullptr && std::strcmp(env, "1") == 0;
-    }();
-    if (disabled) return false;
-
     size_t scopeIndex = 0;
     uint32_t slot = 0;
     auto local = activeVarMap_.find(name);

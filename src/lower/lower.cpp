@@ -41,15 +41,11 @@ Lowerer::Lowerer(const ast::Module& astModule, DiagnosticSink& diags,
         initNativeManifestGlobals();
     }
     if (stats_ && sources_) stats_->setSourceSet(sources_);
-    typedElemDisabled_ = typedElemSeamDisabled() ||
-                         hostGlobals_.count("Float64Array") != 0 ||
+    typedElemDisabled_ = hostGlobals_.count("Float64Array") != 0 ||
                          hostGlobals_.count("Float32Array") != 0;
-    staticShapesDisabled_ = staticShapeSeamDisabled();
-    familyGuardDisabled_ = familyGuardSeamDisabled();
     keyOwnerGuessDisabled_ = keyOwnerGuessSeamDisabled();
-    unboxedFieldsDisabled_ = unboxedFieldSeamDisabled();
     numericArithDisabled_ =
-        numericArithSeamDisabled() || !assumeNoBigInt ||
+        !assumeNoBigInt ||
         bigIntMayReach(astModule, hostGlobals ? *hostGlobals
                                               : std::vector<std::string>{});
     initModuleBufferDetachFree();
@@ -629,11 +625,9 @@ void Lowerer::planModuleEnv(const std::vector<const ast::Stmt*>& topLevelStmts) 
     // And which of them no read can catch uninitialized, settled here for the
     // same reason: the module function that reads one is lowered before `main`
     // and has to know then whether the read carries a check.
-    if (!definiteInitDisabled()) {
-        for (const auto& name : ast::getDefinitelyAssignedLexicalNames(astModule_.body)) {
-            auto slot = info.slotOf.find(name);
-            if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
-        }
+    for (const auto& name : ast::getDefinitelyAssignedLexicalNames(astModule_.body)) {
+        auto slot = info.slotOf.find(name);
+        if (slot != info.slotOf.end()) info.slotIsDefiniteInit[slot->second] = true;
     }
     // Top-level const bindings are immutable. Marking them as SlotImmutability::Throws
     // enables invariant environment load hoisting and runtime TypeError on rebinding.

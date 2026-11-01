@@ -20,7 +20,6 @@ ReceiverForm receiverForm(const ast::MemberAccess& m) {
 }  // namespace
 
 void FlowAnalyzer::markClassReached(const std::string& className) {
-    if (!mod_.ctorParamTypes) return;
     std::vector<std::string> chain;
     mod_.ctors.ancestorsOf(className, chain);
     for (const auto& name : chain) {
@@ -38,7 +37,6 @@ void FlowAnalyzer::markClassReached(const std::string& className) {
 // one its base reaches, because the implicit constructor forwards everything.
 void FlowAnalyzer::constructSite(const std::string& className, const std::vector<Type>& args,
                                  bool spreadArgs) {
-    if (!mod_.ctorParamTypes) return;
     markClassReached(className);
     const uint32_t target = mod_.ctors.targetOf(className);
     if (target != kNoCtor) contributeCtorArgs(target, args, spreadArgs);
@@ -62,7 +60,6 @@ void FlowAnalyzer::constructSite(const std::string& className, const std::vector
 // everything that extends it.
 void FlowAnalyzer::constructUnbounded(const ast::Expr& callee, Type calleeBase,
                                       const std::vector<Type>& args, bool spreadArgs) {
-    if (!mod_.ctorParamTypes) return;
     if (const auto* t = dynamic_cast<const ast::Ternary*>(&callee)) {
         const auto* thenId = dynamic_cast<const ast::Ident*>(t->thenExpr.get());
         const auto* elseId = dynamic_cast<const ast::Ident*>(t->elseExpr.get());
@@ -287,7 +284,7 @@ Type FlowAnalyzer::superCall(const ast::SuperCall& sc) {
     }
     const bool forwarding = scope_.ctorIndex != kNoCtor &&
                             mod_.ctors.ctors()[scope_.ctorIndex].isForwarder;
-    if (mod_.ctorParamTypes && !forwarding) {
+    if (!forwarding) {
         const ClassLayout* here = mod_.result->classLayouts.byShapeClass(scope_.thisClass);
         if (here != nullptr && !here->superName.empty()) {
             constructSite(here->superName, args, spreadArgs);
@@ -366,7 +363,7 @@ void FlowAnalyzer::ifStmt(const ast::IfStmt& i, uint32_t depth) {
         !i.elseBody.empty() && stmtListDefinitelyTerminates(i.elseBody);
 
     std::string narrowedTagVar;
-    if (!i.thenBody.empty() && mod_.interprocIdent) {
+    if (!i.thenBody.empty()) {
         const auto [varName, tagProp] = extractIsTagGuard(i.condition.get());
         if (!varName.empty() && !scope_.isCell(varName)) {
             if (const auto it = scope_.env.find(varName);

@@ -44,9 +44,7 @@ namespace bronze::lower {
 // here is AST -> IL. Move the pair to `src/opt` when a second IL -> IL pass
 // lands.
 //
-// THE SEAM is `BRONZE_NO_GUARDED_REGIONS=1`, read by the COMPILER once per
-// process: with it set the pass selects nothing and the module is byte-identical
-// to what it was. `BRONZE_GUARDED_REGION_STATS=1` prints one line to stderr,
+// `BRONZE_GUARDED_REGION_STATS=1` prints one line to stderr,
 // and `BRONZE_GUARDED_REGION_TRACE=1` one line per function that built or
 // refused something — the counters say how often a reason fired, and only the
 // trace says which functions, which is what decides whether a reason is worth a
@@ -214,10 +212,6 @@ namespace bronze::lower {
 // unread on the failing edge) or the boxed form the trampoline recomputes from
 // the ORIGINAL box. The trampoline carries values live at the run's first read
 // and every one of those is defined before any speculation began.
-//
-// THE SEAM is `BRONZE_NO_REGION_RUN_GUARDS=1`: with it set no point is ever
-// merged past a read run, every read keeps its own point, and the pass emits
-// what it emitted before this rule.
 
 // What the pass did, counted. Every refusal is counted by REASON, because a
 // pass that proves nothing emits exactly the code it replaced and the whole
@@ -291,10 +285,6 @@ struct GuardRegionStats {
 // original kept (`refusedSsa`), so a shape this chunk cannot repair is a missed
 // optimisation rather than a miscompile.
 bool applyGuardedRegions(il::Module& module, GuardRegionStats* stats = nullptr);
-
-// THE SEAM, read once and cached. Exposed so that the caller can skip the pass
-// entirely rather than only its effects.
-bool guardedRegionsDisabled();
 
 // Prints the counters to stderr under `BRONZE_GUARDED_REGION_STATS=1`, and does
 // nothing otherwise.
@@ -421,9 +411,6 @@ struct RegionPlan {
 uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::string>& keys,
                             const std::vector<il::Type>& types, il::BlockId block,
                             std::vector<Candidate>& candidates, RegionPlan& plan);
-
-// THE SEAM for the merge above (`BRONZE_NO_REGION_RUN_GUARDS`), read once.
-bool regionRunGuardsDisabled();
 
 // The read-run rule's two questions, shared with the number windows below.
 // `indexReadReceiver`: the receiver of a `prop.get` whose key is a canonical

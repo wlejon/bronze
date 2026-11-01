@@ -55,11 +55,7 @@
 // otherwise is the whole-module taint scan `Math` has (types/infer.cpp), and
 // that scan's answer is only available with inference on, where this lowering
 // has to emit the same code either way.
-//
-// THE SEAM is `BRONZE_NO_DEFPROPS_LITERAL=1`, read by the COMPILER once per
-// process, because what it isolates is the emitted code.
 
-#include <cstdlib>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -70,12 +66,6 @@
 namespace bronze::lower {
 
 namespace {
-
-// The seam, read once per compiler process.
-bool definePropsSeamDisabled() {
-    static const bool off = std::getenv("BRONZE_NO_DEFPROPS_LITERAL") != nullptr;
-    return off;
-}
 
 // Is this key one that 10.1.11.1 OwnPropertyKeys puts before the string keys,
 // in ascending numeric order rather than in insertion order? Those are the
@@ -151,7 +141,6 @@ bool readDescriptor(const ast::ObjectLit& lit, uint32_t& mask, const ast::Expr*&
 
 std::optional<Lowerer::Value> Lowerer::lowerDefinePropertiesLiteral(
     const ast::Call* call, const ast::MemberAccess& callee, il::Function& ilFn) {
-    if (definePropsSeamDisabled()) return std::nullopt;
     if (callee.optional || call->optional) return std::nullopt;
     // `Object.defineProperty(t, 'k', { ... })` is the same lowering over a map
     // of one key (20.1.2.4: the target check, a ToPropertyKey that a string
