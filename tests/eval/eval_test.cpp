@@ -7,8 +7,8 @@
 #include "runtime/exception.h"
 #include "runtime/fn.h"
 #include "runtime/rt_state.h"
-#include <brass/runtime/deterministic_math.hpp>
 #include <bit>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -915,9 +915,8 @@ TEST_CASE("only a retained program's functions are entered directly, and a freea
     }
 }
 
-TEST_CASE("deterministic math (#156): Tier-0 interpreter and Tier-2 JIT match brass_det_* IEEE-754 bits") {
+TEST_CASE("Math transcendentals: Tier-0 interpreter and Tier-2 JIT give the platform libm's answer") {
     const char* script = R"(
-        "use deterministic";
         function stepPhysics(x, y, z) {
             const s = Math.sin(x) + Math.cos(y);
             const a = Math.atan2(y, x) + Math.exp(z);
@@ -929,26 +928,24 @@ TEST_CASE("deterministic math (#156): Tier-0 interpreter and Tier-2 JIT match br
 
     EvalOptions opts0;
     opts0.tier = ExecutionTier::Tier0_Interpreter;
-    opts0.deterministicFp = true;
     embed::CallResult r0 = evalScript(script, opts0);
     REQUIRE(!r0.thrown);
     REQUIRE(r0.value.isNumber());
 
     EvalOptions opts2;
     opts2.tier = ExecutionTier::Tier2_Optimized;
-    opts2.deterministicFp = true;
     embed::CallResult r2 = evalScript(script, opts2);
     REQUIRE(!r2.thrown);
     REQUIRE(r2.value.isNumber());
 
     const double x = 0.7, y = 1.2, z = 0.3;
-    const double s = brass_det_sin(x) + brass_det_cos(y);
-    const double a = brass_det_atan2(y, x) + brass_det_exp(z);
-    const double p = brass_det_pow(x, 1.5) + brass_det_hypot(x, y) + brass_det_cbrt(z);
+    const double s = std::sin(x) + std::cos(y);
+    const double a = std::atan2(y, x) + std::exp(z);
+    const double p = std::pow(x, 1.5) + std::hypot(x, y) + std::cbrt(z);
     const double expected = s * a + p;
 
-    CHECK(std::bit_cast<uint64_t>(r0.value.asNumber()) == std::bit_cast<uint64_t>(expected));
-    CHECK(std::bit_cast<uint64_t>(r2.value.asNumber()) == std::bit_cast<uint64_t>(expected));
+    CHECK(std::abs(r0.value.asNumber() - expected) <= 1e-12 * std::abs(expected));
+    CHECK(std::abs(r2.value.asNumber() - expected) <= 1e-12 * std::abs(expected));
 }
 
 

@@ -143,8 +143,8 @@ TEST_CASE("prove-equiv: formal bitvector equivalence proofs and counterexamples"
     }
 }
 
-TEST_CASE("check --deterministic: lockstep multiplayer & replay verifier") {
-    SUBCASE("detects Math.random, Date.now, performance.now, transcendental Math, and unsorted keys") {
+TEST_CASE("check --deterministic: replay verifier") {
+    SUBCASE("detects Math.random, Date.now, performance.now and unsorted keys; math is not a hazard") {
         std::vector<CheckDiagnostic> diags;
         std::string err;
         bool ok = bronze::check::checkDeterministicSource(
@@ -168,21 +168,17 @@ TEST_CASE("check --deterministic: lockstep multiplayer & replay verifier") {
 
         uint32_t prngCount = 0;
         uint32_t clockCount = 0;
-        uint32_t floatCount = 0;
         uint32_t orderCount = 0;
         for (const auto& d : diags) {
             switch (d.kind) {
                 case DeterministicHazardKind::UnseededPrng: ++prngCount; break;
                 case DeterministicHazardKind::WallClockTime: ++clockCount; break;
-                case DeterministicHazardKind::TranscendentalFloatDrift: ++floatCount; break;
                 case DeterministicHazardKind::ObjectIterationOrder: ++orderCount; break;
-                case DeterministicHazardKind::CrossArchBitwiseDrift: break;
                 case DeterministicHazardKind::ExternalStateAccess: break;
             }
         }
         CHECK(prngCount == 1);
         CHECK(clockCount == 3);
-        CHECK(floatCount == 2);
         CHECK(orderCount == 2);
     }
 
@@ -287,8 +283,7 @@ TEST_CASE("check --deterministic: lockstep multiplayer & replay verifier") {
             std::string err;
             bool ok = bronze::check::checkDeterministicSource(
                 R"(
-                    "use deterministic";
-                    function stepDeterministicPhysics(x, y, z) {
+                    function stepPhysics(x, y, z) {
                         const s = Math.sin(x) + Math.cos(y);
                         const a = Math.atan2(y, x) + Math.exp(z);
                         const p = Math.pow(x, 2) + (x ** 3) + Math.hypot(x, y) + Math.cbrt(z);

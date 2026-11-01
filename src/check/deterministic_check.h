@@ -19,10 +19,8 @@ namespace bronze::check {
 enum class DeterministicHazardKind : uint8_t {
     UnseededPrng,             // Math.random() without a deterministic seeded PRNG
     WallClockTime,            // Date.now(), new Date(), performance.now()
-    TranscendentalFloatDrift, // Math.sin/cos/tan/pow/exp/log/** ULP drift across platforms
     ObjectIterationOrder,     // for..in, Object.keys/values/entries without deterministic .sort()
-    CrossArchBitwiseDrift,    // x86_64 vs AArch64 bitwise/shift hazard
-    ExternalStateAccess,      // Mutable outer/module/global state access or non-whitelisted host call
+    ExternalStateAccess,     // Mutable outer/module/global state access or non-whitelisted host call
 };
 
 const char* deterministicHazardTag(DeterministicHazardKind kind);
@@ -35,11 +33,11 @@ struct CheckDiagnostic {
     std::string remediation;
 };
 
-// Audits `prog` and `ilMod` for lockstep multiplayer / replay non-determinism
-// hazards (unseeded PRNGs, wall-clock timers, cross-platform transcendental FP
-// drift, unsorted object key enumeration, and x86_64 vs AArch64 LIR bitwise
-// divergence via Brass's `verify_x64_lir_block_equivalence` and
-// `verify_aarch64_lir_block_equivalence`).
+// Audits `prog` and `ilMod` for replay non-determinism hazards: unseeded
+// PRNGs, wall-clock timers, unsorted object key enumeration and access to
+// state outside the function. Floating-point results are not audited: math is
+// the platform's, so a tick replays the same on one machine and need not
+// match another machine to the bit.
 void checkDeterministicLockstep(const ast::Program& prog,
                                 const il::Module& ilMod,
                                 std::vector<CheckDiagnostic>& diags);

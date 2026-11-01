@@ -85,7 +85,8 @@ solving over straight-line JavaScript functions (backed by Brass's `BVSolver`):
 
 - `bronze check <entry.js>`: abstract-interpretation and bitvector hazard checks
   (null/undefined dereference, division by zero, typed-array bounds, and
-  lockstep non-determinism audit with `--deterministic`).
+  and, with `--deterministic`, a replay audit: wall clock, unseeded random,
+  `for..in` order, outer state).
 - `bronze prove-equiv <a.js> <b.js> --fn <name>`: bitvector equivalence check
   for straight-line integer JS functions, reporting a concrete counterexample
   when outputs differ.

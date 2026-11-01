@@ -17,8 +17,6 @@
 #include <random>
 #include <string>
 
-#include <brass/runtime/deterministic_math.hpp>
-
 #include "abi/bronze_abi.h"
 #include "runtime/exception.h"
 #include "runtime/fatal.h"
@@ -81,7 +79,7 @@ uint64_t mathHypot(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     if (argc == 0) return Value::fromDouble(0.0).rawBits();
     if (argc == 1) return Value::fromDouble(std::abs(argAt(argc, argv, 0))).rawBits();
     if (argc == 2) {
-        return Value::fromDouble(brass_det_hypot(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
+        return Value::fromDouble(std::hypot(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
     }
     if (argc == 3) {
         return Value::fromDouble(
@@ -125,17 +123,17 @@ uint64_t mathUnary(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 double unaryFloor(double x) { return std::floor(x); }
 double unaryCeil(double x) { return std::ceil(x); }
 double unaryTrunc(double x) { return std::trunc(x); }
-double unaryCbrt(double x) { return brass_det_cbrt(x); }
-double unaryExp(double x) { return brass_det_exp(x); }
+double unaryCbrt(double x) { return std::cbrt(x); }
+double unaryExp(double x) { return std::exp(x); }
 double unaryExpm1(double x) { return std::expm1(x); }
-double unaryLog(double x) { return brass_det_log(x); }
+double unaryLog(double x) { return std::log(x); }
 double unaryLog1p(double x) { return std::log1p(x); }
 double unaryLog2(double x) { return std::log2(x); }
 double unaryLog10(double x) { return std::log10(x); }
-double unaryTan(double x) { return brass_det_tan(x); }
-double unaryAsin(double x) { return brass_det_asin(x); }
-double unaryAcos(double x) { return brass_det_acos(x); }
-double unaryAtan(double x) { return brass_det_atan(x); }
+double unaryTan(double x) { return std::tan(x); }
+double unaryAsin(double x) { return std::asin(x); }
+double unaryAcos(double x) { return std::acos(x); }
+double unaryAtan(double x) { return std::atan(x); }
 double unarySinh(double x) { return std::sinh(x); }
 double unaryCosh(double x) { return std::cosh(x); }
 double unaryTanh(double x) { return std::tanh(x); }
@@ -178,7 +176,7 @@ uint64_t mathPow(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
 }
 
 uint64_t mathAtan2(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return Value::fromDouble(brass_det_atan2(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
+    return Value::fromDouble(std::atan2(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
 }
 
 // ---- Math.random (21.3.2.27) ------------------------------------------------
@@ -391,21 +389,12 @@ thread_local Value g_mathObject = Value::fromUndefined();
 
 // ---- The direct-dispatch surface (bronze_abi.h) -----------------------------
 //
-// The scalar kernels first: each is the one C function BOTH paths run for a
-// member whose result is not IEEE-pinned. Generated code's fast path calls
-// them on already-unboxed doubles; the helper path reaches the same functions
-// through the trampolines below, so the two paths are the same instructions
-// and cannot drift by a bit. `sqrt` and `abs` have no kernel because
-// llvm.sqrt.f64 and llvm.fabs.f64 are IEEE-exact — the same licence the
-// inferred-arithmetic path has always used.
+// The scalar kernels first: generated code's fast path calls them on
+// already-unboxed doubles, and they are the platform's libm. `sqrt` and `abs`
+// have no kernel because they are single instructions.
 
-extern "C" double bronze_math_sin_f64(double x) { return brass_det_sin(x); }
-extern "C" double bronze_math_cos_f64(double x) { return brass_det_cos(x); }
-// Both kernels' answers from one argument reduction: out[0] is
-// bronze_math_sin_f64(x)'s bits, out[1] bronze_math_cos_f64(x)'s. Compiled
-// code calls it where a sine and a cosine of one value are both taken
-// (brass's sincos_fuse; three.js's setFromEuler).
-extern "C" void bronze_math_sincos_f64(double x, void* out) { brass_det_sincos(x, static_cast<double*>(out)); }
+extern "C" double bronze_math_sin_f64(double x) { return std::sin(x); }
+extern "C" double bronze_math_cos_f64(double x) { return std::cos(x); }
 
 // `math.random` (il_op.h): a proven `Math.random()` call compiled to this, the
 // native's own generator, so the two forms draw from one sequence.

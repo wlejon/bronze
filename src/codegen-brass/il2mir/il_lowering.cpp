@@ -249,16 +249,14 @@ static void declare_data_symbols(Module& mod) {
 std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     bronze::support::PhaseTimer ltimer(bronze::support::timingsEnabled(), 8);
     auto mod = std::make_unique<Module>(ast.name);
-    const bool mod_det_fp = options_.deterministic_fp || ast.is_deterministic_fp;
-    mod->set_deterministic_fp(mod_det_fp);
-    mod->set_allow_fp_reassociation(options_.allow_fp_reassociation && !mod_det_fp);
+    mod->set_allow_fp_reassociation(options_.allow_fp_reassociation);
     mod->set_pinned_tls_register(options_.pin_tls_register);
-    // bronze finds a JS frame's roots through its stack maps alone: the runtime
-    // roots its C++ frames by handle (Rooted, RootedArgs, RootedBlock) and
-    // scans no stack conservatively, compartment fibers included. So the
-    // allocator's zeroing of dead registers and slots at every call, which is
-    // for a host that does scan conservatively, is nothing here
-    // (brass Module::precise_stack_roots; BRASS_NO_PRECISE_ROOTS=1 restores it).
+    // A JS frame's roots are found through its stack maps. brass's collector
+    // also reads every stack conservatively and pins what a word names, so a
+    // dead register or slot that still names an object keeps it for that
+    // collection; bronze takes that over the allocator's zeroing of the dead
+    // ones at every call (brass Module::precise_stack_roots;
+    // BRASS_NO_PRECISE_ROOTS=1 restores the zeroing).
     mod->set_precise_stack_roots(true);
     // Every loop backedge compares the stack pointer with the block's
     // stack_limit, the word every prologue checks too, so arming one
@@ -484,10 +482,8 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
             external_signatures_[fn_name] = {ret_type, std::move(param_types)};
             continue;
         }
-        const bool fn_det_fp = mod_det_fp || fn_ast.is_deterministic_fp;
         Function* fn = mod->create_function(fn_name, ret_type, Span<const Type>(param_types.data(), param_types.size()));
-        fn->set_deterministic_fp(fn_det_fp);
-        fn->set_allow_fp_reassociation(options_.allow_fp_reassociation && !fn_det_fp);
+        fn->set_allow_fp_reassociation(options_.allow_fp_reassociation);
 
         if (fn_name != "main" && !fn_ast.is_coroutine_body()) {
             std::vector<Type> wrapper_param_types = {Type::i64(), Type::i64(), Type::i32(), Type::ptr()};
@@ -495,8 +491,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
                 "__wrapper_" + fn_name,
                 Type::i64(),
                 Span<const Type>(wrapper_param_types.data(), wrapper_param_types.size()));
-            wfn->set_deterministic_fp(fn_det_fp);
-            wfn->set_allow_fp_reassociation(options_.allow_fp_reassociation && !fn_det_fp);
+            wfn->set_allow_fp_reassociation(options_.allow_fp_reassociation);
         }
     }
 

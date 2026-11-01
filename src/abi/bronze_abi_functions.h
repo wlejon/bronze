@@ -591,9 +591,8 @@
      * are the function objects' own code (bronze_fn_code-shaped); the last
      * four are the scalar kernels the inline fast path calls, each the SAME C
      * runtime function the helper path runs, so the two paths cannot differ
-     * by a bit (the determinism rule: llvm.sqrt/llvm.fabs are IEEE-exact and
-     * inlined; sin/cos/min/max are not and stay C calls, made directly from
-     * a speculated Math.sin/Math.cos site). */ \
+     * (sqrt/fabs are single instructions and inlined; sin/cos/min/max stay
+     * C calls, made directly from a speculated Math.sin/Math.cos site). */ \
     X(bronze_math_sqrt,           BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_sin,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_cos,            BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
@@ -607,7 +606,6 @@
     X(bronze_string_char_code_at, BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U64, BRONZE_ABI_U32, BRONZE_ABI_PU64)) \
     X(bronze_math_sin_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
     X(bronze_math_cos_f64,        BRONZE_ABI_F64,  (BRONZE_ABI_F64)) \
-    X(bronze_math_sincos_f64,     BRONZE_ABI_VOID, (BRONZE_ABI_F64, BRONZE_ABI_VPTR)) \
     X(bronze_math_random_f64,     BRONZE_ABI_F64,  (BRONZE_ABI_NOARGS)) \
     X(bronze_math_min2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64)) \
     X(bronze_math_max2_f64,       BRONZE_ABI_F64,  (BRONZE_ABI_F64, BRONZE_ABI_F64)) \

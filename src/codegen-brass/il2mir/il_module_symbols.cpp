@@ -1,17 +1,7 @@
 #include "il_abi.h"
 #include <brass/mir/module.hpp>
-#include <cstdlib>
 
 namespace il2mir {
-
-namespace {
-
-bool sincos_roles_disabled_by_env() {
-    const char* v = std::getenv("BRONZE_NO_SINCOS_ROLES");
-    return v && *v && *v != '0';
-}
-
-}  // namespace
 
 // The object emitter's rule (brass_backend_sections.cpp): only the default
 // entry, `bronze_main`, gets the unsuffixed `bronze_object_*` names.
@@ -83,7 +73,7 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
         "bronze_dynamic_mul", "bronze_dynamic_div", "bronze_dynamic_mod", "bronze_dynamic_neg",
         "bronze_dynamic_bitnot",
         "sin", "cos", "sqrt", "fabs", "floor", "ceil", "trunc", "bronze_math_sin_f64", "bronze_math_cos_f64",
-        "bronze_math_sincos_f64", "bronze_math_random_f64",
+        "bronze_math_random_f64",
     };
     for (const char* sym : kSymbols) {
         mod->add_external_symbol(sym);
@@ -97,19 +87,9 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
     mod->add_symbol_role("bronze_elem_set", SymbolRole::ArraySet);
     // JS `%` on numbers: fmod.
     mod->add_symbol_role("bronze_f64_mod", SymbolRole::FloatRem);
-    // Math.sin / Math.cos's kernels (brass's deterministic fdlibm).
+    // Math.sin / Math.cos's kernels (the platform's libm).
     mod->add_symbol_role("bronze_math_sin_f64", SymbolRole::Pure);
     mod->add_symbol_role("bronze_math_cos_f64", SymbolRole::Pure);
-    // ...and their fused form, the same bits from one reduction (brass's
-    // sincos_fuse pairs a sine and a cosine of one value into it). It writes
-    // only its out slot and never collects. BRONZE_NO_SINCOS_ROLES=1 leaves
-    // the roles off, so nothing is fused (the A/B seam on this side).
-    if (!sincos_roles_disabled_by_env()) {
-        mod->add_symbol_role("bronze_math_sin_f64", SymbolRole::SinF64);
-        mod->add_symbol_role("bronze_math_cos_f64", SymbolRole::CosF64);
-        mod->add_symbol_role("bronze_math_sincos_f64", SymbolRole::SinCosF64);
-        mod->add_symbol_role("bronze_math_sincos_f64", SymbolRole::NoCollect);
-    }
     // Math.random's generator: advances thread-local state (so not Pure) but
     // touches no GC heap, so the call is not a collection point.
     mod->add_symbol_role("bronze_math_random_f64", SymbolRole::NoCollect);

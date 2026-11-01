@@ -20,24 +20,6 @@
 namespace bronze::check {
 namespace {
 
-bool isTranscendentalMathMethod(std::string_view name) {
-    static const std::unordered_set<std::string_view> kMethods = {
-        "sin",   "cos",   "tan",   "asin",  "acos",  "atan",  "atan2",
-        "sinh",  "cosh",  "tanh",  "asinh", "acosh", "atanh", "exp",
-        "expm1", "log",   "log1p", "log10", "log2",  "pow",   "cbrt",
-        "hypot",
-    };
-    return kMethods.count(name) > 0;
-}
-
-bool isDeterministicMathMethod(std::string_view name) {
-    static const std::unordered_set<std::string_view> kDetMethods = {
-        "sin",  "cos",   "tan", "asin", "acos",  "atan",
-        "atan2", "exp",  "log", "pow",  "hypot", "cbrt",
-    };
-    return kDetMethods.count(name) > 0;
-}
-
 bool isObjectEnumerationMethod(std::string_view name) {
     return name == "keys" || name == "values" || name == "entries";
 }
@@ -59,36 +41,10 @@ bool isWhitelistedGlobalObject(std::string_view name) {
     return kSafeGlobals.count(name) > 0;
 }
 
-bool hasUseDeterministicPrologue(const std::vector<ast::StmtPtr>& body) {
-    for (const auto& stmtPtr : body) {
-        const auto* exprStmt = ast::exactAs<const ast::ExprStmt*>(stmtPtr.get());
-        if (!exprStmt || !exprStmt->expr || exprStmt->expr->parenthesized) break;
-        const auto* strLit = ast::exactAs<const ast::StringLit*>(exprStmt->expr.get());
-        if (!strLit) break;
-        if (strLit->value == "use deterministic") return true;
-    }
-    return false;
-}
-
-bool isIntegerLiteralExpr(const ast::Expr* expr) {
-    if (!expr) return false;
-    if (auto* num = ast::exactAs<const ast::NumberLit*>(expr)) {
-        return std::isfinite(num->value) && std::trunc(num->value) == num->value;
-    }
-    if (auto* un = ast::exactAs<const ast::Unary*>(expr)) {
-        if (un->op == ast::UnaryOp::Negate || un->op == ast::UnaryOp::Posate) {
-            return isIntegerLiteralExpr(un->operand.get());
-        }
-    }
-    return false;
-}
-
 class DeterministicAstVisitor final : public ast::Visitor {
 public:
-    explicit DeterministicAstVisitor(std::vector<CheckDiagnostic>& diags, bool moduleDeterministicFp)
-        : diags_(diags) {
+    explicit DeterministicAstVisitor(std::vector<CheckDiagnostic>& diags) : diags_(diags) {
         fnStack_.push_back("<top-level>");
-        detFpStack_.push_back(moduleDeterministicFp);
         scopeStack_.emplace_back();
     }
 
@@ -127,14 +83,6 @@ public:
         if (n.operand) n.operand->accept(*this);
     }
     void visit(const ast::Binary& n) override {
-        if (n.op == ast::BinaryOp::Exp || n.op == ast::BinaryOp::ExpAssign) {
-            if (!currentDeterministicFp() &&
-                (!isIntegerLiteralExpr(n.lhs.get()) || !isIntegerLiteralExpr(n.rhs.get()))) {
-                emit(DeterministicHazardKind::TranscendentalFloatDrift, n.span,
-                     "exponentiation operator (**) uses platform pow() which may drift by 1 ULP across x86_64 and AArch64",
-                     "add \"use deterministic\"; or use repeated integer multiplication");
-            }
-        }
         if (ast::isAssignOp(n.op)) {
             if (auto* id = ast::exactAs<const ast::Ident*>(n.lhs.get())) {
                 recordAliasFromExpr(id->name, n.rhs.get());
@@ -216,7 +164,6 @@ public:
     }
     void visit(const ast::FunctionExpr& n) override {
         fnStack_.push_back(n.name.empty() ? "<anonymous>" : n.name);
-        detFpStack_.push_back(currentDeterministicFp() || hasUseDeterministicPrologue(n.body));
         scopeStack_.emplace_back(/*isFunctionRoot=*/true);
         if (!n.name.empty()) scopeStack_.back().vars[n.name] = VarInfo{true, fnDepth()};
         for (const auto& p : n.params) {
@@ -227,7 +174,6 @@ public:
         predeclareFunctionDecls(n.body);
         for (const auto& s : n.body) if (s) s->accept(*this);
         scopeStack_.pop_back();
-        detFpStack_.pop_back();
         fnStack_.pop_back();
     }
     void visit(const ast::ClassExpr& n) override {
@@ -352,7 +298,6 @@ public:
     void visit(const ast::FunctionDecl& n) override {
         if (!n.name.empty()) scopeStack_.back().vars[n.name] = VarInfo{true, fnDepth()};
         fnStack_.push_back(n.name.empty() ? "<anonymous>" : n.name);
-        detFpStack_.push_back(currentDeterministicFp() || hasUseDeterministicPrologue(n.body));
         scopeStack_.emplace_back(/*isFunctionRoot=*/true);
         for (const auto& p : n.params) {
             if (!p.name.empty()) scopeStack_.back().vars[p.name] = VarInfo{false, fnDepth()};
@@ -362,7 +307,6 @@ public:
         predeclareFunctionDecls(n.body);
         for (const auto& s : n.body) if (s) s->accept(*this);
         scopeStack_.pop_back();
-        detFpStack_.pop_back();
         fnStack_.pop_back();
     }
     void visit(const ast::Module& n) override {
@@ -383,7 +327,6 @@ private:
 
     std::vector<CheckDiagnostic>& diags_;
     std::vector<std::string> fnStack_;
-    std::vector<bool> detFpStack_;
     std::vector<ScopeFrame> scopeStack_;
     std::unordered_set<const ast::Call*> sortedObjectCalls_;
     std::unordered_map<std::string, std::string> aliasToGlobal_;
@@ -391,7 +334,6 @@ private:
     std::unordered_set<std::string> emittedExternalVars_;
 
     size_t fnDepth() const { return fnStack_.size() - 1; }
-    bool currentDeterministicFp() const { return !detFpStack_.empty() && detFpStack_.back(); }
 
     size_t currentFunctionRootScopeIndex() const {
         for (size_t i = scopeStack_.size(); i-- > 0;) {
@@ -468,15 +410,6 @@ private:
                      span,
                      "Math.random() is non-deterministic across lockstep peers and replays",
                      "replace Math.random() with a seeded integer PRNG (e.g. xorshift32 or mulberry32)");
-            } else if (isTranscendentalMathMethod(prop)) {
-                if (!(currentDeterministicFp() && isDeterministicMathMethod(prop))) {
-                    emit(DeterministicHazardKind::TranscendentalFloatDrift,
-                         span,
-                         "Math." + prop +
-                             "() relies on host libm transcendental approximation that can drift by 1 ULP across x86_64 and AArch64",
-                         "add \"use deterministic\"; or replace Math." + prop +
-                             "() with a deterministic fixed-point LUT");
-                }
             }
         } else if (recvName == "Date" && prop == "now") {
             emit(DeterministicHazardKind::WallClockTime,
@@ -762,16 +695,6 @@ void auditIlClosedWorld(const il::Module& ilMod, std::vector<CheckDiagnostic>& d
                         }
                         break;
                     }
-                    case il::Op::MathUnary: {
-                        auto kind = static_cast<il::MathUnaryFn>(inst.immI32);
-                        if ((kind == il::MathUnaryFn::Sin || kind == il::MathUnaryFn::Cos) &&
-                            !fn.isDeterministicFp()) {
-                            emitIl(fn.name, DeterministicHazardKind::TranscendentalFloatDrift, inst.span,
-                                   "IL math.unary(sin/cos) without \"use deterministic\" may drift across platforms",
-                                   "add \"use deterministic\"; or use fixed-point arithmetic");
-                        }
-                        break;
-                    }
                     case il::Op::Call: {
                         if (inst.calleeIndex < ilMod.functions.size()) {
                             callerToCallees[fn.name].push_back(
@@ -822,12 +745,8 @@ const char* deterministicHazardTag(DeterministicHazardKind kind) {
             return "unseeded-prng";
         case DeterministicHazardKind::WallClockTime:
             return "wall-clock-time";
-        case DeterministicHazardKind::TranscendentalFloatDrift:
-            return "transcendental-float-drift";
         case DeterministicHazardKind::ObjectIterationOrder:
             return "object-iteration-order";
-        case DeterministicHazardKind::CrossArchBitwiseDrift:
-            return "cross-arch-bitwise-drift";
         case DeterministicHazardKind::ExternalStateAccess:
             return "external-state-access";
     }
@@ -837,8 +756,7 @@ const char* deterministicHazardTag(DeterministicHazardKind kind) {
 void checkDeterministicLockstep(const ast::Program& prog,
                                 const il::Module& ilMod,
                                 std::vector<CheckDiagnostic>& diags) {
-    const bool moduleDetFp = ilMod.hasDeterministicFp() || hasUseDeterministicPrologue(prog.body);
-    DeterministicAstVisitor visitor(diags, moduleDetFp);
+    DeterministicAstVisitor visitor(diags);
     prog.accept(visitor);
     auditIlClosedWorld(ilMod, diags);
 }

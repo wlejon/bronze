@@ -128,8 +128,7 @@ PassPipelineOptions pass_pipeline_options(const TranslatorOptions& options) {
     p.range_stats = options.range_stats_collector;
 
     LoopOptOptions& l = p.loop;
-    l.deterministic_fp = options.deterministic_fp;
-    l.enable_fp_reassociation = options.allow_fp_reassociation && !options.deterministic_fp;
+    l.enable_fp_reassociation = options.allow_fp_reassociation;
     l.enable_f64_demote = options.enable_f64_demote;
     l.enable_vectorize = options.enable_vectorize;
     l.enable_slp = options.enable_slp;
@@ -154,7 +153,7 @@ PassPipelineOptions pass_pipeline_options(const TranslatorOptions& options) {
     l.pea_stats = options.pea_stats_collector;
     l.demote_stats = options.demote_stats_collector;
     l.enable_avx2 = options.enable_avx2;
-    l.enable_fma = options.enable_fma && !options.deterministic_fp;
+    l.enable_fma = options.enable_fma;
     l.vector_width = options.vector_width;
     l.dump_fma_stats = options.dump_fma_stats;
     l.fma_stats = options.fma_stats_collector;

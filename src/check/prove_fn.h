@@ -46,7 +46,8 @@ struct ProofCertificateReport {
 // Runs the unified Bronze formal verification & proof-certificate suite on an
 // in-memory JS function:
 //   1. Static symbolic hazard check (`checkModule`)
-//   2. Cross-platform deterministic lockstep audit (`checkDeterministicLockstep`)
+//   2. Replay audit: clock, unseeded random, iteration order, outer state
+//      (`checkDeterministicLockstep`)
 //   3. Zero-guard IL proof certificate verification (`il::verifyModuleProofs`)
 //   4. Optional bit-exact equivalence proof (`proveSourceEquivalent`)
 //   5. Optional codec round-trip proof (`proveRoundTripSource`)

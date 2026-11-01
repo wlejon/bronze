@@ -491,10 +491,8 @@ bool lower_ops_instruction(
                 default: break;
             }
             // sin and cos are the runtime's kernels, the ones Math.sin and
-            // Math.cos answer with (brass's deterministic fdlibm, which is
-            // node's to the bit). The platform libm's answer differs in the
-            // last place for a few inputs in a hundred, so a program whose
-            // inline call took it printed what its own `Math.sin` did not.
+            // Math.cos answer with, so an inline call and the program's own
+            // `Math.sin` give the same answer.
             std::string_view fn = "trunc";
             switch (inst_ast.imm_i64) {
                 case 4: fn = "trunc"; break;
