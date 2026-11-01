@@ -1,4 +1,5 @@
-// Interpreted scene render benchmark for bro-headless.
+// Scene render benchmark for bro-headless, which compiles this script in
+// process with bronze.
 // Sets up a 3D scene with animated meshes, advances virtual time for N frames,
 // and computes a state checksum at the end.
 

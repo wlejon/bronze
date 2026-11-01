@@ -1,7 +1,7 @@
 # Benchmarks
 
 Deterministic benchmark harness and runner for Bronze and the Bro runtime integration.
-Measures execution performance across compilation modes (inferred native layouts vs uniform dynamic convention) and compares compiled host apps against interpreted QuickJS.
+Measures execution performance across compilation modes (inferred native layouts vs uniform dynamic convention) and compares compiled host apps against the same kind of scene run by `bro-headless`, which compiles the script in process with bronze.
 
 > [!IMPORTANT]
 > **This suite measures COMPUTE, not processes.** Every fixture times its own
@@ -95,7 +95,7 @@ millisecond total, because a total says nothing without the count beside it.
 |---|---|---|
 | `render_scenegraph_host` | Compiled Host (`bro-bronze-host`) | Full Three.js scene graph + WebGL2 context loop (30 frames) |
 | `render_wild_orbit_host` | Compiled Host (`bro-bronze-host-wild`) | Unmodified Three.js scene + OrbitControls + textures + lit pixels (30 frames) |
-| `render_interpreted_bro` | Interpreted QuickJS (`bro-headless`) | Interpreted 3D scene graph animation under QuickJS engine (30 frames) |
+| `render_interpreted_bro` | `bro-headless` (in-process bronze) | 3D scene graph animation, the script compiled in process by bronze (30 frames) |
 
 ## Manual Node.js Execution Instructions
 

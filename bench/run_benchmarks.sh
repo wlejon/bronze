@@ -5,7 +5,8 @@
 # Deterministic benchmark runner across execution modes:
 #   1. Compiled with Inference (default AOT with native layout proofs)
 #   2. Compiled without Inference (--no-infer uniform dynamic convention)
-#   3. Host Compiled vs Interpreted (for Bro WebGL/Scene render benchmarks)
+#   3. Host Compiled vs bro-headless (script compiled in process by bronze)
+#      for Bro WebGL/Scene render benchmarks
 #   4. Pinned Node.js Baseline Comparison (Node v24.2.0 out-of-band reference)
 #
 # HARD RULES (CLAUDE.md):
@@ -680,7 +681,7 @@ print(json.dumps(record))
         fi
     fi
 
-    # 4. Bro Headless Interpreted (QuickJS)
+    # 4. bro-headless (the script compiled in process by bronze)
     if [[ -f "$BRO_HEADLESS" && -f "$SCRIPT_DIR/render_bench_interpreted.js" && ( -z "$FILTER" || "render_interpreted_bro" =~ $FILTER || "interpreted" =~ $FILTER ) ]]; then
         smoke_dir="$BRO_PATH/tests/_smoke_app"
         script_file="$SCRIPT_DIR/render_bench_interpreted.js"
@@ -695,7 +696,7 @@ st = json.loads(sys.argv[1])
 btype = sys.argv[2]
 record = {
     "name": "render_interpreted_bro",
-    "description": "bro-headless interpreted QuickJS 3D scene (30 frames)",
+    "description": "bro-headless 3D scene, script compiled in process by bronze (30 frames)",
     "category": "render-interpreted",
     "build_type": btype,
     "infer": st,
@@ -799,7 +800,7 @@ if render_records:
             print(f"| `{name}` | {cat} | ERROR | - | - | {err} |")
             continue
         st = r.get("infer") or {}
-        cat = "Compiled Host" if "compiled" in r.get("category", "") else "Interpreted QuickJS"
+        cat = "Compiled Host" if "compiled" in r.get("category", "") else "bro-headless (in-process bronze)"
         med = "{:.2f}".format(st.get("median_ms", 0.0))
         mn = "{:.2f}".format(st.get("min_ms", 0.0))
         mx = "{:.2f}".format(st.get("max_ms", 0.0))
