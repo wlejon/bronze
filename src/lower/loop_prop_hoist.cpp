@@ -256,6 +256,32 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
         }
     };
 
+    // Whether a raw or nullish unbox reads `v`: an unbox the verifier
+    // (verifier_proofs.cpp) certifies by what defines its operand.
+    auto uncheckedUnboxReads = [&](il::ValueId v) {
+        for (const il::Block& b : fn.blocks) {
+            for (const il::Instruction& user : b.instructions) {
+                if (user.op == il::Op::Unbox && (user.rawUnbox || user.nullishUnbox) &&
+                    !user.operands.empty() && user.operands[0] == v) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    // Whether `v` is a Number by its definition, so an unchecked unbox of it
+    // needs no other proof: a boxed double or int32, or an earlier read of
+    // the same field (which certifies itself the way the forwarded one did).
+    auto holdsNumberBits = [&](il::ValueId v) {
+        if (v >= defs.size() || defs[v].block == il::kNoBlock || defs[v].index == UINT32_MAX) {
+            return false;
+        }
+        const il::Instruction& def = fn.blocks[defs[v].block].instructions[defs[v].index];
+        return def.op == il::Op::PropGet ||
+               (def.op == il::Op::Box &&
+                (def.boxType == il::Type::F64 || def.boxType == il::Type::I32));
+    };
+
     for (il::Block& blk : fn.blocks) {
         std::vector<PropCell> table;
         std::vector<UnboxCell> unboxTable;
@@ -519,6 +545,22 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                             existing = entry.val;
                             break;
                         }
+                    }
+                    if (existing != il::kNoValue &&
+                        uncheckedUnboxReads(inst.result) && !holdsNumberBits(existing)) {
+                        // The read's unchecked unbox is certified by the read
+                        // itself: an audited field load, validated where it
+                        // loads. The value last stored there carries no such
+                        // proof (`this.s += a` stores whatever the dynamic add
+                        // made, a String when `a` is one), so the read stays
+                        // and later reads forward to it.
+                        for (auto& entry : table) {
+                            if (entry.recv == recv && entry.keyIndex == key) {
+                                entry.val = inst.result;
+                            }
+                        }
+                        ++i;
+                        continue;
                     }
                     if (existing != il::kNoValue) {
                         replaceAllUses(inst.result, existing);
