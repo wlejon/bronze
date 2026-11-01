@@ -1,0 +1,46 @@
+literal true true false false 1
+concat true true false false 1
+builder loop true true false false 1
+builder += true true false false 1
+two-byte slice true true false false 1
+hashed key true true false false 1
+template true true false false 1
+upper true true false false 1
+json true true false false 1
+fromCharCode true true false false 1
+repeat true true false false 1
+substring true true false false 1
+split join true true false false 1
+reversed twice true true false false 1
+same length false false true false 6
+same length built false false true false 6
+prefix false false true false 0
+longer false false true false 0
+lower false false true false 0
+empty false false true true 8
+wrapper false false true false 0
+toString object false false true false 0
+valueOf object false false true false 0
+array false false true false 0
+number false false true false 0
+nan false false true false 0
+negzero false false true false 0
+bigint false false true false 0
+symbol false false true false 0
+undefined false false true false 0
+null false false true false 0
+true false false true false 0
+false false false true false 0
+function false false true false 0
+builder before true 1
+builder after false 0 true
+latin1 true true true false false
+two-byte true true true false false
+empty true true true false false false false false false false
+numeric 7 0 7 7 0
+fallthrough ab b cd d ab b
+euler 23325.721692 2.6327476856711183 1.7551651237807455 2.6327476856711183 0.8775825618903728 1.7551651237807455 -1
+loop 1652 2348
+gen yynn
+try true true true
+caught true false

@@ -140,6 +140,9 @@ public:
     // Whether `id` is a `box.f64`: a Number's bits, the word a double slot
     // holds (slot_repr.h), so a store of it needs no representation test.
     bool is_number_value(uint32_t id) const { return number_value_ids_.count(id) != 0; }
+    // Whether `id` is a string literal, `box.str k` with no operand: a String
+    // whatever path reaches it, so `===` against it needs no Number test.
+    bool is_string_literal(uint32_t id) const { return string_literal_ids_.count(id) != 0; }
     // The module's class layouts handed to the runtime at init
     // (il_static_slot.cpp); `map_addr` is the filled key map.
     void register_class_families(Builder& b, Value* map_addr);
@@ -250,6 +253,7 @@ private:
     std::unordered_set<uint32_t> unrooted_hole_insensitive_ids_;
     std::unordered_set<uint32_t> primitive_value_ids_;
     std::unordered_set<uint32_t> number_value_ids_;
+    std::unordered_set<uint32_t> string_literal_ids_;
     std::unordered_map<uint32_t, std::vector<DenseArrayProof>> block_dense_proofs_;
     std::unordered_map<uint32_t, uint32_t> active_dense_arrays_;
     std::unordered_map<uint32_t, DenseArrayCursor> dense_array_cursors_;

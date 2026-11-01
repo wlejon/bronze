@@ -1,0 +1,32 @@
+digest 1445571883 length changes 2076459
+"" "" "" true true true
+"a" "a" "A" true false true
+"abcdefgh" "abcdefgh" "ABCDEFGH" true false true
+"abcdefghi" "abcdefghi" "ABCDEFGHI" true false true
+"ABCDEFGH" "abcdefgh" "ABCDEFGH" false true true
+"abcdefgH" "abcdefgh" "ABCDEFGH" false false true
+"Habcdefg" "habcdefg" "HABCDEFG" false false true
+"abcdefghijklmnoP" "abcdefghijklmnop" "ABCDEFGHIJKLMNOP" false false true
+"0123456789abcdef" "0123456789abcdef" "0123456789ABCDEF" true false true
+"01234567-89ab-cdef-0123-456789abcdef" "01234567-89ab-cdef-0123-456789abcdef" "01234567-89AB-CDEF-0123-456789ABCDEF" true false true
+"01234567-89AB-cdef-0123-456789abcdef" "01234567-89ab-cdef-0123-456789abcdef" "01234567-89AB-CDEF-0123-456789ABCDEF" false false true
+"@@@@@@@@" "@@@@@@@@" "@@@@@@@@" true true true
+"[[[[[[[[" "[[[[[[[[" "[[[[[[[[" true true true
+"````````" "````````" "````````" true true true
+"{{{{{{{{" "{{{{{{{{" "{{{{{{{{" true true true
+"abc@[`{xyz" "abc@[`{xyz" "ABC@[`{XYZ" true false true
+"ABC@[`{XYZ" "abc@[`{xyz" "ABC@[`{XYZ" false true true
+"cafécafé" "cafécafé" "CAFÉCAFÉ" true false true
+"CAFÉCAFÉ" "cafécafé" "CAFÉCAFÉ" false true true
+"straße" "straße" "STRASSE" true false true
+"ÿÿÿÿÿÿÿÿ" "ÿÿÿÿÿÿÿÿ" "ŸŸŸŸŸŸŸŸ" true false true
+"µµ" "µµ" "ΜΜ" true false true
+"abcİdef" "abci̇def" "ABCİDEF" false false true
+"ABCıDEF" "abcıdef" "ABCIDEF" false false true
+"日本abc" "日本abc" "日本ABC" true false true
+"日本ABC" "日本abc" "日本ABC" false true true
+lUlUlUlUlUlUlUlUlUlULULULULULULULULULULU
+true ABCDEFGHIJKLMNOP abcdefghij
+abcdefghij ABCDEFGHIJ
+true
+loop 3000

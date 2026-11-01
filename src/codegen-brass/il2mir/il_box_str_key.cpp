@@ -54,4 +54,45 @@ Value* lower_box_str_key(Builder& b, Value* key_id) {
     return result;
 }
 
+// `x === 'XYZ'`, the literal a `box.str`: setFromEuler's `switch (order)`.
+// The literal is a String, so `===` is true exactly when `x` is a String with
+// its text, and the Number test the general lowering opens with
+// (lower_dynamic_strict_eq) answers nothing here: a Number is never ===
+// a String. The literal's bits are the key header the shapes and every other
+// evaluation of the same literal on this thread hold, so the common true
+// answer — the value IS that literal, stored by a default parameter or a
+// field write — is one compare. A value with other bits is false unless it is
+// a String, and then the shared length / memoized-hash test, then the helper's
+// contents compare, decide as they do for any two Strings.
+Value* lower_strict_eq_string_literal(Builder& b, Value* x, Value* lit) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "seqlit_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* differ = b.append_block(prefix + "_differ");
+    BasicBlock* strings = b.append_block(prefix + "_strings");
+    BasicBlock* slow = b.append_block(prefix + "_slow");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i32());
+
+    b.position_at_end(cur);
+    b.build_br_if(b.build_eq(x, lit), merge, {b.build_iconst_i32(1)}, differ, {});
+
+    b.position_at_end(differ);
+    Value* tag = b.build_lshr(x, b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT));
+    b.build_br_if(b.build_eq(tag, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)), strings, {}, merge,
+                  {b.build_iconst_i32(0)});
+
+    b.position_at_end(strings);
+    Value* mask = b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_VALUE_PAYLOAD_MASK));
+    Value* proven = build_strings_differ(b, b.build_and(x, mask), b.build_and(lit, mask));
+    b.build_br_if(proven, merge, {b.build_iconst_i32(0)}, slow, {});
+
+    b.position_at_end(slow);
+    slow->set_cold();
+    b.build_br(merge, {b.build_and(b.build_call("bronze_strict_eq", Type::i32(), {x, lit}),
+                                   b.build_iconst_i32(1))});
+
+    b.position_at_end(merge);
+    return result;
+}
+
 } // namespace il2mir

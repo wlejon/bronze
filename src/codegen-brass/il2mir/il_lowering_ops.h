@@ -28,6 +28,14 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only);
 // answer, read inline from the thread's key-header table (il_box_str_key.cpp).
 Value* lower_box_str_key(Builder& b, Value* key_id);
 
+// Whether two String headers (payload pointers) with different bits are proven
+// to hold different text, as an i32 (il_lowering_ops.cpp).
+Value* build_strings_differ(Builder& b, Value* s0, Value* s1);
+
+// `x === lit` where `lit` is a `box.str k` (il_box_str_key.cpp): equal bits
+// answer true by one compare, and only a String with other bits goes on.
+Value* lower_strict_eq_string_literal(Builder& b, Value* x, Value* lit);
+
 bool lower_ops_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,

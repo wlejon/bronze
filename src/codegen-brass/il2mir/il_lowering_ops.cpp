@@ -126,6 +126,31 @@ bool is_bits_identity_constant(const Value* v) {
     return one_def && one_def->opcode() == brass::Opcode::iconst_i32 && one_def->imm_i64() == 1;
 }
 
+} // namespace
+
+// Whether two String headers with different bits are proven to hold different
+// text (lengths, or both memoized hashes and neither a builder), as an i32; 0
+// means the contents compare must decide. See the strings arm below.
+Value* build_strings_differ(Builder& b, Value* s0, Value* s1) {
+    Value* len_differ = b.build_ne(b.build_load(Type::i32(), s0, BRONZE_ABI_STRING_LENGTH_OFFSET),
+                                   b.build_load(Type::i32(), s1, BRONZE_ABI_STRING_LENGTH_OFFSET));
+    Value* f0 = b.build_load(Type::i32(), s0, BRONZE_ABI_STRING_FLAGS_OFFSET);
+    Value* f1 = b.build_load(Type::i32(), s1, BRONZE_ABI_STRING_FLAGS_OFFSET);
+    Value* hashed_bit = b.build_iconst_i32(BRONZE_ABI_STRING_HASHED_BIT);
+    Value* both_hashed = b.build_ne(b.build_and(b.build_and(f0, f1), hashed_bit), b.build_iconst_i32(0));
+    // The heap header's low word is (flags << 16) | tag.
+    static_assert(BRONZE_ABI_OBJ_FLAGS_OFFSET == 2, "the kind flags are the header word's high half");
+    Value* h0 = b.build_load(Type::i32(), s0, 0);
+    Value* h1 = b.build_load(Type::i32(), s1, 0);
+    Value* builder = b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_STRING_BUILDER_BIT << 16));
+    Value* no_builder = b.build_eq(b.build_and(b.build_or(h0, h1), builder), b.build_iconst_i32(0));
+    Value* hash_mask = b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_STRING_HASH_MASK));
+    Value* hash_differ = b.build_ne(b.build_and(f0, hash_mask), b.build_and(f1, hash_mask));
+    return b.build_or(len_differ, b.build_and(b.build_and(both_hashed, no_builder), hash_differ));
+}
+
+namespace {
+
 // A dynamic `===`, bronze_strict_eq without the call wherever its answer is
 // the bits'. Against an undefined, null or boolean constant it is a plain
 // compare: no Number, String or BigInt has those bits. Otherwise two Numbers
@@ -177,21 +202,7 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
         // payload, whose words are never compared for an answer.
         Value* s0 = b.build_and(op0, mask);
         Value* s1 = b.build_select(is_string, b.build_and(op1, mask), s0);
-        Value* len_differ = b.build_ne(b.build_load(Type::i32(), s0, BRONZE_ABI_STRING_LENGTH_OFFSET),
-                                       b.build_load(Type::i32(), s1, BRONZE_ABI_STRING_LENGTH_OFFSET));
-        Value* f0 = b.build_load(Type::i32(), s0, BRONZE_ABI_STRING_FLAGS_OFFSET);
-        Value* f1 = b.build_load(Type::i32(), s1, BRONZE_ABI_STRING_FLAGS_OFFSET);
-        Value* hashed_bit = b.build_iconst_i32(BRONZE_ABI_STRING_HASHED_BIT);
-        Value* both_hashed = b.build_ne(b.build_and(b.build_and(f0, f1), hashed_bit), b.build_iconst_i32(0));
-        // The heap header's low word is (flags << 16) | tag.
-        static_assert(BRONZE_ABI_OBJ_FLAGS_OFFSET == 2, "the kind flags are the header word's high half");
-        Value* h0 = b.build_load(Type::i32(), s0, 0);
-        Value* h1 = b.build_load(Type::i32(), s1, 0);
-        Value* builder = b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_STRING_BUILDER_BIT << 16));
-        Value* no_builder = b.build_eq(b.build_and(b.build_or(h0, h1), builder), b.build_iconst_i32(0));
-        Value* hash_mask = b.build_iconst_i32(static_cast<int32_t>(BRONZE_ABI_STRING_HASH_MASK));
-        Value* hash_differ = b.build_ne(b.build_and(f0, hash_mask), b.build_and(f1, hash_mask));
-        Value* differ = b.build_or(len_differ, b.build_and(b.build_and(both_hashed, no_builder), hash_differ));
+        Value* differ = build_strings_differ(b, s0, s1);
         b.build_br_if(b.build_and(is_string, differ), merge, {b.build_iconst_i32(0)}, slow, {});
     }
 
@@ -754,8 +765,18 @@ bool lower_ops_instruction(
                 // operands with different bits is a correct path, so the bits
                 // decide; one compare in place of the String arm's loads.
                 constexpr int64_t kIdentityDispatch = 1;
+                // A string literal on either side (il_box_str_key.cpp); the
+                // helper-only form of a run-once block keeps its one call.
+                // BRONZE_NO_STRICT_EQ_STR_LITERAL=1 keeps the general lowering.
+                static const bool no_str_literal = std::getenv("BRONZE_NO_STRICT_EQ_STR_LITERAL") != nullptr;
+                const bool lit0 = lowering->is_string_literal(inst_ast.operands[0]);
+                const bool lit1 = lowering->is_string_literal(inst_ast.operands[1]);
                 if (inst_ast.imm_i64 == kIdentityDispatch) {
                     res_val = b.build_eq(op0, op1);
+                } else if (!no_str_literal && !lowering->run_once() && (lit0 || lit1) &&
+                           !is_bits_identity_constant(op0) && !is_bits_identity_constant(op1)) {
+                    res_val = lit1 ? lower_strict_eq_string_literal(b, op0, op1)
+                                   : lower_strict_eq_string_literal(b, op1, op0);
                 } else {
                     res_val = lower_dynamic_strict_eq(b, op0, op1, lowering->run_once());
                 }
