@@ -761,6 +761,10 @@ std::vector<FunctionEffects> computeModuleEffects(
                     // Pure or aborts execution without mutating existing properties
                 } else if (isImpureForLoopPropHoist(inst)) {
                     effects[f].hasUnresolvedCalls = true;
+                } else if (canRunUserCodeViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
+                                                     isAccessorKey, protoPatchFree, &module)) {
+                    effects[f].coercesUserCode = true;
+                    effects[f].mutatesLength = true;
                 } else if (canMutateLengthViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
                                                       isAccessorKey, protoPatchFree, &module)) {
                     effects[f].mutatesLength = true;
@@ -784,6 +788,10 @@ std::vector<FunctionEffects> computeModuleEffects(
                 }
                 if (effects[callee].mutatesLength && !effects[f].mutatesLength) {
                     effects[f].mutatesLength = true;
+                    changed = true;
+                }
+                if (effects[callee].coercesUserCode && !effects[f].coercesUserCode) {
+                    effects[f].coercesUserCode = true;
                     changed = true;
                 }
                 const auto& theirs = effects[callee].writtenKeys;
@@ -821,7 +829,7 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
         if (callee >= funcEffects.size()) return true;
         const auto& eff = funcEffects[callee];
         if (eff.hasUnresolvedCalls) return true;
-        if (eff.mutatesLength) {
+        if (eff.coercesUserCode || (keyIndex == lengthKeyIndex && eff.mutatesLength)) {
             if (!isNonEscapingLocalObject(recv, fn, defs)) return true;
         }
         if (eff.writes(keyIndex)) {
@@ -984,8 +992,11 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
         // Everything without a narrower answer above: the one predicate, so a
         // loop and a straight-line run agree about what can write a property.
         default:
-            if (canMutateLengthViaCoercion(inst, recv, lengthKeyIndex, fn, defs, isAccessorKey,
-                                           protoPatchFree, &module)) {
+            if (keyIndex == lengthKeyIndex
+                    ? canMutateLengthViaCoercion(inst, recv, lengthKeyIndex, fn, defs,
+                                                 isAccessorKey, protoPatchFree, &module)
+                    : canRunUserCodeViaCoercion(inst, recv, lengthKeyIndex, fn, defs,
+                                                isAccessorKey, protoPatchFree, &module)) {
                 return !isNonEscapingLocalObject(recv, fn, defs);
             }
             return isImpureForLoopPropHoist(inst);

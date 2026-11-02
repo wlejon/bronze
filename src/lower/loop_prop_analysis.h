@@ -21,6 +21,9 @@ struct SafeConstructorInfo {
 struct FunctionEffects {
     bool hasUnresolvedCalls = false;
     bool mutatesLength = false;
+    // A coercion in the function (or anything it calls directly) can run a
+    // user hook, which can write any property.
+    bool coercesUserCode = false;
     // The key indexes the function (or anything it calls directly) sets,
     // sorted and distinct: a module has thousands of keys and functions, and
     // a function writes a handful, so a dense flag per key was most of the
@@ -114,6 +117,16 @@ bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
                                 const std::vector<uint8_t>& isAccessorKey,
                                 bool protoPatchFree,
                                 const il::Module* module = nullptr);
+
+// Whether the instruction can call a user valueOf / toString / hasInstance
+// through an implicit coercion: such a hook can write any property, where
+// canMutateLengthViaCoercion answers only for `length`.
+bool canRunUserCodeViaCoercion(const il::Instruction& inst, il::ValueId recv,
+                               uint32_t lengthKeyIndex, const il::Function& fn,
+                               const std::vector<DefSite>& defs,
+                               const std::vector<uint8_t>& isAccessorKey,
+                               bool protoPatchFree,
+                               const il::Module* module = nullptr);
 
 void sanitizeLoopInBoundsProofs(il::Module& module);
 

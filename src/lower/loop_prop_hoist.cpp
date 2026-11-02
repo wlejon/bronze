@@ -506,7 +506,9 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                     for (uint32_t tgt : targets) {
                         const auto& eff = funcEffects[tgt];
                         for (size_t t = 0; t < table.size();) {
-                            if (eff.mutatesLength || eff.writes(table[t].keyIndex)) {
+                            if (eff.coercesUserCode ||
+                                (eff.mutatesLength && table[t].keyIndex == lengthKeyIndex) ||
+                                eff.writes(table[t].keyIndex)) {
                                 table.erase(table.begin() + t);
                             } else {
                                 ++t;
@@ -519,11 +521,21 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
             }
 
             if (isImpureForLoopPropHoist(inst) ||
-                canMutateLengthViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
-                                           isAccessorKey, protoPatchFree, &module)) {
+                canRunUserCodeViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
+                                          isAccessorKey, protoPatchFree, &module)) {
                 table.clear();
                 ++i;
                 continue;
+            }
+            if (canMutateLengthViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
+                                           isAccessorKey, protoPatchFree, &module)) {
+                for (size_t t = 0; t < table.size();) {
+                    if (table[t].keyIndex == lengthKeyIndex) {
+                        table.erase(table.begin() + t);
+                    } else {
+                        ++t;
+                    }
+                }
             }
 
             if (inst.op == il::Op::PropGet && inst.result != il::kNoValue) {

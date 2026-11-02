@@ -339,12 +339,17 @@ bool isSafeInstForInBoundsLoop(const il::Instruction& inst, il::ValueId recv,
 
 }  // namespace
 
-bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
-                                uint32_t lengthKeyIndex, const il::Function& fn,
-                                const std::vector<DefSite>& defs,
-                                const std::vector<uint8_t>& isAccessorKey,
-                                bool protoPatchFree,
-                                const il::Module* module) {
+namespace {
+
+// What canMutateLengthViaCoercion and canRunUserCodeViaCoercion share: an
+// instruction whose operand may be an object, so that ToPrimitive (or
+// ToPropertyKey) calls a user valueOf / toString. `lengthOnly` asks the
+// narrower question of what can change an array's length, where an element
+// read, `in`, instanceof and a key enumeration also count.
+bool coercionHazard(const il::Instruction& inst, il::ValueId recv, uint32_t lengthKeyIndex,
+                    const il::Function& fn, const std::vector<DefSite>& defs,
+                    const std::vector<uint8_t>& isAccessorKey, bool protoPatchFree,
+                    const il::Module* module, bool lengthOnly) {
     auto opIsSafe = [&](il::ValueId v) {
         return isProvablyPrimitiveOrLengthRead(v, recv, lengthKeyIndex, fn, defs, isAccessorKey,
                                                protoPatchFree, module);
@@ -397,16 +402,48 @@ bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
             return inst.operands.size() < 2 || !opIsSafe(inst.operands[0]) ||
                    !opIsSafe(inst.operands[1]);
 
+        // The key is ToPropertyKey'd: a user toString only when it can be an
+        // object. ElemGet's key is its second operand, `in`'s its first.
         case il::Op::ElemGet:
+            if (lengthOnly) return true;
+            return inst.operands.size() < 2 || !opIsSafe(inst.operands[1]);
         case il::Op::In:
+            if (lengthOnly) return true;
+            return inst.operands.empty() || !opIsSafe(inst.operands[0]);
+
+        // Symbol.hasInstance is user code.
         case il::Op::InstanceOf:
+            return true;
+
         case il::Op::ObjectKeys:
         case il::Op::ForInKeys:
-            return true;
+            return lengthOnly;
 
         default:
             return false;
     }
+}
+
+}  // namespace
+
+bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
+                                uint32_t lengthKeyIndex, const il::Function& fn,
+                                const std::vector<DefSite>& defs,
+                                const std::vector<uint8_t>& isAccessorKey,
+                                bool protoPatchFree,
+                                const il::Module* module) {
+    return coercionHazard(inst, recv, lengthKeyIndex, fn, defs, isAccessorKey, protoPatchFree,
+                          module, true);
+}
+
+bool canRunUserCodeViaCoercion(const il::Instruction& inst, il::ValueId recv,
+                               uint32_t lengthKeyIndex, const il::Function& fn,
+                               const std::vector<DefSite>& defs,
+                               const std::vector<uint8_t>& isAccessorKey,
+                               bool protoPatchFree,
+                               const il::Module* module) {
+    return coercionHazard(inst, recv, lengthKeyIndex, fn, defs, isAccessorKey, protoPatchFree,
+                          module, false);
 }
 
 void sanitizeLoopInBoundsProofs(il::Module& module) {
