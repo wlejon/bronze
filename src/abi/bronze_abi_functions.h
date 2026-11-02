@@ -55,7 +55,7 @@
     X(bronze_coro_start,          BRONZE_ABI_U64,  (BRONZE_ABI_U32, BRONZE_ABI_U64)) \
     X(bronze_async_iter_open,     BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_async_iter_next,     BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
-    X(bronze_async_iter_close,    BRONZE_ABI_VOID, (BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
+    X(bronze_async_iter_close,    BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_BOOL)) \
     X(bronze_dynamic_import,      BRONZE_ABI_U64,  (BRONZE_ABI_U64, BRONZE_ABI_U32)) \
     X(bronze_module_namespace,    BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \
     X(bronze_object_keys,         BRONZE_ABI_U64,  (BRONZE_ABI_U64)) \

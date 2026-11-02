@@ -762,7 +762,7 @@ std::vector<FunctionEffects> computeModuleEffects(
                 } else if (isImpureForLoopPropHoist(inst)) {
                     effects[f].hasUnresolvedCalls = true;
                 } else if (canMutateLengthViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
-                                                      isAccessorKey, protoPatchFree)) {
+                                                      isAccessorKey, protoPatchFree, &module)) {
                     effects[f].mutatesLength = true;
                 }
             }
@@ -821,7 +821,7 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
         if (callee >= funcEffects.size()) return true;
         const auto& eff = funcEffects[callee];
         if (eff.hasUnresolvedCalls) return true;
-        if (keyIndex == lengthKeyIndex && eff.mutatesLength) {
+        if (eff.mutatesLength) {
             if (!isNonEscapingLocalObject(recv, fn, defs)) return true;
         }
         if (eff.writes(keyIndex)) {
@@ -984,10 +984,9 @@ bool canMutateProperty(il::ValueId recv, uint32_t keyIndex,
         // Everything without a narrower answer above: the one predicate, so a
         // loop and a straight-line run agree about what can write a property.
         default:
-            if (keyIndex == lengthKeyIndex &&
-                canMutateLengthViaCoercion(inst, recv, lengthKeyIndex, fn, defs, isAccessorKey,
-                                           protoPatchFree)) {
-                return true;
+            if (canMutateLengthViaCoercion(inst, recv, lengthKeyIndex, fn, defs, isAccessorKey,
+                                           protoPatchFree, &module)) {
+                return !isNonEscapingLocalObject(recv, fn, defs);
             }
             return isImpureForLoopPropHoist(inst);
     }

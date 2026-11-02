@@ -379,7 +379,7 @@ enum class Op : uint8_t {
     IterOpen,    // a: dynamic = iter.open b        (GetIterator, 7.4.2)
     AsyncIterOpen, // a: dynamic = async_iter.open b
     AsyncIterNext, // a: dynamic = async_iter.next %record
-    AsyncIterClose, // async_iter.close %record, <suppress>
+    AsyncIterClose, // a: dynamic = async_iter.close %record, <suppress>
     // Advances the cursor, stashes what it produced in the record, and
     // answers whether there was anything. Two ops rather than one because
     // an SSA instruction has one result and a step has two answers.

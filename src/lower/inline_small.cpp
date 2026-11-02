@@ -260,36 +260,16 @@ bool tryInlineCall(const il::Instruction& callInst,
         return true;
     };
 
-    if (callInst.op == il::Op::Call) {
-        const size_t argCount = callInst.operands.size();
-        for (size_t i = 0; i < paramCount; ++i) {
-            if (callee.params[i].type != il::Type::Dynamic && i >= argCount) return false;
-            std::optional<il::ValueId> arg;
-            if (i < argCount) arg = callInst.operands[i];
-            if (!bindParam(static_cast<il::ValueId>(i), arg)) return false;
+    const size_t opOffset = (callInst.op != il::Op::Call && !callee.needsThis) ? 1 : 0;
+    if (callInst.op != il::Op::Call && callee.needsThis && paramCount == 0) return false;
+    for (size_t i = 0; i < paramCount; ++i) {
+        const size_t opIdx = i + opOffset;
+        if (callee.params[i].type != il::Type::Dynamic && opIdx >= callInst.operands.size()) {
+            return false;
         }
-    } else {
-        if (callee.needsThis) {
-            if (paramCount == 0) return false;
-            if (!bindParam(0, callInst.operands[0])) return false;
-            const size_t argCount = callInst.operands.size() - 1;
-            for (size_t i = 1; i < paramCount; ++i) {
-                if (callee.params[i].type != il::Type::Dynamic && (i - 1) >= argCount) {
-                    return false;
-                }
-                std::optional<il::ValueId> arg;
-                if ((i - 1) < argCount) arg = callInst.operands[i];
-                if (!bindParam(static_cast<il::ValueId>(i), arg)) return false;
-            }
-        } else {
-            const size_t argCount = callInst.operands.size() - 1;
-            for (size_t i = 0; i < paramCount; ++i) {
-                if (callee.params[i].type != il::Type::Dynamic && i >= argCount) return false;
-                std::optional<il::ValueId> arg;
-                if (i < argCount) arg = callInst.operands[1 + i];
-                if (!bindParam(static_cast<il::ValueId>(i), arg)) return false;
-            }
-        }
+        std::optional<il::ValueId> arg;
+        if (opIdx < callInst.operands.size()) arg = callInst.operands[opIdx];
+        if (!bindParam(static_cast<il::ValueId>(i), arg)) return false;
     }
 
     uint32_t curBlock = 0;
@@ -712,10 +692,12 @@ std::vector<std::vector<uint32_t>> computeClosedKeyTargets(const il::Module& mod
     std::unordered_map<uint32_t, uint32_t> methodFnToKey;
     std::vector<uint8_t> keyMutatedByPropSet(numKeys, 0);
 
+    std::vector<std::vector<int32_t>> allFuncValCallee(numFns);
     for (size_t fnIdx = 0; fnIdx < numFns; ++fnIdx) {
         const auto& fn = module.functions[fnIdx];
         const il::ValueId thisParamId = fn.needsEnv ? 1u : 0u;
-        std::vector<int32_t> funcValCallee(fn.valueCount, -1);
+        auto& funcValCallee = allFuncValCallee[fnIdx];
+        funcValCallee.assign(fn.valueCount, -1);
         std::vector<uint8_t> isNullishConst(fn.valueCount, 0);
         std::vector<uint8_t> isCreateObjVal(fn.valueCount, 0);
 
@@ -793,17 +775,9 @@ std::vector<std::vector<uint32_t>> computeClosedKeyTargets(const il::Module& mod
         const auto& setterFn = module.functions[fw.setterFnIdx];
         const size_t argOffset = 1 + (fw.paramIdx - setterFn.firstSourceParam());
 
-        for (const auto& fn : module.functions) {
-            std::vector<int32_t> funcValCallee(fn.valueCount, -1);
-            for (const auto& block : fn.blocks) {
-                for (const auto& inst : block.instructions) {
-                    if (inst.result != il::kNoValue && inst.result < fn.valueCount &&
-                        (inst.op == il::Op::CreateFunction || inst.op == il::Op::FunctionRef) &&
-                        inst.calleeIndex < numFns) {
-                        funcValCallee[inst.result] = static_cast<int32_t>(inst.calleeIndex);
-                    }
-                }
-            }
+        for (size_t fnIdx = 0; fnIdx < numFns && valid[fw.targetKey]; ++fnIdx) {
+            const auto& fn = module.functions[fnIdx];
+            const auto& funcValCallee = allFuncValCallee[fnIdx];
             for (const auto& block : fn.blocks) {
                 for (const auto& inst : block.instructions) {
                     if (inst.op == il::Op::MethodCall && inst.keyIndex == setterKey) {
@@ -819,7 +793,6 @@ std::vector<std::vector<uint32_t>> computeClosedKeyTargets(const il::Module& mod
                 }
                 if (!valid[fw.targetKey]) break;
             }
-            if (!valid[fw.targetKey]) break;
         }
     }
 

@@ -47,7 +47,7 @@ FunctionHeader* FunctionHeader::create(Heap& heap, NativeFunctionCode code, Valu
     // and which only appears once the heap has recycled a block with the right
     // byte in the right place.
     fn->native_base = 0;
-    fn->prototype_readonly = false;
+    fn->prototype_readonly = (function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0;
     fn->statics_materialized = 0;
     // The word these bools share is scanned as a Value; unwritten padding in
     // it is recycled-memory residue that can parse as a heap pointer (fn.h).

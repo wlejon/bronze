@@ -47,16 +47,64 @@ bool isKnownTypedReceiver(il::ValueId a, il::ValueId recv, const il::Function& f
     return false;
 }
 
+bool isBuiltinObjectOrFnKey(const std::string& name) {
+    return name == "valueOf" || name == "toString" || name == "toLocaleString" ||
+           name == "constructor" || name == "__proto__" || name == "prototype" ||
+           name == "hasOwnProperty" || name == "isPrototypeOf" ||
+           name == "propertyIsEnumerable";
+}
+
 bool isProvablyPrimitiveOrLengthRead(il::ValueId val, il::ValueId recv,
                                      uint32_t lengthKeyIndex, const il::Function& fn,
                                      const std::vector<DefSite>& defs,
                                      const std::vector<uint8_t>& isAccessorKey,
-                                     bool protoPatchFree, int depth = 4) {
+                                     bool protoPatchFree,
+                                     const il::Module* module = nullptr,
+                                     int depth = 4) {
     if (depth <= 0 || val >= defs.size()) return false;
     if (defs[val].block == il::kNoBlock) {
-        return val < fn.params.size() &&
-               (fn.params[val].type == il::Type::F64 || fn.params[val].type == il::Type::I32 ||
-                fn.params[val].type == il::Type::Bool || fn.params[val].type == il::Type::Str);
+        if (val >= fn.params.size()) return false;
+        if (fn.params[val].type == il::Type::F64 || fn.params[val].type == il::Type::I32 ||
+            fn.params[val].type == il::Type::Bool || fn.params[val].type == il::Type::Str) {
+            return true;
+        }
+        if (!module || depth <= 1 || fn.isExported || fn.isEntryPoint) return false;
+        uint32_t fnIdx = UINT32_MAX;
+        for (size_t f = 0; f < module->functions.size(); ++f) {
+            if (&module->functions[f] == &fn) {
+                fnIdx = static_cast<uint32_t>(f);
+                break;
+            }
+        }
+        if (fnIdx == UINT32_MAX) return false;
+        bool sawCall = false;
+        for (const il::Function& caller : module->functions) {
+            std::vector<DefSite> callerDefs;
+            bool defsBuilt = false;
+            for (const il::Block& cBlk : caller.blocks) {
+                for (const il::Instruction& cInst : cBlk.instructions) {
+                    if ((cInst.op == il::Op::CreateFunction || cInst.op == il::Op::FunctionRef) &&
+                        cInst.calleeIndex == fnIdx) {
+                        return false;
+                    }
+                    if (cInst.op == il::Op::Call && cInst.calleeIndex == fnIdx) {
+                        if (val >= cInst.operands.size()) return false;
+                        if (!defsBuilt) {
+                            callerDefs = computeDefSites(caller);
+                            defsBuilt = true;
+                        }
+                        sawCall = true;
+                        if (!isProvablyPrimitiveOrLengthRead(cInst.operands[val], il::kNoValue,
+                                                             lengthKeyIndex, caller, callerDefs,
+                                                             isAccessorKey, protoPatchFree, module,
+                                                             depth - 1)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return sawCall;
     }
     const auto& blk = fn.blocks[defs[val].block];
     if (defs[val].index >= blk.instructions.size()) {
@@ -78,7 +126,7 @@ bool isProvablyPrimitiveOrLengthRead(il::ValueId val, il::ValueId recv,
                     foundEdge = true;
                     return isProvablyPrimitiveOrLengthRead(t.args[pIdx], recv, lengthKeyIndex, fn,
                                                            defs, isAccessorKey, protoPatchFree,
-                                                           depth - 1);
+                                                           module, depth - 1);
                 };
                 if ((term.op == il::Op::Jump || term.op == il::Op::Branch) &&
                     !checkTarget(term.target)) {
@@ -144,6 +192,8 @@ bool isProvablyPrimitiveOrLengthRead(il::ValueId val, il::ValueId recv,
         case il::Op::Shl:
         case il::Op::Shr:
         case il::Op::UShr:
+        case il::Op::ConcatBegin:
+        case il::Op::ConcatAppend:
         case il::Op::ConcatEnd:
             return true;
 
@@ -155,17 +205,53 @@ bool isProvablyPrimitiveOrLengthRead(il::ValueId val, il::ValueId recv,
             if (!inst.operands.empty()) {
                 return isProvablyPrimitiveOrLengthRead(inst.operands[0], recv, lengthKeyIndex, fn,
                                                        defs, isAccessorKey, protoPatchFree,
-                                                       depth - 1);
+                                                       module, depth - 1);
             }
             return false;
 
         case il::Op::PropGet:
-            if (!protoPatchFree || inst.keyIndex != lengthKeyIndex) return false;
-            if (lengthKeyIndex < isAccessorKey.size() && isAccessorKey[lengthKeyIndex]) {
+            if (protoPatchFree && inst.keyIndex == lengthKeyIndex &&
+                (lengthKeyIndex >= isAccessorKey.size() || !isAccessorKey[lengthKeyIndex]) &&
+                recv != il::kNoValue && !inst.operands.empty() &&
+                isKnownTypedReceiver(inst.operands[0], recv, fn, defs)) {
+                return true;
+            }
+            if (!module) return false;
+            if (!inst.operands.empty() && isMathObject(inst.operands[0], fn, defs, *module)) {
+                return true;
+            }
+            if (!protoPatchFree || depth <= 1 ||
+                keyMayBeAccessor(isAccessorKey, inst.keyIndex, inst, protoPatchFree) ||
+                inst.keyIndex >= module->keyConstants.size() ||
+                isBuiltinObjectOrFnKey(module->keyConstants[inst.keyIndex])) {
                 return false;
             }
-            return recv != il::kNoValue && !inst.operands.empty() &&
-                   isKnownTypedReceiver(inst.operands[0], recv, fn, defs);
+            for (const il::Function& wFn : module->functions) {
+                std::vector<DefSite> wDefs;
+                bool wDefsBuilt = false;
+                for (const il::Block& wBlk : wFn.blocks) {
+                    for (const il::Instruction& wInst : wBlk.instructions) {
+                        if (wInst.op == il::Op::ObjectSpread) return false;
+                        if (wInst.op == il::Op::MethodDef && wInst.keyIndex == inst.keyIndex) {
+                            return false;
+                        }
+                        if ((wInst.op == il::Op::PropSet || wInst.op == il::Op::DefineOwnAttr) &&
+                            wInst.keyIndex == inst.keyIndex) {
+                            if (wInst.operands.size() < 2) return false;
+                            if (!wDefsBuilt) {
+                                wDefs = computeDefSites(wFn);
+                                wDefsBuilt = true;
+                            }
+                            if (!isProvablyPrimitiveOrLengthRead(
+                                    wInst.operands[1], il::kNoValue, lengthKeyIndex, wFn, wDefs,
+                                    isAccessorKey, protoPatchFree, module, depth - 1)) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
 
         default:
             return false;
@@ -257,14 +343,15 @@ bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
                                 uint32_t lengthKeyIndex, const il::Function& fn,
                                 const std::vector<DefSite>& defs,
                                 const std::vector<uint8_t>& isAccessorKey,
-                                bool protoPatchFree) {
+                                bool protoPatchFree,
+                                const il::Module* module) {
     auto opIsSafe = [&](il::ValueId v) {
         return isProvablyPrimitiveOrLengthRead(v, recv, lengthKeyIndex, fn, defs, isAccessorKey,
-                                               protoPatchFree);
+                                               protoPatchFree, module);
     };
     switch (inst.op) {
         case il::Op::Unbox:
-            if (inst.rawUnbox || inst.nullishUnbox) return false;
+            if (inst.rawUnbox || inst.nullishUnbox || inst.type == il::Type::Bool) return false;
             return inst.operands.empty() || !opIsSafe(inst.operands[0]);
 
         case il::Op::ToInt32:
@@ -277,7 +364,6 @@ bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
         case il::Op::ToNumeric:
         case il::Op::NumericStep:
         case il::Op::ToStr:
-        case il::Op::ConcatAppend:
             return inst.operands.empty() || !opIsSafe(inst.operands[0]);
 
         case il::Op::Neg:
@@ -297,6 +383,8 @@ bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
         case il::Op::Shl:
         case il::Op::Shr:
         case il::Op::UShr:
+        case il::Op::ConcatBegin:
+        case il::Op::ConcatAppend:
             if (inst.type != il::Type::Dynamic) return false;
             return inst.operands.size() < 2 || !opIsSafe(inst.operands[0]) ||
                    !opIsSafe(inst.operands[1]);

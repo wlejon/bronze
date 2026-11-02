@@ -112,7 +112,8 @@ bool canMutateLengthViaCoercion(const il::Instruction& inst, il::ValueId recv,
                                 uint32_t lengthKeyIndex, const il::Function& fn,
                                 const std::vector<DefSite>& defs,
                                 const std::vector<uint8_t>& isAccessorKey,
-                                bool protoPatchFree);
+                                bool protoPatchFree,
+                                const il::Module* module = nullptr);
 
 void sanitizeLoopInBoundsProofs(il::Module& module);
 

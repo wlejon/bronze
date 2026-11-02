@@ -80,13 +80,49 @@ size_t Lowerer::cleanupDepthForJump(size_t targetIndex) const {
 }
 
 void Lowerer::emitIterClose(il::ValueId record, bool suppress, il::Function& ilFn, bool isAsync) {
+    if (!isAsync) {
+        il::Instruction inst;
+        inst.op = il::Op::IterClose;
+        inst.type = il::Type::Void;
+        inst.result = il::kNoValue;
+        inst.operands = {record};
+        inst.immI32 = suppress ? 1 : 0;
+        emitInst(ilFn, inst);
+        return;
+    }
+    il::ValueId closeRes = ilFn.valueCount++;
     il::Instruction inst;
-    inst.op = isAsync ? il::Op::AsyncIterClose : il::Op::IterClose;
-    inst.type = il::Type::Void;
-    inst.result = il::kNoValue;
+    inst.op = il::Op::AsyncIterClose;
+    inst.type = il::Type::Dynamic;
+    inst.result = closeRes;
     inst.operands = {record};
     inst.immI32 = suppress ? 1 : 0;
     emitInst(ilFn, inst);
+
+    il::ValueId isNullish = ilFn.valueCount++;
+    il::Instruction nullish;
+    nullish.op = il::Op::IsNullish;
+    nullish.type = il::Type::Bool;
+    nullish.result = isNullish;
+    nullish.operands = {closeRes};
+    emitInst(ilFn, nullish);
+
+    const il::BlockId bAwait = createBlock(ilFn);
+    const il::BlockId bDone = createBlock(ilFn);
+    il::Instruction br;
+    br.op = il::Op::Branch;
+    br.type = il::Type::Void;
+    br.result = il::kNoValue;
+    br.operands = {isNullish};
+    br.target = il::BlockTarget{.block = bDone, .args = {}};
+    br.elseTarget = il::BlockTarget{.block = bAwait, .args = {}};
+    emitInst(ilFn, br);
+
+    setCurrentBlock(bAwait);
+    (void)lowerAwaitValue(Value{closeRes, il::Type::Dynamic}, Span{}, ilFn);
+    emitInst(ilFn, jumpTo(bDone));
+
+    setCurrentBlock(bDone);
 }
 
 void Lowerer::openBlockUnderHandler(il::BlockId handler, il::Function& ilFn) {

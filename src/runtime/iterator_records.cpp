@@ -404,6 +404,10 @@ Value asyncFromSyncNext(Rooted<Value>& recRoot) {
     return promise.get();
 }
 
+uint64_t asyncCloseSuppressOnSettle(uint64_t, uint64_t, uint32_t, const uint64_t*) {
+    return Value::fromUndefined().rawBits();
+}
+
 }  // namespace
 
 extern "C" {
@@ -608,8 +612,60 @@ uint64_t bronze_async_iter_next(uint64_t recBits) {
     return asyncFromSyncNext(recRoot).rawBits();
 }
 
-void bronze_async_iter_close(uint64_t recBits, bool suppress) {
-    bronze_iter_close(recBits, suppress);
+uint64_t bronze_async_iter_close(uint64_t recBits, bool suppress) {
+    recordHelperCall("bronze_async_iter_close");
+    Value recVal(recBits);
+    if (!recVal.isObject() ||
+        recVal.asObject<HeapObjectHeader>()->flags != IterRecordHeader::kFlags) {
+        fatal("internal: async_iter.close on a value that is not an iteration record");
+    }
+    Rooted<Value> recRoot{recVal};
+    auto* rec = recRoot.get().asObject<IterRecordHeader>();
+    if (rec->kindOf() < IterRecordHeader::Protocol || rec->done.asBool()) {
+        return Value::fromUndefined().rawBits();
+    }
+    rec->done = Value::fromBool(true);
+
+    Rooted<Value> iterObj{rec->target};
+    if (suppress) {
+        Rooted<Value> result{Value::fromUndefined()};
+        bool called = false;
+        Value ignored;
+        if (rtTryCatch(
+                [&] {
+                    Rooted<Value> ret{namedProp(iterObj.get(), keyReturn())};
+                    if (isCallable(ret.get())) {
+                        called = true;
+                        result.set(callMethod(ret, iterObj));
+                    }
+                },
+                ignored) ||
+            !called) {
+            return Value::fromUndefined().rawBits();
+        }
+        Rooted<Value> wrapper{Value::fromUndefined()};
+        if (rtTryCatch([&] { wrapper.set(rtPromiseResolveValue(result)); }, ignored)) {
+            return Value::fromUndefined().rawBits();
+        }
+        Rooted<Value> settled{rtNewPromise()};
+        Rooted<Value> undefEnv{Value::fromUndefined()};
+        Rooted<Value> onSettle{rtMakeNativeClosure(asyncCloseSuppressOnSettle, undefEnv, 1)};
+        rtPerformPromiseThen(wrapper, onSettle, onSettle, settled);
+        return settled.get().rawBits();
+    }
+    Rooted<Value> ret{namedProp(iterObj.get(), keyReturn())};
+    if (ret.get().isUndefined() || ret.get().isNull()) {
+        return Value::fromUndefined().rawBits();
+    }
+    if (!isCallable(ret.get())) {
+        rtThrowTypeError("iterator return property is not callable");
+        return Value::fromUndefined().rawBits();
+    }
+    Rooted<Value> result{callMethod(ret, iterObj)};
+    if (result.get().isUndefined() || result.get().isNull()) {
+        return rtPromiseResolveValue(result).rawBits();
+    }
+    return result.get().rawBits();
 }
 
 }  // extern "C"

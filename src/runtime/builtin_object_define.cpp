@@ -518,6 +518,44 @@ static bool applyRegExpDescriptor(Rooted<Value>& self, PropertyKey name,
     return true;
 }
 
+static bool applyFunctionDescriptor(Rooted<Value>& self, PropertyKey name,
+                                    const DecodedDescriptor& d, Rooted<Value>& value,
+                                    bool throwOnRefusal, bool& answered) {
+    answered = false;
+    if (!name.isString() || rtUtf8Chars(name.string()) != "prototype" ||
+        !self.get().asObject<FunctionHeader>()->hasPrototypeProperty()) {
+        return false;
+    }
+    answered = true;
+    if (d.hasGet || d.hasSet || (d.hasConfigurable && d.wantConfigurable) ||
+        (d.hasEnumerable && d.wantEnumerable)) {
+        return refuseDefine(throwOnRefusal, "Cannot redefine property: prototype");
+    }
+    rtEnsureFunctionPrototype(self);
+    const bool writable = rtFunctionPrototypeWritable(self.get());
+    if (!writable) {
+        if ((d.hasWritable && d.wantWritable) ||
+            (d.hasValue &&
+             !sameValue(value.get(), self.get().asObject<FunctionHeader>()->prototype))) {
+            return refuseDefine(throwOnRefusal, "Cannot redefine property: prototype");
+        }
+        return true;
+    }
+    if (d.hasValue) {
+        if (!value.get().isObject()) {
+            rtThrowTypeError("Assigning a non-object to a function's prototype is not supported");
+            return false;
+        }
+        auto* fn = self.get().asObject<FunctionHeader>();
+        fn->prototype = value.get();
+        fn->instance_shape = rtNewRootShape(value.get());
+    }
+    if (d.hasWritable && !d.wantWritable) {
+        self.get().asObject<FunctionHeader>()->prototype_readonly = true;
+    }
+    return true;
+}
+
 // 10.1.6.3, 10.4.2.1, 10.4.5.3 or 10.5.6, by the receiver's kind, over a table
 // the receiver keeps somewhere: a function's statics box, an array's three
 // stories above, a typed array's elements, a RegExp's `lastIndex`, a proxy's
@@ -558,6 +596,9 @@ static bool applyToReceiver(Rooted<Value>& self, PropertyKey name, const Decoded
     }
     Rooted<Value> holder{self.get()};
     if (kind == HeapKind::Function) {
+        bool answered = false;
+        const bool ok = applyFunctionDescriptor(self, name, d, value, throwOnRefusal, answered);
+        if (answered) return ok;
         rtPrepareFunctionOwnWrite(self);
         holder.set(self.get().asObject<FunctionHeader>()->properties);
     }
