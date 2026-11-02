@@ -414,7 +414,8 @@ std::optional<il::Module> Lowerer::lower() {
         guardRegionStatsReport(stats);
         // After the regions, so that a region's fast copy, whose element
         // reads already stand behind `is.number`, is the loop it versions.
-        applyTypedLoopVersions(ilModule_);
+        ColdBlocks coldLoops;
+        applyTypedLoopVersions(ilModule_, &coldLoops);
         applyTypedEntries(ilModule_, nullptr);
         // Last, so a body is copied as it is finished: its guarded regions
         // formed, a typed site's entry built and folded. Copied first, the
@@ -425,7 +426,7 @@ std::optional<il::Module> Lowerer::lower() {
         if (inlineGuarded_) {
             std::vector<uint32_t> inlinedInto;
             const ClosureGuesses guesses = directMethods_.closureGuesses(ilModule_);
-            inlineGuardedMethods(ilModule_, diags_, &inlinedInto, &guesses);
+            inlineGuardedMethods(ilModule_, diags_, &inlinedInto, &guesses, &coldLoops);
             if (diags_.hasErrors()) return std::nullopt;
             foldInlinedCallers(ilModule_, inlinedInto);
         }

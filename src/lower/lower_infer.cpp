@@ -162,13 +162,11 @@ std::optional<il::MathUnaryFn> Lowerer::mathUnaryCallFn(const ast::Call& call) c
     else if (*member == "trunc") fn = il::MathUnaryFn::Trunc;
     else if (*member == "sin") fn = il::MathUnaryFn::Sin;
     else if (*member == "cos") fn = il::MathUnaryFn::Cos;
-    // `definitelyNumericOperand`, not just `provenNumber`: the argument this
-    // exists for is the FFT/N-body shape — a const chain built from
-    // typed-element reads, which inference types dynamic but whose value,
-    // when one exists, can only be a number (a mixed BigInt pair throws before
-    // the call). That is exactly the licence the method's own ToNumber needs:
-    // a number in, unchanged, out.
-    if (!fn.has_value() || !definitelyNumericOperand(*call.args[0], 8)) return std::nullopt;
+    // Any argument: each of these methods begins with ToNumber(x) (21.3.2),
+    // and the checked unbox the call lowers its argument through is ToNumber
+    // for any value, a user valueOf and a BigInt's TypeError included. An
+    // argument that is not proven a number (`t + ph` over a parameter) is
+    // where the guarded-region pass then folds that unbox in its fast copy.
     return fn;
 }
 

@@ -124,6 +124,9 @@ class Versioner {
 public:
     Versioner(il::Function& fn, const std::vector<std::string>& keys) : fn_(fn), keys_(keys) {}
 
+    // The original loops of the versions made for a proven kind.
+    const std::vector<il::BlockId>& coldBlocks() const { return cold_; }
+
     // Versions every innermost loop it can. Returns how many.
     size_t run() {
         size_t done = 0;
@@ -326,6 +329,58 @@ private:
         if (typedOps == 0) return false;
         std::sort(receivers.begin(), receivers.end());
 
+        // The kinds to copy for. A view's kind never changes, so a typed op
+        // anywhere in the function on one of these receivers names the only
+        // kind it can be: copying for another makes a loop whose entry test
+        // always fails, and whose body took the inline budget
+        // (inline_guarded.cpp) from the copy that runs. Restricting the
+        // copies is sound whatever the op proves, since each is entered
+        // through its own is.typed_array test.
+        // A receiver read from a closure's environment is one `env.get` per
+        // read in some compiles, so a typed op on the same binding can name
+        // another value: two reads of one slot of one environment count as
+        // one receiver here.
+        const auto sameReceiver = [&](il::ValueId x) {
+            if (std::binary_search(receivers.begin(), receivers.end(), x)) return true;
+            if (x >= defs.size() || defs[x].block == il::kNoBlock || defs[x].index == UINT32_MAX) return false;
+            const il::Instruction& dx = fn_.blocks[defs[x].block].instructions[defs[x].index];
+            if (dx.op != il::Op::EnvGet || dx.operands.empty()) return false;
+            for (il::ValueId r : receivers) {
+                if (r >= defs.size() || defs[r].block == il::kNoBlock || defs[r].index == UINT32_MAX) continue;
+                const il::Instruction& dr = fn_.blocks[defs[r].block].instructions[defs[r].index];
+                if (dr.op == il::Op::EnvGet && !dr.operands.empty() && dr.operands[0] == dx.operands[0] &&
+                    dr.envDepth == dx.envDepth && dr.envIndex == dx.envIndex) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::vector<int32_t> kinds;
+        for (const auto& blk : fn_.blocks) {
+            for (const auto& inst : blk.instructions) {
+                if ((inst.op != il::Op::ElemGetTyped && inst.op != il::Op::ElemSetTyped) || inst.operands.empty() ||
+                    !sameReceiver(inst.operands[0])) {
+                    continue;
+                }
+                const int32_t k = inst.immI32 & il::kElemKindMask;
+                if (k != il::kElemKindPlainArrayF64 && std::find(kinds.begin(), kinds.end(), k) == kinds.end()) {
+                    kinds.push_back(k);
+                }
+            }
+        }
+        const bool provenKind = !kinds.empty();
+        if (!provenKind) {
+            kinds = {kKindFloat32, kKindFloat64};
+        } else {
+            kinds.erase(std::remove_if(kinds.begin(), kinds.end(),
+                                       [](int32_t k) { return k != kKindFloat32 && k != kKindFloat64; }),
+                        kinds.end());
+            std::sort(kinds.begin(), kinds.end(), [](int32_t a, int32_t b) {
+                return (a == kKindFloat32) > (b == kKindFloat32);
+            });
+            if (kinds.empty()) return false;
+        }
+
         // A copy in which nothing can run code or collect — every instruction
         // left in it is a typed op, arithmetic, a test or a `length` read of
         // a tested view — cannot change any view's length, shape or
@@ -375,7 +430,7 @@ private:
             std::vector<std::pair<il::BlockId, uint32_t>> sites;
         };
         std::vector<Copy> copies;
-        for (const int32_t kind : {kKindFloat32, kKindFloat64}) {
+        for (const int32_t kind : kinds) {
             // The copy's entry block comes first, so that what it defines
             // precedes its uses in block order (dominanceHolds).
             const il::BlockId entry = appendBlockLike(loop.preheader);
@@ -416,6 +471,11 @@ private:
             fn_ = original;
             return false;
         }
+        // The original loop is now the fallback, run only when every copy's
+        // entry test failed: inline_guarded.cpp spends its budget on the
+        // copies first (f32 first, the kind WebGL buffers are), and on it
+        // only with what is left.
+        cold_.insert(cold_.end(), loop.blocks.begin(), loop.blocks.end());
         if (tracing()) {
             std::fprintf(stderr,
                          "[typed-loop] %s: b%u, %zu receivers, %zu typed ops, %zu length reads on entry, "
@@ -817,18 +877,21 @@ private:
 
     il::Function& fn_;
     const std::vector<std::string>& keys_;
+    std::vector<il::BlockId> cold_;
     // The typed ops the last copy() made, by position in the copy.
     std::vector<std::pair<il::BlockId, uint32_t>> typedSites_;
 };
 
 }  // namespace
 
-bool applyTypedLoopVersions(il::Module& module) {
+bool applyTypedLoopVersions(il::Module& module, ColdBlocks* cold) {
     bool any = false;
-    for (auto& fn : module.functions) {
+    for (size_t f = 0; f < module.functions.size(); ++f) {
+        il::Function& fn = module.functions[f];
         if (fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody()) continue;
         Versioner v(fn, module.keyConstants);
         any |= v.run() != 0;
+        if (cold && !v.coldBlocks().empty()) (*cold)[fn.name] = v.coldBlocks();
     }
     return any;
 }

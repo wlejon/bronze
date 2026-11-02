@@ -905,11 +905,16 @@ bool examineFunction(il::Function& fn, const std::vector<std::string>& keys,
         const RegionPlan& plan = plans.front();
         size_t regionInsts = 0;
         for (il::BlockId b : plan.blocks) regionInsts += fn.blocks[b].instructions.size();
-        // The per-FUNCTION budget: what the duplication adds may not exceed
-        // what was there, so no function can be more than doubled however
-        // many loops it has — with the small-function floor above under it.
+        // The per-FUNCTION budget: the copies may not add more than was
+        // there, so no function can be more than doubled however many loops
+        // it has — with the small-function floor above under it. The bound is
+        // on the copied instructions; the guards and trampolines each copy
+        // brings are counted into `added` afterwards, against the next copy.
+        // Counting them here refused every function whose loop is nearly all
+        // of it (a per-frame `step(t)` over its instances): such a copy plus
+        // its guards is always a little over the function's size.
         const size_t estimate = regionInsts + 4 * plan.guardCount + 2 * plan.blocks.size();
-        if (added + estimate > std::max(originalInsts, kGrowthFloor)) {
+        if (added + regionInsts > std::max(originalInsts, kGrowthFloor)) {
             if (attempt == 0) ++stats.refusedGrowth;
             break;
         }

@@ -2,6 +2,10 @@
 
 #include "il/il.h"
 
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 namespace bronze::lower {
 
 // TYPED-LOOP VERSIONING: an IL -> IL pass that gives an innermost loop over a
@@ -66,6 +70,12 @@ namespace bronze::lower {
 // SLOW copy is left alone.
 //
 // `BRONZE_TYPED_LOOP_VERSION_TRACE=1` prints one line per loop versioned.
-bool applyTypedLoopVersions(il::Module& module);
+// `cold` receives the blocks of each original loop versioned, by function
+// name (applyTypedEntries, which runs in between, adds functions): the
+// original runs only when every copy's entry test fails, so
+// inline_guarded.cpp spends its room there last. When a typed op on the
+// receiver proves its kind, only that kind is copied.
+using ColdBlocks = std::unordered_map<std::string, std::vector<il::BlockId>>;
+bool applyTypedLoopVersions(il::Module& module, ColdBlocks* cold = nullptr);
 
 }  // namespace bronze::lower

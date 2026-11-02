@@ -193,7 +193,8 @@ bool isCandidate(const il::Function& fn, bool closure) {
 
 class Inliner {
 public:
-    Inliner(il::Module& module, const ClosureGuesses* guesses) : module_(module), guesses_(guesses) {
+    Inliner(il::Module& module, const ClosureGuesses* guesses, const ColdBlocks* cold)
+        : module_(module), guesses_(guesses), cold_(cold) {
         originals_.resize(module.functions.size());
         candidate_.assign(module.functions.size(), 0);
         closureCandidate_.assign(module.functions.size(), 0);
@@ -226,6 +227,20 @@ public:
         types_ = valueTypes(fn);
         slowBlock_.assign(fn.blocks.size(), 0);
         closureTried_.assign(fn.blocks.size(), 0);
+        // Second-pass blocks: a guarded region's slow copy, and the generic
+        // loop typed_loop_version.cpp copied per view kind, which runs only
+        // once every copy's entry test has failed.
+        lateBlock_.assign(fn.blocks.size(), 0);
+        for (size_t b = 0; b < fn.blocks.size(); ++b) {
+            if (fn.blocks[b].copyClass == il::CopyClass::Slow) lateBlock_[b] = 1;
+        }
+        if (cold_) {
+            if (const auto it = cold_->find(fn.name); it != cold_->end()) {
+                for (il::BlockId b : it->second) {
+                    if (b < lateBlock_.size()) lateBlock_[b] = 1;
+                }
+            }
+        }
         markLoops(fn);
         const size_t limit =
             std::min(kMaxCallerInstructions, std::max(count * 2 + kCallerGrowthSlack, count + kMinCallerGrowth));
@@ -239,7 +254,7 @@ public:
         // calls of `compose` and `Matrix4.toArray` for want of room.
         for (int pass = 0; pass < 2; ++pass)
         for (size_t b = 0; b < fn.blocks.size(); ++b) {
-            if ((fn.blocks[b].copyClass == il::CopyClass::Slow) != (pass == 1)) continue;
+            if ((b < lateBlock_.size() && lateBlock_[b]) != (pass == 1)) continue;
             if (slowBlock_[b] || (!inLoop_[b] && !hot)) continue;
             for (size_t i = 0; i < fn.blocks[b].instructions.size(); ++i) {
                 const il::Instruction& inst = fn.blocks[b].instructions[i];
@@ -266,11 +281,16 @@ public:
                 }
                 const bool asClosure = callee == closure;
                 if (trace()) {
-                    std::fprintf(stderr, "[inline] %s <- %s%s (%zu)%s\n", fn.name.c_str(),
+                    std::fprintf(stderr, "[inline] %s <- %s%s (%zu)%s%s\n", fn.name.c_str(),
                                  asClosure ? "closure " : "", module_.functions[callee].name.c_str(),
-                                 instructionCount(originals_[callee]), inLoop_[b] ? "" : " outside loops");
+                                 instructionCount(originals_[callee]), inLoop_[b] ? "" : " outside loops",
+                                 pass == 1 ? " late" : "");
                 }
+                const uint8_t late = b < lateBlock_.size() ? lateBlock_[b] : 0;
                 inlineAt(fn, static_cast<il::BlockId>(b), i, callee, asClosure ? next : 0);
+                // The body's blocks are the call block's: the rest of block b
+                // is among them, and the pass that took b reaches it.
+                lateBlock_.resize(fn.blocks.size(), late);
                 count += grows;
                 ++inlined;
                 // Block b now ends at the guard; the rest of it is the last
@@ -678,6 +698,8 @@ private:
     std::vector<il::Function> originals_;
     // The blocks holding a guard's original call, whose call stays a call.
     std::vector<uint8_t> slowBlock_;
+    std::vector<uint8_t> lateBlock_;
+    const ColdBlocks* cold_ = nullptr;
     std::vector<uint8_t> inLoop_;
     std::vector<uint8_t> candidate_;
     std::vector<uint8_t> closureCandidate_;
@@ -693,8 +715,8 @@ private:
 bool inlineGuardedEnabled(const InlineGuardedOptions& options) { return options.on; }
 
 bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector<uint32_t>* changed,
-                          const ClosureGuesses* guesses) {
-    Inliner inliner(module, guesses);
+                          const ClosureGuesses* guesses, const ColdBlocks* cold) {
+    Inliner inliner(module, guesses, cold);
     bool any = false;
     for (size_t f = 0; f < module.functions.size(); ++f) {
         if (inliner.inlineInto(static_cast<uint32_t>(f)) == 0) continue;
