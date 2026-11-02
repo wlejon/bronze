@@ -710,6 +710,9 @@ Type FlowAnalyzer::call(const ast::Call& c) {
         if (InferMemo* memo = mod_.rec()) memo->noteNestedFn(nIdx, callee.version);
         if (!callee.signature.returnType.is(TypeKind::Never)) return callee.signature.returnType;
         if (!callee.bodyReturn.is(TypeKind::Never)) return callee.bodyReturn;
+        // The call is the nested function's, whatever a module function of the
+        // same name would say: it contributes nothing to that one.
+        return Type::never();
     }
 
     const uint32_t index = calleeType.functionIndex();

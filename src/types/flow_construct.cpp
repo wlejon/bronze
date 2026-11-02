@@ -237,8 +237,25 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
         if (dynamic_cast<const ast::SpreadElement*>(a.get())) spreadArgs = true;
         args.push_back(expr(*a));
     }
+    // `new ns.C()` through a module namespace (`import * as ns`) is `new C()`:
+    // the namespace is an exotic object whose getter returns C's binding, so
+    // the callee is C exactly as the bare name would be.
+    std::string nsCtor;
+    if (ident == nullptr) {
+        const auto* member = dynamic_cast<const ast::MemberAccess*>(n.callee.get());
+        if (member != nullptr && !member->optional && !member->isPrivate &&
+            calleeBase.is(TypeKind::Object) && calleeBase.shapeClass() != kNoShapeClass) {
+            if (InferMemo* memo = mod_.rec()) memo->noteObjectLitTable(mod_.objectLitTableVersion);
+            if (const auto it = mod_.objectLitCtorNames.find({calleeBase.shapeClass(), member->property});
+                it != mod_.objectLitCtorNames.end()) {
+                nsCtor = it->second;
+            }
+        }
+    }
     // This site's contribution to the constructor's parameters (ctor_ident.h).
-    if (ident != nullptr && mod_.ctors.isClassName(ident->name)) {
+    if (!nsCtor.empty()) {
+        if (mod_.ctors.isClassName(nsCtor)) constructSite(nsCtor, args, spreadArgs);
+    } else if (ident != nullptr && mod_.ctors.isClassName(ident->name)) {
         constructSite(ident->name, args, spreadArgs);
     } else {
         constructUnbounded(*n.callee, calleeBase, args, spreadArgs);
@@ -269,7 +286,9 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
             }
         }
     }
-    const ShapeClassId cls = ident != nullptr ? constructorShape(ident->name) : kNoShapeClass;
+    const ShapeClassId cls = !nsCtor.empty() ? constructorShape(nsCtor)
+                             : ident != nullptr ? constructorShape(ident->name)
+                                                : kNoShapeClass;
     if (record_ && cls != kNoShapeClass) mod_.result->siteShapes[&n] = cls;
     return Type::object(cls);
 }

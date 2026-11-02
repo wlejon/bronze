@@ -501,6 +501,14 @@ public:
         names.insert(name);
     }
 
+    // When set, a bare name called (`f(x)`) is not a mention: the escape test
+    // (types/escape.h) asks for the names used in any OTHER position.
+    bool skipCalleeNames = false;
+    void visit(const Call& c) override {
+        if (!skipCalleeNames || !dynamic_cast<const Ident*>(c.callee.get())) c.callee->accept(*this);
+        for (const auto& arg : c.args) arg->accept(*this);
+    }
+
     // The function whose free names are wanted: its parameters and body form
     // the outermost scope of the walk, so a default like `(a, b = a)` binds.
     void walkFunction(const std::vector<StmtPtr>& body, const std::vector<Param>* params,

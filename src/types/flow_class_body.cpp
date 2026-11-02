@@ -100,6 +100,17 @@ Type FlowAnalyzer::objectLit(const ast::ObjectLit& o) {
                     if (f->body.size() == 1) {
                         if (const auto* ret = ast::exactAs<const ast::ReturnStmt*>(f->body[0].get())) {
                             if (const auto* id = ast::exactAs<const ast::Ident*>(ret->value.get())) {
+                                // `new ns.C()` names C's constructor through the
+                                // getter (FlowAnalyzer::newExpr).
+                                if (mod_.ctors.isClassName(id->name) ||
+                                    mod_.indexByName.count(id->name) != 0) {
+                                    auto& ctor = mod_.objectLitCtorNames[{cls, p.key}];
+                                    if (ctor != id->name) {
+                                        ctor = id->name;
+                                        ++mod_.objectLitTableVersion;
+                                        ++mod_.persistentWrites;
+                                    }
+                                }
                                 if (const auto it = mod_.indexByName.find(id->name);
                                     it != mod_.indexByName.end()) {
                                     auto& vec = mod_.objectLitMethods[{cls, p.key}];

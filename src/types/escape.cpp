@@ -1,5 +1,6 @@
 #include "types/escape.h"
 
+#include "ast/query_walk.h"
 #include "types/walk.h"
 
 namespace bronze::types {
@@ -54,44 +55,6 @@ private:
     }
 };
 
-class EscapeWalker final : public Walker {
-public:
-    std::set<std::string> escaping;
-
-    void visit(const ast::Ident& n) override { escaping.insert(n.name); }
-
-    void visit(const ast::Call& n) override {
-        // The one non-escaping position. Everything else about the call —
-        // its arguments, and a callee that is not a bare name — still walks.
-        if (!dynamic_cast<const ast::Ident*>(n.callee.get())) {
-            n.callee->accept(*this);
-        }
-        for (const auto& a : n.args) a->accept(*this);
-    }
-
-    // `new` has no override: unlike a call, its callee is NOT a non-escaping
-    // position — the constructor's `.prototype` outlives the site and every
-    // instance holds it — so the base walk, which reaches the callee as an
-    // ordinary expression, records exactly what is wanted.
-
-    void visit(const ast::VarDecl& n) override {
-        escaping.insert(n.name);
-        Walker::visit(n);
-    }
-
-    void visit(const ast::FunctionDecl& n) override {
-        escaping.insert(n.name);
-        for (const auto& p : n.params) escaping.insert(p.name);
-        Walker::visit(n);
-    }
-
-    void visit(const ast::FunctionExpr& n) override {
-        if (!n.name.empty()) escaping.insert(n.name);
-        for (const auto& p : n.params) escaping.insert(p.name);
-        Walker::visit(n);
-    }
-};
-
 }  // namespace
 
 std::set<std::string> escapingNames(const ast::Module& module) {
@@ -126,12 +89,19 @@ std::set<std::string> escapingNames(const ast::Module& module) {
                safety.globalMemberProps.count(fn) == 0 && !safety.globalObjectEscaped;
     };
 
-    EscapeWalker w;
+    // A mention resolves to the module binding only where no scope around it
+    // binds the name: `function setup() {} return { setup }` inside a library
+    // factory is that factory's own `setup`, not the module's. FreeNameVisitor
+    // is the scope walk closures are captured by, so a name it reports free is
+    // one that resolves outward, and one it drops is bound on the way.
+    ast::detail::FreeNameVisitor w;
+    w.skipCalleeNames = true;
+    std::set<std::string> escaping;
     for (const auto& stmt : module.body) {
         if (!stmt) continue;
         // A module-level function declaration is the definition of the name,
         // not a reference to it — so its body and parameters are walked
-        // directly, bypassing the override that would record the name.
+        // directly, bypassing the mention of its own name.
         if (const auto* fn = dynamic_cast<const ast::FunctionDecl*>(stmt.get())) {
             // Unless it is exported. A signature is specialized by joining over
             // every call site, and its licence to do so is "this function has
@@ -140,9 +110,12 @@ std::set<std::string> escapingNames(const ast::Module& module) {
             // join and is free to pass anything. So the name escapes here, in
             // the analysis, rather than being re-tested by every consumer of
             // the result.
-            if (fn->isExported) w.escaping.insert(fn->name);
-            for (const auto& p : fn->params) w.escaping.insert(p.name);
-            w.walkList(fn->body);
+            if (fn->isExported) escaping.insert(fn->name);
+            w.walkFunction(fn->body, &fn->params);
+        } else if (const auto* ex = dynamic_cast<const ast::ExportNamesDecl*>(stmt.get())) {
+            if (!ex->hasFrom) {
+                for (const auto& spec : ex->specifiers) escaping.insert(spec.local);
+            }
         } else if (isSafeGlobalExport(*stmt)) {
             continue;
         } else if (const auto* blk = dynamic_cast<const ast::BlockStmt*>(stmt.get())) {
@@ -153,7 +126,8 @@ std::set<std::string> escapingNames(const ast::Module& module) {
             stmt->accept(w);
         }
     }
-    return std::move(w.escaping);
+    escaping.insert(w.names.begin(), w.names.end());
+    return escaping;
 }
 
 }  // namespace bronze::types

@@ -270,6 +270,9 @@ struct ModuleContext {
     std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>> objectLitMethods;
     std::map<std::pair<ShapeClassId, std::string>, std::vector<uint32_t>> objectLitSetters;
     std::map<std::pair<ShapeClassId, std::string>, std::string> objectLitModuleVars;
+    // A module namespace's getter that returns a class or a module function:
+    // the name `new ns.<key>()` constructs (FlowAnalyzer::newExpr).
+    std::map<std::pair<ShapeClassId, std::string>, std::string> objectLitCtorNames;
     uint32_t objectLitTableVersion = 0;
     // Whether a read off a closed literal shape may spend what
     // `objectLitFields` and the audit say about it: a literal installs every

@@ -465,18 +465,35 @@ TEST_CASE("a missing argument reaches the parameter as undefined") {
           "  #0 expr\n");
 }
 
-TEST_CASE("a shadowing binding stops a name being direct-callable") {
-    // `helper` is a parameter of `wrapper`, so a call through that name is
-    // not necessarily a call to the module function. The escape test is
-    // blunt by design and rules the module function out entirely.
+TEST_CASE("a shadowing binding is the shadowing scope's, not the module function's") {
+    // `helper` is a parameter of `wrapper`, so `helper(1)` there calls the
+    // parameter, and the module function has no caller it cannot see. A
+    // library factory's own `setup`, handed out as `{ setup }`, is that
+    // factory's binding too: neither makes the module's `setup` escape.
     const auto inferred = infer(
         "function helper(a) { return a; }\n"
         "function wrapper(helper) { return helper(1); }\n"
-        "wrapper(1);\n");
+        "function setup(n) { return n * 2; }\n"
+        "function lib() { function setup(o) { return o.y; } return { setup }; }\n"
+        "wrapper(1);\n"
+        "helper(2);\n"
+        "setup(3);\n"
+        "lib();\n");
+
+    const auto& r = *inferred.result;
+    CHECK(r.isDirectCallable("helper"));
+    CHECK(r.isDirectCallable("wrapper"));
+    CHECK(r.isDirectCallable("setup"));
+}
+
+TEST_CASE("a free mention of a module function in a nested scope still escapes it") {
+    const auto inferred = infer(
+        "function helper(a) { return a; }\n"
+        "function wrapper() { { let helper = 1; } return [helper]; }\n"
+        "wrapper();\n");
 
     const auto& r = *inferred.result;
     CHECK_FALSE(r.isDirectCallable("helper"));
-    CHECK(r.isDirectCallable("wrapper"));
 }
 
 TEST_CASE("an exported function is not direct-callable, however plain its call sites") {
