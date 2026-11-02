@@ -63,6 +63,11 @@ enum class BuiltinOp { None, Sqrt, Abs, Floor, Ceil, Sin, Cos };
 struct BuiltinTarget {
     BuiltinOp op = BuiltinOp::None;
     bronze_fn_code code = nullptr;
+    // The builtin's symbol in the shared runtime: an image (an AOT module, an
+    // executable) compares against its address as an import, which the
+    // loader binds to the function itself (an Abs64 to an import is the
+    // symbol's address, not its PLT stub).
+    const char* symbol = nullptr;
 };
 
 // The builtin a one-argument call of a function read with key `key_index`
@@ -70,19 +75,26 @@ struct BuiltinTarget {
 BuiltinTarget builtin_target_for_key(const IlLowering* lowering, uint32_t key_index) {
     if (!lowering) return {};
     const PropertyLoweringHelper& pl = const_cast<IlLowering*>(lowering)->prop_lowering();
-    // The hit test compares against this process's address of the builtin:
-    // only a module that runs here (not an AOT object) can hold it.
-    if (!pl.feedback_driven() || !pl.in_process() || !pl.enable_inlined_fastpaths()) return {};
+    // The hit test compares the method's code word with the builtin's
+    // address: this process's, for a module that runs here under the tiered
+    // pipeline; the import's, for an image (direct_js_calls), whose loader
+    // binds it to the same function.
+    const bool here = pl.feedback_driven() && pl.in_process() && pl.enable_inlined_fastpaths();
+    const bool image = !pl.in_process() && lowering->options().direct_js_calls;
+    if (!here && !image) return {};
     const auto& keys = lowering->options().key_constants;
     if (key_index >= keys.size()) return {};
     const std::string& key = keys[key_index];
-    if (key == "sqrt") return {BuiltinOp::Sqrt, &bronze_math_sqrt};
-    if (key == "abs") return {BuiltinOp::Abs, &bronze_math_abs};
-    if (key == "floor") return {BuiltinOp::Floor, &bronze_math_floor};
-    if (key == "ceil") return {BuiltinOp::Ceil, &bronze_math_ceil};
-    if (key == "sin") return {BuiltinOp::Sin, &bronze_math_sin};
-    if (key == "cos") return {BuiltinOp::Cos, &bronze_math_cos};
-    return {};
+    BuiltinTarget t;
+    if (key == "sqrt") t = {BuiltinOp::Sqrt, &bronze_math_sqrt, "bronze_math_sqrt"};
+    else if (key == "abs") t = {BuiltinOp::Abs, &bronze_math_abs, "bronze_math_abs"};
+    else if (key == "floor") t = {BuiltinOp::Floor, &bronze_math_floor, "bronze_math_floor"};
+    else if (key == "ceil") t = {BuiltinOp::Ceil, &bronze_math_ceil, "bronze_math_ceil"};
+    else if (key == "sin") t = {BuiltinOp::Sin, &bronze_math_sin, "bronze_math_sin"};
+    else if (key == "cos") t = {BuiltinOp::Cos, &bronze_math_cos, "bronze_math_cos"};
+    else return {};
+    if (image) t.code = nullptr;
+    return t;
 }
 
 BuiltinTarget builtin_target(const IlLowering* lowering, const BronzeInstruction& inst) {
@@ -125,12 +137,19 @@ Value* lower_builtin_call(IlLowering* lowering, const BuiltinTarget& target, uin
     Value* is_obj = b.build_eq(b.build_and(method, b.build_iconst_i64(static_cast<int64_t>(kTagMask))),
                                b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
     Value* ptr = b.build_and(method, b.build_iconst_i64(static_cast<int64_t>(kPayloadMask)));
-    Value* base = b.build_select(
-        is_obj, ptr, b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0]))));
+    // An image reads a non-object's header through the pinned TLS block,
+    // whose first word is the even proto epoch and so no function's header
+    // (il_ic_lowering.cpp, receiver_shape).
+    Value* not_object = target.code != nullptr
+        ? b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(&kNotAnObject[0])))
+        : b.build_pinned_tls_read();
+    Value* base = b.build_select(is_obj, ptr, not_object);
     Value* is_fn = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kFunctionHeaderLow));
-    Value* code = b.build_load(Type::i64(), base, BRONZE_ABI_FN_CODE_OFFSET);
-    Value* is_target =
-        b.build_eq(code, b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(target.code))));
+    // func_addr is a ptr, so the image's compare reads the code word as one.
+    Value* is_target = target.code != nullptr
+        ? b.build_eq(b.build_load(Type::i64(), base, BRONZE_ABI_FN_CODE_OFFSET),
+                     b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(target.code))))
+        : b.build_eq(b.build_load(Type::ptr(), base, BRONZE_ABI_FN_CODE_OFFSET), b.build_func_addr(target.symbol));
     Value* is_num = b.build_ule(arg, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
     Value* hit = b.build_and(b.build_and(is_obj, is_fn), b.build_and(is_target, is_num));
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::CallTarget, pl.key_tag(key_index));
