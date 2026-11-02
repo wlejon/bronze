@@ -212,7 +212,20 @@ std::optional<Lowerer::Value> Lowerer::lowerRelational(ast::BinaryOp op, Value l
     auto isNumeric = [](il::Type t) {
         return t == il::Type::F64 || t == il::Type::I32 || t == il::Type::Bool;
     };
-    const bool provenNumeric = isNumeric(lhs.type) && isNumeric(rhs.type);
+    // One side a number and the other boxed: with no BigInt able to reach the
+    // module (numericArithDisabled_), IsLessThan is a number compare after
+    // ToNumber of the boxed side. Step 1's ToPrimitive takes the NUMBER hint,
+    // step 3 needs both sides strings, which a number never is, and step 4's
+    // ToNumeric is ToNumber for anything but a BigInt; the left operand's
+    // ToPrimitive runs first only when it is the boxed one, so there is one
+    // conversion either way. The checked unbox is that ToNumber (a Symbol's
+    // TypeError, undefined's NaN, which the ordered compares answer false
+    // for), and the guarded-region pass hoists it out of a loop as one test,
+    // as `i < n` over a captured `n` wants.
+    const bool numberAndBoxed = (isNumeric(lhs.type) && rhs.type == il::Type::Dynamic) ||
+                                (lhs.type == il::Type::Dynamic && isNumeric(rhs.type));
+    const bool provenNumeric =
+        (isNumeric(lhs.type) && isNumeric(rhs.type)) || (numberAndBoxed && !numericArithDisabled_);
 
     il::Op ilOp;
     switch (op) {

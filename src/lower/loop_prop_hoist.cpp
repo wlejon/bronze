@@ -322,6 +322,13 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
                     unboxTable.push_back(
                         {src, inst.type, inst.rawUnbox, inst.nullishUnbox, inst.result});
                 }
+                // A checked unbox is ToNumber: on an object it calls valueOf /
+                // toString, which may write any property (`i < x` lowers to
+                // one, lower_expr_binary.cpp lowerRelational).
+                if (canRunUserCodeViaCoercion(inst, il::kNoValue, lengthKeyIndex, fn, defs,
+                                              isAccessorKey, protoPatchFree, &module)) {
+                    table.clear();
+                }
                 ++i;
                 continue;
             }

@@ -359,13 +359,19 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     // parameter typed number) is the same tag test either way and the same
     // box after it, so it buys the copy nothing and does not count toward the
     // floor. Without this a constructor of such stores was duplicated whole,
-    // each of its property adds emitted twice.
+    // each of its property adds emitted twice. A number only compared is the
+    // same bargain: the compare reads it from a register in either copy and
+    // its answer is a bool, never a box (`this.index >= list.length` in a
+    // small `push`, once a compare with a boxed side became a checked unbox).
     std::vector<uint8_t> numericUse;
     if (plan.entryRegion) {
         numericUse.assign(fn.valueCount, 0);
         for (const auto& block : fn.blocks) {
             for (const auto& inst : block.instructions) {
-                if (inst.op != il::Op::Box) {
+                const bool compare = inst.op == il::Op::CmpLt || inst.op == il::Op::CmpGt ||
+                                     inst.op == il::Op::CmpLe || inst.op == il::Op::CmpGe ||
+                                     inst.op == il::Op::CmpEq || inst.op == il::Op::CmpNe;
+                if (inst.op != il::Op::Box && !compare) {
                     for (il::ValueId id : inst.operands) {
                         if (id < fn.valueCount) numericUse[id] = 1;
                     }
