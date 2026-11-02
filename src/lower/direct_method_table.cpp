@@ -17,6 +17,10 @@ void DirectMethodTable::recordSite(uint32_t icIndex, std::string receiverClass,
     sites_[icIndex] = std::move(site);
 }
 
+void DirectMethodTable::recordSiteFieldKey(uint32_t icIndex, std::string fieldKey) {
+    if (const auto it = sites_.find(icIndex); it != sites_.end()) it->second.fieldKey = std::move(fieldKey);
+}
+
 void DirectMethodTable::recordClassMethod(const std::string& className,
                                           const std::string& superName,
                                           const std::string& method, uint32_t fnIndex) {
@@ -126,14 +130,37 @@ void DirectMethodTable::resolve(il::Module& ilModule) const {
         return il::Instruction::kNoDirectTarget;
     };
 
+    // A receiver inference gave no class still gets a guess, since the guess
+    // is only ever the fast half of the site (the guard compares the code
+    // word the site's method cache latched with the named function's):
+    //  - a read of a field every declaring class stores one class in
+    //    (`dummy.position.set`: Object3D's `position` is a Vector3);
+    //  - else the one class that declares a method of that name at all.
+    std::unordered_map<std::string, std::string> soleDeclarer;
+    for (const auto& [cls, methods] : classMethods_) {
+        for (const auto& [name, idx] : methods) {
+            (void)idx;
+            auto [it, fresh] = soleDeclarer.emplace(name, cls);
+            if (!fresh && it->second != cls) it->second.clear();
+        }
+    }
+    auto guessClass = [&](const Site& site) -> std::string {
+        if (!site.fieldKey.empty()) {
+            if (const auto g = fieldClassGuesses_.find(site.fieldKey); g != fieldClassGuesses_.end()) return g->second;
+        }
+        if (const auto d = soleDeclarer.find(site.method); d != soleDeclarer.end()) return d->second;
+        return {};
+    };
     for (auto& fn : ilModule.functions) {
         for (auto& block : fn.blocks) {
             for (auto& inst : block.instructions) {
                 if (inst.op != il::Op::MethodCall) continue;
                 const auto site = sites_.find(inst.icIndex);
-                if (site == sites_.end() || site->second.receiverClass.empty()) continue;
-                const uint32_t target =
-                    resolveName(site->second.receiverClass, site->second.method);
+                if (site == sites_.end()) continue;
+                const std::string cls =
+                    site->second.receiverClass.empty() ? guessClass(site->second) : site->second.receiverClass;
+                if (cls.empty()) continue;
+                const uint32_t target = resolveName(cls, site->second.method);
                 if (target >= ilModule.functions.size()) continue;
                 const il::Function& callee = ilModule.functions[target];
                 // The shapes a fixed operand list cannot express, exactly as

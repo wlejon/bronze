@@ -38,6 +38,14 @@ public:
     // override below it is exactly what the backend's code-pointer compare
     // rejects.
     void recordSite(uint32_t icIndex, std::string receiverClass, std::string method);
+    // A site whose receiver has no inferred class but is a read `x.<fieldKey>`:
+    // `resolve` may guess the class from what every class declaring that field
+    // stores in it (setFieldClassGuesses).
+    void recordSiteFieldKey(uint32_t icIndex, std::string fieldKey);
+    // field key -> the one class every class declaring that field stores in it.
+    void setFieldClassGuesses(std::unordered_map<std::string, std::string> guesses) {
+        fieldClassGuesses_ = std::move(guesses);
+    }
     // One entry of class name -> method name -> module function index, for the
     // ordinary instance methods (not static, not private, not an accessor, and
     // not a computed key: none of those is reachable as `recv.<name>`).
@@ -106,7 +114,9 @@ private:
     struct Site {
         std::string receiverClass;
         std::string method;
+        std::string fieldKey;
     };
+    std::unordered_map<std::string, std::string> fieldClassGuesses_;
     std::unordered_map<uint32_t, Site> sites_;
     std::unordered_map<uint32_t, Site> accessorSites_;
     // class -> key -> (getter, setter) function indices, kNoDirectTarget for

@@ -377,6 +377,7 @@ std::optional<il::Module> Lowerer::lower() {
     // The one pass that needs the module WHOLE: a method-call site and the
     // class body that answers it are lowered in the opposite order to the one
     // resolution wants (direct_method_table.h).
+    directMethods_.setFieldClassGuesses(fieldClassGuesses());
     directMethods_.resolve(ilModule_);
     directMethods_.markOwnCalleeSites(ilModule_);
     reportClassLayouts();

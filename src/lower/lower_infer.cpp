@@ -853,7 +853,56 @@ bool Lowerer::receiverIsArray(const ast::Expr& receiver) {
 void Lowerer::recordMethodCallSite(const il::Instruction& inst, const ast::Expr& receiver,
                                    const std::string& method) {
     if (method.empty()) return;
-    directMethods_.recordSite(inst.icIndex, receiverClassName(receiver), method);
+    std::string cls = receiverClassName(receiver);
+    const bool unknown = cls.empty();
+    directMethods_.recordSite(inst.icIndex, std::move(cls), method);
+    if (unknown) {
+        if (const auto* m = ast::exactAs<const ast::MemberAccess*>(&receiver);
+            m != nullptr && !m->optional && !m->isPrivate && !m->property.empty()) {
+            directMethods_.recordSiteFieldKey(inst.icIndex, m->property);
+        }
+    }
+}
+
+// field key -> the class every class that declares the field stores in it,
+// from the field harvest (ClassLayout::fieldTypes). A key some declarer
+// stores anything else in, or no class at all, has no entry. A guess only:
+// see DirectMethodTable::resolve.
+std::unordered_map<std::string, std::string> Lowerer::fieldClassGuesses() const {
+    std::unordered_map<std::string, std::string> out;
+    if (inference_ == nullptr) return out;
+    const types::ClassLayoutTable& layouts = inference_->classLayouts;
+    std::unordered_map<std::string, bool> refused;
+    for (const types::ClassLayout& c : layouts.all()) {
+        for (const std::string& field : c.fields) {
+            if (refused[field]) continue;
+            std::string held;
+            const auto t = c.fieldTypes.find(field);
+            if (t != c.fieldTypes.end() && t->second.is(types::TypeKind::Object) &&
+                t->second.shapeClass() != types::kNoShapeClass) {
+                if (const types::ClassLayout* fc = layouts.byShapeClass(t->second.shapeClass())) held = fc->name;
+            }
+            // A primitive is no receiver of a method, so a class storing one
+            // under the key casts no vote; anything else unknown refuses it.
+            if (held.empty()) {
+                if (t != c.fieldTypes.end() &&
+                    (t->second.is(types::TypeKind::Number) || t->second.is(types::TypeKind::String) ||
+                     t->second.is(types::TypeKind::Bool) || t->second.is(types::TypeKind::Null) ||
+                     t->second.is(types::TypeKind::Undefined))) {
+                    continue;
+                }
+                refused[field] = true;
+                out.erase(field);
+                continue;
+            }
+            auto [it, fresh] = out.emplace(field, held);
+            if (!fresh && it->second != held) {
+                refused[field] = true;
+                out.erase(it);
+            }
+        }
+    }
+    return out;
 }
 
 void Lowerer::reportClassLayouts() {

@@ -273,6 +273,12 @@ struct ModuleContext {
     // A module namespace's getter that returns a class or a module function:
     // the name `new ns.<key>()` constructs (FlowAnalyzer::newExpr).
     std::map<std::pair<ShapeClassId, std::string>, std::string> objectLitCtorNames;
+    // A class's name as a property names it (`X.Object3D` for `mod2.Object3D`)
+    // -> its shape class, for names exactly one class has; kNoShapeClass for
+    // a name two share. Built on first use: the class table is complete before
+    // any body is walked, so every round reads the same map.
+    std::unordered_map<std::string, ShapeClassId> classByShortName;
+    bool classByShortNameBuilt = false;
     uint32_t objectLitTableVersion = 0;
     // Whether a read off a closed literal shape may spend what
     // `objectLitFields` and the audit say about it: a literal installs every

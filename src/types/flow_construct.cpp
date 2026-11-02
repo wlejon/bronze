@@ -286,6 +286,30 @@ Type FlowAnalyzer::newExpr(const ast::NewExpr& n) {
             }
         }
     }
+    // `new <value>.C()` that named no class above: the identity of the one
+    // class called C, as a GUESS (objectIdentityOnly). A library handed over
+    // as an argument (`create({ THREE })`, then `new THREE.Object3D()`) is the
+    // case: nothing proves what `THREE` is, and an identity licenses only the
+    // shape-checked forms, so a wrong guess costs a miss.
+    if (nsCtor.empty() && ident == nullptr) {
+        const auto* member = dynamic_cast<const ast::MemberAccess*>(n.callee.get());
+        if (member != nullptr && !member->optional && !member->isPrivate && !member->property.empty() &&
+            member->property != "constructor") {
+            if (!mod_.classByShortNameBuilt) {
+                mod_.classByShortNameBuilt = true;
+                for (const ClassLayout& c : mod_.result->classLayouts.all()) {
+                    const size_t dot = c.name.rfind('.');
+                    const std::string shortName = dot == std::string::npos ? c.name : c.name.substr(dot + 1);
+                    auto [it, fresh] = mod_.classByShortName.emplace(shortName, c.shapeClass);
+                    if (!fresh) it->second = kNoShapeClass;
+                }
+            }
+            if (const auto it = mod_.classByShortName.find(member->property);
+                it != mod_.classByShortName.end() && it->second != kNoShapeClass) {
+                return Type::objectIdentityOnly(it->second);
+            }
+        }
+    }
     const ShapeClassId cls = !nsCtor.empty() ? constructorShape(nsCtor)
                              : ident != nullptr ? constructorShape(ident->name)
                                                 : kNoShapeClass;
