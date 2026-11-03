@@ -48,4 +48,31 @@ bronze_enter_js PROC FRAME
     ret
 bronze_enter_js ENDP
 
+; bronze_enter_js with the TLS block handed in rather than fetched: a runtime
+; operation that calls into compiled code many times (fn.h, JsEntryContext)
+; fetches it once.
+;
+; rcx = code, rdx = env, r8 = this, r9d = argc, [entry rsp + 40] = argv,
+; [entry rsp + 48] = tls.
+bronze_enter_js_tls PROC FRAME
+    push r13
+    .pushreg r13
+    sub rsp, 32
+    .allocstack 32
+    .endprolog
+
+    ; Entry rsp is now rsp + 40.
+    mov r13, qword ptr [rsp + 88]       ; tls
+    mov rax, rcx                        ; code
+    mov rcx, rdx                        ; env
+    mov rdx, r8                         ; this
+    mov r8d, r9d                        ; argc
+    mov r9, qword ptr [rsp + 80]        ; argv
+    call rax
+
+    add rsp, 32
+    pop r13
+    ret
+bronze_enter_js_tls ENDP
+
 END

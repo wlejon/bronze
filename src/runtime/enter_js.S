@@ -81,6 +81,44 @@ SYM(bronze_enter_js):
     .size SYM(bronze_enter_js), .-SYM(bronze_enter_js)
 #endif
 
+/* bronze_enter_js with the TLS block handed in (r9) rather than fetched: a
+ * runtime operation that calls into compiled code many times (fn.h,
+ * JsEntryContext) fetches it once. Nothing has to survive a call here, so
+ * only the pinned register is saved.
+ * rdi = code, rsi = env, rdx = this, ecx = argc, r8 = argv, r9 = tls. */
+    .globl SYM(bronze_enter_js_tls)
+#if !defined(__APPLE__)
+    .type SYM(bronze_enter_js_tls), @function
+#endif
+    .p2align 4
+SYM(bronze_enter_js_tls):
+    .cfi_startproc
+    pushq %rbp
+    .cfi_def_cfa_offset 16
+    .cfi_offset %rbp, -16
+    movq %rsp, %rbp
+    .cfi_def_cfa_register %rbp
+    pushq %r13
+    .cfi_offset %r13, -24
+    /* Realigns the stack for the call. */
+    subq $8, %rsp
+    movq %r9, %r13
+    movq %rdi, %rax
+    movq %rsi, %rdi
+    movq %rdx, %rsi
+    movl %ecx, %edx
+    movq %r8, %rcx
+    call *%rax
+    addq $8, %rsp
+    popq %r13
+    popq %rbp
+    .cfi_def_cfa %rsp, 8
+    ret
+    .cfi_endproc
+#if !defined(__APPLE__)
+    .size SYM(bronze_enter_js_tls), .-SYM(bronze_enter_js_tls)
+#endif
+
 #elif defined(__aarch64__)
 
 /* x0 = code, x1 = env, x2 = this, w3 = argc, x4 = argv. */
@@ -134,6 +172,39 @@ SYM(bronze_enter_js):
     .cfi_endproc
 #if !defined(__APPLE__)
     .size SYM(bronze_enter_js), .-SYM(bronze_enter_js)
+#endif
+
+/* bronze_enter_js with the TLS block handed in (x5); see the x64 twin.
+ * x0 = code, x1 = env, x2 = this, w3 = argc, x4 = argv, x5 = tls. */
+    .globl SYM(bronze_enter_js_tls)
+#if !defined(__APPLE__)
+    .type SYM(bronze_enter_js_tls), %function
+#endif
+    .p2align 2
+SYM(bronze_enter_js_tls):
+    .cfi_startproc
+    stp x28, x27, [sp, #-32]!
+    .cfi_def_cfa_offset 32
+    stp x29, x30, [sp, #16]
+    add x29, sp, #16
+    .cfi_def_cfa x29, 16
+    .cfi_offset x30, -8
+    .cfi_offset x29, -16
+    .cfi_offset x27, -24
+    .cfi_offset x28, -32
+    mov x28, x5
+    mov x9, x0
+    mov x0, x1
+    mov x1, x2
+    mov w2, w3
+    mov x3, x4
+    blr x9
+    ldp x29, x30, [sp, #16]
+    ldp x28, x27, [sp], #32
+    ret
+    .cfi_endproc
+#if !defined(__APPLE__)
+    .size SYM(bronze_enter_js_tls), .-SYM(bronze_enter_js_tls)
 #endif
 
 #else

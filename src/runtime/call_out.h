@@ -26,7 +26,9 @@ namespace bronze::runtime {
 // before an allocating call are addresses from before it. So the binding is a
 // FACT (this value is an ordinary function whose arity fits), and the two
 // fields are re-read through the caller's root on every call — two loads,
-// against a guard ladder plus an out-of-line helper entry.
+// against a guard ladder plus an out-of-line helper entry. What the entry
+// itself looks up per call (the enter hook, the TLS block) is the thread's
+// and not the callee's, so the bind takes it once too (JsEntryContext).
 //
 // The `NewTargetScope(undefined)` push is the other half, and the expensive
 // half — a rooted slot and a linked-list link, per call, measured at about
@@ -48,8 +50,9 @@ namespace bronze::runtime {
 class DirectCallee {
 public:
     // True when `callee` is an ordinary function object that `argc` arguments
-    // reach without padding — the exact condition under which
-    // `bronze_dynamic_call` would have called `fn->code` directly. Everything
+    // reach without padding and whose call does not throw by construction —
+    // the exact condition under which `bronze_dynamic_call` would have called
+    // `fn->code` directly. Everything
     // else (a proxy, a non-function, a callee needing under-arity padding)
     // answers false, and the caller keeps the helper for every element.
     //
@@ -62,7 +65,11 @@ public:
         if (hdr->flags != HeapKind::Function) return false;
         const FunctionHeader* fn = reinterpret_cast<const FunctionHeader*>(hdr);
         if (!fn->code) return false;
+        // A class constructor's call must throw (10.2.1 step 2), which only
+        // the helper does; its code would run the body as a plain call.
+        if ((fn->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) != 0) return false;
         if (fn->arity != 0 && argc < fn->arity) return false;
+        entry_ = JsEntryContext::current();
         bound_ = true;
         return true;
     }
@@ -75,11 +82,13 @@ public:
     uint64_t call(Rooted<Value>& calleeRoot, uint64_t thisBits, uint32_t argc,
                   const uint64_t* argv) const {
         FunctionHeader* fn = calleeRoot.get().asObject<FunctionHeader>();
-        return rtEnterJs(fn->code, fn->env_record.rawBits(), thisBits, argc, argv);
+        return rtEnterJsIn(entry_, fn->code, fn->env_record.rawBits(), thisBits, argc, argv);
     }
 
 private:
     bool bound_ = false;
+    // Looked up once at the bind, for the whole operation (fn.h).
+    JsEntryContext entry_;
 };
 
 }  // namespace bronze::runtime

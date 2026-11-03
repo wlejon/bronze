@@ -238,6 +238,9 @@ bool rtEntersWithoutScope(const FunctionHeader* fn) noexcept;
 // pinned register, loads the TLS block into it, calls `code`, restores it.
 extern "C" uint64_t bronze_enter_js(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
                                     uint32_t argc, const uint64_t* argv);
+// The same, with the TLS block handed in instead of fetched (JsEntryContext).
+extern "C" uint64_t bronze_enter_js_tls(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
+                                        uint32_t argc, const uint64_t* argv, void* tls);
 
 // THE way the runtime invokes a function object's code — compiled or native,
 // it makes no difference to the caller. Compiled code reads the TLS block
@@ -257,6 +260,23 @@ void rtSetEnterJsHook(EnterJsHook hook) noexcept;
 // interpreted frame's is translated here.
 uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits,
                    uint32_t argc, const uint64_t* argv);
+
+// What rtEnterJs looks up on every entry and that cannot change while one
+// runtime operation runs on one thread: the thread's enter hook (installed
+// once, when an engine is) and its TLS block (whose entry also arms the
+// thread's stack limit, which a nested entry from the same operation finds
+// armed). A runtime operation that calls into compiled code many times — a
+// sort's comparator, three.js's render list sorted every frame — takes it
+// once and enters through rtEnterJsIn, which is rtEnterJs less the three
+// thread-local lookups and the PLT call the trampoline made for the block.
+struct JsEntryContext {
+    EnterJsHook hook = nullptr;
+    void* tls = nullptr;
+    static JsEntryContext current() noexcept;
+};
+
+uint64_t rtEnterJsIn(const JsEntryContext& ctx, bronze_fn_code code, uint64_t env_bits,
+                     uint64_t this_bits, uint32_t argc, const uint64_t* argv);
 
 // Runs a compiled module's entry from C++. The entry loads the pinned
 // register itself (il2mir); a throw out of it continues as rtEnterJs's does.

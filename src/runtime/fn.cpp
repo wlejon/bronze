@@ -138,10 +138,19 @@ namespace {
 
 uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits, uint32_t argc,
                    const uint64_t* argv) {
+    return rtEnterJsIn(JsEntryContext::current(), code, env_bits, this_bits, argc, argv);
+}
+
+JsEntryContext JsEntryContext::current() noexcept {
+    return JsEntryContext{s_enter_js_hook, bronze_tls_enter()};
+}
+
+uint64_t rtEnterJsIn(const JsEntryContext& ctx, bronze_fn_code code, uint64_t env_bits,
+                     uint64_t this_bits, uint32_t argc, const uint64_t* argv) {
     runtime::ActiveDynamicTokenScope activeScope(reinterpret_cast<const void*>(code));
     uint64_t thrown = 0;
     try {
-        if (auto* hook = s_enter_js_hook) {
+        if (auto* hook = ctx.hook) {
             uint64_t result = 0;
             if (hook(code, env_bits, this_bits, argc, argv, &result)) return result;
         }
@@ -149,7 +158,7 @@ uint64_t rtEnterJs(bronze_fn_code code, uint64_t env_bits, uint64_t this_bits, u
         // pad below it, never past this frame's destructors (the unwinder
         // carries it here as a C++ exception instead).
         brass::GeneratedCodeEntryScope entry;
-        return bronze_enter_js(code, env_bits, this_bits, argc, argv);
+        return bronze_enter_js_tls(code, env_bits, this_bits, argc, argv, ctx.tls);
     } catch (const brass::InterpreterThrownException& e) {
         thrown = e.value().raw_bits();
     }

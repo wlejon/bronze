@@ -1,0 +1,22 @@
+3000 true 49 217 2799
+true key0 0 key99 221
+1,2,3
+1,2,3
+3,1,2
+1,2,3
+1,2,3
+true 1
+5,4,2,1
+1,2,4,5
+5,4,2,1
+true
+a,b,c
+8 [0,1,2,3,null,null,null,null] false false
+stop 4,3,2,1
+5 1,2,3,4,5
+1,2,3 true
+{"0":"a","1":"b","2":"d","length":4}
+true 2,1
+sorted frozen true
+0 1
+0,0,1,10,2,9,a,null,true,undefined

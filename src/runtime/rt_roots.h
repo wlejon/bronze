@@ -119,6 +119,10 @@ public:
 
     void set(uint32_t i, Value v) { block_.data()[i] = v; }
     uint32_t count() const noexcept { return block_.count(); }
+    // The rooted slots themselves, which the collector updates in place: a
+    // pointer into them stays valid, and the Value it reads stays current,
+    // across anything that allocates.
+    Value* slots() noexcept { return block_.data(); }
     const uint64_t* data() const noexcept {
         return reinterpret_cast<const uint64_t*>(block_.data());
     }
