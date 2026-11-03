@@ -640,8 +640,24 @@ uint64_t bronze_dynamic_call(uint64_t calleeBits, uint64_t thisBits, uint32_t ar
                              const uint64_t* argvBits) {
     recordCallSite("bronze_dynamic_call", calleeBits);
     recordDynamicCallMiss(calleeBits, thisBits, argc, argvBits);
-    NewTargetScope targetScope(Value::fromUndefined());
     Value calleeVal(calleeBits);
+    // A runtime builtin called through a reference (`const sqrt = Math.sqrt;
+    // sqrt(x)`, a callback a builtin was handed): C++ that needs neither the
+    // generated-code entry nor, when it reads no new.target
+    // (rtEntersWithoutScope), the scope below, so it is called as the function
+    // it is — only its realm is entered first. The entry and the scope were
+    // two thirds of such a call. Fewer arguments than its arity, a class
+    // constructor and every non-native take the general path.
+    if (calleeVal.isObject() && calleeVal.asObject<HeapObjectHeader>()->flags == HeapKind::Function) {
+        auto* native = calleeVal.asObject<FunctionHeader>();
+        if (native->isNativeCode() && !(native->function_flags & BRONZE_ABI_FN_FLAG_CLASS_CTOR) &&
+            (native->arity == 0 || argc >= native->arity) && rtEntersWithoutScope(native)) {
+            CalleeRealmScope realm(native->realmSlot());
+            if (realm.dead()) return rtThrowTypeError(kDeadRealmCall).rawBits();
+            return native->code(native->env_record.rawBits(), thisBits, argc, argvBits);
+        }
+    }
+    NewTargetScope targetScope(Value::fromUndefined());
     if (!calleeVal.isObject()) {
         return rtThrowTypeError(std::string(valueKindName(calleeVal)) + " is not a function")
             .rawBits();

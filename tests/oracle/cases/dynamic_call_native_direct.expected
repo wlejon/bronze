@@ -1,0 +1,15 @@
+math 1514624
+noargs -Infinity Infinity NaN
+arity 255 12 Hi
+ctor Map true
+ctor Set true
+ctor WeakMap true
+ctor Promise true
+object object object true
+array 3 1,2
+conv 12 8 false true
+bound 0,1,2,3,4
+this true
+throws 200
+cb 1,2,3 6
+apply 9
