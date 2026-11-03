@@ -15,9 +15,11 @@
 
 #include "../lower/lower_fixture.h"
 #include "il/print.h"
+#include "il/verifier.h"
 #include "opt/wpo/census.h"
 #include "opt/wpo/shape.h"
 #include "opt/wpo/solver.h"
+#include "opt/wpo/stamp.h"
 #include "opt/wpo/wpo.h"
 
 using namespace bronze;
@@ -32,7 +34,7 @@ struct Analysis {
     std::vector<SiteFact> facts;
 };
 
-Analysis analyze(const std::string& src) {
+Analysis analyze(const std::string& src, bool predict = false) {
     Analysis a;
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
@@ -40,7 +42,9 @@ Analysis analyze(const std::string& src) {
     REQUIRE_FALSE(diags.hasErrors());
     REQUIRE(mod.has_value());
     a.mod = std::make_unique<il::Module>(std::move(*mod));
-    a.solver = std::make_unique<Solver>(*a.mod, SolverOptions{});
+    SolverOptions opts;
+    opts.predict = predict;
+    a.solver = std::make_unique<Solver>(*a.mod, opts);
     a.solver->run();
     a.shapes = std::make_unique<ShapeAnalysis>(*a.solver);
     a.shapes->run();
@@ -312,20 +316,206 @@ TEST_CASE("a deleted key voids the object's slots") {
     CHECK(b.slot == -1);
 }
 
-TEST_CASE("the census prints without changing the module") {
+// ---- predictions (Solver `predict`) and the claims made from them ----
+
+TEST_CASE("a prediction keeps an escaped object's fields; a proof does not") {
+    const char* src =
+        "class K { constructor() { this.a = 1; this.b = 2; } }\n"
+        "function rb(o) { return o.b; }\n"
+        "const k = new K();\n"
+        "globalThis.kept = k;\n"
+        "console.log(rb(k));\n";
+    const auto proved = analyze(src);
+    const auto pb = site(proved, "rb", il::Op::PropGet, "b");
+    CHECK(pb.prop == PropClass::Unknown);
+    const auto predicted = analyze(src, /*predict=*/true);
+    const auto qb = site(predicted, "rb", il::Op::PropGet, "b");
+    CHECK(qb.slot == 1);
+    CHECK((qb.prop == PropClass::SingleShape || qb.prop == PropClass::SameSlotEscaped));
+}
+
+TEST_CASE("a typeof of a name nothing defines prunes its branch in a prediction only") {
+    const char* src =
+        "class S { constructor() { this.a = 1; if (typeof __DEV__ !== 'undefined') { __DEV__.see(this); } } }\n"
+        "function ra(o) { return o.a; }\n"
+        "console.log(ra(new S()));\n";
+    const auto proved = analyze(src);
+    CHECK(site(proved, "ra", il::Op::PropGet, "a").prop == PropClass::Unknown);
+    const auto predicted = analyze(src, /*predict=*/true);
+    const auto a = site(predicted, "ra", il::Op::PropGet, "a");
+    CHECK(a.prop == PropClass::SingleShape);
+    CHECK_FALSE(a.partial);
+    // The guarded call is in a block control never reaches.
+    CHECK(site(predicted, "S", il::Op::MethodCall, "see").call == CallClass::Unreached);
+}
+
+TEST_CASE("a branch on a constant boolean takes one edge in a proof") {
+    const auto a = analyze(
+        "function f(o, flag) { if (flag) { globalThis.kept = o; } return o.a; }\n"
+        "console.log(f({ a: 1 }, false));\n");
+    const auto s = site(a, "f", il::Op::PropGet, "a");
+    CHECK(s.prop == PropClass::SingleShape);
+    CHECK(s.slot == 0);
+}
+
+TEST_CASE("an unknown receiver beside known ones still predicts the known ones") {
+    const auto a = analyze(
+        "class K { constructor() { this.a = 1; } }\n"
+        "function ra(o) { return o.a; }\n"
+        "globalThis.cb = ra;\n"
+        "console.log(ra(new K()));\n",
+        /*predict=*/true);
+    const auto s = site(a, "ra", il::Op::PropGet, "a");
+    CHECK(s.partial);
+    CHECK(s.prop == PropClass::SingleShape);
+    CHECK(s.slot == 0);
+}
+
+TEST_CASE("a predicted single shape is stamped with a cell of its own") {
     DiagnosticSink diags;
     SourceBuffer buf("test.ts", "");
     auto mod = lower_test::inferAndLower(
-        "class P { constructor() { this.x = 1; } get() { return this.x; } }\n"
-        "console.log(new P().get());\n",
+        "function mk() { return { a: 1, b: 2 }; }\n"
+        "function rb(o) { return o.b; }\n"
+        "globalThis.cb = rb;\n"
+        "console.log(rb(mk()));\n",
         diags, buf);
     REQUIRE(mod.has_value());
-    const std::string before = il::print(*mod);
-    StatsOptions opts;
+    const uint32_t before = mod->staticSiteCount;
+    optimizeForBuild(*mod, BuildOptions{});
+    bool found = false;
+    for (const auto& fn : mod->functions) {
+        if (fn.name != "rb") continue;
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op != il::Op::PropGet || mod->keyConstants[inst.keyIndex] != "b") continue;
+                found = true;
+                CHECK(inst.staticSlot == 1);
+                CHECK(inst.staticSlotGuessed);
+                CHECK(inst.familyLo == il::Instruction::kNoFamily);
+                CHECK(inst.staticCellIndex >= before);
+                CHECK(inst.staticCellIndex < mod->staticSiteCount);
+            }
+        }
+    }
+    CHECK(found);
+    DiagnosticSink vdiags;
+    CHECK(il::verify(*mod, vdiags));
+}
+
+TEST_CASE("receivers of one class family get a family range that declares the key at the slot") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lower_test::inferAndLower(
+        "class A { constructor() { this.a = 1; this.b = 2; } getb() { return this.b; } }\n"
+        "class B extends A { constructor() { super(); this.c = 3; } }\n"
+        "class C { constructor() { this.b = 5; } }\n"
+        "const arr = [new A(), new B()];\n"
+        "let sum = 0;\n"
+        "for (const x of arr) sum += x.b + x.getb();\n"
+        "const other = [new C()];\n"
+        "for (const y of other) sum += y.b;\n"
+        "console.log(sum);\n",
+        diags, buf);
+    REQUIRE(mod.has_value());
+    BuildOptions opts;
+    opts.stats = true;
+    optimizeForBuild(*mod, opts);
+    DiagnosticSink vdiags;
+    CHECK(il::verify(*mod, vdiags));
+    if (mod->classFamilies.empty()) return;
+    for (const auto& fn : mod->functions) {
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op != il::Op::PropGet || !inst.staticSlotGuessed) continue;
+                if (inst.familyLo == il::Instruction::kNoFamily) continue;
+                // Every family the guard admits declares the key at the slot.
+                for (uint32_t c = inst.familyLo; c <= inst.familyLo + inst.familySpan; ++c) {
+                    const auto& fields = mod->classFamilies[c].fields;
+                    REQUIRE(inst.staticSlot < fields.size());
+                    CHECK(fields[inst.staticSlot].keyIndex == inst.keyIndex);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("a store into a prototype keeps the generic set") {
+    // The generic set tells the method caches a prototype changed; a static
+    // store would leave `h.m()` calling the method it replaced.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lower_test::inferAndLower(
+        "class Host { m(a) { return a; } }\n"
+        "const h = new Host();\n"
+        "function swap(f) { Host.prototype.m = f; }\n"
+        "swap(function (a) { return a + 1; });\n"
+        "console.log(h.m(1));\n",
+        diags, buf);
+    REQUIRE(mod.has_value());
+    optimizeForBuild(*mod, BuildOptions{});
+    for (const auto& fn : mod->functions) {
+        if (fn.name != "swap") continue;
+        for (const auto& block : fn.blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op == il::Op::PropSet && mod->keyConstants[inst.keyIndex] == "m") {
+                    CHECK(inst.staticSlot == il::Instruction::kNoStaticSlot);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("a predicted method target is set only for a callee no own slot holds") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lower_test::inferAndLower(
+        "class P { m() { return 1; } }\n"
+        "function f() { return 2; }\n"
+        "function viaProto(o) { return o.m(); }\n"
+        "function viaSlot(o) { return o.n(); }\n"
+        "globalThis.cb = viaProto;\n"
+        "console.log(viaProto(new P()), viaSlot({ n: f }));\n",
+        diags, buf);
+    REQUIRE(mod.has_value());
+    optimizeForBuild(*mod, BuildOptions{});
+    auto directOf = [&](const std::string& name) {
+        for (const auto& fn : mod->functions) {
+            if (fn.name != name) continue;
+            for (const auto& block : fn.blocks) {
+                for (const auto& inst : block.instructions) {
+                    if (inst.op == il::Op::MethodCall) return inst.directTarget;
+                }
+            }
+        }
+        return il::Instruction::kNoDirectTarget;
+    };
+    const uint32_t proto = directOf("viaProto");
+    REQUIRE(proto != il::Instruction::kNoDirectTarget);
+    CHECK(mod->functions[proto].name == "P.m");
+    CHECK(directOf("viaSlot") == il::Instruction::kNoDirectTarget);
+}
+
+TEST_CASE("the census does not change what the build does to the module") {
+    const char* src =
+        "class P { constructor() { this.x = 1; } get() { return this.x; } }\n"
+        "console.log(new P().get());\n";
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto plain = lower_test::inferAndLower(src, diags, buf);
+    auto counted = lower_test::inferAndLower(src, diags, buf);
+    REQUIRE(plain.has_value());
+    REQUIRE(counted.has_value());
+    BuildOptions quiet;
+    CHECK(optimizeForBuild(*plain, quiet).empty());
+    BuildOptions opts;
+    opts.stats = true;
     opts.perSite = true;
     opts.filter = "P.get";
-    const std::string report = statsReport(*mod, opts);
+    const std::string report = optimizeForBuild(*counted, opts);
     CHECK(report.find("wpo: functions") != std::string::npos);
+    CHECK(report.find("wpo-pred: functions") != std::string::npos);
     CHECK(report.find("wpo-site P.get") != std::string::npos);
-    CHECK(il::print(*mod) == before);
+    CHECK(report.find("wpo-stamp: predicted static slots") != std::string::npos);
+    CHECK(il::print(*plain) == il::print(*counted));
 }

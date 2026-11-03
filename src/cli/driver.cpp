@@ -435,15 +435,18 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
-    // The whole-program analysis reads the module the backend is about to
-    // compile and changes nothing in it, so the build's output is the same
-    // with the flag as without.
-    if (wpoStats) {
-        wpo::StatsOptions wpoOpts;
+    // The whole-program optimizer: every AOT build runs it on the module the
+    // backend is about to compile. `--wpo-stats` only adds its census, so the
+    // build's output is the same with the flag as without.
+    {
+        wpo::BuildOptions wpoOpts;
         wpoOpts.hostGlobals = hostGlobals;
+        wpoOpts.stats = wpoStats;
         wpoOpts.perSite = wpoStatsPerSite;
         wpoOpts.filter = wpoStatsFilter;
-        std::fputs(wpo::statsReport(*ilModule, wpoOpts).c_str(), stdout);
+        const std::string report = wpo::optimizeForBuild(*ilModule, wpoOpts);
+        timer.mark("wpo");
+        if (wpoStats) std::fputs(report.c_str(), stdout);
     }
 
     reportWarnings(diags, sources);

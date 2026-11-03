@@ -10,6 +10,7 @@
 // the object aliases them and goes wherever the body sends it.
 
 #include <algorithm>
+#include <iterator>
 #include <unordered_map>
 
 #include "opt/wpo/solver.h"
@@ -285,14 +286,19 @@ AVal Solver::methodCall(const il::Instruction& inst, const AVal& recv, const Cal
     // alone. Without the split every method of a polymorphic site would see
     // every receiver of the site as `this`.
     AVal out;
-    std::unordered_map<ObjId, ObjSet> byTarget;
-    bool unknownTarget = false;
-    for (ObjId r : recv.objs) {
+    // The lookups are kept per site, and only receivers not looked up yet
+    // are, unless the heap under the earlier ones changed.
+    MethodLookup& memo = lookups_[curSite_];
+    const ObjSet fresh = unreadReceivers(recv.objs, memo.seen);
+    for (ObjId r : fresh) {
         AVal fnv;
         readKey(r, inst.keyIndex, AVal::obj(r), fnv, 0);
-        if (fnv.topObj) unknownTarget = true;
-        for (ObjId f : fnv.objs) byTarget[f].push_back(r);
+        if (fnv.topObj) memo.unknownTarget = true;
+        for (ObjId f : fnv.objs) insertInto(memo.byTarget[f], r);
     }
+    if (!fresh.empty()) unionInto(memo.seen, fresh);
+    std::unordered_map<ObjId, ObjSet> byTarget = memo.byTarget;
+    bool unknownTarget = memo.unknownTarget;
     if (recv.topObj) {
         // An unknown receiver may be any object that escaped, and a method
         // its chain holds runs with it as `this`. An escaped function, and a
@@ -300,9 +306,14 @@ AVal Solver::methodCall(const il::Instruction& inst, const AVal& recv, const Cal
         // first is called with unknown arguments, the second lets its
         // arguments escape), so only the program's own unescaped methods are
         // called here.
+        //
+        // A prediction keeps escaped objects in the values that reach them
+        // (joinTracked), so an unknown receiver there is an object the
+        // program never made, and the dispatch is left out.
         unknownTarget = true;
-        topCallSites_.insert(curSite_);
-        for (ObjId r : escapedList_) {
+        if (!opts_.predict) topCallSites_.insert(curSite_);
+        static const std::vector<ObjId> kNone;
+        for (ObjId r : opts_.predict ? kNone : escapedList_) {
             if (contains(recv.objs, r) || !userChain(r)) continue;
             AVal fnv;
             readKey(r, inst.keyIndex, AVal::obj(r), fnv, 0);

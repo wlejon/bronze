@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 #include "opt/wpo/solver_tags.h"
 
@@ -34,7 +35,45 @@ bool linkerRenamed(const std::string& name) {
     return i > 3 && i < name.size() && name[i] == '.';
 }
 
+// The one boolean a comparison of two values gives, when only one is
+// possible: what turns `typeof X !== 'undefined'` on a known type, and a
+// test of a constant flag, into a branch with one live edge.
+uint16_t compareConst(il::Op op, const AVal& a, const AVal& b) {
+    if (a.empty() || b.empty()) return kBool;
+    auto single = [](const AVal& v, uint16_t bit) { return v.prims == bit && !v.hasObjects(); };
+    bool eq = false;
+    if (a.isStrConst() && b.isStrConst()) {
+        eq = a.strKey == b.strKey;
+    } else if ((single(a, kTrue) || single(a, kFalse)) && (single(b, kTrue) || single(b, kFalse))) {
+        eq = a.prims == b.prims;
+    } else if (single(a, kUndef) && single(b, kUndef)) {
+        eq = true;
+    } else if (op == il::Op::LooseEq) {
+        const uint16_t nullish = kUndef | kNull;
+        if ((a.prims & ~nullish) != 0 || (b.prims & ~nullish) != 0 || a.hasObjects() || b.hasObjects()) return kBool;
+        eq = true;
+    } else {
+        return kBool;
+    }
+    if (op == il::Op::CmpNe) eq = !eq;
+    return eq ? kTrue : kFalse;
+}
+
 }  // namespace
+
+AVal Solver::typeOfValue(const AVal& v) {
+    // The one string `typeof` gives, when every value of the set gives it.
+    if (v.empty()) return AVal{};
+    const char* name = nullptr;
+    if (!v.hasObjects()) {
+        if (v.prims == kUndef) name = "undefined";
+        else if ((v.prims & ~kNumber) == 0) name = "number";
+        else if ((v.prims & ~(kStr | kStrOther)) == 0) name = "string";
+        else if ((v.prims & ~kBool) == 0) name = "boolean";
+    }
+    if (name == nullptr) return AVal::prim(kStr);
+    return AVal::str(keys_.intern(name));
+}
 
 Solver::Solver(const il::Module& mod, SolverOptions opts)
     : mod_(mod), opts_(std::move(opts)), catalog_(builtinCatalog()), insts_(mod), keys_(mod) {
@@ -137,48 +176,6 @@ ObjId Solver::alloc(uint32_t site, uint32_t tag, ObjKind kind) {
     return id;
 }
 
-void Solver::computeRpo(uint32_t f) {
-    const auto& fn = mod_.functions[f];
-    FnState& st = fns_[f];
-    st.rpo.clear();
-    if (fn.blocks.empty()) return;
-    std::vector<uint8_t> seen(fn.blocks.size(), 0);
-    std::vector<uint32_t> post;
-    // An iterative DFS: (block, next successor to try).
-    std::vector<std::pair<uint32_t, uint32_t>> stack;
-    auto successors = [&](uint32_t b, std::vector<uint32_t>& out) {
-        out.clear();
-        const auto& block = fn.blocks[b];
-        if (!block.instructions.empty()) {
-            const auto& last = block.instructions.back();
-            if (last.op == il::Op::Jump) out.push_back(last.target.block);
-            if (last.op == il::Op::Branch) {
-                out.push_back(last.target.block);
-                out.push_back(last.elseTarget.block);
-            }
-        }
-        if (block.handler != il::kNoBlock) out.push_back(block.handler);
-    };
-    std::vector<uint32_t> succ;
-    stack.push_back({0, 0});
-    seen[0] = 1;
-    while (!stack.empty()) {
-        auto& [b, next] = stack.back();
-        successors(b, succ);
-        if (next < succ.size()) {
-            const uint32_t s = succ[next++];
-            if (s < fn.blocks.size() && !seen[s]) {
-                seen[s] = 1;
-                stack.push_back({s, 0});
-            }
-            continue;
-        }
-        post.push_back(b);
-        stack.pop_back();
-    }
-    st.rpo.assign(post.rbegin(), post.rend());
-}
-
 void Solver::markReachable(uint32_t f) {
     FnState& st = fns_[f];
     if (st.reachable) return;
@@ -190,7 +187,7 @@ void Solver::markReachable(uint32_t f) {
         st.values[p].addPrims(primsForType(fn.params[p].type));
     }
     if (fn.isExternal) return;
-    computeRpo(f);
+    st.live.assign(fn.blocks.size(), 0);
     st.users.assign(fn.valueCount, {});
     for (uint32_t b = 0; b < fn.blocks.size(); ++b) {
         const auto& insts = fn.blocks[b].instructions;
@@ -206,9 +203,18 @@ void Solver::markReachable(uint32_t f) {
             for (il::ValueId v : insts[i].elseTarget.args) use(v);
         }
     }
-    // Every instruction runs once, in reverse post-order.
-    for (uint32_t b : st.rpo) {
+    if (!fn.blocks.empty()) markLive(f, 0);
+}
+
+void Solver::markLive(uint32_t f, uint32_t b) {
+    FnState& st = fns_[f];
+    const auto& fn = mod_.functions[f];
+    // A block runs once control can reach it: from the entry, along an edge
+    // a branch can take, or by a throw out of a live block into its handler.
+    while (b < st.live.size() && !st.live[b]) {
+        st.live[b] = 1;
         for (uint32_t i = 0; i < fn.blocks[b].instructions.size(); ++i) enqueueInst(insts_.id(f, b, i));
+        b = fn.blocks[b].handler;
     }
 }
 
@@ -225,13 +231,41 @@ void Solver::enqueueUsers(uint32_t f, il::ValueId v) {
 }
 
 void Solver::enqueueCallers(uint32_t f) {
-    for (uint32_t site : fns_[f].callers) enqueueInst(site);
+    // A caller may be a read that ran a getter: it reads every receiver
+    // again to take the new return.
+    for (uint32_t site : fns_[f].callers) {
+        rereadAll_[site] = 1;
+        enqueueInst(site);
+    }
+}
+
+ObjSet Solver::unreadReceivers(const ObjSet& recv, const ObjSet& seen) {
+    // The receivers not read yet, and the read ones whose own heap facts
+    // changed. A change anywhere else (a prototype, a getter's return) reads
+    // them all again.
+    auto dirty = dirtyObjs_.find(curSite_);
+    bool all = rereadAll_[curSite_] != 0;
+    rereadAll_[curSite_] = 0;
+    ObjSet out;
+    if (dirty != dirtyObjs_.end()) {
+        for (ObjId d : dirty->second) {
+            if (contains(seen, d)) out.push_back(d);
+            else if (!contains(recv, d)) all = true;
+        }
+        dirtyObjs_.erase(dirty);
+    }
+    if (all) return recv;
+    std::set_difference(recv.begin(), recv.end(), seen.begin(), seen.end(), std::back_inserter(out));
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 void Solver::run() {
     const auto start = std::chrono::steady_clock::now();
     recording_ = true;
     queued_.assign(insts_.size(), 0);
+    rereadAll_.assign(insts_.size(), 0);
     for (uint32_t f = 0; f < mod_.functions.size(); ++f) {
         const auto& fn = mod_.functions[f];
         if (fn.isEntryPoint) markReachable(f);
@@ -288,6 +322,8 @@ void Solver::widen(AVal& v) {
 }
 
 bool Solver::joinTracked(AVal& into, const AVal& from) {
+    // A prediction keeps every object it knows, escaped or not.
+    if (opts_.predict) return into.join(from);
     // An escaped object is one of the objects `topObj` stands for: a value
     // that takes it on holds `topObj` instead, so the sets that flow stay the
     // objects the program alone still knows about. Its methods are reached
@@ -314,6 +350,10 @@ bool Solver::mergeInto(AVal& into, const AVal& from, il::Type type, bool keepEsc
         keys.strKey = from.strKey;
         return into.join(keys);
     }
+    if (type == il::Type::Bool && !from.hasObjects() && (from.prims & ~kBool) == 0) {
+        // A boolean keeps which booleans it can be.
+        return into.addPrims(from.prims);
+    }
     if (type != il::Type::Dynamic && type != il::Type::Void) {
         return into.addPrims(primsForType(type));
     }
@@ -334,6 +374,7 @@ bool Solver::setResult(const il::Instruction& inst, const AVal& v, bool keepEsca
 void Solver::flowTarget(const il::BlockTarget& target, bool& changed) {
     const auto& fn = mod_.functions[curFn_];
     if (target.block >= fn.blocks.size()) return;
+    markLive(curFn_, target.block);
     const auto& params = fn.blocks[target.block].params;
     auto& values = fns_[curFn_].values;
     for (size_t i = 0; i < params.size() && i < target.args.size(); ++i) {
@@ -404,14 +445,17 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             break;
         }
         case Op::ConstI32: primResult(kI32); break;
-        case Op::ConstBool: primResult(kBool); break;
+        case Op::ConstBool: primResult(inst.immI32 != 0 ? kTrue : kFalse); break;
         case Op::ConstUndefined: primResult(kUndef); break;
         case Op::ConstNull: primResult(kNull); break;
         case Op::ConstBigInt: primResult(kBigInt); break;
         case Op::Add: primResult(kNumber | kStr | kBigInt); break;
-        case Op::ConcatBegin: case Op::ConcatAppend: case Op::ConcatEnd:
-        case Op::TypeOf: case Op::ToStr:
+        case Op::ConcatBegin: case Op::ConcatAppend: case Op::ConcatEnd: case Op::ToStr:
             primResult(kStr);
+            break;
+        case Op::TypeOf: result(typeOfValue(op(inst, 0))); break;
+        case Op::StrictEq: case Op::LooseEq: case Op::CmpEq: case Op::CmpNe:
+            primResult(compareConst(inst.op, op(inst, 0), op(inst, 1)));
             break;
         case Op::Sub: case Op::Neg: case Op::Mul: case Op::Div: case Op::Mod: case Op::Pow:
         case Op::ToNumeric: case Op::NumericStep: case Op::ToInt32: case Op::BitAnd:
@@ -419,8 +463,8 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         case Op::UShr: case Op::BitNot:
             primResult(kNumber | kBigInt);
             break;
-        case Op::CmpLt: case Op::CmpGt: case Op::CmpLe: case Op::CmpGe: case Op::CmpEq:
-        case Op::CmpNe: case Op::NumTruthy: case Op::StrictEq: case Op::LooseEq: case Op::RelLt:
+        case Op::CmpLt: case Op::CmpGt: case Op::CmpLe: case Op::CmpGe:
+        case Op::NumTruthy: case Op::RelLt:
         case Op::RelGt: case Op::RelLe: case Op::RelGe: case Op::IsNullish: case Op::IsNumber:
         case Op::IsDenseArray: case Op::InstanceOf: case Op::In: case Op::IterStep:
         case Op::MethodIcIs: case Op::AccessorIcIs: case Op::IsTypedArray: case Op::IsNumberArray:
@@ -454,17 +498,39 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             break;
         case Op::ExcTake: result(AVal::top()); break;
         case Op::Jump: flowTarget(inst.target, changed); break;
-        case Op::Branch:
-            flowTarget(inst.target, changed);
-            flowTarget(inst.elseTarget, changed);
+        case Op::Branch: {
+            // Only the edges the condition allows. A condition with no value
+            // yet takes both: an empty set here is a value the lattice has not
+            // modelled (a call that has not returned), not dead code.
+            const AVal& cond = op(inst, 0);
+            if (cond.empty() || cond.mayBeTruthy()) flowTarget(inst.target, changed);
+            if (cond.empty() || cond.mayBeFalsy()) flowTarget(inst.elseTarget, changed);
             break;
+        }
         case Op::Call: result(directCall(inst)); break;
         case Op::Box:
             if (inst.operands.empty()) result(AVal::str(inst.keyIndex));
             else result(op(inst, 0));
             break;
-        case Op::Unbox: primResult(primsForType(inst.type)); break;
-        case Op::PropGet: result(readProp(op(inst, 0), inst.keyIndex)); break;
+        case Op::Unbox: {
+            // A boolean unboxed is the booleans it was.
+            const AVal& v = op(inst, 0);
+            const bool bools = inst.type == il::Type::Bool && !v.hasObjects() && (v.prims & ~kBool) == 0;
+            if (bools && v.prims != 0) primResult(v.prims);
+            else if (!bools || !v.empty()) primResult(primsForType(inst.type));
+            break;
+        }
+        case Op::PropGet: {
+            // Only the receivers this site has not read yet, unless the heap
+            // under the ones it has read changed: the result only grows.
+            const AVal& recv = op(inst, 0);
+            ObjSet& seen = readRecv_[curSite_];
+            AVal fresh = recv;
+            fresh.objs = unreadReceivers(recv.objs, seen);
+            seen = recv.objs;
+            result(readProp(fresh, inst.keyIndex));
+            break;
+        }
         case Op::SuperGet: {
             AVal out;
             const AVal& self = op(inst, 1);
@@ -685,7 +751,15 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             for (ObjId o : op(inst, 0).objs) markFlag(o, &AObj::deleted);
             primResult(kBool);
             break;
-        case Op::GlobalGet: case Op::ResolveName: result(globalValue(inst.keyIndex)); break;
+        case Op::GlobalGet: result(globalValue(inst.keyIndex)); break;
+        case Op::ResolveName:
+            // A name no binding, provided global or host global declares
+            // (lower_unresolved.cpp). It is a property of the global object
+            // only if something the program does not show made it one, which
+            // a prediction assumes nothing did: `typeof __THREE_DEVTOOLS__`
+            // is then "undefined" and the code it guards does not run.
+            result(opts_.predict ? AVal::prim(kUndef) : globalValue(inst.keyIndex));
+            break;
         case Op::ImmutableAssign: case Op::PrivateMisuse: primResult(kUndef); break;
         case Op::PinGuard: case Op::CensusRecord: case Op::IterClose: case Op::KeepAlive:
         case Op::Print: case Op::PrintErr: case Op::PrintSpread: case Op::PrintSpreadErr:

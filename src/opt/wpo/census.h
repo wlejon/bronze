@@ -71,6 +71,8 @@ struct SiteFact {
     bool direct = false;           // a direct method target
     uint32_t directTarget = UINT32_MAX;
     bool inlined = false;          // an inlined copy
+    bool partial = false;          // unknown receivers beside the known ones
+    std::string wpoStamp;          // the claim stamp.h made on the site, for the dump
 };
 
 std::vector<SiteFact> classifySites(Solver& solver, const ShapeAnalysis& shapes);
@@ -80,6 +82,9 @@ struct CensusOptions {
     // comma-separated substrings of `filter`.
     bool perSite = false;
     std::string filter;
+    // What every line starts with: `wpo` for proofs, `wpo-pred` for the
+    // predictions.
+    std::string prefix = "wpo";
 };
 
 std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std::vector<SiteFact>& facts,

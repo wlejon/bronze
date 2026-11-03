@@ -93,7 +93,7 @@ public:
                     fact.direct = inst.directTarget != il::Instruction::kNoDirectTarget;
                     fact.directTarget = inst.directTarget;
                     fact.inlined = inst.inlineFrame != 0;
-                    if (s_.reachable(f)) {
+                    if (s_.reachable(f) && s_.blockLive(f, b)) {
                         if (prop) classifyProp(inst, fact);
                         else classifyCall(inst, fact);
                     }
@@ -142,7 +142,8 @@ private:
         }
         // An escaped object may have been given any key by code the program
         // does not show.
-        if (o.fields.count(key) != 0 || slot >= 0 || o.anyKey || o.escaped || forWrite) {
+        const bool escaped = o.escaped && !s_.options().predict;
+        if (o.fields.count(key) != 0 || slot >= 0 || o.anyKey || escaped || forWrite) {
             r.where = Where::OwnUnknown;
             r.holder = id;
             return r;
@@ -264,7 +265,10 @@ private:
         const AVal& recv = recvOf(inst);
         fact.receivers = recv.objs.size();
         summarize(recv, fact);
-        if (recv.topObj) {
+        // A prediction is about the receivers the program shows; the unknown
+        // rest is what the guard in front of the fast path is for.
+        fact.partial = recv.topObj && !recv.objs.empty();
+        if (recv.topObj && !(s_.options().predict && fact.partial)) {
             fact.prop = PropClass::Unknown;
             fact.cause = (recv.viaEscape ? "escaped objects, " : "") + causeOf(inst.operands[0]);
             return;
@@ -373,12 +377,15 @@ private:
             fact.call = CallClass::Unreached;
             return;
         }
-        if (recv.topObj) {
+        fact.partial = recv.topObj && !recv.objs.empty();
+        if (recv.topObj && !(s_.options().predict && fact.partial)) {
             fact.call = CallClass::Unknown;
             fact.cause = (recv.viaEscape ? "escaped objects, " : "") + causeOf(inst.operands[0]);
             return;
         }
-        const AVal fnv = s_.queryProp(recv, inst.keyIndex);
+        AVal known = recv;
+        known.topObj = false;
+        const AVal fnv = s_.queryProp(known, inst.keyIndex);
         const auto c = s_.callees(fnv);
         fact.targets = c.fns;
         if (c.unknown) {

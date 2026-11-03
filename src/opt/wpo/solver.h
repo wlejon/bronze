@@ -20,6 +20,17 @@
 // `notify`), or, for a call, when a callee's return grows. Monotone transfers
 // over a finite lattice make it a fixpoint.
 //
+// CONTROL is followed too: a block runs once control can reach it, and a
+// branch whose condition the lattice knows (a constant, a `typeof` of a value
+// of one type compared with a string) takes one edge. Booleans are two bits
+// (value.h) for that reason.
+//
+// Two MODES share the solver (SolverOptions::predict). A proof holds for every
+// run of the program and is what the census reports as `wpo`. A prediction is
+// what a fast path may assume behind a runtime guard: escaped objects keep the
+// fields the program gave them, a name only the global object could define is
+// undefined, and an unknown receiver dispatches to nothing the program shows.
+//
 // Context sensitivity is not built in, but the place for it is: the state of
 // a function is `FnState`, looked up by function index alone. Keying that table
 // by (function, context) — a receiver allocation site, for 1-object
@@ -66,6 +77,13 @@ struct SolverOptions {
     // value becomes unknown. A safety valve for the solver's running time,
     // not a precision knob.
     size_t setCap = 1024;
+    // PREDICTIONS instead of proofs: what a guarded fast path may assume.
+    // Escaped objects stay in the sets that reach them and keep the fields
+    // the program wrote (unknown code is assumed not to write them), and a
+    // name only the global object could define (`name.resolve`) is
+    // undefined. Every fact this mode adds must be one a runtime guard
+    // checks before code relies on it.
+    bool predict = false;
 };
 
 struct SolverStats {
@@ -96,6 +114,11 @@ public:
     size_t objectCount() const { return objs_.size(); }
     const AObj& object(ObjId id) const { return objs_[id]; }
     bool reachable(uint32_t fn) const { return fns_[fn].reachable; }
+    bool blockLive(uint32_t fn, uint32_t block) const {
+        const auto& live = fns_[fn].live;
+        return block < live.size() && live[block] != 0;
+    }
+    const SolverOptions& options() const { return opts_; }
     const AVal& value(uint32_t fn, il::ValueId v) const { return fns_[fn].values[v]; }
     const AVal& returned(uint32_t fn) const { return fns_[fn].ret; }
     bool calledWithUnknown(uint32_t fn) const { return fns_[fn].calledTop; }
@@ -142,7 +165,8 @@ private:
         std::unordered_map<il::ValueId, AVal> superForeign;
         // The call instructions (global ids) that read `ret`.
         std::unordered_set<uint32_t> callers;
-        std::vector<uint32_t> rpo;
+        // The blocks control can reach (Solver::markLive).
+        std::vector<uint8_t> live;
         // For each value, the instructions (global ids) that use it.
         std::vector<std::vector<uint32_t>> users;
     };
@@ -184,8 +208,9 @@ private:
 
     // ---- solver.cpp: the driver and the instruction transfers ----
     void prepass();
-    void computeRpo(uint32_t fn);
     void markReachable(uint32_t fn);
+    void markLive(uint32_t fn, uint32_t block);
+    AVal typeOfValue(const AVal& v);
     // The worklist is of instructions: one runs again when a value it uses,
     // a heap location it read, or a callee's return changes.
     void enqueueInst(uint32_t site);
@@ -275,6 +300,20 @@ private:
     std::vector<FnState> fns_;
     std::deque<uint32_t> worklist_;
     std::vector<uint8_t> queued_;
+    // Difference propagation for the reads that dominate the solve: a visit
+    // reads the receivers it has not read and those whose heap facts changed
+    // (`dirtyObjs_`), and all of them only when something else under the read
+    // changed (a prototype, a getter's return: `rereadAll_`).
+    struct MethodLookup {
+        ObjSet seen;
+        std::unordered_map<ObjId, ObjSet> byTarget;
+        bool unknownTarget = false;
+    };
+    ObjSet unreadReceivers(const ObjSet& recv, const ObjSet& seen);
+    std::vector<uint8_t> rereadAll_;
+    std::unordered_map<uint32_t, ObjSet> dirtyObjs_;
+    std::unordered_map<uint32_t, ObjSet> readRecv_;
+    std::unordered_map<uint32_t, MethodLookup> lookups_;
     // Every escaped object, in the order it escaped, and the method calls on
     // an unknown receiver, which dispatch over them (methodCall). Those
     // calls run again whenever the worklist drains with objects escaped

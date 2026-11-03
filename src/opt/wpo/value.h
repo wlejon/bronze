@@ -30,7 +30,10 @@ inline constexpr ObjId kNoObj = UINT32_MAX;
 enum Prim : uint16_t {
     kUndef = 1u << 0,
     kNull = 1u << 1,
-    kBool = 1u << 2,
+    // The two booleans apart, so a branch on a constant flows one way.
+    kFalse = 1u << 2,
+    kTrue = 1u << 9,
+    kBool = kFalse | kTrue,
     kI32 = 1u << 3,
     kF64 = 1u << 4,
     kStr = 1u << 5,
@@ -43,7 +46,7 @@ enum Prim : uint16_t {
     kStrOther = 1u << 8,
 };
 inline constexpr uint16_t kNumber = kI32 | kF64;
-inline constexpr uint16_t kAllPrims = 0x1FF;
+inline constexpr uint16_t kAllPrims = 0x3FF;
 
 // `strKey` when a string value may be more than one string.
 inline constexpr uint32_t kAnyStr = UINT32_MAX;
@@ -78,6 +81,11 @@ struct AVal {
     }
     // Only strings, each an enumerated key name.
     bool onlyEnumKeys() const { return prims == kStr && !hasObjects(); }
+    // Whether ToBoolean of some value of this set can give true, or false.
+    bool mayBeTruthy() const {
+        return hasObjects() || (prims & (kTrue | kNumber | kStr | kSym | kBigInt)) != 0;
+    }
+    bool mayBeFalsy() const { return (prims & (kFalse | kUndef | kNull | kNumber | kStr | kBigInt)) != 0; }
 
     // Joins `other` in; true when this value grew.
     bool join(const AVal& other);

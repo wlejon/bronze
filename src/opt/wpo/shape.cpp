@@ -48,7 +48,8 @@ void ShapeAnalysis::run() {
 bool ShapeAnalysis::singleShape(ObjId id) const {
     const ObjShape& s = shapes_[id];
     const AObj& o = solver_.object(id);
-    return s.modelled && s.exact && !s.partial && s.extras.empty() && !o.escaped && !o.anyKey &&
+    const bool escaped = o.escaped && !solver_.options().predict;
+    return s.modelled && s.exact && !s.partial && s.extras.empty() && !escaped && !o.anyKey &&
            !o.deleted && !o.attrsChanged && !o.protoSet;
 }
 
@@ -106,7 +107,7 @@ bool ShapeAnalysis::chainHasAccessor(uint32_t key) const {
         if (std::find(seen.begin(), seen.end(), o) != seen.end()) continue;
         seen.push_back(o);
         const AObj& a = solver_.object(o);
-        if (a.escaped || a.proto.topObj || a.accessors.count(key) != 0) return true;
+        if ((a.escaped && !solver_.options().predict) || a.proto.topObj || a.accessors.count(key) != 0) return true;
         if (a.kind == ObjKind::Builtin && solver_.keys().name(key) == "__proto__") return true;
         for (ObjId p : a.proto.objs) work.push_back(p);
     }
@@ -164,6 +165,10 @@ ShapeAnalysis::WalkOut ShapeAnalysis::walk(uint32_t fnIdx, uint32_t startBlock, 
     WalkOut out;
     const auto& mod = solver_.module();
     const il::Function& fn = mod.functions[fnIdx];
+    // An edge out of a block control never reaches feeds nothing.
+    auto live = [&](const il::Block& block) {
+        return solver_.blockLive(fnIdx, static_cast<uint32_t>(&block - fn.blocks.data()));
+    };
     if (depth > kMaxDepth || std::find(stack_.begin(), stack_.end(), fnIdx) != stack_.end() ||
         fn.isExternal || fn.blocks.empty()) {
         out.exit = in;
@@ -233,7 +238,7 @@ ShapeAnalysis::WalkOut ShapeAnalysis::walk(uint32_t fnIdx, uint32_t startBlock, 
             }
         };
         for (const auto& block : fn.blocks) {
-            if (block.instructions.empty()) continue;
+            if (block.instructions.empty() || !live(block)) continue;
             const auto& last = block.instructions.back();
             if (last.op == il::Op::Jump) check(last.target);
             if (last.op == il::Op::Branch) {
@@ -246,7 +251,7 @@ ShapeAnalysis::WalkOut ShapeAnalysis::walk(uint32_t fnIdx, uint32_t startBlock, 
     {
         std::vector<uint8_t> fed(nv, 0);
         for (const auto& block : fn.blocks) {
-            if (block.instructions.empty()) continue;
+            if (block.instructions.empty() || !live(block)) continue;
             const auto& last = block.instructions.back();
             auto mark = [&](const il::BlockTarget& t) {
                 if (t.block >= fn.blocks.size()) return;
@@ -275,7 +280,7 @@ ShapeAnalysis::WalkOut ShapeAnalysis::walk(uint32_t fnIdx, uint32_t startBlock, 
     size_t aliasRets = 0;
     bool excExposed = false;
     auto flow = [&](uint32_t succ, const State& s) {
-        if (succ >= fn.blocks.size()) return;
+        if (succ >= fn.blocks.size() || !solver_.blockLive(fnIdx, succ)) return;
         if (succ == startBlock && startInst > 0) {
             // Back to the creating instruction: a new object from here on.
             join(out.exit, s);

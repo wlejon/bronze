@@ -23,13 +23,13 @@ std::string fmt(const char* f, double v) {
 struct Tally {
     std::map<std::string, size_t> counts;
     void add(const std::string& k) { ++counts[k]; }
-    std::string top(const std::string& title, size_t n) const {
+    std::string top(const std::string& prefix, const std::string& title, size_t n) const {
         std::vector<std::pair<size_t, std::string>> rows;
         for (const auto& [k, c] : counts) rows.push_back({c, k});
         std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
             return a.first != b.first ? a.first > b.first : a.second < b.second;
         });
-        std::string out = "wpo: " + title + " (" + std::to_string(rows.size()) + " distinct)\n";
+        std::string out = prefix + ": " + title + " (" + std::to_string(rows.size()) + " distinct)\n";
         for (size_t i = 0; i < rows.size() && i < n; ++i) {
             out += "  " + std::to_string(rows[i].first) + "  " + rows[i].second + "\n";
         }
@@ -94,7 +94,7 @@ std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std:
             if (shapes.singleShape(id)) ++single;
         }
     }
-    out += "wpo: functions " + std::to_string(reachable) + " reachable of " + std::to_string(defined) +
+    out += opts.prefix + ": functions " + std::to_string(reachable) + " reachable of " + std::to_string(defined) +
            "; abstract objects " + std::to_string(solver.objectCount()) + " (";
     bool firstKind = true;
     for (const auto& [k, n] : byKind) {
@@ -103,9 +103,9 @@ std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std:
     }
     out += "), escaped " + std::to_string(escaped) + "\n";
     const auto& st = solver.stats();
-    out += "wpo: solver " + std::to_string(st.transfers) + " instruction transfers, " + fmt("%.0f", st.millis) + " ms; shapes " + fmt("%.0f", shapeMillis) +
+    out += opts.prefix + ": solver " + std::to_string(st.transfers) + " instruction transfers, " + fmt("%.0f", st.millis) + " ms; shapes " + fmt("%.0f", shapeMillis) +
            " ms; widenings " + std::to_string(st.widenings) + "\n";
-    out += "wpo: shapes modelled " + std::to_string(modelled) + ", exact " + std::to_string(exact) +
+    out += opts.prefix + ": shapes modelled " + std::to_string(modelled) + ", exact " + std::to_string(exact) +
            ", single-shape " + std::to_string(single) + "\n";
 
     // ---- per-class counts ----
@@ -191,32 +191,32 @@ std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std:
         for (const auto& [k, n] : counts) {
             if (k[0] != '(') total += n;
         }
-        out += "wpo: " + group + " sites " + std::to_string(total) + ":";
+        out += opts.prefix + ": " + group + " sites " + std::to_string(total) + ":";
         for (const auto& [k, n] : counts) out += " " + k + " " + std::to_string(n) + ";";
         out += "\n";
     }
-    out += "wpo: static-slot stamps vs the analysis's slot: agree " + std::to_string(stampAgree) + ", disagree " +
+    out += opts.prefix + ": static-slot stamps vs the analysis's slot: agree " + std::to_string(stampAgree) + ", disagree " +
            std::to_string(stampDisagree) + "\n";
-    out += "wpo: direct method targets vs the analysis: agree " + std::to_string(directAgree) + ", disagree " +
+    out += opts.prefix + ": direct method targets vs the analysis: agree " + std::to_string(directAgree) + ", disagree " +
            std::to_string(directDisagree) + ", not single " + std::to_string(directUnresolved) + "\n";
-    out += disagreements.top("sites where lowering's stamp or direct target and the analysis disagree", 20);
-    out += unknownCauses.top("unknown-receiver causes", 40);
-    out += unknownTargets.top("unknown method targets", 20);
-    out += escapedSites.top("same-slot-escaped sites by escaped receiver", 20);
-    out += notInPrefix.top("not-in-prefix sites by reason", 20);
-    out += mixedCauses.top("mixed sites with an unknown prototype", 10);
-    out += escapeReasons.top("escaped objects by kind and reason", 25);
-    out += escapeSites.top("escaped objects by the instruction that let them go", 30);
-    out += escapedInstances.top("escaped classes and class instances", 400);
-    out += inexactWhy.top("inexact shapes by reason", 20);
+    out += disagreements.top(opts.prefix, "sites where lowering's stamp or direct target and the analysis disagree", 20);
+    out += unknownCauses.top(opts.prefix, "unknown-receiver causes", 40);
+    out += unknownTargets.top(opts.prefix, "unknown method targets", 20);
+    out += escapedSites.top(opts.prefix, "same-slot-escaped sites by escaped receiver", 20);
+    out += notInPrefix.top(opts.prefix, "not-in-prefix sites by reason", 20);
+    out += mixedCauses.top(opts.prefix, "mixed sites with an unknown prototype", 10);
+    out += escapeReasons.top(opts.prefix, "escaped objects by kind and reason", 25);
+    out += escapeSites.top(opts.prefix, "escaped objects by the instruction that let them go", 30);
+    out += escapedInstances.top(opts.prefix, "escaped classes and class instances", 400);
+    out += inexactWhy.top(opts.prefix, "inexact shapes by reason", 20);
 
     // ---- per-function table ----
-    out += "wpo: per function: get <n> (single same-slot escaped-slot unknown other) | set <n> (slot unknown) | "
+    out += opts.prefix + ": per function: get <n> (single same-slot escaped-slot unknown other) | set <n> (slot unknown) | "
            "idx <resolved>/<n> | call <n> (single multi builtin unknown) | stamped direct\n";
     for (uint32_t f = 0; f < mod.functions.size(); ++f) {
         const FnRow& r = rows[f];
         if (!solver.reachable(f) || r.get + r.set + r.idx + r.call == 0) continue;
-        out += "wpo-fn " + mod.functions[f].name + " | get " + std::to_string(r.get) + " (" +
+        out += opts.prefix + "-fn " + mod.functions[f].name + " | get " + std::to_string(r.get) + " (" +
                std::to_string(r.getSingle) + " " + std::to_string(r.getSameSlot) + " " +
                std::to_string(r.getEscaped) + " " + std::to_string(r.getUnknown) + " " +
                std::to_string(r.getOther) + ") | set " + std::to_string(r.set) + " (" +
@@ -242,7 +242,7 @@ std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std:
                 return name.find(p) != std::string::npos;
             });
             if (!named) continue;
-            std::string line = "wpo-site " + name + " b" + std::to_string(f.block) + ":" + std::to_string(f.inst) +
+            std::string line = opts.prefix + "-site " + name + " b" + std::to_string(f.block) + ":" + std::to_string(f.inst) +
                                " " + il::opName(f.op) + " ." + solver.keys().name(f.key) +
                                (f.inlined ? " [inlined]" : "") + " -> " +
                                (f.isCall ? callClassName(f.call) : propClassName(f.prop));
@@ -258,6 +258,8 @@ std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std:
                 line += "}";
             }
             if (f.stamped) line += std::string(" stamp ") + (f.guessed ? "guess " : "") + std::to_string(f.stampSlot);
+            if (!f.wpoStamp.empty()) line += " wpo-stamp " + f.wpoStamp;
+            if (f.partial) line += " (+unknown)";
             if (f.direct && f.directTarget < mod.functions.size()) line += " direct " + mod.functions[f.directTarget].name;
             if (!f.cause.empty()) line += " cause: " + f.cause;
             if (!f.escapeWhy.empty()) line += " escaped: " + f.escapeWhy;

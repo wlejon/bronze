@@ -46,7 +46,10 @@ void Solver::notify(ObjId obj, uint32_t key) {
     auto wake = [&](uint32_t k) {
         auto it = readers_.find(DepKey{obj, k});
         if (it == readers_.end()) return;
-        for (uint32_t site : it->second) enqueueInst(site);
+        for (uint32_t site : it->second) {
+            insertInto(dirtyObjs_[site], obj);
+            enqueueInst(site);
+        }
     };
     wake(key);
     if (key != kKeyAny && key != kKeyFlags) wake(kKeyAny);
@@ -157,6 +160,11 @@ void Solver::readKey(ObjId start, uint32_t key, const AVal& self, AVal& out, int
     std::vector<ObjId> seen;
     const std::string& name = keys_.name(key);
     const bool numeric = isNumericKey(key);
+    // A prediction reads an escaped object's own facts: unknown code is
+    // assumed to have written only keys the program never names on it, so
+    // the read is unknown only when nothing on the chain has the key.
+    bool escapedOnChain = false;
+    bool found = false;
     while (!work.empty()) {
         const ObjId obj = work.back();
         work.pop_back();
@@ -165,23 +173,30 @@ void Solver::readKey(ObjId start, uint32_t key, const AVal& self, AVal& out, int
         depend(obj, key);
         depend(obj, kKeyFlags);
         const AObj& o = objs_[obj];
-        if (o.escaped) out.join(AVal::top());
+        if (o.escaped) {
+            if (opts_.predict) escapedOnChain = true;
+            else out.join(AVal::top());
+        }
         if (name == "__proto__") {
             depend(obj, kKeyProto);
             out.join(o.proto);
+            found = true;
             continue;
         }
         if ((o.kind == ObjKind::Array || o.kind == ObjKind::TypedArray) && name == "length") {
             out.addPrims(kI32);
+            found = true;
             continue;
         }
         if (o.kind == ObjKind::Function || o.kind == ObjKind::Bound) {
             if (name == "length") {
                 out.addPrims(kI32);
+                found = true;
                 continue;
             }
             if (name == "name" && o.fields.find(key) == o.fields.end()) {
                 out.addPrims(kStr);
+                found = true;
                 continue;
             }
         }
@@ -196,10 +211,14 @@ void Solver::readKey(ObjId start, uint32_t key, const AVal& self, AVal& out, int
             if (keys_.isIndex(key)) out.addPrims(kUndef);
         }
         auto field = o.fields.find(key);
-        if (field != o.fields.end()) out.join(field->second);
+        if (field != o.fields.end()) {
+            out.join(field->second);
+            found = true;
+        }
         auto acc = o.accessors.find(key);
         if (acc != o.accessors.end()) {
             const AVal getters = acc->second.getters;
+            found = true;
             out.join(callValue(getters, self, CallArgs{}));
         }
         if (objs_[obj].anyKey && !numeric) {
@@ -209,7 +228,10 @@ void Solver::readKey(ObjId start, uint32_t key, const AVal& self, AVal& out, int
         if (objs_[obj].kind == ObjKind::Builtin) {
             bool absent = false;
             readBuiltinMember(obj, key, out, absent);
-            if (!absent) continue;
+            if (!absent) {
+                found = true;
+                continue;
+            }
         }
         if (objs_[obj].kind == ObjKind::Env) continue;
         const AObj& cur = objs_[obj];
@@ -220,9 +242,17 @@ void Solver::readKey(ObjId start, uint32_t key, const AVal& self, AVal& out, int
         if (proto.objs.empty() || (proto.prims & kNull) != 0) out.addPrims(kUndef);
         for (ObjId p : proto.objs) work.push_back(p);
     }
+    if (escapedOnChain && !found) out.join(AVal::top());
 }
 
 void Solver::readAll(const ObjSet& starts, AVal& out, bool enumerableOnly) {
+    // A prediction does not follow a read by an unknown key: it would join
+    // every field of every receiver, which is no prediction a guard can use,
+    // and it is what would spread each object to every site.
+    if (opts_.predict) {
+        if (!starts.empty()) out.join(AVal::top());
+        return;
+    }
     // Every object on the receivers' chains once, however many receivers
     // share it. A read under an enumerated key name sees only what
     // enumeration can name: not a class's methods, accessors or
