@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "il/il.h"
@@ -78,5 +79,28 @@ bool dominanceHolds(const il::Function& fn);
 // survives the renumbering.
 // `alreadyBuilt` is renumbered with the blocks.
 uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt);
+
+// A list of renames, and the name a value has under it.
+using Rename = std::vector<std::pair<il::ValueId, il::ValueId>>;
+inline il::ValueId renamed(const Rename& map, il::ValueId v) {
+    for (const auto& [from, to] : map) {
+        if (from == v) return to;
+    }
+    return v;
+}
+
+// Every value an instruction READS, in place, so a rewrite touches operands and
+// block arguments through one function and cannot forget the second kind.
+template <typename Fn>
+void rewriteUses(il::Instruction& inst, Fn&& map) {
+    for (il::ValueId& id : inst.operands) id = map(id);
+    for (il::ValueId& id : inst.target.args) id = map(id);
+    for (il::ValueId& id : inst.elseTarget.args) id = map(id);
+}
+
+// Two clean-ups of a rewritten function: a fast copy's repeated raw view read
+// of one element shares the first, and a `box.f64` nothing reads is dropped.
+void cseFastElemGetTyped(il::Function& fn);
+void dropDeadF64Boxes(il::Function& fn);
 
 }  // namespace bronze::lower

@@ -529,6 +529,37 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                                         " is not first in the one successor of its closure.is test");
                 return false;
             }
+            if (inst.op == Op::IsShape &&
+                (inst.operands.size() != 1 || inst.type != Type::Bool || inst.result == kNoValue ||
+                 definedTypes[inst.operands[0]] != Type::Dynamic ||
+                 inst.staticSlot == Instruction::kNoStaticSlot)) {
+                diags.error(Span{}, "Function " + fn.name +
+                                        ": is.shape takes one dynamic operand and a site's slot claim, and is a bool");
+                return false;
+            }
+            // A shape-guarded site is a bare load or store at its claimed slot,
+            // and a store's value has to be one every slot representation takes
+            // without a barrier: a Number box.
+            if (inst.shapeGuarded) {
+                const bool site = (inst.op == Op::PropGet || inst.op == Op::PropSet) &&
+                                  inst.staticSlot != Instruction::kNoStaticSlot &&
+                                  inst.directTarget == Instruction::kNoDirectTarget;
+                bool numberValue = inst.op != Op::PropSet;
+                if (site && !numberValue && inst.operands.size() > 1) {
+                    for (const auto& block : fn.blocks) {
+                        for (const auto& def : block.instructions) {
+                            if (def.result == inst.operands[1]) {
+                                numberValue = def.op == Op::Box && def.boxType == Type::F64;
+                            }
+                        }
+                    }
+                }
+                if (!site || !numberValue) {
+                    diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                            " is shape-guarded without a static slot claim or a number to store");
+                    return false;
+                }
+            }
             // The kind is compared against the view header's kind word, so it
             // must be one of the Number kinds the typed element ops serve.
             const int32_t taKind = inst.immI32 & ~kTypedArrayPristineLength;
@@ -841,7 +872,7 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                             std::to_string(inst.defineAddCell) + ", which the module cannot back");
                     return false;
                 }
-                if (inst.op == Op::PropGet || inst.op == Op::PropSet ||
+                if (inst.op == Op::PropGet || inst.op == Op::PropSet || inst.op == Op::IsShape ||
                     inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
                     if (inst.icIndex >= module.icSiteCount) {
                         diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +

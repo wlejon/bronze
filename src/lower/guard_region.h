@@ -244,6 +244,10 @@ struct GuardRegionStats {
     uint32_t numberSkipped = 0;
     uint32_t blocksAdded = 0;
     uint32_t blocksPruned = 0;  // blocks the duplication left unreachable
+    // SHAPE GUARDS: `is.shape` tests emitted, and the static sites whose fast
+    // copy they made a bare load or store.
+    uint32_t shapeTests = 0;
+    uint32_t shapeGuarded = 0;
 
     // Refusals, by the thing that refused. `handler` and `singleEntry` are
     // properties of the CFG, `nonNumeric` and `tooFew` of the candidate
@@ -369,10 +373,15 @@ struct RegionPlan {
     // Otherwise the point is a merged READ RUN — see the header — and the fast
     // copy tests `receiver` at the split, performs everything up to
     // `guardIndex`, and tests the values there.
+    // A SHAPE RUN (`shapeRun`, no receiver) is a merged point over static
+    // reads instead: its licence is the point's shape tests, which cover every
+    // read of the run (see "SHAPE GUARDS").
     struct RunGuard {
         il::ValueId receiver = il::kNoValue;
         uint32_t maxIndex = 0;
         uint32_t guardIndex = 0;
+        bool shapeRun = false;
+        bool isRun() const { return receiver != il::kNoValue || shapeRun; }
     };
     std::vector<std::vector<RunGuard>> runGuardsOf;  // by block id
 
@@ -398,12 +407,35 @@ struct RegionPlan {
     };
     std::vector<std::vector<NumberWindow>> numberWindowsOf;  // by block id
 
+    // Parallel to `splitsOf` too: the `is.shape` tests that stand first at each
+    // point, one per distinct claim of a receiver whose sites the point covers
+    // (guard_region_shapes.cpp). A point may hold shape tests and nothing else.
+    struct ShapeTest {
+        il::ValueId receiver = il::kNoValue;
+        uint32_t slot = 0;
+        uint32_t cell = 0;
+        uint32_t familyLo = il::Instruction::kNoFamily;
+        uint32_t familySpan = 0;
+    };
+    std::vector<std::vector<std::vector<ShapeTest>>> shapeTestsOf;  // by block id
+    // By block id and instruction index: the sites whose fast copy is
+    // `shapeGuarded`, the bare access a covering point's tests license.
+    std::vector<std::vector<uint8_t>> shapeGuardedOf;
+    uint32_t shapeGuardedCount = 0;
+
     // Everything a guard licenses: promotable arithmetic whose result is a
     // candidate, plus every checked `unbox.f64` of one. It is the numerator of
     // the profitability ratio, and counting the unboxes is what makes a
     // straight-line kernel — whose arithmetic is already `f64` behind them —
     // worth anything at all.
     uint32_t promotedUseCount = 0;
+    // REPEATED RUN READS: by value, the earlier read of the same element a
+    // read inside the same index run repeats, else `kNoValue`. Behind the run's
+    // `is.dense_array` both are loads of one element with nothing between them
+    // that writes, so the fast copy keeps the first and needs no test of the
+    // second (`te[0] * te[0]` in `getMaxScaleOnAxis`).
+    std::vector<il::ValueId> aliasOf;
+    uint32_t aliasCount = 0;
     uint32_t guardCount = 0;
 };
 
@@ -418,6 +450,10 @@ struct RegionPlan {
 uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::string>& keys,
                             const std::vector<il::Type>& types, il::BlockId block,
                             std::vector<Candidate>& candidates, RegionPlan& plan);
+
+// Fills `plan.aliasOf` over the index runs `mergeReadRunGuards` settled, and
+// takes each folded read's test off `plan.guardCount`.
+void foldRepeatedRunReads(const il::Function& fn, const std::vector<std::string>& keys, RegionPlan& plan);
 
 // The read-run rule's two questions, shared with the number windows below.
 // `indexReadReceiver`: the receiver of a `prop.get` whose key is a canonical
@@ -460,6 +496,44 @@ bool pureInFastCopy(const il::Instruction& inst, const std::vector<il::Type>& ty
 // thing that sets it is a claim; neither can turn a claimed array's element
 // into a non-Number inside the window. A claim is never moved by a later pass
 // (il2mir does not hoist it).
+
+// ---------------------------------------------------------------------------
+// SHAPE GUARDS
+//
+// A static-slot site (il.h `staticSlot`) guards its receiver's shape itself and,
+// on a miss, runs the ordinary access, which may run a getter or a setter and
+// therefore change any object's shape. The site's join is where the two paths
+// meet again, and past it nothing the hit knew about any shape is still known:
+// `this.x * v.x + this.y * v.y + this.z * v.z` asks the six guards over again,
+// because each miss in between rejoins.
+//
+// In the fast copy a miss need not rejoin. A point's `is.shape` tests ask a
+// receiver's guard ONCE, for the claims of every site on it that the point
+// covers, and fail into the slow copy at the point, where the sites are their
+// ordinary selves. Behind them each covered site is `shapeGuarded`: a bare load,
+// or the bare store of a Number. What a point covers is a stretch of its block
+// that moves no shape — a covered site, an instruction pure in the fast copy
+// (`pureInFastCopy`), an index read behind its run's `is.dense_array` — and the
+// first instruction that is none of those ends it; a later site on the same
+// receiver is guarded again at a later point.
+//
+// A point is found for a site where one already is: the latest point of the
+// stretch at which the receiver is defined. Where there is none, a SHAPE POINT
+// is added in front of the site when the stretch it would open has more sites
+// than distinct tests — a split with shape tests and no value tests. A test
+// costs what the guard of the one site it answers costs, so a point whose every
+// test answers one site buys nothing but its own split.
+//
+// A SHAPE RUN is the read-run rule over static reads: their points merge at the
+// run's first read, as an index run's do, licensed by the shape tests there,
+// which cover every read of the run and so make each a load that may run again
+// in the slow copy.
+
+// Fills `plan.shapeTestsOf` and `plan.shapeGuardedOf`, adding shape points to
+// `plan.splitsOf` (and `plan.runGuardsOf`) where a stretch needs one. Run after
+// the read-run merge, before the number windows.
+// False when a shape run's read could not be covered, which refuses the region.
+bool planShapeGuards(const il::Function& fn, const std::vector<il::Type>& types, RegionPlan& plan);
 
 // Fills `plan.numberWindowsOf` for every region block, from the points and
 // candidates the selection settled. Writes nothing else.

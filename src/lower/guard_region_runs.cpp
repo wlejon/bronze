@@ -78,6 +78,9 @@ namespace {
 // One run found in a block: reads at `first .. lastRead` off `receiver`, and the
 // largest index any of them takes.
 struct ReadRun {
+    // A SHAPE RUN: static reads off receivers defined before `first`, and no
+    // `receiver`.
+    bool shape = false;
     uint32_t first = 0;
     uint32_t lastRead = 0;
     // One past the whole stretch that is reads-or-pure, which is where the
@@ -96,6 +99,48 @@ struct ReadRun {
 // the same receiver or pure in the fast copy; anything else closes it. A
 // redefinition of the receiver closes it too — the reads after that point are
 // off a different object and one `is.dense_array` cannot answer for both.
+// A static read a shape run may hold: its receiver is a boxed value the pass
+// does not promote, so `is.shape` has bits to test (guard_region.h "SHAPE
+// GUARDS" says what covers it).
+bool shapeRunRead(const il::Instruction& inst, const std::vector<il::Type>& types,
+                  const std::vector<uint8_t>& isCandidate) {
+    if (inst.op != il::Op::PropGet || inst.result == il::kNoValue || inst.operands.empty()) return false;
+    if (inst.staticSlot == il::Instruction::kNoStaticSlot) return false;
+    if (inst.directTarget != il::Instruction::kNoDirectTarget) return false;
+    const il::ValueId recv = inst.operands[0];
+    if (recv >= types.size() || types[recv] != il::Type::Dynamic) return false;
+    return !(recv < isCandidate.size() && isCandidate[recv] != 0);
+}
+
+// The shape run opened at `i`, if two static reads there make one: every read
+// off a receiver defined before the run, everything between them pure in the
+// fast copy.
+bool findShapeRun(const il::Block& block, const std::vector<il::Type>& types,
+                  const std::vector<uint8_t>& isCandidate, size_t i, ReadRun& run) {
+    const size_t n = block.instructions.size();
+    if (!shapeRunRead(block.instructions[i], types, isCandidate)) return false;
+    run = ReadRun{};
+    run.shape = true;
+    run.first = static_cast<uint32_t>(i);
+    run.lastRead = static_cast<uint32_t>(i);
+    std::vector<il::ValueId> definedInRun;
+    size_t j = i;
+    for (; j < n; ++j) {
+        const il::Instruction& inst = block.instructions[j];
+        if (shapeRunRead(inst, types, isCandidate) &&
+            std::find(definedInRun.begin(), definedInRun.end(), inst.operands[0]) == definedInRun.end()) {
+            run.lastRead = static_cast<uint32_t>(j);
+            ++run.reads;
+            definedInRun.push_back(inst.result);
+            continue;
+        }
+        if (!pureInFastCopy(inst, types, isCandidate)) break;
+        if (inst.result != il::kNoValue) definedInRun.push_back(inst.result);
+    }
+    run.limit = static_cast<uint32_t>(j);
+    return run.reads >= 2;
+}
+
 std::vector<ReadRun> findReadRuns(const il::Block& block, const std::vector<std::string>& keys,
                                   const std::vector<il::Type>& types,
                                   const std::vector<uint8_t>& isCandidate) {
@@ -103,6 +148,12 @@ std::vector<ReadRun> findReadRuns(const il::Block& block, const std::vector<std:
     const size_t n = block.instructions.size();
     size_t i = 0;
     while (i < n) {
+        ReadRun shapeRun;
+        if (findShapeRun(block, types, isCandidate, i, shapeRun)) {
+            runs.push_back(shapeRun);
+            i = shapeRun.lastRead + 1;
+            continue;
+        }
         const il::ValueId recv = indexReadReceiver(block.instructions[i], keys);
         // The receiver has to be a boxed value for `is.dense_array` to test, and
         // it must not be one of the values this pass is promoting to `f64` —
@@ -192,7 +243,9 @@ uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::strin
         for (size_t k = firstInRun; k < p; ++k) moved.push_back({points[k], run.first});
         removed += static_cast<uint32_t>(count - 1);
         kept.push_back(run.first);
-        keptGuards.push_back(RegionPlan::RunGuard{run.receiver, run.maxIndex, guardIndex});
+        RegionPlan::RunGuard guard{run.receiver, run.maxIndex, guardIndex};
+        guard.shapeRun = run.shape;
+        keptGuards.push_back(guard);
     }
     while (p < points.size()) {
         kept.push_back(points[p]);
@@ -210,6 +263,62 @@ uint32_t mergeReadRunGuards(const il::Function& fn, const std::vector<std::strin
     points = std::move(kept);
     guards = std::move(keptGuards);
     return removed;
+}
+
+void foldRepeatedRunReads(const il::Function& fn, const std::vector<std::string>& keys, RegionPlan& plan) {
+    plan.aliasOf.assign(fn.valueCount, il::kNoValue);
+    plan.aliasCount = 0;
+    std::vector<const Candidate*> candidateOf(fn.valueCount, nullptr);
+    for (const Candidate& c : plan.candidates) candidateOf[c.value] = &c;
+    for (il::BlockId b : plan.blocks) {
+        const auto& points = plan.splitsOf[b];
+        const auto& guards = plan.runGuardsOf[b];
+        for (size_t j = 0; j < points.size() && j < guards.size(); ++j) {
+            const RegionPlan::RunGuard& run = guards[j];
+            if (!run.isRun()) continue;
+            // (receiver, key) -> the first read of it in the run. A shape run's
+            // reads are loads behind its shape tests just as an index run's are
+            // behind its `is.dense_array`, and neither run holds a write.
+            struct First {
+                il::ValueId receiver;
+                uint32_t key;
+                il::ValueId value;
+            };
+            std::vector<First> firstOf;
+            for (uint32_t i = points[j]; i < run.guardIndex; ++i) {
+                const il::Instruction& inst = fn.blocks[b].instructions[i];
+                uint32_t index = 0;
+                const bool read = run.shapeRun
+                                      ? inst.op == il::Op::PropGet && inst.result != il::kNoValue &&
+                                            !inst.operands.empty() &&
+                                            inst.staticSlot != il::Instruction::kNoStaticSlot &&
+                                            inst.directTarget == il::Instruction::kNoDirectTarget
+                                      : indexReadOf(inst, keys, run.receiver, index);
+                if (!read) continue;
+                il::ValueId first = il::kNoValue;
+                for (const First& f : firstOf) {
+                    if (f.receiver == inst.operands[0] && f.key == inst.keyIndex) first = f.value;
+                }
+                if (first == il::kNoValue) {
+                    firstOf.push_back({inst.operands[0], inst.keyIndex, inst.result});
+                    continue;
+                }
+                // Both tested at this point, or neither tested at all: the
+                // fast copy then reads the first's value where it read the
+                // second's.
+                const Candidate* a = candidateOf[first];
+                const Candidate* c = candidateOf[inst.result];
+                const bool atPoint = a != nullptr && c != nullptr && a->kind == CandidateKind::UseGuard &&
+                                     c->kind == CandidateKind::UseGuard && a->guardBlock == b &&
+                                     c->guardBlock == b && a->guardIndex == points[j] &&
+                                     c->guardIndex == points[j];
+                if (!atPoint && (a != nullptr || c != nullptr)) continue;
+                plan.aliasOf[inst.result] = first;
+                ++plan.aliasCount;
+                if (atPoint && plan.guardCount > 0) --plan.guardCount;
+            }
+        }
+    }
 }
 
 }  // namespace bronze::lower

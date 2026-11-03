@@ -17,6 +17,14 @@ bool is_property_il_op(BronzeOp op);
 bool static_get_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast);
 bool static_set_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast);
 
+// SHAPE GUARDS (il.h `Op::IsShape`, `shapeGuarded`; il_static_slot.cpp):
+// lowers an `is.shape` into `res`, or a shape-guarded PropGet (into `res`) or
+// PropSet (of `val`) as its bare access, and answers true; a site that is not
+// shape-guarded, or one whose guard is not lowered here, answers false and is
+// lowered as it otherwise would be.
+bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj, Value* val,
+                         Value*& res);
+
 bool lower_property_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,

@@ -31,6 +31,7 @@
 #include "il_abi.h"
 #include "il_lowering.h"
 #include "il_property.h"
+#include "il_property_lowering.h"
 #include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <algorithm>
@@ -332,6 +333,64 @@ void PropertyLoweringHelper::lower_prop_set_static(Builder& b, Value* obj, uint3
 
     b.position_at_end(bb_merge);
     merge_memo(b, bb_merge, hit_args.size(), miss);
+}
+
+Value* PropertyLoweringHelper::lower_prop_get_guarded(Builder& b, Value* obj, const StaticSlotSite& site) {
+    Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
+    int32_t off = 0;
+    Value* base = static_slot_base(b, ptr, site.slot, off);
+    return b.build_load(Type::i64(), base, off);
+}
+
+void PropertyLoweringHelper::lower_prop_set_guarded(Builder& b, Value* obj, Value* val, const StaticSlotSite& site) {
+    Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
+    int32_t off = 0;
+    Value* base = static_slot_base(b, ptr, site.slot, off);
+    store_with_barrier(b, base, off, val, /*need_barrier=*/false, "");
+}
+
+Value* PropertyLoweringHelper::lower_is_shape(Builder& b, Value* obj, Value* keyed, const StaticSlotSite& site) {
+    Value* ptr = nullptr;
+    return static_guard(b, obj, keyed, {StaticGuardTerm{site}}, ptr);
+}
+
+// Whether `is.shape` tests anything here and a shape-guarded site is its bare
+// access: the same conditions under which the site itself would take its
+// static guard, so the two always agree. Where they fail `is.shape` answers
+// no, and the fast copy whose sites it guards is never past it.
+static bool shape_guard_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
+    const PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    const StaticSlotSite site = StaticSlotSite::of(inst_ast);
+    return !site.none() && prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
+           prop_lowering.static_site_backed(site);
+}
+
+bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj, Value* val,
+                         Value*& res) {
+    PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    const bool here = shape_guard_lowerable(lowering, inst_ast);
+    // A guard reads and decides, so the memo answers the receiver's keyed
+    // shape and stays.
+    if (inst_ast.op == BronzeOp::IsShape) {
+        if (!here) {
+            res = b.build_iconst_i32(0);
+            return true;
+        }
+        res = prop_lowering.lower_is_shape(b, obj, lowering->memo_keyed(b, inst_ast.operands[0], obj),
+                                           StaticSlotSite::of(inst_ast));
+        lowering->memo_keep();
+        return true;
+    }
+    if (!inst_ast.shape_guarded || !here) return false;
+    // A load, or a store into a slot the shape already has of a Number: no
+    // shape moves and no barrier is owed, so the memo stays.
+    if (inst_ast.op == BronzeOp::PropGet) {
+        res = prop_lowering.lower_prop_get_guarded(b, obj, StaticSlotSite::of(inst_ast));
+    } else {
+        prop_lowering.lower_prop_set_guarded(b, obj, val, StaticSlotSite::of(inst_ast));
+    }
+    lowering->memo_keep();
+    return true;
 }
 
 void IlLowering::register_class_families(Builder& b, Value* map_addr) {

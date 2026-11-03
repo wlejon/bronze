@@ -34,6 +34,7 @@ struct InstructionMirror {
     bool rawUnbox;
     bool nullishUnbox;
     bool numberBits;
+    bool shapeGuarded;
     uint32_t staticSlot;
     uint32_t staticCellIndex;
     uint32_t familyLo;
@@ -264,7 +265,7 @@ private:
     std::string err_;
 };
 
-enum InstBits : uint32_t {
+enum InstBits : uint64_t {
     kHasResult = 1u << 0,
     kHasOperands = 1u << 1,
     kHasImmF64 = 1u << 2,
@@ -298,7 +299,8 @@ enum InstBits : uint32_t {
     kStaticSlotGuessed = 1u << 29,
     kIcPolymorphic = 1u << 30,
     kIcAbsent = 1u << 31,
-    kKnownBits = 0xFFFFFFFFu,
+    kShapeGuarded = uint64_t{1} << 32,
+    kKnownBits = (uint64_t{1} << 33) - 1,
 };
 
 bool hasTarget(const BlockTarget& t) { return t.block != kNoBlock || !t.args.empty(); }
@@ -318,7 +320,7 @@ void readTarget(Reader& r, BlockTarget& t) {
 void writeInstruction(Writer& w, const Instruction& inst) {
     uint64_t immBits = 0;
     std::memcpy(&immBits, &inst.immF64, 8);
-    uint32_t m = 0;
+    uint64_t m = 0;
     if (inst.result != kNoValue) m |= kHasResult;
     if (!inst.operands.empty()) m |= kHasOperands;
     if (immBits != 0) m |= kHasImmF64;
@@ -349,6 +351,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
     if (inst.rawUnbox) m |= kRawUnbox;
     if (inst.nullishUnbox) m |= kNullishUnbox;
     if (inst.numberBits) m |= kNumberBits;
+    if (inst.shapeGuarded) m |= kShapeGuarded;
     if (inst.staticSlotGuessed) m |= kStaticSlotGuessed;
     if (inst.envImmutable) m |= kEnvImmutable;
 
@@ -393,7 +396,7 @@ void writeInstruction(Writer& w, const Instruction& inst) {
 
 void readInstruction(Reader& r, Instruction& inst) {
     const uint8_t op = r.u8();
-    if (op > static_cast<uint8_t>(Op::MathRandom)) r.fail("bad op");
+    if (op > static_cast<uint8_t>(Op::IsShape)) r.fail("bad op");
     inst.op = static_cast<Op>(op);
     inst.type = r.type();
     const uint64_t m = r.var();
@@ -443,6 +446,7 @@ void readInstruction(Reader& r, Instruction& inst) {
     inst.rawUnbox = (m & kRawUnbox) != 0;
     inst.nullishUnbox = (m & kNullishUnbox) != 0;
     inst.numberBits = (m & kNumberBits) != 0;
+    inst.shapeGuarded = (m & kShapeGuarded) != 0;
     inst.staticSlotGuessed = (m & kStaticSlotGuessed) != 0;
     inst.envImmutable = (m & kEnvImmutable) != 0;
 }

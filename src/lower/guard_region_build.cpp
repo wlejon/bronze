@@ -9,24 +9,6 @@ namespace bronze::lower {
 
 namespace {
 
-using Rename = std::vector<std::pair<il::ValueId, il::ValueId>>;
-
-il::ValueId renamed(const Rename& map, il::ValueId v) {
-    for (const auto& [from, to] : map) {
-        if (from == v) return to;
-    }
-    return v;
-}
-
-// Every value an instruction READS, in place, so a rewrite touches operands and
-// block arguments through one function and cannot forget the second kind.
-template <typename Fn>
-void rewriteUses(il::Instruction& inst, Fn&& map) {
-    for (il::ValueId& id : inst.operands) id = map(id);
-    for (il::ValueId& id : inst.target.args) id = map(id);
-    for (il::ValueId& id : inst.elseTarget.args) id = map(id);
-}
-
 il::Instruction makeIsNumber(il::ValueId result, il::ValueId operand) {
     il::Instruction inst;
     inst.op = il::Op::IsNumber;
@@ -49,6 +31,19 @@ il::Instruction makeIsDenseArray(il::ValueId result, il::ValueId operand, uint32
 il::Instruction makeIsNumberArray(il::ValueId result, il::ValueId operand, uint32_t maxIndex) {
     il::Instruction inst = makeIsDenseArray(result, operand, maxIndex);
     inst.op = il::Op::IsNumberArray;
+    return inst;
+}
+
+il::Instruction makeIsShape(il::ValueId result, il::ValueId operand, const RegionPlan::ShapeTest& test) {
+    il::Instruction inst;
+    inst.op = il::Op::IsShape;
+    inst.type = il::Type::Bool;
+    inst.result = result;
+    inst.operands = {operand};
+    inst.staticSlot = test.slot;
+    inst.staticCellIndex = test.cell;
+    inst.familyLo = test.familyLo;
+    inst.familySpan = test.familySpan;
     return inst;
 }
 
@@ -93,92 +88,6 @@ il::Instruction makeBranch(il::ValueId cond, il::BlockId thenBlock, il::BlockId 
     return inst;
 }
 
-void cseFastElemGetTyped(il::Function& fn) {
-    struct CachedRead {
-        il::ValueId obj = il::kNoValue;
-        il::ValueId idx = il::kNoValue;
-        int32_t kind = 0;
-        il::ValueId result = il::kNoValue;
-    };
-    Rename replacements;
-    for (auto& block : fn.blocks) {
-        if (block.copyClass != il::CopyClass::Fast) continue;
-        std::vector<CachedRead> active;
-        for (size_t i = 0; i < block.instructions.size();) {
-            auto& inst = block.instructions[i];
-            if (!replacements.empty()) {
-                rewriteUses(inst, [&](il::ValueId v) { return renamed(replacements, v); });
-            }
-            // A plain array's read coerces, and two coercions of an object are
-            // two `valueOf` calls, so only a view's raw loads are shared.
-            if (inst.op == il::Op::ElemGetTyped && !il::elemGetCoerces(inst) && inst.operands.size() == 2 &&
-                inst.result != il::kNoValue) {
-                il::ValueId hit = il::kNoValue;
-                for (const auto& entry : active) {
-                    if (entry.obj == inst.operands[0] && entry.idx == inst.operands[1] &&
-                        entry.kind == inst.immI32) {
-                        hit = entry.result;
-                        break;
-                    }
-                }
-                if (hit != il::kNoValue) {
-                    replacements.emplace_back(inst.result, hit);
-                    block.instructions.erase(block.instructions.begin() + static_cast<ptrdiff_t>(i));
-                    continue;
-                }
-                active.push_back(CachedRead{inst.operands[0], inst.operands[1], inst.immI32, inst.result});
-                ++i;
-                continue;
-            }
-            if (il::canThrow(inst) || il::canCollect(inst) ||
-                inst.op == il::Op::ElemSet || inst.op == il::Op::ElemSetTyped ||
-                inst.op == il::Op::PropSet) {
-                active.clear();
-            }
-            ++i;
-        }
-    }
-    if (!replacements.empty()) {
-        for (auto& block : fn.blocks) {
-            for (auto& inst : block.instructions) {
-                rewriteUses(inst, [&](il::ValueId v) { return renamed(replacements, v); });
-            }
-        }
-    }
-}
-
-// A `box.f64` whose result nothing reads. The entry edge is where these appear:
-// a candidate whose def is a box promotes to the box's OPERAND, so redirecting
-// the edge to the fast copy hands over the double and leaves the box with no
-// reader at all. Removing it is what makes the entry edge of a counted loop
-// exactly `jump bFast(%double, %i)`.
-void dropDeadF64Boxes(il::Function& fn) {
-    std::vector<uint8_t> used(fn.valueCount, 0);
-    for (const auto& block : fn.blocks) {
-        for (const auto& inst : block.instructions) {
-            for (il::ValueId v : inst.operands) {
-                if (v < used.size()) used[v] = 1;
-            }
-            for (const il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
-                for (il::ValueId v : t->args) {
-                    if (v < used.size()) used[v] = 1;
-                }
-            }
-        }
-    }
-    for (auto& block : fn.blocks) {
-        auto& insts = block.instructions;
-        insts.erase(std::remove_if(insts.begin(), insts.end(),
-                                   [&](const il::Instruction& inst) {
-                                       return inst.op == il::Op::Box &&
-                                              inst.boxType == il::Type::F64 &&
-                                              inst.result != il::kNoValue &&
-                                              inst.result < used.size() && !used[inst.result];
-                                   }),
-                    insts.end());
-    }
-}
-
 }  // namespace
 
 bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionStats& stats,
@@ -218,6 +127,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     // Counted locally: a rewrite the dominance check discards must leave the
     // statistics saying nothing happened, because nothing did.
     uint32_t emittedGuards = 0;
+    uint32_t emittedShapeTests = 0;
     uint32_t foldedCount = 0;
 
     // ---- value identity in the copies ------------------------------------
@@ -250,6 +160,15 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             c.kind == CandidateKind::EntryGuard) {
             rawOf[c.value] = newValue();
         }
+    }
+    // A repeated run read is its first read in the fast copy, both names.
+    auto aliased = [&](il::ValueId v) {
+        return v < plan.aliasOf.size() && plan.aliasOf[v] != il::kNoValue;
+    };
+    for (il::ValueId v = 0; v < plan.aliasOf.size(); ++v) {
+        if (!aliased(v)) continue;
+        fastOf[v] = fastOf[plan.aliasOf[v]];
+        rawOf[v] = rawOf[plan.aliasOf[v]];
     }
 
     // ---- the slow copy's split points ------------------------------------
@@ -324,6 +243,8 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         // `skip` tests the claims answer when they all hold.
         std::vector<il::ValueId> keep;
         std::vector<il::ValueId> skip;
+        // The point's `is.shape` tests, first at the split (SHAPE GUARDS).
+        std::vector<RegionPlan::ShapeTest> shapes;
         size_t chainLength() const { return keep.size() + claimIds.size() + skip.size(); }
     };
     std::vector<std::vector<GuardPoint>> guardPoints(blockCount);
@@ -336,10 +257,14 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             if (b < plan.numberWindowsOf.size() && j < plan.numberWindowsOf[b].size()) {
                 point.numbers = plan.numberWindowsOf[b][j];
             }
+            if (b < plan.shapeTestsOf.size() && j < plan.shapeTestsOf[b].size()) {
+                point.shapes = plan.shapeTestsOf[b][j];
+            }
             guardPoints[b].push_back(std::move(point));
         }
     }
     for (const Candidate& c : plan.candidates) {
+        if (c.kind == CandidateKind::UseGuard && aliased(c.value)) continue;
         if (c.kind == CandidateKind::UseGuard) {
             for (GuardPoint& point : guardPoints[c.guardBlock]) {
                 if (point.index == c.guardIndex) point.guarded.push_back(c.value);
@@ -356,7 +281,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     uint32_t runGuardCount = 0;
     for (il::BlockId b : plan.blocks) {
         for (const GuardPoint& point : guardPoints[b]) {
-            if (point.run.receiver == il::kNoValue) continue;
+            if (!point.run.isRun()) continue;
             ++runGuardCount;
             for (il::ValueId v : point.guarded) {
                 inlineUnbox[b].push_back({defs[v].index + 1, v});
@@ -415,7 +340,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             return read ? &def : nullptr;
         };
         for (const GuardPoint& point : guardPoints[b]) {
-            const uint32_t chainAt = point.run.receiver == il::kNoValue ? point.index : point.run.guardIndex;
+            const uint32_t chainAt = point.run.isRun() ? point.run.guardIndex : point.index;
             for (il::ValueId v : point.skip) {
                 if (elementRead(v, 0, chainAt)) numberBitsOf[v] = 1;
             }
@@ -468,13 +393,17 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     // A run point's own block: the reads, between the receiver test that
     // licenses them and the value tests that spend them.
     std::vector<std::vector<il::BlockId>> fastRunId(blockCount);
+    // The block each passing shape test leads to, by block and point.
+    std::vector<std::vector<std::vector<il::BlockId>>> fastShapeId(blockCount);
     for (il::BlockId b : plan.blocks) {
         const size_t parts = guardPoints[b].size() + 1;
         fastPartId[b].resize(parts);
         fastChainId[b].resize(guardPoints[b].size());
         fastRunId[b].assign(guardPoints[b].size(), il::kNoBlock);
+        fastShapeId[b].resize(guardPoints[b].size());
         fastPartId[b][0] = nextBlock++;
         for (size_t j = 0; j < guardPoints[b].size(); ++j) {
+            for (size_t k = 0; k < guardPoints[b][j].shapes.size(); ++k) fastShapeId[b][j].push_back(nextBlock++);
             if (guardPoints[b][j].run.receiver != il::kNoValue) fastRunId[b][j] = nextBlock++;
             const size_t extra = guardPoints[b][j].chainLength();
             fastChainId[b][j].resize(extra == 0 ? 0 : extra - 1);
@@ -561,6 +490,9 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         for (il::BlockId id : fastPartId[b]) classify(id, il::CopyClass::Fast);
         for (il::BlockId id : fastRunId[b]) {
             if (id != il::kNoBlock) classify(id, il::CopyClass::Fast);
+        }
+        for (const auto& tests : fastShapeId[b]) {
+            for (il::BlockId id : tests) classify(id, il::CopyClass::Fast);
         }
         for (const auto& chain : fastChainId[b]) {
             for (il::BlockId id : chain) classify(id, il::CopyClass::Fast);
@@ -760,6 +692,9 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                         part.instructions.push_back(makeRawUnbox(rawOf[value], fastOf[value]));
                     }
                 }
+                if (source.instructions[i].result != il::kNoValue && aliased(source.instructions[i].result)) {
+                    continue;
+                }
                 // The coercion the guard paid for, deleted rather than copied.
                 // Its result IS the f64 form of its operand from here on, which
                 // every later reader finds through `fastOf` exactly as it would
@@ -782,6 +717,10 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 if (inst.result != il::kNoValue) {
                     inst.numberBits = numberBitsOf[inst.result] != 0;
                     inst.result = fastOf[inst.result];
+                }
+                if (b < plan.shapeGuardedOf.size() && i < plan.shapeGuardedOf[b].size() &&
+                    plan.shapeGuardedOf[b][i] != 0) {
+                    inst.shapeGuarded = true;
                 }
 
                 if (promotedArith) {
@@ -821,7 +760,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             // The doubles the guard just before this part licensed. A RUN point
             // licensed its doubles where they were defined instead, so there is
             // nothing owed here for one.
-            if (j > 0 && guardPoints[b][j - 1].run.receiver == il::kNoValue) {
+            if (j > 0 && !guardPoints[b][j - 1].run.isRun()) {
                 for (il::ValueId v : guardPoints[b][j - 1].guarded) {
                     part->instructions.push_back(makeRawUnbox(rawOf[v], fastOf[v]));
                 }
@@ -838,6 +777,17 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
             // tests use, and it is the edge on which NOTHING has been read —
             // which is what makes the value tests' edge, where everything has,
             // sound to re-run in the slow copy.
+            // THE SHAPE TESTS, first of all: on their failing edge nothing at
+            // or after the split has run, so the slow copy's own sites are the
+            // program's only accesses.
+            for (size_t k = 0; k < guardPoints[b][j].shapes.size(); ++k) {
+                const RegionPlan::ShapeTest& test = guardPoints[b][j].shapes[k];
+                const il::ValueId cond = newValue();
+                part->instructions.push_back(makeIsShape(cond, fastDyn(test.receiver, *part, &boxCache), test));
+                part->instructions.push_back(makeBranch(cond, fastShapeId[b][j][k], trampolineId[b][j]));
+                part = &out[fastShapeId[b][j][k]];
+                ++emittedShapeTests;
+            }
             const RegionPlan::RunGuard& run = guardPoints[b][j].run;
             if (run.receiver != il::kNoValue) {
                 const il::ValueId dense = newValue();
@@ -846,6 +796,8 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 part->instructions.push_back(
                     makeBranch(dense, fastRunId[b][j], trampolineId[b][j]));
                 part = &out[fastRunId[b][j]];
+            }
+            if (run.isRun()) {
                 emitRange(*part, cursor, run.guardIndex);
                 cursor = run.guardIndex;
             }
@@ -877,6 +829,8 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
                 ++t;
             }
             for (il::ValueId v : point.skip) emitTest(v);
+            // A point of shape tests alone has no value chain to end its part.
+            if (length == 0) blockAt(0)->instructions.push_back(makeJump(done));
 
             // The trampoline. Its arguments are the tail's parameters, in the
             // tail's order, each as the boxed value the slow copy expects.
@@ -950,6 +904,8 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     stats.numberClaims += claimCount;
     stats.numberSkipped += skippedCount;
     stats.unboxFolded += foldedCount;
+    stats.shapeTests += emittedShapeTests;
+    stats.shapeGuarded += plan.shapeGuardedCount;
     stats.blocksPruned += pruned;
     for (il::BlockId b : plan.blocks) {
         stats.guardPoints += static_cast<uint32_t>(plan.splitsOf[b].size());

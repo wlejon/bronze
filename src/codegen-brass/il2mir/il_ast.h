@@ -123,6 +123,9 @@ enum class BronzeOp {
     SuperSet,
     MathUnary,
     MathRandom,
+    // a: bool = is.shape recv: the static-slot guard of the site claim it
+    // carries (il.h `Op::IsShape`).
+    IsShape,
     DynamicImport,
     ModuleNamespace,
     ObjectKeys,
@@ -206,6 +209,9 @@ struct BronzeInstruction {
     bool nullish_unbox = false;
     // PropGet: the element's bits may be held as a double (il.h `numberBits`).
     bool number_bits = false;
+    // PropGet/PropSet: a dominating `is.shape` answered the site's static
+    // guard (il.h `shapeGuarded`): a bare load or store at the claimed slot.
+    bool shape_guarded = false;
     std::string callee_name;
     // MethodCall: the typed entry of `callee_name` the direct edge calls
     // (il.h `typedTarget`), or empty. The guard's identity stays `callee_name`.

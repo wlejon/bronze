@@ -572,6 +572,16 @@ enum class Op : uint8_t {
     // the native-call entry. Not pure: every one advances the generator, so it
     // is never merged, hoisted or dropped. Cannot throw and allocates nothing.
     MathRandom,
+    // a: bool = is.shape b. Whether `b` passes the static-slot guard of the
+    // site whose claim this instruction carries (`staticSlot`,
+    // `staticCellIndex`, `familyLo`/`familySpan`, il.h): a plain object whose
+    // shape is the one the site's cell names, or whose family stamp falls in
+    // the site's range. The guarded-region pass (lower/guard_region.h, "SHAPE
+    // GUARDS") is its only producer: it stands in front of a stretch of the
+    // fast copy in which the same receiver's sites are `shapeGuarded` raw
+    // loads and stores. Loads only; cannot throw, cannot collect, moves no
+    // shape.
+    IsShape,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

@@ -165,6 +165,14 @@ struct Instruction {
     // kernel become f64 loads, not GC references that are spilled at their
     // definition and moved to an xmm register at each use.
     bool numberBits = false;
+    // PropGet/PropSet with a `staticSlot`: a dominating `is.shape` of the same
+    // receiver has already admitted this site's claim, with nothing between
+    // that can move a shape, so the backend emits the slot's load or store and
+    // no guard of its own. Set by exactly one thing, the guarded-region pass,
+    // on the fast copy (lower/guard_region.h, "SHAPE GUARDS"); a store carries
+    // it only when its value is a `box.f64`, which no slot's representation
+    // refuses and which needs no write barrier.
+    bool shapeGuarded = false;
     // PropGet/PropSet: the instance slot a PROVEN CLASS LAYOUT puts this key
     // at, or `kNoStaticSlot`. Strictly stronger than `icMonomorphic`, which is
     // only an identity claim: this says the receiver's class was modellable end

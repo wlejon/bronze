@@ -226,6 +226,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.is_poly = inst.icPolymorphic;
             out.is_absent = inst.icAbsent;
             out.number_bits = inst.numberBits;
+            out.shape_guarded = inst.shapeGuarded;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);
             }
@@ -272,6 +273,7 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.run_cell = inst.transitionRunCell;
             out.run_length = inst.transitionRunLength;
             out.run_slot = inst.transitionRunSlot;
+            out.shape_guarded = inst.shapeGuarded;
             if (inst.directTarget != il::Instruction::kNoDirectTarget) {
                 out.callee_name = ctx.fnName(inst.directTarget);
             }
@@ -293,6 +295,14 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::MathUnary:
             out.op = il2mir::BronzeOp::MathUnary;
             out.imm_i64 = inst.immI32;
+            break;
+        case il::Op::IsShape:
+            out.op = il2mir::BronzeOp::IsShape;
+            out.static_slot = inst.staticSlot;
+            out.static_cell = inst.staticCellIndex;
+            out.family_lo = inst.familyLo;
+            out.family_span = inst.familySpan;
+            out.is_family = inst.familyLo != il::Instruction::kNoFamily;
             break;
         case il::Op::MathRandom:
             out.op = il2mir::BronzeOp::MathRandom;

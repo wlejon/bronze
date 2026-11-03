@@ -587,12 +587,6 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     // re-derives the slow copy's names over the pruned graph instead
     // (`repairSplitNames`, guard_region_ssa.cpp), which puts a parameter on
     // each join where a trampoline's path meets another.
-    if (plan.entryRegion) {
-        for (il::BlockId b : plan.blocks) {
-            if (b == plan.header || plan.splitsOf[b].empty()) continue;
-            if (!dominatesReachable(cfg, plan, b)) plan.repairNames = true;
-        }
-    }
 
     // The rewrite reads candidates in value order for the raw-unbox names and
     // in guard-point order for the chains; sorting once here is what keeps both
@@ -614,11 +608,6 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     // outnumbering the work they license is the other side of the same floor —
     // a test per operation is what the backend already emits inline, so
     // hoisting it has bought nothing.
-    if (plan.guardCount == 0 || inRegionGuards > plan.promotedUseCount) {
-        ++stats.refusedTooFew;
-        return false;
-    }
-
     for (auto& splits : plan.splitsOf) {
         std::sort(splits.begin(), splits.end());
         splits.erase(std::unique(splits.begin(), splits.end()), splits.end());
@@ -632,6 +621,32 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     plan.runGuardsOf.assign(fn.blocks.size(), {});
     for (il::BlockId b : plan.blocks) {
         mergeReadRunGuards(fn, keys, types, b, plan.candidates, plan);
+    }
+    const uint32_t guardsBeforeFold = plan.guardCount;
+    foldRepeatedRunReads(fn, keys, plan);
+    const uint32_t foldedReads = guardsBeforeFold - plan.guardCount;
+    // SHAPE GUARDS, once the points are where the runs left them; the shape
+    // points they add are splits like any other from here on.
+    if (!planShapeGuards(fn, types, plan)) {
+        ++stats.refusedPlacement;
+        return false;
+    }
+    uint32_t shapeTests = 0;
+    for (il::BlockId b : plan.blocks) {
+        for (const auto& tests : plan.shapeTestsOf[b]) shapeTests += static_cast<uint32_t>(tests.size());
+    }
+    // A covered site is work licensed as well: its own guard and its miss's
+    // rejoin are what a shape test replaces.
+    if ((plan.guardCount == 0 && shapeTests == 0) ||
+        inRegionGuards - std::min(inRegionGuards, foldedReads) > plan.promotedUseCount + plan.shapeGuardedCount) {
+        ++stats.refusedTooFew;
+        return false;
+    }
+    if (plan.entryRegion) {
+        for (il::BlockId b : plan.blocks) {
+            if (b == plan.header || plan.splitsOf[b].empty()) continue;
+            if (!dominatesReachable(cfg, plan, b)) plan.repairNames = true;
+        }
     }
 
     // Last, because the read-run merge above moves points: a split inside a
@@ -676,6 +691,8 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
         {"numberClaims", {before.numberClaims, after.numberClaims}},
         {"numberSkipped", {before.numberSkipped, after.numberSkipped}},
         {"unboxFolded", {before.unboxFolded, after.unboxFolded}},
+        {"shapeTests", {before.shapeTests, after.shapeTests}},
+        {"shapeGuarded", {before.shapeGuarded, after.shapeGuarded}},
         {"handler", {before.refusedHandler, after.refusedHandler}},
         {"singleEntry", {before.refusedSingleEntry, after.refusedSingleEntry}},
         {"nonNumeric", {before.refusedNonNumeric, after.refusedNonNumeric}},
@@ -720,12 +737,12 @@ void guardRegionStatsReport(const GuardRegionStats& s) {
     std::fprintf(stderr,
                  "[guard] fns=%u regions=%u entry=%u dup=%u guards=%u points=%u runGuards=%u "
                  "numberClaims=%u numberSkipped=%u elidedBox=%u "
-                 "elidedPin=%u unboxFolded=%u promoted=%u blocks=+%u pruned=%u "
+                 "elidedPin=%u unboxFolded=%u promoted=%u shapeTests=%u shapeGuarded=%u blocks=+%u pruned=%u "
                  "refused=%u(handler %u, singleEntry %u, nonNumeric %u, tooFew %u, growth %u, "
                  "placement %u, entrySplit %u, concatSplit %u, ssa %u, machine %u, copyPred %u)\n",
                  s.functions, s.regions, s.entryRegions, s.duplicated, s.guards, s.guardPoints,
-                 s.runGuards, s.numberClaims, s.numberSkipped, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted, s.blocksAdded,
-                 s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
+                 s.runGuards, s.numberClaims, s.numberSkipped, s.elidedBox, s.elidedPin, s.unboxFolded, s.promoted,
+                 s.shapeTests, s.shapeGuarded, s.blocksAdded, s.blocksPruned, refused, s.refusedHandler, s.refusedSingleEntry,
                  s.refusedNonNumeric, s.refusedTooFew, s.refusedGrowth, s.refusedPlacement,
                  s.refusedEntrySplit, s.refusedConcatSplit, s.refusedSsa, s.refusedMachine,
                  s.refusedCopyPred);

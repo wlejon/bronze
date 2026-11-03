@@ -168,6 +168,14 @@ public:
     // One static write, likewise; `need_barrier` false for a primitive value.
     void lower_prop_set_static(Builder& b, Value* obj, uint32_t key_index, Value* val, const StaticSlotSite& site,
                                bool val_is_number, bool need_barrier, const StaticMiss& miss);
+    // A SHAPE-GUARDED site (il.h `shapeGuarded`): a dominating `is.shape`
+    // already answered `site`'s guard, so the read is the slot's load and the
+    // write, of a Number, the slot's store with no barrier.
+    Value* lower_prop_get_guarded(Builder& b, Value* obj, const StaticSlotSite& site);
+    void lower_prop_set_guarded(Builder& b, Value* obj, Value* val, const StaticSlotSite& site);
+    // `is.shape`: `site`'s guard alone, as an i1, over the receiver's keyed
+    // shape `keyed`.
+    Value* lower_is_shape(Builder& b, Value* obj, Value* keyed, const StaticSlotSite& site);
 
     // With per-thread module data (TranslatorOptions::per_thread_module_data)
     // the table's address is the symbol plus the calling thread's delta,

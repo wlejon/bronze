@@ -250,6 +250,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                             } else {
                                 out += "@" + std::to_string(inst.staticCellIndex);
                             }
+                            // A dominating `is.shape` answered the guard: the
+                            // site is a bare load or store.
+                            if (inst.shapeGuarded) out += ", shape-guarded";
                         }
                         // An accessor site calls its getter or setter behind
                         // the cell pair it names: emitted code again.
@@ -433,6 +436,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                             } else {
                                 out += "@" + std::to_string(inst.staticCellIndex);
                             }
+                            // A dominating `is.shape` answered the guard: the
+                            // site is a bare load or store.
+                            if (inst.shapeGuarded) out += ", shape-guarded";
                         }
                         // An accessor site calls its getter or setter behind
                         // the cell pair it names: emitted code again.
@@ -804,6 +810,17 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         break;
                     case Op::ClosureEnv:
                         out += "closure.env %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]);
+                        break;
+                    // The site claim it tests, spelled as the site prints it.
+                    case Op::IsShape:
+                        out += "is.shape %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                               ", slot " + std::to_string(inst.staticSlot);
+                        if (inst.familyLo != Instruction::kNoFamily) {
+                            out += " family " + std::to_string(inst.familyLo) + ".." +
+                                   std::to_string(inst.familyLo + inst.familySpan);
+                        } else {
+                            out += "@" + std::to_string(inst.staticCellIndex);
+                        }
                         break;
                     case Op::Print:
                     case Op::PrintErr:

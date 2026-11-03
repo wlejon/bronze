@@ -676,6 +676,7 @@ bool is_property_il_op(BronzeOp op) {
         case BronzeOp::ElemSet:
         case BronzeOp::ElemSetTyped:
         case BronzeOp::ElemDelete:
+        case BronzeOp::IsShape:
             return true;
         default:
             return false;
@@ -728,6 +729,7 @@ bool lower_property_instruction(
                 }
             }
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
+            if (lower_shape_guarded(lowering, inst_ast, b, obj_val, nullptr, res_val)) return true;
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
             if (accessor_direct_here(lowering, inst_ast)) {
                 AccessorMiss miss;
@@ -781,9 +783,14 @@ bool lower_property_instruction(
             return true;
         }
 
+        case BronzeOp::IsShape:
+            lower_shape_guarded(lowering, inst_ast, b, ensure_type(get_opd(0), Type::i64()), nullptr, res_val);
+            return true;
+
         case BronzeOp::PropSet: {
             Value* obj_val = ensure_type(get_opd(0), Type::i64());
             Value* val = ensure_type(get_opd(1), Type::i64());
+            if (lower_shape_guarded(lowering, inst_ast, b, obj_val, val, res_val)) return true;
             const IcSite site = prop_lowering.ic_site_ref(b, inst_ast.ic_index);
             const uint32_t strict = static_cast<uint32_t>(inst_ast.imm_i64);
             if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {

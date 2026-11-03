@@ -28,7 +28,8 @@ namespace bronze::il {
 // 13: prop.get / prop.set carry staticSlotGuessed (il.h).
 // 14: prop.get carries icPolymorphic (il.h).
 // 15: prop.get carries icAbsent (il.h).
-inline constexpr uint32_t kFormatVersion = 15;
+// 16: is.shape, and prop.get/prop.set carry shapeGuarded (il.h).
+inline constexpr uint32_t kFormatVersion = 16;
 
 std::string serializeModule(const Module& module);
 

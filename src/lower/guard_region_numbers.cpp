@@ -127,7 +127,7 @@ void planNumberWindows(const il::Function& fn, const std::vector<std::string>& k
                 j < plan.runGuardsOf[b].size() ? plan.runGuardsOf[b][j] : RegionPlan::RunGuard{};
             // An ordinary point's chain stands at its split, a run point's at
             // the end of its run (guard_region.h, READ RUNS).
-            const uint32_t hi = run.receiver != il::kNoValue ? run.guardIndex : points[j];
+            const uint32_t hi = run.isRun() ? run.guardIndex : points[j];
             if (hi == 0 || hi > block.instructions.size()) continue;
             windows[j] = findWindow(block, keys, types, plan.isCandidate, hi, guardedAt(plan, b, points[j]));
             const Window& w = windows[j];

@@ -106,6 +106,8 @@ bool canThrow(const Instruction& inst) {
         case Op::MethodIcIs:
         // Loads off the receiver's header, its shape and the site's cell.
         case Op::AccessorIcIs:
+        // The same loads, and a family stamp's range compare.
+        case Op::IsShape:
         // Two loads off the receiver's header, the receiver's guarded by its
         // tag.
         case Op::IsTypedArray:
@@ -255,6 +257,7 @@ bool canCollect(const Instruction& inst) {
         // Tag tests and loads, no allocation.
         case Op::MethodIcIs:
         case Op::AccessorIcIs:
+        case Op::IsShape:
         case Op::IsTypedArray:
         // The claim's scan rewrites an Int32 box as a double in place: a
         // store of a Number, which allocates nothing.
