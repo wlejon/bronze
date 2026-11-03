@@ -124,9 +124,19 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
     if (fact.call != CallClass::Single || fact.targets.size() != 1) return;
     const il::Module& mod = s.module();
     const il::Instruction& inst = mod.functions[fact.fn].blocks[fact.block].instructions[fact.inst];
-    if (inst.op != il::Op::MethodCall || inst.directTarget != il::Instruction::kNoDirectTarget) return;
-    ++plan.callCandidates;
+    if (inst.op != il::Op::MethodCall) return;
     const uint32_t target = fact.targets[0];
+    if (inst.directTarget != il::Instruction::kNoDirectTarget) {
+        // Lowering's guess names the method its receiver's CLASS has under
+        // the key; the prediction saw the receivers, and their callee is
+        // another function. A guard that every one of them fails is a compare
+        // and a dead inlined body at the site, in front of the dispatch it
+        // falls back to anyway.
+        if (inst.directTarget == target) return;
+        plan.withdrawn.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
+        ++plan.callWithdrawn;
+    }
+    ++plan.callCandidates;
     bool protoHeld = held.fn[target] == 0 && (inst.keyIndex >= held.key.size() || held.key[inst.keyIndex] == 0);
     for (ObjId r : s.value(fact.fn, inst.operands[0]).objs) {
         const AObj& o = s.object(r);
@@ -297,6 +307,11 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
 }
 
 void applyDirects(il::Module& mod, const StampPlan& plan) {
+    for (const PolyEntry& w : plan.withdrawn) {
+        il::Instruction& inst = mod.functions[w.fn].blocks[w.block].instructions[w.inst];
+        inst.directTarget = il::Instruction::kNoDirectTarget;
+        inst.typedTarget = il::Instruction::kNoDirectTarget;
+    }
     for (const DirectEntry& d : plan.directs) {
         mod.functions[d.fn].blocks[d.block].instructions[d.inst].directTarget = d.target;
     }

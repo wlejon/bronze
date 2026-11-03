@@ -110,7 +110,8 @@ std::string stampReport(const il::Module& mod, const StampPlan& plan, const Buil
                       std::to_string(plan.rangeMismatch) + "; module families " +
                       std::to_string(mod.classFamilies.size()) + "\n";
     out += "wpo-stamp: predicted direct method targets " + std::to_string(plan.directs.size()) + " of " +
-           std::to_string(plan.callCandidates) + " single-callee sites without one; refused: the callee may sit in an own slot " +
+           std::to_string(plan.callCandidates) + " single-callee sites without one (lowering's guess withdrawn at " +
+           std::to_string(plan.callWithdrawn) + "); refused: the callee may sit in an own slot " +
            std::to_string(plan.callOwnHeld) + ", the callee's parameters " + std::to_string(plan.callRefused) + "\n";
     out += "wpo-stamp: predicted polymorphic reads " + std::to_string(plan.polys.size()) + " of " +
            std::to_string(plan.polyCandidates) + " own-data reads without a claim; more receivers than cache ways " +
@@ -154,7 +155,8 @@ std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts,
     if (!opts.stats) return {};
     std::string out = "wpo-early: predicted direct method targets " + std::to_string(plan.directs.size()) + " of " +
                       std::to_string(plan.callCandidates) +
-                      " single-callee sites without one, before inlining; refused: the callee may sit in an own slot " +
+                      " single-callee sites without one, before inlining (lowering's guess withdrawn at " +
+                      std::to_string(plan.callWithdrawn) + "); refused: the callee may sit in an own slot " +
                       std::to_string(plan.callOwnHeld) + ", the callee's parameters " +
                       std::to_string(plan.callRefused) + "\n";
     out += "wpo-early: predicted own-slot callees " + std::to_string(plan.ownCalls.size()) + " sites, " +

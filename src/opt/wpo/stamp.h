@@ -77,6 +77,11 @@ struct StampPlan {
     std::vector<PolyEntry> absents;
     // Method calls whose one predicted callee a receiver holds in an own slot.
     std::vector<DirectEntry> ownCalls;
+    // Method calls whose direct target lowering guessed (by the method's name
+    // on the receiver's class) where the prediction gives the site one other
+    // callee: the guess is withdrawn, since every receiver the prediction saw
+    // misses its guard, and the site is planned as one without a target.
+    std::vector<PolyEntry> withdrawn;
     // Reads left without a claim whose predicted receivers all hold the key
     // as an own data property, and how many of those have more receivers than
     // the cache has ways.
@@ -89,6 +94,8 @@ struct StampPlan {
     uint32_t callRefused = 0;
     // ... and how many a receiver may hold the callee in an own slot.
     uint32_t callOwnHeld = 0;
+    // ... and how many of the candidates had a guess of lowering's withdrawn.
+    uint32_t callWithdrawn = 0;
     // Sites whose predicted receivers agree on a slot, and why the ones
     // without a stamp have none.
     uint32_t candidates = 0;
@@ -109,7 +116,8 @@ StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const
 // static cell, and the direct targets and polymorphic marks.
 void applyStamps(il::Module& mod, const StampPlan& plan);
 
-// Writes only the plan's direct targets.
+// Writes only the plan's direct targets (and withdraws the guesses it
+// contradicts).
 void applyDirects(il::Module& mod, const StampPlan& plan);
 
 }  // namespace bronze::wpo
