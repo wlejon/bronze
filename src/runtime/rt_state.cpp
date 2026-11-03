@@ -291,7 +291,7 @@ static void eraseSingletonCode(std::unordered_map<SingletonKey, size_t, Singleto
 }
 
 static thread_local ThreadModuleState* g_threadModules = nullptr;
-static std::atomic<uint32_t> g_totalDynamicModules{0};
+std::atomic<uint32_t> g_totalDynamicModules{0};
 static std::mutex g_heapStateMu;
 static std::unordered_map<const brass::gc::Heap*, ThreadModuleState*> g_heapToModuleState;
 static std::atomic<uint64_t> g_heapStateGeneration{1};
@@ -450,10 +450,6 @@ void rtRegisterDynamicModule(uint64_t epoch, std::shared_ptr<void> owner,
     }
     s.dynamicModules.push_back(std::move(mod));
     g_totalDynamicModules.fetch_add(1, std::memory_order_relaxed);
-}
-
-bool rtHasDynamicModules() noexcept {
-    return g_totalDynamicModules.load(std::memory_order_relaxed) != 0;
 }
 
 size_t rtDynamicModuleCount() noexcept {

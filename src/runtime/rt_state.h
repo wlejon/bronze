@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -107,7 +108,12 @@ uint64_t rtCurrentModuleEpoch() noexcept;
 // actively executing on the stack, and swept on full GC once unreachable.
 void rtRegisterDynamicModule(uint64_t epoch, std::shared_ptr<void> owner,
                              const std::vector<const void*>& codeTokens);
-bool rtHasDynamicModules() noexcept;
+// Inline: every entry from C++ into generated code asks it (rtEnterJsIn's
+// token scope), and a three.js render-list sort enters once per comparison.
+extern std::atomic<uint32_t> g_totalDynamicModules;
+inline bool rtHasDynamicModules() noexcept {
+    return g_totalDynamicModules.load(std::memory_order_relaxed) != 0;
+}
 size_t rtDynamicModuleCount() noexcept;
 void rtTraceDynamicModuleToken(const void* token, brass::gc::Tracer& t);
 void rtPushActiveDynamicToken(const void* token) noexcept;

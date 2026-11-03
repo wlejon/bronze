@@ -6,8 +6,8 @@
 // the snapshot; the mutations are overwritten by the write-back) and to one
 // that throws (the array is untouched, because no write had happened yet).
 //
-// The list is snapshotted into an ordinary bronze ARRAY and sorted in a
-// RootedBlock rather than a std::vector of Values, and that is the GC story:
+// The list is snapshotted straight into a RootedBlock and sorted there rather
+// than in a std::vector of Values, and that is the GC story:
 // a comparator is user code, so every call into it can collect, and a C++
 // vector of raw Values would be a buffer of pre-collection addresses by the
 // second comparison. Every slot of the block is a root the collector updates
@@ -44,17 +44,15 @@ namespace bronze::runtime {
 
 namespace {
 
-// Element access through a ROOT, because everything in this file runs between
+// Element writes through a ROOT, because everything in this file runs between
 // comparator calls that can move the array. `setAt` writes an index that
 // already exists, so it cannot grow the block — but `setElem` is used anyway,
 // through the root, so the invariant is the callee's and not this comment's.
-Value getAt(Rooted<Value>& arr, uint32_t i) {
-    return arr.get().asObject<ArrayHeader>()->getElem(i);
-}
-
 void setAt(Rooted<Value>& arr, uint32_t i, Value v) {
-    Rooted<Value> val{v};
-    arr.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, val);
+    // The plain-Value write roots `v` only on the growth edge, which an index
+    // that exists never takes: a rooted temporary per element was most of
+    // the write-back.
+    arr.get().asObject<ArrayHeader>()->setElem(rtHeap(), i, v);
 }
 
 // ---- the merge engine --------------------------------------------------------
@@ -173,32 +171,32 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     // and sorts to its end; a hole is absent from it and reappears after the
     // items, as the deletes at the bottom.
     //
-    // The snapshot is presized to `len`, so the appends below never grow it.
-    Rooted<Value> list{Value::fromObject(ArrayHeader::create(rtHeap(), len > 4 ? len : 4))};
+    // Bottom-up merge sort between two rooted blocks (the merge engine above
+    // says why blocks): O(n log n), stable, and no recursion for a comparator
+    // to blow the C++ stack through. The snapshot is sized for every index;
+    // the items are however many of them are there, and the merge's second
+    // block is sized for those alone, so a sparse array's length is paid
+    // once.
+    RootedBlock work(len);
+    Value* items = work.slots();
+    uint32_t itemCount = 0;
     // A hole the chain answers is an item (HasProperty), which the generic
-    // read takes.
+    // read takes. An array's own elements are read straight into the block:
+    // nothing on this path allocates, so the header read once stays current.
     if (isArr && !rtArrayChainHoldsIndex(self.get())) {
-        for (uint32_t i = 0; i < len; ++i) {
-            if (!self.get().asObject<ArrayHeader>()->hasElem(i)) continue;
-            const uint32_t at = list.get().asObject<ArrayHeader>()->length;
-            setAt(list, at, getAt(self, i));
+        const auto* arr = self.get().asObject<ArrayHeader>();
+        const Value* elems = arr->elementsData();
+        for (uint32_t i = 0; elems && i < len; ++i) {
+            if (!elems[i].isHole()) items[itemCount++] = elems[i];
         }
     } else {
+        // The generic read can run user code (a getter at an index), so each
+        // value lands in its rooted slot before the next read.
         for (uint32_t i = 0; i < len; ++i) {
             if (!rtArrayLikeHasElement(self, i)) continue;
-            Rooted<Value> val{rtArrayLikeGetElement(self, i)};
-            const uint32_t at = list.get().asObject<ArrayHeader>()->length;
-            setAt(list, at, val.get());
+            items[itemCount++] = rtArrayLikeGetElement(self, i);
         }
     }
-    const uint32_t itemCount = list.get().asObject<ArrayHeader>()->length;
-
-    // Bottom-up merge sort between the two halves of one rooted block (the
-    // merge engine above says why a block): O(n log n), stable, and no
-    // recursion for a comparator to blow the C++ stack through.
-    RootedBlock work(itemCount * 2);
-    Value* items = work.slots();
-    for (uint32_t i = 0; i < itemCount; ++i) items[i] = getAt(list, i);
 
     // Bound once for the whole sort, and only once: a comparator cannot turn
     // into something else between two comparisons, so the guard ladder
@@ -216,8 +214,9 @@ uint64_t rtArraySortBuiltin(uint64_t, uint64_t thisBits, uint32_t argc, const ui
     NewTargetScope sortTargetScope(Value::fromUndefined());
     SortContext ctx(comparefn, direct);
 
+    RootedBlock scratch(itemCount);
     Value* src = items;
-    Value* dst = items + itemCount;
+    Value* dst = scratch.slots();
     for (uint32_t width = 1; width < itemCount; width *= 2) {
         for (uint32_t lo = 0; lo < itemCount; lo += 2 * width) {
             const uint32_t mid = lo + width < itemCount ? lo + width : itemCount;
