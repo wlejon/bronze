@@ -462,7 +462,10 @@ void resetObservations(ModuleContext& mod) {
 // mention; everything else taints: a bare `Math` (it aliases the object,
 // and a later write through the alias is invisible here), a member write,
 // update or delete through it, a destructuring that could target it, any
-// mention of `globalThis` (the other road to the same object). A program
+// mention of `globalThis` (the other road to the same object) other than a
+// named member that leads nowhere near it (`globalThis.BENCH_CONFIG`), and a
+// member of `window`, `self`, `top`, `parent` or `frames` (the same object in
+// bro) that names `Math` or is computed. A program
 // binding NAMED Math needs no care here: writes through it touch the
 // program's own object, and each claim site separately refuses shadowed
 // names (`resolvesToUserBinding`) — this bit is about mutation of the
@@ -484,6 +487,15 @@ public:
     }
     void visit(const ast::MemberAccess& m) override {
         if (isMath(m.object.get())) return;
+        // `globalThis.BENCH_CONFIG`: a named property of the global object,
+        // read or written, is not the builtin unless it names `Math`, another
+        // road back to the global object, or a way to run source text — and
+        // `window.Math = f` rebinds the bare name as surely as
+        // `globalThis.Math = f` does.
+        if (globalRoad(m.object.get()) && !m.isPrivate) {
+            if (reachesMath(m.property)) tainted = true;
+            if (isGlobalThis(m.object.get())) return;
+        }
         ast::detail::IdentVisitor::visit(m);
     }
     void visit(const ast::IndexAccess& ix) override {
@@ -491,6 +503,8 @@ public:
             ix.index->accept(*this);
             return;
         }
+        // `window[k]` may name `Math`.
+        if (globalRoad(ix.object.get())) tainted = true;
         ast::detail::IdentVisitor::visit(ix);
     }
     void visit(const ast::Binary& b) override {
@@ -520,6 +534,29 @@ public:
     }
 
 private:
+    static bool isGlobalThis(const ast::Expr* e) {
+        const auto* id = dynamic_cast<const ast::Ident*>(e);
+        return id != nullptr && id->name == "globalThis";
+    }
+    // A name the global object answers with itself. Only `globalThis` taints
+    // on a bare mention: the others are common names of a program's own
+    // bindings (`function onFirstUse(self)`, `let parent = node.parent`),
+    // which this scan cannot tell from the global's, so a member of them is
+    // what it watches.
+    static bool globalRoad(const ast::Expr* e) {
+        const auto* id = dynamic_cast<const ast::Ident*>(e);
+        if (id == nullptr) return false;
+        const std::string& n = id->name;
+        return n == "globalThis" || n == "window" || n == "self" || n == "top" || n == "parent" || n == "frames";
+    }
+    // The global object's properties that hand back `Math`, the global object
+    // itself, or an evaluator: what a member of `globalThis` must not name for
+    // the mention to be harmless.
+    static bool reachesMath(const std::string& p) {
+        return p == "Math" || p == "globalThis" || p == "window" || p == "self" || p == "frames" ||
+               p == "parent" || p == "top" || p == "eval" || p == "Function" || p == "Reflect" ||
+               p == "Object";
+    }
     static bool isMath(const ast::Expr* e) {
         const auto* id = dynamic_cast<const ast::Ident*>(e);
         return id != nullptr && (id->name == "Math");

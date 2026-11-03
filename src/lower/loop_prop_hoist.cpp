@@ -653,7 +653,7 @@ bool eliminateRedundantPropGets(il::Function& fn, const std::vector<uint8_t>& is
 
 }  // namespace
 
-bool hoistLoopInvariantProps(il::Module& module, const DirectMethodTable* directMethods) {
+AccessorKeyFacts computeAccessorKeyFacts(const il::Module& module) {
     std::vector<uint8_t> isAccessorKey(module.keyConstants.size(), 0);
     std::vector<uint8_t> isReflectionKey(module.keyConstants.size(), 0);
     uint32_t lengthKeyIndex = UINT32_MAX;
@@ -739,6 +739,19 @@ bool hoistLoopInvariantProps(il::Module& module, const DirectMethodTable* direct
             }
         }
     }
+
+    AccessorKeyFacts facts;
+    facts.isAccessorKey = std::move(isAccessorKey);
+    facts.fnTouchesReflection = std::move(fnTouchesReflection);
+    facts.lengthKeyIndex = lengthKeyIndex;
+    return facts;
+}
+
+bool hoistLoopInvariantProps(il::Module& module, const DirectMethodTable* directMethods) {
+    AccessorKeyFacts facts = computeAccessorKeyFacts(module);
+    std::vector<uint8_t>& isAccessorKey = facts.isAccessorKey;
+    std::vector<uint8_t>& fnTouchesReflection = facts.fnTouchesReflection;
+    const uint32_t lengthKeyIndex = facts.lengthKeyIndex;
 
     std::vector<std::optional<SafeConstructorInfo>> ctorCache(module.functions.size());
     const bool protoPatchFree = isModulePrototypePatchFree(module);

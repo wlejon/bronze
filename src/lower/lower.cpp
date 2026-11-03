@@ -17,6 +17,7 @@
 #include "lower/typed_entry.h"
 #include "lower/loop_prop_analysis.h"
 #include "lower/loop_prop_hoist.h"
+#include "lower/read_cse.h"
 #include "lower/lowerer.h"
 #include "support/timings.h"
 
@@ -417,6 +418,7 @@ std::optional<il::Module> Lowerer::lower() {
         inlineSmallFunctions(ilModule_, &directMethods_);
         sanitizeLoopInBoundsProofs(ilModule_);
         hoistLoopInvariantProps(ilModule_, &directMethods_);
+        eliminateRepeatedReads(ilModule_);
         GuardRegionStats stats;
         applyGuardedRegions(ilModule_, &stats);
         guardRegionStatsReport(stats);

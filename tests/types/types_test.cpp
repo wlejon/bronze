@@ -852,6 +852,26 @@ TEST_CASE("MathTaintScan: dynamic Function constructors taint Math pristine stat
     }
 }
 
+TEST_CASE("MathTaintScan: a named member of the global object leaves Math pristine") {
+    const auto inferred = infer(
+        "const cfg = globalThis.BENCH_CONFIG;\n"
+        "globalThis.BENCH_RESULT = 1;\n"
+        "const y = Math.sqrt(4.0);\n");
+    CHECK(inferred.result->classLayouts.mathPristine());
+}
+
+TEST_CASE("MathTaintScan: Math reached through a road to the global object taints") {
+    for (const char* src : {"globalThis.Math.sqrt = function() { return 0; };\n",
+                            "window.Math = { sqrt() { return 0; } };\n",
+                            "self['Ma' + 'th'].sqrt = function() { return 0; };\n",
+                            "const g = globalThis.globalThis; g.Math.sqrt = null;\n",
+                            "const g = globalThis; g.Math.sqrt = null;\n"}) {
+        const auto inferred = infer(std::string("const y = Math.sqrt(4.0);\n") + src);
+        CHECK_FALSE(inferred.result->classLayouts.mathPristine());
+        CHECK(inferred.result->pristineMathCalls.empty());
+    }
+}
+
 TEST_CASE("flow analysis: switch statement preserves unmutated bindings") {
     const auto inferred = infer(
         "function f(x) {\n"

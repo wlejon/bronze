@@ -6,7 +6,7 @@ bronze_add_module(lower
             lower_update.cpp lower_private.cpp lower_class_fields.cpp lower_derived_ctor.cpp derived_ctor_plan.cpp lower_typed_elem.cpp lower_typed_elem_proof.cpp lower_typed_elem_loop_sanitize.cpp bigint_reach.cpp
             lower_concat_chain.cpp lower_define_props.cpp lower_keyed_field_store.cpp lower_key_owner_guess.cpp
             guard_region_cfg.cpp guard_region_select.cpp guard_region_apply.cpp guard_region_build.cpp guard_region_ssa.cpp own_callee_calls.cpp
-            guard_region_runs.cpp guard_region_shapes.cpp guard_region_numbers.cpp typed_loop_version.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp inline_small.cpp inline_guarded.cpp transition_runs.cpp
+            guard_region_runs.cpp guard_region_shapes.cpp guard_region_numbers.cpp typed_loop_version.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp read_cse.cpp inline_small.cpp inline_guarded.cpp transition_runs.cpp
             lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp direct_method_guess.cpp
             lower_pattern.cpp lower_pin.cpp lower_census.cpp native_manifest.cpp lower_native.cpp
             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
@@ -33,6 +33,7 @@ bronze_add_module(lower
                  ../../tests/lower/guard_region_run_test.cpp
                  ../../tests/lower/guard_region_shape_test.cpp
                  ../../tests/lower/loop_prop_hoist_test.cpp
+                 ../../tests/lower/read_cse_test.cpp
                  ../../tests/lower/typed_entry_test.cpp
     # Test-only: the fixtures need a lexer and parser to produce an AST.
     # `bronze::lower` itself consumes an AST it is handed and includes
