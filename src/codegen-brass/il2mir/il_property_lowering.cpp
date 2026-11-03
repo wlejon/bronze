@@ -530,8 +530,8 @@ Value* PropertyLoweringHelper::lower_prop_get_index(Builder& b, Value* obj, uint
     return result;
 }
 
-// `obj.length` read inline for the two receivers whose length is not a slot:
-// an Array, from its header (10.4.2's exotic `length`, which the runtime's
+// `obj.length` read inline for the three receivers whose length is not a slot:
+// a String, from its header; an Array, from its header (10.4.2's exotic `length`, which the runtime's
 // read answers the same way for every array, `arguments` included), and a
 // typed array, from its view header — but only when the runtime's own read
 // would answer from it (rtTypedArrayChainPristine): the view's shape is its
@@ -549,6 +549,8 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     BasicBlock* cur = b.current_block();
     const std::string prefix = "len_" + std::to_string(cur->parent()->next_block_id());
     BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_not_obj = b.append_block(prefix + "_not_obj");
+    BasicBlock* bb_str = b.append_block(prefix + "_str");
     BasicBlock* bb_arr = b.append_block(prefix + "_arr");
     BasicBlock* bb_not_arr = b.append_block(prefix + "_not_arr");
     BasicBlock* bb_ta = b.append_block(prefix + "_ta");
@@ -559,7 +561,20 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     Value* result = b.add_block_param(bb_merge, Type::i64());
 
     b.position_at_end(cur);
-    b.build_br_if(is_obj, bb_obj, bb_slow);
+    b.build_br_if(is_obj, bb_obj, bb_not_obj);
+
+    // A String's `length` is its code-unit count, which nothing can redefine
+    // (22.1.4.1: an own, non-writable, non-configurable property of every
+    // String exotic object), and the header holds it for every string,
+    // a `+`-chain builder included (string.h).
+    b.position_at_end(bb_not_obj);
+    Value* tag = b.build_lshr(obj, b.build_iconst_i64(48));
+    b.build_br_if(b.build_eq(tag, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)), bb_str, bb_slow);
+
+    b.position_at_end(bb_str);
+    Value* str = b.build_and(obj, b.build_iconst_i64(static_cast<int64_t>(0x0000FFFFFFFFFFFFULL)));
+    Value* str_len = b.build_zext_i64(b.build_load(Type::i32(), str, BRONZE_ABI_STRING_LENGTH_OFFSET));
+    b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(str_len))});
 
     b.position_at_end(bb_obj);
     constexpr int32_t kArrayHeaderLow = (BRONZE_ABI_OBJ_FLAGS_ARRAY << 16) | BRONZE_ABI_TAG_OBJECT;

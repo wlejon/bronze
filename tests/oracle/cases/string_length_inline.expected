@@ -1,0 +1,11 @@
+total 36200
+0,1,5,5,2,5,40,80,3,5,3,4,3,7,9,str,2,5,2,0,
+builder 2,4,6,8,10
+number undefined
+boolean undefined
+symbol undefined
+bigint undefined
+nullish TypeError
+nullish TypeError
+proto 3 4
+gc 228887
