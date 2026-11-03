@@ -89,6 +89,9 @@ private:
     // program-wide bit says nothing can have changed it, and no binding in
     // scope shadows the name here?
     bool isPristineMathBase(const ast::Expr& e) const;
+    // The same for `Number`, whose program-wide bit covers only the name
+    // (its value properties cannot change).
+    bool isPristineNumberBase(const ast::Expr& e) const;
     // `Math.<own fn>(...)` with a pristine base — the calls whose value is a
     // Number by 21.3 whatever the arguments are.
     bool mathCallReturnsNumber(const ast::Call& c) const;

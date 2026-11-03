@@ -92,11 +92,11 @@ bool Lowerer::pristineMathCall(const ast::Expr& call) const {
     return inference_->pristineMathCalls.count(&inferenceExpr(call)) != 0;
 }
 
-std::optional<double> Lowerer::pristineMathConstant(const ast::MemberAccess& mem) const {
-    if (inference_ == nullptr || inference_->pristineMathConstants.count(&inferenceExpr(mem)) == 0) {
-        return std::nullopt;
-    }
-    return types::mathValueProperty(mem.property);
+std::optional<double> Lowerer::pristineConstant(const ast::MemberAccess& mem) const {
+    if (inference_ == nullptr) return std::nullopt;
+    const auto it = inference_->pristineConstants.find(&inferenceExpr(mem));
+    if (it == inference_->pristineConstants.end()) return std::nullopt;
+    return it->second;
 }
 
 namespace {

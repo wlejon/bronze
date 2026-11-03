@@ -146,10 +146,18 @@ Type FlowAnalyzer::exprKind(const ast::Expr& e) {
         // 21.3.1 lists exactly these eight, all non-writable and
         // non-configurable, though what carries the proof here is the
         // program-wide pristine bit, not the attributes.
-        if (!m->optional && isPristineMathBase(*m->object) &&
-            isMathValueProperty(m->property)) {
-            if (record_) mod_.result->pristineMathConstants.insert(&e);
-            return Type::number();
+        if (!m->optional && isPristineMathBase(*m->object)) {
+            if (const std::optional<double> k = mathValueProperty(m->property)) {
+                if (record_) mod_.result->pristineConstants.emplace(&e, *k);
+                return Type::number();
+            }
+        }
+        // 21.1.2's value properties of `Number`, on the same terms.
+        if (!m->optional && isPristineNumberBase(*m->object)) {
+            if (const std::optional<double> k = numberValueProperty(m->property)) {
+                if (record_) mod_.result->pristineConstants.emplace(&e, *k);
+                return Type::number();
+            }
         }
         if (!m->optional && !m->isPrivate) {
             const Type hostPropT = classifyHostMemberReadType(

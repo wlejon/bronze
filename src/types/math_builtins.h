@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -40,6 +41,27 @@ inline std::optional<double> mathValueProperty(std::string_view prop) {
 
 inline bool isMathValueProperty(std::string_view prop) {
     return mathValueProperty(prop).has_value();
+}
+
+// ECMAScript 21.1.2 value properties of the Number constructor, each
+// non-writable and non-configurable, with the values the runtime's table holds
+// (builtin_number.cpp). A read of one off an unshadowed, never-rebound `Number`
+// folds to this constant.
+inline std::optional<double> numberValueProperty(std::string_view prop) {
+    struct Entry { std::string_view name; double value; };
+    static constexpr Entry kNumberProps[] = {
+        {"EPSILON", 2.220446049250313e-16},
+        {"MAX_SAFE_INTEGER", 9007199254740991.0},
+        {"MIN_SAFE_INTEGER", -9007199254740991.0},
+        {"MAX_VALUE", 1.7976931348623157e308},
+        {"MIN_VALUE", 5e-324},
+        {"POSITIVE_INFINITY", std::numeric_limits<double>::infinity()},
+        {"NEGATIVE_INFINITY", -std::numeric_limits<double>::infinity()},
+        {"NaN", std::numeric_limits<double>::quiet_NaN()}};
+    for (const auto& p : kNumberProps) {
+        if (prop == p.name) return p.value;
+    }
+    return std::nullopt;
 }
 
 }  // namespace bronze::types

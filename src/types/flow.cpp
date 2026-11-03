@@ -172,6 +172,12 @@ bool FlowAnalyzer::isPristineMathBase(const ast::Expr& e) const {
     return id != nullptr && id->name == "Math" && !resolvesToUserBinding("Math");
 }
 
+bool FlowAnalyzer::isPristineNumberBase(const ast::Expr& e) const {
+    if (!mod_.numberPristine) return false;
+    const auto* id = ast::exactAs<const ast::Ident*>(&e);
+    return id != nullptr && id->name == "Number" && !resolvesToUserBinding("Number");
+}
+
 bool FlowAnalyzer::mathCallReturnsNumber(const ast::Call& c) const {
     const auto* ma = ast::exactAs<const ast::MemberAccess*>(c.callee.get());
     if (ma == nullptr || ma->optional || !isPristineMathBase(*ma->object)) return false;

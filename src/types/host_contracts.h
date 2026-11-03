@@ -34,8 +34,7 @@ using HostObjectLookup = std::function<HostObjectKind(const std::string&)>;
 
 // True when `<baseGlobal>.<prop>` is a host/builtin global property that
 // always evaluates to a JS Number on an unshadowed global (`window.innerWidth`,
-// `window.devicePixelRatio`, `screen.width`, `performance.timeOrigin`,
-// `Number.MAX_SAFE_INTEGER`, etc.).
+// `window.devicePixelRatio`, `screen.width`, `performance.timeOrigin`, etc.).
 bool isHostGlobalNumericProperty(std::string_view baseGlobal, std::string_view prop);
 
 // True when `bro.<subNamespace>.<prop>` is a Bronze native namespace property

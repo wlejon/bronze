@@ -177,6 +177,10 @@ struct ModuleContext {
     // and the builtin returns a Number for any arguments — which is the
     // whole licence for typing those calls (flow_expr.cpp).
     bool mathPristine = false;
+    // No statement can rebind the NAME `Number` (types/builtin_taint.h): under
+    // this bit an unshadowed `Number.EPSILON` is 21.1.2's constant, since the
+    // value properties themselves are non-writable and non-configurable.
+    bool numberPristine = false;
     bool failed = false;
 
     // ---- interprocedural identity (method_ident.h) --------------------------

@@ -11,6 +11,7 @@
 #include "ast/assigned.h"
 #include "ast/queries.h"
 #include "ast/query_walk.h"
+#include "types/builtin_taint.h"
 #include "types/ctor_ident.h"
 #include "types/escape.h"
 #include "types/flow.h"
@@ -456,122 +457,6 @@ void resetObservations(ModuleContext& mod) {
     }
 }
 
-// Can any statement in the program change what `Math` means? The scan runs
-// over the MERGED module — the whole program — so one pass answers for every
-// call site. `Math.<name>` and `Math[expr]` READS are the one harmless
-// mention; everything else taints: a bare `Math` (it aliases the object,
-// and a later write through the alias is invisible here), a member write,
-// update or delete through it, a destructuring that could target it, any
-// mention of `globalThis` (the other road to the same object) other than a
-// named member that leads nowhere near it (`globalThis.BENCH_CONFIG`), and a
-// member of `window`, `self`, `top`, `parent` or `frames` (the same object in
-// bro) that names `Math` or is computed. A program
-// binding NAMED Math needs no care here: writes through it touch the
-// program's own object, and each claim site separately refuses shadowed
-// names (`resolvesToUserBinding`) — this bit is about mutation of the
-// builtin, which requires the builtin as a value, which requires a mention
-// this scan sees.
-//
-// Sloppy-mode `this` is not a vector: bronze binds it undefined, never the
-// global object (lowerThisValue), so `this.Math` reaches nothing.
-class MathTaintScan final : public ast::detail::IdentVisitor {
-public:
-    bool tainted = false;
-
-    void visit(const ast::Ident& i) override {
-        if (i.name == "Math" || i.name == "globalThis" || i.name == "eval" ||
-            i.name == "Function" || i.name == "AsyncFunction" ||
-            i.name == "GeneratorFunction") {
-            tainted = true;
-        }
-    }
-    void visit(const ast::MemberAccess& m) override {
-        if (isMath(m.object.get())) return;
-        // `globalThis.BENCH_CONFIG`: a named property of the global object,
-        // read or written, is not the builtin unless it names `Math`, another
-        // road back to the global object, or a way to run source text — and
-        // `window.Math = f` rebinds the bare name as surely as
-        // `globalThis.Math = f` does.
-        if (globalRoad(m.object.get()) && !m.isPrivate) {
-            if (reachesMath(m.property)) tainted = true;
-            if (isGlobalThis(m.object.get())) return;
-        }
-        ast::detail::IdentVisitor::visit(m);
-    }
-    void visit(const ast::IndexAccess& ix) override {
-        if (isMath(ix.object.get())) {
-            ix.index->accept(*this);
-            return;
-        }
-        // `window[k]` may name `Math`.
-        if (globalRoad(ix.object.get())) tainted = true;
-        ast::detail::IdentVisitor::visit(ix);
-    }
-    void visit(const ast::Binary& b) override {
-        if (ast::isAssignOp(b.op) && memberBaseIsMath(b.lhs.get())) tainted = true;
-        ast::detail::IdentVisitor::visit(b);
-    }
-    void visit(const ast::Unary& u) override {
-        const bool mutating = u.op == ast::UnaryOp::Delete || u.op == ast::UnaryOp::PreInc ||
-                              u.op == ast::UnaryOp::PreDec || u.op == ast::UnaryOp::PostInc ||
-                              u.op == ast::UnaryOp::PostDec;
-        if (mutating && memberBaseIsMath(u.operand.get())) tainted = true;
-        ast::detail::IdentVisitor::visit(u);
-    }
-    // A destructuring pattern's targets can be member expressions, and the
-    // walk below cannot tell a target from a read — so any Math anywhere in
-    // the pattern taints, via a plain mention scan over its expressions.
-    void visit(const ast::DestructuringAssign& d) override {
-        ast::detail::IdentVisitor mentions;
-        ast::detail::visitPatternExprs(d.pattern.get(), mentions);
-        if (mentions.names.count("Math") != 0 || mentions.names.count("globalThis") != 0 ||
-            mentions.names.count("eval") != 0 || mentions.names.count("Function") != 0 ||
-            mentions.names.count("AsyncFunction") != 0 ||
-            mentions.names.count("GeneratorFunction") != 0) {
-            tainted = true;
-        }
-        d.value->accept(*this);
-    }
-
-private:
-    static bool isGlobalThis(const ast::Expr* e) {
-        const auto* id = dynamic_cast<const ast::Ident*>(e);
-        return id != nullptr && id->name == "globalThis";
-    }
-    // A name the global object answers with itself. Only `globalThis` taints
-    // on a bare mention: the others are common names of a program's own
-    // bindings (`function onFirstUse(self)`, `let parent = node.parent`),
-    // which this scan cannot tell from the global's, so a member of them is
-    // what it watches.
-    static bool globalRoad(const ast::Expr* e) {
-        const auto* id = dynamic_cast<const ast::Ident*>(e);
-        if (id == nullptr) return false;
-        const std::string& n = id->name;
-        return n == "globalThis" || n == "window" || n == "self" || n == "top" || n == "parent" || n == "frames";
-    }
-    // The global object's properties that hand back `Math`, the global object
-    // itself, or an evaluator: what a member of `globalThis` must not name for
-    // the mention to be harmless.
-    static bool reachesMath(const std::string& p) {
-        return p == "Math" || p == "globalThis" || p == "window" || p == "self" || p == "frames" ||
-               p == "parent" || p == "top" || p == "eval" || p == "Function" || p == "Reflect" ||
-               p == "Object";
-    }
-    static bool isMath(const ast::Expr* e) {
-        const auto* id = dynamic_cast<const ast::Ident*>(e);
-        return id != nullptr && (id->name == "Math");
-    }
-    static bool memberBaseIsMath(const ast::Expr* e) {
-        if (const auto* m = dynamic_cast<const ast::MemberAccess*>(e)) {
-            return isMath(m->object.get());
-        }
-        if (const auto* ix = dynamic_cast<const ast::IndexAccess*>(e)) {
-            return isMath(ix->object.get());
-        }
-        return false;
-    }
-};
-
 // The rounds that settle what NARROWS, run before anything that WIDENS starts
 // accumulating.
 //
@@ -647,10 +532,12 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     result.moduleName = module.name;
 
     bool hostOverridesMath = false;
+    bool hostOverridesNumber = false;
     std::vector<std::string> hostClaimNames;
     if (hostGlobals != nullptr) {
         for (const auto& g : *hostGlobals) {
             if (g == "Math" || g == "globalThis") hostOverridesMath = true;
+            if (g == "Number" || g == "globalThis") hostOverridesNumber = true;
             // A host-provided constructor is not the builtin the typed-array
             // proof names; feeding it to the module-scope set makes every
             // claim site see a user binding and stand down.
@@ -688,11 +575,10 @@ std::optional<InferenceResult> inferModule(const ast::Module& module, Diagnostic
     collectUniqueModuleConsts(module, mod.uniqueModuleConsts);
     for (const auto& name : hostClaimNames) mod.uniqueModuleConsts.erase(name);
     if (!hostOverridesMath && mod.moduleScopeNames.count("Math") == 0) {
-        MathTaintScan taint;
-        for (const auto& stmt : module.body) {
-            if (stmt) stmt->accept(taint);
-        }
-        mod.mathPristine = !taint.tainted;
+        mod.mathPristine = !builtinTainted(module, "Math", /*aliasTaints=*/true);
+    }
+    if (!hostOverridesNumber && mod.moduleScopeNames.count("Number") == 0) {
+        mod.numberPristine = !builtinTainted(module, "Number", /*aliasTaints=*/false);
     }
     result.classLayouts.setMathPristine(mod.mathPristine);
     // Before any body is walked: the flow pass reads class identities to type

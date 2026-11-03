@@ -131,10 +131,11 @@ struct InferenceResult {
     // that is why the site itself is recorded and not only its type.
     std::unordered_set<const ast::Expr*> pristineMathCalls;
     // Reads of one of 21.3.1's value properties (`Math.PI`) on the same proven
-    // builtin: the property is non-writable and non-configurable, so the read
-    // is its constant and the lowering emits that instead of the global read
-    // and the property load.
-    std::unordered_set<const ast::Expr*> pristineMathConstants;
+    // builtin, or of 21.1.2's (`Number.EPSILON`) on a `Number` whose name no
+    // statement rebinds: the property is non-writable and non-configurable, so
+    // the read is its constant and the lowering emits that instead of the
+    // global read and the property load.
+    std::unordered_map<const ast::Expr*, double> pristineConstants;
     // The same proof for a call through a `const` that holds a pristine
     // `Math.<fn>` (`const cos = Math.cos; cos(x)`), with the member it names:
     // the binding is never reassigned and its initializer read the builtin,

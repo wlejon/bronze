@@ -19,11 +19,9 @@ bool isHostGlobalNumericProperty(std::string_view baseGlobal, std::string_view p
     if (baseGlobal == "performance") {
         return prop == "timeOrigin";
     }
-    if (baseGlobal == "Number") {
-        return prop == "EPSILON" || prop == "MAX_SAFE_INTEGER" || prop == "MIN_SAFE_INTEGER" ||
-               prop == "MAX_VALUE" || prop == "MIN_VALUE" || prop == "NaN" ||
-               prop == "POSITIVE_INFINITY" || prop == "NEGATIVE_INFINITY";
-    }
+    // `Number`'s value properties are not a host contract: they are a Number
+    // only while the program cannot rebind the name, which the flow pass
+    // decides (FlowAnalyzer::isPristineNumberBase) and folds to the constant.
     return false;
 }
 

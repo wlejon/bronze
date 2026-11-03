@@ -467,9 +467,9 @@ std::optional<Lowerer::Value> Lowerer::lowerMemberAccess(const ast::MemberAccess
         }
     }
 
-    // Nothing to evaluate: the base is the builtin Math, whose read has no
-    // effect, and the property is a constant that cannot change.
-    if (const std::optional<double> k = pristineMathConstant(*mem)) {
+    // Nothing to evaluate: the base is the builtin Math or Number, whose read
+    // has no effect, and the property is a constant that cannot change.
+    if (const std::optional<double> k = pristineConstant(*mem)) {
         il::Instruction inst;
         inst.op = il::Op::ConstF64;
         inst.type = il::Type::F64;
