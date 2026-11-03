@@ -41,6 +41,20 @@ public:
     void push(Value* slot) { roots_.push(slot); }
     void pop(Value* slot) noexcept { roots_.pop(slot); }
 
+    // One contiguous block of Values rooted for the frame's whole life, beside
+    // the pushed slots. A host call is the shape: the trampoline
+    // (embed/embed_function.cpp) roots its receiver and arguments, and
+    // pushing them a slot at a time — a capacity test per push, an identity
+    // compare per pop — was most of what the trampoline did. The block must
+    // outlive the frame and is set at most once; the collector visits every
+    // word of it.
+    void rootSpan(Value* base, uint32_t count) noexcept {
+        span_ = base;
+        spanCount_ = count;
+    }
+    Value* span() const noexcept { return span_; }
+    uint32_t spanCount() const noexcept { return spanCount_; }
+
     static ShadowStackFrame* current() noexcept { return top_frame_; }
     // The innermost frame, by reference: per STACK (runtime/stack_locals.h),
     // so a fiber's chain is its own and a switched-out one is walked from
@@ -49,8 +63,13 @@ public:
 
 private:
     ShadowStackFrame* prev_{nullptr};
+    Value* span_{nullptr};
+    uint32_t spanCount_{0};
     RootSlotList roots_;
-    static thread_local ShadowStackFrame* top_frame_;
+    // constinit on the declaration, so no translation unit has to assume a
+    // dynamic initializer: without it every frame open and every Rooted<>
+    // tested (and could call) a TLS init wrapper before touching the slot.
+    static constinit thread_local ShadowStackFrame* top_frame_;
 };
 
 // The brass stack-local index of ShadowStackFrame::current(): a collection

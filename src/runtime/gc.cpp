@@ -18,7 +18,7 @@
 
 namespace bronze {
 
-thread_local ShadowStackFrame* ShadowStackFrame::top_frame_ = nullptr;
+constinit thread_local ShadowStackFrame* ShadowStackFrame::top_frame_ = nullptr;
 
 namespace {
 ShadowStackFrame*& topFrameRef() { return ShadowStackFrame::currentRef(); }

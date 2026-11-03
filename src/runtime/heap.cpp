@@ -274,15 +274,20 @@ Heap::~Heap() {
 
 void Heap::registerFrameRoots() {
     gc_->add_root_source([](brass::gc::Tracer& t) {
-        // The C++ side's shadow stack: Rooted<>, RootedArgs, RootedBlock —
-        // the running stack's chain, and each switched-out stack's (a
-        // suspended compartment fiber, or the stack that resumed it).
+        // The C++ side's shadow stack: Rooted<>, RootedArgs, RootedBlock and
+        // a frame's rooted span — the running stack's chain, and each
+        // switched-out stack's (a suspended compartment fiber, or the stack
+        // that resumed it).
         auto walk = [&t](ShadowStackFrame* top) {
             for (ShadowStackFrame* frame = top; frame != nullptr; frame = frame->prev()) {
                 Value** slots = frame->roots();
                 const size_t count = frame->count();
                 for (size_t i = 0; i < count; ++i) {
                     if (slots[i]) t.visit(reinterpret_cast<uint64_t*>(slots[i]));
+                }
+                Value* span = frame->span();
+                for (uint32_t i = 0, n = frame->spanCount(); i < n; ++i) {
+                    t.visit(reinterpret_cast<uint64_t*>(&span[i]));
                 }
             }
         };

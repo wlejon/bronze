@@ -24,7 +24,7 @@
 #include "runtime/gc.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
-#include "runtime/rt_roots.h"
+#include "runtime/root_slots.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
@@ -41,13 +41,19 @@ namespace {
 // interned.
 uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
                         const uint64_t* argv) {
-    // The builtin prologue (rt_roots.h): copy the arguments into rooted
-    // slots before anything can allocate, and never read `argv` again. A
-    // frame of our own, because the nearest generated frame roots only its
-    // own slots.
+    // The builtin prologue (rt_roots.h): copy the receiver and the arguments
+    // into rooted slots before anything can allocate, and never read `argv`
+    // again. A frame of our own, because the nearest generated frame roots
+    // only its own slots — and the copy is rooted as the frame's one span,
+    // not slot by slot: this runs on every WebGL call bro makes, and the
+    // per-slot push and pop were the larger half of it.
+    // The block first, so it outlives the frame whose span names it.
+    RootValueBlock block(argc + 1);
     ShadowStackFrame frame;
-    runtime::RootedArgs args(argc, argv);
-    Rooted<Value> thisRoot{Value(this_bits)};
+    Value* slots = block.data();
+    slots[0] = Value(this_bits);
+    for (uint32_t i = 0; i < argc; ++i) slots[i + 1] = Value(argv[i]);
+    frame.rootSpan(slots, argc + 1);
 
     // The std::function lives on the C++ heap, so the pointer is stable —
     // read once, before the callback can move anything. The environment is
@@ -80,7 +86,7 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
         fatal(buf);
     }
 
-    // The span points at RootedArgs' own slots: the collector updates them in
+    // The span points at the rooted block itself: the collector updates it in
     // place, so the arguments the host reads stay current across anything it
     // does. The receiver is a copy — embed.h tells the host to re-root it
     // before allocating.
@@ -94,8 +100,7 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
     std::string failure;
     bool outOfMemory = false;
     try {
-        Value result = (*fn)(thisRoot.get(),
-                             std::span<const Value>(args.data(), args.count()));
+        Value result = (*fn)(slots[0], std::span<const Value>(slots + 1, argc));
         return result.rawBits();
     } catch (const std::bad_alloc&) {
         outOfMemory = true;

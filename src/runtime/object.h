@@ -542,6 +542,37 @@ struct ObjectHeader {
     }
 };
 
+// Inline, and the reason is a host call: every native-handle read goes through
+// these — the env cell a host function's trampoline reads its callable from,
+// the receiver HostClass::unwrap checks on each WebGL method — and out of line
+// they were two calls per read, 15 % of a host-method call loop.
+//
+// The base payload is the plain object's: the fields after the heap header,
+// plus the inline property slots. Anything past it is an internal slot, which
+// is how the count is recovered from `header.size` without a field of its own
+// — a field would be one more word on every `{}` literal in a program to
+// describe a thing almost none of them have.
+inline uint32_t ObjectHeader::internalSlotCount() const noexcept {
+    constexpr size_t kBasePayload = BRONZE_ABI_PLAIN_OBJECT_BYTES - sizeof(HeapObjectHeader);
+    const size_t payload = header.size - sizeof(HeapObjectHeader);
+    if (payload <= kBasePayload) return 0;
+    return static_cast<uint32_t>((payload - kBasePayload) / sizeof(Value));
+}
+
+inline Value ObjectHeader::internalSlot(uint32_t index) const {
+    if (index >= internalSlotCount()) [[unlikely]] {
+        fatal("internal slot index beyond what the object was created with");
+    }
+    return slotsData()[kInlineSlots + index];
+}
+
+inline void ObjectHeader::setInternalSlot(uint32_t index, Value val) {
+    if (index >= internalSlotCount()) [[unlikely]] {
+        fatal("internal slot index beyond what the object was created with");
+    }
+    slotsData()[kInlineSlots + index] = val;
+}
+
 // These two layouts are part of the generated-code ABI: compiled code loads the
 // shape word and the cache entry itself rather than calling a helper to do it.
 // The constants live in bronze_abi.h, which is pure C and cannot see a C++

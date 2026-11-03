@@ -187,26 +187,6 @@ ObjectHeader* ObjectHeader::createWithInternalSlots(Heap& heap, NonMovingArena& 
     return obj;
 }
 
-uint32_t ObjectHeader::internalSlotCount() const noexcept {
-    const size_t payload = header.size - sizeof(HeapObjectHeader);
-    if (payload <= kObjectBasePayload) return 0;
-    return static_cast<uint32_t>((payload - kObjectBasePayload) / sizeof(Value));
-}
-
-Value ObjectHeader::internalSlot(uint32_t index) const {
-    if (index >= internalSlotCount()) {
-        fatal("internal slot index beyond what the object was created with");
-    }
-    return slotsData()[kInlineSlots + index];
-}
-
-void ObjectHeader::setInternalSlot(uint32_t index, Value val) {
-    if (index >= internalSlotCount()) {
-        fatal("internal slot index beyond what the object was created with");
-    }
-    slotsData()[kInlineSlots + index] = val;
-}
-
 // Grow self's overflow block to hold at least `needed` out-of-line slots.
 // Allocation may collect and move both the object and its old block, so
 // everything is re-derived through the root after allocating.
