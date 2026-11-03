@@ -18,4 +18,16 @@ inline constexpr const char* kElemSetStub = "__bronze_elem_set_keyed";
 // computed access in the helpers, and tells the property lowering which.
 void emit_elem_stubs(IlLowering* lowering, Module& mod);
 
+class PropertyLoweringHelper;
+
+// An element key as the Value the helpers and stubs take: an i32 is an int32
+// Number, an f64 its boxed bits, anything else already a Value.
+Value* boxed_elem_key(Builder& b, Value* index);
+
+// The get stub's own-slot hit inlined at a site: the slot's value branches to
+// `merge` (its one i64 parameter), everything else to `miss`, which calls the
+// stub.
+void build_inline_elem_get_hit(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* key, BasicBlock* merge,
+                               BasicBlock* miss);
+
 }  // namespace il2mir

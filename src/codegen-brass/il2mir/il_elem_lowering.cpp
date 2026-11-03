@@ -8,6 +8,7 @@
 #include "il/il_op.h"
 #include "il_abi.h"
 #include "il_lowering_ops.h"
+#include "il_elem_stub.h"
 #include "il_property.h"
 #include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
@@ -41,13 +42,6 @@ struct ElemIndex {
     Value* i64 = nullptr;
     Value* ok = nullptr;
 };
-
-// The index as the Value the helpers take: an i32 is an int32 Number.
-Value* boxed_index(Builder& b, Value* index) {
-    if (index->type() == Type::i32()) return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(index));
-    if (index->type() == Type::f64()) return box_f64_bits(b, index);
-    return index;
-}
 
 ElemIndex elem_index(Builder& b, Value* index, bool proven_integral = false) {
     ElemIndex r;
@@ -238,19 +232,9 @@ Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
 
 } // namespace
 
-Value* PropertyLoweringHelper::lower_elem_get_call(Builder& b, Value* obj, Value* index) {
-    return b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_index(b, index)});
-}
-
-void PropertyLoweringHelper::lower_elem_set_call(Builder& b, Value* obj, Value* index, Value* val,
-                                                 uint32_t strict) {
-    b.build_call(elem_set_helper(), Type::void_type(),
-                 {obj, boxed_index(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
-}
-
 Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* index) {
     if (!enable_inlined_fastpaths_) {
-        return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)});
+        return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)});
     }
 
     BasicBlock* cur = b.current_block();
@@ -340,8 +324,17 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.position_at_end(bb_box);
     b.build_br(bb_merge, {box_f64_bits(b, number)});
 
+    // Past the array and view arms: a plain object's own slot answers inline
+    // from the computed-read cache, and only the rest calls the stub.
     b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_index(b, index)})});
+    Value* key = boxed_elem_key(b, index);
+    if (elem_stubs_) {
+        BasicBlock* bb_stub = b.append_block(prefix + "_stub");
+        b.position_at_end(bb_slow);
+        build_inline_elem_get_hit(*this, b, obj, key, bb_merge, bb_stub);
+        b.position_at_end(bb_stub);
+    }
+    b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, key})});
 
     b.position_at_end(bb_merge);
     return result;
@@ -350,7 +343,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
 Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Value* index, int64_t elem_kind,
                                                     Value* preloaded_data, Value* preloaded_length) {
     if (!enable_inlined_fastpaths_) {
-        return b.build_bitcast_f64_i64(b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)}));
+        return b.build_bitcast_f64_i64(b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_elem_key(b, index)}));
     }
 
     const bool proven_integral = (elem_kind & (1LL << 16)) != 0;
@@ -391,7 +384,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         finish_hole_read(b, elem, bb_merge, bb_slow, prefix);
 
         b.position_at_end(bb_slow);
-        b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_index(b, index)})});
+        b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_elem_key(b, index)})});
 
         // The read is ToNumber of the element (il::elemGetCoerces): a Number
         // is its own bits, anything else — a hole or a miss read as
@@ -472,7 +465,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
 void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index, Value* val, uint32_t strict) {
     Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
     if (!enable_inlined_fastpaths_) {
-        b.build_call("bronze_elem_set", Type::void_type(), {obj, boxed_index(b, index), val, strict_val});
+        b.build_call("bronze_elem_set", Type::void_type(), {obj, boxed_elem_key(b, index), val, strict_val});
         return;
     }
 
@@ -606,7 +599,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.build_br(bb_merge);
 
     b.position_at_end(bb_slow);
-    b.build_call(elem_set_helper(), Type::void_type(), {obj, boxed_index(b, index), val, strict_val});
+    b.build_call(elem_set_helper(), Type::void_type(), {obj, boxed_elem_key(b, index), val, strict_val});
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);
@@ -618,7 +611,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     Value* strict_val = b.build_iconst_i32(static_cast<int32_t>(strict));
     if (!enable_inlined_fastpaths_) {
         b.build_call("bronze_elem_set", Type::void_type(),
-                     {obj, boxed_index(b, index), box_f64_bits(b, val_f64), strict_val});
+                     {obj, boxed_elem_key(b, index), box_f64_bits(b, val_f64), strict_val});
         return;
     }
 
@@ -669,7 +662,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
 
         b.position_at_end(bb_slow);
         b.build_call(elem_set_helper(), Type::void_type(),
-                     {obj, boxed_index(b, index), box_f64_bits(b, val_f64), strict_val});
+                     {obj, boxed_elem_key(b, index), box_f64_bits(b, val_f64), strict_val});
         b.build_br(bb_merge);
 
         b.position_at_end(bb_merge);

@@ -12,9 +12,11 @@
 // thread_local table address, the key's content compare against the entry's
 // arena copy and the probe's result struct — about a hundred and fifty
 // instructions for what is a hash, three compares and a load. The stub is one
-// module-local call per read, and it is a call rather than code at each site
-// because a site that is not a plain-object read (an array past its length, a
-// typed array's Float16) would carry the probe for nothing.
+// module-local call per read. A generic `o[k]` site (il_elem_lowering.cpp)
+// also carries the own-slot hit inline, behind its array and view arms
+// (build_inline_elem_get_hit below), because the call was most of what a hit
+// cost; a run-once body calls the stub alone, since there the code size buys
+// nothing.
 //
 // What the stub may trust, and why it is the runtime's own answer:
 //  - the bucket is the runtime's `bucketOf`, constant for constant (the ABI's
@@ -38,6 +40,7 @@
 #include "il_abi.h"
 #include "il_elem_stub.h"
 #include "il_lowering.h"
+#include "il_lowering_ops.h"
 #include "il_property.h"
 #include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
@@ -236,6 +239,51 @@ void build_elem_set_stub(PropertyLoweringHelper& pl, Function* fn) {
 }
 
 }  // namespace
+
+// The get stub's own-slot hit, at the site: the same probe, and on a hit the
+// slot load straight into `merge`; everything else (an absent key, a miss, a
+// receiver that is not a plain object) branches to `miss`, where the caller
+// calls the stub, which answers the rest. Inline because the call was most of
+// what a hit cost: three.js reads `map[name]` and `enabledCapabilities[id]`
+// millions of times a frame, and the stub was the largest line item of those
+// reads. The absent hit stays in the stub: inlining it too was more code at
+// every site and measured no better (keyed microbench, 7.79G instructions
+// against 7.72G).
+void build_inline_elem_get_hit(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* key, BasicBlock* merge,
+                               BasicBlock* miss) {
+    // append_block moves the insertion point: the blocks first.
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "kget_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* matched = b.append_block(prefix + "_matched");
+    BasicBlock* own = b.append_block(prefix + "_own");
+    b.position_at_end(cur);
+    const KeyedEntry k =
+        keyed_entry(b, obj, key, BRONZE_TLS_ELEM_CACHE_TBL_OFF, BRONZE_ABI_ELEM_BUCKET_SHIFT, miss, prefix);
+    b.build_br_if(k.match, matched, miss);
+
+    b.position_at_end(matched);
+    Value* slot_word = b.build_load(Type::i64(), k.entry, BRONZE_ABI_ELEM_IC_OFFSET + BRONZE_ABI_IC_SLOT_OFFSET);
+    b.build_br_if(b.build_ult(slot_word, b.build_iconst_i64(kOwnDataLimit)), own, miss);
+
+    b.position_at_end(own);
+    b.build_br(merge, {pl.load_slot(b, k.ptr, slot_word)});
+}
+
+Value* boxed_elem_key(Builder& b, Value* index) {
+    if (index->type() == Type::i32()) return b.build_bitcast_i64_f64(b.build_sitofp_f64_i32(index));
+    if (index->type() == Type::f64()) return box_f64_bits(b, index);
+    return index;
+}
+
+Value* PropertyLoweringHelper::lower_elem_get_call(Builder& b, Value* obj, Value* index) {
+    return b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_elem_key(b, index)});
+}
+
+void PropertyLoweringHelper::lower_elem_set_call(Builder& b, Value* obj, Value* index, Value* val,
+                                                 uint32_t strict) {
+    b.build_call(elem_set_helper(), Type::void_type(),
+                 {obj, boxed_elem_key(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
+}
 
 // What a computed access calls when its inline arms miss: the module's keyed
 // stub once emit_elem_stubs has built one, else the runtime helper itself.
