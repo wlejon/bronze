@@ -238,12 +238,12 @@ Value* narrow_f64_to_i32_callfree(Builder& b, Value* v) {
 } // namespace
 
 Value* PropertyLoweringHelper::lower_elem_get_call(Builder& b, Value* obj, Value* index) {
-    return b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)});
+    return b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_index(b, index)});
 }
 
 void PropertyLoweringHelper::lower_elem_set_call(Builder& b, Value* obj, Value* index, Value* val,
                                                  uint32_t strict) {
-    b.build_call("bronze_elem_set", Type::void_type(),
+    b.build_call(elem_set_helper(), Type::void_type(),
                  {obj, boxed_index(b, index), val, b.build_iconst_i32(static_cast<int32_t>(strict))});
 }
 
@@ -340,7 +340,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     b.build_br(bb_merge, {box_f64_bits(b, number)});
 
     b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
+    b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_index(b, index)})});
 
     b.position_at_end(bb_merge);
     return result;
@@ -390,7 +390,7 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
         finish_hole_read(b, elem, bb_merge, bb_slow, prefix);
 
         b.position_at_end(bb_slow);
-        b.build_br(bb_merge, {b.build_call("bronze_elem_get", Type::i64(), {obj, boxed_index(b, index)})});
+        b.build_br(bb_merge, {b.build_call(elem_get_helper(), Type::i64(), {obj, boxed_index(b, index)})});
 
         // The read is ToNumber of the element (il::elemGetCoerces): a Number
         // is its own bits, anything else — a hole or a miss read as
@@ -605,7 +605,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.build_br(bb_merge);
 
     b.position_at_end(bb_slow);
-    b.build_call("bronze_elem_set", Type::void_type(), {obj, boxed_index(b, index), val, strict_val});
+    b.build_call(elem_set_helper(), Type::void_type(), {obj, boxed_index(b, index), val, strict_val});
     b.build_br(bb_merge);
 
     b.position_at_end(bb_merge);
@@ -667,7 +667,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
         b.build_br(bb_merge);
 
         b.position_at_end(bb_slow);
-        b.build_call("bronze_elem_set", Type::void_type(),
+        b.build_call(elem_set_helper(), Type::void_type(),
                      {obj, boxed_index(b, index), box_f64_bits(b, val_f64), strict_val});
         b.build_br(bb_merge);
 

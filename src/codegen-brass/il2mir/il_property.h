@@ -253,6 +253,11 @@ public:
     // which the module then defines (emit_direct_stubs).
     void set_ic_stubs(bool on) noexcept { ic_stubs_ = on; }
     [[nodiscard]] bool ic_stubs() const noexcept { return ic_stubs_; }
+    // Whether a computed access's helper call goes through kElemGetStub /
+    // kElemSetStub (il_elem_stub.h), which the module then defines.
+    void set_elem_stubs(bool on) noexcept { elem_stubs_ = on; }
+    [[nodiscard]] const char* elem_get_helper() const noexcept;
+    [[nodiscard]] const char* elem_set_helper() const noexcept;
     // The module's key constants, which name a property site in a profile.
     void set_key_names(const std::vector<std::string>* names) noexcept { key_names_ = names; }
     [[nodiscard]] std::string_view key_tag(uint32_t key_index) const noexcept {
@@ -428,6 +433,7 @@ private:
     bool feedback_driven_ = false;
     bool in_process_ = false;
     bool ic_stubs_ = false;
+    bool elem_stubs_ = false;
     const std::vector<std::string>* key_names_ = nullptr;
     bool enable_inlined_fastpaths_ = true;
     std::string key_map_sym_ = "__bronze_key_map";

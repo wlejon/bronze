@@ -376,8 +376,10 @@
  * reads the string's flags word (offsets below) and takes the helper when the
  * hash has not been memoized yet — the helper's first probe memoizes it.
  *
- * The bucket function is splitmix64's finalizer applied twice, and generated
- * code must reproduce it EXACTLY: a probe that hashes differently from the
+ * The bucket is the high BRONZE_ABI_ELEM_BUCKET_SHIFT-complement bits of
+ * `shape * HASH_MUL_SHAPE + witness * HASH_MUL_WITNESS` (elem_ic.cpp
+ * `bucketOf`, which says why the high bits), and generated code must
+ * reproduce it EXACTLY: a probe that hashes differently from the
  * fill does not answer wrongly, it simply never hits, which is a silent
  * regression rather than a bug. elem_ic.cpp static_asserts the constants. */
 #define BRONZE_ABI_ELEM_ENTRY_SIZE      56 /* sizeof(ElemCacheEntry) */
@@ -405,9 +407,10 @@
 #define BRONZE_ABI_STRING_HASHED_BIT     2 /* StringHeader::kHasHashFlag */
 #define BRONZE_ABI_STRING_HASH_MASK     0xFFFFFFFCu
 #define BRONZE_ABI_STRING_BUILDER_BIT   1 /* StringHeader::kBuilderFlag (in HeapObjectHeader::flags) */
-#define BRONZE_ABI_MIX64_ADD  0x9E3779B97F4A7C15ull
-#define BRONZE_ABI_MIX64_MUL1 0xBF58476D1CE4E5B9ull
-#define BRONZE_ABI_MIX64_MUL2 0x94D049BB133111EBull
+#define BRONZE_ABI_ELEM_HASH_MUL_SHAPE   0x9E3779B97F4A7C15ull
+#define BRONZE_ABI_ELEM_HASH_MUL_WITNESS 0xBF58476D1CE4E5B9ull
+#define BRONZE_ABI_ELEM_BUCKET_SHIFT     52 /* 64 - log2(BRONZE_ABI_ELEM_ENTRIES) */
+#define BRONZE_ABI_ELEM_SET_BUCKET_SHIFT 54 /* 64 - log2(BRONZE_ABI_ELEM_SET_ENTRIES) */
 
 /* Value: NaN-boxed, tag in the top 16 bits (runtime/value.h). */
 #define BRONZE_ABI_VALUE_TAG_SHIFT      48

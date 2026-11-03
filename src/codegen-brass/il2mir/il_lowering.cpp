@@ -1,5 +1,6 @@
 #include "il_lowering.h"
 #include "il_lowering_direct.h"
+#include "il_elem_stub.h"
 #include "il_lowering_coro.h"
 #include "il_lowering_ops.h"
 #include "il_lowering_calls.h"
@@ -495,6 +496,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     }
 
     emit_direct_stubs(this, *mod);
+    emit_elem_stubs(this, *mod);
     ltimer.mark("declare");
     // 2. Lower each function body, or leave it lazy (il_lowering_lazy.cpp).
     lazy_bodies_.clear();

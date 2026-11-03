@@ -50,29 +50,27 @@ static_assert(StringHeader::kHasHashFlag == BRONZE_ABI_STRING_HASHED_BIT);
 static_assert((0xFFFFFFFFu & ~(StringHeader::kHasHashFlag | StringHeader::kUTF16Flag)) ==
               BRONZE_ABI_STRING_HASH_MASK);
 static_assert((kElemCacheEntries & (kElemCacheEntries - 1)) == 0, "bucket masking needs a power of two");
+static_assert(64 - std::countr_zero(kElemCacheEntries) == BRONZE_ABI_ELEM_BUCKET_SHIFT);
+static_assert(64 - std::countr_zero(kElemSetCacheEntries) == BRONZE_ABI_ELEM_SET_BUCKET_SHIFT);
 static_assert(static_cast<uint8_t>(ElemKeyKind::Number) == BRONZE_ABI_ELEM_KIND_NUMBER);
 static_assert(static_cast<uint8_t>(ElemKeyKind::String) == BRONZE_ABI_ELEM_KIND_STRING);
 static_assert(static_cast<uint8_t>(ElemKeyKind::Boolean) == BRONZE_ABI_ELEM_KIND_BOOL);
 
-// splitmix64's finalizer. Both inputs need it and one of them needs it badly:
+// Multiplicative (Fibonacci) hashing of both inputs, the bucket taken from
+// the product's HIGH bits. Both inputs need the high bits rather than the low:
 // a NUMBER witness is a DOUBLE's bit pattern, and a small integer's double has
-// about forty ZERO low bits. A mix that only multiplies leaves those zeros in
-// the low half of the product, so `factorToGL[2884]`, `[2929]` and `[2960]`
-// all indexed the same bucket and evicted one another 15,000 times a frame —
-// 5.4 M misses on `many_meshes`, which read as key rotation until the reason
-// was split by shape. A shape pointer has the milder version of the same
-// problem at the other end (arena alignment zeros at the bottom), so both go
-// through the finalizer rather than only the one that was caught.
-uint64_t mix64(uint64_t x) noexcept {
-    x += BRONZE_ABI_MIX64_ADD;
-    x = (x ^ (x >> 30)) * BRONZE_ABI_MIX64_MUL1;
-    x = (x ^ (x >> 27)) * BRONZE_ABI_MIX64_MUL2;
-    return x ^ (x >> 31);
-}
-
+// about forty ZERO low bits, so `factorToGL[2884]`, `[2929]` and `[2960]`
+// differ only near the top of the word (a low-bits mask put all three in one
+// bucket, evicting one another 15,000 times a frame on `many_meshes`); a
+// shape pointer has the milder version of the same problem at the other end
+// (arena alignment zeros at the bottom). A product's high bits depend on every
+// bit at or below them, which covers both. The two products are independent,
+// so generated code (il_elem_stub.cpp) computes the bucket in one multiply's
+// latency rather than the two dependent finalizer rounds this used to be.
 uint32_t bucketOf(const Shape* shape, uint64_t witness, uint32_t entries) noexcept {
-    const uint64_t h = mix64(reinterpret_cast<uintptr_t>(shape) ^ mix64(witness));
-    return static_cast<uint32_t>(h) & (entries - 1);
+    const uint64_t h = reinterpret_cast<uintptr_t>(shape) * BRONZE_ABI_ELEM_HASH_MUL_SHAPE +
+                       witness * BRONZE_ABI_ELEM_HASH_MUL_WITNESS;
+    return static_cast<uint32_t>(h >> (64 - std::countr_zero(entries)));
 }
 
 // The key's witness, or Empty for a kind this table does not speak for.
