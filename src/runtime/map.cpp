@@ -296,6 +296,38 @@ bool MapHeader::findFast(const Heap& heap, MapHeader* map, Value key, uint32_t& 
     return true;
 }
 
+bool MapHeader::findFastIdentity(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept {
+    // findFast's validity test, verbatim.
+    if (map->liveSize() == 0) {
+        slot = UINT32_MAX;
+        return true;
+    }
+    if (!map->index.isPointer() || !epochCurrent(heap, map) ||
+        map->indexAnchor.asNumber() !=
+            static_cast<double>(reinterpret_cast<uintptr_t>(map))) {
+        return false;
+    }
+    const uint32_t count = bucketCountOf(map);
+    if (count == 0) return false;
+    const uint32_t mask = count - 1;
+    const uint32_t* buckets = bucketsOf(map);
+    const Value* entries = static_cast<const MapHeader*>(map)->entryData();
+    // An object or symbol key is SameValueZero-equal only to itself, and a
+    // tombstone (a hole) is never one, so one compare of the bits is the
+    // whole test, with the hash and the compare inline rather than two calls
+    // a bucket.
+    const uint64_t want = key.rawBits();
+    for (uint32_t b = mix64(want) & mask; buckets[b] != 0; b = (b + 1) & mask) {
+        const uint32_t s = buckets[b] - 1;
+        if (entries[s * 2].rawBits() == want) {
+            slot = s;
+            return true;
+        }
+    }
+    slot = UINT32_MAX;
+    return true;
+}
+
 uint32_t MapHeader::find(Heap& heap, Rooted<Value>& self, Rooted<Value>& key) {
     if (self.get().asObject<MapHeader>()->liveSize() == 0) return UINT32_MAX;
     ensureIndex(heap, self);

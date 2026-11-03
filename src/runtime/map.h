@@ -144,6 +144,9 @@ struct MapHeader {
     // can say, and the caller falls back to the rooted path. Raw pointers are
     // safe exactly BECAUSE nothing in here allocates.
     static bool findFast(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept;
+    // findFast for a key that is an object or a symbol (a WeakMap's): the
+    // same answers, the probe compared by identity.
+    static bool findFastIdentity(const Heap& heap, MapHeader* map, Value key, uint32_t& slot) noexcept;
 
     // Insert or update. Updating an EXISTING key keeps its position, which is
     // 24.1.3.9 step 4 and the reason the table is ordered at all.

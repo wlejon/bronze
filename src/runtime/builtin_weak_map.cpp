@@ -89,7 +89,7 @@ uint64_t weakMapGet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
         if (isWeakCollection(selfV) && keyV.isObject()) {
             auto* map = selfV.asObject<MapHeader>();
             uint32_t slot;
-            if (MapHeader::findFast(rtHeap(), map, keyV, slot)) {
+            if (MapHeader::findFastIdentity(rtHeap(), map, keyV, slot)) {
                 if (slot == UINT32_MAX) return Value::fromUndefined().rawBits();
                 return map->valueAt(slot).rawBits();
             }
@@ -143,7 +143,7 @@ uint64_t weakMapHas(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* 
         if (isWeakCollection(selfV) && keyV.isObject()) {
             auto* map = selfV.asObject<MapHeader>();
             uint32_t slot;
-            if (MapHeader::findFast(rtHeap(), map, keyV, slot)) {
+            if (MapHeader::findFastIdentity(rtHeap(), map, keyV, slot)) {
                 return Value::fromBool(slot != UINT32_MAX).rawBits();
             }
         }
