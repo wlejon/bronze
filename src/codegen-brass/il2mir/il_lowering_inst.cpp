@@ -5,6 +5,7 @@
 #include "il_property_lowering.h"
 #include "il_abi.h"
 #include <brass/mir/verifier.hpp>
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -35,6 +36,50 @@ Value* lower_unbox_f64(IlLowering* lowering, Builder& b, Value* bits) {
 
     b.position_at_end(fast);
     b.build_br(merge, {b.build_bitcast_f64_i64(bits)});
+
+    b.position_at_end(merge);
+    return result;
+}
+
+// A read of a global through the module's cache (codegen::lowerToBrassAst
+// names the thunk): the cell's load and hole test inline, the thunk only for
+// a hole. The thunk is built after this pipeline has run (brass_backend.cpp),
+// so the inliner never sees its body, and a `Math.sqrt(x)` in a loop paid a
+// call for a load. Null when the module carries no slot table (an AST built
+// by hand), and the caller emits the plain thunk call.
+Value* lower_global_read(IlLowering* lowering, Builder& b, const BronzeInstruction& inst,
+                         const std::string& thunk) {
+    const BronzeModuleAST* ast = lowering->current_ast();
+    if (!ast || ast->global_read_keys.empty()) return nullptr;
+    const auto& keys = ast->global_read_keys;
+    const auto it = std::lower_bound(keys.begin(), keys.end(), inst.index);
+    if (it == keys.end() || *it != inst.index) {
+        // The slot table is built from these very instructions, so a key
+        // missing from it is a bug upstream, never a read to fall back on.
+        lowering->set_has_error(true);
+        if (lowering->diag()) {
+            lowering->diag()->error(SourceLocation("", inst.line, inst.column),
+                                    "il2mir: global read of key " + std::to_string(inst.index) +
+                                        " has no slot in the module's global cache");
+        }
+        return nullptr;
+    }
+    const auto slot = static_cast<int32_t>(it - keys.begin());
+
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = "gread_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* miss = b.append_block(prefix + "_miss_cold");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+
+    b.position_at_end(cur);
+    Value* cells = lowering->module_data_addr(b, "__bronze_global_cache");
+    Value* cached = b.build_load(Type::i64(), cells, slot * static_cast<int32_t>(sizeof(uint64_t)));
+    Value* hole = b.build_eq(cached, b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_HOLE_BITS)));
+    b.build_br_if(hole, miss, {}, merge, {cached});
+
+    b.position_at_end(miss);
+    b.build_br(merge, {b.build_call(thunk, Type::i64(), {})});
 
     b.position_at_end(merge);
     return result;
@@ -584,6 +629,9 @@ bool IlLowering::lower_instruction(
 
         case BronzeOp::Call: {
             std::string callee_name = resolve_callee(inst_ast.callee_name);
+            if (inst_ast.callee_name.rfind("__bronze_global_read_k", 0) == 0) {
+                if ((res_val = lower_global_read(this, b, inst_ast, callee_name))) break;
+            }
             Function* callee = fn->parent()->get_function(callee_name);
             Type callee_ret = callee ? callee->return_type() : lower_type(inst_ast.result_type);
             const std::vector<Type>* expected_params = callee ? &callee->param_types() : nullptr;

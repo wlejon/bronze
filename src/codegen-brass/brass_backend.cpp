@@ -433,6 +433,7 @@ std::unique_ptr<brass::Module> BrassBackend::buildMirModule(
     std::vector<uint32_t> globalReadKeys;
     mtimer.mark("options");
     auto ast = codegen::lowerToBrassAst(module, uniqueNames, &globalReadKeys);
+    ast.global_read_keys = globalReadKeys;
     mtimer.mark("brass ast");
     il2mir::TranslationResult res = il2mir::translate_bronze_ast_lazy(std::move(ast), options, &reporter);
     mtimer.mark("translate");

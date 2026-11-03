@@ -307,6 +307,12 @@ struct BronzeModuleAST {
     // instruction names its own.
     std::vector<std::string> source_files;
     std::vector<BronzeFunction> functions;
+    // The keys of the module's global-read cache, sorted and unique
+    // (codegen::lowerToBrassAst): slot i of __bronze_global_cache caches the
+    // global key global_read_keys[i] names, which is what lets a read load
+    // its cell inline rather than call the slot's thunk. Empty for an AST
+    // built without one, whose reads call the thunks.
+    std::vector<uint32_t> global_read_keys;
 };
 
 const char* bronze_type_name(BronzeType t);
