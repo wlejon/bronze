@@ -1,0 +1,16 @@
+same shape 10000 x,y
+before a,b
+added a,b,c
+deleted b,c
+non-enumerable b,c
+chain own,inherited
+proto add own,inherited,later
+proto delete own,later
+object proto z,polluted
+restored z
+nested pp,pq,qp,qq
+recursive pppqqpqqppqqpq
+grow m m,n1
+many shapes 57800
+array 0,1 string 0,1 typed 0,1
+nullish  

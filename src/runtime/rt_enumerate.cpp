@@ -299,11 +299,11 @@ uint64_t emptyKeyArray() {
 //
 // What the cache holds is the ordered key LIST — arena-interned StringHeader
 // pointers, immortal and non-moving — so the entry contains no heap pointer at
-// all and the collector never needs to know the cache exists. The per-call
-// result array is still built fresh (the loop mutates a cursor over it), but a
-// hit skips the chain walk, the per-level key-vector allocations, and the
-// O(keys^2) cross-level dedup that made three.js's per-mesh-per-frame
-// enumerations (1.8M a run on `many_meshes`) the third-largest helper cost.
+// all and the collector never needs to know the cache exists. A hit skips the
+// chain walk, the per-level key-vector allocations, and the O(keys^2)
+// cross-level dedup that made three.js's per-mesh-per-frame enumerations (1.8M
+// a run on `many_meshes`) the third-largest helper cost. The result ARRAY is
+// cached as well, under the same guard, by ArrayCache below.
 struct EnumCacheEntry {
     uint64_t epoch = 0;
     std::vector<StringHeader*> keys;
@@ -313,6 +313,40 @@ std::unordered_map<Shape*, EnumCacheEntry>& enumCache() {
     static thread_local std::unordered_map<Shape*, EnumCacheEntry> cache;
     return cache;
 }
+
+// The result ARRAYS of the most recent shapes, direct-mapped: V8's enum cache,
+// which hands a for-in over a same-shape object the array the last one built.
+// It may, because the array never reaches the program: a for-in's key array
+// is only ever the target of the loop's own iteration record (lower_iter_loop,
+// lowerForInStmt), which reads it and nothing else, and every other caller of
+// bronze_for_in_keys's array (Object.keys and friends) has its own entry
+// point. A for-in that ran into a frozen-in-place array would see exactly the
+// keys a fresh build gives, since the entry is valid under the key list's own
+// guard (shape, epoch, chain provable).
+//
+// The slots are visited with the thread's runtime tables (rt_state.cpp,
+// rtVisitForInArrayRoots), and the table is FIXED so a collection visits
+// kSlots words however many shapes a program enumerates (an unbounded map of
+// arrays would cost every minor collection a walk). It is emptied when the
+// thread's heap is made, so it never holds another heap's arrays.
+struct ArrayCache {
+    static constexpr uint32_t kSlots = 64;
+    struct Slot {
+        Shape* shape = nullptr;
+        uint64_t epoch = 0;
+        Value array = Value::fromUndefined();
+    };
+    Slot slots[kSlots];
+
+    static uint32_t indexOf(const Shape* shape) noexcept {
+        return static_cast<uint32_t>((reinterpret_cast<uintptr_t>(shape) * 0x9E3779B97F4A7C15ull) >> 58);
+    }
+};
+static_assert(ArrayCache::kSlots == 64, "indexOf takes the hash's top six bits");
+
+thread_local ArrayCache t_arrayCache;
+
+ArrayCache& arrayCache() { return t_arrayCache; }
 
 // The result array for a key list: the arena keys THEMSELVES, for the same
 // identity-latch reason the walk's own foot states below.
@@ -327,7 +361,26 @@ uint64_t keyListToArray(const std::vector<StringHeader*>& keys) {
     return out.get().rawBits();
 }
 
+// Puts a fresh for-in array in its shape's slot and returns it. The epoch is
+// the one its keys were collected (or found) at: building the array allocates
+// but runs no user code, so nothing could have moved it since.
+uint64_t cacheArray(Shape* shape, uint64_t epoch, uint64_t array) {
+    ArrayCache::Slot& slot = arrayCache().slots[ArrayCache::indexOf(shape)];
+    slot.shape = shape;
+    slot.epoch = epoch;
+    slot.array = Value(array);
+    return array;
+}
+
 }  // namespace
+
+void rtVisitForInArrayRoots(const Heap::RootVisitor& visit) {
+    for (auto& slot : t_arrayCache.slots) visit(slot.array);
+}
+
+void rtResetForInArrayCache() {
+    for (auto& slot : t_arrayCache.slots) slot = ArrayCache::Slot{};
+}
 
 extern "C" {
 
@@ -472,10 +525,12 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     const uint64_t epochNow = protoMutationEpoch();
     if (holder->shape && holder->chainIsCacheable()) {
         cacheShape = holder->shape;
+        ArrayCache::Slot& cached = arrayCache().slots[ArrayCache::indexOf(cacheShape)];
+        if (cached.shape == cacheShape && cached.epoch == epochNow) return cached.array.rawBits();
         auto& cache = enumCache();
         if (auto it = cache.find(cacheShape);
             it != cache.end() && it->second.epoch == epochNow) {
-            return keyListToArray(it->second.keys);
+            return cacheArray(cacheShape, epochNow, keyListToArray(it->second.keys));
         }
     }
 
@@ -502,7 +557,8 @@ uint64_t bronze_for_in_keys(uint64_t objBits) {
     // turns into an inline hit — and it deletes the one-heap-string-per-key-
     // per-enumeration bill the copy used to run (three.js's many_meshes made
     // ~5M such copies a run).
-    return keyListToArray(keys);
+    const uint64_t array = keyListToArray(keys);
+    return cacheShape ? cacheArray(cacheShape, epochNow, array) : array;
 }
 
 }  // extern "C"

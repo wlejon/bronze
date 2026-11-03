@@ -75,6 +75,11 @@ void rtVisitPreRealmHostGlobals(const Heap::RootVisitor& visit);
 uint32_t rtArrayMethodId(const std::string& key);
 Value rtArrayMethodById(uint32_t id);
 void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
+// The for-in key arrays rt_enumerate.cpp caches per shape: visited with the
+// thread's other runtime tables, and emptied when the thread's heap is made
+// (a table must never hold another heap's arrays).
+void rtVisitForInArrayRoots(const Heap::RootVisitor& visit);
+void rtResetForInArrayCache();
 
 // Module load epochs: the unregister half of the module root spans. A host
 // (embed.h's beginModuleLoad/unloadModule) brackets a module's entry with an

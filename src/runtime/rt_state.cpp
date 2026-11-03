@@ -665,8 +665,10 @@ static void registerThreadRootSources(Heap& heap) {
     heap.add_root_source([](const Heap::RootVisitor& visit) {
         rtVisitPreRealmHostGlobals(visit);
         rtVisitArrayMethodRoots(visit);
+        rtVisitForInArrayRoots(visit);
         rtVisitRealmRoots(visit);
     });
+    rtResetForInArrayCache();
 }
 
 
