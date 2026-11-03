@@ -8,6 +8,7 @@
 #include "runtime/gc.h"
 #include "runtime/native_fn_memo.h"
 #include "runtime/object.h"
+#include "runtime/shape.h"
 #include "runtime/string.h"
 #include "runtime/value.h"
 
@@ -56,6 +57,36 @@ const std::vector<std::pair<std::string, Value>>& rtHostGlobalEntries();
 // user-defined-global fallback. Distinguishes an absent name from one
 // assigned `undefined`, which the fallback needs and a plain read cannot give.
 bool rtGlobalThisOwnLookup(const std::string& name, Value& out);
+
+// What a bare BUILTIN name reads (9.1.1.4.6, the object record of the global
+// environment): the global object's own property of that name. The realm
+// populates it with the builtin (Realm::initGlobalObject), so this answers
+// the builtin until a program writes `globalThis.Math = m`, and `m` after.
+// `cacheable` is false for an accessor, whose getter answers every read.
+// False when the property is gone, and the caller answers the builtin.
+bool rtGlobalObjectBinding(const std::string& name, Value& out, bool& cacheable);
+
+// Called before a write, define or delete of `key` on an object whose shape
+// is marked `used_as_prototype` — which every realm's global object is, so no
+// set site ever caches a slot of it and every write reaches the runtime. On a
+// global object and a builtin name, the module global-read cells go back to
+// holes: they cached the old binding.
+void rtNoteGlobalObjectWrite(const struct ObjectHeader* obj, PropertyKey key);
+
+// The root shapes of this thread's global objects, which the write paths ask
+// about before calling the note above: a marked shape is any prototype's, and
+// a class's method definitions are thousands of writes that must not each
+// pay the realm search. A root shared with other objects (a host's custom
+// global) only sends their writes to the exact test.
+void rtWatchGlobalObjectRoot(const Shape* root);
+extern thread_local std::vector<const Shape*> t_globalObjectRoots;
+inline bool rtMaybeGlobalObjectShape(const Shape* shape) noexcept {
+    if (!shape->used_as_prototype) return false;
+    for (const Shape* root : t_globalObjectRoots) {
+        if (root == shape->root) return true;
+    }
+    return false;
+}
 
 // 10.2.9 SetFunctionName and 10.2.10 SetFunctionLength, filled in from the key
 // index the creator was given. `BRONZE_ABI_FN_NAME_NONE` leaves both absent.

@@ -80,6 +80,10 @@ void rtVisitArrayMethodRoots(const Heap::RootVisitor& visit);
 // (a table must never hold another heap's arrays).
 void rtVisitForInArrayRoots(const Heap::RootVisitor& visit);
 void rtResetForInArrayCache();
+// Every module global-read cell of this thread back to a hole, so the next
+// read of each resolves again: a program wrote a builtin's binding on the
+// global object (rtNoteGlobalObjectWrite).
+void rtInvalidateGlobalReadCells();
 
 // Module load epochs: the unregister half of the module root spans. A host
 // (embed.h's beginModuleLoad/unloadModule) brackets a module's entry with an

@@ -1,0 +1,10 @@
+math 515596
+patched 30 false true
+restored 44 true
+method 8
+method back 18
+json fake
+json back {"a":1}
+parseInt 99
+parseFloat getter 1 2 2
+map -1 true

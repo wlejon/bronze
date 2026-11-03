@@ -828,12 +828,24 @@ uint64_t bronze_global_get(uint32_t keyIndex, uint64_t* cacheCell) {
         }
         fatal(("internal: no global named " + keyStr).c_str());
     }
-    if (cacheCell) {
+    bool cacheable = true;
+    rtGlobalObjectBinding(keyStr, resolved, cacheable);
+    if (cacheCell && cacheable) {
         *cacheCell = resolved.rawBits();
         rtNoteRootCellWrite(cacheCell);
     }
     return resolved.rawBits();
 }
+
+}  // extern "C"
+
+void rtInvalidateGlobalReadCells() {
+    for (const auto& span : threadModules().globalCacheSpans) {
+        for (uint64_t i = 0; i < span.count; ++i) span.cells[i] = Value(BRONZE_ABI_HOLE_BITS);
+    }
+}
+
+extern "C" {
 
 uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t count,
                                   uint32_t slot) {
@@ -871,7 +883,10 @@ uint64_t bronze_global_get_cached(uint32_t keyIndex, uint64_t* cells, uint64_t c
     } else if (rtHostShadowsBuiltin(keyStr) && rtHostGlobalLookup(keyStr, resolved)) {
         cacheable = true;
     } else if (rtResolveBuiltinGlobal(keyStr, resolved)) {
+        // The global object's property, which starts as the builtin; the cell
+        // is emptied when a program writes it (rtNoteGlobalObjectWrite).
         cacheable = true;
+        rtGlobalObjectBinding(keyStr, resolved, cacheable);
     } else if (rtHostGlobalLookup(keyStr, resolved)) {
         cacheable = true;
     } else if (!rtGlobalThisOwnLookup(keyStr, resolved)) {

@@ -11,6 +11,7 @@
 #include "runtime/fn.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/rt_builtins.h"
 
 namespace bronze {
 
@@ -77,6 +78,10 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
     if (!name.valid()) {
         runtime::rtThrowTypeError("property name must be a string or a symbol");
         return;
+    }
+    if (ObjectHeader* target = self.get().asObject<ObjectHeader>();
+        target->shape && runtime::rtMaybeGlobalObjectShape(target->shape)) {
+        runtime::rtNoteGlobalObjectWrite(target, name);
     }
     if (!self.get().isObject()) {
         runtime::rtThrowTypeError("an accessor defined on a value that is not an object");

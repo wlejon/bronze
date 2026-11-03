@@ -12,6 +12,7 @@
 #include "runtime/fatal.h"
 #include "runtime/heap.h"
 #include "runtime/object.h"
+#include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
 
@@ -209,6 +210,7 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
 
 bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
     if (!shape) return true;
+    if (runtime::rtMaybeGlobalObjectShape(shape)) runtime::rtNoteGlobalObjectWrite(this, name);
     PropertyInfo info;
     // Absent, or present only on a prototype: already in the state delete
     // wants, and answering true without touching the object is what keeps

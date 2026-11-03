@@ -463,6 +463,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         runtime::rtThrowTypeError("property key must be a string or a symbol");
         return this;
     }
+    if (shape && runtime::rtMaybeGlobalObjectShape(shape)) runtime::rtNoteGlobalObjectWrite(this, prop_name);
 
     // A set-site entry only ever describes an OWN DATA property of a
     // non-dictionary shape (below), so a shape match is a slot write with

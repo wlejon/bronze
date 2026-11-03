@@ -180,6 +180,12 @@ void Realm::initGlobalObject(Value customGlobal) {
     }
 
     Rooted<Value> globRoot{globalObject_};
+    // Marked as a prototype is, before it holds anything (so on a root of its
+    // own): no set site then caches a slot of it (ObjectHeader::setProp's
+    // install refuses a marked shape), so every write of a builtin's binding
+    // reaches rtNoteGlobalObjectWrite, which empties the global-read cells
+    // that cached the old one.
+    Shape::markObjectAsPrototype(runtime::rtArena(), globRoot.get().asObject<ObjectHeader>());
 
     for (const char* name : kGlobalObjectNames) {
         Value resolved = Value::fromUndefined();
@@ -243,6 +249,9 @@ void Realm::initGlobalObject(Value customGlobal) {
         runtime::rtHeap(), runtime::rtArena(), key, globRoot, nullptr,
         /*enumerable=*/false, /*defineOwn=*/true);
 
+    // From here on its writes are watched (rtNoteGlobalObjectWrite); the
+    // population above is the builtins themselves.
+    runtime::rtWatchGlobalObjectRoot(globRoot.get().asObject<ObjectHeader>()->shape->root);
     globalObject_ = globRoot.get();
 }
 

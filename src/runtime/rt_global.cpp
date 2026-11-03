@@ -150,6 +150,53 @@ bool rtGlobalThisOwnLookup(const std::string& name, Value& out) {
     return true;
 }
 
+// Set once a program has written a builtin's binding on a global object of
+// this thread. Until then every such property still holds the builtin it was
+// populated with, so the name's answer is the builtin's and the lookup below
+// — an allocation and a shape walk, on a path `bronze_global_get` takes per
+// read — is skipped.
+static thread_local bool t_builtinBindingWritten = false;
+
+bool rtGlobalObjectBinding(const std::string& name, Value& out, bool& cacheable) {
+    if (!t_builtinBindingWritten) return false;
+    Rooted<Value> globRoot{rtGlobalThisObject()};
+    if (!globRoot.get().isObject()) return false;
+    Rooted<Value> key{rtMakeString(name)};
+    const PropertyKey pkey = rtInternPropertyKey(key.get());
+    auto* obj = globRoot.get().asObject<ObjectHeader>();
+    PropertyInfo info;
+    if (!obj->shape || !obj->shape->lookupProperty(pkey, info)) return false;
+    cacheable = !info.accessor;
+    out = globRoot.get().asObject<ObjectHeader>()->getProp(rtHeap(), key);
+    return true;
+}
+
+// Never shrunk: a destroyed realm's root is an immortal shape no live object
+// is built on, so keeping it costs a compare and never an answer.
+thread_local std::vector<const Shape*> t_globalObjectRoots;
+
+void rtWatchGlobalObjectRoot(const Shape* root) {
+    for (const Shape* watched : t_globalObjectRoots) {
+        if (watched == root) return;
+    }
+    t_globalObjectRoots.push_back(root);
+}
+
+void rtNoteGlobalObjectWrite(const ObjectHeader* obj, PropertyKey key) {
+    if (!key.isString()) return;
+    if (!rtRealmOfGlobal(Value::fromObject(const_cast<ObjectHeader*>(obj)))) return;
+    const StringHeader* str = key.string();
+    if (!str->isLatin1()) return;
+    const std::string_view name(str->latin1Data(), str->getLength());
+    for (const char* builtin : rtBuiltinGlobalNames()) {
+        if (name == builtin) {
+            t_builtinBindingWritten = true;
+            rtInvalidateGlobalReadCells();
+            return;
+        }
+    }
+}
+
 extern "C" uint64_t bronze_global_get_name(const char* name) {
     if (!name || std::strcmp(name, "globalThis") == 0) {
         return rtGlobalThisObject().rawBits();
@@ -160,6 +207,8 @@ extern "C" uint64_t bronze_global_get_name(const char* name) {
     }
     Value resolved = Value::fromUndefined();
     if (rtResolveBuiltinGlobal(name, resolved)) {
+        bool cacheable = false;
+        rtGlobalObjectBinding(name, resolved, cacheable);
         return resolved.rawBits();
     }
     if (rtGlobalThisOwnLookup(name, resolved)) {
