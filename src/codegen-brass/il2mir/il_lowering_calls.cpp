@@ -60,10 +60,15 @@ namespace {
 // argument. Max and Min take two to four (the shapes three.js calls them in),
 // each a Number: 21.3.2.24/25 over them is a fold of a select chain, NaN
 // first and -0 below +0.
-enum class BuiltinOp { None, Sqrt, Abs, Floor, Ceil, Sin, Cos, Max, Min };
+//
+// `Kernel1` and `Kernel2` are the libm members (exp, log, tan, asin, acos,
+// atan; atan2): the fast path calls the f64 kernel the function object's own
+// code calls (builtin_math.cpp), by name.
+enum class BuiltinOp { None, Sqrt, Abs, Floor, Ceil, Sin, Cos, Max, Min, Kernel1, Kernel2 };
 
 bool builtin_takes(BuiltinOp op, uint32_t argc) {
     if (op == BuiltinOp::Max || op == BuiltinOp::Min) return argc >= 2 && argc <= 4;
+    if (op == BuiltinOp::Kernel2) return argc == 2;
     return argc == 1;
 }
 
@@ -75,6 +80,8 @@ struct BuiltinTarget {
     // loader binds to the function itself (an Abs64 to an import is the
     // symbol's address, not its PLT stub).
     const char* symbol = nullptr;
+    // Kernel1 / Kernel2: the f64 kernel's symbol.
+    const char* kernel = nullptr;
 };
 
 // The builtin a one-argument call of a function read with key `key_index`
@@ -101,6 +108,13 @@ BuiltinTarget builtin_target_for_key(const IlLowering* lowering, uint32_t key_in
     else if (key == "cos") t = {BuiltinOp::Cos, &bronze_math_cos, "bronze_math_cos"};
     else if (key == "max") t = {BuiltinOp::Max, &bronze_math_max, "bronze_math_max"};
     else if (key == "min") t = {BuiltinOp::Min, &bronze_math_min, "bronze_math_min"};
+    else if (key == "exp") t = {BuiltinOp::Kernel1, &bronze_math_exp, "bronze_math_exp", "bronze_math_exp_f64"};
+    else if (key == "log") t = {BuiltinOp::Kernel1, &bronze_math_log, "bronze_math_log", "bronze_math_log_f64"};
+    else if (key == "tan") t = {BuiltinOp::Kernel1, &bronze_math_tan, "bronze_math_tan", "bronze_math_tan_f64"};
+    else if (key == "asin") t = {BuiltinOp::Kernel1, &bronze_math_asin, "bronze_math_asin", "bronze_math_asin_f64"};
+    else if (key == "acos") t = {BuiltinOp::Kernel1, &bronze_math_acos, "bronze_math_acos", "bronze_math_acos_f64"};
+    else if (key == "atan") t = {BuiltinOp::Kernel1, &bronze_math_atan, "bronze_math_atan", "bronze_math_atan_f64"};
+    else if (key == "atan2") t = {BuiltinOp::Kernel2, &bronze_math_atan2, "bronze_math_atan2", "bronze_math_atan2_f64"};
     else return {};
     if (image) t.code = nullptr;
     return t;
@@ -194,6 +208,9 @@ Value* lower_builtin_call(IlLowering* lowering, const BuiltinTarget& target, uin
         for (size_t i = 1; i < args.size(); ++i) x = build_min_max(b, target.op, x, b.build_bitcast_f64_i64(args[i]));
     }
     Value* r = target.op == BuiltinOp::Max || target.op == BuiltinOp::Min ? x
+             : target.op == BuiltinOp::Kernel1 ? b.build_call(target.kernel, Type::f64(), {x})
+             : target.op == BuiltinOp::Kernel2
+                 ? b.build_call(target.kernel, Type::f64(), {x, b.build_bitcast_f64_i64(args[1])})
              : target.op == BuiltinOp::Sqrt  ? b.build_sqrt_f64(x)
              : target.op == BuiltinOp::Abs   ? b.build_fabs(x)
              : target.op == BuiltinOp::Floor ? b.build_floor_f64(x)

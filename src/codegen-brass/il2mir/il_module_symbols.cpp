@@ -90,6 +90,14 @@ void register_all_module_external_symbols(Module* mod, const std::string& entry_
     // Math.sin / Math.cos's kernels (brass's trig runtime, V8's bits)...
     mod->add_symbol_role("bronze_math_sin_f64", SymbolRole::Pure);
     mod->add_symbol_role("bronze_math_cos_f64", SymbolRole::Pure);
+    // The libm members' kernels (builtin_math.cpp): plain functions of their
+    // arguments, read nothing, write nothing, never collect.
+    for (const char* sym : {"bronze_math_exp_f64", "bronze_math_log_f64", "bronze_math_tan_f64",
+                            "bronze_math_asin_f64", "bronze_math_acos_f64", "bronze_math_atan_f64",
+                            "bronze_math_atan2_f64"}) {
+        mod->add_external_symbol(sym);
+        mod->add_symbol_role(sym, SymbolRole::Pure);
+    }
     // ...and their fused form, the same bits from one reduction (brass's
     // sincos_fuse pairs a sine and a cosine of one value into it). It writes
     // only its out slot and never collects.

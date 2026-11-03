@@ -126,16 +126,10 @@ double unaryFloor(double x) { return std::floor(x); }
 double unaryCeil(double x) { return std::ceil(x); }
 double unaryTrunc(double x) { return std::trunc(x); }
 double unaryCbrt(double x) { return std::cbrt(x); }
-double unaryExp(double x) { return std::exp(x); }
 double unaryExpm1(double x) { return std::expm1(x); }
-double unaryLog(double x) { return std::log(x); }
 double unaryLog1p(double x) { return std::log1p(x); }
 double unaryLog2(double x) { return std::log2(x); }
 double unaryLog10(double x) { return std::log10(x); }
-double unaryTan(double x) { return std::tan(x); }
-double unaryAsin(double x) { return std::asin(x); }
-double unaryAcos(double x) { return std::acos(x); }
-double unaryAtan(double x) { return std::atan(x); }
 double unarySinh(double x) { return std::sinh(x); }
 double unaryCosh(double x) { return std::cosh(x); }
 double unaryTanh(double x) { return std::tanh(x); }
@@ -175,10 +169,6 @@ uint64_t mathPow(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return Value::fromDouble(
                rtExponentiate(argAt(argc, argv, 0), argAt(argc, argv, 1)))
         .rawBits();
-}
-
-uint64_t mathAtan2(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
-    return Value::fromDouble(std::atan2(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
 }
 
 // ---- Math.random (21.3.2.27) ------------------------------------------------
@@ -351,19 +341,19 @@ const MathFn kMathFunctions[] = {
     {"ceil", bronze_math_ceil, 1, 1},       {"trunc", mathUnary<unaryTrunc>, 1, 1},
     {"round", bronze_math_round, 1, 1},     {"sign", mathUnary<jsSign>, 1, 1},
     {"sqrt", bronze_math_sqrt, 1, 1},       {"cbrt", mathUnary<unaryCbrt>, 1, 1},
-    {"exp", mathUnary<unaryExp>, 1, 1},     {"expm1", mathUnary<unaryExpm1>, 1, 1},
-    {"log", mathUnary<unaryLog>, 1, 1},     {"log1p", mathUnary<unaryLog1p>, 1, 1},
+    {"exp", bronze_math_exp, 1, 1},     {"expm1", mathUnary<unaryExpm1>, 1, 1},
+    {"log", bronze_math_log, 1, 1},     {"log1p", mathUnary<unaryLog1p>, 1, 1},
     {"log2", mathUnary<unaryLog2>, 1, 1},   {"log10", mathUnary<unaryLog10>, 1, 1},
     {"sin", bronze_math_sin, 1, 1},         {"cos", bronze_math_cos, 1, 1},
-    {"tan", mathUnary<unaryTan>, 1, 1},     {"asin", mathUnary<unaryAsin>, 1, 1},
-    {"acos", mathUnary<unaryAcos>, 1, 1},   {"atan", mathUnary<unaryAtan>, 1, 1},
+    {"tan", bronze_math_tan, 1, 1},     {"asin", bronze_math_asin, 1, 1},
+    {"acos", bronze_math_acos, 1, 1},   {"atan", bronze_math_atan, 1, 1},
     {"sinh", mathUnary<unarySinh>, 1, 1},   {"cosh", mathUnary<unaryCosh>, 1, 1},
     {"tanh", mathUnary<unaryTanh>, 1, 1},   {"asinh", mathUnary<unaryAsinh>, 1, 1},
     {"acosh", mathUnary<unaryAcosh>, 1, 1}, {"atanh", mathUnary<unaryAtanh>, 1, 1},
     {"fround", mathUnary<unaryFround>, 1, 1},
     {"f16round", mathUnary<unaryF16round>, 1, 1},
     {"clz32", mathClz32, 1, 1},             {"imul", bronze_math_imul, 2, 2},
-    {"atan2", mathAtan2, 2, 2},             {"pow", mathPow, 2, 2},
+    {"atan2", bronze_math_atan2, 2, 2},             {"pow", mathPow, 2, 2},
     // Arity 0 is not "takes nothing": FunctionHeader::arity is the count a
     // short call is PADDED with undefined up to, and a variadic builtin
     // must see the real argc — `Math.min()` is Infinity, while the same
@@ -411,6 +401,18 @@ extern "C" void bronze_math_sincos_f64(double x, void* out) {
     brass::math::sincos_f64(x, static_cast<double*>(out));
 }
 
+// The libm members a speculated call site computes directly (il2mir's
+// il_lowering_calls.cpp): each function object's code is the boxed wrapper
+// below, and the wrapper and the site's fast path call the one kernel, so the
+// two cannot differ in a bit.
+extern "C" double bronze_math_exp_f64(double x) { return std::exp(x); }
+extern "C" double bronze_math_log_f64(double x) { return std::log(x); }
+extern "C" double bronze_math_tan_f64(double x) { return std::tan(x); }
+extern "C" double bronze_math_asin_f64(double x) { return std::asin(x); }
+extern "C" double bronze_math_acos_f64(double x) { return std::acos(x); }
+extern "C" double bronze_math_atan_f64(double x) { return std::atan(x); }
+extern "C" double bronze_math_atan2_f64(double y, double x) { return std::atan2(y, x); }
+
 // `math.random` (il_op.h): a proven `Math.random()` call compiled to this, the
 // native's own generator, so the two forms draw from one sequence.
 extern "C" double bronze_math_random_f64() { return randomUnit(); }
@@ -443,6 +445,34 @@ extern "C" uint64_t bronze_math_sin(uint64_t, uint64_t, uint32_t argc, const uin
 
 extern "C" uint64_t bronze_math_cos(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
     return Value::fromDouble(bronze_math_cos_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_exp(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_exp_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_log(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_log_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_tan(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_tan_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_asin(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_asin_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_acos(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_acos_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_atan(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_atan_f64(argAt(argc, argv, 0))).rawBits();
+}
+
+extern "C" uint64_t bronze_math_atan2(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {
+    return Value::fromDouble(bronze_math_atan2_f64(argAt(argc, argv, 0), argAt(argc, argv, 1))).rawBits();
 }
 
 extern "C" uint64_t bronze_math_abs(uint64_t, uint64_t, uint32_t argc, const uint64_t* argv) {

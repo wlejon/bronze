@@ -1,0 +1,27 @@
+0 0 1 true true -Infinity true
+-0 -0 1 true true -Infinity true
+1 1.5707963267948966 0 true true 0 true
+-1 -1.5707963267948966 1 true true NaN true
+0.5 0.5235987755982989 1 true true -0.6931471805599453 true
+2 NaN NaN true true 0.6931471805599453 true
+-2 NaN NaN true true NaN true
+Infinity NaN NaN true true Infinity false
+-Infinity NaN NaN true true NaN false
+NaN NaN NaN false false NaN false
+0 0 true false
+-0 0 true false
+0 -0 true true
+-0 -0 true false
+1 0 true true
+0 -1 true true
+-0 -1 true false
+Infinity Infinity true true
+-Infinity Infinity true false
+NaN 1 false false
+1 NaN false false
+3 4 true true
+18086.920142 true
+true 0.7853981633974483 1 0
+NaN NaN 2 asin atan2
+71.63278641 1102
+0.71632786
