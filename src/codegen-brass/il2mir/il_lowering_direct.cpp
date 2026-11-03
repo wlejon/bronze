@@ -129,6 +129,163 @@ Value* lower_closure_call(IlLowering* lowering, Builder& b, Value* callee, Value
     return result;
 }
 
+namespace {
+
+// What a property site's cache says about a plain receiver, as the stubs
+// below read it: whether one of the `ways` entries names the receiver's
+// shape, that entry's slot word ((depth << 32) | slot, the flags in the
+// depth half) and the epoch it was filled at, which a depth > 0 answer needs
+// to be the thread's.
+struct PropEntry {
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    Value* hit = nullptr;
+    Value* slot_word = nullptr;
+    Value* epoch = nullptr;
+};
+
+// The scan of ways [first, ways) for the receiver `e` already describes.
+void scan_ways(Builder& b, PropEntry& e, Value* site, int first, int ways) {
+    Value* any = nullptr;
+    Value* epoch = nullptr;
+    e.slot_word = nullptr;
+    // At most one way names a shape (an install rewrites an entry in place),
+    // so the words select on the match alone.
+    for (int32_t way = ways - 1; way >= first; --way) {
+        const int32_t at = way * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
+        Value* match = b.build_eq(e.shape, b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SHAPE_OFFSET));
+        Value* word = b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SLOT_OFFSET);
+        Value* ep = b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_EPOCH_OFFSET);
+        e.slot_word = e.slot_word ? b.build_select(match, word, e.slot_word) : word;
+        epoch = epoch ? b.build_select(match, ep, epoch) : ep;
+        any = any ? b.build_or(any, match) : match;
+    }
+    e.hit = b.build_and(e.plain, any);
+    e.epoch = epoch;
+}
+
+PropEntry prop_entry(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* site, int ways) {
+    PropEntry e;
+    pl.receiver_shape(b, obj, e.plain, e.ptr, e.shape);
+    scan_ways(b, e, site, 0, ways);
+    return e;
+}
+
+// The probe of the thread's megamorphic table (bronze_abi_tls.h, mega_prop)
+// for the receiver `e` names under `key` (a key index, with the set bit for a
+// write): branches to `hit` with the entry's slot word and epoch — an entry is
+// a way of the same layout, so the caller reads it exactly as a way — or to
+// `miss`. The index is the runtime's (rt_prop_mega.cpp), the ABI's formula.
+//
+// Only a FULL site probes: its last way holds a shape (an install fills way 0
+// and shifts the rest down, so the last is the final one taken). A site with
+// room still installs through the helper, so a site that sees one shape warms
+// to its inline way even when another site already filled the table for that
+// pair; an answer from the table would leave it calling the stub forever.
+void build_mega_probe_if(Builder& b, Value* tls, const PropEntry& e, Value* full, Value* key, BasicBlock* hit,
+                         BasicBlock* miss) {
+    const auto mul = static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_HASH_MUL);
+    Value* h = b.build_mul(b.build_xor(e.shape, b.build_mul(key, b.build_iconst_i64(mul))), b.build_iconst_i64(mul));
+    Value* index = b.build_lshr(h, b.build_iconst_i64(64 - BRONZE_ABI_MEGA_PROP_BITS));
+    static_assert(BRONZE_ABI_MEGA_PROP_ENTRY_WORDS * kWord == 32, "the index scales by a shift of 5");
+    Value* at = b.build_add(tls, b.build_add(b.build_shl(index, b.build_iconst_i64(5)),
+                                             b.build_iconst_i64(BRONZE_TLS_MEGA_PROP_OFF)));
+    Value* match = b.build_and(
+        b.build_and(e.plain, full), b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), e.shape),
+                             b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * kWord), key)));
+    Value* word = b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET);
+    Value* epoch = b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET);
+    b.build_br_if(match, hit, {word, epoch}, miss, {});
+}
+
+void build_mega_probe(Builder& b, Value* tls, const PropEntry& e, Value* site, int ways, Value* key,
+                      BasicBlock* hit, BasicBlock* miss) {
+    const int32_t last = (ways - 1) * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
+    Value* full = b.build_ne(b.build_load(Type::i64(), site, last + BRONZE_ABI_IC_SHAPE_OFFSET), b.build_iconst_i64(0));
+    build_mega_probe_if(b, tls, e, full, key, hit, miss);
+}
+
+constexpr int64_t kOwnDataLimit = int64_t{1} << 32;
+constexpr int64_t kAccessorDepth = int64_t{BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG};
+constexpr int64_t kSlotMask = 0xFFFFFFFFLL;
+constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+
+// The deepest entry the stubs walk to; deeper ones are the helper's. Four
+// links cover a three.js leaf class's accessors (Mesh -> Object3D ->
+// EventDispatcher) with one to spare.
+constexpr int64_t kMaxStubDepth = 4;
+
+// Whether `depth` (the slot word's high half) is an entry at 1..kMaxStubDepth
+// with no flag but, at most, the accessor's: not absent, not an f64 slot.
+Value* walkable_depth(Builder& b, Value* depth) {
+    Value* links = b.build_and(depth, b.build_iconst_i64(~kAccessorDepth));
+    return b.build_ult(b.build_sub(links, b.build_iconst_i64(1)), b.build_iconst_i64(kMaxStubDepth));
+}
+
+// The holder of a depth-`depth` entry, walked the way
+// ObjectHeader::cachedProtoHolder walks (shape -> root -> prototype, once a
+// link): every link a plain object whose shape is no dictionary, else `slow`.
+// The builder enters at the walk and leaves in the block where the result is
+// the holder's payload. An entry whose receiver shape and epoch both still
+// hold names the chain it was filled on, so what is left to ask at each link
+// is what the fill asked of it.
+//
+// Straight-line, one copy per link up to kMaxStubDepth, rather than a loop:
+// a loop's back edge carries an interrupt poll and its block parameters
+// spilled across it, and that was a third of a prototype read through the
+// stub. The stubs exist once per module, so the copies cost nothing at a
+// site.
+Value* walk_to_prototype(Builder& b, Value* tls, Value* shape, Value* depth, BasicBlock* slow,
+                         const std::string& prefix) {
+    // append_block moves the insertion point.
+    BasicBlock* entry = b.current_block();
+    BasicBlock* found = b.append_block(prefix + "_holder");
+    Value* holder = b.add_block_param(found, Type::i64());
+    b.position_at_end(entry);
+    Value* links = b.build_and(depth, b.build_iconst_i64(~kAccessorDepth));
+    Value* cur_shape = shape;
+    for (int64_t link = 1; link <= kMaxStubDepth; ++link) {
+        const std::string at = prefix + "_l" + std::to_string(link);
+        BasicBlock* has_root = b.append_block(at + "_root");
+        BasicBlock* is_plain = b.append_block(at + "_proto");
+        BasicBlock* next = link < kMaxStubDepth ? b.append_block(at + "_next") : nullptr;
+        b.position_at_end(entry);
+        Value* root = b.build_load(Type::i64(), cur_shape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
+        b.build_br_if(b.build_ne(root, b.build_iconst_i64(0)), has_root, slow);
+
+        b.position_at_end(has_root);
+        Value* proto = b.build_load(Type::i64(), root, BRONZE_ABI_SHAPE_PROTO_OFFSET);
+        Value* pptr = b.build_xor(proto, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+        Value* is_obj = b.build_ult(pptr, b.build_iconst_i64(kPayloadLimit));
+        Value* base = b.build_select(is_obj, pptr, tls);
+        Value* plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
+        b.build_br_if(plain, is_plain, slow);
+
+        b.position_at_end(is_plain);
+        Value* hshape = b.build_load(Type::i64(), pptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+        Value* not_dict =
+            b.build_eq(b.build_load(Type::i64(), hshape, BRONZE_ABI_SHAPE_DICT_OFFSET), b.build_iconst_i64(0));
+        if (!next) {
+            // walkable_depth bounds the links at kMaxStubDepth, so the last
+            // copy is the holder whenever its link is sound.
+            b.build_br_if(not_dict, found, {pptr}, slow, {});
+            break;
+        }
+        Value* here = b.build_eq(links, b.build_iconst_i64(link));
+        b.build_br_if(not_dict, next, slow);
+        b.position_at_end(next);
+        BasicBlock* cont = b.append_block(at + "_cont");
+        b.position_at_end(next);
+        b.build_br_if(here, found, {pptr}, cont, {});
+        entry = cont;
+        cur_shape = hshape;
+    }
+
+    b.position_at_end(found);
+    return holder;
+}
+
 // The method IC's dispatch, built once per module as a function of its own
 // and called from every site with the operands bronze_call_method takes:
 // inline at each site it would be some sixty instructions, which a program of
@@ -152,6 +309,14 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     BasicBlock* direct0 = b.append_block(prefix + "_direct0");
     BasicBlock* slot = b.append_block(prefix + "_slot");
     BasicBlock* not_way0 = b.append_block(prefix + "_notway0");
+    BasicBlock* mega = b.append_block(prefix + "_mega");
+    BasicBlock* mega_hit = b.append_block(prefix + "_megahit");
+    Value* mega_word = b.add_block_param(mega_hit, Type::i64());
+    Value* mega_epoch = b.add_block_param(mega_hit, Type::i64());
+    BasicBlock* mega_own = b.append_block(prefix + "_megaown");
+    BasicBlock* mega_chain = b.append_block(prefix + "_megachain");
+    BasicBlock* mega_callee = b.append_block(prefix + "_megacallee");
+    Value* mega_fn = b.add_block_param(mega_callee, Type::i64());
     BasicBlock* exotic = b.append_block(prefix + "_exotic");
     BasicBlock* exotic_box = b.append_block(prefix + "_exotic_box");
     BasicBlock* enter = b.append_block(prefix + "_enter");
@@ -219,7 +384,51 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
                 b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD * kWord), epoch)));
         Value* code = b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_WAY1_CODE_WORD * kWord);
         Value* env = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_ENV_WORD * kWord);
-        b.build_br_if(hit, enter, {code, env}, exotic, {});
+        b.build_br_if(hit, enter, {code, env}, mega, {});
+    }
+
+    // Both ways missed: the thread's (shape, key) read table, which the
+    // runtime's method lookup fills (bronze_call_method reads the method
+    // through bronze_prop_get). A site whose receivers rotate through more
+    // shapes than its two ways — `object.onBeforeRender(...)` over a scene's
+    // Mesh, Line, Points and Sprite — otherwise took the by-name lookup on
+    // every call. Only a full site probes (way 1 latched), for the reason
+    // build_mega_probe states. The entry is a read entry and is read as the
+    // read stub reads one: an own data slot, or a data slot up the chain
+    // while its epoch is current; the callee then takes the SLOT form's
+    // test, since nothing about it was latched here.
+    b.position_at_end(mega);
+    {
+        PropEntry e;
+        e.plain = plain;
+        e.ptr = ptr;
+        e.shape = shape;
+        Value* full = b.build_ne(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD * kWord), zero);
+        build_mega_probe_if(b, tls, e, full, b.build_zext_i64(key_id), mega_hit, exotic);
+    }
+    b.position_at_end(mega_hit);
+    b.build_br_if(b.build_ult(mega_word, b.build_iconst_i64(kOwnDataLimit)), mega_own, mega_chain);
+    b.position_at_end(mega_own);
+    b.build_br(mega_callee, {pl.load_slot(b, ptr, mega_word)});
+    b.position_at_end(mega_chain);
+    {
+        Value* depth = b.build_lshr(mega_word, b.build_iconst_i64(32));
+        Value* current = b.build_eq(mega_epoch, b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+        // A data entry up the chain: walkable and no accessor flag.
+        Value* data = b.build_eq(b.build_and(depth, b.build_iconst_i64(kAccessorDepth)), zero);
+        BasicBlock* walk = b.append_block(prefix + "_megawalk");
+        b.position_at_end(mega_chain);
+        b.build_br_if(b.build_and(current, b.build_and(data, walkable_depth(b, depth))), walk, slow);
+        b.position_at_end(walk);
+        Value* holder = walk_to_prototype(b, tls, shape, depth, slow, prefix + "_mega");
+        b.build_br(mega_callee, {pl.load_slot(b, holder, b.build_and(mega_word, b.build_iconst_i64(kSlotMask)))});
+    }
+    b.position_at_end(mega_callee);
+    {
+        const EntryTest t = entry_test(b, tls, mega_fn, kCallMask, kCallBits);
+        Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
+        Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
+        b.build_br_if(t.ok, enter, {code, env}, slow, {});
     }
 
     // EXOTIC with the BOX guard (an Array's C-table method): the receiver's
@@ -264,136 +473,6 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     fn->rebuild_cfg_predecessors();
 }
 
-namespace {
-
-// What a property site's cache says about a plain receiver, as the stubs
-// below read it: whether one of the `ways` entries names the receiver's
-// shape, that entry's slot word ((depth << 32) | slot, the flags in the
-// depth half) and the epoch it was filled at, which a depth > 0 answer needs
-// to be the thread's.
-struct PropEntry {
-    Value* plain = nullptr;
-    Value* ptr = nullptr;
-    Value* shape = nullptr;
-    Value* hit = nullptr;
-    Value* slot_word = nullptr;
-    Value* epoch = nullptr;
-};
-
-PropEntry prop_entry(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* site, int ways) {
-    PropEntry e;
-    pl.receiver_shape(b, obj, e.plain, e.ptr, e.shape);
-    Value* any = nullptr;
-    Value* epoch = nullptr;
-    // At most one way names a shape (an install rewrites an entry in place),
-    // so the words select on the match alone.
-    for (int32_t way = ways - 1; way >= 0; --way) {
-        const int32_t at = way * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
-        Value* match = b.build_eq(e.shape, b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SHAPE_OFFSET));
-        Value* word = b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_SLOT_OFFSET);
-        Value* ep = b.build_load(Type::i64(), site, at + BRONZE_ABI_IC_EPOCH_OFFSET);
-        e.slot_word = e.slot_word ? b.build_select(match, word, e.slot_word) : word;
-        epoch = epoch ? b.build_select(match, ep, epoch) : ep;
-        any = any ? b.build_or(any, match) : match;
-    }
-    e.hit = b.build_and(e.plain, any);
-    e.epoch = epoch;
-    return e;
-}
-
-// The probe of the thread's megamorphic table (bronze_abi_tls.h, mega_prop)
-// for the receiver `e` names under `key` (a key index, with the set bit for a
-// write): branches to `hit` with the entry's slot word and epoch — an entry is
-// a way of the same layout, so the caller reads it exactly as a way — or to
-// `miss`. The index is the runtime's (rt_prop_mega.cpp), the ABI's formula.
-//
-// Only a FULL site probes: its last way holds a shape (an install fills way 0
-// and shifts the rest down, so the last is the final one taken). A site with
-// room still installs through the helper, so a site that sees one shape warms
-// to its inline way even when another site already filled the table for that
-// pair; an answer from the table would leave it calling the stub forever.
-void build_mega_probe(Builder& b, Value* tls, const PropEntry& e, Value* site, int ways, Value* key,
-                      BasicBlock* hit, BasicBlock* miss) {
-    const int32_t last = (ways - 1) * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
-    Value* full = b.build_ne(b.build_load(Type::i64(), site, last + BRONZE_ABI_IC_SHAPE_OFFSET), b.build_iconst_i64(0));
-    const auto mul = static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_HASH_MUL);
-    Value* h = b.build_mul(b.build_xor(e.shape, b.build_mul(key, b.build_iconst_i64(mul))), b.build_iconst_i64(mul));
-    Value* index = b.build_lshr(h, b.build_iconst_i64(64 - BRONZE_ABI_MEGA_PROP_BITS));
-    static_assert(BRONZE_ABI_MEGA_PROP_ENTRY_WORDS * kWord == 32, "the index scales by a shift of 5");
-    Value* at = b.build_add(tls, b.build_add(b.build_shl(index, b.build_iconst_i64(5)),
-                                             b.build_iconst_i64(BRONZE_TLS_MEGA_PROP_OFF)));
-    Value* match = b.build_and(
-        b.build_and(e.plain, full), b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), e.shape),
-                             b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * kWord), key)));
-    Value* word = b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET);
-    Value* epoch = b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET);
-    b.build_br_if(match, hit, {word, epoch}, miss, {});
-}
-
-constexpr int64_t kOwnDataLimit = int64_t{1} << 32;
-constexpr int64_t kAccessorDepth = int64_t{BRONZE_ABI_IC_DEPTH_ACCESSOR_FLAG};
-constexpr int64_t kSlotMask = 0xFFFFFFFFLL;
-constexpr int32_t kPlainHeaderLow = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
-
-// The deepest entry the stubs walk to; deeper ones are the helper's. Four
-// links cover a three.js leaf class's accessors (Mesh -> Object3D ->
-// EventDispatcher) with one to spare.
-constexpr int64_t kMaxStubDepth = 4;
-
-// Whether `depth` (the slot word's high half) is an entry at 1..kMaxStubDepth
-// with no flag but, at most, the accessor's: not absent, not an f64 slot.
-Value* walkable_depth(Builder& b, Value* depth) {
-    Value* links = b.build_and(depth, b.build_iconst_i64(~kAccessorDepth));
-    return b.build_ult(b.build_sub(links, b.build_iconst_i64(1)), b.build_iconst_i64(kMaxStubDepth));
-}
-
-// The holder of a depth-`depth` entry, walked the way
-// ObjectHeader::cachedProtoHolder walks (shape -> root -> prototype, once a
-// link): every link a plain object whose shape is no dictionary, else `slow`.
-// The builder enters at the walk and leaves in the block where the result is
-// the holder's payload. An entry whose receiver shape and epoch both still
-// hold names the chain it was filled on, so what is left to ask at each link
-// is what the fill asked of it.
-Value* walk_to_prototype(Builder& b, Value* tls, Value* shape, Value* depth, BasicBlock* slow,
-                         const std::string& prefix) {
-    // append_block moves the insertion point.
-    BasicBlock* entry = b.current_block();
-    BasicBlock* walk = b.append_block(prefix + "_walk");
-    Value* cur_shape = b.add_block_param(walk, Type::i64());
-    Value* left = b.add_block_param(walk, Type::i64());
-    BasicBlock* has_root = b.append_block(prefix + "_root");
-    BasicBlock* is_plain = b.append_block(prefix + "_proto");
-    BasicBlock* next = b.append_block(prefix + "_next");
-    BasicBlock* found = b.append_block(prefix + "_holder");
-    Value* holder = b.add_block_param(found, Type::i64());
-    b.position_at_end(entry);
-    b.build_br(walk, {shape, b.build_and(depth, b.build_iconst_i64(~kAccessorDepth))});
-
-    b.position_at_end(walk);
-    Value* root = b.build_load(Type::i64(), cur_shape, BRONZE_ABI_SHAPE_ROOT_OFFSET);
-    b.build_br_if(b.build_ne(root, b.build_iconst_i64(0)), has_root, slow);
-
-    b.position_at_end(has_root);
-    Value* proto = b.build_load(Type::i64(), root, BRONZE_ABI_SHAPE_PROTO_OFFSET);
-    Value* pptr = b.build_xor(proto, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
-    Value* is_obj = b.build_ult(pptr, b.build_iconst_i64(kPayloadLimit));
-    Value* base = b.build_select(is_obj, pptr, tls);
-    Value* plain = b.build_eq(b.build_load(Type::i32(), base, 0), b.build_iconst_i32(kPlainHeaderLow));
-    b.build_br_if(plain, is_plain, slow);
-
-    b.position_at_end(is_plain);
-    Value* hshape = b.build_load(Type::i64(), pptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
-    Value* not_dict = b.build_eq(b.build_load(Type::i64(), hshape, BRONZE_ABI_SHAPE_DICT_OFFSET), b.build_iconst_i64(0));
-    b.build_br_if(not_dict, next, slow);
-
-    b.position_at_end(next);
-    Value* rest = b.build_sub(left, b.build_iconst_i64(1));
-    b.build_br_if(b.build_eq(rest, b.build_iconst_i64(0)), found, {pptr}, walk, {hshape, rest});
-
-    b.position_at_end(found);
-    return holder;
-}
-
 // The read stub: kPropGetStub(obj, key, site), bronze_prop_get's operands.
 // It answers what propGetHelperBody's site-cache path answers, test for
 // test, from any of the site's ways:
@@ -434,9 +513,26 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
     Value* slot_word = b.add_block_param(hit, Type::i64());
     Value* entry_epoch = b.add_block_param(hit, Type::i64());
 
+    BasicBlock* rest = b.append_block(prefix + "_rest");
+
+    // Way 0 first, on a branch of its own: a monomorphic site whose inline
+    // read cannot answer (a prototype member, an absent key, a getter) hits
+    // it on every call, and the select scan over all four ways was a third
+    // of the stub for it. Only a receiver way 0 does not name pays the scan.
     b.position_at_end(cur);
     Value* tls = tls_block(b);
-    const PropEntry e = prop_entry(pl, b, obj, site, BRONZE_ABI_IC_WAYS);
+    PropEntry e;
+    pl.receiver_shape(b, obj, e.plain, e.ptr, e.shape);
+    {
+        Value* match0 = b.build_and(
+            e.plain, b.build_eq(e.shape, b.build_load(Type::i64(), site, BRONZE_ABI_IC_SHAPE_OFFSET)));
+        Value* word0 = b.build_load(Type::i64(), site, BRONZE_ABI_IC_SLOT_OFFSET);
+        Value* epoch0 = b.build_load(Type::i64(), site, BRONZE_ABI_IC_EPOCH_OFFSET);
+        b.build_br_if(match0, hit, {word0, epoch0}, rest, {});
+    }
+
+    b.position_at_end(rest);
+    scan_ways(b, e, site, 1, BRONZE_ABI_IC_WAYS);
     b.build_br_if(e.hit, hit, {e.slot_word, e.epoch}, mega, {});
 
     // Every way missed: the thread's (shape, key) table.

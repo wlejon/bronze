@@ -1,0 +1,8 @@
+warm base:A:4 base:B:4 C:4 base:D:4 base:E4:4
+patched patched:A:0 patched:B:0 C:4 patched:D:0 patched:E4:0
+own patched:A:0 own:104 C:4 patched:D:0 patched:E4:0
+closure patched:A:0 own:104 C:4 arrow:22 patched:E4:0
+getter getter:A4 own:104 C:4 arrow:22 getter:E44
+deleted patched:A:0 own:104 C:4 arrow:22 patched:E4:0
+nonfn true
+swapped patched:A:0 own:104 swapped:2 arrow:22 patched:E4:0
