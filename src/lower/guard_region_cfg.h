@@ -65,4 +65,18 @@ std::vector<DefSite> computeDefSites(const il::Function& fn);
 // discards its result when this fails.
 bool dominanceHolds(const il::Function& fn);
 
+// Blocks nothing reaches, dropped and the rest renumbered compactly.
+//
+// The ENTRY region is what makes these: its fast copy IS the function's entry,
+// so the head of the slow copy — everything before the first guard point, which
+// on a straight-line kernel is every property read in it — has no predecessor
+// left. Keeping it would be dead code the backend still emits, and worse, it
+// would fail the rewrite's dominance check for the honest reason that dominance is
+// not defined over a block the entry cannot reach.
+//
+// Ascending order is preserved, so "a definition's block precedes its uses'"
+// survives the renumbering.
+// `alreadyBuilt` is renumbered with the blocks.
+uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt);
+
 }  // namespace bronze::lower

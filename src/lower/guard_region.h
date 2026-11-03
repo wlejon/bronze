@@ -260,7 +260,10 @@ struct GuardRegionStats {
     // as opposed to `refusedEntrySplit`, where a site exists and the entry
     // region cannot enter its own slow copy at it.
     uint32_t refusedPlacement = 0;
-    uint32_t refusedEntrySplit = 0;  // an entry region wanting a split outside its header
+    // An entry region whose slow copy's names could not be re-derived for a
+    // split outside its header (guard_region_ssa.cpp).
+    uint32_t refusedEntrySplit = 0;
+    uint32_t repairedNames = 0;  // entry regions whose slow copy took join parameters
     // A guard point that would land inside a `+`-chain accumulator. The
     // accumulator is a RUN and not an instruction — `concat.begin`, its
     // appends and `concat.end` hand one builder along, and it must not leave
@@ -338,6 +341,10 @@ struct RegionPlan {
     // rather than a block the function had. Only the counters and the caps read
     // it; the rewrite is the same rewrite.
     bool entryRegion = false;
+    // An entry region with a split block that does not dominate every region
+    // block reachable from it: the slow copy's names are re-derived after the
+    // rewrite rather than read off the dominator chain alone.
+    bool repairNames = false;
     il::BlockId header = il::kNoBlock;
     // The region's blocks, ascending. `inRegion` is the same set by block id.
     std::vector<il::BlockId> blocks;
@@ -503,5 +510,14 @@ std::vector<RegionPlan> selectRegions(const il::Function& fn, const std::vector<
 // consumed marked.
 bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionStats& stats,
                         std::vector<uint8_t>& alreadyBuilt);
+
+// Re-derives the slow copy's names (copy region `region`) of each value a
+// split tail re-defines — `tailNames` pairs the original with a tail's
+// parameter — adding block parameters at the joins where they meet. Run on the
+// pruned rewrite of a plan with `repairNames`; false when some use has no
+// reaching definition. guard_region_ssa.cpp.
+bool repairSplitNames(il::Function& fn, uint32_t region,
+                      const std::vector<std::pair<il::ValueId, il::ValueId>>& tailNames,
+                      const std::vector<il::Type>& types);
 
 }  // namespace bronze::lower

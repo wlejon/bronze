@@ -93,48 +93,6 @@ il::Instruction makeBranch(il::ValueId cond, il::BlockId thenBlock, il::BlockId 
     return inst;
 }
 
-// Blocks nothing reaches, dropped and the rest renumbered compactly.
-//
-// The ENTRY region is what makes these: its fast copy IS the function's entry,
-// so the head of the slow copy — everything before the first guard point, which
-// on a straight-line kernel is every property read in it — has no predecessor
-// left. Keeping it would be dead code the backend still emits, and worse, it
-// would fail the dominance check below for the honest reason that dominance is
-// not defined over a block the entry cannot reach.
-//
-// Ascending order is preserved, so "a definition's block precedes its uses'"
-// survives the renumbering.
-uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) {
-    const Cfg cfg = buildCfg(fn);
-    std::vector<il::BlockId> remap(fn.blocks.size(), il::kNoBlock);
-    il::BlockId next = 0;
-    for (size_t b = 0; b < fn.blocks.size(); ++b) {
-        if (cfg.rpoIndex[b] != UINT32_MAX) remap[b] = next++;
-    }
-    if (next == fn.blocks.size()) return 0;
-
-    std::vector<il::Block> kept;
-    std::vector<uint8_t> keptBuilt;
-    kept.reserve(next);
-    for (size_t b = 0; b < fn.blocks.size(); ++b) {
-        if (remap[b] == il::kNoBlock) continue;
-        il::Block block = std::move(fn.blocks[b]);
-        block.id = remap[b];
-        if (block.handler != il::kNoBlock) block.handler = remap[block.handler];
-        for (auto& inst : block.instructions) {
-            for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
-                if (t->block != il::kNoBlock && t->block < remap.size()) t->block = remap[t->block];
-            }
-        }
-        kept.push_back(std::move(block));
-        keptBuilt.push_back(b < alreadyBuilt.size() ? alreadyBuilt[b] : 1);
-    }
-    const auto dropped = static_cast<uint32_t>(fn.blocks.size() - kept.size());
-    fn.blocks = std::move(kept);
-    alreadyBuilt = std::move(keptBuilt);
-    return dropped;
-}
-
 void cseFastElemGetTyped(il::Function& fn) {
     struct CachedRead {
         il::ValueId obj = il::kNoValue;
@@ -961,6 +919,20 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
     // makes answerable: dominance is not defined over a block the entry cannot
     // reach, and an entry region always orphans the head of its slow copy.
     const uint32_t pruned = pruneUnreachable(rewritten, built);
+    if (plan.repairNames) {
+        std::vector<std::pair<il::ValueId, il::ValueId>> tailNames;
+        for (il::BlockId b : plan.blocks) {
+            for (const SlowSplit& split : slowSplits[b]) {
+                for (size_t i = 0; i < split.params.size(); ++i) {
+                    tailNames.push_back({split.params[i], split.paramIds[i]});
+                }
+            }
+        }
+        if (!repairSplitNames(rewritten, region, tailNames, types)) {
+            ++stats.refusedEntrySplit;
+            return false;
+        }
+    }
     if (!dominanceHolds(rewritten)) {
         ++stats.refusedSsa;
         return false;
@@ -983,6 +955,7 @@ bool buildGuardedRegion(il::Function& fn, const RegionPlan& plan, GuardRegionSta
         stats.guardPoints += static_cast<uint32_t>(plan.splitsOf[b].size());
     }
     ++stats.duplicated;
+    if (plan.repairNames) ++stats.repairedNames;
     fn = std::move(rewritten);
     return true;
 }

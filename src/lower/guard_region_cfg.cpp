@@ -280,4 +280,35 @@ bool dominanceHolds(const il::Function& fn) {
     return true;
 }
 
+uint32_t pruneUnreachable(il::Function& fn, std::vector<uint8_t>& alreadyBuilt) {
+    const Cfg cfg = buildCfg(fn);
+    std::vector<il::BlockId> remap(fn.blocks.size(), il::kNoBlock);
+    il::BlockId next = 0;
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        if (cfg.rpoIndex[b] != UINT32_MAX) remap[b] = next++;
+    }
+    if (next == fn.blocks.size()) return 0;
+
+    std::vector<il::Block> kept;
+    std::vector<uint8_t> keptBuilt;
+    kept.reserve(next);
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        if (remap[b] == il::kNoBlock) continue;
+        il::Block block = std::move(fn.blocks[b]);
+        block.id = remap[b];
+        if (block.handler != il::kNoBlock) block.handler = remap[block.handler];
+        for (auto& inst : block.instructions) {
+            for (il::BlockTarget* t : {&inst.target, &inst.elseTarget}) {
+                if (t->block != il::kNoBlock && t->block < remap.size()) t->block = remap[t->block];
+            }
+        }
+        kept.push_back(std::move(block));
+        keptBuilt.push_back(b < alreadyBuilt.size() ? alreadyBuilt[b] : 1);
+    }
+    const auto dropped = static_cast<uint32_t>(fn.blocks.size() - kept.size());
+    fn.blocks = std::move(kept);
+    alreadyBuilt = std::move(keptBuilt);
+    return dropped;
+}
+
 }  // namespace bronze::lower

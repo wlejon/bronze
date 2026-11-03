@@ -583,13 +583,14 @@ bool analyzeRegion(const il::Function& fn, const std::vector<std::string>& keys,
     //
     // A loop region is not exposed to any of this: its slow copy keeps its own
     // back edge, so its header stays reachable and nothing is orphaned.
+    // A split block that fails it does not refuse the region: the rewrite then
+    // re-derives the slow copy's names over the pruned graph instead
+    // (`repairSplitNames`, guard_region_ssa.cpp), which puts a parameter on
+    // each join where a trampoline's path meets another.
     if (plan.entryRegion) {
         for (il::BlockId b : plan.blocks) {
             if (b == plan.header || plan.splitsOf[b].empty()) continue;
-            if (!dominatesReachable(cfg, plan, b)) {
-                ++stats.refusedEntrySplit;
-                return false;
-            }
+            if (!dominatesReachable(cfg, plan, b)) plan.repairNames = true;
         }
     }
 
@@ -682,6 +683,7 @@ std::string traceDelta(const GuardRegionStats& before, const GuardRegionStats& a
         {"growth", {before.refusedGrowth, after.refusedGrowth}},
         {"placement", {before.refusedPlacement, after.refusedPlacement}},
         {"entrySplit", {before.refusedEntrySplit, after.refusedEntrySplit}},
+        {"repaired", {before.repairedNames, after.repairedNames}},
         {"concatSplit", {before.refusedConcatSplit, after.refusedConcatSplit}},
         {"ssa", {before.refusedSsa, after.refusedSsa}},
         {"machine", {before.refusedMachine, after.refusedMachine}},

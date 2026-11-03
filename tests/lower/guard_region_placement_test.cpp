@@ -302,14 +302,14 @@ TEST_CASE("an entry region splits below its header when the split block dominate
     CHECK_FALSE(diags.hasErrors());
 }
 
-TEST_CASE("an entry region refuses a split block that does not dominate what it reaches") {
+TEST_CASE("an entry region re-derives the names below a split block that does not dominate what it reaches") {
     // `b1` holds the only split and does not dominate `b3`, which it reaches.
     // `b3` reads `%2`, defined in the header — and with no split in the header
     // the header's slow copy is orphaned and pruned, while `b3`'s survives on
-    // the trampoline's edge. `renameAt` finds a split's renames on a block's
-    // DOMINATOR chain and `b1` is not on `b3`'s, so the rewrite would leave
-    // `%2` with no definition at all. Refused in selection, where the reason is
-    // still nameable.
+    // the trampoline's edge. The dominator chain of `b3` does not hold `b1`, so
+    // the names are re-derived over the pruned rewrite (guard_region_ssa.cpp):
+    // `b3`'s only surviving predecessor is the tail, and it reads the tail's
+    // parameter.
     //
     // `%5` is dead: two promotable operations are an entry region's floor
     // (`kMinEntryUses`) and this is the smallest body that reaches it.
@@ -326,13 +326,62 @@ TEST_CASE("an entry region refuses a split block that does not dominate what it 
         block(3, {propGet(6, 2, 12, 2), ret(6)}),
     };
 
-    const il::Module before = oneFunction(fn);
     il::Module module = oneFunction(std::move(fn));
     GuardRegionStats stats;
-    CHECK_FALSE(applyGuardedRegions(module, &stats));
+    REQUIRE(applyGuardedRegions(module, &stats));
 
-    CHECK(stats.refusedEntrySplit == 1);
+    CHECK(stats.refusedEntrySplit == 0);
     CHECK(stats.refusedSsa == 0);
-    CHECK(stats.duplicated == 0);
-    CHECK(il::print(module) == il::print(before));
+    CHECK(stats.repairedNames == 1);
+    CHECK(stats.duplicated == 1);
+
+    DiagnosticSink diags;
+    CHECK(il::verify(module, diags));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("a join the slow copy reaches from a tail and from its head takes a parameter") {
+    // The same shape with a guarded PARAMETER `%2`: a failed entry guard enters
+    // the slow header, so the slow copy of `b0` survives the pruning and `b3`
+    // is reached both from the tail of `b1` (which carries `%3` as a parameter)
+    // and from `b2` (which carries the header's own `%3`). Neither dominates
+    // `b3`, so `b3` takes a parameter for it, fed by both.
+    il::Function fn;
+    fn.name = "j";
+    fn.params = {{"o", il::Type::Dynamic}, {"c", il::Type::Bool}, {"x", il::Type::Dynamic}};
+    fn.returnType = il::Type::Dynamic;
+    fn.valueCount = 10;
+    fn.blocks = {
+        block(0, {propGet(3, 0, 10, 0), arith(il::Op::Mul, 4, 2, 2), arith(il::Op::Mul, 5, 4, 2),
+                  branch(1, 1, {}, 2, {})}),
+        block(1, {propGet(6, 3, 11, 1), arith(il::Op::Mul, 7, 6, 6), arith(il::Op::Mul, 8, 7, 6),
+                  jump(3)}),
+        block(2, {jump(3)}),
+        block(3, {propGet(9, 3, 12, 2), ret(9)}),
+    };
+
+    il::Module module = oneFunction(std::move(fn));
+    GuardRegionStats stats;
+    REQUIRE(applyGuardedRegions(module, &stats));
+
+    CHECK(stats.repairedNames == 1);
+    CHECK(stats.duplicated == 1);
+    CHECK(stats.refusedSsa == 0);
+
+    // The slow join reads `%3` through a parameter of its own.
+    bool joinParam = false;
+    for (const il::Block& b : module.functions[0].blocks) {
+        if (b.copyClass != il::CopyClass::Slow || b.params.empty()) continue;
+        for (const il::Instruction& inst : b.instructions) {
+            if (inst.op == il::Op::PropGet && inst.keyIndex == 12 &&
+                inst.operands[0] == b.params.back().id) {
+                joinParam = true;
+            }
+        }
+    }
+    CHECK(joinParam);
+
+    DiagnosticSink diags;
+    CHECK(il::verify(module, diags));
+    CHECK_FALSE(diags.hasErrors());
 }
