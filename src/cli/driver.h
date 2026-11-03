@@ -150,7 +150,12 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath,
              // `--spec-profile`: a speculation profile a tiered run of the
              // same program wrote (BRONZE_SPEC_PROFILE_OUT), which lays the
              // build's fast paths out as the JIT's (il2mir/il_spec_profile.h).
-             const std::string& specProfilePath = {});
+             const std::string& specProfilePath = {},
+             // `--wpo-stats[=<substring>]`: print the whole-program analysis's
+             // census of the final IL (src/opt/wpo/wpo.h) to stdout; with a
+             // filter, every site of the functions whose name contains it.
+             bool wpoStats = false, const std::string& wpoStatsFilter = {},
+             bool wpoStatsPerSite = false);
 int runDriver(int argc, char** argv);
 
 }  // namespace bronze::cli

@@ -33,6 +33,7 @@
 #include "lower/lower.h"
 #include "lower/native_manifest.h"
 #include "modules/modules.h"
+#include "opt/wpo/wpo.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
 #include "support/timings.h"
@@ -275,7 +276,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
              bool pinsAllowObserved, const std::string& nativeManifestPath,
              const std::string& nativeLibPath, const std::string& entryResolvesAs,
              const std::string& targetName, bool publishModules, bool emitDebugInfo,
-             const std::string& specProfilePath) {
+             const std::string& specProfilePath, bool wpoStats,
+             const std::string& wpoStatsFilter, bool wpoStatsPerSite) {
     // Two output kinds, named on one command line: a fact about the
     // INVOCATION, so it is refused here, before anything is read or compiled,
     // and it names both flags rather than silently letting one win.
@@ -431,6 +433,17 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         } else {
             std::fputs(statsStr.c_str(), stdout);
         }
+    }
+
+    // The whole-program analysis reads the module the backend is about to
+    // compile and changes nothing in it, so the build's output is the same
+    // with the flag as without.
+    if (wpoStats) {
+        wpo::StatsOptions wpoOpts;
+        wpoOpts.hostGlobals = hostGlobals;
+        wpoOpts.perSite = wpoStatsPerSite;
+        wpoOpts.filter = wpoStatsFilter;
+        std::fputs(wpo::statsReport(*ilModule, wpoOpts).c_str(), stdout);
     }
 
     reportWarnings(diags, sources);
@@ -813,6 +826,9 @@ int runDriver(int argc, char** argv) {
         bool emitDebugInfo = false;
         bool publishModules = false;
         std::string specProfilePath;
+        bool wpoStats = false;
+        bool wpoStatsPerSite = false;
+        std::string wpoStatsFilter;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -820,6 +836,12 @@ int runDriver(int argc, char** argv) {
                 emitDebugInfo = true;
             } else if (arg == "--no-infer") {
                 infer = false;
+            } else if (arg == "--wpo-stats") {
+                wpoStats = true;
+            } else if (arg.rfind("--wpo-stats=", 0) == 0) {
+                wpoStats = true;
+                wpoStatsPerSite = true;
+                wpoStatsFilter = arg.substr(12);
             } else if (arg == "--target") {
                 if (i + 1 < argc) {
                     targetName = argv[++i];
@@ -939,7 +961,8 @@ int runDriver(int argc, char** argv) {
                         hostGlobalsPath, inferStats, nullptr, moduleRoots, entrySymbol,
                         emitShared, retainFnSource, importMapPath, assumeNoBigInt, pinsPath,
                         censusOutPath, pinsAllowObserved, nativeManifestPath, {}, {},
-                        targetName, publishModules, emitDebugInfo, specProfilePath);
+                        targetName, publishModules, emitDebugInfo, specProfilePath, wpoStats,
+                        wpoStatsFilter, wpoStatsPerSite);
     }
 
     return fail(kUsage);
