@@ -352,6 +352,12 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
     // the call stays: there the inline form is only size and compile time.
     // A read the whole-program optimizer predicts polymorphic (il.h
     // `icPolymorphic`) gets the same form wherever it is.
+    // A read predicted to answer `undefined` (il.h `icAbsent`): way 0's
+    // own-data or negative entry, inline.
+    if (inst_ast.is_absent && site && prop_lowering.enable_inlined_fastpaths() && !prop_lowering.in_process() &&
+        inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
+        return prop_lowering.lower_prop_get_absent(b, obj_val, inst_ast.index, site);
+    }
     const bool loop_poly = !mono && lowering->in_loop();
     const bool poly = loop_poly || inst_ast.is_poly;
     if (site && (mono || poly) && prop_lowering.enable_inlined_fastpaths() &&

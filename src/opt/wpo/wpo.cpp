@@ -47,6 +47,8 @@ std::string census(const il::Module& mod, const BuildOptions& opts, bool predict
         for (const DirectEntry& d : plan->directs) directAt[{d.fn, d.block, d.inst}] = d.target;
         std::set<std::tuple<uint32_t, uint32_t, uint32_t>> polyAt;
         for (const PolyEntry& p : plan->polys) polyAt.insert({p.fn, p.block, p.inst});
+        std::set<std::tuple<uint32_t, uint32_t, uint32_t>> absentAt;
+        for (const PolyEntry& p : plan->absents) absentAt.insert({p.fn, p.block, p.inst});
         for (SiteFact& f : facts) {
             if (auto d = directAt.find({f.fn, f.block, f.inst}); d != directAt.end()) {
                 f.wpoStamp = "direct " + mod.functions[d->second].name;
@@ -55,6 +57,7 @@ std::string census(const il::Module& mod, const BuildOptions& opts, bool predict
             auto it = byLoc.find({f.fn, f.block, f.inst});
             if (it == byLoc.end()) {
                 if (polyAt.count({f.fn, f.block, f.inst}) != 0) f.wpoStamp = "poly";
+                if (absentAt.count({f.fn, f.block, f.inst}) != 0) f.wpoStamp = "absent";
                 continue;
             }
             f.wpoStamp = it->second->form == StampForm::Identity
@@ -112,6 +115,7 @@ std::string stampReport(const il::Module& mod, const StampPlan& plan, const Buil
     out += "wpo-stamp: predicted polymorphic reads " + std::to_string(plan.polys.size()) + " of " +
            std::to_string(plan.polyCandidates) + " own-data reads without a claim; more receivers than cache ways " +
            std::to_string(plan.polyTooMany) + "\n";
+    out += "wpo-stamp: predicted absent reads " + std::to_string(plan.absents.size()) + "\n";
     if (!opts.perSite) return out;
     for (const auto& [fn, row] : perFn) {
         const std::string& name = mod.functions[fn].name;
@@ -125,7 +129,8 @@ std::string stampReport(const il::Module& mod, const StampPlan& plan, const Buil
 
 }  // namespace
 
-std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts) {
+std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts,
+                                 std::unordered_map<uint32_t, uint32_t>* ownCallees) {
     StampPlan plan;
     {
         Solver predicted(mod, solverOptions(opts, /*predict=*/true));
@@ -135,12 +140,25 @@ std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts) {
         plan = planStamps(predicted, shapes, classifySites(predicted, shapes));
     }
     applyDirects(mod, plan);
+    if (ownCallees != nullptr) {
+        constexpr uint32_t kDisagree = UINT32_MAX;
+        for (const DirectEntry& d : plan.ownCalls) {
+            const uint32_t site = mod.functions[d.fn].blocks[d.block].instructions[d.inst].icIndex;
+            auto [it, fresh] = ownCallees->insert({site, d.target});
+            if (!fresh && it->second != d.target) it->second = kDisagree;
+        }
+        for (auto it = ownCallees->begin(); it != ownCallees->end();) {
+            it = it->second == kDisagree ? ownCallees->erase(it) : std::next(it);
+        }
+    }
     if (!opts.stats) return {};
     std::string out = "wpo-early: predicted direct method targets " + std::to_string(plan.directs.size()) + " of " +
                       std::to_string(plan.callCandidates) +
                       " single-callee sites without one, before inlining; refused: the callee may sit in an own slot " +
                       std::to_string(plan.callOwnHeld) + ", the callee's parameters " +
                       std::to_string(plan.callRefused) + "\n";
+    out += "wpo-early: predicted own-slot callees " + std::to_string(plan.ownCalls.size()) + " sites, " +
+           std::to_string(ownCallees != nullptr ? ownCallees->size() : 0) + " cache sites\n";
     if (!opts.perSite) return out;
     std::map<uint32_t, uint32_t> perFn;
     for (const DirectEntry& d : plan.directs) ++perFn[d.fn];

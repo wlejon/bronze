@@ -628,3 +628,69 @@ TEST_CASE("a target only the prediction knows reaches guarded inlining") {
     DiagnosticSink vdiags;
     CHECK(il::verify(with, vdiags));
 }
+
+TEST_CASE("a read some receivers lack on their whole chain is marked absent") {
+    // `isB` is own on B's instances and on no link of A's chain, so the read
+    // answers an own slot or `undefined`.
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lower_test::inferAndLower(
+        "class A { constructor() { this.a = 1; } }\n"
+        "class B { constructor() { this.isB = true; } }\n"
+        "function rk(o) { return o.isB; }\n"
+        "console.log(rk(new A()), rk(new B()));\n",
+        diags, buf);
+    REQUIRE(mod.has_value());
+    optimizeForBuild(*mod, BuildOptions{});
+    const il::Function* rk = functionNamed(*mod, "rk");
+    REQUIRE(rk != nullptr);
+    const il::Instruction* read = nullptr;
+    for (const auto& block : rk->blocks) {
+        for (const auto& inst : block.instructions) {
+            if (inst.op == il::Op::PropGet) read = &inst;
+        }
+    }
+    REQUIRE(read != nullptr);
+    CHECK(read->icAbsent);
+    CHECK_FALSE(read->icPolymorphic);
+    CHECK(il::print(*mod).find(", absent") != std::string::npos);
+    DiagnosticSink vdiags;
+    CHECK(il::verify(*mod, vdiags));
+}
+
+TEST_CASE("a call of a factory's own-slot closure enters the predicted function directly") {
+    // `api.step` is the literal's own slot, so no direct target is set; the
+    // prediction knows the closure is `step`'s and the call is split on it.
+    const std::string src =
+        "function make(k) {\n"
+        "  let total = 0;\n"
+        "  function step(x) { total += x * k; if (total > 1e9) { total = 0; } return total + x - k; }\n"
+        "  return { step };\n"
+        "}\n"
+        "function run(api, n) { let s = 0; s += api.step(n); return s; }\n"
+        "console.log(run(make(2), 3));\n";
+    auto directCalls = [](const il::Module& mod) {
+        size_t closureIs = 0, calls = 0;
+        const il::Function* run = functionNamed(mod, "run");
+        REQUIRE(run != nullptr);
+        for (const auto& block : run->blocks) {
+            for (const auto& inst : block.instructions) {
+                if (inst.op == il::Op::ClosureIs) ++closureIs;
+                if (inst.op == il::Op::Call && inst.calleeIndex < mod.functions.size() &&
+                    mod.functions[inst.calleeIndex].name.find("step") != std::string::npos) {
+                    ++calls;
+                    CHECK(inst.callEnvHops == 0);
+                }
+            }
+        }
+        return std::make_pair(closureIs, calls);
+    };
+    const il::Module without = buildLower(src, false);
+    const il::Module with = buildLower(src, true);
+    CHECK(directCalls(without).second == 0);
+    const auto [closureIs, calls] = directCalls(with);
+    CHECK(closureIs == 1);
+    CHECK(calls == 1);
+    DiagnosticSink vdiags;
+    CHECK(il::verify(with, vdiags));
+}

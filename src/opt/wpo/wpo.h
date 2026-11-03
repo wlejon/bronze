@@ -12,7 +12,9 @@
 // them (stamp.h). `--wpo-stats` adds the census of both modes and of the
 // claims.
 
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "il/il.h"
@@ -35,7 +37,12 @@ struct BuildOptions {
 // bodies (guarded inlining, typed entries): a predicting solve whose direct
 // method targets it applies, so those passes see them.
 // Returns its report line when `opts.stats`.
-std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts);
+//
+// `ownCallees`, when given, receives for each method-call site (by IC index)
+// whose one predicted callee its receivers hold in an own slot that callee's
+// function index; a site whose copies disagree is left out.
+std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts,
+                                 std::unordered_map<uint32_t, uint32_t>* ownCallees = nullptr);
 
 // Runs the analysis over `mod` and applies its claims. Returns the census
 // text when `opts.stats`, else an empty string. What it does to `mod` does

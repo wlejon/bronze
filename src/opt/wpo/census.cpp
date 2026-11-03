@@ -297,6 +297,9 @@ private:
         auto any = [&](Where w) {
             return std::any_of(rs.begin(), rs.end(), [&](const Resolution& r) { return r.where == w; });
         };
+        fact.ownOrAbsent = any(Where::Absent) && std::all_of(rs.begin(), rs.end(), [](const Resolution& r) {
+            return r.where == Where::Absent || r.where == Where::OwnSlot || r.where == Where::OwnUnknown;
+        });
         if (all(Where::OwnSlot)) {
             const int slot = rs[0].slot;
             const bool same = std::all_of(rs.begin(), rs.end(), [&](const Resolution& r) { return r.slot == slot; });

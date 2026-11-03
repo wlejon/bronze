@@ -73,6 +73,10 @@ struct StampPlan {
     std::vector<StampEntry> entries;
     std::vector<DirectEntry> directs;
     std::vector<PolyEntry> polys;
+    // Reads some predicted receiver answers with `undefined` (il.h `icAbsent`).
+    std::vector<PolyEntry> absents;
+    // Method calls whose one predicted callee a receiver holds in an own slot.
+    std::vector<DirectEntry> ownCalls;
     // Reads left without a claim whose predicted receivers all hold the key
     // as an own data property, and how many of those have more receivers than
     // the cache has ways.

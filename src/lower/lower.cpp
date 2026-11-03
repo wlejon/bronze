@@ -13,6 +13,7 @@
 #include "lower/typed_loop_version.h"
 #include "lower/inline_small.h"
 #include "lower/inline_guarded.h"
+#include "lower/own_callee_calls.h"
 #include "lower/typed_entry.h"
 #include "lower/loop_prop_analysis.h"
 #include "lower/loop_prop_hoist.h"
@@ -409,7 +410,10 @@ std::optional<il::Module> Lowerer::lower() {
         // The predicted direct targets first, so that every pass below that
         // copies or specializes a callee reads them as it reads lowering's.
         const bool wholeProgram = wholeProgram_ != nullptr && wholeProgram_->on;
-        if (wholeProgram) wholeProgram_->report += wpo::predictDirectTargets(ilModule_, wholeProgram_->build);
+        OwnCallees ownCallees;
+        if (wholeProgram) {
+            wholeProgram_->report += wpo::predictDirectTargets(ilModule_, wholeProgram_->build, &ownCallees);
+        }
         inlineSmallFunctions(ilModule_, &directMethods_);
         sanitizeLoopInBoundsProofs(ilModule_);
         hoistLoopInvariantProps(ilModule_, &directMethods_);
@@ -433,6 +437,12 @@ std::optional<il::Module> Lowerer::lower() {
             inlineGuardedMethods(ilModule_, diags_, &inlinedInto, &guesses, &coldLoops);
             if (diags_.hasErrors()) return std::nullopt;
             foldInlinedCallers(ilModule_, inlinedInto);
+        }
+        // The own-slot calls inlining left: a direct entry behind the slot's
+        // closure's code word.
+        const uint32_t ownCalls = applyOwnCalleeCalls(ilModule_, ownCallees);
+        if (wholeProgram && wholeProgram_->build.stats) {
+            wholeProgram_->report += "wpo-own: own-slot calls entered directly " + std::to_string(ownCalls) + "\n";
         }
         // After every pass that copies instructions: a copied run would share
         // its cells with the original (transition_runs.h).

@@ -73,6 +73,9 @@ struct SiteFact {
     bool inlined = false;          // an inlined copy
     bool mono = false;             // inference calls the site monomorphic (il.h icMonomorphic)
     bool partial = false;          // unknown receivers beside the known ones
+    // Some receiver lacks the key on its whole chain and every other holds it
+    // as its own data: the read answers `undefined` or an own slot.
+    bool ownOrAbsent = false;
     std::string wpoStamp;          // the claim stamp.h made on the site, for the dump
 };
 

@@ -132,7 +132,7 @@ static bool instructions_are_identical(const BronzeInstruction& a, const BronzeI
     if (a.typed_callee_name != b.typed_callee_name) return false;
     if (a.depth != b.depth || a.index != b.index || a.param_count != b.param_count) return false;
     if (a.static_slot != b.static_slot || a.ic_index != b.ic_index || a.is_mono != b.is_mono || a.is_fn_recv != b.is_fn_recv ||
-        a.is_family != b.is_family || a.is_poly != b.is_poly) return false;
+        a.is_family != b.is_family || a.is_poly != b.is_poly || a.is_absent != b.is_absent) return false;
     if (a.static_cell != b.static_cell || a.family_lo != b.family_lo || a.family_span != b.family_span) return false;
     if (a.run_cell != b.run_cell || a.run_length != b.run_length || a.run_slot != b.run_slot) return false;
     if (a.target.block_id != b.target.block_id || a.target.args != b.target.args) return false;

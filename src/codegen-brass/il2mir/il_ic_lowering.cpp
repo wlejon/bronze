@@ -224,6 +224,53 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     return merge_val;
 }
 
+Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uint32_t key_index,
+                                                    const IcSite& site) {
+    BasicBlock* bb_current = b.current_block();
+    Function* fn = bb_current->parent();
+    const std::string prefix = "ic_absent_" + std::to_string(fn->next_block_id());
+    // The stub is laid out after the hot code where nothing measured the
+    // site, as lower_prop_get_mono's miss is.
+    const bool unmeasured = !(spec_ && (spec_->has_profile() || spec_->has_feedback()));
+    BasicBlock* bb_own = b.append_block(prefix + "_own");
+    BasicBlock* bb_test = b.append_block(prefix + "_test");
+    BasicBlock* bb_undef = b.append_block(prefix + "_undef");
+    BasicBlock* bb_slow = b.append_block(prefix + "_miss" + std::string(unmeasured ? "_cold" : ""));
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    Value* merge_val = b.add_block_param(bb_merge, Type::i64());
+
+    b.position_at_end(bb_current);
+    Value* plain = nullptr;
+    Value* ptr = nullptr;
+    Value* shape = nullptr;
+    receiver_shape(b, obj, plain, ptr, shape);
+    Value* match = b.build_and(plain, b.build_eq(shape, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset)));
+    Value* slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
+    b.build_br_if(b.build_and(match, b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit))), bb_own, bb_test);
+
+    // The negative entry's word is the flag alone (InlineCache::fillAbsent),
+    // and it speaks only for the epoch it was filled at.
+    b.position_at_end(bb_test);
+    constexpr int64_t kAbsentWord = int64_t{BRONZE_ABI_IC_DEPTH_ABSENT_FLAG} << 32;
+    Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
+    Value* current = b.build_eq(b.build_load(Type::i64(), site.base, site.off + BRONZE_ABI_IC_EPOCH_OFFSET), epoch);
+    Value* absent = b.build_and(b.build_and(match, current), b.build_eq(slot_word, b.build_iconst_i64(kAbsentWord)));
+    b.build_br_if(absent, bb_undef, bb_slow);
+
+    b.position_at_end(bb_undef);
+    b.build_br(bb_merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
+
+    b.position_at_end(bb_slow);
+    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site_ptr(b, site))});
+
+    b.position_at_end(bb_own);
+    b.build_br(bb_merge, {b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8,
+                                               kBronzeObjSlotsOffset)});
+
+    b.position_at_end(bb_merge);
+    return merge_val;
+}
+
 void PropertyLoweringHelper::other_ways_hit(Builder& b, Value* plain, Value* shape, const IcSite& site, Value*& hit,
                                             Value*& slot_word) {
     Value* any = nullptr;

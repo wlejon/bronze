@@ -230,6 +230,9 @@ struct BronzeInstruction {
     // A read the whole-program optimizer predicts meets a few shapes (il.h
     // `icPolymorphic`): the same inline scan as a family read.
     bool is_poly = false;
+    // A read predicted to answer `undefined` for some receivers (il.h
+    // `icAbsent`): way 0's own-data or negative entry inline.
+    bool is_absent = false;
     // PropGet/PropSet with a `static_slot`: which guard licenses it (il.h
     // `staticCellIndex`, `familyLo`/`familySpan`). An identity site compares
     // the receiver's shape with its module cell `static_cell`; a family site

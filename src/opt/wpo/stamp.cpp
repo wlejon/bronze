@@ -134,6 +134,9 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
     }
     if (!protoHeld) {
         ++plan.callOwnHeld;
+        // The receiver's own slot holds the callee's closure: a call the
+        // closure's code word may enter directly (own_callee_calls.h).
+        plan.ownCalls.push_back(DirectEntry{fact.fn, fact.block, fact.inst, target});
         return;
     }
     const il::Function& callee = mod.functions[target];
@@ -157,6 +160,14 @@ void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, Stam
 // monomorphic keeps its way-0 form unless more than one receiver reaches it.
 void planPoly(const il::Module& mod, const SiteFact& fact, StampPlan& plan) {
     if (fact.op != il::Op::PropGet) return;
+    if (fact.ownOrAbsent) {
+        const il::Instruction& inst = mod.functions[fact.fn].blocks[fact.block].instructions[fact.inst];
+        if (inst.staticSlot == il::Instruction::kNoStaticSlot && inst.directTarget == il::Instruction::kNoDirectTarget &&
+            !inst.operands.empty() && !il::parseIndexKey(mod.keyConstants[inst.keyIndex])) {
+            plan.absents.push_back(PolyEntry{fact.fn, fact.block, fact.inst});
+        }
+        return;
+    }
     const bool ownEverywhere = fact.prop == PropClass::SlotDiffers || fact.prop == PropClass::NotInPrefix ||
                                fact.prop == PropClass::SameSlot || fact.prop == PropClass::SameSlotEscaped;
     if (!ownEverywhere) return;
@@ -295,6 +306,9 @@ void applyStamps(il::Module& mod, const StampPlan& plan) {
     applyDirects(mod, plan);
     for (const PolyEntry& p : plan.polys) {
         mod.functions[p.fn].blocks[p.block].instructions[p.inst].icPolymorphic = true;
+    }
+    for (const PolyEntry& p : plan.absents) {
+        mod.functions[p.fn].blocks[p.block].instructions[p.inst].icAbsent = true;
     }
     for (const StampEntry& e : plan.entries) {
         il::Instruction& inst = mod.functions[e.fn].blocks[e.block].instructions[e.inst];

@@ -95,6 +95,13 @@ struct Instruction {
     // receiver class has subclasses. The ways are what the runtime filled, so
     // a wrong prediction costs the scan's loads and never an answer.
     bool icPolymorphic = false;
+    // PropGet: a PREDICTION (src/opt/wpo) that some of this site's receivers
+    // hold the key nowhere on their chain, so the read answers `undefined`.
+    // The backend tests way 0 of the site's cache inline, taking its own-data
+    // slot or, while the prototype epoch holds, its negative entry, in front
+    // of the stub. The entry is what the runtime filled, so a wrong prediction
+    // costs the test and never an answer.
+    bool icAbsent = false;
     // PropGet/MethodCall: this site's RECEIVER EXPRESSION is a name bound to a
     // class or function DECLARATION — `Object3D.DEFAULT_UP`, `Object.keys`,
     // `MathUtils.generateUUID`, a class name used inside its own body —

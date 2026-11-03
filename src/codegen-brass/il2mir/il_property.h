@@ -204,6 +204,14 @@ public:
     Value* lower_prop_get_mono(Builder& b, Value* obj, uint32_t key_index, const IcSite& site,
                                bool expect_poly = false);
 
+    // A read predicted to answer `undefined` for some receivers (il.h
+    // `icAbsent`): way 0 of the site, taken inline when it names the
+    // receiver's shape with an own data slot (the slot) or, while the
+    // prototype epoch holds, with the negative entry (`undefined`); anything
+    // else is the stub. An image's only: the epoch is read through the pinned
+    // TLS register. Requires a real site.
+    Value* lower_prop_get_absent(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
+
     // `bronze_prop_set`; `imm` nonzero is a strict-mode write.
     void lower_prop_set(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm, Value* ic_entry);
 

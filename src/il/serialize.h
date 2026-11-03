@@ -27,7 +27,8 @@ namespace bronze::il {
 // 12: `object.proto`, and prop.set / elem.set carry kWriteDefine (il.h).
 // 13: prop.get / prop.set carry staticSlotGuessed (il.h).
 // 14: prop.get carries icPolymorphic (il.h).
-inline constexpr uint32_t kFormatVersion = 14;
+// 15: prop.get carries icAbsent (il.h).
+inline constexpr uint32_t kFormatVersion = 15;
 
 std::string serializeModule(const Module& module);
 
