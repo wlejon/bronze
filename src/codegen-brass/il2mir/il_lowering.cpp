@@ -16,6 +16,17 @@
 
 namespace il2mir {
 
+namespace {
+// BRONZE_VERIFY_EACH_PASS=1 turns on TranslatorOptions::verify_after_each_pass
+// in any build, to name the pass that broke a module from a release binary.
+bool verifyEachPassEnv() {
+    static const bool on = [] {
+        const char* v = std::getenv("BRONZE_VERIFY_EACH_PASS");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+}  // namespace
 
 std::string IlLowering::resolve_callee(const std::string& callee_name) const {
     auto it_fn = caller_to_callee_map_.find(current_fn_idx_);
@@ -575,7 +586,7 @@ std::unique_ptr<Module> IlLowering::lower_module(const BronzeModuleAST& ast) {
     if (options_.enable_optimizations) {
         PassPipelineHooks hooks;
         hooks.after_pass = [&](std::string_view name) {
-            if (!options_.verify_after_each_pass) return true;
+            if (!options_.verify_after_each_pass && !verifyEachPassEnv()) return true;
             if (!verify_module(*mod, diag_)) {
                 std::fprintf(stderr, "[FATAL] Broken after %.*s\n",
                              static_cast<int>(name.size()), name.data());
