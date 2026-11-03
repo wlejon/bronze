@@ -122,3 +122,31 @@ function show(label, ta) {
   console.log("warm", sum);
 }
 
+// One warmed call site across receivers and a patched method: the site's cached
+// builtin entry must give way to a program's own function on the chain, then
+// come back, and a builtin that throws or calls back into JS from that entry
+// behaves as from any other call.
+{
+  const views = [new Float32Array(4), new Int16Array(4), new Float32Array(4)];
+  function setAll(src, off) { for (const v of views) v.set(src, off); }
+  for (let i = 0; i < 500; i++) setAll([i, i + 1], 1);
+  show("warmed", views[1]);
+  const saved = Float32Array.prototype.set;
+  let calls = 0;
+  Float32Array.prototype.set = function (src, off) { calls++; return saved.call(this, [-1], off); };
+  setAll([7, 8], 2);
+  console.log("patched", calls, Array.prototype.join.call(views[0], ","), Array.prototype.join.call(views[1], ","));
+  Float32Array.prototype.set = saved;
+  setAll([9, 9], 2);
+  show("restored", views[0]);
+  for (let i = 0; i < 3; i++) {
+    try { setAll([1, 2, 3, 4, 5], 0); } catch (e) { console.log("site throws", i, e.constructor.name); }
+  }
+  let seen = 0;
+  setAll([{ valueOf() { seen++; return 5; } }], 0);
+  console.log("callback", seen, views[2][0]);
+  function isArr(x) { return Array.isArray(x); }
+  let n = 0;
+  for (let i = 0; i < 300; i++) if (isArr(i & 1 ? [] : {})) n++;
+  console.log("isArray site", n);
+}

@@ -160,6 +160,11 @@ bool latchExoticMethodIc(uint64_t* icEntry, const HeapObjectHeader* objHdr, Valu
         // it declines).
         if (!probe.isRealShape() || probe.isAccessor() || probe.isAbsent()) return false;
         if (probe.realDepth() == 0) return false;
+        // A program may put its own function on the view's chain
+        // (`Float32Array.prototype.set = f`); this form holds builtins only,
+        // which is what lets a hit call it without the generated-code entry
+        // (methodIcHit's `native`), so that callee takes the ordinary path.
+        if (!fn->isNativeCode()) return false;
         const auto* view = reinterpret_cast<const TypedArrayHeader*>(objHdr);
         if (probe.cached_shape != view->object.shape) return false;
         icEntry[BRONZE_ABI_METHOD_IC_AUX_WORD] = reinterpret_cast<uint64_t>(view->object.shape);
@@ -424,8 +429,14 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
     const Value thisVal(thisBits);
 
     // `epochWord` is the word holding the entry's latch epoch, or -1 for a form
-    // answered from an immutable C table and never epoch-guarded.
-    auto dispatchDirect = [&](const uint64_t* way, int epochWord) -> bool {
+    // answered from an immutable C table and never epoch-guarded. `native`
+    // says the latch proved the callee a runtime builtin (the EXOTIC form,
+    // latchExoticMethodIc's contract): C++ that needs neither the generated-code
+    // entry (no pinned TLS register, no interpreter tier to hand it to, no
+    // dynamic module whose code it is) nor, with the direct-entry bit, a
+    // NewTargetScope (rtEntersWithoutScope) — so it is called as the function
+    // it is. Both were a third of a `view.set(src)` call.
+    auto dispatchDirect = [&](const uint64_t* way, int epochWord, bool native) -> bool {
         if (epochWord >= 0 &&
             icEntry[epochWord] != static_cast<uint64_t>(protoMutationEpoch())) {
             return false;
@@ -436,6 +447,11 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
         if (!code) return false;
         const auto arity =
             static_cast<uint32_t>(arityWord & ~BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT);
+        const bool scopeFree = (arityWord & BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT) != 0;
+        if (native && scopeFree && (arity == 0 || argc >= arity)) {
+            result = code(way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);
+            return true;
+        }
         if (arity == 0 || argc >= arity) {
             NewTargetScope targetScope(Value::fromUndefined());
             result = rtEnterJs(code, way[BRONZE_ABI_METHOD_IC_ENV_WORD], thisBits, argc, argv);
@@ -506,7 +522,8 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
             kind == TypedArrayHeader::kFlags ||
             (kind == HeapKind::Function &&
              reinterpret_cast<const FunctionHeader*>(hdr)->statics_materialized);
-        return dispatchDirect(icEntry, epochGuarded ? BRONZE_ABI_METHOD_IC_EPOCH_WORD : -1);
+        return dispatchDirect(icEntry, epochGuarded ? BRONZE_ABI_METHOD_IC_EPOCH_WORD : -1,
+                              /*native=*/true);
     }
 
     if (hdr->flags == HeapKind::Plain) {
@@ -514,12 +531,12 @@ bool methodIcHit(uint64_t* icEntry, uint64_t thisBits, uint32_t argc, const uint
         const uint64_t shapeWord = reinterpret_cast<uint64_t>(obj->shape);
         if (shapeWord == w0) {
             if (slotPlusOne != 0) return dispatchSlot(obj, slotPlusOne);
-            return dispatchDirect(icEntry, BRONZE_ABI_METHOD_IC_EPOCH_WORD);
+            return dispatchDirect(icEntry, BRONZE_ABI_METHOD_IC_EPOCH_WORD, /*native=*/false);
         }
         // WAY 1 holds a plain-receiver DIRECT entry and nothing else.
         if (icEntry[BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD] == shapeWord) {
             return dispatchDirect(icEntry + BRONZE_ABI_METHOD_IC_WAY1_SHAPE_WORD,
-                                  BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD);
+                                  BRONZE_ABI_METHOD_IC_WAY1_EPOCH_WORD, /*native=*/false);
         }
         return false;
     }
