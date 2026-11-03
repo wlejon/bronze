@@ -168,6 +168,7 @@ bronze_add_module(runtime
         json_stringify.cpp
         exact_decimal.cpp
         rt_enumerate.cpp
+        rt_prop_mega.cpp
         rt_spread.cpp
         rt_print.cpp
         namespace.cpp

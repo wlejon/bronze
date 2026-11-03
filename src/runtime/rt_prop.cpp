@@ -56,6 +56,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/elem_ic.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_prop_mega.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -158,7 +159,16 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
             // inline path refuses. Scanned again rather than passed in,
             // because the helper is entered from paths that never ran the
             // inline scan at all.
-            if (site) ic = site->find(fastObj->shape);
+            if (site) {
+                ic = site->find(fastObj->shape);
+                // Past the site's ways, the thread's (shape, key) table
+                // (rt_prop_mega.h): a site seeing more shapes than it has ways
+                // answers here instead of from the by-name lookup. A site with
+                // a free way installs instead, so it warms to an inline hit.
+                if (!ic && site->ways[BRONZE_ABI_IC_WAYS - 1].isRealShape()) {
+                    ic = rtMegaPropProbe(fastObj->shape, keyIndex);
+                }
+            }
             if (ic && ic->describesAbsent(fastObj->shape)) {
                 return BRONZE_ABI_UNDEFINED_BITS;
             }
@@ -246,7 +256,17 @@ static uint64_t propGetHelperBody(uint64_t objBits, uint32_t keyIndex, uint64_t*
         }
     }
 
-    return propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
+    // The shape the lookup below may install an entry for, read now: a getter
+    // it runs can move the receiver. Shapes are immortal, so the pointer
+    // stays good across the call.
+    const Shape* missShape = nullptr;
+    if (site && objVal.isObject() &&
+        HeapKind::carriesShape(objVal.asObject<HeapObjectHeader>()->flags)) {
+        missShape = objVal.asObject<ObjectHeader>()->shape;
+    }
+    const uint64_t result = propGetByName(objVal, rtKeyString(keyIndex), rtKeyHeader(keyIndex), site);
+    if (missShape) rtMegaPropFill(site, missShape, keyIndex);
+    return result;
 }
 
 uint64_t bronze_prop_get(uint64_t objBits, uint32_t keyIndex, uint64_t* icEntry) {

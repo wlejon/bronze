@@ -1,0 +1,14 @@
+read 132
+write 588
+absent 108
+proto add xxxxxxxxxxxx
+proto del undefined
+getter g0g1g2g3g4g5g6g7g8g9g0g1
+redefined dddddddddddd
+setter 120 false
+nonwritable 9,9,9,9,5,9,9,5,9,9,9,9
+strict refusals 2
+accessor 1019
+deleted NaN
+re-added 66
+many 4516500 12000

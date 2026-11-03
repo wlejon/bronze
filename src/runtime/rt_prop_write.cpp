@@ -53,6 +53,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_property.h"
+#include "runtime/rt_prop_mega.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
 #include "runtime/string.h"
@@ -160,6 +161,20 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
     // numeric keys are elements (10.4.5.5), never slots, and an entry filled by
     // a plain object sharing the view's root shape could otherwise answer a
     // `v[0]` store with a slot write. Its arm below sorts the key first.
+    // Past the site's one way, the thread's (shape, key) table
+    // (rt_prop_mega.h), for a site storing to more shapes than it can hold.
+    // An empty way installs instead, so the site warms to its own entry.
+    const Shape* missShape = nullptr;
+    if (ic && HeapKind::carriesShape(hdr->flags) && hdr->flags != TypedArrayHeader::kFlags) {
+        const Shape* shape = reinterpret_cast<ObjectHeader*>(hdr)->shape;
+        if (ic->isRealShape() && ic->cached_shape != shape) {
+            if (InlineCache* mega = rtMegaPropSetProbe(shape, keyIndex)) {
+                ic = mega;
+            } else {
+                missShape = shape;
+            }
+        }
+    }
     if (ic && ic->cached_shape && HeapKind::carriesShape(hdr->flags) &&
         hdr->flags != TypedArrayHeader::kFlags) {
         auto* fastObj = reinterpret_cast<ObjectHeader*>(hdr);
@@ -201,6 +216,18 @@ void bronze_prop_set(uint64_t objBits, uint32_t keyIndex, uint64_t valBits, uint
             }
         }
     }
+
+    // Whatever the full store below installs in the site's way 0 for the
+    // shape the receiver had, recorded on every way out (a setter that throws
+    // included: the entry is the site's, whatever the call did).
+    struct MegaSetFill {
+        const InlineCache* way0;
+        const Shape* shape;
+        uint32_t key;
+        ~MegaSetFill() {
+            if (shape) rtMegaPropSetFill(way0, shape, key);
+        }
+    } megaFill{rtAsCache(icEntry), missShape, keyIndex};
 
     const KeyInfo& ki = rtKeyInfo(keyIndex);
     const std::string& keyStr = rtKeyString(keyIndex);

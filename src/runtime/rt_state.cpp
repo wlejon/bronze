@@ -45,6 +45,7 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_state.h"
+#include "runtime/rt_prop_mega.h"
 #include "runtime/realm.h"
 #include "runtime/root_remset.h"
 #include "runtime/rt_module_state.h"
@@ -669,6 +670,7 @@ static void registerThreadRootSources(Heap& heap) {
         rtVisitRealmRoots(visit);
     });
     rtResetForInArrayCache();
+    rtResetMegaPropCache();
 }
 
 

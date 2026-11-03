@@ -269,18 +269,18 @@ namespace {
 // What a property site's cache says about a plain receiver, as the stubs
 // below read it: whether one of the `ways` entries names the receiver's
 // shape, that entry's slot word ((depth << 32) | slot, the flags in the
-// depth half) and whether the depth > 0 answer it gives is still current
-// (its epoch is the thread's).
+// depth half) and the epoch it was filled at, which a depth > 0 answer needs
+// to be the thread's.
 struct PropEntry {
     Value* plain = nullptr;
     Value* ptr = nullptr;
     Value* shape = nullptr;
     Value* hit = nullptr;
     Value* slot_word = nullptr;
-    Value* epoch_ok = nullptr;
+    Value* epoch = nullptr;
 };
 
-PropEntry prop_entry(PropertyLoweringHelper& pl, Builder& b, Value* tls, Value* obj, Value* site, int ways) {
+PropEntry prop_entry(PropertyLoweringHelper& pl, Builder& b, Value* obj, Value* site, int ways) {
     PropEntry e;
     pl.receiver_shape(b, obj, e.plain, e.ptr, e.shape);
     Value* any = nullptr;
@@ -297,8 +297,37 @@ PropEntry prop_entry(PropertyLoweringHelper& pl, Builder& b, Value* tls, Value* 
         any = any ? b.build_or(any, match) : match;
     }
     e.hit = b.build_and(e.plain, any);
-    e.epoch_ok = b.build_eq(epoch, b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+    e.epoch = epoch;
     return e;
+}
+
+// The probe of the thread's megamorphic table (bronze_abi_tls.h, mega_prop)
+// for the receiver `e` names under `key` (a key index, with the set bit for a
+// write): branches to `hit` with the entry's slot word and epoch — an entry is
+// a way of the same layout, so the caller reads it exactly as a way — or to
+// `miss`. The index is the runtime's (rt_prop_mega.cpp), the ABI's formula.
+//
+// Only a FULL site probes: its last way holds a shape (an install fills way 0
+// and shifts the rest down, so the last is the final one taken). A site with
+// room still installs through the helper, so a site that sees one shape warms
+// to its inline way even when another site already filled the table for that
+// pair; an answer from the table would leave it calling the stub forever.
+void build_mega_probe(Builder& b, Value* tls, const PropEntry& e, Value* site, int ways, Value* key,
+                      BasicBlock* hit, BasicBlock* miss) {
+    const int32_t last = (ways - 1) * static_cast<int32_t>(BRONZE_ABI_IC_ENTRY_SIZE);
+    Value* full = b.build_ne(b.build_load(Type::i64(), site, last + BRONZE_ABI_IC_SHAPE_OFFSET), b.build_iconst_i64(0));
+    const auto mul = static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_HASH_MUL);
+    Value* h = b.build_mul(b.build_xor(e.shape, b.build_mul(key, b.build_iconst_i64(mul))), b.build_iconst_i64(mul));
+    Value* index = b.build_lshr(h, b.build_iconst_i64(64 - BRONZE_ABI_MEGA_PROP_BITS));
+    static_assert(BRONZE_ABI_MEGA_PROP_ENTRY_WORDS * kWord == 32, "the index scales by a shift of 5");
+    Value* at = b.build_add(tls, b.build_add(b.build_shl(index, b.build_iconst_i64(5)),
+                                             b.build_iconst_i64(BRONZE_TLS_MEGA_PROP_OFF)));
+    Value* match = b.build_and(
+        b.build_and(e.plain, full), b.build_and(b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_IC_SHAPE_OFFSET), e.shape),
+                             b.build_eq(b.build_load(Type::i64(), at, BRONZE_ABI_MEGA_PROP_KEY_WORD * kWord), key)));
+    Value* word = b.build_load(Type::i64(), at, BRONZE_ABI_IC_SLOT_OFFSET);
+    Value* epoch = b.build_load(Type::i64(), at, BRONZE_ABI_IC_EPOCH_OFFSET);
+    b.build_br_if(match, hit, {word, epoch}, miss, {});
 }
 
 constexpr int64_t kOwnDataLimit = int64_t{1} << 32;
@@ -400,19 +429,31 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
     BasicBlock* enter = b.append_block(prefix + "_enter");
     BasicBlock* slow = b.append_block(prefix + "_slow");
 
+    BasicBlock* mega = b.append_block(prefix + "_mega");
+    BasicBlock* hit = b.append_block(prefix + "_hit");
+    Value* slot_word = b.add_block_param(hit, Type::i64());
+    Value* entry_epoch = b.add_block_param(hit, Type::i64());
+
     b.position_at_end(cur);
     Value* tls = tls_block(b);
-    const PropEntry e = prop_entry(pl, b, tls, obj, site, BRONZE_ABI_IC_WAYS);
-    Value* own_data = b.build_ult(e.slot_word, b.build_iconst_i64(kOwnDataLimit));
-    b.build_br_if(b.build_and(e.hit, own_data), own, not_own);
+    const PropEntry e = prop_entry(pl, b, obj, site, BRONZE_ABI_IC_WAYS);
+    b.build_br_if(e.hit, hit, {e.slot_word, e.epoch}, mega, {});
+
+    // Every way missed: the thread's (shape, key) table.
+    b.position_at_end(mega);
+    build_mega_probe(b, tls, e, site, BRONZE_ABI_IC_WAYS, b.build_zext_i64(key_id), hit, slow);
+
+    b.position_at_end(hit);
+    Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kOwnDataLimit));
+    b.build_br_if(own_data, own, not_own);
 
     b.position_at_end(own);
-    b.build_ret(pl.load_slot(b, e.ptr, e.slot_word));
+    b.build_ret(pl.load_slot(b, e.ptr, slot_word));
 
     b.position_at_end(not_own);
-    Value* depth = b.build_lshr(e.slot_word, b.build_iconst_i64(32));
-    Value* slot = b.build_and(e.slot_word, b.build_iconst_i64(kSlotMask));
-    Value* current = b.build_and(e.hit, e.epoch_ok);
+    Value* depth = b.build_lshr(slot_word, b.build_iconst_i64(32));
+    Value* slot = b.build_and(slot_word, b.build_iconst_i64(kSlotMask));
+    Value* current = b.build_eq(entry_epoch, b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
     b.build_br_if(b.build_and(current, b.build_eq(depth, b.build_iconst_i64(BRONZE_ABI_IC_DEPTH_ABSENT_FLAG))),
                   absent, not_absent);
 
@@ -433,8 +474,7 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
     b.build_ret(pl.load_slot(b, pptr, slot));
 
     b.position_at_end(not_depth1);
-    b.build_br_if(b.build_and(e.hit, b.build_eq(depth, b.build_iconst_i64(kAccessorDepth))), getter, {e.ptr}, slow,
-                  {});
+    b.build_br_if(b.build_eq(depth, b.build_iconst_i64(kAccessorDepth)), getter, {e.ptr}, slow, {});
 
     b.position_at_end(getter);
     Value* fn_val = pl.load_slot(b, holder, slot);
@@ -485,16 +525,31 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     BasicBlock* enter = b.append_block(prefix + "_enter");
     BasicBlock* slow = b.append_block(prefix + "_slow");
 
+    BasicBlock* mega = b.append_block(prefix + "_mega");
+    BasicBlock* hit = b.append_block(prefix + "_hit");
+    Value* slot_word = b.add_block_param(hit, Type::i64());
+    Value* entry_epoch = b.add_block_param(hit, Type::i64());
+
     b.position_at_end(cur);
     Value* argv = b.build_alloca_tagged(1);
     Value* tls = tls_block(b);
-    const PropEntry e = prop_entry(pl, b, tls, obj, site, 1);
-    Value* own_data = b.build_ult(e.slot_word, b.build_iconst_i64(kOwnDataLimit));
-    b.build_br_if(b.build_and(e.hit, own_data), own, not_own);
+    const PropEntry e = prop_entry(pl, b, obj, site, 1);
+    b.build_br_if(e.hit, hit, {e.slot_word, e.epoch}, mega, {});
+
+    // Way 0 missed: the thread's table, in its write key space.
+    b.position_at_end(mega);
+    build_mega_probe(b, tls, e, site, 1,
+                     b.build_or(b.build_zext_i64(key_id),
+                                b.build_iconst_i64(static_cast<int64_t>(BRONZE_ABI_MEGA_PROP_SET_KEY_BIT))),
+                     hit, slow);
+
+    b.position_at_end(hit);
+    Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kOwnDataLimit));
+    b.build_br_if(own_data, own, not_own);
 
     b.position_at_end(own);
-    Value* base = pl.slot_base(b, e.ptr, e.slot_word);
-    Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(e.slot_word, b.build_iconst_i64(3))),
+    Value* base = pl.slot_base(b, e.ptr, slot_word);
+    Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
                                    b.build_iconst_i64(kBronzeObjSlotsOffset));
     b.build_store(Type::i64(), slot_addr, 0, val);
     Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
@@ -508,9 +563,10 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     b.build_ret_void();
 
     b.position_at_end(not_own);
-    Value* depth = b.build_lshr(e.slot_word, b.build_iconst_i64(32));
-    Value* slot = b.build_and(e.slot_word, b.build_iconst_i64(kSlotMask));
-    b.build_br_if(b.build_and(b.build_and(e.hit, e.epoch_ok),
+    Value* depth = b.build_lshr(slot_word, b.build_iconst_i64(32));
+    Value* slot = b.build_and(slot_word, b.build_iconst_i64(kSlotMask));
+    Value* current = b.build_eq(entry_epoch, b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
+    b.build_br_if(b.build_and(current,
                               b.build_and(walkable_depth(b, depth),
                                           b.build_ne(b.build_and(depth, b.build_iconst_i64(kAccessorDepth)),
                                                      b.build_iconst_i64(0)))),
@@ -521,8 +577,7 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     b.build_br(setter, {pptr});
 
     b.position_at_end(not_depth1);
-    b.build_br_if(b.build_and(e.hit, b.build_eq(depth, b.build_iconst_i64(kAccessorDepth))), setter, {e.ptr}, slow,
-                  {});
+    b.build_br_if(b.build_eq(depth, b.build_iconst_i64(kAccessorDepth)), setter, {e.ptr}, slow, {});
 
     // An accessor's setter is the slot after its getter.
     b.position_at_end(setter);

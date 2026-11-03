@@ -14,6 +14,17 @@ extern "C" {
  * One block per OS thread executing generated Bronze code. Pinned to a
  * dedicated machine register by the calling convention (x64: R13, aarch64: X28).
  */
+/* The megamorphic property cache's geometry (mega_prop below). An entry's
+ * index is ((shape ^ key * MUL) * MUL) >> (64 - BITS), computed the same way
+ * by the runtime and by generated code; a write entry's key carries
+ * SET_KEY_BIT, since a read entry says nothing about writability. */
+#define BRONZE_ABI_MEGA_PROP_BITS        10
+#define BRONZE_ABI_MEGA_PROP_ENTRIES     (1u << BRONZE_ABI_MEGA_PROP_BITS)
+#define BRONZE_ABI_MEGA_PROP_ENTRY_WORDS 4
+#define BRONZE_ABI_MEGA_PROP_KEY_WORD    3
+#define BRONZE_ABI_MEGA_PROP_HASH_MUL    0x9E3779B97F4A7C15ULL
+#define BRONZE_ABI_MEGA_PROP_SET_KEY_BIT 0x80000000u
+
 typedef struct bronze_tls_block {
     uint64_t proto_epoch;
     uint64_t alloc_cursor;
@@ -116,6 +127,14 @@ typedef struct bronze_tls_block {
      * fields — and calls only for an object outside it. */
     uint64_t young_base;
     uint64_t young_span;
+    /* The megamorphic property cache (runtime/rt_prop_mega.h): a direct-
+     * mapped table of BRONZE_ABI_MEGA_PROP_ENTRIES entries keyed by (shape,
+     * key), each an IC way (shape, slot word, epoch: the InlineCache layout,
+     * BRONZE_ABI_IC_*_OFFSET) followed by the key word. A read site whose
+     * ways all miss probes it before the helper's full lookup, and the helper
+     * fills it from what the site installed. In the block itself rather than
+     * behind a pointer, so a probe is pinned-register relative. */
+    uint64_t mega_prop[BRONZE_ABI_MEGA_PROP_ENTRIES * BRONZE_ABI_MEGA_PROP_ENTRY_WORDS];
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -137,6 +156,7 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF      128
 #define BRONZE_TLS_YOUNG_BASE_OFF                136
 #define BRONZE_TLS_YOUNG_SPAN_OFF                144
+#define BRONZE_TLS_MEGA_PROP_OFF                 152
 
 /*
  * ---- the pinned register -----------------------------------------------
