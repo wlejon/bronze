@@ -108,6 +108,15 @@ target_compile_definitions(bronze_runtime_shared PRIVATE BRONZE_EMBED_SHARED_BUI
 # through the pinned TLS register, not C++ thread_local.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT WIN32)
     target_compile_options(bronze_runtime_shared PRIVATE -ftls-model=initial-exec)
+    # brass's own thread-locals (the generated-code entry scopes, the GC's
+    # thread state, exception state) are linked into this library from the
+    # static brass archive, compiled as PIC: without the same model every
+    # call into generated code from the runtime (a sort comparator, a host
+    # callback) paid __tls_get_addr for each. Executables relax the access at
+    # link time anyway, so the archive's other users lose nothing.
+    if(TARGET brass)
+        target_compile_options(brass PRIVATE -ftls-model=initial-exec)
+    endif()
 endif()
 target_compile_definitions(bronze_runtime_shared INTERFACE BRONZE_EMBED_SHARED)
 
