@@ -21,7 +21,7 @@
 namespace bronze {
 struct InlineCache;
 struct InlineCacheSite;
-struct Shape;
+class Shape;
 }  // namespace bronze
 
 namespace bronze::runtime {

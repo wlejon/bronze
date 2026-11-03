@@ -546,8 +546,8 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                                   inst.directTarget == Instruction::kNoDirectTarget;
                 bool numberValue = inst.op != Op::PropSet;
                 if (site && !numberValue && inst.operands.size() > 1) {
-                    for (const auto& block : fn.blocks) {
-                        for (const auto& def : block.instructions) {
+                    for (const auto& defBlock : fn.blocks) {
+                        for (const auto& def : defBlock.instructions) {
                             if (def.result == inst.operands[1]) {
                                 numberValue = def.op == Op::Box && def.boxType == Type::F64;
                             }

@@ -67,22 +67,22 @@ uint64_t hostTrampoline(uint64_t env_bits, uint64_t this_bits, uint32_t argc,
         char buf[256];
         const char* shape = "non-object";
         uint64_t kindBits = 0, slot2 = 0;
-        uint32_t slots = 0;
+        uint32_t islots = 0;
         if (env.isObject()) {
             auto* hdr = env.asObject<HeapObjectHeader>();
             kindBits = static_cast<uint64_t>(hdr->flags);
             shape = (hdr->flags == HeapKind::Plain) ? "plain-object" : "other-heap-kind";
             if (hdr->flags == HeapKind::Plain) {
                 auto* obj = reinterpret_cast<ObjectHeader*>(hdr);
-                slots = obj->internalSlotCount();
-                if (slots >= 3) slot2 = obj->internalSlot(2).rawBits();
+                islots = obj->internalSlotCount();
+                if (islots >= 3) slot2 = obj->internalSlot(2).rawBits();
             }
         }
         std::snprintf(buf, sizeof buf,
                       "embed: host fn env not a native handle: env=%016llx (%s kind=%llu "
                       "islots=%u slot2=%016llx) this=%016llx argc=%u",
                       (unsigned long long)env_bits, shape, (unsigned long long)kindBits,
-                      slots, (unsigned long long)slot2, (unsigned long long)this_bits, argc);
+                      islots, (unsigned long long)slot2, (unsigned long long)this_bits, argc);
         fatal(buf);
     }
 
