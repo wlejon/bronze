@@ -1,6 +1,7 @@
 #include "il_lowering_coro.h"
 #include "il_lowering.h"
 #include "il_abi.h"
+#include "il_iter_lowering.h"
 #include <brass/mir/module.hpp>
 
 namespace il2mir {
@@ -103,7 +104,10 @@ bool lower_coro_instruction(
 
         case BronzeOp::IterStep: {
             Value* iter = get_opd(0);
-            if (inst_ast.result_type == BronzeType::Bool) {
+            if (inst_ast.result_type == BronzeType::Bool && lowering && !lowering->run_once() &&
+                lowering->prop_lowering().enable_inlined_fastpaths()) {
+                res_val = lower_iter_step_inline(b, iter);
+            } else if (inst_ast.result_type == BronzeType::Bool) {
                 res_val = b.build_and(b.build_call("bronze_iter_step", Type::i32(), {iter}), b.build_iconst_i32(1));
             } else {
                 res_val = b.build_call("bronze_iter_step", Type::i64(), {iter});
@@ -113,7 +117,7 @@ bool lower_coro_instruction(
 
         case BronzeOp::IterValue: {
             Value* iter = get_opd(0);
-            res_val = b.build_call("bronze_iter_value", Type::i64(), {iter});
+            res_val = lower_iter_value_inline(b, iter);
             return true;
         }
 
