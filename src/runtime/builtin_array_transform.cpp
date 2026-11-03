@@ -1,4 +1,8 @@
+#include <string>
+#include <vector>
+
 #include "runtime/builtin_array_internal.h"
+#include "runtime/number_format.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
 #include "runtime/rt_receivers.h"
@@ -103,6 +107,89 @@ uint64_t arrayConcat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t*
     return out.get().rawBits();
 }
 
+namespace {
+
+// The text a join is building, in the code units the result will hold: Latin-1
+// until the first unit past 0xFF arrives, UTF-16 from then on. Each piece is
+// copied straight out of its StringHeader (or a number's digits out of a stack
+// buffer), so a join allocates its result and nothing else per element —
+// `getTextureCacheKey` and `getProgramCacheKey` join a dozen numbers, booleans
+// and strings per draw.
+class JoinBuffer {
+public:
+    void appendAscii(const char* s, size_t n) {
+        if (wide_) {
+            for (size_t i = 0; i < n; ++i) u16_.push_back(static_cast<unsigned char>(s[i]));
+        } else {
+            lat_.append(s, n);
+        }
+    }
+    void append(const StringHeader* s) {
+        const uint32_t n = s->getLength();
+        if (s->isLatin1()) {
+            appendAscii(s->latin1Data(), n);
+            return;
+        }
+        const uint16_t* d = s->utf16Data();
+        if (!wide_) {
+            uint32_t i = 0;
+            while (i < n && d[i] <= 0xFF) ++i;
+            if (i == n) {
+                for (uint32_t k = 0; k < n; ++k) lat_.push_back(static_cast<char>(d[k]));
+                return;
+            }
+            widen();
+        }
+        u16_.insert(u16_.end(), d, d + n);
+    }
+    Value finish() {
+        if (wide_) {
+            return Value::fromString(StringHeader::createUTF16(
+                rtHeap(), u16_.data(), static_cast<uint32_t>(u16_.size())));
+        }
+        return Value::fromString(
+            StringHeader::createLatin1(rtHeap(), lat_.data(), static_cast<uint32_t>(lat_.size())));
+    }
+
+private:
+    void widen() {
+        wide_ = true;
+        u16_.reserve(lat_.size() * 2 + 16);
+        for (char c : lat_) u16_.push_back(static_cast<unsigned char>(c));
+        lat_.clear();
+    }
+    bool wide_ = false;
+    std::string lat_;
+    std::vector<uint16_t> u16_;
+};
+
+// One element's text, for the primitives without a heap string of their own
+// to make: a number formats into a stack buffer, a boolean is its literal.
+// Answers false for anything else, which takes ToString.
+bool appendPrimitive(JoinBuffer& out, Value v) {
+    if (v.isString()) {
+        out.append(v.asString<StringHeader>());
+        return true;
+    }
+    char buf[64];
+    if (v.isNumber()) {
+        out.appendAscii(buf, formatJsNumber(v.asNumber(), buf));
+        return true;
+    }
+    if (v.isInt32()) {
+        out.appendAscii(buf, formatJsNumber(static_cast<double>(static_cast<int32_t>(v.payload())), buf));
+        return true;
+    }
+    if (v.isBool()) {
+        if (v.asBool()) out.appendAscii("true", 4);
+        else out.appendAscii("false", 5);
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
     RootedArgs args(argc, argv);
     Rooted<Value> self{toObject(Value(thisBits), "join")};
@@ -110,32 +197,40 @@ uint64_t arrayJoin(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* a
     const uint32_t len = isArray(self.get()) ? lengthOf(self.get()) : rtArrayLikeLength(self);
     if (len == 0) return rtMakeString("").rawBits();
 
-    std::string sep = ",";
-    if (args.count() > 0 && !args[0].isUndefined()) {
-        Rooted<Value> sepStr{rtValueToString(args[0])};
-        sep = rtUtf8Chars(sepStr.get().asString<StringHeader>());
-    }
+    Rooted<Value> sep{rtMakeString(",")};
+    if (args.count() > 0 && !args[0].isUndefined()) sep.set(rtValueToString(args[0]));
 
-    std::string result;
+    JoinBuffer result;
     for (uint32_t i = 0; i < len; ++i) {
-        if (i > 0) result += sep;
-        if (!rtArrayLikeHasElement(self, i)) continue;
-        Rooted<Value> elem{rtArrayLikeGetElement(self, i)};
+        if (i > 0) result.append(sep.get().asString<StringHeader>());
+        // An array's own element, read straight out of it when no prototype
+        // holds an index (a hole then reads as one); otherwise the generic
+        // read, which may run a getter. Asked per element because an
+        // element's toString below can change the array under the loop.
+        Rooted<Value> elem{Value::fromUndefined()};
+        if (isArray(self.get()) && !rtArrayChainHoldsIndex(self.get())) {
+            if (!hasIndex(self.get(), i)) continue;
+            elem.set(elemOf(self.get(), i));
+        } else {
+            if (!rtArrayLikeHasElement(self, i)) continue;
+            elem.set(rtArrayLikeGetElement(self, i));
+        }
         if (elem.get().isNull() || elem.get().isUndefined()) continue;
+        if (appendPrimitive(result, elem.get())) continue;
         if (isArray(elem.get())) {
             Rooted<Value> joinKey{rtMakeString("join")};
             Rooted<Value> joinMethod{Value(bronze_elem_get(elem.get().rawBits(), joinKey.get().rawBits()))};
             if (isCallable(joinMethod.get())) {
                 uint64_t res = bronze_dynamic_call(joinMethod.get().rawBits(), elem.get().rawBits(), 0, nullptr);
                 Rooted<Value> resStr{rtValueToString(Value(res))};
-                result += rtUtf8Chars(resStr.get().asString<StringHeader>());
+                result.append(resStr.get().asString<StringHeader>());
                 continue;
             }
         }
         Rooted<Value> s{rtValueToString(elem.get())};
-        result += rtUtf8Chars(s.get().asString<StringHeader>());
+        result.append(s.get().asString<StringHeader>());
     }
-    return rtMakeString(result).rawBits();
+    return result.finish().rawBits();
 }
 
 uint64_t arrayFlat(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
