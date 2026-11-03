@@ -57,8 +57,15 @@ namespace {
 // function object's code pointer, which a moving GC never changes, and the
 // machine op (or, for sin and cos, the runtime's f64 kernel, the one the
 // builtin itself calls) that computes the member exactly for a Number
-// argument.
-enum class BuiltinOp { None, Sqrt, Abs, Floor, Ceil, Sin, Cos };
+// argument. Max and Min take two to four (the shapes three.js calls them in),
+// each a Number: 21.3.2.24/25 over them is a fold of a select chain, NaN
+// first and -0 below +0.
+enum class BuiltinOp { None, Sqrt, Abs, Floor, Ceil, Sin, Cos, Max, Min };
+
+bool builtin_takes(BuiltinOp op, uint32_t argc) {
+    if (op == BuiltinOp::Max || op == BuiltinOp::Min) return argc >= 2 && argc <= 4;
+    return argc == 1;
+}
 
 struct BuiltinTarget {
     BuiltinOp op = BuiltinOp::None;
@@ -92,32 +99,52 @@ BuiltinTarget builtin_target_for_key(const IlLowering* lowering, uint32_t key_in
     else if (key == "ceil") t = {BuiltinOp::Ceil, &bronze_math_ceil, "bronze_math_ceil"};
     else if (key == "sin") t = {BuiltinOp::Sin, &bronze_math_sin, "bronze_math_sin"};
     else if (key == "cos") t = {BuiltinOp::Cos, &bronze_math_cos, "bronze_math_cos"};
+    else if (key == "max") t = {BuiltinOp::Max, &bronze_math_max, "bronze_math_max"};
+    else if (key == "min") t = {BuiltinOp::Min, &bronze_math_min, "bronze_math_min"};
     else return {};
     if (image) t.code = nullptr;
     return t;
 }
 
 BuiltinTarget builtin_target(const IlLowering* lowering, const BronzeInstruction& inst) {
-    if (!lowering || inst.param_count != 1) return {};
+    if (!lowering || inst.param_count == 0 || inst.param_count > 4) return {};
+    BuiltinTarget t;
     if (inst.op == BronzeOp::MethodCall) {
         if (inst.ic_index == BronzeInstruction::kNoIcIndex) return {};
-        return builtin_target_for_key(lowering, inst.index);
-    }
-    // `const cos = Math.cos; cos(x)`: the callee is a value a `prop.get` of
-    // the builtin's key read (three.js's setFromEuler, makeRotation*).
-    if (inst.op == BronzeOp::CallDynamic && !inst.operands.empty()) {
+        t = builtin_target_for_key(lowering, inst.index);
+    } else if (inst.op == BronzeOp::CallDynamic && !inst.operands.empty()) {
+        // `const cos = Math.cos; cos(x)`: the callee is a value a `prop.get`
+        // of the builtin's key read (three.js's setFromEuler, makeRotation*).
         const uint32_t key_index = lowering->prop_get_key_of(inst.operands[0]);
-        if (key_index != UINT32_MAX) return builtin_target_for_key(lowering, key_index);
+        if (key_index != UINT32_MAX) t = builtin_target_for_key(lowering, key_index);
     }
-    return {};
+    if (t.op == BuiltinOp::None || !builtin_takes(t.op, inst.param_count)) return {};
+    return t;
 }
 
-// A call of `method` with `this_val` and `arg`, where `method` was read with
-// key `key_index`, a speculated builtin's: a CallTarget site tests that it is
-// the builtin's function object and `arg` a Number. The fast path is the
-// machine op, boxed with NaN canonicalized; the slow path calls `method`.
+// 21.3.2.24 Math.max / 21.3.2.25 Math.min of two Numbers, as the runtime's
+// bronze_math_max2_f64 / bronze_math_min2_f64 answer it: a NaN operand is the
+// answer, two zeros are -0 only when both are (max) or either is (min) — which
+// is what `x + y` and `-(-x + -y)` give for zeros — and otherwise the ordered
+// compare picks (equal non-zeros are one value). A NaN result stays the result
+// of every later step, so a fold of it over more operands is the variadic one.
+Value* build_min_max(Builder& b, BuiltinOp op, Value* x, Value* y) {
+    const bool max = op == BuiltinOp::Max;
+    Value* pick = b.build_select(max ? b.build_slt(x, y) : b.build_slt(y, x), y, x);
+    Value* zeros = max ? b.build_add(x, y) : b.build_neg(b.build_add(b.build_neg(x), b.build_neg(y)));
+    Value* both_zero = b.build_and(b.build_eq(x, y), b.build_eq(x, b.build_fconst_f64(0.0)));
+    Value* r = b.build_select(both_zero, zeros, pick);
+    // x NaN: the compares above are all false, so `r` is x already.
+    return b.build_select(b.build_ne(y, y), y, r);
+}
+
+// A call of `method` with `this_val` and `args` (the builtin's arity of them),
+// where `method` was read with key `key_index`, a speculated builtin's: a
+// CallTarget site tests that it is the builtin's function object and every
+// argument a Number. The fast path is the machine op, boxed with NaN
+// canonicalized; the slow path calls `method`.
 Value* lower_builtin_call(IlLowering* lowering, const BuiltinTarget& target, uint32_t key_index, Builder& b,
-                          Value* method, Value* this_val, Value* arg) {
+                          Value* method, Value* this_val, const std::vector<Value*>& args) {
     PropertyLoweringHelper& pl = lowering->prop_lowering();
     BasicBlock* cur = b.current_block();
     const std::string prefix = "builtin_" + std::to_string(cur->parent()->next_block_id());
@@ -150,14 +177,24 @@ Value* lower_builtin_call(IlLowering* lowering, const BuiltinTarget& target, uin
         ? b.build_eq(b.build_load(Type::i64(), base, BRONZE_ABI_FN_CODE_OFFSET),
                      b.build_iconst_i64(static_cast<int64_t>(reinterpret_cast<uintptr_t>(target.code))))
         : b.build_eq(b.build_load(Type::ptr(), base, BRONZE_ABI_FN_CODE_OFFSET), b.build_func_addr(target.symbol));
-    Value* is_num = b.build_ule(arg, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+    Value* is_num = nullptr;
+    for (Value* arg : args) {
+        Value* n = b.build_ule(arg, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
+        is_num = is_num ? b.build_and(is_num, n) : n;
+    }
     Value* hit = b.build_and(b.build_and(is_obj, is_fn), b.build_and(is_target, is_num));
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::CallTarget, pl.key_tag(key_index));
-    b.build_br(merge, {b.build_call("bronze_call_dynamic_1", Type::i64(), {method, this_val, arg})});
+    std::vector<Value*> dyn_args = {method, this_val};
+    dyn_args.insert(dyn_args.end(), args.begin(), args.end());
+    b.build_br(merge, {build_call_dynamic(b, dyn_args, lowering)});
 
     b.position_at_end(fast);
-    Value* x = b.build_bitcast_f64_i64(arg);
-    Value* r = target.op == BuiltinOp::Sqrt  ? b.build_sqrt_f64(x)
+    Value* x = b.build_bitcast_f64_i64(args[0]);
+    if (target.op == BuiltinOp::Max || target.op == BuiltinOp::Min) {
+        for (size_t i = 1; i < args.size(); ++i) x = build_min_max(b, target.op, x, b.build_bitcast_f64_i64(args[i]));
+    }
+    Value* r = target.op == BuiltinOp::Max || target.op == BuiltinOp::Min ? x
+             : target.op == BuiltinOp::Sqrt  ? b.build_sqrt_f64(x)
              : target.op == BuiltinOp::Abs   ? b.build_fabs(x)
              : target.op == BuiltinOp::Floor ? b.build_floor_f64(x)
              : target.op == BuiltinOp::Ceil  ? b.build_ceil_f64(x)
@@ -173,11 +210,11 @@ Value* lower_builtin_call(IlLowering* lowering, const BuiltinTarget& target, uin
 // (the inline property path, its own site), then called as above, so the
 // read happens once either way.
 Value* lower_builtin_method_call(IlLowering* lowering, const BronzeInstruction& inst, Builder& b, Value* recv,
-                                 Value* arg, Value* site) {
+                                 const std::vector<Value*>& args, Value* site) {
     const BuiltinTarget target = builtin_target(lowering, inst);
     if (target.op == BuiltinOp::None || !site) return nullptr;
     Value* method = lowering->prop_lowering().lower_prop_get_mono(b, recv, inst.index, IcSite{site, 0});
-    return lower_builtin_call(lowering, target, inst.index, b, method, recv, arg);
+    return lower_builtin_call(lowering, target, inst.index, b, method, recv, args);
 }
 
 // An argument as the Value the uniform convention passes, given the
@@ -563,8 +600,9 @@ bool lower_call_instruction(
             }
             if (!can_direct && method_call_is_speculated_builtin(lowering, inst_ast)) {
                 if (Value* site = lowering->prop_lowering().ic_site(b, inst_ast.ic_index)) {
-                    Value* arg = box_value(lowering, b, get_opd(1), arg_kinds[0]);
-                    res_val = lower_builtin_method_call(lowering, inst_ast, b, recv, arg, site);
+                    std::vector<Value*> args;
+                    for (size_t a = 0; a < argc; ++a) args.push_back(box_value(lowering, b, get_opd(1 + a), arg_kinds[a]));
+                    res_val = lower_builtin_method_call(lowering, inst_ast, b, recv, args, site);
                     if (res_val) break;
                 }
             }
@@ -675,7 +713,8 @@ bool lower_call_instruction(
             const BuiltinTarget target = builtin_target(lowering, inst_ast);
             if (target.op != BuiltinOp::None && !lowering->run_once()) {
                 res_val = lower_builtin_call(lowering, target, lowering->prop_get_key_of(inst_ast.operands[0]), b,
-                                             callee_val, this_val, dyn_args[2]);
+                                             callee_val, this_val,
+                                             std::vector<Value*>(dyn_args.begin() + 2, dyn_args.end()));
                 break;
             }
             if (direct_entry_here(lowering)) {
