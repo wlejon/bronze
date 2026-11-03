@@ -203,12 +203,22 @@ Value rtWellKnownSymbolMember(Rooted<Value>& obj, Rooted<Value>& key, bool& hand
     // for every other member a string reaches through its intrinsic.
     if (!obj.get().isObject()) return Value::fromUndefined();
     switch (obj.get().asObject<HeapObjectHeader>()->flags) {
-        case HeapKind::Array:
+        case HeapKind::Array: {
+            handled = true;
+            // A subclass instance or an array given a prototype inherits its
+            // `[Symbol.iterator]` from that chain, which may override it; the
+            // chain's [[Get]] (with the array as receiver) answers, reaching
+            // Array.prototype's own below it when nothing overrides.
+            if (obj.get().asObject<ArrayHeader>()->reserved & ArrayHeader::kHasCustomPrototype) {
+                Rooted<Value> proto{rtExoticSubclassPrototype(obj.get())};
+                if (!proto.get().isObject()) return Value::fromUndefined();
+                return rtGetWithReceiver(proto, key, obj);
+            }
             // 23.1.3.41 makes it the same function object as
             // `Array.prototype.values` — an IDENTITY, not a twin, and it holds
             // because both routes intern on the one code pointer.
-            handled = true;
             return rtNativeFunction(rtArrayValuesBuiltin, 0, "values", 0);
+        }
         default:
             return Value::fromUndefined();
     }

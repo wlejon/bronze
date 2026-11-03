@@ -97,6 +97,14 @@ Value iteratorMethodOf(Value v) {
     if (v.asObject<HeapObjectHeader>()->flags == ProxyHeader::kFlags) {
         return proxyMethodOf(v, rtIteratorKey());
     }
+    if (v.asObject<HeapObjectHeader>()->flags == HeapKind::Array) {
+        // An array is no ObjectHeader: its own `[Symbol.iterator]` lives in the
+        // named-properties object and its prototype may be any object, which
+        // the full [[Get]] walks.
+        Rooted<Value> arrRoot{v};
+        Rooted<Value> keyRoot{rtIteratorKey()};
+        return rtGetWithReceiver(arrRoot, keyRoot, arrRoot);
+    }
     if (!HeapKind::carriesShape(v.asObject<HeapObjectHeader>()->flags)) {
         return Value::fromUndefined();
     }
@@ -148,6 +156,22 @@ void openProtocol(Rooted<Value>& recRoot, Rooted<Value>& srcRoot) {
         return;
     }
     openProtocolFromMethod(recRoot, srcRoot, method);
+}
+
+// Whether the array's `[Symbol.iterator]` is the intrinsic %Array.prototype.values%,
+// which is what lets an ARRAY record step its elements directly. An array with
+// the intrinsic prototype and no named properties answers that without a
+// lookup: Array.prototype refuses every change (rtArrayPrototypeRefusesChange),
+// so its `[Symbol.iterator]` is `values` for good. An own or inherited override
+// (`a[Symbol.iterator] = ...`, a subclass's method) is the lookup's to find.
+// The iterator's `next` needs no check: it is an own property of each iterator
+// object (builtin_array_iterator.cpp), never read from %ArrayIteratorPrototype%.
+bool arrayIterationIntrinsic(Rooted<Value>& src) {
+    const auto* arr = src.get().asObject<ArrayHeader>();
+    if (!(arr->reserved & ArrayHeader::kHasCustomPrototype) && !arr->properties.isObject()) return true;
+    const Value method = iteratorMethodOf(src.get());
+    return method.isObject() && method.asObject<HeapObjectHeader>()->flags == HeapKind::Function &&
+           method.asObject<FunctionHeader>()->code == rtArrayValuesBuiltin;
 }
 
 bool stepFast(IterRecordHeader* rec) {
@@ -236,7 +260,17 @@ Value rtOpenIterator(Value source) {
         kind = IterRecordHeader::String;
     } else if (source.isObject()) {
         switch (source.asObject<HeapObjectHeader>()->flags) {
-            case 1: kind = IterRecordHeader::Array; break;
+            case HeapKind::Array: {
+                if (arrayIterationIntrinsic(srcRoot)) {
+                    kind = IterRecordHeader::Array;
+                    break;
+                }
+                Rooted<Value> method{iteratorMethodOf(srcRoot.get())};
+                if (!isCallable(method.get())) {
+                    rtThrowTypeError(rtIterableKindName(srcRoot.get()) + " is not iterable");
+                }
+                return rtGetIteratorFromMethod(srcRoot, method);
+            }
             case TypedArrayHeader::kFlags: {
                 if (rtTypedArrayIteratorPristine(source.asObject<TypedArrayHeader>())) {
                     kind = IterRecordHeader::TypedArray;
