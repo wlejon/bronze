@@ -255,7 +255,7 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
         // means the receiver is re-read after it.
         Value* ov_val = b.build_or(b.build_and(fresh, iconst(b, kPayloadMask)), iconst(b, kObjectTagBits));
         Value* ov_addr = b.build_add(ptr, iconst(b, kBronzeObjOverflowOffset));
-        b.build_store(Type::i64(), ov_addr, 0, ov_val);
+        with_alias_class(b.build_store(Type::i64(), ov_addr, 0, ov_val), kShapeWordAliasClass);
         b.build_call("brass_gc_write_barrier", Type::void_type(), {ov_addr, ov_val});
         Value* again = b.build_xor(ensure_type(get_val_by_id(recv_id, b, val_map), Type::i64(), b),
                                    iconst(b, kObjectTagBits));
@@ -271,7 +271,7 @@ bool IlLowering::try_lower_transition_run(const BronzeBlock& blk_ast, size_t& in
     Value* cur_ptr = b.build_xor(ensure_type(get_val_by_id(recv_id, b, fast_map), Type::i64(), b),
                                  iconst(b, kObjectTagBits));
     Value* cur_block = fast_block;
-    b.build_store(Type::i64(), cur_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, end_shape);
+    with_alias_class(b.build_store(Type::i64(), cur_ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, end_shape), kShapeWordAliasClass);
     auto rederive = [&] {
         cur_ptr = b.build_xor(ensure_type(get_val_by_id(recv_id, b, fast_map), Type::i64(), b),
                               iconst(b, kObjectTagBits));

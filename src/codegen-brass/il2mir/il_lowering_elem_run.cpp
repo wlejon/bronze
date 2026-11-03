@@ -531,7 +531,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
 
         b.position_at_end(bb_ta);
         Value* is_ta = b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow));
-        Value* ta_len = b.build_zext_i64(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+        Value* ta_len = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
         Value* ta_in_bounds = b.build_and(is_ta, b.build_ult(max_end_idx, ta_len));
         Value* ta_kind = b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_KIND_OFFSET);
         Value* is_f32 = b.build_and(ta_in_bounds, b.build_eq(ta_kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)));
@@ -546,15 +546,15 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
         b.position_at_end(bb_ta_f32);
         Value* f32_data = prop_lowering_.load_typed_array_data(b, arr_ptr);
         for (size_t k = 0; k < N; ++k) {
-            b.build_store_indexed(Type::f32(), f32_data, base_i64, 4, static_cast<int32_t>(k * 4),
-                                  b.build_fptrunc_f32_f64(elem_f64(k)));
+            with_alias_class(b.build_store_indexed(Type::f32(), f32_data, base_i64, 4, static_cast<int32_t>(k * 4),
+                                  b.build_fptrunc_f32_f64(elem_f64(k))), kTypedElementAliasClass);
         }
         b.build_br(bb_merge);
 
         b.position_at_end(bb_ta_f64);
         Value* f64_data = prop_lowering_.load_typed_array_data(b, arr_ptr);
         for (size_t k = 0; k < N; ++k) {
-            b.build_store_indexed(Type::f64(), f64_data, base_i64, 8, static_cast<int32_t>(k * 8), elem_f64(k));
+            with_alias_class(b.build_store_indexed(Type::f64(), f64_data, base_i64, 8, static_cast<int32_t>(k * 8), elem_f64(k)), kTypedElementAliasClass);
         }
         b.build_br(bb_merge);
 
@@ -579,7 +579,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
             b.build_and(b.build_load(Type::i64(), arr_ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst(b, kPayloadMask));
         for (size_t k = 0; k < N; ++k) {
             const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(k) * 8);
-            b.build_store_indexed(Type::i64(), arr_block, base_slot, 8, disp, elem_bits(k));
+            with_alias_class(b.build_store_indexed(Type::i64(), arr_block, base_slot, 8, disp, elem_bits(k)), kBoxedElementAliasClass);
         }
         // Every element stored is proven <= kBronzeNumberMaxBits, so no write barrier is needed.
         b.build_br(bb_merge);
@@ -771,7 +771,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
 
         b.position_at_end(bb_src_ta);
         Value* is_ta = b.build_eq(header_low, b.build_iconst_i32(kTypedArrayHeaderLow));
-        Value* ta_len = b.build_zext_i64(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+        Value* ta_len = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
         Value* ta_in_bounds = b.build_and(is_ta, b.build_ult(max_end_idx, ta_len));
         Value* ta_kind = b.build_load(Type::i32(), arr_ptr, BRONZE_ABI_TA_KIND_OFFSET);
         Value* is_f32 = b.build_and(ta_in_bounds, b.build_eq(ta_kind, b.build_iconst_i32(BRONZE_ABI_TA_KIND_FLOAT32)));
@@ -809,7 +809,7 @@ bool IlLowering::try_lower_elem_offset_run(const BronzeBlock& blk_ast, size_t& i
                                                              store_params[k]);
             } else {
                 Value* base = prop_lowering_.slot_base(b, dst_ptr, dst_slot_words[k]);
-                b.build_store_indexed(Type::i64(), base, dst_slot_words[k], 8, kBronzeObjSlotsOffset, store_params[k]);
+                with_alias_class(b.build_store_indexed(Type::i64(), base, dst_slot_words[k], 8, kBronzeObjSlotsOffset, store_params[k]), kObjectSlotAliasClass);
             }
         }
         // Every `store_params[k]` is a boxed Number, so no write barrier is needed.

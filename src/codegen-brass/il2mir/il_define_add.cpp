@@ -122,7 +122,7 @@ void PropertyLoweringHelper::lower_define_own_attr(Builder& b, Value* obj, Value
     // The shape first, then the value (the new slot already holds undefined),
     // then the barrier: nothing between them allocates, so `ptr` holds.
     b.position_at_end(bb_store);
-    b.build_store(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, end);
+    with_alias_class(b.build_store(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, end), kShapeWordAliasClass);
     Value* slot_addr = b.build_add(b.build_add(slot_base(b, ptr, slot), b.build_shl(slot, b.build_iconst_i64(3))),
                                    b.build_iconst_i64(kBronzeObjSlotsOffset));
     store_with_barrier(b, slot_addr, 0, val, !val_is_number && !is_known_non_ref(val), prefix);

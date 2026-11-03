@@ -405,11 +405,11 @@ void PropertyLoweringHelper::emit_transition_arm(Builder& b, Value* ptr, Value* 
     // filled when allocated), and the barrier, which comes last as it does on
     // every slot store, sees the object at its final shape.
     b.position_at_end(bb_store);
-    b.build_store(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, cached);
+    with_alias_class(b.build_store(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET, cached), kShapeWordAliasClass);
     Value* base = slot_base(b, ptr, slot_word);
     Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
                                    b.build_iconst_i64(kBronzeObjSlotsOffset));
-    b.build_store(Type::i64(), slot_addr, 0, val);
+    with_alias_class(b.build_store(Type::i64(), slot_addr, 0, val), kObjectSlotAliasClass);
     if (need_barrier) {
         Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
         b.build_br_if(is_ref, bb_barrier, done);
@@ -488,14 +488,14 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     if (need_barrier) {
         Value* slot_addr = b.build_add(b.build_add(base, b.build_shl(slot_word, b.build_iconst_i64(3))),
                                        b.build_iconst_i64(kBronzeObjSlotsOffset));
-        b.build_store(Type::i64(), slot_addr, 0, val);
+        with_alias_class(b.build_store(Type::i64(), slot_addr, 0, val), kObjectSlotAliasClass);
         Value* is_ref = b.build_ugt(val, b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits)));
         b.build_br_if(is_ref, bb_barrier, bb_merge);
         b.position_at_end(bb_barrier);
         b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
         b.build_br(bb_merge);
     } else {
-        b.build_store_indexed(Type::i64(), base, slot_word, 8, kBronzeObjSlotsOffset, val);
+        with_alias_class(b.build_store_indexed(Type::i64(), base, slot_word, 8, kBronzeObjSlotsOffset, val), kObjectSlotAliasClass);
         b.build_br(bb_merge);
     }
 

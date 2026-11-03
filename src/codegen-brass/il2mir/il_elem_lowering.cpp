@@ -116,11 +116,11 @@ void object_pointer(Builder& b, Value* obj, Value*& ptr, Value*& is_obj) {
 // The first byte of the typed array at `ptr`'s window: its buffer's external
 // store, or the bytes inline after the buffer's header, plus byteOffset.
 Value* typed_array_data(Builder& b, Value* ptr) {
-    Value* buf = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET), iconst(b, kPayloadMask));
-    Value* ext = b.build_load(Type::i64(), buf, BRONZE_ABI_BUF_EXTPTR_OFFSET);
+    Value* buf = b.build_and(with_alias_class(b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET), kTypedArrayHeaderAliasClass), iconst(b, kPayloadMask));
+    Value* ext = with_alias_class(b.build_load(Type::i64(), buf, BRONZE_ABI_BUF_EXTPTR_OFFSET), kTypedArrayHeaderAliasClass);
     Value* inline_data = b.build_add(buf, iconst(b, BRONZE_ABI_BUF_DATA_OFFSET));
     Value* data = b.build_select(b.build_ne(ext, iconst(b, 0)), ext, inline_data);
-    Value* byte_offset = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET));
+    Value* byte_offset = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET), kTypedArrayHeaderAliasClass));
     return b.build_add(data, byte_offset);
 }
 
@@ -306,7 +306,7 @@ Value* PropertyLoweringHelper::lower_elem_get(Builder& b, Value* obj, Value* ind
     // A TypedArray of a Number kind, in bounds (a detached view's length is
     // 0); Float16 and the BigInt kinds take the helper.
     b.position_at_end(bb_ta);
-    Value* ta_length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    Value* ta_length = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     b.build_br_if(b.build_ult(idx.i64, ta_length), bb_ta_load, bb_slow);
 
     b.position_at_end(bb_ta_load);
@@ -432,14 +432,18 @@ Value* PropertyLoweringHelper::lower_elem_get_typed(Builder& b, Value* obj, Valu
     Value* ptr = (preloaded_data && preloaded_length) ? nullptr : b.build_and(obj, iconst(b, kPayloadMask));
     Value* ta_len = preloaded_length
                         ? preloaded_length
-                        : b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+                        : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     Value* in_bounds = b.build_ult(idx.i64, ta_len);
     Value* ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
     Value* nan_f64 = b.build_bitcast_f64_i64(iconst(b, BRONZE_ABI_CANONICAL_NAN_BITS));
+    // The window's first byte before the bounds test, as the length is: the
+    // receiver is a view either way, and in the block that dominates the
+    // load the next read of the same view finds it (GVN), where in the
+    // in-bounds block it would be recomputed for every read.
+    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
     b.build_br_if(ok, bb_load, {}, bb_merge, {nan_f64});
 
     b.position_at_end(bb_load);
-    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
     Value* loaded_val = load_typed_array_elem(b, data, idx.i64, elem_kind);
     b.build_br(bb_merge, {loaded_val});
 
@@ -523,7 +527,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     branch_on_hole_store(b, block, slot, bb_array_store, bb_slow, prefix);
 
     b.position_at_end(bb_array_store);
-    b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
+    with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
     // Every reference, and every value that is not a Number, is tagged above the Number range.
     b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), bb_barrier, bb_merge);
 
@@ -541,7 +545,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     Value* num = boxed_f64_source(val);
     Value* is_number = num ? b.build_iconst_i32(1) : b.build_ule(val, iconst(b, kBronzeNumberMaxBits));
     if (!num) num = b.build_bitcast_f64_i64(val);
-    Value* ta_length = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    Value* ta_length = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     b.build_br_if(b.build_and(is_number, b.build_ult(idx.i64, ta_length)), bb_ta_store, bb_slow);
 
     b.position_at_end(bb_ta_store);
@@ -555,10 +559,10 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
                     SwitchCase(BRONZE_ABI_TA_KIND_UINT8CLAMPED, bb_clamp_check)});
 
     b.position_at_end(bb_f64);
-    b.build_store_indexed(Type::f64(), data, idx.i64, 8, num);
+    with_alias_class(b.build_store_indexed(Type::f64(), data, idx.i64, 8, num), kTypedElementAliasClass);
     b.build_br(bb_merge);
     b.position_at_end(bb_f32);
-    b.build_store_indexed(Type::f32(), data, idx.i64, 4, b.build_fptrunc_f32_f64(num));
+    with_alias_class(b.build_store_indexed(Type::f32(), data, idx.i64, 4, b.build_fptrunc_f32_f64(num)), kTypedElementAliasClass);
     b.build_br(bb_merge);
 
     // The integer kinds: a magnitude below 2^63 (NaN and the infinities fail
@@ -575,15 +579,15 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
                     SwitchCase(BRONZE_ABI_TA_KIND_INT8, bb_i8), SwitchCase(BRONZE_ABI_TA_KIND_UINT8, bb_i8)});
 
     b.position_at_end(bb_i32);
-    b.build_store_indexed(Type::i32(), data, idx.i64, 4, b.build_trunc_i32(whole));
+    with_alias_class(b.build_store_indexed(Type::i32(), data, idx.i64, 4, b.build_trunc_i32(whole)), kTypedElementAliasClass);
     b.build_br(bb_merge);
     // Two bytes, little-endian, as load_u16 reads them.
     b.position_at_end(bb_i16);
-    b.build_store_indexed(Type::i8(), data, idx.i64, 2, 0, b.build_trunc_i8(whole));
-    b.build_store_indexed(Type::i8(), data, idx.i64, 2, 1, b.build_trunc_i8(b.build_lshr(whole, iconst(b, 8))));
+    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 2, 0, b.build_trunc_i8(whole)), kTypedElementAliasClass);
+    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 2, 1, b.build_trunc_i8(b.build_lshr(whole, iconst(b, 8)))), kTypedElementAliasClass);
     b.build_br(bb_merge);
     b.position_at_end(bb_i8);
-    b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(whole));
+    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(whole)), kTypedElementAliasClass);
     b.build_br(bb_merge);
 
     // Uint8Clamped: an integral value (the round trip is exact, so no
@@ -597,7 +601,7 @@ void PropertyLoweringHelper::lower_elem_set(Builder& b, Value* obj, Value* index
     b.position_at_end(bb_clamp);
     Value* lo = b.build_select(b.build_slt(c_whole, iconst(b, 0)), iconst(b, 0), c_whole);
     Value* clamped = b.build_select(b.build_sgt(lo, iconst(b, 255)), iconst(b, 255), lo);
-    b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(clamped));
+    with_alias_class(b.build_store_indexed(Type::i8(), data, idx.i64, 1, b.build_trunc_i8(clamped)), kTypedElementAliasClass);
     b.build_br(bb_merge);
 
     b.position_at_end(bb_slow);
@@ -659,7 +663,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
 
         b.position_at_end(bb_array_store);
         // A boxed f64 is a primitive Number, never a heap reference, so no write barrier is needed.
-        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64_bits(b, val_f64));
+        with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), box_f64_bits(b, val_f64)), kBoxedElementAliasClass);
         b.build_br(bb_merge);
 
         b.position_at_end(bb_slow);
@@ -681,27 +685,27 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     auto emit_typed_store = [&](Value* data, Value* idx_i64) {
         switch (elem_kind) {
             case BRONZE_ABI_TA_KIND_FLOAT64:
-                b.build_store_indexed(Type::f64(), data, idx_i64, 8, val_f64);
+                with_alias_class(b.build_store_indexed(Type::f64(), data, idx_i64, 8, val_f64), kTypedElementAliasClass);
                 break;
             case BRONZE_ABI_TA_KIND_FLOAT32:
-                b.build_store_indexed(Type::f32(), data, idx_i64, 4, b.build_fptrunc_f32_f64(val_f64));
+                with_alias_class(b.build_store_indexed(Type::f32(), data, idx_i64, 4, b.build_fptrunc_f32_f64(val_f64)), kTypedElementAliasClass);
                 break;
             case BRONZE_ABI_TA_KIND_INT32:
             case BRONZE_ABI_TA_KIND_UINT32:
-                b.build_store_indexed(Type::i32(), data, idx_i64, 4, narrow_f64_to_i32_callfree(b, val_f64));
+                with_alias_class(b.build_store_indexed(Type::i32(), data, idx_i64, 4, narrow_f64_to_i32_callfree(b, val_f64)), kTypedElementAliasClass);
                 break;
             case BRONZE_ABI_TA_KIND_INT16:
             case BRONZE_ABI_TA_KIND_UINT16: {
                 Value* i32 = narrow_f64_to_i32_callfree(b, val_f64);
-                b.build_store_indexed(Type::i8(), data, idx_i64, 2, 0, b.build_trunc_i8(i32));
-                b.build_store_indexed(Type::i8(), data, idx_i64, 2, 1,
-                                      b.build_trunc_i8(b.build_lshr(i32, b.build_iconst_i32(8))));
+                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 2, 0, b.build_trunc_i8(i32)), kTypedElementAliasClass);
+                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 2, 1,
+                                      b.build_trunc_i8(b.build_lshr(i32, b.build_iconst_i32(8)))), kTypedElementAliasClass);
                 break;
             }
             case BRONZE_ABI_TA_KIND_INT8:
             case BRONZE_ABI_TA_KIND_UINT8:
-                b.build_store_indexed(Type::i8(), data, idx_i64, 1,
-                                      b.build_trunc_i8(narrow_f64_to_i32_callfree(b, val_f64)));
+                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 1,
+                                      b.build_trunc_i8(narrow_f64_to_i32_callfree(b, val_f64))), kTypedElementAliasClass);
                 break;
             default: { // UINT8CLAMPED: half-to-even rounding in [0, 255]
                 Value* is_nan = b.build_ne(val_f64, val_f64);
@@ -717,7 +721,7 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
                 Value* rounded = b.build_add(trunc_i64, b.build_zext_i64(round_up));
                 Value* clamped = b.build_select(le_zero, iconst(b, 0),
                                                 b.build_select(ge_255, iconst(b, 255), rounded));
-                b.build_store_indexed(Type::i8(), data, idx_i64, 1, b.build_trunc_i8(clamped));
+                with_alias_class(b.build_store_indexed(Type::i8(), data, idx_i64, 1, b.build_trunc_i8(clamped)), kTypedElementAliasClass);
                 break;
             }
         }
@@ -779,13 +783,14 @@ void PropertyLoweringHelper::lower_elem_set_typed(Builder& b, Value* obj, Value*
     Value* ptr = (preloaded_data && preloaded_length) ? nullptr : b.build_and(obj, iconst(b, kPayloadMask));
     Value* ta_len = preloaded_length
                         ? preloaded_length
-                        : b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+                        : b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     Value* in_bounds = b.build_ult(idx.i64, ta_len);
     Value* ok = (proven_integral && known_num_idx) ? in_bounds : b.build_and(idx.ok, in_bounds);
+    // Before the bounds test, as lower_elem_get_typed computes it.
+    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
     b.build_br_if(ok, bb_store, bb_merge);
 
     b.position_at_end(bb_store);
-    Value* data = preloaded_data ? preloaded_data : typed_array_data(b, ptr);
     emit_typed_store(data, idx.i64);
     b.build_br(bb_merge);
 

@@ -222,16 +222,16 @@ bool load_ta_cursor(IlLowering* lowering, Value* raw_obj, Builder& b, IlLowering
     }
     const auto mask = b.build_iconst_i64(0x0000FFFFFFFFFFFFLL);
     Value* ptr = b.build_and(lowering->ensure_type(raw_obj, Type::i64(), b), mask);
-    Value* buf_bits = b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET);
+    Value* buf_bits = with_alias_class(b.build_load(Type::i64(), ptr, BRONZE_ABI_TA_BUFFER_OFFSET), kTypedArrayHeaderAliasClass);
     Value* buf_addr = b.build_and(buf_bits, mask);
-    Value* ext = b.build_load(Type::i64(), buf_addr, BRONZE_ABI_BUF_EXTPTR_OFFSET);
+    Value* ext = with_alias_class(b.build_load(Type::i64(), buf_addr, BRONZE_ABI_BUF_EXTPTR_OFFSET), kTypedArrayHeaderAliasClass);
     Value* is_ext = b.build_ne(ext, b.build_iconst_i64(0));
-    Value* byte_offset = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET));
+    Value* byte_offset = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_BYTEOFFSET_OFFSET), kTypedArrayHeaderAliasClass));
     cursor.buf = lowering->ensure_type(buf_bits, Type::tagged(), b);
     cursor.keep = b.build_select(is_ext, b.build_iconst_i64(0), mask);
     cursor.off = b.build_add(b.build_select(is_ext, ext, b.build_iconst_i64(BRONZE_ABI_BUF_DATA_OFFSET)),
                              byte_offset);
-    cursor.len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    cursor.len = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     cursor.loaded = true;
 
     if (repositioned) {
@@ -476,16 +476,16 @@ void PropertyLoweringHelper::store_proven_dense_array_elem(Builder& b, Value* bl
     if (!head) {
         if (index <= kMaxInlineDispIndex) {
             const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-            b.build_store(Type::i64(), block, disp, val);
+            with_alias_class(b.build_store(Type::i64(), block, disp, val), kBoxedElementAliasClass);
         } else {
-            b.build_store_indexed(Type::i64(), block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val);
+            with_alias_class(b.build_store_indexed(Type::i64(), block, iconst64(b, index), 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
         }
     } else if (index <= kMaxInlineDispIndex) {
         const auto disp = static_cast<int32_t>(kBronzeHdrBytes + static_cast<uint64_t>(index) * 8);
-        b.build_store_indexed(Type::i64(), block, head, 8, disp, val);
+        with_alias_class(b.build_store_indexed(Type::i64(), block, head, 8, disp, val), kBoxedElementAliasClass);
     } else {
         Value* slot = b.build_add(head, iconst64(b, index));
-        b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val);
+        with_alias_class(b.build_store_indexed(Type::i64(), block, slot, 8, static_cast<int32_t>(kBronzeHdrBytes), val), kBoxedElementAliasClass);
     }
 }
 
@@ -569,7 +569,7 @@ Value* PropertyLoweringHelper::lower_prop_get_length(Builder& b, Value* obj, uin
     b.build_br_if(typed_array_chain_pristine(b, ptr, kind), bb_ta_hit, bb_slow);
 
     b.position_at_end(bb_ta_hit);
-    Value* ta_len = b.build_zext_i64(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET));
+    Value* ta_len = b.build_zext_i64(with_alias_class(b.build_load(Type::i32(), ptr, BRONZE_ABI_TA_LENGTH_OFFSET), kTypedArrayHeaderAliasClass));
     b.build_br(bb_merge, {box_number(b, b.build_sitofp_f64_i64(ta_len))});
 
     // A plain object's `length` is an ordinary property: the site's way 0

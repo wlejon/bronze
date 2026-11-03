@@ -195,14 +195,14 @@ Value* PropertyLoweringHelper::static_slot_base(Builder& b, Value* ptr, uint32_t
 void PropertyLoweringHelper::store_with_barrier(Builder& b, Value* base, int32_t off, Value* val, bool need_barrier,
                                                 const std::string& prefix) {
     if (!need_barrier) {
-        b.build_store(Type::i64(), base, off, val);
+        with_alias_class(b.build_store(Type::i64(), base, off, val), kObjectSlotAliasClass);
         return;
     }
     // The barrier for a value that is not a Number (every reference is tagged
     // above BRONZE_ABI_NUMBER_MAX_BITS), handed the slot's own address as
     // every C++ slot store hands it.
     Value* slot_addr = b.build_add(base, b.build_iconst_i64(off));
-    b.build_store(Type::i64(), slot_addr, 0, val);
+    with_alias_class(b.build_store(Type::i64(), slot_addr, 0, val), kObjectSlotAliasClass);
     BasicBlock* bb_cur = b.current_block();
     BasicBlock* bb_barrier = b.append_block(prefix + "_barrier");
     BasicBlock* bb_cont = b.append_block(prefix + "_stored");

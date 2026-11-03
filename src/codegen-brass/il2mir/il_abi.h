@@ -6,6 +6,7 @@
 
 #include "abi/bronze_abi.h"
 #include "il_ast.h"
+#include <brass/mir/instruction.hpp>
 #include <cstdint>
 #include <string>
 
@@ -29,6 +30,31 @@ constexpr uint64_t kPrintErrTag = 0xFFFE000000000002ULL;
 // valid Value already and need no NaN canonicalization (il_bridge_verifier).
 // Nothing else carries it; every other access is class 0, which overlaps it.
 constexpr uint8_t kBoxedElementAliasClass = 1;
+// The other memory il2mir names, so brass keeps the accesses apart (an access
+// of class 0 overlaps everything). Array element stores share the class of
+// the element loads above, since they write the same words.
+// A TypedArray's buffer, window and length, and a buffer's external-storage
+// word: written only by the runtime (a call), never by compiled code, and the
+// header of a view is laid out after its four inline slots, so no slot store
+// reaches it. Only loads carry this class.
+constexpr uint8_t kTypedArrayHeaderAliasClass = 2;
+// A TypedArray element: the bytes of a buffer's store.
+constexpr uint8_t kTypedElementAliasClass = 3;
+// An object's property slot, inline or in its overflow block, and a static
+// slot cell.
+constexpr uint8_t kObjectSlotAliasClass = 4;
+// An object's header words: its shape and its overflow-block pointer.
+constexpr uint8_t kShapeWordAliasClass = 5;
+
+// Marks the access `v` (a load's result) or `inst` (a store) with `cls`.
+inline brass::Value* with_alias_class(brass::Value* v, uint8_t cls) {
+    v->defining_instruction()->set_alias_class(cls);
+    return v;
+}
+inline brass::Instruction* with_alias_class(brass::Instruction* inst, uint8_t cls) {
+    inst->set_alias_class(cls);
+    return inst;
+}
 
 // The thread-local block, as pinned-register code reads it.
 constexpr int32_t kBronzeTlsStackLimitOff = BRONZE_TLS_STACK_LIMIT_OFF;
