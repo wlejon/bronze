@@ -2,6 +2,7 @@
 #include "runtime/builtin_typed_array_internal.h"
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_convert.h"
+#include "runtime/rt_property.h"
 #include "runtime/rt_receivers.h"
 #include "runtime/rt_roots.h"
 #include "runtime/rt_state.h"
@@ -9,7 +10,106 @@
 
 namespace bronze::runtime {
 
+namespace {
+
+// A view every prototype method may use (requireTypedArray's tests), asked
+// without raising: the fast path below declines what the general path throws
+// for.
+bool usableView(Value v) {
+    if (!isTypedArray(v)) return false;
+    const auto* view = v.asObject<TypedArrayHeader>();
+    return view->buffer.isObject() && !view->buffer.asObject<ArrayBufferHeader>()->isDetached() &&
+           !view->isOutOfBounds();
+}
+
+// Numbers from `elems` into a view of element type T, while they ARE numbers;
+// returns how many it stored. One loop per destination kind rather than
+// TypedArrayHeader::set per element, which re-dispatches on the kind and
+// re-derives the element size each time.
+template <typename T>
+uint32_t storeNumbers(uint8_t* dst, const Value* elems, uint32_t count) {
+    uint32_t i = 0;
+    for (; i < count; ++i) {
+        const Value e = elems[i];
+        if (!e.isNumber()) break;
+        const T v = static_cast<T>(e.asNumber());
+        std::memcpy(dst + static_cast<size_t>(i) * sizeof(T), &v, sizeof v);
+    }
+    return i;
+}
+
+// 23.2.3.26 %TypedArray%.prototype.set when no step can allocate, run user
+// code or throw: a usable view, a Number (or absent) offset, and a source that
+// is a usable view of a compatible kind or an Array whose elements are all
+// Numbers, fitting the target. three.js reaches this per draw (a matrix's
+// `elements` into a uniform buffer), so it is answered from raw headers with
+// no root opened. Anything else returns false having written nothing that the
+// general path would not write identically, and the general path answers it.
+bool setFast(Value self, uint32_t argc, const uint64_t* argv) {
+    if (argc == 0 || !usableView(self)) return false;
+    double offsetNum = 0.0;
+    if (argc >= 2 && !Value(argv[1]).isUndefined()) {
+        if (!Value(argv[1]).isNumber()) return false;
+        offsetNum = toInteger(Value(argv[1]).asNumber());
+    }
+    auto* target = self.asObject<TypedArrayHeader>();
+    if (offsetNum < 0 || offsetNum > target->length) return false;
+    const auto offset = static_cast<uint32_t>(offsetNum);
+    const Value source(argv[0]);
+    const ElementKind dstKind = target->elementKind();
+
+    if (isTypedArray(source)) {
+        if (!usableView(source)) return false;
+        auto* srcView = source.asObject<TypedArrayHeader>();
+        const uint32_t srcLength = srcView->length;
+        if (srcLength > target->length - offset) return false;
+        if (isBigIntElementKind(srcView->elementKind()) != isBigIntElementKind(dstKind)) return false;
+        // One buffer and two encodings is the general path's staged copy.
+        if (!sameRawTypedArrayEncoding(dstKind, srcView->elementKind()) &&
+            srcView->buffer.rawBits() == target->buffer.rawBits()) {
+            return false;
+        }
+        copyTypedArrayElements(target->bytes() + static_cast<size_t>(offset) * target->bytesPerElement(),
+                               dstKind, srcView->bytes(), srcView->elementKind(), srcLength);
+        return true;
+    }
+
+    if (!isArray(source) || isBigIntElementKind(dstKind)) return false;
+    const auto* srcArr = source.asObject<ArrayHeader>();
+    const uint32_t srcLength = srcArr->length;
+    if (srcLength > target->length - offset) return false;
+    // Past the capacity an index is a hole with no storage behind it.
+    if (srcLength > srcArr->capacity) return false;
+    const Value* elems = srcArr->elementsData();
+    if (srcLength != 0 && elems == nullptr) return false;
+    uint8_t* dst = target->bytes();
+    uint32_t stored;
+    switch (dstKind) {
+        case ElementKind::Float32:
+            stored = storeNumbers<float>(dst + static_cast<size_t>(offset) * 4, elems, srcLength);
+            break;
+        case ElementKind::Float64:
+            stored = storeNumbers<double>(dst + static_cast<size_t>(offset) * 8, elems, srcLength);
+            break;
+        default:
+            stored = 0;
+            for (; stored < srcLength; ++stored) {
+                const Value e = elems[stored];
+                if (!e.isNumber()) break;
+                target->set(offset + stored, e.asNumber());
+            }
+            break;
+    }
+    // A non-Number element (a hole reads as one) needs ToNumber, which is the
+    // general path's: it re-stores the Numbers before it, which are the same
+    // bytes, and converts from there.
+    return stored == srcLength;
+}
+
+}  // namespace
+
 uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv) {
+    if (setFast(Value(thisBits), argc, argv)) return Value::fromUndefined().rawBits();
     RootedArgs args(argc, argv);
     Rooted<Value> self{Value(thisBits)};
     if (!requireTypedArray(self.get(), "set")) return Value::fromUndefined().rawBits();
@@ -21,7 +121,11 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
     }
     if (!requireTypedArray(self.get(), "set")) return Value::fromUndefined().rawBits();
     const uint32_t targetLength = lengthOf(self.get());
-    const auto offset = static_cast<uint64_t>(offsetNum);
+    // Saturated past the end rather than cast: +Infinity has no uint64_t, and
+    // any offset beyond targetLength fails the same bounds checks below, in
+    // the spec's order (after the source's TypeErrors).
+    const uint64_t offset =
+        offsetNum > targetLength ? uint64_t{targetLength} + 1 : static_cast<uint64_t>(offsetNum);
 
     if (isTypedArray(source.get())) {
         if (!requireTypedArray(source.get(), "set")) return Value::fromUndefined().rawBits();
@@ -71,7 +175,7 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
         // which can run user code, so the view is re-derived per store and the
         // maintained length guards a window that shrank mid-loop.
         for (uint32_t i = 0; i < srcLength; ++i) {
-            Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
+            Rooted<Value> elem{rtArrayIndexGet(source.get(), i)};
             uint64_t bits = 0;
             if (!rtBigIntToRawBits64(elem.get(), bits)) break;
             auto* live = self.get().asObject<TypedArrayHeader>();
@@ -80,29 +184,12 @@ uint64_t taSet(uint64_t, uint64_t thisBits, uint32_t argc, const uint64_t* argv)
         }
         return Value::fromUndefined().rawBits();
     }
-    uint32_t i = 0;
-    // The number-elements fast loop: while every element IS a number, ToNumber is an identity and no user code can
-    // run — so nothing allocates, the raw headers stay valid for the whole
-    // run, and the per-element root the spec-shaped loop below opens defends
-    // nothing. three.js reaches this path per draw, copying a matrix's plain
-    // `elements` array into a uniform upload buffer. The first non-number
-    // element (a hole reads as `undefined` and is one) resumes the rooted
-    // loop AT that element with every spec'd conversion intact.
-    {
-        const auto* srcArr = source.get().asObject<ArrayHeader>();
-        auto* dst = self.get().asObject<TypedArrayHeader>();
-        const Value* elems = srcArr->elementsData();
-        if (elems != nullptr) {
-            const uint32_t bound = srcLength < srcArr->length ? srcLength : srcArr->length;
-            for (; i < bound; ++i) {
-                const Value e = elems[i];
-                if (!e.isNumber()) break;
-                dst->set(static_cast<uint32_t>(offset) + i, e.asNumber());
-            }
-        }
-    }
-    for (; i < srcLength; ++i) {
-        Rooted<Value> elem{source.get().asObject<ArrayHeader>()->getElem(i)};
+    // The spec-shaped loop: setFast above took every source that is all
+    // Numbers, so this one meets a conversion that can run user code, and
+    // roots each element and re-derives the view around it. A hole is the
+    // chain's Get (23.2.3.26.2 step 7.b), not `undefined`.
+    for (uint32_t i = 0; i < srcLength; ++i) {
+        Rooted<Value> elem{rtArrayIndexGet(source.get(), i)};
         const double v = rtToNumber(elem.get());
         auto* live = self.get().asObject<TypedArrayHeader>();
         const uint32_t at = static_cast<uint32_t>(offset) + i;
