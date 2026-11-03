@@ -160,6 +160,10 @@ private:
         // What the function returns other than its own receiver: the part of
         // `ret` a `new` of it yields besides the instance it allocated.
         AVal foreignRet;
+        // A return gives `new` its own instance: the receiver, a primitive,
+        // or no value. A function every return of which is another object
+        // (a factory called with `new`) never yields the instance.
+        bool newGivesInstance = false;
         // For each `super(...)` result on the function's own receiver, what
         // the base constructor returned other than that receiver.
         std::unordered_map<il::ValueId, AVal> superForeign;
@@ -281,6 +285,33 @@ private:
     AVal coerceThis(const AVal& self, bool strict) const;
     void escapeArgs(const AVal& self, const CallArgs& args, uint32_t reason);
 
+    // ---- solver_summary.cpp: returns read off the arguments ----
+    // A function each of whose returns is its receiver or a parameter, or a
+    // chain of reads from one (`return this`, `return arr[i]`,
+    // `return this.items[k]`). A call of it gives that chain read on what
+    // the CALL passed rather than on the join of every caller's arguments,
+    // which is what keeps `v.copy(a).add(b)` on `v` and
+    // `pick(materials)` on the materials: the one piece of context
+    // sensitivity the solver has. The function's own values stay joined.
+    struct RetStep {
+        bool elems = false;            // an element read, at `idx` (a value of the function)
+        uint32_t key = 0;              // else a named read of `key`
+        il::ValueId idx = il::kNoValue;
+    };
+    struct RetPath {
+        il::ValueId param = 0;
+        std::vector<RetStep> steps;    // in read order
+    };
+    struct RetSummary {
+        bool computed = false;
+        bool valid = false;
+        std::vector<RetPath> paths;
+    };
+    const RetSummary& retSummary(uint32_t fn);
+    // The summary's reads on `actual`, the value each parameter of this call
+    // is bound to.
+    AVal readPaths(uint32_t fn, const RetSummary& summary, const std::vector<AVal>& actual);
+
     // ---- solver_builtins.cpp: builtin behaviour ----
     AVal globalValue(uint32_t key);
     AVal callBuiltin(Effect effect, ObjId fnObj, const AVal& self, const CallArgs& args,
@@ -329,6 +360,7 @@ private:
     std::unordered_map<uint32_t, ObjId> instances_;
     std::unordered_map<uint32_t, SiteInfo> siteInfo_;
     std::unordered_map<uint32_t, uint32_t> methodKeyByIc_;
+    std::vector<RetSummary> summaries_;
     std::unordered_set<std::string> hostGlobals_;
     std::unordered_map<DepKey, std::vector<uint32_t>, DepHash> readers_;
     std::unordered_set<DepFn, DepFnHash> readerSeen_;

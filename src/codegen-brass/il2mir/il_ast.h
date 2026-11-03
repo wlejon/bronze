@@ -227,6 +227,9 @@ struct BronzeInstruction {
     // than one shape is the expected case, so a way-0 miss scans the site's
     // other ways inline rather than calling the helper.
     bool is_family = false;
+    // A read the whole-program optimizer predicts meets a few shapes (il.h
+    // `icPolymorphic`): the same inline scan as a family read.
+    bool is_poly = false;
     // PropGet/PropSet with a `static_slot`: which guard licenses it (il.h
     // `staticCellIndex`, `familyLo`/`familySpan`). An identity site compares
     // the receiver's shape with its module cell `static_cell`; a family site

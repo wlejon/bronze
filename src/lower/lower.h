@@ -7,6 +7,7 @@
 #include "ast/ast.h"
 #include "il/il.h"
 #include "lower/inline_guarded.h"
+#include "opt/wpo/wpo.h"
 #include "support/diagnostics.h"
 #include "types/pins.h"
 #include "types/result.h"
@@ -62,6 +63,19 @@ namespace bronze::lower {
 class InferStatsCollector;
 class NativeManifest;
 
+// The whole-program optimizer (src/opt/wpo/wpo.h) of an AOT build, which only
+// `bronze build` asks for: lowering then solves the module before the passes
+// that copy callee bodies, so the direct method targets the solve predicts
+// reach guarded inlining and typed entries, and again on its final IL for the
+// static-slot claims and polymorphic marks, which inlined copies then get in
+// their callers' contexts. Off, the IL is what it was without it; the JIT
+// never turns it on. `report` collects the `--wpo-stats` text.
+struct WholeProgramOptions {
+    bool on = false;
+    wpo::BuildOptions build;
+    std::string report;
+};
+
 // `pins` is the `--pins` manifest, or null. Lowering reads only its ENV-SLOT
 // entries: a captured binding has no name inference can key a side table on —
 // it has a (function, binding) pair and a record layout this pass invents — so
@@ -77,7 +91,8 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const types::PinManifest* pins = nullptr,
                                       const std::string& censusOutPath = {},
                                       const NativeManifest* nativeManifest = nullptr,
-                                      const InlineGuardedOptions& inlineGuarded = {});
+                                      const InlineGuardedOptions& inlineGuarded = {},
+                                      WholeProgramOptions* wholeProgram = nullptr);
 
 // The kind a TypeScript annotation claims, as the lattice states it: `number`,
 // an array type, a class's instances (an object), an alias followed to what

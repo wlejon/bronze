@@ -33,7 +33,6 @@
 #include "lower/lower.h"
 #include "lower/native_manifest.h"
 #include "modules/modules.h"
-#include "opt/wpo/wpo.h"
 #include "parse/parser.h"
 #include "support/diagnostics.h"
 #include "support/timings.h"
@@ -399,6 +398,15 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
     const bool noBigIntPromised =
         assumeNoBigInt || !hasHostBoundary(hostGlobalsPath, emitObj, emitShared);
 
+    // The whole-program optimizer: every AOT build runs it, inside lowering
+    // (lower.h WholeProgramOptions). `--wpo-stats` only adds its census, so
+    // the build's output is the same with the flag as without.
+    lower::WholeProgramOptions wholeProgram;
+    wholeProgram.on = true;
+    wholeProgram.build.hostGlobals = hostGlobals;
+    wholeProgram.build.stats = wpoStats;
+    wholeProgram.build.perSite = wpoStatsPerSite;
+    wholeProgram.build.filter = wpoStatsFilter;
     lower::InferStatsCollector statsCollector;
     auto ilModule = lower::lowerModule(*astModule, diags,
                                        inferred ? &*inferred : nullptr,
@@ -409,7 +417,8 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
                                        pins.empty() ? nullptr : &pins,
                                        censusOutPath,
                                        nativeManifest ? &*nativeManifest : nullptr,
-                                       lower::InlineGuardedOptions{/*on=*/true});
+                                       lower::InlineGuardedOptions{/*on=*/true},
+                                       &wholeProgram);
     timer.mark("lower");
     if (diags.hasErrors() || !ilModule) {
         std::string msg = diags.render(sources);
@@ -435,19 +444,7 @@ int runBuild(const std::string& sourcePath, const std::string& outputPath, std::
         }
     }
 
-    // The whole-program optimizer: every AOT build runs it on the module the
-    // backend is about to compile. `--wpo-stats` only adds its census, so the
-    // build's output is the same with the flag as without.
-    {
-        wpo::BuildOptions wpoOpts;
-        wpoOpts.hostGlobals = hostGlobals;
-        wpoOpts.stats = wpoStats;
-        wpoOpts.perSite = wpoStatsPerSite;
-        wpoOpts.filter = wpoStatsFilter;
-        const std::string report = wpo::optimizeForBuild(*ilModule, wpoOpts);
-        timer.mark("wpo");
-        if (wpoStats) std::fputs(report.c_str(), stdout);
-    }
+    if (wpoStats) std::fputs(wholeProgram.report.c_str(), stdout);
 
     reportWarnings(diags, sources);
 

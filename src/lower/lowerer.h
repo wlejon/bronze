@@ -17,6 +17,7 @@
 #include "lower/derived_ctor_plan.h"
 #include "lower/direct_method_table.h"
 #include "lower/infer_stats.h"
+#include "lower/lower.h"
 #include "lower/lowerer_state.h"
 #include "support/diagnostics.h"
 #include "support/source.h"
@@ -69,6 +70,8 @@ public:
     // Whether lower() compiles resolved method calls' bodies in place
     // (inline_guarded.h, inlineGuardedEnabled).
     void setInlineGuarded(bool on) { inlineGuarded_ = on; }
+    // The whole-program optimizer's two runs (lower.h WholeProgramOptions).
+    void setWholeProgram(WholeProgramOptions* options) { wholeProgram_ = options; }
 
 private:
     const ast::Module& astModule_;
@@ -87,6 +90,7 @@ private:
     // --- Direct method-call edge (direct_method_table.h) ---
     DirectMethodTable directMethods_;
     bool inlineGuarded_ = false;
+    WholeProgramOptions* wholeProgram_ = nullptr;
     uint32_t lastClosureFnIndex_ = il::Instruction::kNoDirectTarget;
     // The class name inference gives `receiver`'s object type, or empty.
     std::unordered_map<std::string, std::string> fieldClassGuesses() const;

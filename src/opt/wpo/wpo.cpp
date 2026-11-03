@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <map>
+#include <set>
 #include <tuple>
 
 #include "opt/wpo/census.h"
@@ -44,13 +45,18 @@ std::string census(const il::Module& mod, const BuildOptions& opts, bool predict
         for (const StampEntry& e : plan->entries) byLoc[{e.fn, e.block, e.inst}] = &e;
         std::map<std::tuple<uint32_t, uint32_t, uint32_t>, uint32_t> directAt;
         for (const DirectEntry& d : plan->directs) directAt[{d.fn, d.block, d.inst}] = d.target;
+        std::set<std::tuple<uint32_t, uint32_t, uint32_t>> polyAt;
+        for (const PolyEntry& p : plan->polys) polyAt.insert({p.fn, p.block, p.inst});
         for (SiteFact& f : facts) {
             if (auto d = directAt.find({f.fn, f.block, f.inst}); d != directAt.end()) {
                 f.wpoStamp = "direct " + mod.functions[d->second].name;
                 continue;
             }
             auto it = byLoc.find({f.fn, f.block, f.inst});
-            if (it == byLoc.end()) continue;
+            if (it == byLoc.end()) {
+                if (polyAt.count({f.fn, f.block, f.inst}) != 0) f.wpoStamp = "poly";
+                continue;
+            }
             f.wpoStamp = it->second->form == StampForm::Identity
                              ? "identity"
                              : "family " + std::to_string(it->second->familyLo) + "+" +
@@ -64,13 +70,24 @@ std::string census(const il::Module& mod, const BuildOptions& opts, bool predict
     return formatCensus(solver, shapes, facts, censusOpts, shapeMillis);
 }
 
+// Whether `name` contains one of the comma-separated substrings of `filter`.
+bool matchesFilter(const std::string& name, const std::string& filter) {
+    for (size_t at = 0; at <= filter.size();) {
+        const size_t comma = std::min(filter.find(',', at), filter.size());
+        if (name.find(filter.substr(at, comma - at)) != std::string::npos) return true;
+        at = comma + 1;
+    }
+    return false;
+}
+
 std::string stampReport(const il::Module& mod, const StampPlan& plan, const BuildOptions& opts) {
     uint32_t identity = 0, family = 0;
     struct Row {
-        uint32_t identity = 0, family = 0, direct = 0;
+        uint32_t identity = 0, family = 0, direct = 0, poly = 0;
     };
     std::map<uint32_t, Row> perFn;
     for (const DirectEntry& d : plan.directs) ++perFn[d.fn].direct;
+    for (const PolyEntry& p : plan.polys) ++perFn[p.fn].poly;
     for (const StampEntry& e : plan.entries) {
         auto& row = perFn[e.fn];
         if (e.form == StampForm::Identity) {
@@ -92,26 +109,47 @@ std::string stampReport(const il::Module& mod, const StampPlan& plan, const Buil
     out += "wpo-stamp: predicted direct method targets " + std::to_string(plan.directs.size()) + " of " +
            std::to_string(plan.callCandidates) + " single-callee sites without one; refused: the callee may sit in an own slot " +
            std::to_string(plan.callOwnHeld) + ", the callee's parameters " + std::to_string(plan.callRefused) + "\n";
+    out += "wpo-stamp: predicted polymorphic reads " + std::to_string(plan.polys.size()) + " of " +
+           std::to_string(plan.polyCandidates) + " own-data reads without a claim; more receivers than cache ways " +
+           std::to_string(plan.polyTooMany) + "\n";
     if (!opts.perSite) return out;
-    std::vector<std::string> parts;
-    for (size_t at = 0; at <= opts.filter.size();) {
-        const size_t comma = std::min(opts.filter.find(',', at), opts.filter.size());
-        parts.push_back(opts.filter.substr(at, comma - at));
-        at = comma + 1;
-    }
     for (const auto& [fn, row] : perFn) {
         const std::string& name = mod.functions[fn].name;
-        for (const std::string& p : parts) {
-            if (name.find(p) == std::string::npos) continue;
-            out += "wpo-stamp-fn " + name + " identity " + std::to_string(row.identity) + " family " +
-                   std::to_string(row.family) + " direct " + std::to_string(row.direct) + "\n";
-            break;
-        }
+        if (!matchesFilter(name, opts.filter)) continue;
+        out += "wpo-stamp-fn " + name + " identity " + std::to_string(row.identity) + " family " +
+               std::to_string(row.family) + " direct " + std::to_string(row.direct) + " poly " +
+               std::to_string(row.poly) + "\n";
     }
     return out;
 }
 
 }  // namespace
+
+std::string predictDirectTargets(il::Module& mod, const BuildOptions& opts) {
+    StampPlan plan;
+    {
+        Solver predicted(mod, solverOptions(opts, /*predict=*/true));
+        predicted.run();
+        ShapeAnalysis shapes(predicted);
+        shapes.run();
+        plan = planStamps(predicted, shapes, classifySites(predicted, shapes));
+    }
+    applyDirects(mod, plan);
+    if (!opts.stats) return {};
+    std::string out = "wpo-early: predicted direct method targets " + std::to_string(plan.directs.size()) + " of " +
+                      std::to_string(plan.callCandidates) +
+                      " single-callee sites without one, before inlining; refused: the callee may sit in an own slot " +
+                      std::to_string(plan.callOwnHeld) + ", the callee's parameters " +
+                      std::to_string(plan.callRefused) + "\n";
+    if (!opts.perSite) return out;
+    std::map<uint32_t, uint32_t> perFn;
+    for (const DirectEntry& d : plan.directs) ++perFn[d.fn];
+    for (const auto& [fn, n] : perFn) {
+        const std::string& name = mod.functions[fn].name;
+        if (matchesFilter(name, opts.filter)) out += "wpo-early-fn " + name + " direct " + std::to_string(n) + "\n";
+    }
+    return out;
+}
 
 std::string optimizeForBuild(il::Module& mod, const BuildOptions& opts) {
     StampPlan plan;

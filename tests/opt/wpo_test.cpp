@@ -9,6 +9,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -76,6 +77,31 @@ SiteFact site(const Analysis& a, const std::string& fn, il::Op op, const std::st
     const auto all = sites(a, fn, op, key);
     REQUIRE_MESSAGE(!all.empty(), "no " << il::opName(op) << " ." << key << " in " << fn);
     return all.front();
+}
+
+// The `bronze build` pipeline: lowering with guarded inlining, and with the
+// whole-program optimizer when `wholeProgram`.
+il::Module buildLower(const std::string& src, bool wholeProgram) {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto astMod = lower_test::parseOnly(src, diags, buf);
+    REQUIRE(astMod);
+    auto inferred = types::inferModule(*astMod, diags);
+    REQUIRE(inferred.has_value());
+    lower::WholeProgramOptions wp;
+    wp.on = wholeProgram;
+    auto mod = lower::lowerModule(*astMod, diags, &*inferred, nullptr, nullptr, nullptr, false, nullptr, {},
+                                  nullptr, lower::InlineGuardedOptions{/*on=*/true}, &wp);
+    REQUIRE_FALSE(diags.hasErrors());
+    REQUIRE(mod.has_value());
+    return std::move(*mod);
+}
+
+const il::Function* functionNamed(const il::Module& mod, const std::string& name) {
+    for (const auto& fn : mod.functions) {
+        if (fn.name == name) return &fn;
+    }
+    return nullptr;
 }
 
 std::string targetNames(const Analysis& a, const SiteFact& f) {
@@ -326,8 +352,11 @@ TEST_CASE("a prediction keeps an escaped object's fields; a proof does not") {
         "globalThis.kept = k;\n"
         "console.log(rb(k));\n";
     const auto proved = analyze(src);
+    // The proof claims no shape: the receiver is unknown, or the instance
+    // marked escaped, depending on whether the call bound it before the
+    // store let it escape.
     const auto pb = site(proved, "rb", il::Op::PropGet, "b");
-    CHECK(pb.prop == PropClass::Unknown);
+    CHECK((pb.prop == PropClass::Unknown || pb.prop == PropClass::SameSlotEscaped));
     const auto predicted = analyze(src, /*predict=*/true);
     const auto qb = site(predicted, "rb", il::Op::PropGet, "b");
     CHECK(qb.slot == 1);
@@ -518,4 +547,84 @@ TEST_CASE("the census does not change what the build does to the module") {
     CHECK(report.find("wpo-site P.get") != std::string::npos);
     CHECK(report.find("wpo-stamp: predicted static slots") != std::string::npos);
     CHECK(il::print(*plain) == il::print(*counted));
+}
+
+TEST_CASE("a call's return read off its argument stays with that call's argument") {
+    const auto a = analyze(
+        "class G { constructor() { this.g = 1; } }\n"
+        "class M { constructor() { this.m = 1; } }\n"
+        "function pick(xs) { return xs[0]; }\n"
+        "function rg(o) { return o.g; }\n"
+        "const g = pick([new G()]);\n"
+        "const m = pick([new M()]);\n"
+        "console.log(rg(g), m.m);\n");
+    const auto g = site(a, "rg", il::Op::PropGet, "g");
+    CHECK(g.receivers == 1);
+    CHECK(g.prop == PropClass::SingleShape);
+}
+
+TEST_CASE("a new of a function that returns another object yields that object alone") {
+    const auto a = analyze(
+        "function F() { return { x: 1 }; }\n"
+        "function rx(o) { return o.x; }\n"
+        "console.log(rx(new F()));\n");
+    const auto x = site(a, "rx", il::Op::PropGet, "x");
+    CHECK(x.receivers == 1);
+    CHECK(x.prop == PropClass::SingleShape);
+}
+
+TEST_CASE("a read of two shapes with the key at different slots is marked polymorphic") {
+    DiagnosticSink diags;
+    SourceBuffer buf("test.ts", "");
+    auto mod = lower_test::inferAndLower(
+        "class A { constructor() { this.a = 1; this.k = 2; } }\n"
+        "class B { constructor() { this.k = 3; } }\n"
+        "function rk(o) { return o.k; }\n"
+        "console.log(rk(new A()) + rk(new B()));\n",
+        diags, buf);
+    REQUIRE(mod.has_value());
+    optimizeForBuild(*mod, BuildOptions{});
+    const il::Function* rk = functionNamed(*mod, "rk");
+    REQUIRE(rk != nullptr);
+    const il::Instruction* read = nullptr;
+    for (const auto& block : rk->blocks) {
+        for (const auto& inst : block.instructions) {
+            if (inst.op == il::Op::PropGet) read = &inst;
+        }
+    }
+    REQUIRE(read != nullptr);
+    CHECK(read->icPolymorphic);
+    CHECK(read->staticSlot == il::Instruction::kNoStaticSlot);
+    CHECK(il::print(*mod).find(", poly") != std::string::npos);
+    DiagnosticSink vdiags;
+    CHECK(il::verify(*mod, vdiags));
+}
+
+TEST_CASE("a target only the prediction knows reaches guarded inlining") {
+    // Two classes declare `get1`, so lowering guesses no target for the call
+    // on the captured `cur`; the prediction sees only A's instances there.
+    const std::string src =
+        "class A { constructor() { this.v = 1; } get1() { return this.v; } }\n"
+        "class B { constructor() { this.v = 2; } get1() { return this.v + 1; } }\n"
+        "let cur = null;\n"
+        "function set(o) { cur = o; }\n"
+        "function run(n) { let s = 0; for (let i = 0; i < n; i++) s += cur.get1(); return s; }\n"
+        "set(new A());\n"
+        "globalThis.unusedB = B;\n"
+        "console.log(run(10));\n";
+    auto inlinedFrom = [](const il::Module& mod) {
+        std::vector<std::string> names;
+        const il::Function* run = functionNamed(mod, "run");
+        REQUIRE(run != nullptr);
+        for (const auto& frame : run->inlineFrames) names.push_back(mod.functions[frame.callee].name);
+        return names;
+    };
+    const il::Module without = buildLower(src, false);
+    const il::Module with = buildLower(src, true);
+    const auto before = inlinedFrom(without);
+    const auto after = inlinedFrom(with);
+    CHECK(std::find(before.begin(), before.end(), "A.get1") == before.end());
+    CHECK(std::find(after.begin(), after.end(), "A.get1") != after.end());
+    DiagnosticSink vdiags;
+    CHECK(il::verify(with, vdiags));
 }

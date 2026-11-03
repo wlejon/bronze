@@ -258,6 +258,7 @@ std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std:
                 line += "}";
             }
             if (f.stamped) line += std::string(" stamp ") + (f.guessed ? "guess " : "") + std::to_string(f.stampSlot);
+            if (f.mono) line += " mono";
             if (!f.wpoStamp.empty()) line += " wpo-stamp " + f.wpoStamp;
             if (f.partial) line += " (+unknown)";
             if (f.direct && f.directTarget < mod.functions.size()) line += " direct " + mod.functions[f.directTarget].name;

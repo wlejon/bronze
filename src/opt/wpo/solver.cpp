@@ -476,8 +476,14 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
             break;
         case Op::CoroMode: primResult(kI32); break;
         case Op::Ret: {
-            if (inst.operands.empty()) break;
             FnState& st = fns_[curFn_];
+            const bool givesInstance = inst.operands.empty() || inst.operands[0] == thisParam(curFn_) ||
+                                       st.superForeign.count(inst.operands[0]) != 0 || op(inst, 0).prims != 0;
+            if (givesInstance && !st.newGivesInstance) {
+                st.newGivesInstance = true;
+                enqueueCallers(curFn_);
+            }
+            if (inst.operands.empty()) break;
             const il::Type retType = mod_.functions[curFn_].returnType == il::Type::Void
                                          ? il::Type::Dynamic
                                          : mod_.functions[curFn_].returnType;

@@ -71,6 +71,7 @@ struct SiteFact {
     bool direct = false;           // a direct method target
     uint32_t directTarget = UINT32_MAX;
     bool inlined = false;          // an inlined copy
+    bool mono = false;             // inference calls the site monomorphic (il.h icMonomorphic)
     bool partial = false;          // unknown receivers beside the known ones
     std::string wpoStamp;          // the claim stamp.h made on the site, for the dump
 };

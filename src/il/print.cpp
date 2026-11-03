@@ -223,6 +223,7 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         // The site inference proved monomorphic: an identity claim about
                         // the receiver, shown because it is what --infer-stats counts.
                         if (inst.icMonomorphic) out += ", mono";
+                        if (inst.icPolymorphic) out += ", poly";
                         // The receiver is a class- or function-declaration BINDING, so it
                         // can be a function object with members in a statics box: a hint,
                         // not a proof, but it decides whether the backend emits the arm

@@ -67,6 +67,7 @@ Module fullModule() {
     inst.keyIndex = 1;
     inst.icIndex = 6;
     inst.icMonomorphic = true;
+    inst.icPolymorphic = true;
     inst.icFnRecv = true;
     inst.rawUnbox = true;
     inst.nullishUnbox = true;
@@ -119,6 +120,7 @@ TEST_CASE("a module round-trips through its binary encoding") {
     CHECK(b.target.args == a.target.args);
     CHECK(b.callEnvHops == a.callEnvHops);
     CHECK(b.nullishUnbox);
+    CHECK(b.icPolymorphic);
     CHECK(b.numberBits);
     CHECK(b.typedTarget == 0);
     CHECK(back.functions[0].typedOrigin == 1);

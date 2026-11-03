@@ -339,8 +339,9 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
     // only ever miss on one.
     if (prop_lowering.enable_inlined_fastpaths() && !lowering->run_once() &&
         prop_lowering.key_tag(inst_ast.index) == "length") {
-        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site, site && mono,
-                                                   inst_ast.is_family);
+        return prop_lowering.lower_prop_get_length(b, obj_val, inst_ast.index, site,
+                                                   site && (mono || inst_ast.is_poly),
+                                                   inst_ast.is_family || inst_ast.is_poly);
     }
     // A read inference could not type, in a loop: the way-0 guard and the
     // scan of the other ways, inline, in front of the out-of-line site. Its
@@ -349,11 +350,14 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
     // so one site meets a few shapes, which the scan answers without the
     // call, its caller-saved spills and its root-slot clears. Outside loops
     // the call stays: there the inline form is only size and compile time.
+    // A read the whole-program optimizer predicts polymorphic (il.h
+    // `icPolymorphic`) gets the same form wherever it is.
     const bool loop_poly = !mono && lowering->in_loop();
-    if (site && (mono || loop_poly) && prop_lowering.enable_inlined_fastpaths() &&
+    const bool poly = loop_poly || inst_ast.is_poly;
+    if (site && (mono || poly) && prop_lowering.enable_inlined_fastpaths() &&
         inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
         return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site,
-                                                 inst_ast.is_family || loop_poly);
+                                                 inst_ast.is_family || poly);
     }
     return prop_lowering.lower_prop_get(b, obj_val, inst_ast.index, site ? prop_lowering.site_ptr(b, site) : nullptr);
 }

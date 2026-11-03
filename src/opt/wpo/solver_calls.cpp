@@ -61,7 +61,10 @@ AVal Solver::bindFunction(uint32_t f, ObjId fnObj, const AVal& self, const CallA
     }
     if (!recording_) return fns_[f].ret;
     markReachable(f);
+    const RetSummary& summary = retSummary(f);
+    std::vector<AVal> actual(summary.valid ? fn.params.size() : 0);
     auto bind = [&](size_t index, const AVal& v, bool receiver = false) {
+        if (index < actual.size()) actual[index] = v;
         auto& values = fns_[f].values;
         if (index < values.size() && index < fn.params.size() &&
             mergeInto(values[index], v, fn.params[index].type, receiver)) {
@@ -108,6 +111,7 @@ AVal Solver::bindFunction(uint32_t f, ObjId fnObj, const AVal& self, const CallA
         bind(p, AVal::obj(rest));
     }
     if (curSite_ != UINT32_MAX) fns_[f].callers.insert(curSite_);
+    if (summary.valid) return readPaths(f, summary, actual);
     return fns_[f].ret;
 }
 
@@ -202,7 +206,7 @@ AVal Solver::construct(const AVal& callee, const CallArgs& args, int depth) {
             // parameter holds every instance of every `new` site, which the
             // site's own result must not.
             const AVal& r = fns_[f].foreignRet;
-            out.addObj(inst);
+            if (fns_[f].newGivesInstance) out.addObj(inst);
             unionInto(out.objs, r.objs);
             if (r.topObj) out.topObj = true;
         } else if (kind == ObjKind::Bound) {
@@ -271,12 +275,16 @@ AVal Solver::directCall(const il::Instruction& inst) {
     }
     if (!recording_) return fns_[g].ret;
     markReachable(g);
+    const RetSummary& summary = retSummary(g);
+    std::vector<AVal> actual(summary.valid ? fn.params.size() : 0);
     for (size_t i = 0; i < inst.operands.size() && i < fn.params.size(); ++i) {
         AVal v = op(inst, i);
         if (i == 0 && inst.callEnvHops != il::Instruction::kNoEnvHops) v = envWalk(v, inst.callEnvHops);
+        if (i < actual.size()) actual[i] = v;
         if (mergeInto(fns_[g].values[i], v, fn.params[i].type)) enqueueUsers(g, static_cast<il::ValueId>(i));
     }
     fns_[g].callers.insert(curSite_);
+    if (summary.valid) return readPaths(g, summary, actual);
     return fns_[g].ret;
 }
 

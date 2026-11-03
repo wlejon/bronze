@@ -88,6 +88,13 @@ struct Instruction {
     // branch), so the guard is what makes the proof sound, not a redundancy on
     // top.
     bool icMonomorphic = false;
+    // PropGet: a PREDICTION (src/opt/wpo) that this site meets a few shapes,
+    // each holding the key as an own data property, at slots that need not
+    // agree. The backend gives it the way-0 test and the inline scan of the
+    // cache's other ways in front of the helper, as it does a read whose
+    // receiver class has subclasses. The ways are what the runtime filled, so
+    // a wrong prediction costs the scan's loads and never an answer.
+    bool icPolymorphic = false;
     // PropGet/MethodCall: this site's RECEIVER EXPRESSION is a name bound to a
     // class or function DECLARATION — `Object3D.DEFAULT_UP`, `Object.keys`,
     // `MathUtils.generateUUID`, a class name used inside its own body —

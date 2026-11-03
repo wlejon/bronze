@@ -22,6 +22,11 @@
 //
 // Families are the ones lowering proved and registered; a site whose
 // receivers no registered family describes is counted and left alone.
+//
+// A read whose few predicted receivers hold the key as an own data property
+// at slots no one claim covers is marked polymorphic instead (il.h
+// `icPolymorphic`): the backend scans the site's cache ways inline, which the
+// runtime fills with the shapes it really meets.
 
 #include <cstdint>
 #include <string>
@@ -57,9 +62,22 @@ struct DirectEntry {
     uint32_t target = 0;
 };
 
+// A read marked polymorphic.
+struct PolyEntry {
+    uint32_t fn = 0;
+    uint32_t block = 0;
+    uint32_t inst = 0;
+};
+
 struct StampPlan {
     std::vector<StampEntry> entries;
     std::vector<DirectEntry> directs;
+    std::vector<PolyEntry> polys;
+    // Reads left without a claim whose predicted receivers all hold the key
+    // as an own data property, and how many of those have more receivers than
+    // the cache has ways.
+    uint32_t polyCandidates = 0;
+    uint32_t polyTooMany = 0;
     // Method calls with one predicted IL callee and no direct target, and how
     // many of those the callee's shape refuses (an `arguments` object, a rest
     // array, an environment, a typed parameter a short call would pad).
@@ -84,7 +102,10 @@ struct StampPlan {
 StampPlan planStamps(const Solver& predicted, const ShapeAnalysis& shapes, const std::vector<SiteFact>& facts);
 
 // Writes the plan's claims into `mod`, handing each identity site a new
-// static cell, and the direct targets.
+// static cell, and the direct targets and polymorphic marks.
 void applyStamps(il::Module& mod, const StampPlan& plan);
+
+// Writes only the plan's direct targets.
+void applyDirects(il::Module& mod, const StampPlan& plan);
 
 }  // namespace bronze::wpo

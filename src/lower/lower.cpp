@@ -406,6 +406,10 @@ std::optional<il::Module> Lowerer::lower() {
     // named. It is also why `bronze il` shows the transformed IL: `lowerModule`
     // is the single funnel both `runIl` and `runBuild` come through.
     {
+        // The predicted direct targets first, so that every pass below that
+        // copies or specializes a callee reads them as it reads lowering's.
+        const bool wholeProgram = wholeProgram_ != nullptr && wholeProgram_->on;
+        if (wholeProgram) wholeProgram_->report += wpo::predictDirectTargets(ilModule_, wholeProgram_->build);
         inlineSmallFunctions(ilModule_, &directMethods_);
         sanitizeLoopInBoundsProofs(ilModule_);
         hoistLoopInvariantProps(ilModule_, &directMethods_);
@@ -434,6 +438,9 @@ std::optional<il::Module> Lowerer::lower() {
         // its cells with the original (transition_runs.h).
         markTransitionRuns(ilModule_);
         assignDefineAddCells(ilModule_);
+        // The claims last: they hand out static cells of their own, one per
+        // site, so an inlined copy is claimed in its caller's context.
+        if (wholeProgram) wholeProgram_->report += wpo::optimizeForBuild(ilModule_, wholeProgram_->build);
     }
     return ilModule_;
 }
@@ -757,10 +764,12 @@ std::optional<il::Module> lowerModule(const ast::Module& astModule, DiagnosticSi
                                       const types::PinManifest* pins,
                                       const std::string& censusOutPath,
                                       const NativeManifest* nativeManifest,
-                                      const InlineGuardedOptions& inlineGuarded) {
+                                      const InlineGuardedOptions& inlineGuarded,
+                                      WholeProgramOptions* wholeProgram) {
     Lowerer lowerer(astModule, diags, inference, hostGlobals, sources, stats,
                     assumeNoBigInt, pins, censusOutPath, nativeManifest);
     lowerer.setInlineGuarded(inlineGuardedEnabled(inlineGuarded));
+    lowerer.setWholeProgram(wholeProgram);
     return lowerer.lower();
 }
 
