@@ -33,6 +33,7 @@ add_library(bronze_codegen_brass STATIC
     il2mir/il_elem_lowering.cpp
     il2mir/il_elem_stub.cpp
     il2mir/il_iter_lowering.cpp
+    il2mir/il_write_barrier.cpp
     il2mir/il_number_array.cpp
     il2mir/il_box_str_key.cpp
     il2mir/il_env_lowering.cpp

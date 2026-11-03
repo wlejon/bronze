@@ -4,6 +4,7 @@
 #include "il_abi.h"
 #include "il_property.h"
 #include "il/key.h"
+#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 #include <cstdlib>
@@ -641,7 +642,7 @@ void PropertyLoweringHelper::lower_prop_set_index(Builder& b, Value* obj, uint32
         b.position_at_end(bb_barrier);
         forget_numbers(b, obj);
         Value* slot_addr = dense_array_slot_addr(b, block, head, elem_index);
-        b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+        build_write_barrier(b, slot_addr, val);
         b.build_br(bb_merge);
     } else {
         // A primitive the barrier skips may still not be a Number (il_number_array.cpp, the rule for a store).

@@ -31,6 +31,7 @@
 #include "il_abi.h"
 #include "il_lowering.h"
 #include "il_property.h"
+#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <algorithm>
 #include <stdexcept>
@@ -209,7 +210,7 @@ void PropertyLoweringHelper::store_with_barrier(Builder& b, Value* base, int32_t
     b.position_at_end(bb_cur);
     b.build_br_if(b.build_ugt(val, iconst(b, kBronzeNumberMaxBits)), bb_barrier, bb_cont);
     b.position_at_end(bb_barrier);
-    b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+    build_write_barrier(b, slot_addr, val);
     b.build_br(bb_cont);
     b.position_at_end(bb_cont);
 }

@@ -8,6 +8,7 @@
 #include "il_property_lowering.h"
 #include "il/key.h"
 #include "il_abi.h"
+#include "il_write_barrier.h"
 #include <algorithm>
 #include <cstdlib>
 #include <unordered_map>
@@ -539,7 +540,7 @@ bool IlLowering::try_lower_array_index_run(const BronzeBlock& blk_ast, size_t& i
         prop_lowering_.forget_numbers(b, set_obj);
         for (size_t k = 0; k < non_prim_vals.size(); ++k) {
             Value* slot_addr = prop_lowering_.dense_array_slot_addr(b, set_block, set_head, non_prim_idx[k]);
-            b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, non_prim_vals[k]});
+            build_write_barrier(b, slot_addr, non_prim_vals[k]);
         }
         b.build_br(bb_merge);
     }

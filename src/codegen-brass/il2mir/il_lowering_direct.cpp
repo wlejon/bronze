@@ -13,6 +13,7 @@
 
 #include "il_abi.h"
 #include "il_lowering.h"
+#include "il_write_barrier.h"
 
 #include <string>
 
@@ -500,7 +501,7 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     b.build_br_if(is_ref, barrier, done);
 
     b.position_at_end(barrier);
-    b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+    build_write_barrier(b, slot_addr, val);
     b.build_br(done);
 
     b.position_at_end(done);

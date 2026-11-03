@@ -258,6 +258,8 @@ Heap::~Heap() {
         bronze_tls_block* tls = runtime::rtTls();
         tls->alloc_cursor = 0;
         tls->alloc_limit = 0;
+        tls->young_base = 0;
+        tls->young_span = 0;
         if (brass::gc::Heap::current() == gc_.get()) brass::gc::Heap::set_current(nullptr);
     }
     if (g_gcLog.heap == gc_.get()) g_gcLog.enabled = false;
@@ -391,6 +393,10 @@ void Heap::bind_thread() {
     // (bronze_abi_tls.h, gc_cell_header).
     tls->gc_cell_header = static_cast<uint64_t>(gc_detail::layoutIds().cell) << 32;
     gc_->bind_allocation_buffer(reinterpret_cast<brass::gc::Heap::AllocationBuffer*>(&tls->alloc_cursor));
+    // The barrier filter's range (bronze_abi_tls.h, young_base): brass fixes
+    // it when the heap reserves its space, so it is read once, here.
+    tls->young_base = gc_->young_base();
+    tls->young_span = gc_->young_span();
     bound_ = true;
 }
 

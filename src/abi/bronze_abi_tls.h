@@ -104,6 +104,18 @@ typedef struct bronze_tls_block {
      * of what the hazard costs it; a separate load and test of the word
      * above was +2.8% instructions on three_math. Set with it, never apart. */
     uint64_t array_elems_tag_mask;
+    /* The young generation of the heap this thread allocates in, as
+     * [young_base, young_base + young_span): brass's young_base() and
+     * young_span(), fixed for the heap's lifetime and published when the
+     * thread binds to it (span 0 while it is bound to none, which no address
+     * is inside). A store into an object in that range needs no write
+     * barrier (brass's slow path is only for a target in the old range,
+     * which the young range never overlaps), so generated code tests the
+     * target against it before calling brass_gc_write_barrier — the store a
+     * fresh object takes, an iteration record's `current`, a literal's
+     * fields — and calls only for an object outside it. */
+    uint64_t young_base;
+    uint64_t young_span;
 } bronze_tls_block;
 
 #define BRONZE_TLS_PROTO_EPOCH_OFF                 0
@@ -123,6 +135,8 @@ typedef struct bronze_tls_block {
 #define BRONZE_TLS_KEY_HEADER_COUNT_OFF          112
 #define BRONZE_TLS_ARRAY_INDEX_HAZARD_OFF        120
 #define BRONZE_TLS_ARRAY_ELEMS_TAG_MASK_OFF      128
+#define BRONZE_TLS_YOUNG_BASE_OFF                136
+#define BRONZE_TLS_YOUNG_SPAN_OFF                144
 
 /*
  * ---- the pinned register -----------------------------------------------

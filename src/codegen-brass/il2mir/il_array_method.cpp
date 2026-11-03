@@ -27,6 +27,7 @@
 #include "il_lowering_direct.h"
 #include "il_property.h"
 #include "il/il.h"
+#include "il_write_barrier.h"
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 #include <string>
@@ -128,7 +129,7 @@ Value* lower_array_method_inline(IlLowering* lowering, Builder& b, ArrayInline w
         b.position_at_end(bb_barrier);
         lowering->prop_lowering().forget_numbers(b, recv);  // il_number_array.cpp, the rule for a store
         Value* slot_addr = b.build_add(b.build_add(block, b.build_shl(pos, iconst(b, 3))), iconst(b, kBronzeHdrBytes));
-        b.build_call("brass_gc_write_barrier", Type::void_type(), {slot_addr, val});
+        build_write_barrier(b, slot_addr, val);
         b.build_br(bb_stored);
         b.position_at_end(bb_stored);
         b.build_br(bb_merge, {boxed_len});
