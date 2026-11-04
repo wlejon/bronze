@@ -74,20 +74,18 @@ struct ElementKindInfo {
 const ElementKindInfo& elementKindInfo(ElementKind kind) noexcept;
 double toUint8Clamp(double number) noexcept;
 
-// The largest byte length bronze will allocate for one buffer. Two separate
-// obligations meet at this number and both are real:
+// The largest byte length bronze will allocate for one buffer. The view
+// header's `{byteOffset, length}` pair and `{kind, constructedLength}` pair
+// each share one 8-byte word that the collector's payload trace reads as a
+// `Value`. Keeping lengths and byte offsets at or below 0x7FFFFFC0 (2 GiB - 64)
+// keeps the top 16 bits of the upper half at or below 0x7FFF — well below the
+// lowest NaN-box pointer tag (0xFFF1) and strictly below the tracking-view
+// sentinel (`kAutoLength = 0x7FFFFFFF`). Buffers above `kMaxInlineByteLength`
+// allocate their byte store outside the moving GC heap via ExternalStore.
 //
-//  - a buffer is one heap object, so it must fit `Heap::kMaxObjectBytes`; and
-//  - the view header's `{byteOffset, length}` pair shares one 8-byte word,
-//    which the collector's payload trace reads as a `Value`. Its top 16 bits
-//    are `length >> 16`, so a length at or above 0xFFF1_0000 elements would
-//    present a valid pointer TAG to the trace and be "relocated" — the
-//    view's length would be overwritten with an address. This cap is three
-//    orders of magnitude below that, which is what makes the shared word safe
-//    rather than lucky.
-//
-// A request above it is a RangeError, by name, at the constructor.
-inline constexpr uint32_t kMaxByteLength = 1u << 28;  // 256 MiB
+// A request above `kMaxByteLength` is a RangeError, by name, at the constructor.
+inline constexpr uint32_t kMaxByteLength = 0x7FFFFFC0u;        // 2 GiB - 64 bytes
+inline constexpr uint32_t kMaxInlineByteLength = 1u << 20;     // 1 MiB
 
 // Raw byte storage (Tag::RawBytes: the collector moves the object with its
 // bytes, but never traces the BYTES as Values — the ordinary-object prefix it

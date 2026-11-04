@@ -3,12 +3,21 @@
 #include <cstdint>
 #include <thread>
 
+#include "../stack_scrub.h"
+#include "abi/bronze_abi.h"
+#include "runtime/exception.h"
+#include "runtime/external_store.h"
 #include "runtime/gc.h"
 #include "runtime/heap.h"
+#include "runtime/native_handle.h"
+#include "runtime/rt_receivers.h"
+#include "runtime/rt_roots.h"
+#include "runtime/rt_state.h"
 #include "runtime/shape.h"
 #include "runtime/typed_array.h"
 
 using namespace bronze;
+using namespace bronze::runtime;
 
 namespace {
 
@@ -97,4 +106,102 @@ TEST_CASE("a thread that detaches a buffer tracks the views of every buffer it m
                ArrayBufferHeader::kFlagViewsTracked) != 0);
     });
     t.join();
+}
+
+TEST_CASE("large ArrayBuffer and Float32Array (> 256 MiB) allocate externally and reclaim on GC") {
+    std::thread t([] {
+        Heap heap;
+        LocalShapes shapes;
+        ShadowStackFrame frame;
+
+        // Buffers at or below kMaxInlineByteLength (1 MiB) stay inline on the GC heap.
+        {
+            Rooted<Value> smallBuf(
+                Value::fromObject(ArrayBufferHeader::create(heap, shapes.shape, kMaxInlineByteLength)));
+            CHECK_FALSE(smallBuf.get().asObject<ArrayBufferHeader>()->isExternal());
+        }
+        CHECK(rtExternalStoreCount() == 0);
+
+        // A 10000 x 10000 Float32Array (400 MB > 256 MiB) allocates its backing store
+        // externally via calloc, keeping the moving GC heap footprint tiny.
+        constexpr uint32_t kSide = 10000;
+        constexpr uint32_t kElements = kSide * kSide;
+        constexpr uint32_t kBytes = kElements * sizeof(float);
+        static_assert(kBytes == 400'000'000u);
+        static_assert(kBytes > (1u << 28));
+        static_assert(kBytes <= kMaxByteLength);
+
+        const size_t usedBefore = heap.used_size();
+        auto viewRoot = bronze::test::heapRooted<Rooted<Value>>();
+        bronze::test::inOwnFrame([&] {
+            viewRoot->set(Value::fromObject(
+                TypedArrayHeader::create(heap, shapes.shape, shapes.shape, ElementKind::Float32, kElements)));
+            auto* ta = viewRoot->get().asObject<TypedArrayHeader>();
+            auto* buf = ta->buffer.asObject<ArrayBufferHeader>();
+            CHECK(ta->length == kElements);
+            CHECK(ta->byteLength() == kBytes);
+            CHECK(buf->byteLength == kBytes);
+            CHECK(buf->isExternal());
+            CHECK(rtExternalStoreCount() == 1);
+            CHECK(heap.used_size() - usedBefore < 4096);
+
+            uint8_t* origPtr = buf->data();
+            CHECK(ta->get(0) == 0.0);
+            CHECK(ta->get(kElements / 2) == 0.0);
+            CHECK(ta->get(kElements - 1) == 0.0);
+
+            ta->set(0, 12.5);
+            ta->set(kElements / 2, -42.25);
+            ta->set(kElements - 1, 9001.75);
+
+            // Survives GC without copying or moving the 400 MB backing store.
+            heap.collect();
+            ta = viewRoot->get().asObject<TypedArrayHeader>();
+            buf = ta->buffer.asObject<ArrayBufferHeader>();
+            CHECK(buf->data() == origPtr);
+            CHECK(ta->get(0) == 12.5);
+            CHECK(ta->get(kElements / 2) == -42.25);
+            CHECK(ta->get(kElements - 1) == 9001.75);
+
+            // rtExternalizeArrayBuffer reuses the existing ExternalStore without copying.
+            ExternalWindow win = rtExternalizeArrayBuffer(viewRoot->get());
+            CHECK(win.bytes == origPtr);
+            CHECK(win.byteLength == kBytes);
+            rtReleaseExternalStore(win.store);
+        });
+
+        viewRoot.reset();
+        bronze::test::scrubStack();
+        heap.collect();
+        rtDrainFinalizers();
+        heap.collect();
+        rtDrainFinalizers();
+        CHECK(rtExternalStoreCount() == 0);
+    });
+    t.join();
+}
+
+TEST_CASE("allocating above kMaxByteLength throws RangeError") {
+    ShadowStackFrame frame;
+    Rooted<Value> ctor{rtTypedArrayConstructor("Uint8Array")};
+    Rooted<Value> f64Ctor{rtTypedArrayConstructor("Float64Array")};
+
+    Value caught = Value::fromUndefined();
+    const bool threwBytes = rtTryCatch(
+        [&] {
+            RootedBlock args(1);
+            args.set(0, Value::fromDouble(static_cast<double>(kMaxByteLength) + 1.0));
+            (void)bronze_construct(ctor.get().rawBits(), 1, args.data());
+        },
+        caught);
+    CHECK(threwBytes);
+
+    const bool threwElements = rtTryCatch(
+        [&] {
+            RootedBlock args(1);
+            args.set(0, Value::fromDouble(static_cast<double>(kMaxByteLength / 8 + 1)));
+            (void)bronze_construct(f64Ctor.get().rawBits(), 1, args.data());
+        },
+        caught);
+    CHECK(threwElements);
 }

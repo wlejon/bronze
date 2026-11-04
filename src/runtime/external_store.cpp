@@ -151,4 +151,13 @@ Value rtCreateExternalArrayBuffer(uint8_t* bytes, uint32_t byteLength,
     return Value::fromObject(buf);
 }
 
+void rtAttachNewExternalStore(Heap& heap, ArrayBufferHeader* buf, uint8_t* bytes) {
+    auto* store = new ExternalStore{{1}, bytes, freeMallocStore, nullptr};
+    g_externalStores.emplace(reinterpret_cast<uint64_t>(bytes), store);
+    buf->externalPtrBits = reinterpret_cast<uint64_t>(bytes);
+    rtRegisterHeapFinalizer(heap, &buf->object.header, store, dropBufferRef, Finalize::Deferred);
+}
+
+size_t rtExternalStoreCount() noexcept { return g_externalStores.size(); }
+
 }  // namespace bronze::runtime

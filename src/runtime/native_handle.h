@@ -24,6 +24,7 @@
 #include "runtime/value.h"
 
 namespace bronze {
+class Heap;
 struct HeapObjectHeader;
 }
 
@@ -85,6 +86,8 @@ void* rtHandleDataAndBrand(Value handle, const void** brand);
 // The cell may be ANY heap object (the external buffers register their
 // ArrayBufferHeader). The caller must not allocate between obtaining `cell`
 // and this call: the entry records the address the collector will next see.
+void rtRegisterHeapFinalizer(Heap& heap, HeapObjectHeader* cell, void* data,
+                             HandleDestructor dtor, Finalize when);
 void rtRegisterHeapFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor,
                              Finalize when);
 

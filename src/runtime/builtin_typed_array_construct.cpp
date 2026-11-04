@@ -47,7 +47,7 @@ namespace {
 // handed view over it. False with the RangeError pending when it does not fit.
 bool fillFromLength(Rooted<Value>& view, ElementKind kind, uint32_t length) {
     const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
-    if (!checkAllocatable(length * bpe)) return false;
+    if (!checkAllocatable(static_cast<uint64_t>(length) * bpe)) return false;
     Rooted<Value> buffer{rtNewArrayBuffer(length * bpe)};
     view.get().asObject<TypedArrayHeader>()->initialize(buffer, 0, length, /*tracking=*/false);
     return true;
@@ -322,7 +322,7 @@ Value rtTypedArrayConstructBody(ElementKind kind, Rooted<Value>& receiver, uint3
 Value rtTypedArrayCreateFromConstructor(Rooted<Value>& ctor, uint32_t length) {
     if (ElementKind kind; intrinsicViewKind(ctor.get(), kind)) {
         const uint32_t bpe = elementKindInfo(kind).bytesPerElement;
-        if (!checkAllocatable(length * bpe)) return Value::fromUndefined();
+        if (!checkAllocatable(static_cast<uint64_t>(length) * bpe)) return Value::fromUndefined();
         return rtNewTypedArray(kind, length);
     }
     RootedBlock block(1);

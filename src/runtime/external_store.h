@@ -16,9 +16,15 @@
 // one more reference the host releases in its own time. Thread-local like
 // every runtime registry — the home-thread rule.
 
+#include <cstddef>
 #include <cstdint>
 
 #include "runtime/value.h"
+
+namespace bronze {
+class Heap;
+struct ArrayBufferHeader;
+}
 
 namespace bronze::runtime {
 
@@ -45,5 +51,13 @@ ExternalWindow rtExternalizeArrayBuffer(Value bufferOrView);
 // Opens its own root frame; ALLOCATES.
 Value rtCreateExternalArrayBuffer(uint8_t* bytes, uint32_t byteLength,
                                   void (*deleter)(void* user, uint8_t* bytes), void* user);
+
+// Attach a newly malloc/calloc'd backing store to `buf`, registering its
+// Deferred finalizer on `heap`. Caller must not allocate between creating `buf`
+// and calling this.
+void rtAttachNewExternalStore(Heap& heap, ArrayBufferHeader* buf, uint8_t* bytes);
+
+// Number of live external stores registered on the current thread.
+size_t rtExternalStoreCount() noexcept;
 
 }  // namespace bronze::runtime

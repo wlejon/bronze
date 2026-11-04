@@ -6,12 +6,14 @@
 #include "runtime/typed_array.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <limits>
 #include <type_traits>
 #include <vector>
 
+#include "runtime/external_store.h"
 #include "runtime/fatal.h"
 
 namespace bronze {
@@ -507,12 +509,21 @@ void initObjectPrefix(ObjectHeader& object, uint16_t kind, Shape* shape) {
 }
 
 ArrayBufferHeader* allocateBuffer(Heap& heap, Shape* shape, uint32_t reserve) {
-    size_t payload_bytes = (sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader)) + reserve;
+    const bool external = reserve > kMaxInlineByteLength;
+    const size_t inline_reserve = external ? 0 : reserve;
+    size_t payload_bytes = (sizeof(ArrayBufferHeader) - sizeof(HeapObjectHeader)) + inline_reserve;
     HeapObjectHeader* raw_hdr = heap.allocate(payload_bytes, Tag::RawBytes);
     auto* buf = reinterpret_cast<ArrayBufferHeader*>(raw_hdr);
     initObjectPrefix(buf->object, ArrayBufferHeader::kFlags, shape);
     buf->viewTable = 0;
     buf->externalPtrBits = 0;
+    if (external) {
+        auto* bytes = static_cast<uint8_t*>(std::calloc(reserve, 1));
+        if (!bytes) fatal("out of memory allocating ArrayBuffer backing store");
+        runtime::rtAttachNewExternalStore(heap, buf, bytes);
+    } else if (reserve > 0) {
+        std::memset(buf->data(), 0, reserve);
+    }
     return buf;
 }
 
@@ -523,7 +534,6 @@ ArrayBufferHeader* ArrayBufferHeader::create(Heap& heap, Shape* shape, uint32_t 
     buf->byteLength = byte_length;
     buf->maxByteLength = byte_length;
     buf->bufferFlags = 0;
-    std::memset(buf->data(), 0, byte_length);
     trackNewBuffer(heap, buf);
     return buf;
 }
@@ -535,7 +545,6 @@ ArrayBufferHeader* ArrayBufferHeader::createResizable(Heap& heap, Shape* shape,
     buf->byteLength = byte_length;
     buf->maxByteLength = max_byte_length;
     buf->bufferFlags = kFlagResizable;
-    std::memset(buf->data(), 0, max_byte_length);
     trackBufferViews(heap, buf);
     return buf;
 }
@@ -553,7 +562,6 @@ ArrayBufferHeader* ArrayBufferHeader::createShared(Heap& heap, Shape* shape, uin
     // refuses to shrink, and one bit answering "is this block bigger than its
     // current length" keeps the two from disagreeing about the reservation.
     buf->bufferFlags = kFlagShared | (reserve > byte_length ? kFlagResizable : 0u);
-    std::memset(buf->data(), 0, reserve);
     if (buf->isResizable()) trackBufferViews(heap, buf);
     else trackNewBuffer(heap, buf);
     return buf;

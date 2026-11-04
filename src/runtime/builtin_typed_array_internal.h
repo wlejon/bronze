@@ -54,8 +54,8 @@ inline bool toIndex(Value v, const char* what, uint32_t bytesPerElement, uint32_
     return true;
 }
 
-inline bool checkAllocatable(uint32_t byteLength) {
-    if (byteLength >= kMaxByteLength || byteLength + 64 >= Heap::kMaxObjectBytes) {
+inline bool checkAllocatable(uint64_t byteLength) {
+    if (byteLength > kMaxByteLength) {
         rtThrowRangeError("Array buffer allocation failed: " + std::to_string(byteLength) +
                           " bytes does not fit in the heap");
         return false;
@@ -144,7 +144,7 @@ inline void relativeArg(Value v, uint32_t len, uint32_t& out, uint32_t fallback)
 // `rtTypedArraySpeciesCreate` (rt_receivers.h).
 inline Value newViewLike(Value model, uint32_t length) {
     const ElementKind kind = kindOf(model);
-    if (!checkAllocatable(length * elementKindInfo(kind).bytesPerElement)) {
+    if (!checkAllocatable(static_cast<uint64_t>(length) * elementKindInfo(kind).bytesPerElement)) {
         return Value::fromUndefined();
     }
     return rtNewTypedArray(kind, length);

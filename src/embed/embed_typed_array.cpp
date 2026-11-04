@@ -98,7 +98,7 @@ Value createTypedArray(ElementKind kind, uint32_t length) {
     // program would, not a failed allocation.
     const uint64_t bpe = elementKindInfo(kind).bytesPerElement;
     const uint64_t byteLength = static_cast<uint64_t>(length) * bpe;
-    if (byteLength >= kMaxByteLength || byteLength + 64 >= Heap::kMaxObjectBytes) {
+    if (byteLength > kMaxByteLength) {
         return runtime::rtThrowRangeError(
             "Array buffer allocation failed: " + std::to_string(byteLength) +
             " bytes does not fit in the heap");

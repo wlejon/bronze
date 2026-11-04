@@ -555,7 +555,7 @@ Value rtNewTypedArrayOverBuffer(ElementKind kind, Rooted<Value>& buffer, uint32_
 
 Value rtTypedArraySpeciesCreate(Rooted<Value>& exemplar, uint32_t length) {
     const ElementKind kind = kindOf(exemplar.get());
-    if (!checkAllocatable(length * elementKindInfo(kind).bytesPerElement)) {
+    if (!checkAllocatable(static_cast<uint64_t>(length) * elementKindInfo(kind).bytesPerElement)) {
         return Value::fromUndefined();
     }
     if (speciesPristine(exemplar.get().asObject<TypedArrayHeader>())) {

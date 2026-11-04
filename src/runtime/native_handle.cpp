@@ -79,10 +79,15 @@ void runDeferred(void* data, void* dtor) {
     g_pendingFinalizers.push_back({data, reinterpret_cast<HandleDestructor>(dtor)});
 }
 
+void registerFinalizer(Heap& heap, HeapObjectHeader* cell, void* data, HandleDestructor dtor,
+                       Finalize when) {
+    heap.gc().add_finalizer(reinterpret_cast<uintptr_t>(cell),
+                            when == Finalize::InSweep ? &runInSweep : &runDeferred, data,
+                            reinterpret_cast<void*>(dtor));
+}
+
 void registerFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor, Finalize when) {
-    rtHeap().gc().add_finalizer(reinterpret_cast<uintptr_t>(cell),
-                                when == Finalize::InSweep ? &runInSweep : &runDeferred, data,
-                                reinterpret_cast<void*>(dtor));
+    registerFinalizer(rtHeap(), cell, data, dtor, when);
 }
 
 // A host pointer stored raw in an internal slot must never look like a heap
@@ -236,6 +241,11 @@ const void* rtHandleBrand(Value handle) {
     const uint64_t tag = obj->internalSlot(kSlotClassTag).rawBits();
     if ((tag & kHostBrandBit) == 0) return nullptr;
     return reinterpret_cast<const void*>(static_cast<uintptr_t>(tag & ~kHostBrandBit));
+}
+
+void rtRegisterHeapFinalizer(Heap& heap, HeapObjectHeader* cell, void* data,
+                             HandleDestructor dtor, Finalize when) {
+    registerFinalizer(heap, cell, data, dtor, when);
 }
 
 void rtRegisterHeapFinalizer(HeapObjectHeader* cell, void* data, HandleDestructor dtor,
