@@ -84,4 +84,31 @@ TEST_CASE("sampling profiler: captures samples and resolves symbols on busy loop
     unregisterProfilerThread();
 }
 
+TEST_CASE("sampling profiler: high-frequency 2000 Hz sampling avoids cumulative drift") {
+    registerProfilerThread(kProfilerThreadMain, "main");
+    ProfilerOptions startOpts;
+    startOpts.hz = 2000;
+    startOpts.threads = kProfilerThreadMain;
+
+    std::string err;
+    REQUIRE_MESSAGE(profilerStart(startOpts, &err), err);
+
+    volatile uint64_t sink = 1;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    while (std::chrono::steady_clock::now() < deadline) {
+        sink = profilerBusySpinStep(sink);
+    }
+    (void)sink;
+
+    ProfilerStopOptions stopOpts;
+    stopOpts.callers = false;
+    stopOpts.text = false;
+    ProfilerResult result;
+    REQUIRE_MESSAGE(profilerStop(stopOpts, result, &err), err);
+    CHECK(result.hz == 2000);
+    // Over 100 ms at 2000 Hz, expected ~200 samples; check we get well above 100 Hz floor
+    CHECK(result.samples >= 80);
+    unregisterProfilerThread();
+}
+
 #endif

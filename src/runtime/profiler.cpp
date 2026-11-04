@@ -656,6 +656,14 @@ void record(Session& s, const Raw& raw, uint64_t relMs) {
 void samplerBody(Session& s) {
 #if BRONZE_PROFILER_WIN32
     ::timeBeginPeriod(1);
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+    HANDLE timer = ::CreateWaitableTimerExW(
+        nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!timer) {
+        timer = ::CreateWaitableTimerW(nullptr, TRUE, nullptr);
+    }
 #else
     s.samplerId = currentThreadId();
     std::vector<std::pair<uint64_t, uint64_t>> otherBounds;  // each other thread's stack
@@ -672,14 +680,31 @@ void samplerBody(Session& s) {
         const double relMs = 1000.0 * double(qpcNow() - s.qpcStart) / double(s.qpcFreq);
         if (relMs < nextDue) {
 #if BRONZE_PROFILER_WIN32
-            ::Sleep(1);
+            const double remMs = nextDue - relMs;
+            if (remMs > 0.25 && timer) {
+                LARGE_INTEGER due;
+                due.QuadPart = -static_cast<LONGLONG>((remMs - 0.15) * 10000.0);
+                if (due.QuadPart < -1) {
+                    ::SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+                    ::WaitForSingleObject(timer, 5);
+                }
+            } else {
+                ::SwitchToThread();
+            }
 #else
-            std::this_thread::sleep_for(std::chrono::microseconds(
-                std::max<int64_t>(50, static_cast<int64_t>((nextDue - relMs) * 1000.0))));
+            const int64_t remUs = static_cast<int64_t>((nextDue - relMs) * 1000.0);
+            if (remUs > 100) {
+                std::this_thread::sleep_for(std::chrono::microseconds(remUs - 50));
+            } else {
+                std::this_thread::yield();
+            }
 #endif
             continue;
         }
-        nextDue = relMs + periodMs;
+        nextDue += periodMs;
+        if (nextDue <= relMs) {
+            nextDue = relMs + periodMs;
+        }
         if (relMs - lastModuleRefresh > 1000.0) {
             lastModuleRefresh = relMs;
             s.modules.refresh();
@@ -732,6 +757,7 @@ void samplerBody(Session& s) {
     for (auto& [id, h] : s.others) releaseThread(h);
     s.others.clear();
 #if BRONZE_PROFILER_WIN32
+    if (timer) ::CloseHandle(timer);
     ::timeEndPeriod(1);
 #endif
 }
