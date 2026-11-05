@@ -339,6 +339,8 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only) {
     BasicBlock* merge = b.append_block(prefix + "_merge");
     Value* result = b.add_block_param(merge, Type::i32());
     BasicBlock* classify = b.append_block(prefix + "_classify");
+    BasicBlock* not_obj = b.append_block(prefix + "_notobj");
+    BasicBlock* not_nullish = b.append_block(prefix + "_notnullish");
     b.position_at_end(cur);
 
     auto bits = [&](uint64_t x) { return b.build_iconst_i64(static_cast<int64_t>(x)); };
@@ -350,7 +352,17 @@ Value* lower_dynamic_truthy(Builder& b, Value* v, bool helper_only) {
     // Boolean" and its low bit is its answer; every other value falls through
     // to the classifier unchanged.
     Value* is_bool = b.build_ult(b.build_sub(v, bits(kBoolTag)), bits(2));
-    b.build_br_if(is_bool, merge, {b.build_and(b.build_trunc_i32(v), b.build_iconst_i32(1))}, classify, {});
+    b.build_br_if(is_bool, merge, {b.build_and(b.build_trunc_i32(v), b.build_iconst_i32(1))}, not_obj, {});
+    // Then an Object and the two nullish values, each on a branch of its own:
+    // the next most common conditions are presence tests (`if (material.map)`,
+    // `object.parent !== null && ...` written as `if (object.parent)`), whose
+    // operand is an object or null/undefined.
+    b.position_at_end(not_obj);
+    b.build_br_if(b.build_eq(b.build_lshr(v, bits(BRONZE_ABI_VALUE_TAG_SHIFT)), bits(BRONZE_ABI_TAG_OBJECT)), merge,
+                  {b.build_iconst_i32(1)}, not_nullish, {});
+    b.position_at_end(not_nullish);
+    b.build_br_if(b.build_or(b.build_eq(v, bits(kNullTag)), b.build_eq(v, bits(kUndefinedTag))), merge,
+                  {b.build_iconst_i32(0)}, classify, {});
     b.position_at_end(classify);
     Value* is_num = b.build_ule(v, bits(kBronzeNumberMaxBits));
     // |x| in [1, +Inf] bits: neither a zero nor a NaN.

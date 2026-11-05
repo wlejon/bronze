@@ -121,7 +121,13 @@ OwnHeld ownHeld(const Solver& s) {
 }
 
 void planDirect(const Solver& s, const OwnHeld& held, const SiteFact& fact, StampPlan& plan) {
-    if (fact.call != CallClass::Single || fact.targets.size() != 1) return;
+    // An unknown target beside one known callee (an escaped receiver whose
+    // prototype the prediction still sees) is planned like a single one: the
+    // direct edge's guard is the site's method cache, which names the callee
+    // only for a receiver whose lookup really finds it.
+    const bool single = fact.call == CallClass::Single ||
+                        (fact.call == CallClass::UnknownTarget && s.options().predict);
+    if (!single || fact.targets.size() != 1) return;
     const il::Module& mod = s.module();
     const il::Instruction& inst = mod.functions[fact.fn].blocks[fact.block].instructions[fact.inst];
     if (inst.op != il::Op::MethodCall) return;
