@@ -297,7 +297,8 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
             out.imm_i64 = inst.immI32;
             break;
         case il::Op::IsShape:
-            out.op = il2mir::BronzeOp::IsShape;
+        case il::Op::LayoutFact:
+            out.op = inst.op == il::Op::IsShape ? il2mir::BronzeOp::IsShape : il2mir::BronzeOp::LayoutFact;
             out.static_slot = inst.staticSlot;
             out.static_cell = inst.staticCellIndex;
             out.family_lo = inst.familyLo;

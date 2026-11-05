@@ -397,6 +397,18 @@ inline bool provenStaticSlot(const Instruction& inst) {
     return inst.staticSlot != Instruction::kNoStaticSlot && !inst.staticSlotGuessed;
 }
 
+// The `layout.fact` a shape-guarded site holds as its last operand
+// (lower/layout_facts.h): one operand past a prop.get's receiver or a
+// prop.set's receiver and value. `kNoValue` for every other instruction,
+// including a shape-guarded site of a guarded region, which holds none and is
+// its bare access unconditionally.
+inline ValueId layoutFactOperand(const Instruction& inst) {
+    if (!inst.shapeGuarded) return kNoValue;
+    if (inst.op == Op::PropGet && inst.operands.size() == 2) return inst.operands[1];
+    if (inst.op == Op::PropSet && inst.operands.size() == 3) return inst.operands[2];
+    return kNoValue;
+}
+
 // Which copy of a guarded numeric region a block belongs to
 // (src/lower/guard_region.h). The pass duplicates a region into a FAST copy
 // whose numbers are carried as `f64` and leaves the original blocks as the SLOW

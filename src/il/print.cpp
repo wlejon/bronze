@@ -251,8 +251,12 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                 out += "@" + std::to_string(inst.staticCellIndex);
                             }
                             // A dominating `is.shape` answered the guard: the
-                            // site is a bare load or store.
+                            // site is a bare load or store. With a layout fact
+                            // (its last operand), only while the epoch equals it.
                             if (inst.shapeGuarded) out += ", shape-guarded";
+                            if (inst.shapeGuarded && layoutFactOperand(inst) != kNoValue) {
+                                out += " fact %" + std::to_string(layoutFactOperand(inst));
+                            }
                         }
                         // An accessor site calls its getter or setter behind
                         // the cell pair it names: emitted code again.
@@ -437,8 +441,12 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                                 out += "@" + std::to_string(inst.staticCellIndex);
                             }
                             // A dominating `is.shape` answered the guard: the
-                            // site is a bare load or store.
+                            // site is a bare load or store. With a layout fact
+                            // (its last operand), only while the epoch equals it.
                             if (inst.shapeGuarded) out += ", shape-guarded";
+                            if (inst.shapeGuarded && layoutFactOperand(inst) != kNoValue) {
+                                out += " fact %" + std::to_string(layoutFactOperand(inst));
+                            }
                         }
                         // An accessor site calls its getter or setter behind
                         // the cell pair it names: emitted code again.
@@ -813,7 +821,9 @@ std::string print(const Module& module, const std::vector<std::string>& fnNames)
                         break;
                     // The site claim it tests, spelled as the site prints it.
                     case Op::IsShape:
-                        out += "is.shape %" + std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
+                    case Op::LayoutFact:
+                        out += std::string(opName(inst.op)) + " %" +
+                               std::to_string(inst.operands.empty() ? 0 : inst.operands[0]) +
                                ", slot " + std::to_string(inst.staticSlot);
                         if (inst.familyLo != Instruction::kNoFamily) {
                             out += " family " + std::to_string(inst.familyLo) + ".." +

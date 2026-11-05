@@ -28,6 +28,7 @@
 #include "il_property.h"
 #include "il_property_lowering.h"
 #include <brass/mir/function.hpp>
+#include <algorithm>
 #include <unordered_set>
 
 namespace il2mir {
@@ -144,9 +145,18 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     apply_inst_loc(b, first);
     Value* obj = ensure_type(get_val_by_id(recv_id, b, val_map), Type::i64(), b);
     std::vector<StaticGuardTerm> terms;
+    // A site holding a LAYOUT FACT (lower/layout_facts.h) asks its fact
+    // instead of its claim: one compare per distinct fact against one read of
+    // the epoch. Its value, a store's included, is a Number box.
+    std::vector<uint32_t> facts;
     for (size_t j = inst_idx; j < end; ++j) {
         const BronzeInstruction& inst = insts[j];
         if (!is_site(inst)) continue;
+        if (has_layout_fact(inst)) {
+            const uint32_t fact = inst.operands.back();
+            if (std::find(facts.begin(), facts.end(), fact) == facts.end()) facts.push_back(fact);
+            continue;
+        }
         StaticGuardTerm t{StaticSlotSite::of(inst)};
         if (inst.op == BronzeOp::PropSet) {
             t.store_is_number = is_number_value(inst.operands[1]);
@@ -157,7 +167,20 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
         terms.push_back(t);
     }
     Value* ptr = nullptr;
-    Value* ok = prop_lowering_.static_guard(b, obj, memo_keyed(b, recv_id, obj), terms, ptr);
+    Value* ok = nullptr;
+    if (!terms.empty()) {
+        ok = prop_lowering_.static_guard(b, obj, memo_keyed(b, recv_id, obj), terms, ptr);
+    } else {
+        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_OBJECT} << 48)));
+    }
+    if (!facts.empty()) {
+        Value* epoch = load_layout_epoch(b);
+        for (uint32_t fact : facts) {
+            Value* f = ensure_type(get_val_by_id(fact, b, val_map), Type::f64(), b);
+            Value* holds = b.build_eq(epoch, b.build_fptosi_i64(f));
+            ok = ok ? b.build_and(ok, holds) : holds;
+        }
+    }
     // The shape memo (il_shape_memo.cpp) as the fast copy leaves it: nothing
     // in the fast copy moves a shape.
     const auto memo_fast = memo_snapshot();

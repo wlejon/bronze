@@ -10,6 +10,7 @@
 #include "ast/assigned.h"
 #include "ast/queries.h"
 #include "lower/guard_region.h"
+#include "lower/layout_facts.h"
 #include "lower/typed_loop_version.h"
 #include "lower/inline_small.h"
 #include "lower/inline_guarded.h"
@@ -452,7 +453,16 @@ std::optional<il::Module> Lowerer::lower() {
         assignDefineAddCells(ilModule_);
         // The claims last: they hand out static cells of their own, one per
         // site, so an inlined copy is claimed in its caller's context.
-        if (wholeProgram) wholeProgram_->report += wpo::optimizeForBuild(ilModule_, wholeProgram_->build);
+        if (wholeProgram) {
+            wholeProgram_->report += wpo::optimizeForBuild(ilModule_, wholeProgram_->build);
+            // After the claims, which it spends: a receiver's guard asked once
+            // answers its later sites across calls (layout_facts.h).
+            LayoutFactStats layoutStats;
+            std::string layoutPerFn;
+            const wpo::BuildOptions& build = wholeProgram_->build;
+            applyLayoutFacts(ilModule_, &layoutStats, build.perSite ? build.filter : std::string{}, &layoutPerFn);
+            if (build.stats) wholeProgram_->report += layoutFactReport(layoutStats) + layoutPerFn;
+        }
     }
     return ilModule_;
 }

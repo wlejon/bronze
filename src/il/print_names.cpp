@@ -86,6 +86,7 @@ const char* opName(Op op) {
         case Op::MathRandom: return "math.random";
         case Op::IsShape: return "is.shape";
         case Op::LayoutEpoch: return "layout.epoch";
+        case Op::LayoutFact: return "layout.fact";
         case Op::DynamicCall: return "call.dynamic";
         case Op::FunctionRef: return "func.ref";
         case Op::Construct: return "new";

@@ -593,6 +593,19 @@ enum class Op : uint8_t {
     // cannot throw but is not in canCollect's list, and is never merged,
     // hoisted or dropped.
     LayoutEpoch,
+    // a: f64 = layout.fact b. A LAYOUT FACT (lower/layout_facts.h,
+    // docs/aot-specialization.md "S2"): the layout epoch when `b` passes the
+    // static-slot guard of the claim this instruction carries (the fields
+    // `is.shape` carries), else a value no epoch equals. Its only readers are
+    // the sites it covers — a `shapeGuarded` prop.get / prop.set holding it
+    // as a last operand — and each asks one question of it: does the epoch
+    // still equal it? If so, the receiver still has every slot the shape it
+    // was checked at described, across any calls (S1), and the site is its
+    // bare load or store; if not, the site is its ordinary self. The value is
+    // the epoch as an exact double (as `layout.epoch` reads it), or 1, which
+    // no epoch is. Loads only, cannot throw; impure like `layout.epoch`
+    // (never merged, hoisted or dropped).
+    LayoutFact,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

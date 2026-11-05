@@ -125,6 +125,9 @@ enum class BronzeOp {
     MathRandom,
     // a: f64 = layout.epoch (il_op.h `LayoutEpoch`).
     LayoutEpoch,
+    // a: f64 = layout.fact recv: the epoch when recv passes the claim it
+    // carries, else 1, which no epoch is (il_op.h `LayoutFact`).
+    LayoutFact,
     // a: bool = is.shape recv: the static-slot guard of the site claim it
     // carries (il.h `Op::IsShape`).
     IsShape,

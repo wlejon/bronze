@@ -559,6 +559,33 @@ bool verifyFunction(const Function& fn, DiagnosticSink& diags) {
                                             " is shape-guarded without a static slot claim or a number to store");
                     return false;
                 }
+                // A layout fact, when the site holds one, is a `layout.fact`
+                // of the same receiver.
+                const ValueId fact = layoutFactOperand(inst);
+                if (fact != kNoValue) {
+                    bool factOk = false;
+                    for (const auto& defBlock : fn.blocks) {
+                        for (const auto& def : defBlock.instructions) {
+                            if (def.result == fact) {
+                                factOk = def.op == Op::LayoutFact && def.operands.size() == 1 &&
+                                         def.operands[0] == inst.operands[0];
+                            }
+                        }
+                    }
+                    if (!factOk) {
+                        diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +
+                                                " holds a layout fact that is no layout.fact of its receiver");
+                        return false;
+                    }
+                }
+            }
+            if (inst.op == Op::LayoutFact &&
+                (inst.operands.size() != 1 || inst.type != Type::F64 || inst.result == kNoValue ||
+                 definedTypes[inst.operands[0]] != Type::Dynamic ||
+                 inst.staticSlot == Instruction::kNoStaticSlot)) {
+                diags.error(Span{}, "Function " + fn.name +
+                                        ": layout.fact takes one dynamic operand and a site's slot claim, and is an f64");
+                return false;
             }
             // The kind is compared against the view header's kind word, so it
             // must be one of the Number kinds the typed element ops serve.
@@ -872,7 +899,7 @@ bool verify(const Module& module, DiagnosticSink& diags) {
                                             std::to_string(inst.defineAddCell) + ", which the module cannot back");
                     return false;
                 }
-                if (inst.op == Op::PropGet || inst.op == Op::PropSet || inst.op == Op::IsShape ||
+                if (inst.op == Op::PropGet || inst.op == Op::PropSet || inst.op == Op::IsShape || inst.op == Op::LayoutFact ||
                     inst.op == Op::MethodCall || inst.op == Op::MethodCallSpread) {
                     if (inst.icIndex >= module.icSiteCount) {
                         diags.error(Span{}, "Function " + fn.name + ": " + opName(inst.op) +

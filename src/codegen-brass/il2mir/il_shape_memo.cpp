@@ -68,6 +68,7 @@ bool moves_no_shape(const BronzeInstruction& inst) {
         case BronzeOp::IsDenseArray:  // header loads
         case BronzeOp::IsTypedArray:
         case BronzeOp::IsShape:       // the static guard's loads
+        case BronzeOp::LayoutFact:    // the same, and the epoch word
         // The claim's helper scans an Array's elements and rewrites an Int32
         // box as the same Number: an Array's element block, no shape.
         case BronzeOp::IsNumberArray:

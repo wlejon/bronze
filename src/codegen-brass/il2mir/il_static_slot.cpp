@@ -365,10 +365,48 @@ static bool shape_guard_lowerable(IlLowering* lowering, const BronzeInstruction&
            prop_lowering.static_site_backed(site);
 }
 
+Value* load_layout_epoch(Builder& b) {
+    // The TLS word `layout.epoch` reads (il_lowering_ops.cpp), as its i64.
+    Module* mod = b.current_block()->parent()->parent();
+    Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                     : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+    return b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF);
+}
+
+bool has_layout_fact(const BronzeInstruction& inst_ast) {
+    if (!inst_ast.shape_guarded) return false;
+    return (inst_ast.op == BronzeOp::PropGet && inst_ast.operands.size() == 2) ||
+           (inst_ast.op == BronzeOp::PropSet && inst_ast.operands.size() == 3);
+}
+
+Value* layout_fact_holds(Builder& b, Value* fact) {
+    // The fact is the epoch as an exact double (il_op.h `LayoutFact`): one
+    // truncation back and one integer compare against the word.
+    return b.build_eq(load_layout_epoch(b), b.build_fptosi_i64(fact));
+}
+
 bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj, Value* val,
                          Value*& res) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
     const bool here = shape_guard_lowerable(lowering, inst_ast);
+    // A layout fact: the claim's guard where the receiver stands now, and
+    // the epoch read beside it (lower/layout_facts.h). Where the guard is not
+    // lowered here the fact is 1, which no epoch is (epochs are even, from 2),
+    // and every site holding it takes its ordinary path.
+    if (inst_ast.op == BronzeOp::LayoutFact) {
+        if (!here) {
+            res = b.build_sitofp_f64_i64(iconst(b, 1));
+            return true;
+        }
+        Value* ok = prop_lowering.lower_is_shape(b, obj, lowering->memo_keyed(b, inst_ast.operands[0], obj),
+                                                 StaticSlotSite::of(inst_ast));
+        res = b.build_sitofp_f64_i64(b.build_select(ok, load_layout_epoch(b), iconst(b, 1)));
+        lowering->memo_keep();
+        return true;
+    }
+    // A site holding a fact is lowered by the caller (lower_fact_site); a
+    // fact is no licence for an unconditional bare access.
+    if (has_layout_fact(inst_ast)) return false;
     // A guard reads and decides, so the memo answers the receiver's keyed
     // shape and stays.
     if (inst_ast.op == BronzeOp::IsShape) {
@@ -393,6 +431,47 @@ bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast
     return true;
 }
 
+Value* lower_fact_site(IlLowering* lowering, Builder& b, Value* fact,
+                       const std::unordered_map<uint32_t, Value*>& val_map, bool has_result,
+                       const std::function<Value*(Builder&)>& bare, const std::function<Value*(Builder&)>& ordinary) {
+    BasicBlock* bb_cur = b.current_block();
+    const std::string prefix = "fact_site_" + std::to_string(bb_cur->parent()->next_block_id());
+    BasicBlock* bb_hit = b.append_block(prefix + "_hit");
+    BasicBlock* bb_miss = b.append_block(prefix + kMissName);
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    // The shape memo crosses the site as a static site's join carries it:
+    // the hit moves no shape, and the miss, which may run anything, reads
+    // every memoized receiver's keyed shape again.
+    const auto memo = lowering->memo_snapshot();
+
+    b.position_at_end(bb_cur);
+    b.build_br_if(layout_fact_holds(b, fact), bb_hit, bb_miss);
+
+    b.position_at_end(bb_hit);
+    std::vector<Value*> hit_args;
+    Value* hit = bare(b);
+    if (has_result) hit_args.push_back(hit);
+    for (const auto& entry : memo) hit_args.push_back(entry.second);
+    b.build_br(bb_merge, hit_args);
+
+    // The site exactly as it is without a fact: its own guard, cache and fill.
+    b.position_at_end(bb_miss);
+    std::vector<Value*> miss_args;
+    Value* missed = ordinary(b);
+    if (has_result) miss_args.push_back(missed);
+    lowering->memo_restore(memo);
+    for (Value* v : lowering->memo_recompute(b, val_map)) miss_args.push_back(v);
+    b.build_br(bb_merge, miss_args);
+
+    b.position_at_end(bb_merge);
+    Value* res = has_result ? b.add_block_param(bb_merge, Type::i64()) : nullptr;
+    std::vector<std::pair<uint32_t, Value*>> merged;
+    for (const auto& entry : memo) merged.emplace_back(entry.first, b.add_block_param(bb_merge, Type::i64()));
+    lowering->memo_restore(std::move(merged));
+    lowering->memo_keep();
+    return res;
+}
+
 void IlLowering::register_class_families(Builder& b, Value* map_addr) {
     if (options_.class_family_count == 0) return;
     // Preorder ids, contiguous per subtree: the runtime allocates the module's
@@ -403,6 +482,42 @@ void IlLowering::register_class_families(Builder& b, Value* map_addr) {
                   b.build_iconst_i32(static_cast<int32_t>(options_.class_family_count)),
                   b.build_func_addr(module_sym("__bronze_class_family_fields")), map_addr,
                   module_data_addr(b, "__bronze_family_base")});
+}
+
+// Whether a site's layout claim gets the static-slot guard: a named key, in
+// code that runs more than once (code that runs once calls the helper, as
+// every other site there does). A claim this module has no table for is a
+// lowering bug, refused by name rather than quietly lowered without its guard.
+static bool static_site_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
+    const PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
+    const StaticSlotSite site = StaticSlotSite::of(inst_ast);
+    if (site.none() || inst_ast.index == PropertyLoweringHelper::kNoKey) return false;
+    if (!prop_lowering.enable_inlined_fastpaths() || lowering->run_once()) return false;
+    if (!prop_lowering.static_site_backed(site)) {
+        lowering->set_has_error(true);
+        if (lowering->diag()) {
+            lowering->diag()->error(SourceLocation("", inst_ast.line, inst_ast.column),
+                                    "il2mir: static slot " + std::to_string(site.slot) + " of '" +
+                                        std::string(prop_lowering.key_tag(inst_ast.index)) +
+                                        "' names a guard table the module does not have");
+        }
+        return false;
+    }
+    return true;
+}
+
+bool static_get_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
+    return inst_ast.op == BronzeOp::PropGet && !inst_ast.operands.empty() && static_site_lowerable(lowering, inst_ast);
+}
+
+// A constructor's writes and the writes to an object this function made are
+// adds: the property is not there yet, the guard could only miss, and the
+// cache's transition arm is what answers them. A census build counts every
+// write through the helper (inline_sets off).
+bool static_set_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
+    return inst_ast.op == BronzeOp::PropSet && inst_ast.operands.size() >= 2 &&
+           lowering->prop_lowering().inline_sets() && !lowering->in_class_constructor() &&
+           !lowering->is_fresh_object(inst_ast.operands[0]) && static_site_lowerable(lowering, inst_ast);
 }
 
 } // namespace il2mir

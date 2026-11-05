@@ -134,6 +134,9 @@ bool canThrow(const Instruction& inst) {
         // One load of the thread's epoch word; same reasoning as above: it
         // must read as impure, so it stays out of canCollect's list.
         case Op::LayoutEpoch:
+        // A static guard's loads and the same epoch load: impure for the
+        // same reason.
+        case Op::LayoutFact:
         // One aligned load from the module's own template-slot table, at an
         // address the compiler already proved in range.
         case Op::TemplateCached:

@@ -25,6 +25,20 @@ bool static_set_lowerable(IlLowering* lowering, const BronzeInstruction& inst_as
 bool lower_shape_guarded(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj, Value* val,
                          Value*& res);
 
+// LAYOUT FACTS (il.h `layoutFactOperand`, lower/layout_facts.h): whether a
+// site holds one; the layout epoch word as an i64; and whether `fact` (the
+// operand, the epoch as a double) still holds, as an i1.
+bool has_layout_fact(const BronzeInstruction& inst_ast);
+Value* load_layout_epoch(Builder& b);
+Value* layout_fact_holds(Builder& b, Value* fact);
+
+// A site holding a fact: `bare` (the slot's load or store) where the fact
+// holds, else `ordinary` (the site as it is lowered without one), joined. The
+// result (an i64) when `has_result`; the shape memo is carried across.
+Value* lower_fact_site(IlLowering* lowering, Builder& b, Value* fact,
+                       const std::unordered_map<uint32_t, Value*>& val_map, bool has_result,
+                       const std::function<Value*(Builder&)>& bare, const std::function<Value*(Builder&)>& ordinary);
+
 bool lower_property_instruction(
     IlLowering* lowering,
     const BronzeInstruction& inst_ast,

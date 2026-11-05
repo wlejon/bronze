@@ -205,8 +205,8 @@ certainty.
 
 Six steps toward Chromium's ~58M instructions per three_meshes n=2565 frame
 (bro AOT: ~102M, 7.85 cpu ms). S0 measured where receivers are read; S1 built
-the invariant later steps lean on. S2 onward (dataflow over "layout still
-valid", fewer guards and stubs per receiver) is not built.
+the invariant later steps lean on. S2 carries a guard's answer across calls
+within a function as a layout fact. S3 onward is not built.
 
 ### S0: what the hot receivers look like
 
@@ -298,6 +298,120 @@ bump and which do not); tests/oracle/cases/stable_layout_leaves.js (every leave
 kind inside a call between two reads, including two calls deep) and
 stable_layout_constructors.js (appending constructors, a prototype setter
 appearing mid-run, deletes and repr changes inside constructors and callees).
+
+### S2: layout facts across calls
+
+`src/lower/layout_facts.{h,cpp}` (the design is in the header). A receiver's
+static-slot guard, asked once, answers the later static sites on the same
+receiver in the same function across calls, getters, stubs and blocks, while
+the layout epoch is unchanged.
+
+- **The fact** is an IL value: `layout.fact %r` (`LayoutFact`, f64, impure,
+  cannot throw) carries one site's claim (identity cell or family range) and
+  evaluates to the layout epoch, as an exact double, when `r` passes that
+  claim's guard, else 1, which no epoch is. A covered site (`PropGet` /
+  `PropSet` with `shapeGuarded` and the fact as its last operand) is lowered by
+  il2mir as `epoch == fact ? bare slot access : the site's ordinary lowering`
+  (`lower_fact_site`). The miss path is the full static site (guard, cache,
+  fill), so a failed fact costs one compare more than before and never runs
+  anything twice. Covered sites the backend batches into one static run share
+  one epoch load.
+- **Where facts go.** Per receiver SSA value, an ANCHOR is a static site no
+  other site on that receiver dominates. Facts are made in front of an anchor,
+  where il2mir's shape memo already has the receiver's keyed shape, so each
+  fact is a compare. A member is covered only when it is REMOTE: in a different
+  memo stretch from its anchor (a call, a stub or a block edge the memo does not
+  cross lies between). Members in the anchor's stretch already get the memo's
+  compare and are left to it. A stretch is covered only whole, only when one
+  claim answers all of it, and only when that claim is a FAMILY range used in
+  two or more remote stretches. Identity claims are left alone: an identity
+  guard is one load and one compare against the site's cell, about what the
+  fact's check costs (epoch word, fact reloaded across the calls, conversion),
+  so a fact for one only adds the cost of making it. Covering identity claims
+  cost object_graph +1.65% instructions (`traverseDFS` paid three facts for
+  one guard per loop iteration); family-only is neutral there.
+- **Handlers.** Dominance is computed over a graph that splits each block into
+  an entry and an exit node, handler edges leaving from the entry, so a fact
+  made mid-block in a try body is never assumed in its handler.
+- **Why the epoch check per site and not a fast/slow copy.** S1's epoch is
+  global: any call may bump it, so a copy would need a test after every call
+  and a slow copy re-entered mid-function. A per-site `cmp` + branch on a TLS
+  word is 3-4 instructions where the guard it replaces is a tag test, a shape
+  load and a compare against a cell (identity) or a family range (two loads, two
+  compares), and the site's miss path is code that exists anyway.
+- **AOT only.** The pass runs in `lowerModule` after the whole-program claims
+  are stamped (`optimizeForBuild`), which only `bronze build` does. The JIT
+  tiers never see a fact, and their output is unchanged. Coroutine bodies are
+  skipped.
+- **What it cannot cover.** Sites without a static claim (the material's
+  `is*` flags, `materialProperties`: "not-in-prefix") still call the IC stubs.
+  Identity claims are one cell per site, so two reads of one receiver at
+  different keys never share a fact; only family claims (one range for a
+  class's whole layout) do. In three_meshes nearly all shareable claims are
+  family claims on `material` and `object`.
+
+Coverage on three_meshes (`--wpo-stats`, `wpo-layout` lines):
+
+| scope | static sites | covered | facts |
+|---|---|---|---|
+| module | 8845 | 885 | 152 at 150 anchors (224 left local) |
+| setMaterial | 29 | 28 | 1 |
+| setProgram | 37 | 11 | 3 |
+| renderObject (two copies) | 12 / 10 | 7 / 5 | 1 / 2 |
+| projectObject (two copies) | 22 / 18 | 8 / 3 | 2 / 1 |
+| Object3D.updateMatrixWorld | 30 | 7 | 1 |
+| painterSortStable | 14 | 0 | 0 (all reads in one stretch) |
+| renderBufferDirect | 0-1 | 0 | 0 |
+
+Measured (with and without the pass, same compiler):
+
+- **Microbench** (8 family-claim reads of one receiver per call, a call
+  between each pair): 8.41G to 7.77G instructions, -7.7%, ~6 per covered read.
+- **Pure-compute benches** (instructions): mesh_churn_2k 374.53M to 371.46M
+  (-0.8%); three_math, object_graph, typed_array_crunch, instanced_mesh_churn,
+  fib, numeric_loop, property_access, proto_dispatch(_churn) unchanged (within
+  0.01%).
+- **three_meshes n=2565**: no change outside noise. cpu ms, order-balanced
+  pairs: 7.63 / 7.64 / 7.73 / 7.70 without, 7.87 / 7.74 / 7.67 / 7.65 with
+  (the second run of a pair is the slower one either way). Main-thread
+  instructions per frame 102.0-105.3M without, 102.7-103.7M with; the IC
+  stubs vary by ±1M between runs of one build (`__bronze_prop_get_ic`
+  5.4-6.6M, `__bronze_method_call_ic` 4.2-5.2M), more than S2 can move.
+- **three_skinned n=410**: cpu 6.80 / 6.60 without, 6.50 / 6.64 with;
+  90.1M vs 92.0M instructions in one pair; noise.
+
+Why so little on the scenes: the fact replaces a family guard (~12
+instructions: tag, shape, stamp, family base, range) with an epoch compare
+(~6: the epoch word, the fact reloaded from its spill slot, the conversion,
+compare, branch; il2mir CSEs the conversion within a block). That is ~6 per
+covered read, and three_meshes has under ~0.1M covered reads per frame (885
+covered sites, most in setMaterial / setProgram / projectObject at about one
+activation per object): ~0.5M of 102M at most. The IC stubs (~11M) and the
+unclaimed reads behind them are untouched. Annotating setMaterial shows the
+facts hold (the miss blocks are cold), so the mechanism works; the scenes'
+cost is elsewhere.
+
+What this says about the next steps:
+
+- **S3 (receiver-class function versions).** A version entered through one
+  guard needs exactly what S2 now provides: a check that survives calls. But
+  the S2 numbers say the guard itself is cheap; a version pays only where it
+  turns stub sites (no claim: `materialProperties`, the material's `is*`
+  flags, polymorphic geometry reads) into slot reads, ~6-12 instructions
+  saved on a stub hit of ~40-60 rather than ~6 on a guard. S3's estimate
+  should be counted in stub hits removed, not guards.
+- **S4 (non-collecting IC fast paths).** The stubs are the larger and the
+  more certain target: ~11M per frame on three_meshes in `__bronze_prop_get_ic`
+  and `__bronze_method_call_ic` alone, against ~0.5M S2 could reach. S4
+  before S3.
+
+Tests: tests/oracle/cases/layout_facts_mutation.js mutates a covered receiver
+between two covered reads in every way S1 lists (delete, accessor redefine,
+freeze, seal, preventExtensions, setPrototypeOf, double to string and to
+object, overflow reallocation by appends, becoming a prototype, delete and
+re-add, read-only redefine), from a call one and two levels deep and from a
+getter, across if/else, loops and try (anchor inside and before the try),
+with covered stores read back.
 
 ## Measuring
 

@@ -403,42 +403,6 @@ void lower_prop_set_cached(IlLowering* lowering, const BronzeInstruction& inst_a
 
 } // namespace
 
-// Whether a site's layout claim gets the static-slot guard: a named key, in
-// code that runs more than once (code that runs once calls the helper, as
-// every other site there does). A claim this module has no table for is a
-// lowering bug, refused by name rather than quietly lowered without its guard.
-static bool static_site_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
-    const PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
-    const StaticSlotSite site = StaticSlotSite::of(inst_ast);
-    if (site.none() || inst_ast.index == PropertyLoweringHelper::kNoKey) return false;
-    if (!prop_lowering.enable_inlined_fastpaths() || lowering->run_once()) return false;
-    if (!prop_lowering.static_site_backed(site)) {
-        lowering->set_has_error(true);
-        if (lowering->diag()) {
-            lowering->diag()->error(SourceLocation("", inst_ast.line, inst_ast.column),
-                                    "il2mir: static slot " + std::to_string(site.slot) + " of '" +
-                                        std::string(prop_lowering.key_tag(inst_ast.index)) +
-                                        "' names a guard table the module does not have");
-        }
-        return false;
-    }
-    return true;
-}
-
-bool static_get_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
-    return inst_ast.op == BronzeOp::PropGet && !inst_ast.operands.empty() && static_site_lowerable(lowering, inst_ast);
-}
-
-// A constructor's writes and the writes to an object this function made are
-// adds: the property is not there yet, the guard could only miss, and the
-// cache's transition arm is what answers them. A census build counts every
-// write through the helper (inline_sets off).
-bool static_set_lowerable(IlLowering* lowering, const BronzeInstruction& inst_ast) {
-    return inst_ast.op == BronzeOp::PropSet && inst_ast.operands.size() >= 2 &&
-           lowering->prop_lowering().inline_sets() && !lowering->in_class_constructor() &&
-           !lowering->is_fresh_object(inst_ast.operands[0]) && static_site_lowerable(lowering, inst_ast);
-}
-
 void PropertyLoweringHelper::load_dense_array_cursor(Builder& b, Value* obj, Value*& out_block, Value*& out_head) {
     Value* ptr = b.build_and(obj, iconst64(b, kPayloadMask));
     Value* block = b.build_and(b.build_load(Type::i64(), ptr, BRONZE_ABI_ARRAY_ELEMS_OFFSET), iconst64(b, kPayloadMask));
@@ -677,6 +641,7 @@ bool is_property_il_op(BronzeOp op) {
         case BronzeOp::ElemSetTyped:
         case BronzeOp::ElemDelete:
         case BronzeOp::IsShape:
+        case BronzeOp::LayoutFact:
             return true;
         default:
             return false;
@@ -739,12 +704,24 @@ bool lower_property_instruction(
                 return true;
             }
             if (static_get_lowerable(lowering, inst_ast)) {
-                StaticMiss miss;
-                miss.get = [&](Builder& bb) { return lower_prop_get_cached(lowering, inst_ast, bb, obj_val, site); };
-                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
-                lowering->memo_attach(b, miss, inst_ast.operands[0], obj_val, val_map);
-                res_val = prop_lowering.lower_prop_get_static(b, obj_val, inst_ast.index, StaticSlotSite::of(inst_ast),
-                                                              miss);
+                auto static_get = [&](Builder& bb) {
+                    StaticMiss miss;
+                    miss.get = [&](Builder& b2) { return lower_prop_get_cached(lowering, inst_ast, b2, obj_val, site); };
+                    miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
+                    lowering->memo_attach(bb, miss, inst_ast.operands[0], obj_val, val_map);
+                    return prop_lowering.lower_prop_get_static(bb, obj_val, inst_ast.index,
+                                                               StaticSlotSite::of(inst_ast), miss);
+                };
+                if (has_layout_fact(inst_ast)) {
+                    res_val = lower_fact_site(
+                        lowering, b, ensure_type(get_opd(1), Type::f64()), val_map, /*has_result=*/true,
+                        [&](Builder& bb) {
+                            return prop_lowering.lower_prop_get_guarded(bb, obj_val, StaticSlotSite::of(inst_ast));
+                        },
+                        static_get);
+                    return true;
+                }
+                res_val = static_get(b);
                 return true;
             }
             if (inst_ast.index != PropertyLoweringHelper::kNoKey && inst_ast.static_slot == UINT32_MAX) {
@@ -784,6 +761,7 @@ bool lower_property_instruction(
         }
 
         case BronzeOp::IsShape:
+        case BronzeOp::LayoutFact:
             lower_shape_guarded(lowering, inst_ast, b, ensure_type(get_opd(0), Type::i64()), nullptr, res_val);
             return true;
 
@@ -817,15 +795,32 @@ bool lower_property_instruction(
                 return true;
             }
             if (static_set_lowerable(lowering, inst_ast)) {
-                StaticMiss miss;
-                miss.set = [&](Builder& bb) { lower_prop_set_cached(lowering, inst_ast, bb, obj_val, val, site); };
-                miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
-                lowering->memo_attach(b, miss, inst_ast.operands[0], obj_val, val_map);
-                const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
-                const bool need_barrier = !val_prim && !prop_lowering.is_known_non_ref(val);
-                prop_lowering.lower_prop_set_static(b, obj_val, inst_ast.index, val, StaticSlotSite::of(inst_ast),
-                                                    lowering->is_number_value(inst_ast.operands[1]), need_barrier,
-                                                    miss);
+                auto static_set = [&](Builder& bb) -> Value* {
+                    StaticMiss miss;
+                    miss.set = [&](Builder& b2) { lower_prop_set_cached(lowering, inst_ast, b2, obj_val, val, site); };
+                    miss.receiver = [&](Builder&) { return ensure_type(get_opd(0), Type::i64()); };
+                    lowering->memo_attach(bb, miss, inst_ast.operands[0], obj_val, val_map);
+                    const bool val_prim = lowering->is_primitive_value(inst_ast.operands[1]);
+                    const bool need_barrier = !val_prim && !prop_lowering.is_known_non_ref(val);
+                    prop_lowering.lower_prop_set_static(bb, obj_val, inst_ast.index, val,
+                                                        StaticSlotSite::of(inst_ast),
+                                                        lowering->is_number_value(inst_ast.operands[1]),
+                                                        need_barrier, miss);
+                    return nullptr;
+                };
+                if (has_layout_fact(inst_ast)) {
+                    // The verifier holds a fact site's value to a Number box,
+                    // which every slot representation takes with no barrier.
+                    lower_fact_site(
+                        lowering, b, ensure_type(get_opd(2), Type::f64()), val_map, /*has_result=*/false,
+                        [&](Builder& bb) -> Value* {
+                            prop_lowering.lower_prop_set_guarded(bb, obj_val, val, StaticSlotSite::of(inst_ast));
+                            return nullptr;
+                        },
+                        static_set);
+                    return true;
+                }
+                static_set(b);
                 return true;
             }
             lower_prop_set_cached(lowering, inst_ast, b, obj_val, val, site);
