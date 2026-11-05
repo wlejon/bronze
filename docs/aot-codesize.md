@@ -191,3 +191,17 @@ line with hot code.
 `BRASS_BLOCK_MAP=/path/map.txt bronze build ...` writes the block map;
 together with `perf record -b` it names each taken branch by the blocks it
 leaves and enters, and with IBS each hot line by its blocks.
+
+## Parked: splittable tagged intervals (chunk 12)
+
+gcref and tagged intervals were made splittable like any value, with each GC
+point's stack map listing only the live references in their slot at that point
+(callee-saved register residents covered by the conservative pinning scan), and
+S5's rule re-applied on top. Correct under every GC stress mode and the pin
+matrix, x64 and aarch64. It did not pay: three_meshes cycles +1.0%,
+instructions +2.2%, setProgram +5.3% bytes, cpu -0.4% (noise). Splitting adds
+copies and edge moves that cancel the slot traffic it removes, so frame-slot
+operands are not the lever they looked like. Parked on brass branch
+`c12-splittable-tagged`. Untried and cheap: order frame slots hottest-first so
+most slot operands take 8-bit displacements (15.4K of 20.5K hot slot operands
+use 32-bit ones).
