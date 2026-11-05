@@ -157,10 +157,13 @@ Value* build_strings_differ(Builder& b, Value* s0, Value* s1) {
 
 // A dynamic `===`, bronze_strict_eq without the call wherever its answer is
 // the bits'. Against an undefined, null or boolean constant it is a plain
-// compare: no Number, String or BigInt has those bits. Otherwise two Numbers
-// compare as doubles (NaN !== NaN, +0 === -0), equal bits are equal, and only
-// two Strings or two BigInts with different bits need the helper's contents
-// compare; any other pair with different bits is false.
+// compare: no Number, String or BigInt has those bits. Otherwise equal bits
+// are asked first, and are equal unless they are a Number that is NaN (the
+// one value not === itself): `x.k !== k` over an unchanged value — the same
+// object, string, Boolean or Number — is that compare and one range test.
+// Different bits are two Numbers compared as doubles (+0 === -0), and only
+// two Strings or two BigInts need the helper's contents compare; any other
+// pair with different bits is false.
 Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_only, bool hot) {
     if (is_bits_identity_constant(op0) || is_bits_identity_constant(op1)) return b.build_eq(op0, op1);
     if (helper_only) {
@@ -168,6 +171,9 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
     }
     BasicBlock* cur = b.current_block();
     const std::string prefix = "seq_" + std::to_string(cur->parent()->next_block_id());
+    BasicBlock* same = b.append_block(prefix + "_same");
+    BasicBlock* same_num = b.append_block(prefix + "_samenum");
+    BasicBlock* differ = b.append_block(prefix + "_differ");
     BasicBlock* num = b.append_block(prefix + "_num");
     BasicBlock* other = b.append_block(prefix + "_other");
     BasicBlock* strings = b.append_block(prefix + "_strings");
@@ -182,21 +188,31 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
 
     b.position_at_end(cur);
     Value* max = b.build_iconst_i64(static_cast<int64_t>(kBronzeNumberMaxBits));
+    b.build_br_if(b.build_eq(op0, op1), same, differ);
+
+    // Equal bits: equal, unless a Number that is NaN.
+    b.position_at_end(same);
+    b.build_br_if(b.build_ule(op0, max), same_num, {}, merge, {b.build_iconst_i32(1)});
+    b.position_at_end(same_num);
+    Value* self = b.build_bitcast_f64_i64(op0);
+    b.build_br(merge, {b.build_eq(self, self)});
+
+    b.position_at_end(differ);
     b.build_br_if(b.build_and(b.build_ule(op0, max), b.build_ule(op1, max)), num, other);
 
     b.position_at_end(num);
     b.build_br(merge, {b.build_eq(b.build_bitcast_f64_i64(op0), b.build_bitcast_f64_i64(op1))});
 
+    // Different bits, not two Numbers: false unless two Strings or two
+    // BigInts, whose contents decide.
     b.position_at_end(other);
-    Value* same_bits = b.build_eq(op0, op1);
     Value* shift = b.build_iconst_i64(BRONZE_ABI_VALUE_TAG_SHIFT);
     Value* tag0 = b.build_lshr(op0, shift);
     Value* tag1 = b.build_lshr(op1, shift);
     Value* by_contents = b.build_or(b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_STRING)),
                                     b.build_eq(tag0, b.build_iconst_i64(BRONZE_ABI_TAG_BIGINT)));
-    Value* needs_helper = b.build_and(b.build_and(by_contents, b.build_eq(tag0, tag1)),
-                                      b.build_eq(same_bits, b.build_iconst_i32(0)));
-    b.build_br_if(needs_helper, strings, {}, merge, {same_bits});
+    Value* needs_helper = b.build_and(by_contents, b.build_eq(tag0, tag1));
+    b.build_br_if(needs_helper, strings, {}, merge, {b.build_iconst_i32(0)});
 
     // Two Strings with different bits differ when their lengths do, or when
     // both carry a memoized hash and the hashes do (StringHeader::hash is of
@@ -211,8 +227,8 @@ Value* lower_dynamic_strict_eq(Builder& b, Value* op0, Value* op1, bool helper_o
         // payload, whose words are never compared for an answer.
         Value* s0 = b.build_and(op0, mask);
         Value* s1 = b.build_select(is_string, b.build_and(op1, mask), s0);
-        Value* differ = build_strings_differ(b, s0, s1);
-        b.build_br_if(b.build_and(is_string, differ), merge, {b.build_iconst_i32(0)}, slow, {});
+        Value* texts_differ = build_strings_differ(b, s0, s1);
+        b.build_br_if(b.build_and(is_string, texts_differ), merge, {b.build_iconst_i32(0)}, slow, {});
     }
 
     b.position_at_end(slow);

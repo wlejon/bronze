@@ -40,12 +40,20 @@
 // ACROSS BLOCKS the memo flows along an edge into a block with exactly one
 // incoming edge, whose predecessor was lowered first: the predecessor's end
 // state dominates the block's whole lowering, since the block is entered
-// from nowhere else. A handler block (entered by a throw from anywhere in
-// its region), a block with two or more edges in, and every block of a
-// coroutine body (a suspension lets other code run before the resume) start
-// with an empty memo.
+// from nowhere else. A JOIN whose predecessors were all lowered first (a
+// forward join, which reverse post-order lowers after every block that
+// enters it) keeps a receiver every predecessor's end still holds: as that
+// value when they all hold the same one, which then dominates the join, and
+// else as a new i64 parameter of the join, each predecessor's edges into it
+// passing the value its end holds (an `if (a || b) ...; else if (r.x ...)`
+// chain joins once per test, and its tests read one receiver). A loop
+// header (a back edge not lowered yet), a handler block (entered by a throw
+// from anywhere in its region), and every block of a coroutine body (a
+// suspension lets other code run before the resume) start with an empty
+// memo.
 
 #include "il_lowering.h"
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -95,6 +103,7 @@ void IlLowering::memo_begin_function(const BronzeFunction& fn_ast) {
     shape_memo_kept_ = false;
     shape_memo_at_end_.clear();
     memo_preds_.clear();
+    memo_spans_.clear();
     memo_handler_blocks_.clear();
     shape_memo_off_ = fn_ast.is_coroutine_body();
     if (shape_memo_off_) return;
@@ -103,9 +112,9 @@ void IlLowering::memo_begin_function(const BronzeFunction& fn_ast) {
         if (blk.instructions.empty()) continue;
         const BronzeInstruction& term = blk.instructions.back();
         auto edge = [&](uint32_t succ) {
-            auto& [count, pred] = memo_preds_[succ];
+            auto& [count, preds] = memo_preds_[succ];
             ++count;
-            pred = blk.id;
+            if (std::find(preds.begin(), preds.end(), blk.id) == preds.end()) preds.push_back(blk.id);
         };
         if (term.op == BronzeOp::Jump) {
             edge(term.target.block_id);
@@ -116,14 +125,69 @@ void IlLowering::memo_begin_function(const BronzeFunction& fn_ast) {
     }
 }
 
-void IlLowering::memo_begin_block(const BronzeBlock& blk) {
+void IlLowering::memo_begin_block(Builder& b, const BronzeBlock& blk, BasicBlock* bb) {
     shape_memo_.clear();
     shape_memo_kept_ = false;
     if (shape_memo_off_ || memo_handler_blocks_.count(blk.id) != 0) return;
     const auto pit = memo_preds_.find(blk.id);
-    if (pit == memo_preds_.end() || pit->second.first != 1) return;
-    const auto eit = shape_memo_at_end_.find(pit->second.second);
-    if (eit != shape_memo_at_end_.end()) shape_memo_ = eit->second;
+    if (pit == memo_preds_.end()) return;
+    if (pit->second.first == 1) {
+        const auto eit = shape_memo_at_end_.find(pit->second.second.front());
+        if (eit != shape_memo_at_end_.end()) shape_memo_ = eit->second;
+        return;
+    }
+    memo_join(b, pit->second.second, bb);
+}
+
+void IlLowering::memo_join(Builder& b, const std::vector<uint32_t>& preds, BasicBlock* bb) {
+    // Every predecessor lowered, with its MIR edges into the join found in
+    // the blocks its own lowering made: a predecessor not lowered yet (a back
+    // edge) or one whose edges are not all there to patch keeps the memo out.
+    std::vector<const std::vector<std::pair<uint32_t, Value*>>*> ends;
+    std::vector<std::vector<BranchTarget*>> edges;
+    for (uint32_t pred : preds) {
+        const auto eit = shape_memo_at_end_.find(pred);
+        const auto sit = memo_spans_.find(pred);
+        if (eit == shape_memo_at_end_.end() || sit == memo_spans_.end() || eit->second.empty()) return;
+        ends.push_back(&eit->second);
+        std::vector<BranchTarget*> into;
+        for (BasicBlock* blk : sit->second) {
+            Instruction* term = blk->terminator();
+            if (term == nullptr) continue;
+            if (term->branch_target().block == bb) into.push_back(&term->branch_target());
+            if (term->true_target().block == bb) into.push_back(&term->true_target());
+            if (term->false_target().block == bb) into.push_back(&term->false_target());
+            for (SwitchCase& sc : term->switch_cases()) {
+                if (sc.target.block == bb) into.push_back(&sc.target);
+            }
+        }
+        if (into.empty()) return;
+        edges.push_back(std::move(into));
+    }
+    for (const auto& [id, first] : *ends.front()) {
+        std::vector<Value*> vals{first};
+        bool everywhere = true;
+        bool same = true;
+        for (size_t p = 1; p < ends.size() && everywhere; ++p) {
+            Value* v = nullptr;
+            for (const auto& [pid, pv] : *ends[p]) {
+                if (pid == id) v = pv;
+            }
+            everywhere = v != nullptr;
+            same = same && v == first;
+            vals.push_back(v);
+        }
+        if (!everywhere) continue;
+        if (same) {
+            shape_memo_.emplace_back(id, first);
+            continue;
+        }
+        Value* param = b.add_block_param(bb, Type::i64());
+        for (size_t p = 0; p < edges.size(); ++p) {
+            for (BranchTarget* t : edges[p]) t->args.push_back(vals[p]);
+        }
+        shape_memo_.emplace_back(id, param);
+    }
 }
 
 void IlLowering::memo_after_instruction(const BronzeInstruction& inst) {
@@ -134,8 +198,15 @@ void IlLowering::memo_after_instruction(const BronzeInstruction& inst) {
     if (!shape_memo_.empty() && !moves_no_shape(inst)) shape_memo_.clear();
 }
 
-void IlLowering::memo_end_block(const BronzeBlock& blk) {
-    if (!shape_memo_off_) shape_memo_at_end_[blk.id] = shape_memo_;
+void IlLowering::memo_end_block(const BronzeBlock& blk, BasicBlock* bb, Function* fn, size_t first_new) {
+    if (shape_memo_off_) return;
+    shape_memo_at_end_[blk.id] = shape_memo_;
+    std::vector<BasicBlock*>& span = memo_spans_[blk.id];
+    span.assign(1, bb);
+    const auto& blocks = fn->blocks();
+    for (size_t i = first_new; i < blocks.size(); ++i) {
+        if (blocks[i] != bb) span.push_back(blocks[i]);
+    }
 }
 
 Value* IlLowering::memo_lookup(uint32_t recv_id) const {
@@ -168,6 +239,27 @@ std::vector<Value*> IlLowering::memo_recompute(Builder& b, const std::unordered_
         out.push_back(prop_lowering_.keyed_shape(b, obj));
     }
     return out;
+}
+
+std::optional<MemoCarry> IlLowering::memo_carry(uint32_t recv_id, Value* obj,
+                                                const std::unordered_map<uint32_t, Value*>& val_map) {
+    if (shape_memo_off_) return std::nullopt;
+    MemoCarry carry;
+    carry.keyed = [this, recv_id, obj](Builder& bb) { return memo_keyed(bb, recv_id, obj); };
+    carry.hit = [this](Builder&) {
+        std::vector<Value*> out;
+        for (const auto& entry : shape_memo_) out.push_back(entry.second);
+        return out;
+    };
+    carry.miss = [this, &val_map](Builder& bb) { return memo_recompute(bb, val_map); };
+    carry.merged = [this](const std::vector<Value*>& params) {
+        if (params.size() != shape_memo_.size()) {
+            throw std::logic_error("il2mir: an inline-cache read's join lost track of the shape memo");
+        }
+        for (size_t i = 0; i < params.size(); ++i) shape_memo_[i].second = params[i];
+        memo_keep();
+    };
+    return carry;
 }
 
 void IlLowering::memo_attach(Builder& b, StaticMiss& miss, uint32_t recv_id, Value* obj,

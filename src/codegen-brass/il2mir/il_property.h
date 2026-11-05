@@ -91,6 +91,20 @@ struct StaticMiss {
     std::function<void(Value*)> memo_fresh;
 };
 
+// The shape memo (il_shape_memo.cpp) carried across an inline-cache read
+// (lower_prop_get_mono, lower_prop_get_absent), as a static site carries it
+// (StaticMiss): `keyed` is the receiver's keyed shape, the memo's or computed
+// and remembered there, which the site's way 0 is compared with; `hit` is
+// what every edge into the read's join that ran no call passes, `miss` what
+// an edge after the helper's call passes (each receiver's shape read again),
+// and `merged` takes the join's parameters that stand for them past it.
+struct MemoCarry {
+    std::function<Value*(Builder&)> keyed;
+    std::function<std::vector<Value*>(Builder&)> hit;
+    std::function<std::vector<Value*>(Builder&)> miss;
+    std::function<void(const std::vector<Value*>&)> merged;
+};
+
 class PropertyLoweringHelper {
 public:
     // A key operand that names no key constant.
@@ -243,6 +257,11 @@ public:
     // else is the stub. An image's only: the epoch is read through the pinned
     // TLS register. Requires a real site.
     Value* lower_prop_get_absent(Builder& b, Value* obj, uint32_t key_index, const IcSite& site);
+
+    // The memo carry the next mono or absent read takes (and clears), so
+    // that the read keeps the shape memo across its join; null leaves the
+    // read as it was, the memo forgotten after it.
+    void set_memo_carry(const MemoCarry* carry) { memo_carry_ = carry; }
 
     // `bronze_prop_set`; `imm` nonzero is a strict-mode write.
     void lower_prop_set(Builder& b, Value* obj, uint32_t key_index, Value* val, uint32_t imm, Value* ic_entry);
@@ -461,6 +480,12 @@ private:
     // 1..N-1, with the matching way's slot word.
     void other_ways_hit(Builder& b, Value* plain, Value* shape, const IcSite& site, Value*& hit,
                         Value*& slot_word);
+    // The edges into a read's join and the call-free ones among them: the
+    // memo carry's values appended to each, and the join's new parameters
+    // handed back to it.
+    static void carry_memo(Builder& b, const MemoCarry& carry, BasicBlock* merge,
+                           const std::vector<std::pair<BasicBlock*, bool>>& edges);
+    const MemoCarry* memo_carry_ = nullptr;
     SpecSiteEmitter* spec_ = nullptr;
     bool inline_sets_ = true;
     bool feedback_driven_ = false;

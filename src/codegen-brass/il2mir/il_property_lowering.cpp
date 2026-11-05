@@ -8,6 +8,7 @@
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 #include <cstdlib>
+#include <optional>
 #include <unordered_set>
 
 namespace il2mir {
@@ -300,10 +301,12 @@ Value* iconst64(Builder& b, uint64_t v) { return b.build_iconst_i64(static_cast<
 // the sites that get one, else the helper. A static site's guard misses into
 // this.
 Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
-                               const IcSite& site);
+                               const IcSite& site, const MemoCarry* carry = nullptr);
 
+// `carry`: the shape memo carried across the read (MemoCarry), where the read
+// is a mono or absent site of its own and not a branch of a larger one.
 Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
-                             const IcSite& site) {
+                             const IcSite& site, const MemoCarry* carry = nullptr) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
     // A receiver written as a class's name: the function arms first
     // (il_fn_recv.cpp), the site's ordinary read for anything else.
@@ -313,11 +316,11 @@ Value* lower_prop_get_cached(IlLowering* lowering, const BronzeInstruction& inst
             return lower_prop_get_ordinary(lowering, inst_ast, bb, obj_val, site);
         });
     }
-    return lower_prop_get_ordinary(lowering, inst_ast, b, obj_val, site);
+    return lower_prop_get_ordinary(lowering, inst_ast, b, obj_val, site, carry);
 }
 
 Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& inst_ast, Builder& b, Value* obj_val,
-                               const IcSite& site) {
+                               const IcSite& site, const MemoCarry* carry) {
     PropertyLoweringHelper& prop_lowering = lowering->prop_lowering();
     // A site the IL calls monomorphic gets the way-0 guard-and-load
     // in front of the helper: one compare against the most recently
@@ -357,12 +360,14 @@ Value* lower_prop_get_ordinary(IlLowering* lowering, const BronzeInstruction& in
     // own-data or negative entry, inline.
     if (inst_ast.is_absent && site && prop_lowering.enable_inlined_fastpaths() && !prop_lowering.in_process() &&
         inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
+        prop_lowering.set_memo_carry(carry);
         return prop_lowering.lower_prop_get_absent(b, obj_val, inst_ast.index, site);
     }
     const bool loop_poly = !mono && lowering->in_loop();
     const bool poly = loop_poly || inst_ast.is_poly;
     if (site && (mono || poly) && prop_lowering.enable_inlined_fastpaths() &&
         inst_ast.index != PropertyLoweringHelper::kNoKey && !lowering->run_once()) {
+        prop_lowering.set_memo_carry(carry);
         return prop_lowering.lower_prop_get_mono(b, obj_val, inst_ast.index, site,
                                                  inst_ast.is_family || poly);
     }
@@ -756,7 +761,11 @@ bool lower_property_instruction(
                     return true;
                 }
             }
-            res_val = lower_prop_get_cached(lowering, inst_ast, b, obj_val, site);
+            // The read keeps the shape memo across its join where it is an
+            // inline-cache site (MemoCarry); anything else forgets it after.
+            const std::optional<MemoCarry> carry = lowering->memo_carry(inst_ast.operands[0], obj_val, val_map);
+            res_val = lower_prop_get_cached(lowering, inst_ast, b, obj_val, site, carry ? &*carry : nullptr);
+            prop_lowering.set_memo_carry(nullptr);
             return true;
         }
 

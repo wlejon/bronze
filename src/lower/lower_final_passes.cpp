@@ -27,6 +27,7 @@
 #include "lower/own_callee_calls.h"
 #include "lower/read_cse.h"
 #include "lower/transition_runs.h"
+#include "lower/truth_join_threading.h"
 #include "lower/typed_entry.h"
 #include "lower/typed_loop_version.h"
 #include "opt/spec/feedback_plan.h"
@@ -184,6 +185,12 @@ bool Lowerer::runFinalPasses(il::Module& mod, DiagnosticSink& diags, const spec:
         if (build.stats) report += layoutFactReport(layoutStats) + layoutPerFn;
     }
     if (plan != nullptr && wholeProgram && build.stats) report += spec::feedbackReport(*plan, feedbackStats);
+    // Last: control flow only, after every pass that reads or copies a site.
+    // Not in the probe, nor in a build a profile is recorded from: a profile
+    // numbers its sites in the order the final IL has them, and the probe is
+    // read against it as the recorded build had it, so both stay unthreaded.
+    const bool recording = feedback_ != nullptr && !feedback_->outPath.empty();
+    if (!probe && !recording) threadTruthJoins(mod);
     if (!probe) dumpFinalIl(mod);
     return true;
 }

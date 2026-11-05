@@ -832,7 +832,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
         protected_block_ = blk_ast.handler_id != UINT32_MAX;
         begin_block_proofs(blk_ast.id);
         forget_ta_cursors();
-        memo_begin_block(blk_ast);
+        memo_begin_block(b, blk_ast, bb);
 
         for (size_t inst_idx = 0; inst_idx < blk_ast.instructions.size(); ++inst_idx) {
             const MirMark mark = mir_mark(b, *fn);
@@ -858,7 +858,7 @@ bool IlLowering::lower_function(const BronzeFunction& fn_ast, Module& mod, const
             after_instruction_proofs(inst_ast);
             memo_after_instruction(inst_ast);
         }
-        memo_end_block(blk_ast);
+        memo_end_block(blk_ast, bb, fn, first_new_block);
         note_protected_blocks(fn, bb, first_new_block, blk_ast.handler_id);
     }
     run_once_ = false;

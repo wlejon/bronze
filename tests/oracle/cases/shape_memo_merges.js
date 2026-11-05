@@ -1,9 +1,8 @@
 // The shape memo (il2mir/il_shape_memo.cpp) and the class-family guards on
-// both sides of a block with more than one predecessor. A memo that reached
-// such a block (it starts empty there today; carrying it in as block
-// parameters was measured and not kept, ledger chunk 18) would have to take,
-// on each edge, what that predecessor knew at its end, or read the receiver
-// afresh where the predecessor forgot it; and a family answer may be reused
+// both sides of a block with more than one predecessor. The memo reaches
+// such a block as block parameters, so it has to take, on each edge, what
+// that predecessor knew at its end, or read the receiver afresh where the
+// predecessor forgot it; and a family answer may be reused
 // only while the keyed shape it was computed from stands.
 //
 // Every method below reads `this` (or a parameter) before a branch, does

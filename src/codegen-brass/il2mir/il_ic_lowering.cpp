@@ -9,6 +9,7 @@
 #include <brass/mir/function.hpp>
 #include <brass/mir/module.hpp>
 #include <cstdlib>
+#include <utility>
 
 namespace il2mir {
 
@@ -129,6 +130,12 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
         if (no_poly_scan && spec_) spec_->skip_site(SpecKind::PolyProperty, key_tag(key_index));
     }
     const bool compact = !no_poly_scan && in_process_ && spec_ && spec_->has_feedback();
+    // The memo carry is an image's (a compiled-ahead read's way 0 is the
+    // shape word's compare): the in-process forms keep their own guards.
+    const MemoCarry* carry = std::exchange(memo_carry_, nullptr);
+    if (in_process_) carry = nullptr;
+    std::vector<std::pair<BasicBlock*, bool>> edges;
+    Value* keyed = carry ? carry->keyed(b) : nullptr;
     BasicBlock* bb_current = b.current_block();
     Function* fn = bb_current->parent();
     const std::string prefix = "ic_get_" + std::to_string(fn->next_block_id());
@@ -157,8 +164,10 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     } else {
         // Compiled ahead of time, the object and plain-header tests branch
         // to the way-0 miss, and way 0 is compared with the shape word
-        // itself (plain_shape_or_miss).
-        Value* shape = plain_shape_or_miss(b, obj, bb_way0_miss);
+        // itself (plain_shape_or_miss) — or with the receiver's keyed shape
+        // the memo carry has, which no way holds unless it is a plain
+        // object's.
+        Value* shape = keyed ? keyed : plain_shape_or_miss(b, obj, bb_way0_miss);
         ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
         emit_mono_slot_guard(b, shape, nullptr, site, hit, slot_word);
     }
@@ -218,18 +227,22 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
             b.position_at_end(bb_poly_hit);
             Value* poly_val = b.build_load_indexed(Type::i64(), slot_base(b, poly_ptr, poly_slot), poly_slot, 8,
                                                    kBronzeObjSlotsOffset);
+            edges.emplace_back(b.current_block(), true);
             b.build_br(bb_merge, {poly_val});
             b.position_at_end(bb_slow);
         }
         Value* slow_val = lower_prop_get(b, obj, key_index, site_ptr(b, site));
+        edges.emplace_back(b.current_block(), false);
         b.build_br(bb_merge, {slow_val});
     }
 
     b.position_at_end(bb_fast);
     Value* fast_val = b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8,
                                            kBronzeObjSlotsOffset);
+    edges.emplace_back(b.current_block(), true);
     b.build_br(bb_merge, {fast_val});
 
+    if (carry) carry_memo(b, *carry, bb_merge, edges);
     b.position_at_end(bb_merge);
     return merge_val;
 }
@@ -248,13 +261,25 @@ Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uin
     BasicBlock* bb_slow = b.append_block(prefix + "_miss" + std::string(unmeasured ? "_cold" : ""));
     BasicBlock* bb_merge = b.append_block(prefix + "_merge");
     Value* merge_val = b.add_block_param(bb_merge, Type::i64());
+    const MemoCarry* carry = std::exchange(memo_carry_, nullptr);
+    std::vector<std::pair<BasicBlock*, bool>> edges;
 
     b.position_at_end(bb_current);
-    Value* plain = nullptr;
+    Value* match = nullptr;
     Value* ptr = nullptr;
-    Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
-    Value* match = b.build_and(plain, b.build_eq(shape, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset)));
+    if (carry) {
+        // The receiver's keyed shape is what no way holds unless the
+        // receiver is a plain object with that shape word: its compare is
+        // the plain test and the shape's together.
+        Value* keyed = carry->keyed(b);
+        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+        match = b.build_eq(keyed, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset));
+    } else {
+        Value* plain = nullptr;
+        Value* shape = nullptr;
+        receiver_shape(b, obj, plain, ptr, shape);
+        match = b.build_and(plain, b.build_eq(shape, b.build_load(Type::i64(), site.base, site.off + kIcShapeOffset)));
+    }
     Value* slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
     b.build_br_if(b.build_and(match, b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit))), bb_own, bb_test);
 
@@ -268,17 +293,42 @@ Value* PropertyLoweringHelper::lower_prop_get_absent(Builder& b, Value* obj, uin
     b.build_br_if(absent, bb_undef, bb_slow);
 
     b.position_at_end(bb_undef);
+    edges.emplace_back(bb_undef, true);
     b.build_br(bb_merge, {b.build_iconst_i64(static_cast<int64_t>(kUndefinedTag))});
 
     b.position_at_end(bb_slow);
-    b.build_br(bb_merge, {lower_prop_get(b, obj, key_index, site_ptr(b, site))});
+    Value* slow_val = lower_prop_get(b, obj, key_index, site_ptr(b, site));
+    edges.emplace_back(b.current_block(), false);
+    b.build_br(bb_merge, {slow_val});
 
     b.position_at_end(bb_own);
-    b.build_br(bb_merge, {b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8,
-                                               kBronzeObjSlotsOffset)});
+    Value* own_val = b.build_load_indexed(Type::i64(), slot_base(b, ptr, slot_word), slot_word, 8,
+                                          kBronzeObjSlotsOffset);
+    edges.emplace_back(b.current_block(), true);
+    b.build_br(bb_merge, {own_val});
 
+    if (carry) carry_memo(b, *carry, bb_merge, edges);
     b.position_at_end(bb_merge);
     return merge_val;
+}
+
+void PropertyLoweringHelper::carry_memo(Builder& b, const MemoCarry& carry, BasicBlock* merge,
+                                        const std::vector<std::pair<BasicBlock*, bool>>& edges) {
+    size_t n = 0;
+    for (const auto& [blk, hit] : edges) {
+        Instruction* term = blk->terminator();
+        // A miss edge's values are the receivers' shapes read again after
+        // the helper ran, just before the edge leaves.
+        if (!hit) b.position_before(term);
+        const std::vector<Value*> vals = hit ? carry.hit(b) : carry.miss(b);
+        n = vals.size();
+        for (BranchTarget* t : {&term->branch_target(), &term->true_target(), &term->false_target()}) {
+            if (t->block == merge) t->args.insert(t->args.end(), vals.begin(), vals.end());
+        }
+    }
+    std::vector<Value*> params;
+    for (size_t i = 0; i < n; ++i) params.push_back(b.add_block_param(merge, Type::i64()));
+    carry.merged(params);
 }
 
 void PropertyLoweringHelper::other_ways_hit(Builder& b, Value* plain, Value* shape, const IcSite& site, Value*& hit,

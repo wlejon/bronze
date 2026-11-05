@@ -9,6 +9,7 @@
 #include <brass/mir/builder.hpp>
 #include <brass/core/diagnostics.hpp>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -179,6 +180,10 @@ public:
     // The memo as it stands, its receivers' keyed shapes recomputed at the
     // builder's position, and a rebinding to new values (same order): what
     // a two-armed lowering uses to carry it across its own join.
+    // The carry an inline-cache read of `recv_id` keeps the memo across its
+    // join with (MemoCarry); none where the memo is off.
+    std::optional<MemoCarry> memo_carry(uint32_t recv_id, Value* obj,
+                                        const std::unordered_map<uint32_t, Value*>& val_map);
     std::vector<std::pair<uint32_t, Value*>> memo_snapshot() const { return shape_memo_; }
     std::vector<Value*> memo_recompute(Builder& b, const std::unordered_map<uint32_t, Value*>& val_map);
     void memo_restore(std::vector<std::pair<uint32_t, Value*>> m) { shape_memo_ = std::move(m); }
@@ -196,9 +201,14 @@ private:
     // The memo at a block's start (from its one predecessor's end), after an
     // instruction (kept, or forgotten unless the instruction can move no
     // shape), and at a block's end.
-    void memo_begin_block(const BronzeBlock& blk);
+    void memo_begin_block(Builder& b, const BronzeBlock& blk, BasicBlock* bb);
     void memo_after_instruction(const BronzeInstruction& inst);
-    void memo_end_block(const BronzeBlock& blk);
+    // `first_new` is where the block's own MIR blocks start in the function's
+    // list (`bb` itself comes before): the span a join patches edges in.
+    void memo_end_block(const BronzeBlock& blk, BasicBlock* bb, Function* fn, size_t first_new);
+    // The memo at a join: what every predecessor's end holds, one value or
+    // a join parameter fed along each predecessor's edges.
+    void memo_join(Builder& b, const std::vector<uint32_t>& preds, BasicBlock* bb);
     // Per-function values computed once at the function's entry and shared
     // by every use (il_lowering_hoist.cpp): the inline-cache table's address.
     enum class Hoist : uint8_t { IcTable, StaticCells, FamilyBase, Count };
@@ -397,8 +407,10 @@ private:
     std::vector<std::pair<uint32_t, Value*>> shape_memo_;
     bool shape_memo_kept_ = false;
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, Value*>>> shape_memo_at_end_;
-    // Per IL block: how many edges enter it, and from which block the last.
-    std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> memo_preds_;
+    // Per IL block: how many edges enter it, and the blocks they come from.
+    std::unordered_map<uint32_t, std::pair<uint32_t, std::vector<uint32_t>>> memo_preds_;
+    // Per lowered IL block: the MIR blocks its lowering made (its own first).
+    std::unordered_map<uint32_t, std::vector<BasicBlock*>> memo_spans_;
     std::unordered_set<uint32_t> memo_handler_blocks_;
     bool shape_memo_off_ = false;
     void memo_begin_function(const BronzeFunction& fn_ast);
