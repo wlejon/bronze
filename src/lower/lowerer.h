@@ -208,10 +208,17 @@ private:
         std::string* outBoundedArrayName = nullptr) const;
     bool provenArrayOrTypedArray(const ast::Expr& e) const;
     bool binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const;
+    // Stronger than binaryCoercesOperand: the operand's value reaches the
+    // operator ONLY through ToNumeric, so a plain array element may be read as
+    // its ToNumber (lower_typed_elem.cpp has the argument).
+    bool binaryToNumericOperand(ast::BinaryOp op, const ast::Expr& other) const;
     bool typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs) const;
+    // `plainElemToNumeric`: the position is a ToNumeric one (see
+    // binaryToNumericOperand), not merely one where `undefined` and NaN agree.
     std::optional<Value> lowerCoercingOperand(const ast::Expr& e, il::Function& ilFn,
                                               bool* outDeferredUnbox = nullptr,
-                                              bool allowUnprovenLengthUnbox = true);
+                                              bool allowUnprovenLengthUnbox = true,
+                                              bool plainElemToNumeric = true);
     std::optional<Value> lowerTypedElemRead(const ast::IndexAccess& idx, uint32_t elemKind,
                                             il::Function& ilFn);
     std::optional<Value> lowerTypedElemAssign(const ast::Binary* bin,

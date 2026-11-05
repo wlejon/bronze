@@ -323,11 +323,13 @@ std::optional<Lowerer::Value> Lowerer::lowerBinary(const ast::Binary* bin, il::F
     bool lhsDeferUnbox = false;
     bool rhsDeferUnbox = false;
     auto lhsOpt = lhsCoerces
-                      ? lowerCoercingOperand(*bin->lhs, ilFn, &lhsDeferUnbox, allowLenUnbox)
+                      ? lowerCoercingOperand(*bin->lhs, ilFn, &lhsDeferUnbox, allowLenUnbox,
+                                             binaryToNumericOperand(bin->op, *bin->rhs))
                       : lowerExpr(*bin->lhs, ilFn);
     if (!lhsOpt) return std::nullopt;
     auto rhsOpt = rhsCoerces
-                      ? lowerCoercingOperand(*bin->rhs, ilFn, &rhsDeferUnbox, allowLenUnbox)
+                      ? lowerCoercingOperand(*bin->rhs, ilFn, &rhsDeferUnbox, allowLenUnbox,
+                                             binaryToNumericOperand(bin->op, *bin->lhs))
                       : lowerExpr(*bin->rhs, ilFn);
     if (!rhsOpt) return std::nullopt;
 

@@ -174,7 +174,8 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
 
         const bool rhsCoerces =
             bin->op != ast::BinaryOp::Assign && binaryCoercesOperand(bin->op, *bin->lhs);
-        auto rhsVal = rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn)
+        auto rhsVal = rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn, nullptr, true,
+                                                        binaryToNumericOperand(bin->op, *bin->lhs))
                                  : lowerExpr(*bin->rhs, ilFn);
         if (!rhsVal) return std::nullopt;
         Value stored = curVal ? emitCompoundCombine(*curVal, *rhsVal, bin->op,
@@ -212,11 +213,15 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         const bool isNumericRhs = definitelyNumericOperand(*bin->rhs, 8);
         const bool allowPlain = isPinnedOrTyped || isNumericRhs;
         if (const auto elemKind = typedElemAccessKind(*bin->lhs, allowPlain)) {
+            // A compound into a PLAIN array reads an element that may be a
+            // string or an object, so its read half goes native only where the
+            // combine is ToNumeric on every branch — never `+=`, which
+            // concatenates a string element whatever the RHS is.
             const bool admissible =
                 bin->op == ast::BinaryOp::Assign
                     ? allowPlain
-                    : (isPinnedOrTyped || isNumericRhs) &&
-                      typedElemCompoundAdmissible(bin->op, *bin->rhs);
+                : isPinnedOrTyped ? typedElemCompoundAdmissible(bin->op, *bin->rhs)
+                                  : isNumericRhs && binaryToNumericOperand(bin->op, *bin->rhs);
             if (admissible) return lowerTypedElemAssign(bin, *idxAccess, *elemKind, ilFn);
         }
         auto objVal = lowerExpr(*idxAccess->object, ilFn);
@@ -626,7 +631,9 @@ std::optional<Lowerer::Value> Lowerer::lowerAssignment(const ast::Binary* bin,
         }
 
         const bool rhsCoerces = compound && binaryCoercesOperand(bin->op, *bin->lhs);
-        auto rhsVal = compound ? (rhsCoerces ? lowerCoercingOperand(*bin->rhs, ilFn)
+        auto rhsVal = compound ? (rhsCoerces ? lowerCoercingOperand(
+                                                   *bin->rhs, ilFn, nullptr, true,
+                                                   binaryToNumericOperand(bin->op, *bin->lhs))
                                              : lowerExpr(*bin->rhs, ilFn))
                                : lowerNamedEvaluation(*bin->rhs, sourceSpelling(ident->name), ilFn);
         if (!rhsVal) return std::nullopt;

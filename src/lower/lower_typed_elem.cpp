@@ -39,9 +39,12 @@
 
 namespace bronze::lower {
 
-// Operators whose EVERY operand goes through ToNumeric on every branch.
-// `+` is absent (string branch), equality is absent (undefined and NaN
-// compare differently), `in`/`instanceof` are absent (no coercion at all).
+// Operators whose EVERY operand goes through ToNumeric on every branch, and
+// whose result is therefore numeric. `+` is absent (string branch), equality
+// is absent (undefined and NaN compare differently), `in`/`instanceof` are
+// absent (no coercion at all), and so are the relational operators: two
+// strings compare as strings (`"10" < "9"`), and the result is a Boolean,
+// which is not the claim the callers below spend. `relationalBinary` has them.
 //
 // Not in this file's anonymous namespace, and declared in lowerer.h, because
 // the env-slot number proof (lower_scope.cpp) asks the same question of the
@@ -60,6 +63,21 @@ bool alwaysCoercingBinary(ast::BinaryOp op) {
         case ast::BinaryOp::Shl:
         case ast::BinaryOp::Shr:
         case ast::BinaryOp::UShr:
+            return true;
+        default:
+            return false;
+    }
+}
+
+namespace {
+
+// The relational operators: ToPrimitive on both sides, then a STRING compare
+// when both are strings and a numeric one otherwise (7.2.13). So an operand
+// that is a Number or `undefined` — a typed-element read — is coerced on every
+// branch (`undefined` and NaN both compare false), but an arbitrary value is
+// coerced only when the other side is definitely numeric.
+bool relationalBinary(ast::BinaryOp op) {
+    switch (op) {
         case ast::BinaryOp::Less:
         case ast::BinaryOp::Greater:
         case ast::BinaryOp::LessEqual:
@@ -69,8 +87,6 @@ bool alwaysCoercingBinary(ast::BinaryOp op) {
             return false;
     }
 }
-
-namespace {
 
 // The compound-assignment operators whose combine step coerces the READ half
 // on every branch. PlusAssign is handled separately (its combine has the
@@ -250,7 +266,11 @@ std::optional<uint32_t> Lowerer::typedElemAccessKind(const ast::Expr& e, bool co
 bool Lowerer::definitelyNumericOperand(const ast::Expr& e, int depth) const {
     if (depth <= 0) return false;
     if (provenNumber(e)) return true;
-    if (typedElemAccessKind(e, true)) return true;
+    // A view's or a pinned array's element — NOT a plain array's: its coerced
+    // form is ToNumber of the element, and the element itself may be a string
+    // or an object, which is exactly what `+`, a relational compare, or a
+    // store would see.
+    if (typedElemAccessKind(e, false)) return true;
     if (const auto* bin = dynamic_cast<const ast::Binary*>(&e)) {
         if (alwaysCoercingBinary(bin->op)) {
             return definitelyNumericOperand(*bin->lhs, depth - 1) ||
@@ -318,20 +338,33 @@ bool Lowerer::typedElemCompoundAdmissible(ast::BinaryOp op, const ast::Expr& rhs
 }
 
 bool Lowerer::binaryCoercesOperand(ast::BinaryOp op, const ast::Expr& other) const {
-    if (!numericArithDisabled_ && (alwaysCoercingBinary(op) || alwaysCoercingCompound(op))) return true;
-    if (alwaysCoercingBinary(op) || alwaysCoercingCompound(op) ||
-        op == ast::BinaryOp::Add || op == ast::BinaryOp::PlusAssign) {
+    const bool always =
+        alwaysCoercingBinary(op) || alwaysCoercingCompound(op) || relationalBinary(op);
+    if (!numericArithDisabled_ && always) return true;
+    if (always || op == ast::BinaryOp::Add || op == ast::BinaryOp::PlusAssign) {
         return definitelyNumericOperand(other, 8);
     }
+    return false;
+}
+
+// Where binaryCoercesOperand admits a typed-element read, whose value is a
+// Number or `undefined`, this admits ANY value: the operator converts it with
+// ToNumeric and uses nothing else of it. `+` never qualifies — with a numeric
+// other side a string operand still concatenates — and a relational operator
+// qualifies only when the other side rules out the string compare.
+bool Lowerer::binaryToNumericOperand(ast::BinaryOp op, const ast::Expr& other) const {
+    if (alwaysCoercingBinary(op) || alwaysCoercingCompound(op)) return true;
+    if (relationalBinary(op)) return definitelyNumericOperand(other, 8);
     return false;
 }
 
 std::optional<Lowerer::Value> Lowerer::lowerCoercingOperand(const ast::Expr& e,
                                                             il::Function& ilFn,
                                                             bool* outDeferredUnbox,
-                                                            bool allowUnprovenLengthUnbox) {
+                                                            bool allowUnprovenLengthUnbox,
+                                                            bool plainElemToNumeric) {
     if (outDeferredUnbox != nullptr) *outDeferredUnbox = false;
-    if (const auto kind = typedElemAccessKind(e, true)) {
+    if (const auto kind = typedElemAccessKind(e, plainElemToNumeric)) {
         return lowerTypedElemRead(static_cast<const ast::IndexAccess&>(e), *kind, ilFn);
     }
     auto val = lowerExpr(e, ilFn);
@@ -480,7 +513,11 @@ std::optional<Lowerer::Value> Lowerer::lowerTypedElemAssign(const ast::Binary* b
     // array's read has no such substitution to spend, which is why this needs
     // no proof about what the value is used for.
     std::optional<Value> rhsVal;
-    if (const auto rhsKind = typedElemAccessKind(*bin->rhs, true)) {
+    const auto* rhsIdx = dynamic_cast<const ast::IndexAccess*>(bin->rhs.get());
+    const auto rhsKind = rhsIdx != nullptr && inferredType(*rhsIdx->object).arrayElementsPinned()
+                             ? typedElemAccessKind(*bin->rhs, false)
+                             : std::nullopt;
+    if (rhsKind) {
         rhsVal = lowerTypedElemRead(static_cast<const ast::IndexAccess&>(*bin->rhs),
                                     *rhsKind, ilFn);
     } else {
@@ -590,7 +627,9 @@ public:
 
         bool lhsSanctioned = false;
         bool rhsSanctioned = false;
-        if (alwaysCoercingBinary(b.op)) {
+        // The binding holds a typed-element read (a Number or `undefined`),
+        // which a relational operator coerces on every branch.
+        if (alwaysCoercingBinary(b.op) || relationalBinary(b.op)) {
             lhsSanctioned = lhsIsTarget;
             rhsSanctioned = rhsIsTarget;
         } else if (b.op == ast::BinaryOp::Add) {
@@ -710,15 +749,18 @@ bool Lowerer::typedElemBindingUsesCoerce(const std::string& name,
     if (currentBodyStmts_ == nullptr) return false;
     ScanHooks hooks{
         [this](const ast::Expr& e) { return definitelyNumericOperand(e, 8); },
+        // A view or a pinned array only: a store into a plain array keeps
+        // the value it is given, so `undefined` and NaN differ there, and a
+        // plain array's `+=` read may be a string that concatenates it.
         [this](const ast::Expr& lhs) {
             if (const auto* ia = dynamic_cast<const ast::IndexAccess*>(&lhs)) {
-                return typedElemAccessKind(*ia, true).has_value();
+                return typedElemAccessKind(*ia, false).has_value();
             }
             return false;
         },
         [this](const ast::Binary& b) {
             const auto* ia = dynamic_cast<const ast::IndexAccess*>(b.lhs.get());
-            return ia != nullptr && typedElemAccessKind(*ia, true).has_value() &&
+            return ia != nullptr && typedElemAccessKind(*ia, false).has_value() &&
                    definitelyNumericOperand(*b.rhs, 8);
         }};
     CoercingUseScan scan(hooks, name, self);

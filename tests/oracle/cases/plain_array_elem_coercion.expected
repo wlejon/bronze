@@ -1,0 +1,23 @@
+string,object,number,undefined,object,boolean
+true true true true true
+string,object,number,undefined,object,boolean
+true true true true true
+string:5 obj number:7 undefined:undefined object:null boolean:true string:x undefined:undefined undefined:undefined string:9
+false true
+true object
+3 true undefined
+12 23 31
+4 4 8
+true false true false
+false true true
+6 9 6 -5 NaN
+string:a1 string:51 number:4 number:5
+number:7 number:2 number:3
+53 9
+20 30
+boolean true
+boolean:true
+5 4
+number,undefined,undefined
+object true 3
+string 51
