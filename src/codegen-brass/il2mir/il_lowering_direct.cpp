@@ -81,6 +81,29 @@ EntryTest entry_test(Builder& b, Value* tls, Value* callee, uint64_t mask, uint6
     return EntryTest{b.build_and(is_fn, flags_ok), fn};
 }
 
+// entry_test as branches: a callee that is no object, or no function, goes to
+// `miss` before anything past its header is read, and `ok` is the flags word's
+// test alone, made where both held; `fn` is the payload. A guard that ends in
+// a branch anyway pays two compares and branches for what the selects to the
+// stand-in cost it.
+EntryTest entry_test_br(Builder& b, Value* tls, Value* callee, uint64_t mask, uint64_t bits, BasicBlock* miss) {
+    BasicBlock* cur = b.current_block();
+    const std::string prefix = block_prefix(b, "fntest");
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_fn = b.append_block(prefix + "_fn");
+    b.position_at_end(cur);
+    Value* ptr = b.build_xor(callee, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    b.build_br_if(b.build_ult(ptr, b.build_iconst_i64(kPayloadLimit)), bb_obj, miss);
+    b.position_at_end(bb_obj);
+    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kFunctionHeaderLow)), bb_fn, miss);
+    b.position_at_end(bb_fn);
+    Value* word = b.build_load(Type::i64(), ptr, BRONZE_ABI_FN_FLAGS_WORD_OFFSET);
+    Value* realm = b.build_shl(b.build_load(Type::i64(), tls, BRONZE_TLS_REALM_SLOT_OFF),
+                               b.build_iconst_i64(BRONZE_ABI_FN_REALM_SHIFT));
+    Value* want = b.build_or(realm, b.build_iconst_i64(static_cast<int64_t>(bits)));
+    return EntryTest{b.build_eq(b.build_and(word, b.build_iconst_i64(static_cast<int64_t>(mask))), want), ptr};
+}
+
 Value* call_code(Builder& b, Value* code, Value* env, Value* this_val, Value* argc, Value* argv) {
     return b.build_call_indirect(code, Type::i64(), {env, this_val, argc, argv});
 }
@@ -129,7 +152,7 @@ Value* lower_closure_call_argv(Builder& b, Value* callee, Value* this_val, uint3
 
     b.position_at_end(cur);
     Value* tls = tls_block(b);
-    const EntryTest t = entry_test(b, tls, callee, kCallMask, kCallBits);
+    const EntryTest t = entry_test_br(b, tls, callee, kCallMask, kCallBits, slow);
     b.build_br_if(t.ok, enter, slow);
 
     b.position_at_end(enter);
@@ -380,7 +403,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
         Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
                                        b.build_iconst_i64(1));
         Value* callee = pl.load_slot(b, ptr, slot_word);
-        const EntryTest t = entry_test(b, tls, callee, kCallMask, kCallBits);
+        const EntryTest t = entry_test_br(b, tls, callee, kCallMask, kCallBits, slow);
         Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
         Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
         b.build_br_if(t.ok, enter, {code, env}, slow, {});
@@ -441,7 +464,7 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     }
     b.position_at_end(mega_callee);
     {
-        const EntryTest t = entry_test(b, tls, mega_fn, kCallMask, kCallBits);
+        const EntryTest t = entry_test_br(b, tls, mega_fn, kCallMask, kCallBits, slow);
         Value* code = b.build_load(Type::ptr(), t.fn, BRONZE_ABI_FN_CODE_OFFSET);
         Value* env = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_ENV_OFFSET);
         b.build_br_if(t.ok, enter, {code, env}, slow, {});
@@ -592,7 +615,7 @@ void build_prop_get_stub(IlLowering* lowering, Function* fn) {
 
     b.position_at_end(getter);
     Value* fn_val = pl.load_slot(b, holder, slot);
-    const EntryTest t = entry_test(b, tls, fn_val, kCallMask, kCallBits);
+    const EntryTest t = entry_test_br(b, tls, fn_val, kCallMask, kCallBits, slow);
     b.build_br_if(t.ok, enter, slow);
 
     b.position_at_end(enter);
@@ -696,7 +719,7 @@ void build_prop_set_stub(IlLowering* lowering, Function* fn) {
     // An accessor's setter is the slot after its getter.
     b.position_at_end(setter);
     Value* fn_val = pl.load_slot(b, holder, b.build_add(slot, b.build_iconst_i64(1)));
-    const EntryTest t = entry_test(b, tls, fn_val, kCallMask, kCallBits);
+    const EntryTest t = entry_test_br(b, tls, fn_val, kCallMask, kCallBits, slow);
     b.build_br_if(t.ok, enter, slow);
 
     b.position_at_end(enter);
@@ -830,7 +853,7 @@ Value* lower_method_slot_inline(IlLowering* lowering, Builder& b, Value* recv, c
     Value* tls = tls_block(b);
     Value* slot_word = b.build_sub(b.build_lshr(arity0, b.build_iconst_i64(BRONZE_ABI_METHOD_IC_SLOT_SHIFT)),
                                    b.build_iconst_i64(1));
-    const EntryTest t = entry_test(b, tls, pl.load_slot(b, ptr, slot_word), kCallMask, kCallBits);
+    const EntryTest t = entry_test_br(b, tls, pl.load_slot(b, ptr, slot_word), kCallMask, kCallBits, other);
     b.build_br_if(t.ok, enter, other);
 
     b.position_at_end(enter);
@@ -902,7 +925,7 @@ Value* lower_construct_direct(IlLowering* lowering, Builder& b, Value* ctor, con
 
     b.position_at_end(cur);
     Value* tls = tls_block(b);
-    const EntryTest t = entry_test(b, tls, ctor, kConstructMask, kConstructBits);
+    const EntryTest t = entry_test_br(b, tls, ctor, kConstructMask, kConstructBits, slow);
     Value* shape = b.build_load(Type::i64(), t.fn, BRONZE_ABI_FN_INSTANCE_SHAPE_OFFSET);
     Value* ok = b.build_and(t.ok, b.build_ne(shape, b.build_iconst_i64(0)));
     Value* obj_bits = lowering->alloc_lowering().bump_plain_object(b, shape, ok, slow, fast);

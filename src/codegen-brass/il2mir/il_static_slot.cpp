@@ -108,8 +108,26 @@ Value* PropertyLoweringHelper::keyed_shape(Builder& b, Value* obj) {
     return b.build_select(plain, shape, iconst(b, kNotPlainShape));
 }
 
+Value* PropertyLoweringHelper::plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss) {
+    // The payload is the Value with its object tag XORed away, below 2^48
+    // exactly when the tag was the object tag; only then is the header read.
+    BasicBlock* bb_cur = b.current_block();
+    const std::string prefix = "recv_" + std::to_string(bb_cur->parent()->next_block_id());
+    BasicBlock* bb_obj = b.append_block(prefix + "_obj");
+    BasicBlock* bb_plain = b.append_block(prefix + "_plain");
+    b.position_at_end(bb_cur);
+    Value* ptr = b.build_xor(obj, iconst(b, uint64_t{BRONZE_ABI_TAG_OBJECT} << 48));
+    b.build_br_if(b.build_ult(ptr, iconst(b, uint64_t{1} << 48)), bb_obj, miss);
+    b.position_at_end(bb_obj);
+    constexpr int32_t kPlainHeader = (BRONZE_ABI_OBJ_FLAGS_PLAIN << 16) | BRONZE_ABI_TAG_OBJECT;
+    b.build_br_if(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeader)), bb_plain, miss);
+    b.position_at_end(bb_plain);
+    return b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET);
+}
+
 Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed,
-                                            const std::vector<StaticGuardTerm>& terms, Value*& ptr) {
+                                            const std::vector<StaticGuardTerm>& terms, Value*& ptr,
+                                            bool keyed_plain) {
     // The payload, meaningful where the guard holds: an object's tag XORed
     // away. Every term below admits only a plain object (a cell or a family
     // stamp names a plain shape, and a non-plain receiver's keyed shape is
@@ -130,7 +148,9 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
     // before the guard's single branch.
     auto shape_word = [&](int32_t off) {
         if (!safe_shape) {
-            safe_shape = b.build_select(b.build_eq(keyed, iconst(b, kNotPlainShape)), mapped_block(b), keyed);
+            safe_shape = keyed_plain ? keyed
+                                     : b.build_select(b.build_eq(keyed, iconst(b, kNotPlainShape)),
+                                                      mapped_block(b), keyed);
         }
         return b.build_load(Type::i64(), safe_shape, off);
     };
@@ -151,7 +171,7 @@ Value* PropertyLoweringHelper::static_guard(Builder& b, Value* obj, Value* keyed
                     stamp = shape_word(kFamilyOffset);
                     family_base = data_addr(b, family_base_sym_);
                     first_id = b.build_load(Type::i64(), family_base, 0);
-                    all(b.build_ne(keyed, iconst(b, kNotPlainShape)));
+                    if (!keyed_plain) all(b.build_ne(keyed, iconst(b, kNotPlainShape)));
                 }
                 Value* rel = b.build_sub(stamp, b.build_add(first_id, iconst(b, site.family_lo)));
                 all(b.build_ule(rel, iconst(b, site.family_span)));
@@ -261,6 +281,20 @@ void PropertyLoweringHelper::emit_static_fill(Builder& b, Value* obj, uint32_t k
     b.position_at_end(bb_cont);
 }
 
+namespace {
+// A static site's guard: against the keyed shape the caller holds, or, with
+// none in hand, on a path only a plain receiver reaches (the object and
+// header tests branching to the site's miss), which hands its shape to the
+// memo first.
+Value* guard_or_miss(Builder& b, PropertyLoweringHelper& pl, Value* obj, const std::vector<StaticGuardTerm>& terms,
+                     const StaticMiss& miss, BasicBlock* bb_miss, Value*& ptr) {
+    if (miss.keyed) return pl.static_guard(b, obj, miss.keyed, terms, ptr);
+    Value* shape = pl.plain_shape_or_miss(b, obj, bb_miss);
+    if (miss.memo_fresh) miss.memo_fresh(shape);
+    return pl.static_guard(b, obj, shape, terms, ptr, /*keyed_plain=*/true);
+}
+}  // namespace
+
 Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uint32_t key_index,
                                                      const StaticSlotSite& site, const StaticMiss& miss) {
     BasicBlock* bb_cur = b.current_block();
@@ -272,7 +306,7 @@ Value* PropertyLoweringHelper::lower_prop_get_static(Builder& b, Value* obj, uin
 
     b.position_at_end(bb_cur);
     Value* ptr = nullptr;
-    b.build_br_if(static_guard(b, obj, miss.keyed, {StaticGuardTerm{site}}, ptr), bb_hit, bb_miss);
+    b.build_br_if(guard_or_miss(b, *this, obj, {StaticGuardTerm{site}}, miss, bb_miss, ptr), bb_hit, bb_miss);
 
     b.position_at_end(bb_hit);
     int32_t off = 0;
@@ -312,7 +346,7 @@ void PropertyLoweringHelper::lower_prop_set_static(Builder& b, Value* obj, uint3
     StaticGuardTerm term{site};
     term.store = val;
     term.store_is_number = val_is_number;
-    b.build_br_if(static_guard(b, obj, miss.keyed, {term}, ptr), bb_hit, bb_miss);
+    b.build_br_if(guard_or_miss(b, *this, obj, {term}, miss, bb_miss, ptr), bb_hit, bb_miss);
 
     // A hit stores into a slot the shape already has, which moves no shape;
     // the memo crosses it as it is.

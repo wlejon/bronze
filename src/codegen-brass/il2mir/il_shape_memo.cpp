@@ -138,14 +138,23 @@ void IlLowering::memo_end_block(const BronzeBlock& blk) {
     if (!shape_memo_off_) shape_memo_at_end_[blk.id] = shape_memo_;
 }
 
-Value* IlLowering::memo_keyed(Builder& b, uint32_t recv_id, Value* obj) {
+Value* IlLowering::memo_lookup(uint32_t recv_id) const {
     for (const auto& [id, keyed] : shape_memo_) {
         if (id == recv_id) return keyed;
     }
-    Value* keyed = prop_lowering_.keyed_shape(b, obj);
-    if (shape_memo_off_) return keyed;
+    return nullptr;
+}
+
+void IlLowering::memo_add(uint32_t recv_id, Value* keyed) {
+    if (shape_memo_off_) return;
     if (shape_memo_.size() >= kMemoCap) shape_memo_.erase(shape_memo_.begin());
     shape_memo_.emplace_back(recv_id, keyed);
+}
+
+Value* IlLowering::memo_keyed(Builder& b, uint32_t recv_id, Value* obj) {
+    if (Value* keyed = memo_lookup(recv_id)) return keyed;
+    Value* keyed = prop_lowering_.keyed_shape(b, obj);
+    memo_add(recv_id, keyed);
     return keyed;
 }
 
@@ -163,8 +172,15 @@ std::vector<Value*> IlLowering::memo_recompute(Builder& b, const std::unordered_
 
 void IlLowering::memo_attach(Builder& b, StaticMiss& miss, uint32_t recv_id, Value* obj,
                              const std::unordered_map<uint32_t, Value*>& val_map) {
-    miss.keyed = memo_keyed(b, recv_id, obj);
+    // A receiver the memo holds is compared as it stands; one it does not
+    // is tested by the site on its own plain-only path (plain_shape_or_miss),
+    // which hands back the shape word, remembered as its keyed shape where
+    // the site's hit is.
+    (void)obj;
+    (void)b;
+    miss.keyed = memo_lookup(recv_id);
     if (shape_memo_off_) return;
+    if (!miss.keyed) miss.memo_fresh = [this, recv_id](Value* shape) { memo_add(recv_id, shape); };
     miss.memo_hit = [this](Builder&) {
         std::vector<Value*> out;
         for (const auto& entry : shape_memo_) out.push_back(entry.second);

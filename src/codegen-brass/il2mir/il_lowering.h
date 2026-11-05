@@ -164,6 +164,11 @@ public:
     // A receiver's keyed shape, the memo's if it holds one, else computed
     // here from `obj` (its bits) and remembered.
     Value* memo_keyed(Builder& b, uint32_t recv_id, Value* obj);
+    // The memo's keyed shape for a receiver, or null; and a receiver's
+    // keyed shape remembered (a shape word read where the receiver is known
+    // plain is its keyed shape there).
+    Value* memo_lookup(uint32_t recv_id) const;
+    void memo_add(uint32_t recv_id, Value* keyed);
     // Says the instruction being lowered kept the memo true (a static site
     // that carried it across its join, a pure guard).
     void memo_keep() { shape_memo_kept_ = true; }

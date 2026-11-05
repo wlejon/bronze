@@ -738,7 +738,10 @@ from an earlier iteration.
 **Tried and dropped: a branchy keyed shape in images.** The keyed-shape
 idiom as two branches to a cold not-plain join instead of two `cmov`s (three
 instructions fewer per guard on the plain path). three_meshes 104.05M with
-the S5 rule alone, 104.36M with this: noise. Taken out.
+the S5 rule alone, 104.36M with this: noise. Taken out. (S6 below: one run
+of each was inside the scene's run-to-run spread, ±2.5M with the same
+`app.so`, so this verdict said nothing either way; the branching form S6
+built, with no join, pays.)
 
 Tests: brass `test_gc_tagged_roots.cpp` (twelve tagged references across a
 collecting call, some in callee-saved registers and some in slots, under no
@@ -749,6 +752,133 @@ at least one in a slot; a compare of two spilled values reads the right one
 in place), all 1738 unit tests with `BRASS_GC_VERIFY=1 BRASS_GC_POISON=1`.
 bronze: the oracle's 792 cases infer and no-infer, the pin matrix's eight
 rows over fifteen GC-heavy cases, `wpo` and `codegen_brass`.
+
+### S6: receiver guards that branch
+
+**What a guard's instructions were spent on.** `guardparts.py` (c9) splits
+every `cmovb`-anchored guard window of the base `app.so` by part, sample
+weighted, three_meshes n=2565 (20.1M per frame in those windows, scheduled
+neighbours included):
+
+| part | M/frame | what |
+|---|---|---|
+| header | 4.8 | the 32-bit header load, `cmp e?,0xfff1`, `mov r,2`, `cmove` (mostly the load's cache miss lands here) |
+| shape | 3.3 | the shape word's load |
+| object test | 2.4 | `cmp` against the pooled limit, `mov r,r13`, `cmovb` |
+| reload | 2.2 | the cell table's per-thread base, reloaded from its frame slot |
+| bool | 1.1 | `sete`/`movzx`/`and`/`test` where a plain bit is ANDed with a way compare |
+| branch, cell, untag, moves | 2.6 | the one `jne`, the cell compare, the `xor` |
+| scheduled neighbours | 3.8 | not the guard's |
+
+Two corrections to item 1 above. A quarter of what was counted as receiver
+guards (5.2M of 20.1M) is the callee test of closure calls (`entry_test`:
+the same select-to-TLS idiom, header `0x2fff1`), not a receiver's shape.
+And the scene's instruction count is not repeatable to the 0.3M the earlier
+A/B relied on: four perf runs of one and the same `app.so` gave 100.9,
+98.4, 96.1 and 98.2M (ip-matched main-thread samples; `copyArray` alone
+moves 3.2-5.2M between them). Only deterministic benches, or several runs
+a side, can rank a change of a few percent here.
+
+**Design.** Each part asked separately:
+
+- *Not-plain header test.* Needed for an arbitrary receiver: an Array keeps
+  `length | capacity << 32` at +8, where a plain object keeps its shape, so a
+  shape compare alone can be forged by an Array's counts. It can only go
+  where plainness is already known.
+- *Object test.* Needed likewise: nothing in the IL types a value as an
+  object, and inference is not trusted for soundness.
+- *Per-thread cell.* Shapes live in the thread's NonMovingArena and die with
+  it, so a process-global cell could compare equal to a new thread's shape
+  at a reused address (ABA). A global cell is possible only with the
+  runtime clearing a dead thread's publications first; it would save the
+  base reload (one instruction) and the delta at entry. Not built.
+- *Immediates / patching.* `cmp [ptr+8], imm32` needs shapes in the low 2GB
+  and text patched per thread; not worth it against the above.
+
+What the measurement ranked first is the form, not a part: a guard whose
+receiver the shape memo does not hold computed the keyed shape with two
+selects (to the TLS stand-in, then to 2) and compared once. It now branches
+straight to the site's miss: `xor`, `cmp`/`jae` (not an object), `cmp
+dword [p],0xfff1`/`jne` (not plain), the shape load, the cell compare and
+`jne` — no stand-in, no `2`, and on the hit path the shape word IS the keyed
+shape, which the memo keeps (the miss recomputes it, as before). The
+difference from the dropped variant is that nothing joins: the refusals go
+to the miss block the site already has.
+
+**Built** (bronze il2mir unless named):
+
+- `plain_shape_or_miss` (il_static_slot.cpp): the two tests as branches,
+  then the shape word. Used by a lone static read or write
+  (`guard_or_miss`, with `StaticMiss::memo_fresh` handing the shape to the
+  memo), a static run (il_lowering_static_run.cpp: the slow copy starts from
+  the memo as it was before the guard), a direct method call
+  (il_lowering_calls.cpp), and the AOT way-0 inline read and write
+  (il_ic_lowering.cpp; in-process tiers keep the select form, whose `hit`
+  value the speculation sites arm). `static_guard(..., keyed_plain)` drops
+  the `keyed != 2` term and reads family stamps and double maps through the
+  shape itself.
+- `entry_test_br` (il_lowering_direct.cpp): the closure-call callee test
+  as branches to the call's slow path, at the closure call, the method
+  stub's slot and mega entries, the slot call, the getter/setter stubs and
+  inline `new`.
+- brass x64 isel: a compare against an immediate whose other side is a
+  single-use load in the branch's block reads the load in place (`cmp
+  dword [rax],0xfff1`), except an equality with zero, which stays a `test`.
+- Unchanged: guards whose answer is an i1 the IL branches on later
+  (`is.shape`, `layout.fact`, `method.ic.is`, `accessor.ic.is`) keep the
+  keyed-shape selects; they are 0.07M of the remaining executions.
+
+A fresh guard is now about 9 instructions (`xor`, `cmp`, `jae`, `cmp`,
+`jne`, load, `lea`/reload, `cmp`, `jne`) against 13.
+
+**Measured** (same session, base = HEAD):
+
+| | base | S6 |
+|---|---|---|
+| three_math | 109.76M | 107.30M (-2.2%) |
+| object_graph | 319.11M | 314.13M (-1.6%) |
+| typed_array_crunch | 228.28M | 227.32M (-0.4%) |
+| mesh_churn_2k | 371.91M | 363.73M (-2.2%) |
+| instanced_mesh_churn | 546.07M | 539.10M (-1.3%) |
+| fib, numeric_loop, property_access, proto_dispatch(_churn) | | unchanged |
+| three_meshes main thread (ip-matched), M/frame | 100.9, 98.4, 96.1, 98.2 | 93.1, 95.5 |
+| three_meshes app.so, M/frame | 80.4, 78.2, 76.3, 77.5 | 73.1, 75.1 |
+| three_skinned n=410 app.so, M/frame | 61.0, 62.7 | 61.8, 60.8 |
+| three_meshes cpu ms (`rw.py time`, two runs) | 7.56, 7.62 | 7.58, 7.64 |
+| three_skinned cpu ms | 6.46, 6.59 | 6.79, 6.57 |
+
+The meshes scene loses ~4M instructions a frame (4-5%) in the main thread
+and app.so; skinned, whose hot code is bone math in typed arrays with few
+fresh receivers, does not move beyond its spread, and neither scene's cpu
+time moves outside noise: the instructions removed were cheap ones (the
+selects and constant moves run in the shadow of the header and shape
+loads' latency, which remain).
+
+Categories (`insncat.py`, every hot function, one run a side, M/frame):
+tag/box/cmov 9.2 to 6.3, bool 3.9 to 3.0, branches 7.5 to 10.3, `movabs`
+2.5 to 2.6. The pooled tag and limit constants stay: the branching form
+still reads them as folded frame-slot operands.
+
+Tests: `receiver_guard_branches` (new: every site kind against numbers,
+strings, booleans, null/undefined, symbols, BigInts, arrays, typed arrays,
+functions, proxies, maps, dates, frozen, reshaped and dictionary objects, a
+subclass and a prototype-only object, and shape changes across a call), the
+oracle's 807 cases infer and no-infer, the pin matrix's four rows over
+fifteen guard cases, bronze `wpo`, `codegen_brass`, `runtime`, and brass's
+1736 unit tests with `BRASS_GC_VERIFY=1 BRASS_GC_POISON=1`. No case runs a
+second realm or thread against a module's cells; the cells are per thread
+and unchanged.
+
+**What remains, ranked.** Guards are now ~9 instructions against V8's 4, and
+the rest of the gap is in parts that need a runtime or ABI change: the
+not-plain test (an Array header with a shape word at +8 would remove it,
+and the object test with it where a type fact holds), the per-thread cell
+base (process-global cells cleared at thread exit), and the family stamp's
+per-thread base id (a process-wide id range per image would make it a
+RIP-relative load). Above guards now: calls V8 inlines (~10M, item 2),
+then splittable tagged intervals (S5's 13.3M of slot traffic, ~2M by the
+rule alone), then doubles (2.5M), then pooled constants (~2.4M of slot
+stores at entry).
 
 ## Measuring
 

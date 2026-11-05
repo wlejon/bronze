@@ -335,7 +335,12 @@ Value* lower_direct_method_call(IlLowering* lowering, const BronzeInstruction& i
     Value* result = b.add_block_param(merge, Type::i64());
 
     b.position_at_end(cur);
-    Value* hit = direct_method_ic_hit(b, lowering->memo_keyed(b, inst.operands[0], recv), site, callee);
+    // A receiver the memo does not hold is tested on a path only a plain
+    // receiver reaches, the rest going to the generic call; the call ends
+    // the memo, so its shape word is not remembered.
+    Value* keyed = lowering->memo_lookup(inst.operands[0]);
+    if (!keyed) keyed = pl.plain_shape_or_miss(b, recv, slow);
+    Value* hit = direct_method_ic_hit(b, keyed, site, callee);
     lowering->spec().emit_branch(b, hit, fast, slow, SpecKind::Property, "()" + std::string(pl.key_tag(inst.index)));
     // The generic dispatch takes every argument boxed. A typed edge's
     // unboxed operands are boxed here, on the path that needs them.

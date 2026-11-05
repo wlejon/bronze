@@ -85,6 +85,10 @@ struct StaticMiss {
     std::function<std::vector<Value*>(Builder&)> memo_hit;
     std::function<std::vector<Value*>(Builder&)> memo_miss;
     std::function<void(const std::vector<Value*>&)> memo_merged;
+    // Set when `keyed` is null: the site computes the receiver's shape on
+    // its own plain-only path (plain_shape_or_miss) and hands it here, for
+    // the memo, before it reads any memo hook.
+    std::function<void(Value*)> memo_fresh;
 };
 
 class PropertyLoweringHelper {
@@ -142,8 +146,15 @@ public:
     // the value bare — as one i1 before one branch. `keyed` is `obj`'s keyed
     // shape (keyed_shape). `ptr` is the receiver's payload, meaningful only
     // where the i1 holds.
+    // `keyed_plain` says the caller reached here only for a plain receiver
+    // (plain_shape_or_miss), so `keyed` is its shape word itself.
     Value* static_guard(Builder& b, Value* obj, Value* keyed, const std::vector<StaticGuardTerm>& terms,
-                        Value*& ptr);
+                        Value*& ptr, bool keyed_plain = false);
+    // A receiver's shape word, reached only when it is a plain object: the
+    // object test and the plain-header test as two branches to `miss`, the
+    // builder left in the block where both held. What a guard with no keyed
+    // shape in hand (no memo entry) asks instead of keyed_shape's selects.
+    Value* plain_shape_or_miss(Builder& b, Value* obj, BasicBlock* miss);
     // THE KEYED SHAPE of `obj`: its shape word when it is a plain object,
     // else kNotPlainShape. One i64 that answers "plain, and of shape S" with
     // one compare against S, for every S a guard compares it with: a static
@@ -423,7 +434,8 @@ public:
                              bool need_barrier, BasicBlock* done, const std::string& prefix);
     // Monomorphic way-0 guard on a pre-computed receiver shape: checks that
     // `plain` holds, `shape` matches way 0 of `site`, and its slot word is an
-    // own data slot.
+    // own data slot. A null `plain` is a shape the caller reached only for a
+    // plain receiver.
     void emit_mono_slot_guard(Builder& b, Value* shape, Value* plain, const IcSite& site,
                               Value*& hit, Value*& slot_word);
 

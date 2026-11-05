@@ -151,8 +151,17 @@ Value* PropertyLoweringHelper::lower_prop_get_mono(Builder& b, Value* obj, uint3
     Value* hit = nullptr;
     Value* ptr = nullptr;
     Value* slot_word = nullptr;
-    mono_hit(b, obj, site, hit, ptr, slot_word);
     BasicBlock* bb_way0_miss = bb_poly ? bb_poly : bb_slow;
+    if (in_process_) {
+        mono_hit(b, obj, site, hit, ptr, slot_word);
+    } else {
+        // Compiled ahead of time, the object and plain-header tests branch
+        // to the way-0 miss, and way 0 is compared with the shape word
+        // itself (plain_shape_or_miss).
+        Value* shape = plain_shape_or_miss(b, obj, bb_way0_miss);
+        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+        emit_mono_slot_guard(b, shape, nullptr, site, hit, slot_word);
+    }
     Value* c0 = nullptr;
     if (spec_) {
         spec_->emit_branch(b, hit, bb_fast, bb_way0_miss, SpecKind::Property, key_tag(key_index),
@@ -318,7 +327,7 @@ void PropertyLoweringHelper::emit_mono_slot_guard(Builder& b, Value* shape, Valu
     Value* shape_match = b.build_eq(shape, cached_shape);
     slot_word = b.build_load(Type::i64(), site.base, site.off + kIcSlotWordOffset);
     Value* own_data = b.build_ult(slot_word, b.build_iconst_i64(kIcOwnDataLimit));
-    hit = b.build_and(plain, b.build_and(shape_match, own_data));
+    hit = plain ? b.build_and(plain, b.build_and(shape_match, own_data)) : b.build_and(shape_match, own_data);
 }
 
 void PropertyLoweringHelper::mono_hit(Builder& b, Value* obj, const IcSite& site, Value*& hit, Value*& ptr,
@@ -491,7 +500,14 @@ void PropertyLoweringHelper::lower_prop_set_mono(Builder& b, Value* obj, uint32_
     Value* slot_word = nullptr;
     Value* plain = nullptr;
     Value* shape = nullptr;
-    receiver_shape(b, obj, plain, ptr, shape);
+    if (in_process_ || with_transition) {
+        receiver_shape(b, obj, plain, ptr, shape);
+    } else {
+        // Ahead of time and with no transition arm (which reads the shape
+        // on its miss), as the read's way-0 guard: branches to the helper.
+        shape = plain_shape_or_miss(b, obj, bb_slow);
+        ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(kObjectTagBits)));
+    }
     emit_mono_slot_guard(b, shape, plain, site, hit, slot_word);
     Value* counter = nullptr;
     // A write's tag is its key after '=', apart from the reads of it.

@@ -168,8 +168,27 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     }
     Value* ptr = nullptr;
     Value* ok = nullptr;
+    const std::string prefix = "static_run_" + std::to_string(fn->next_block_id());
+    BasicBlock* bb_entry = b.current_block();
+    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
+    // Named cold for brass's block layout, as a lone site's miss is
+    // (il_static_slot.cpp): the slow copy is its own trace.
+    BasicBlock* bb_slow = b.append_block(prefix + "_slow_cold");
+    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
+    b.position_at_end(bb_entry);
+    // The memo the slow copy starts from. A receiver the memo does not hold
+    // is tested on a path only a plain receiver reaches, whose shape word
+    // the fast copy remembers; the slow copy, entered from that test's
+    // refusals too, starts without it.
+    const auto memo_pre = memo_snapshot();
     if (!terms.empty()) {
-        ok = prop_lowering_.static_guard(b, obj, memo_keyed(b, recv_id, obj), terms, ptr);
+        if (Value* keyed = memo_lookup(recv_id)) {
+            ok = prop_lowering_.static_guard(b, obj, keyed, terms, ptr);
+        } else {
+            Value* shape = prop_lowering_.plain_shape_or_miss(b, obj, bb_slow);
+            memo_add(recv_id, shape);
+            ok = prop_lowering_.static_guard(b, obj, shape, terms, ptr, /*keyed_plain=*/true);
+        }
     } else {
         ptr = b.build_xor(obj, b.build_iconst_i64(static_cast<int64_t>(uint64_t{BRONZE_ABI_TAG_OBJECT} << 48)));
     }
@@ -185,14 +204,6 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     // in the fast copy moves a shape.
     const auto memo_fast = memo_snapshot();
 
-    BasicBlock* guard_bb = b.current_block();
-    const std::string prefix = "static_run_" + std::to_string(fn->next_block_id());
-    BasicBlock* bb_fast = b.append_block(prefix + "_fast");
-    // Named cold for brass's block layout, as a lone site's miss is
-    // (il_static_slot.cpp): the slow copy is its own trace.
-    BasicBlock* bb_slow = b.append_block(prefix + "_slow_cold");
-    BasicBlock* bb_merge = b.append_block(prefix + "_merge");
-    b.position_at_end(guard_bb);
     b.build_br_if(ok, bb_fast, bb_slow);
 
     std::unordered_map<uint32_t, Value*> fast_map = val_map;
@@ -232,6 +243,7 @@ bool IlLowering::try_lower_static_slot_run(const BronzeBlock& blk_ast, size_t& i
     BasicBlock* fast_end = b.current_block();
 
     b.position_at_end(bb_slow);
+    memo_restore(memo_pre);
     for (size_t j = inst_idx; j < end; ++j) {
         const BronzeInstruction& inst = insts[j];
         apply_inst_loc(b, inst);

@@ -1,0 +1,25 @@
+warm 36006000
+int undefined undefined TypeError NaN undefined undefined
+double undefined undefined TypeError NaN undefined undefined
+nan undefined undefined TypeError NaN undefined undefined
+str undefined undefined TypeError NaN undefined undefined
+true undefined undefined TypeError NaN undefined undefined
+null TypeError TypeError TypeError TypeError TypeError TypeError
+undef TypeError TypeError TypeError TypeError TypeError TypeError
+sym undefined undefined TypeError NaN undefined undefined
+big undefined undefined TypeError NaN undefined undefined
+fn fnx w fnlen fnxundefined fnk lk
+arr arrx w TypeError arrxundefined arrk lk
+ta tax w TypeError taxundefined undefined lk
+frozen 5 6 11 5 undefined undefined
+reshaped late w latew0 late0 undefined lk NaNw1
+dict 1 w 1w0 1 undefined lk 20w1
+proxy 300 w proxied 300 undefined lk 301000w100
+map mapx w TypeError mapxundefined undefined lk
+date undefined w TypeError NaN datek lk
+sub 11 w 1011 11 undefined lk 120w1
+protoOnly 21 w 21w0 21 undefined lk 220w1
+lit litx w litlen litx1 litk lk
+around 41
+around2 41
+after 61000
