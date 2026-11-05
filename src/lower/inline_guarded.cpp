@@ -223,7 +223,10 @@ public:
         // whose hot loop is there keeps its calls.
         if (fn.isEntryPoint || fn.name == "main") return 0;
         size_t count = instructionCount(fn);
-        if (count > kMaxCallerStart) return 0;
+        if (count > kMaxCallerStart) {
+            if (trace()) std::fprintf(stderr, "[inline] %s: caller too big (%zu)\n", fn.name.c_str(), count);
+            return 0;
+        }
         types_ = valueTypes(fn);
         slowBlock_.assign(fn.blocks.size(), 0);
         closureTried_.assign(fn.blocks.size(), 0);
@@ -256,8 +259,16 @@ public:
         for (size_t b = 0; b < fn.blocks.size(); ++b) {
             if ((b < lateBlock_.size() && lateBlock_[b]) != (pass == 1)) continue;
             if (slowBlock_[b] || (!inLoop_[b] && !hot)) continue;
+            // Open `+` chains: a call between a chain's links stays a call.
+            // The chain's builder must be read by its next link in the same
+            // block (il/verifier.cpp, verifyConcatChain), and a body copied
+            // in would split the block between them.
+            int openChains = 0;
             for (size_t i = 0; i < fn.blocks[b].instructions.size(); ++i) {
                 const il::Instruction& inst = fn.blocks[b].instructions[i];
+                if (inst.op == il::Op::ConcatBegin) ++openChains;
+                if (inst.op == il::Op::ConcatEnd && openChains > 0) --openChains;
+                if (openChains > 0) continue;
                 // An own callee's guessed closure first (its miss is a block
                 // holding the call, which takes the next guess, then the
                 // prototype's method as any call does), else the method.
@@ -718,9 +729,18 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
                           const ClosureGuesses* guesses, const ColdBlocks* cold) {
     Inliner inliner(module, guesses, cold);
     bool any = false;
+    // BRONZE_INLINE_DUMP=<name>: the IL of the function so named, after
+    // inlining (a diagnostic, like BRONZE_INLINE_GUARDED_TRACE).
+    const char* dump = std::getenv("BRONZE_INLINE_DUMP");
     for (size_t f = 0; f < module.functions.size(); ++f) {
         if (inliner.inlineInto(static_cast<uint32_t>(f)) == 0) continue;
         any = true;
+        if (dump && module.functions[f].name == dump) {
+            il::Module one;
+            one.keyConstants = module.keyConstants;
+            one.functions.push_back(module.functions[f]);
+            std::fputs(il::print(one).c_str(), stderr);
+        }
         if (changed) changed->push_back(static_cast<uint32_t>(f));
         if (!il::verifyFunction(module.functions[f], diags)) {
             if (std::getenv("BRONZE_INLINE_GUARDED_DEBUG")) {

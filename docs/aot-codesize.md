@@ -205,3 +205,8 @@ operands are not the lever they looked like. Parked on brass branch
 `c12-splittable-tagged`. Untried and cheap: order frame slots hottest-first so
 most slot operands take 8-bit displacements (15.4K of 20.5K hot slot operands
 use 32-bit ones).
+
+## Next: inlining and call overhead
+
+Chunk 13, the call edges, what a call costs in cycles, and guarded inlining
+reaching the frustum chain, measured and parked: [aot-inlining.md](aot-inlining.md).
