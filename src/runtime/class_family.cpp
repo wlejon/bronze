@@ -166,7 +166,15 @@ bool prefixMatches(const FamilyClass& cls, const std::vector<const Shape*>& node
 }  // namespace
 
 uint64_t classFamilyIdFor(Shape* shape, uint64_t wantLo, uint64_t wantSpan) {
-    if (shape == nullptr || shape->isDictionary()) {
+    // Nor a shape some object is the prototype of (shape.h
+    // `used_as_prototype`): a family guard licenses a bare STORE, and a store
+    // into a prototype has to reach the runtime, which moves the prototype
+    // epoch the method caches check (the reason `bronze_static_shape_publish`
+    // refuses such a shape for a write). A shared shape is never marked in
+    // place once objects sit on it — an object that becomes a prototype late
+    // moves to a private marked copy (Shape::markObjectAsPrototype) — so a
+    // shape stamped before is never one of these.
+    if (shape == nullptr || shape->isDictionary() || shape->used_as_prototype) {
         return BRONZE_ABI_FAMILY_NONE;
     }
     std::shared_lock<std::shared_mutex> lock(familyMutex());

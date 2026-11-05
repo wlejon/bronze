@@ -337,3 +337,35 @@ TEST_CASE("bronze_family_stamp breaks a tie between unrelated classes toward the
     CHECK(classFamilyIdFor(longer, mod.base + 0, 0) == mod.base + 2);
     CHECK(classFamilyIdFor(a, mod.base + 2, 0) == mod.base + 1);
 }
+
+TEST_CASE("class family never stamps a shape an object is the prototype of") {
+    classFamilyResetForTesting();
+    NonMovingArena& arena = rtArena();
+    Heap& heap = rtHeap();
+    ShadowStackFrame frame;
+
+    FakeModule mod;
+    mod.addClass({{"a", true}, {"b", true}});
+    mod.registerAll();
+
+    // A family guard licenses a bare store, and a store into a prototype's own
+    // slot must reach the runtime, which moves the prototype epoch the method
+    // caches check. An instance that becomes a prototype moves to a private,
+    // marked copy of its chain: same layout, and never stamped.
+    Shape* root = Shape::createRoot(arena);
+    Shape* shaped = shapeWith(arena, heap, root, {{"a", true}, {"b", true}});
+    Rooted<Value> obj(Value::fromObject(ObjectHeader::create(heap, arena, shaped)));
+    Shape::markObjectAsPrototype(arena, obj.get().asObject<ObjectHeader>());
+    Shape* marked = obj.get().asObject<ObjectHeader>()->shape;
+    REQUIRE(marked != shaped);
+    REQUIRE(marked->used_as_prototype);
+    CHECK(classFamilyIdFor(marked) == BRONZE_ABI_FAMILY_NONE);
+    bronze_family_stamp(obj.get().rawBits(), 0, 0);
+    CHECK(marked->family_stamp == BRONZE_ABI_FAMILY_NONE);
+
+    // The shared shape it left keeps its layout, and is still stamped for the
+    // objects that are no one's prototype.
+    Rooted<Value> plain(Value::fromObject(ObjectHeader::create(heap, arena, shaped)));
+    bronze_family_stamp(plain.get().rawBits(), 0, 0);
+    CHECK(shaped->family_stamp == mod.base);
+}
