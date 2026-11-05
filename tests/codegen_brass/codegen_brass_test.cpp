@@ -7,6 +7,7 @@
 #include "codegen-brass/il2mir/il_translator.h"
 #include "codegen-brass/il_to_brass_ast.h"
 #include "il/il.h"
+#include <brass/mir/opcodes.hpp>
 #include <brass/mir/verifier.hpp>
 #include "support/diagnostics.h"
 
@@ -193,4 +194,70 @@ TEST_CASE("layout.epoch lowers to a TLS load that a call between two reads does 
     }
     CHECK(conversions == 2);
     CHECK(runtimeEpochCalls == 0);
+}
+
+// docs/aot-specialization.md "S4": in an image build a read through a site's
+// cache calls the module's read stub, whose hit paths call nothing; its one
+// call is the full stub (__bronze_prop_get_slow), from a block whose every
+// path returns that call's answer.
+TEST_CASE("a read site's stub answers hits without a call and hands the rest to the full stub") {
+    bronze::il::Module m;
+    m.name = "ic_fast_test";
+    m.keyConstants = {"x"};
+    m.icSiteCount = 1;
+    bronze::il::Function fn;
+    fn.name = "read_x";
+    fn.params = {{"o", bronze::il::Type::Dynamic}};
+    fn.returnType = bronze::il::Type::Dynamic;
+    fn.valueCount = 2;
+    bronze::il::Block b0;
+    b0.id = 0;
+    bronze::il::Instruction get;
+    get.op = bronze::il::Op::PropGet;
+    get.type = bronze::il::Type::Dynamic;
+    get.result = 1;
+    get.operands = {0};
+    get.keyIndex = 0;
+    get.icIndex = 0;
+    b0.instructions.push_back(get);
+    b0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::Dynamic, bronze::il::kNoValue, {1}, 0, 0, 0});
+    fn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> names = {"read_x"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, names);
+    il2mir::TranslatorOptions opts;
+    opts.enable_optimizations = false;
+    opts.verify_lowered_module = true;
+    opts.direct_js_calls = true;
+    opts.pin_tls_register = true;
+    opts.ic_site_count = 1;
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    brass::Function* stub = tr.module->get_function("__bronze_prop_get_ic");
+    REQUIRE(stub != nullptr);
+    REQUIRE(tr.module->get_function("__bronze_prop_get_slow") != nullptr);
+    CHECK(brass::verify_function(*stub));
+    int calls = 0;
+    for (brass::BasicBlock* bb : stub->blocks()) {
+        for (brass::Instruction* inst : *bb) {
+            if (!brass::is_call(inst->opcode())) continue;
+            ++calls;
+            CHECK(inst->opcode() == brass::Opcode::call);
+            CHECK(inst->symbol() == "__bronze_prop_get_slow");
+        }
+    }
+    CHECK(calls == 1);
+
+    brass::Function* reader = tr.module->get_function("read_x");
+    REQUIRE(reader != nullptr);
+    int stub_calls = 0;
+    for (brass::BasicBlock* bb : reader->blocks()) {
+        for (brass::Instruction* inst : *bb) {
+            if (inst->opcode() != brass::Opcode::call) continue;
+            if (inst->symbol() == "__bronze_prop_get_ic") ++stub_calls;
+            CHECK(inst->symbol() != "__bronze_prop_get_slow");
+        }
+    }
+    CHECK(stub_calls == 1);
 }

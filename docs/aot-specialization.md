@@ -206,7 +206,8 @@ certainty.
 Six steps toward Chromium's ~58M instructions per three_meshes n=2565 frame
 (bro AOT: ~102M, 7.85 cpu ms). S0 measured where receivers are read; S1 built
 the invariant later steps lean on. S2 carries a guard's answer across calls
-within a function as a layout fact. S3 onward is not built.
+within a function as a layout fact. S4 (built out of order, below S2) made
+the IC stubs' hits cheaper. S3 and S5 are not built.
 
 ### S0: what the hot receivers look like
 
@@ -412,6 +413,132 @@ object, overflow reallocation by appends, becoming a prototype, delete and
 re-add, read-only redefine), from a call one and two levels deep and from a
 getter, across if/else, loops and try (anchor inside and before the try),
 with covered stores read back.
+
+### S4: IC stub hits
+
+The read and method stubs were ~11.5M instructions per three_meshes frame
+(`__bronze_prop_get_ic` 6.4M, `__bronze_method_call_ic` 5.1M in the
+same-session baseline below).
+
+**What the calls are** (a temporary counter patch in the stubs, 300 measured
+frames of three_meshes n=2565, per frame):
+
+| stub | calls | how they end |
+|---|---|---|
+| read | 96.3K | way 0 51.4K, ways 1-3 39.4K, mega table ~4.8K, miss to the helper 0.64K |
+| | | own data 31.2K, absent 44.2K, prototype data 19.9K, getter 0.32K, helper 0.64K: 99.3% call nothing |
+| method | 79.4K | way 0's shape 72.0K: DIRECT entry 65.7K, SLOT 6.2K; way 1 0.36K; mega, exotic ~0; `bronze_call_method` 7-9K |
+| write | 4.3K | own slot 4.3K |
+
+A read hit was ~56 instructions, a method hit ~60 before the call. Callers
+(`perf --call-graph=fp`): reads from setMaterial, setProgram's many sites,
+setup, `__anon_fn_1418`, refreshUniformsCommon; methods from `__anon_fn_527`,
+setProgram, updateMatrixWorld, Frustum.intersectsSphere, Sphere.applyMatrix4,
+renderObject, projectObject. Caller side, static (objdump of the image):
+
+| function | instructions | frame-slot operands | calls (to a stub) | `movabs` |
+|---|---|---|---|---|
+| setProgram | 20296 | 3731 | 433 (161) | 627 |
+| updateMatrixWorld | 7391 | 1684 | 211 (98) | 211 |
+| projectObject | 7252 | 1247 | 150 (46) | 266 |
+| `__anon_fn_1418` | 5718 | 1033 | 155 (65) | 186 |
+| setMaterial | 4195 | 672 | 103 (41) | 100 |
+
+About a fifth of the hot functions' instructions touch a frame slot. Two
+causes: every call is a GC point, and a tagged value whose interval spans
+one lives in its slot for the whole interval (brass's unsplittable-gcref
+rule); and brass pools equal 64-bit constants module wide with no
+rematerialization, so each `movabs` value holds a register or a slot.
+
+**Built.**
+
+- brass: a call to a function the module declares `nocollect` (or `pure`) is
+  no GC point for register allocation either: it does not make the values
+  live across it unsplittable (`live_range.cpp`, `call_inst_ids_`) and records
+  no stack-map roots (`linear_scan.cpp`, `record_live_gcrefs`). The MIR
+  verifier refuses a GC point (a collecting call, an indirect call, a
+  safepoint) in a function the module declares nocollect, and the interrupt
+  poll pass leaves its loops unpolled. docs/gc_contract.md. Users today:
+  `bronze_math_sincos_f64` and `bronze_math_random_f64` (nocollect),
+  `bronze_tls_block_addr` and the math kernels (pure); instanced_mesh_churn
+  -0.4% instructions from it alone.
+- bronze, read: `__bronze_prop_get_ic` is now the stub's hit paths
+  (il_prop_get_fast.cpp: ways 0-3, the mega table, own data, absent,
+  prototype data 1-4 links up), written for a leaf's registers: tag and
+  payload tests are shifts against immediates, so no pooled constant holds a
+  register. Anything else calls the old stub, now `__bronze_prop_get_slow`,
+  with the same operands. An own way-0 hit is ~40 instructions where it was
+  ~56; 8 of them are saves and restores of four callee-saved registers,
+  which brass gives any function with a call (no shrink-wrapping), here the
+  miss path's.
+- bronze, method: the site tests way 0's DIRECT entry inline (plain receiver
+  of way 0's shape, the direct bit, the latch's epoch) and enters the latched
+  code itself; any other receiver calls the stub from a cold block
+  (`lower_method_way0_direct`, il_lowering_direct.cpp). Only in images, at
+  sites that are not run-once and have no handler.
+
+**Tried and dropped: the nocollect split at the site.** The plan was a read
+site calling a call-free half declared nocollect, then the full stub from a
+cold block on its miss, so the caller's references would stay in registers
+across the hit. The stubs fell as far (11.5M to ~6M), but callers paid back
+half of it: a second call per site, the site's operands kept across the
+first, 11% more image code, and frame-slot operands *up* (setProgram 3731 to
+4787, setMaterial 672 to 958). The freed registers never showed, because a
+value is in its slot for its whole interval if it spans any collecting call,
+and in setProgram-sized functions nearly every value does. object_graph
++1.3% instructions, mesh_churn_2k +0.4%. One call to a stub that calls the
+full stub itself measured better on every count, so that is what is built.
+
+**Measured**, same session, base = this work's changes taken out (main-thread
+instructions per frame, `perf`; cpu ms two runs each):
+
+| | base | nocollect split (dropped) | built |
+|---|---|---|---|
+| three_meshes instructions | 104.45M | 103.02M, 102.80M | 102.38M, 101.83M |
+| three_meshes cpu ms | 7.73, 7.75 | 7.66, 7.70, 7.81, 7.68 | 7.61, 7.56, 7.70, 7.72 |
+| read stub(s) | 6.43M | 3.44M + <0.3M | 4.12M, 4.48M + <0.3M |
+| `__bronze_method_call_ic` | 5.12M | 2.57M, 2.15M | 1.92M, 2.16M |
+| three_skinned instructions | 88.22M | 92.69M, 87.68M, 90.11M | 91.82M, 89.02M |
+| three_instanced instructions | 64.08M | 63.53M | (no stub traffic) |
+
+three_skinned moves ±2.5M between runs of one build; its stubs fell 5.8M to
+~4.3M, the totals are noise. Pure-compute benches, instructions, base to
+built: three_math 109.75M to 109.76M, object_graph 318.45M to 319.15M
+(+0.2%), mesh_churn_2k 371.46M to 371.91M (+0.1%), instanced_mesh_churn
+548.02M to 546.07M (-0.4%); typed_array_crunch, fib, numeric_loop,
+property_access, proto_dispatch(_churn) unchanged.
+
+So: the stubs halved (11.5M to ~6.3M), the frame fell ~2.3M (-2%), and
+cpu ms moved less than run-to-run noise (0.05-0.15 ms). The rest of the stub saving went to the inline method arms' code
+in their callers and to noise in setProgram (8.3-9.7M between builds).
+
+What this says about the next steps:
+
+- **S5 (tagged values in registers across collecting calls)** is where the
+  caller-side cost is: the frame-slot operands in the table above come from
+  values spanning collecting calls, which no change to the stubs touches, as
+  the dropped split showed. brass has the machinery (callee-saved roots saved
+  at the call and reported in the stack map); the unsplittable-gcref rule
+  keeps it unused. Constant rematerialization (the pooled `movabs`) is the
+  cheaper half of the same pressure, and shrink-wrapping would take the
+  read stub's register saves (8 of its ~40) off every hit.
+- **S3 (receiver-class function versions)** removes stub sites. A read hit
+  now costs ~40 + the call's setup and a DIRECT method hit is inline, so a
+  removed site saves less than S2 assumed; count S3's payoff in the built
+  per-hit costs, and expect it to depend on S5 for the callers' spills.
+- Other call-free candidates: `__bronze_elem_get_keyed` (0.35M), the write
+  stub's own-slot store (its barrier is already a no-GC call), the method
+  stub's SLOT arm (6.2K calls a frame).
+
+Tests: tests/oracle/cases/ic_fast_split.js (own data at 1, 4 and 7 shapes;
+absent keys appearing on the prototype and the receiver and deleted again;
+prototype data 1-4 links up, changed; allocating and throwing getters; own
+accessors; method calls mono, mixed, replaced, shadowed, through a slot, on a
+non-callable, on undefined and null, in try; allocation between), through
+the pin matrix's eight rows. brass tests/unit/test_nocollect_calls.cpp: a
+tagged value across a no-GC call keeps its register (x64 and aarch64), one
+that also spans a collecting call keeps its slot, a nocollect callee runs
+under the JIT, the verifier's refusals, no poll in a nocollect loop.
 
 ## Measuring
 

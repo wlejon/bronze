@@ -34,6 +34,12 @@ inline constexpr const char* kPolyScanHelper = "bronze_prop_poly_scan";
 // the same operands.
 inline constexpr const char* kPropGetStub = "__bronze_prop_get_ic";
 inline constexpr const char* kPropSetStub = "__bronze_prop_set_ic";
+// kPropGetStub is the read's hit paths alone (il_prop_get_fast.cpp: own and
+// prototype data slots and absent keys, from any way or the megamorphic
+// table), written for a leaf's registers; everything else (a getter, a
+// receiver no way names, the helper) it hands to kPropGetSlowStub, which
+// answers the whole read with the site's operands.
+inline constexpr const char* kPropGetSlowStub = "__bronze_prop_get_slow";
 
 // A site whose class layout proved its key's instance slot (il.h
 // `staticSlot`), with the guard that licenses the constant offset: the

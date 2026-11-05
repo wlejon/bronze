@@ -1,0 +1,23 @@
+own 1 0
+own 4 120000
+own 7 420000
+absent 10000
+now proto,proto,proto,
+then proto,own,proto,
+after delete undefined,own,undefined,
+kind A A
+kind2 A2 A2
+kind3 C C A2
+heavy 24850 20000
+caught 30
+own accessor 12600
+mono 114000
+mixed 304500
+replaced 19000
+shadowed 18707
+slot 2700
+not callable true
+no receiver true
+null read true
+try 4873 1
+interleaved 18000000 2936 3000

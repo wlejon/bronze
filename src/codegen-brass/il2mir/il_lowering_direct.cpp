@@ -14,6 +14,7 @@
 #include "il_abi.h"
 #include "il_array_sort.h"
 #include "il_lowering.h"
+#include "il_prop_get_fast.h"
 #include "il_write_barrier.h"
 
 #include <string>
@@ -488,7 +489,9 @@ void build_method_call_stub(IlLowering* lowering, Function* fn) {
     fn->rebuild_cfg_predecessors();
 }
 
-// The read stub: kPropGetStub(obj, key, site), bronze_prop_get's operands.
+// The full read stub: kPropGetSlowStub(obj, key, site), bronze_prop_get's
+// operands, called by kPropGetStub (il_prop_get_fast.cpp) for what its hit
+// paths do not answer.
 // It answers what propGetHelperBody's site-cache path answers, test for
 // test, from any of the site's ways:
 //  - an own data slot (the inline paths' hit, for a site without them);
@@ -720,18 +723,78 @@ void emit_direct_stubs(IlLowering* lowering, Module& mod) {
     Function* stub = mod.create_function(kMethodCallStub, Type::i64(),
                                          {Type::i64(), Type::i32(), Type::i32(), Type::ptr(), Type::ptr()});
     build_method_call_stub(lowering, stub);
-    build_prop_get_stub(lowering, mod.create_function(kPropGetStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));
+    build_prop_get_stub(lowering,
+                        mod.create_function(kPropGetSlowStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));
+    build_prop_get_fast_stub(mod.create_function(kPropGetStub, Type::i64(), {Type::i64(), Type::i32(), Type::ptr()}));
     build_prop_set_stub(lowering, mod.create_function(kPropSetStub, Type::void_type(),
                                                       {Type::i64(), Type::i32(), Type::i64(), Type::ptr(), Type::i32()}));
     build_sort_merge_stub(
         mod.create_function(kSortMergeStub, Type::i64(), {Type::i64(), Type::i64(), Type::i32(), Type::ptr()}));
 }
 
+// The stub's DIRECT arm for way 0 (build_method_call_stub), at the site: the
+// receiver a plain object of way 0's shape, a DIRECT latch (the arity word's
+// direct bit, no slot form) and its epoch the thread's, then the latched code
+// and env entered here. Five of six method stub calls on three_meshes were
+// this arm, and the stub's call, frame and dispatch were most of its cost.
+// Everything else calls the stub, which tests way 0 again and goes on.
+static Value* lower_method_way0_direct(IlLowering* lowering, Builder& b, Value* recv, Value* key_id, uint32_t argc,
+                                       Value* argv, Value* site) {
+    (void)lowering;
+    const std::string prefix = block_prefix(b, "mway0");
+    BasicBlock* cur = b.current_block();
+    BasicBlock* object = b.append_block(prefix + "_object");
+    BasicBlock* enter = b.append_block(prefix + "_enter");
+    BasicBlock* stub = b.append_block(prefix + "_stub_cold");
+    BasicBlock* merge = b.append_block(prefix + "_merge");
+    Value* result = b.add_block_param(merge, Type::i64());
+    stub->set_cold();
+    // Tests by shifts against immediates, not masks: brass keeps a 64-bit
+    // constant live from its first definition, and a large caller then held
+    // each mask in a register or a stack slot across its whole body.
+    auto imm = [&](int64_t v) { return b.build_iconst_i64(v); };
+
+    b.position_at_end(cur);
+    b.build_br_if(b.build_eq(b.build_lshr(recv, imm(48)), imm(BRONZE_ABI_TAG_OBJECT)), object, stub);
+
+    // A plain object of way 0's shape; the arity word's bit 31 (the direct
+    // bit) its highest set bit (no SLOT form above it); the latch's epoch.
+    b.position_at_end(object);
+    Value* ptr = b.build_lshr(b.build_shl(recv, imm(16)), imm(16));
+    static_assert(BRONZE_ABI_METHOD_IC_DIRECT_ENTRY_BIT == (uint64_t{1} << 31) &&
+                      BRONZE_ABI_METHOD_IC_SLOT_SHIFT == 32,
+                  "the DIRECT form's test is one shift");
+    Value* arity0 = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ARITY_WORD * kWord);
+    Value* epoch = b.build_load(Type::i64(), b.build_pinned_tls_read(), BRONZE_TLS_PROTO_EPOCH_OFF);
+    Value* ok = b.build_and(
+        b.build_and(b.build_eq(b.build_load(Type::i32(), ptr, 0), b.build_iconst_i32(kPlainHeaderLow)),
+                    b.build_eq(b.build_load(Type::i64(), ptr, BRONZE_ABI_OBJ_SHAPE_OFFSET), b.build_load(Type::i64(), site, 0))),
+        b.build_and(b.build_eq(b.build_lshr(arity0, imm(31)), imm(1)),
+                    b.build_eq(b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_EPOCH_WORD * kWord), epoch)));
+    b.build_br_if(ok, enter, stub);
+
+    b.position_at_end(enter);
+    Value* code = b.build_load(Type::ptr(), site, BRONZE_ABI_METHOD_IC_CODE_WORD * kWord);
+    Value* env = b.build_load(Type::i64(), site, BRONZE_ABI_METHOD_IC_ENV_WORD * kWord);
+    b.build_br(merge, {call_code(b, code, env, recv, argc, argv)});
+
+    b.position_at_end(stub);
+    b.build_br(merge, {b.build_call(kMethodCallStub, Type::i64(),
+                                    {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site})});
+
+    b.position_at_end(merge);
+    return result;
+}
+
 Value* lower_method_call_ic(IlLowering* lowering, Builder& b, Value* recv, Value* key_id,
                             const std::vector<Value*>& boxed_args, Value* site) {
     Value* argv = lowering->stage_argv(b, boxed_args);
+    const uint32_t argc = static_cast<uint32_t>(boxed_args.size());
+    // The inline arm calls through a register, which a block with a handler
+    // cannot invoke, and is only size in code that runs once.
+    if (direct_entry_here(lowering)) return lower_method_way0_direct(lowering, b, recv, key_id, argc, argv, site);
     return b.build_call(kMethodCallStub, Type::i64(),
-                        {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(boxed_args.size())), argv, site});
+                        {recv, key_id, b.build_iconst_i32(static_cast<int32_t>(argc)), argv, site});
 }
 
 // The stub's SLOT arm (build_method_call_stub) at the site, in front of the
