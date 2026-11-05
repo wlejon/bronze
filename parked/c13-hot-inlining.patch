@@ -1,0 +1,491 @@
+diff --git a/src/lower/CMakeLists.txt b/src/lower/CMakeLists.txt
+index 1545449..42d67e2 100644
+--- a/src/lower/CMakeLists.txt
++++ b/src/lower/CMakeLists.txt
+@@ -6,7 +6,7 @@ bronze_add_module(lower
+             lower_update.cpp lower_private.cpp lower_class_fields.cpp lower_derived_ctor.cpp derived_ctor_plan.cpp lower_typed_elem.cpp lower_typed_elem_proof.cpp lower_typed_elem_loop_sanitize.cpp bigint_reach.cpp
+             lower_concat_chain.cpp lower_define_props.cpp lower_keyed_field_store.cpp lower_key_owner_guess.cpp
+             guard_region_cfg.cpp guard_region_select.cpp guard_region_apply.cpp guard_region_build.cpp guard_region_ssa.cpp own_callee_calls.cpp
+-            guard_region_runs.cpp guard_region_shapes.cpp guard_region_numbers.cpp typed_loop_version.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp loop_prop_effects.cpp read_cse.cpp layout_facts.cpp inline_small.cpp inline_guarded.cpp transition_runs.cpp
++            guard_region_runs.cpp guard_region_shapes.cpp guard_region_numbers.cpp typed_loop_version.cpp loop_prop_hoist.cpp loop_prop_analysis.cpp loop_prop_effects.cpp read_cse.cpp layout_facts.cpp inline_small.cpp inline_guarded.cpp inline_hot.cpp transition_runs.cpp
+             lower_object.cpp lower_call.cpp lower_module_inline.cpp direct_method_table.cpp direct_method_guess.cpp
+             lower_pattern.cpp lower_pin.cpp lower_census.cpp native_manifest.cpp lower_native.cpp
+             lower_iter_loop.cpp lower_switch.cpp lower_label.cpp lower_expr_chain.cpp
+diff --git a/src/lower/inline_guarded.cpp b/src/lower/inline_guarded.cpp
+index 0dd01c0..ff6e140 100644
+--- a/src/lower/inline_guarded.cpp
++++ b/src/lower/inline_guarded.cpp
+@@ -27,6 +27,7 @@
+ 
+ #include "lower/inline_guarded.h"
+ #include "lower/guard_region_cfg.h"
++#include "lower/inline_hot.h"
+ #include "lower/typed_entry.h"
+ 
+ #include <algorithm>
+@@ -212,6 +213,14 @@ public:
+             if (candidate_[i] || closureCandidate_[i]) originals_[i] = module.functions[i];
+         }
+         markEnteredFromLoops();
++        // The call graph's hot part (inline_hot.h): a function a loop enters
++        // through any number of calls the IL names.
++        const std::vector<uint8_t> hot = hotFunctions(module, guesses);
++        for (size_t i = 0; i < hot.size(); ++i) {
++            if (!hot[i] || enteredFromLoop_[originOf(static_cast<uint32_t>(i))]) continue;
++            if (trace()) std::fprintf(stderr, "[inline] hot: %s (call graph)\n", module.functions[i].name.c_str());
++            enteredFromLoop_[originOf(static_cast<uint32_t>(i))] = 1;
++        }
+     }
+ 
+     // Inlines every eligible call in `fnIdx`, its copied bodies' calls
+@@ -223,7 +232,10 @@ public:
+         // whose hot loop is there keeps its calls.
+         if (fn.isEntryPoint || fn.name == "main") return 0;
+         size_t count = instructionCount(fn);
+-        if (count > kMaxCallerStart) return 0;
++        if (count > kMaxCallerStart) {
++            if (trace()) std::fprintf(stderr, "[inline] %s: caller too big (%zu)\n", fn.name.c_str(), count);
++            return 0;
++        }
+         types_ = valueTypes(fn);
+         slowBlock_.assign(fn.blocks.size(), 0);
+         closureTried_.assign(fn.blocks.size(), 0);
+@@ -242,62 +254,122 @@ public:
+             }
+         }
+         markLoops(fn);
+-        const size_t limit =
++        const size_t start = count;
++        size_t limit =
+             std::min(kMaxCallerInstructions, std::max(count * 2 + kCallerGrowthSlack, count + kMinCallerGrowth));
+         const bool hot = enteredFromLoop_[originOf(fnIdx)] != 0;
+         size_t inlined = 0;
+-        // The guarded regions' fast copies first: the room is one budget for
+-        // the whole function, and a region's slow copy (its original blocks,
+-        // so the lower numbers) runs only once a guard of the fast copy has
+-        // failed. Taken in block order, the slow copy of instanced's loop got
+-        // `compose` and the fast copy, the one that runs, was left with the
+-        // calls of `compose` and `Matrix4.toArray` for want of room.
++        // The body a site would take and what it grows the caller by, or
++        // kNone: an own callee's guessed closure first (its miss is a block
++        // holding the call, which takes the next guess, then the prototype's
++        // method as any call does), else the method.
++        struct Site {
++            uint32_t callee = kNone;
++            uint32_t next = 0;
++            size_t grows = 0;
++        };
++        const auto consider = [&](size_t b, const il::Instruction& inst, bool report) -> Site {
++            Site site;
++            const auto roomFor = [&](uint32_t callee, size_t extra) -> size_t {
++                const size_t grows =
++                    originals_[callee].blocks.size() * 2 + instructionCount(originals_[callee]) + 4 + extra;
++                if (count + grows <= limit) return grows;
++                if (report && trace()) {
++                    std::fprintf(stderr, "[inline] %s: no room for %s (%zu + %zu > %zu)\n", fn.name.c_str(),
++                                 module_.functions[callee].name.c_str(), count, grows, limit);
++                }
++                return 0;
++            };
++            const uint32_t closure = closureCallee(fn, fnIdx, static_cast<il::BlockId>(b), inst, site.next);
++            site.grows = closure != kNone ? roomFor(closure, kClosureGuardInstructions) : 0;
++            site.callee = closure;
++            if (site.grows == 0) {
++                site.next = 0;
++                site.callee = eligibleCallee(fn, fnIdx, inst);
++                if (site.callee == kNone || (site.grows = roomFor(site.callee, 0)) == 0) site.callee = kNone;
++            }
++            return site;
++        };
++        const auto apply = [&](size_t b, size_t i, const Site& site, int pass) {
++            if (trace()) {
++                std::fprintf(stderr, "[inline] %s <- %s%s (%zu)%s%s\n", fn.name.c_str(),
++                             site.next ? "closure " : "", module_.functions[site.callee].name.c_str(),
++                             instructionCount(originals_[site.callee]), inLoop_[b] ? "" : " outside loops",
++                             pass == 1 ? " late" : "");
++            }
++            const uint8_t late = b < lateBlock_.size() ? lateBlock_[b] : 0;
++            inlineAt(fn, static_cast<il::BlockId>(b), i, site.callee, site.next);
++            // The body's blocks are the call block's: the rest of block b
++            // is among them, and the pass that took b reaches it.
++            lateBlock_.resize(fn.blocks.size(), late);
++            count += site.grows;
++            ++inlined;
++        };
++        // A call between a `+` chain's links stays a call: the chain's
++        // builder must be read by the next link in the same block (verifier,
++        // `verifyConcatChain`), and the body would split the block between
++        // them.
++        const auto openChain = [](const il::Instruction& inst, int& open) {
++            if (inst.op == il::Op::ConcatBegin) ++open;
++            if (inst.op == il::Op::ConcatEnd && open > 0) --open;
++        };
++        // Loops first, in block order. The guarded regions' fast copies
++        // first: the room is one budget for the whole function, and a
++        // region's slow copy (its original blocks, so the lower numbers) runs
++        // only once a guard of the fast copy has failed. Taken in block
++        // order, the slow copy of instanced's loop got `compose` and the fast
++        // copy, the one that runs, was left with the calls of `compose` and
++        // `Matrix4.toArray` for want of room.
+         for (int pass = 0; pass < 2; ++pass)
+         for (size_t b = 0; b < fn.blocks.size(); ++b) {
+             if ((b < lateBlock_.size() && lateBlock_[b]) != (pass == 1)) continue;
+-            if (slowBlock_[b] || (!inLoop_[b] && !hot)) continue;
++            if (slowBlock_[b] || !inLoop_[b]) continue;
++            int open = 0;
+             for (size_t i = 0; i < fn.blocks[b].instructions.size(); ++i) {
+                 const il::Instruction& inst = fn.blocks[b].instructions[i];
+-                // An own callee's guessed closure first (its miss is a block
+-                // holding the call, which takes the next guess, then the
+-                // prototype's method as any call does), else the method.
+-                uint32_t next = 0;
+-                const uint32_t closure = closureCallee(fn, fnIdx, static_cast<il::BlockId>(b), inst, next);
+-                const auto roomFor = [&](uint32_t callee, size_t extra) -> size_t {
+-                    const size_t grows =
+-                        originals_[callee].blocks.size() * 2 + instructionCount(originals_[callee]) + 4 + extra;
+-                    if (count + grows <= limit) return grows;
+-                    if (trace()) {
+-                        std::fprintf(stderr, "[inline] %s: no room for %s (%zu + %zu > %zu)\n", fn.name.c_str(),
+-                                     module_.functions[callee].name.c_str(), count, grows, limit);
+-                    }
+-                    return 0;
+-                };
+-                size_t grows = closure != kNone ? roomFor(closure, kClosureGuardInstructions) : 0;
+-                uint32_t callee = closure;
+-                if (grows == 0) {
+-                    callee = eligibleCallee(fn, fnIdx, inst);
+-                    if (callee == kNone || (grows = roomFor(callee, 0)) == 0) continue;
+-                }
+-                const bool asClosure = callee == closure;
+-                if (trace()) {
+-                    std::fprintf(stderr, "[inline] %s <- %s%s (%zu)%s%s\n", fn.name.c_str(),
+-                                 asClosure ? "closure " : "", module_.functions[callee].name.c_str(),
+-                                 instructionCount(originals_[callee]), inLoop_[b] ? "" : " outside loops",
+-                                 pass == 1 ? " late" : "");
+-                }
+-                const uint8_t late = b < lateBlock_.size() ? lateBlock_[b] : 0;
+-                inlineAt(fn, static_cast<il::BlockId>(b), i, callee, asClosure ? next : 0);
+-                // The body's blocks are the call block's: the rest of block b
+-                // is among them, and the pass that took b reaches it.
+-                lateBlock_.resize(fn.blocks.size(), late);
+-                count += grows;
+-                ++inlined;
++                openChain(inst, open);
++                if (open > 0) continue;
++                const Site site = consider(b, inst, true);
++                if (site.callee == kNone) continue;
++                apply(b, i, site, pass);
+                 // Block b now ends at the guard; the rest of it is the last
+                 // blocks appended, which the loop reaches in turn.
+                 break;
+             }
+         }
++        if (!hot) return inlined;
++        if (const char* tmp = std::getenv("BRONZE_TMP_HOTLIMIT")) {  // TEMPORARY A/B
++            limit = std::max(limit, std::min(kMaxCallerInstructions, start * static_cast<size_t>(std::atoi(tmp)) + 300));
++        }
++        // A hot function's other calls, the smallest body first: each runs
++        // once per entry, so what a copy saves is about the same for every
++        // site (the call), and the room goes furthest spent on small bodies.
++        // A body's own calls are sites in turn, a level deeper.
++        for (;;) {
++            size_t bestB = 0, bestI = 0, bestSize = SIZE_MAX;
++            int bestPass = 0;
++            Site best;
++            for (int pass = 0; pass < 2 && best.callee == kNone; ++pass)
++            for (size_t b = 0; b < fn.blocks.size(); ++b) {
++                if ((b < lateBlock_.size() && lateBlock_[b]) != (pass == 1)) continue;
++                if (slowBlock_[b] || inLoop_[b]) continue;
++                int open = 0;
++                for (size_t i = 0; i < fn.blocks[b].instructions.size(); ++i) {
++                    const il::Instruction& inst = fn.blocks[b].instructions[i];
++                    openChain(inst, open);
++                    if (open > 0) continue;
++                    const Site site = consider(b, inst, false);
++                    if (site.callee == kNone || site.grows >= bestSize) continue;
++                    best = site;
++                    bestSize = site.grows;
++                    bestB = b;
++                    bestI = i;
++                    bestPass = pass;
++                }
++            }
++            if (best.callee == kNone) break;
++            apply(bestB, bestI, best, bestPass);
++        }
+         return inlined;
+     }
+ 
+@@ -718,9 +790,23 @@ bool inlineGuardedMethods(il::Module& module, DiagnosticSink& diags, std::vector
+                           const ClosureGuesses* guesses, const ColdBlocks* cold) {
+     Inliner inliner(module, guesses, cold);
+     bool any = false;
++    // BRONZE_INLINE_DUMP=<name>: the IL of the function so named, after inlining (diagnostic).
++    const char* dump = std::getenv("BRONZE_INLINE_DUMP");
+     for (size_t f = 0; f < module.functions.size(); ++f) {
++        if (dump && module.functions[f].name == dump) {
++            il::Module one;
++            one.keyConstants = module.keyConstants;
++            one.functions.push_back(module.functions[f]);
++            std::fprintf(stderr, "[inline] before:\n%s", il::print(one).c_str());
++        }
+         if (inliner.inlineInto(static_cast<uint32_t>(f)) == 0) continue;
+         any = true;
++        if (dump && module.functions[f].name == dump) {
++            il::Module one;
++            one.keyConstants = module.keyConstants;
++            one.functions.push_back(module.functions[f]);
++            std::fprintf(stderr, "[inline] after:\n%s", il::print(one).c_str());
++        }
+         if (changed) changed->push_back(static_cast<uint32_t>(f));
+         if (!il::verifyFunction(module.functions[f], diags)) {
+             if (std::getenv("BRONZE_INLINE_GUARDED_DEBUG")) {
+#pragma once
+
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+#include "il/il.h"
+
+namespace bronze::lower {
+
+// Which blocks of `fn` lie in a natural loop (index = block id).
+std::vector<uint8_t> loopBlocks(const il::Function& fn);
+
+// The module function a call made at `inst` in function `fn` would enter, as
+// far as the IL names it; UINT32_MAX when it names none. A guess, read only by
+// the inliner's choice of WHERE to copy bodies (inline_guarded.cpp): every copy
+// stands behind the guard its call would have taken, so a wrong answer costs
+// code, never meaning.
+//  - `call @F` (a direct call, closures by their env hops included): F;
+//  - a resolved method, getter or setter site (`directTarget`): the body the
+//    site was pointed at;
+//  - `call.dynamic` of a closure read from the environment record its caller
+//    closed over (`function walk(n) { for (...) walk(c); }` nested in another
+//    function, or a sibling declaration): the function whose closure the
+//    enclosing function stores in that slot, when it stores one and only one.
+class CallTargets {
+public:
+    explicit CallTargets(const il::Module& module);
+    uint32_t target(uint32_t fnIdx, const il::Instruction& inst) const;
+
+private:
+    // A record a function holds, named by the function and the value id of
+    // its `env.create` there.
+    struct Record {
+        uint32_t fn = UINT32_MAX;
+        il::ValueId value = il::kNoValue;
+    };
+    static uint64_t key(Record r, uint32_t slot) {
+        return (static_cast<uint64_t>(r.fn) << 40) ^ (static_cast<uint64_t>(r.value) << 16) ^ slot;
+    }
+    Record normalize(Record r) const;
+    Record parentOf(Record r) const;
+
+    const il::Module& module_;
+    // Per function: the record its closures were created over (by its one
+    // `create.func`), when there is one.
+    std::vector<Record> closedOver_;
+    // Per function: the defining op and operand 0 of each value, enough to
+    // follow `env.get` and `env.create` chains.
+    std::vector<std::vector<const il::Instruction*>> defs_;
+    // (record, slot) -> the function whose closure is the only thing stored
+    // there; UINT32_MAX when something else is stored too.
+    std::unordered_map<uint64_t, uint32_t> slotFn_;
+};
+
+// Functions entered often: from a loop anywhere in the module (other than the
+// module's top level), or from any block of a function so entered, through the
+// calls `CallTargets` names; a function that calls itself from a loop of its
+// own (a recursive tree walk) is entered from a loop. `closureGuesses` adds a
+// site's own-callee guesses (direct_method_table.h) as calls of those
+// functions.
+std::vector<uint8_t> hotFunctions(const il::Module& module,
+                                  const std::unordered_map<uint32_t, std::vector<uint32_t>>* closureGuesses);
+
+}  // namespace bronze::lower
+// Where guarded inlining copies bodies: the call graph's hot part
+// (inline_hot.h). docs/aot-inlining.md has the measurements behind it.
+
+#include "lower/inline_hot.h"
+
+#include "lower/guard_region_cfg.h"
+
+#include <cstdlib>
+
+namespace bronze::lower {
+
+std::vector<uint8_t> loopBlocks(const il::Function& fn) {
+    std::vector<uint8_t> in(fn.blocks.size(), 0);
+    if (fn.blocks.empty()) return in;
+    const Cfg cfg = buildCfg(fn);
+    for (size_t b = 0; b < fn.blocks.size(); ++b) {
+        if (cfg.rpoIndex[b] == UINT32_MAX) continue;
+        for (il::BlockId h : cfg.succs[b]) {
+            if (!cfg.dominates(h, static_cast<il::BlockId>(b))) continue;
+            for (il::BlockId m : naturalLoop(cfg, h, static_cast<il::BlockId>(b))) in[m] = 1;
+        }
+    }
+    return in;
+}
+
+namespace {
+constexpr uint32_t kNone = UINT32_MAX;
+}  // namespace
+
+CallTargets::CallTargets(const il::Module& module) : module_(module) {
+    const size_t n = module.functions.size();
+    closedOver_.assign(n, Record{});
+    defs_.resize(n);
+    std::vector<uint8_t> created(n, 0);
+    struct Set {
+        Record rec;
+        uint32_t slot;
+        uint32_t fn;
+    };
+    std::vector<Set> pendingSets;
+    for (uint32_t p = 0; p < n; ++p) {
+        const il::Function& fn = module.functions[p];
+        defs_[p].assign(fn.valueCount, nullptr);
+        for (const auto& b : fn.blocks) {
+            for (const auto& inst : b.instructions) {
+                if (inst.result != il::kNoValue && inst.result < fn.valueCount) defs_[p][inst.result] = &inst;
+            }
+        }
+    }
+    for (uint32_t p = 0; p < n; ++p) {
+        const il::Function& fn = module.functions[p];
+        for (const auto& b : fn.blocks) {
+            for (const auto& inst : b.instructions) {
+                if (inst.op == il::Op::CreateFunction && inst.calleeIndex < n && !inst.operands.empty()) {
+                    const uint32_t f = inst.calleeIndex;
+                    const Record r{p, inst.operands[0]};
+                    // Created in two places: its record is not one record.
+                    if (created[f] && (closedOver_[f].fn != r.fn || closedOver_[f].value != r.value)) {
+                        closedOver_[f] = Record{};
+                    } else if (!created[f]) {
+                        closedOver_[f] = r;
+                    }
+                    created[f] = 1;
+                }
+                if (inst.op != il::Op::EnvSet || inst.envDepth != 0 || inst.operands.size() < 2) continue;
+                const il::Instruction* def =
+                    inst.operands[1] < defs_[p].size() ? defs_[p][inst.operands[1]] : nullptr;
+                const uint32_t f = def && def->op == il::Op::CreateFunction ? def->calleeIndex : kNone;
+                pendingSets.push_back({Record{p, inst.operands[0]}, inst.envIndex, f});
+            }
+        }
+    }
+    // Keyed once every function's record is known: a set through a
+    // function's own parameter names its creator's record.
+    for (const auto& [rec, slot, f] : pendingSets) {
+        const Record r = normalize(rec);
+        if (r.fn == kNone) continue;
+        const auto [it, fresh] = slotFn_.emplace(key(r, slot), f);
+        if (!fresh && it->second != f) it->second = kNone;
+    }
+}
+
+// A record named by its function's environment parameter is the record that
+// function was created over, named in its creator's terms.
+CallTargets::Record CallTargets::normalize(Record r) const {
+    for (int guard = 0; guard < 64 && r.fn != kNone; ++guard) {
+        if (!module_.functions[r.fn].needsEnv || r.value != 0) return r;
+        r = closedOver_[r.fn];
+    }
+    return r.fn == kNone ? r : Record{};
+}
+
+// The record one parent link above `r`: the parent operand of its
+// `env.create`.
+CallTargets::Record CallTargets::parentOf(Record r) const {
+    r = normalize(r);
+    if (r.fn == kNone || r.value == il::kNoValue) return Record{};
+    const il::Instruction* def = r.value < defs_[r.fn].size() ? defs_[r.fn][r.value] : nullptr;
+    if (!def || def->op != il::Op::EnvCreate || def->operands.empty()) return Record{};
+    return normalize(Record{r.fn, def->operands[0]});
+}
+
+uint32_t CallTargets::target(uint32_t fnIdx, const il::Instruction& inst) const {
+    switch (inst.op) {
+        case il::Op::Call:
+            return inst.calleeIndex < module_.functions.size() ? inst.calleeIndex : kNone;
+        case il::Op::MethodCall:
+        case il::Op::PropGet:
+        case il::Op::PropSet:
+            if (inst.directTarget == il::Instruction::kNoDirectTarget) return kNone;
+            return inst.typedTarget != il::Instruction::kNoDirectTarget ? inst.typedTarget : inst.directTarget;
+        case il::Op::DynamicCall: {
+            if (inst.operands.empty() || fnIdx >= defs_.size()) return kNone;
+            const il::Instruction* get =
+                inst.operands[0] < defs_[fnIdx].size() ? defs_[fnIdx][inst.operands[0]] : nullptr;
+            if (!get || (get->op != il::Op::EnvGet && get->op != il::Op::EnvGetTdz) || get->operands.empty()) {
+                return kNone;
+            }
+            // The record read: the caller's own (an `env.create` of its
+            // body, or its environment parameter, the record it closed
+            // over), `envDepth` parent links up.
+            Record r = normalize(Record{static_cast<uint32_t>(fnIdx), get->operands[0]});
+            for (uint32_t d = 0; d < get->envDepth && r.fn != kNone; ++d) r = parentOf(r);
+            if (r.fn == kNone) return kNone;
+            const auto it = slotFn_.find(key(r, get->envIndex));
+            return it == slotFn_.end() ? kNone : it->second;
+        }
+        default:
+            return kNone;
+    }
+}
+
+std::vector<uint8_t> hotFunctions(const il::Module& module,
+                                  const std::unordered_map<uint32_t, std::vector<uint32_t>>* closureGuesses) {
+    const size_t n = module.functions.size();
+    const CallTargets targets(module);
+    std::vector<uint8_t> hot(n, 0);
+    std::vector<std::vector<uint8_t>> loops(n);
+    std::vector<uint32_t> work;
+    const auto mark = [&](uint32_t f) {
+        if (f >= n || hot[f]) return;
+        hot[f] = 1;
+        work.push_back(f);
+    };
+    const auto skip = [&](const il::Function& fn) {
+        return fn.isExternal || fn.blocks.empty() || fn.isCoroutineBody() || fn.isEntryPoint || fn.name == "main";
+    };
+    const auto calls = [&](uint32_t g, const il::Block& b, auto&& each) {
+        for (const auto& inst : b.instructions) {
+            const uint32_t t = targets.target(g, inst);
+            if (t != kNone) each(t);
+            if (closureGuesses && inst.op == il::Op::MethodCall) {
+                if (const auto it = closureGuesses->find(inst.icIndex); it != closureGuesses->end()) {
+                    for (uint32_t f : it->second) each(f);
+                }
+            }
+        }
+    };
+    const bool selfOnly = std::getenv("BRONZE_TMP_HOTSELF") != nullptr;  // TEMPORARY A/B
+    for (uint32_t g = 0; g < n; ++g) {
+        const il::Function& fn = module.functions[g];
+        if (skip(fn)) continue;
+        loops[g] = loopBlocks(fn);
+        for (size_t b = 0; b < fn.blocks.size(); ++b) {
+            if (!loops[g][b]) continue;
+            if (selfOnly) {
+                calls(g, fn.blocks[b], [&](uint32_t f) { if (f == g && !hot[g]) hot[g] = 1; });
+            } else {
+                calls(g, fn.blocks[b], mark);
+            }
+        }
+    }
+    if (selfOnly) return hot;
+    while (!work.empty()) {
+        const uint32_t g = work.back();
+        work.pop_back();
+        const il::Function& fn = module.functions[g];
+        if (skip(fn)) continue;
+        for (const auto& b : fn.blocks) calls(g, b, mark);
+    }
+    return hot;
+}
+
+}  // namespace bronze::lower
