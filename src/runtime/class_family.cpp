@@ -286,7 +286,12 @@ void bronze_family_stamp(uint64_t objBits, uint64_t wantLo, uint64_t wantSpan) {
     if (stampRef.load(std::memory_order_acquire) != BRONZE_ABI_FAMILY_UNSTAMPED) return;
     uint64_t id = classFamilyIdFor(shape, wantLo, wantSpan);
     uint64_t expected = BRONZE_ABI_FAMILY_UNSTAMPED;
-    stampRef.compare_exchange_strong(expected, id, std::memory_order_acq_rel);
+    // A stamp naming a class is a compiled assumption about the shape's
+    // prefix from now on: keep it stable (shape.h `watched`).
+    if (stampRef.compare_exchange_strong(expected, id, std::memory_order_acq_rel) &&
+        id != BRONZE_ABI_FAMILY_NONE) {
+        Shape::watch(shape);
+    }
 }
 
 }  // extern "C"

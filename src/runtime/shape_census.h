@@ -98,6 +98,17 @@ struct CensusNestedScope {
     CensusNestedScope& operator=(const CensusNestedScope&) = delete;
 };
 
+// The module's IC table (`__bronze_ic_table`), handed over at module init, so
+// the artifact can name a named site by its IC index as well as its address:
+// that index is what `bronze build --wpo-stats=<fn>` prints for the site
+// (`ic N`), and the two artifacts join on it. Records only in census mode.
+void censusNoteIcTable(const void* table);
+
+// A prototype-epoch bump (object.cpp `bumpProtoMutationEpoch`), keyed by the
+// runtime function that bumped it: the leave log's companion, since a bump is
+// what every proto-hit entry and transition cell pays for. Census mode only.
+void censusNoteEpochBump(const void* caller);
+
 // Definition below rather than in the class of one-liner .cpps: the latch
 // sites that consult this are hot paths in NORMAL mode too, and the whole
 // check must stay a load and a test.

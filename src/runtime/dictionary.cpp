@@ -15,6 +15,7 @@
 #include "runtime/rt_builtins.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shape_leave.h"
 
 namespace bronze {
 
@@ -199,6 +200,7 @@ void ObjectHeader::toDictionary(NonMovingArena& arena, Rooted<Value>& self) {
     std::reverse(d.entries.begin(), d.entries.end());
     d.reindex();
 
+    runtime::noteShapeLeave(old, dictShape, runtime::currentDictionaryReason());
     obj->shape = dictShape;
     // An object of a heap other than the thread's (a test's own) keeps its
     // storage for the life of the arena.
@@ -233,6 +235,7 @@ bool ObjectHeader::deleteProperty(NonMovingArena& arena, PropertyKey name) {
         // but toDictionary takes one because the object it edits must be
         // reachable if that ever changes.
         Rooted<Value> self{Value::fromObject(this)};
+        runtime::ShapeLeaveReason why(ShapeLeave::Delete);
         toDictionary(arena, self);
         live = self.get().asObject<ObjectHeader>();
     }

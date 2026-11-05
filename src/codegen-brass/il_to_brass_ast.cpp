@@ -307,6 +307,9 @@ il2mir::BronzeInstruction lowerInstruction(const il::Instruction& inst, const Lo
         case il::Op::MathRandom:
             out.op = il2mir::BronzeOp::MathRandom;
             break;
+        case il::Op::LayoutEpoch:
+            out.op = il2mir::BronzeOp::LayoutEpoch;
+            break;
 
         // --- Dynamic Calls & Objects ---
         case il::Op::DynamicCall:

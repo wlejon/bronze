@@ -4,7 +4,10 @@
 #include "runtime/gc.h"
 #include "codegen-brass/brass_backend.h"
 #include "codegen-brass/brass_jit.h"
+#include "codegen-brass/il2mir/il_translator.h"
+#include "codegen-brass/il_to_brass_ast.h"
 #include "il/il.h"
+#include <brass/mir/verifier.hpp>
 #include "support/diagnostics.h"
 
 TEST_CASE("brass backend reports name") {
@@ -143,4 +146,51 @@ TEST_CASE("cross compilation target does not leak host AVX2/FMA features") {
     REQUIRE(!diags.hasErrors());
     REQUIRE(obj.has_value());
     CHECK(obj->target.arch() == brass::Arch::aarch64);
+}
+
+// `layout.epoch` (il_op.h `LayoutEpoch`, docs/aot-specialization.md "S1"): one
+// load of the TLS epoch word and an exact conversion, no runtime call, and two
+// reads with a call between them stay two reads after the optimizer, since the
+// whole point of the second is to see what the call did.
+TEST_CASE("layout.epoch lowers to a TLS load that a call between two reads does not merge") {
+    bronze::il::Module m;
+    m.name = "layout_epoch_test";
+    bronze::il::Function fn;
+    fn.name = "epoch_still";
+    fn.returnType = bronze::il::Type::Bool;
+    fn.valueCount = 4;
+    bronze::il::Block b0;
+    b0.id = 0;
+    // %0 = layout.epoch; %1 = math.random; %2 = layout.epoch; %3 = cmp.eq %0, %2; ret %3
+    b0.instructions.push_back({bronze::il::Op::LayoutEpoch, bronze::il::Type::F64, 0, {}, 0, 0, 0});
+    b0.instructions.push_back({bronze::il::Op::MathRandom, bronze::il::Type::F64, 1, {}, 0, 0, 0});
+    b0.instructions.push_back({bronze::il::Op::LayoutEpoch, bronze::il::Type::F64, 2, {}, 0, 0, 0});
+    b0.instructions.push_back({bronze::il::Op::CmpEq, bronze::il::Type::Bool, 3, {0, 2}, 0, 0, 0});
+    b0.instructions.push_back({bronze::il::Op::Ret, bronze::il::Type::Bool, bronze::il::kNoValue, {3}, 0, 0, 0});
+    fn.blocks.push_back(std::move(b0));
+    m.functions.push_back(std::move(fn));
+
+    std::vector<std::string> names = {"epoch_still"};
+    il2mir::BronzeModuleAST ast = bronze::codegen::lowerToBrassAst(m, names);
+    il2mir::TranslatorOptions opts;
+    opts.enable_optimizations = true;
+    opts.verify_lowered_module = true;
+    il2mir::TranslationResult tr = il2mir::translate_bronze_ast(ast, opts);
+    REQUIRE(tr.success);
+    brass::Function* mirFn = tr.module->get_function("epoch_still");
+    REQUIRE(mirFn != nullptr);
+    CHECK(brass::verify_function(*mirFn));
+
+    int conversions = 0;
+    int runtimeEpochCalls = 0;
+    for (brass::BasicBlock* bb : mirFn->blocks()) {
+        for (brass::Instruction* inst : *bb) {
+            if (inst->opcode() == brass::Opcode::sitofp_f64_i64) ++conversions;
+            if (inst->opcode() == brass::Opcode::call && inst->symbol().find("epoch") != std::string::npos) {
+                ++runtimeEpochCalls;
+            }
+        }
+    }
+    CHECK(conversions == 2);
+    CHECK(runtimeEpochCalls == 0);
 }

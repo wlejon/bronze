@@ -12,6 +12,7 @@
 #include "runtime/heap.h"
 #include "runtime/object.h"
 #include "runtime/rt_builtins.h"
+#include "runtime/shape_leave.h"
 
 namespace bronze {
 
@@ -120,6 +121,7 @@ void ObjectHeader::defineAccessor(Heap& heap, NonMovingArena& arena, Rooted<Valu
         Shape* next = obj->shape->addProperty(arena, heap, key, slot, enumerable,
                                               /*is_accessor=*/true, /*is_writable=*/true,
                                               configurable);
+        runtime::noteShapeLeave(obj->shape, next, ShapeLeave::Add);
         obj = ensureSlots(heap, self, slot + 2);
         obj->shape = next;
         // A pair starts empty, so the half this call does not write reads as

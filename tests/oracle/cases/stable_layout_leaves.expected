@@ -1,0 +1,24 @@
+warm 4501500
+add 3 1 2 10/20 a,b,c
+add-overflow 3 1 2 10/20 42 keys
+delete-read 3 undefined 2 10/20 b,a
+delete-other 3 1 undefined 10/20 a,b
+delete-absent 3 1 2 10/20 a,b
+readonly 3 1 2 1/20 a,b
+non-enumerable 3 1 2 10/20 a
+accessor 3 "got" 2 "got"/20 a,b,shadow
+repr 3 "str" [object Object] 10/20 a,b
+set-prototype 3 1 2 10/20 a,b
+set-prototype-null 3 1 2 10/20 a,b
+freeze 3 1 2 1/2 a,b
+seal 3 1 2 10/20 a,b
+prevent-extensions 3 1 2 10/20 a,b
+dictionary 3 1 2 10/20 1102 keys
+become-prototype 3 1 2 10/20 a,b
+become-class-prototype 3 1 2 10/20 a,b
+sibling 3 1 2 10/20 a,b
+again 0 0 0 10/20 a,b
+again 2 undefined 1 10/20 b,a
+again 4 2 2 10/20 a,b
+deep 1:2 1:2 1:undefined 1:undefined 
+accessor shadow 10

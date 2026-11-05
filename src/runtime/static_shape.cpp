@@ -127,6 +127,9 @@ void bronze_static_shape_publish(uint64_t objBits, uint32_t keyIndex, uint64_t* 
     // slot as a Value is right in stage R1, because the stored word IS the
     // number's box.
     *cell = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape));
+    // The cell is a compiled assumption about this layout from now on: keep
+    // it stable (shape.h `watched`).
+    Shape::watch(shape);
 }
 
 }  // extern "C"

@@ -582,6 +582,17 @@ enum class Op : uint8_t {
     // loads and stores. Loads only; cannot throw, cannot collect, moves no
     // shape.
     IsShape,
+    // a: f64 = layout.epoch. The thread's LAYOUT EPOCH (runtime/shape_leave.h,
+    // docs/aot-specialization.md "S1"), which is the prototype-mutation epoch,
+    // as a double (it counts by 2 from 2, so it stays exact far past any run).
+    // Two reads that compare equal (`cmp.eq`) say that nothing in between
+    // broke a watched layout or moved a prototype chain: every shape fact a
+    // static-slot guard established before the first still holds for its
+    // receiver's existing slots, across any calls. One load. Not pure — the
+    // point is to read it again after a call — so, like `math.random`, it
+    // cannot throw but is not in canCollect's list, and is never merged,
+    // hoisted or dropped.
+    LayoutEpoch,
 };
 
 // The bit of `is.typed_array`'s immI32 above its element kind (see there).

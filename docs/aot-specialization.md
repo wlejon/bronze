@@ -201,6 +201,104 @@ certainty.
    size, and the register pressure it adds in large callers, is the larger cost.
    Measure it after item 2.
 
+## Structural plan
+
+Six steps toward Chromium's ~58M instructions per three_meshes n=2565 frame
+(bro AOT: ~102M, 7.85 cpu ms). S0 measured where receivers are read; S1 built
+the invariant later steps lean on. S2 onward (dataflow over "layout still
+valid", fewer guards and stubs per receiver) is not built.
+
+### S0: what the hot receivers look like
+
+A shape census over 20 warm and 30/60 measured frames (docs/shape-census.md),
+joined with `--wpo-stats` by `bench/tools/census_receivers.py`. Accesses per
+activation; shapes seen at the receiver's sites (top shape's share); calls and
+slotless IC stubs between consecutive reads of the same receiver; the
+predicting solve's class.
+
+| function (acc/act) | receiver | acc/act | shapes (top) | calls between | stubs between | prediction |
+|---|---|---|---|---|---|---|
+| setProgram (81.4) | materialProperties | 21.0 | 4 (1.00) | 1.0 | 2.6 | not-in-prefix |
+| | material | 13.4 | 8 (0.38) | 2.4 | 6.4 | not-in-prefix, some same-slot-escaped |
+| | object | 9.1 | 1 | 5.8 | 5.1 | absent / same-slot-escaped |
+| | geometry | 6.0 | 6 (0.17) | 1.5 | 11.7 | same-slot-escaped |
+| renderObject (12.2) | object | 6.0 | 1 | 0.6 | 1.0 | family |
+| | material | 2.25 | 8 (0.39) | 1.5 | | |
+| renderBufferDirect (25.7) | object | 5.0 | 1 | 2.25 | 2.75 | absent |
+| | geometry | 4.0 | 6 | 6.7 | 8.3 | |
+| | material | 2.0 | 4 (0.37) | 13 | 12 | |
+| projectObject (24.2) | object | 11.35 | 5 (0.96) | 0.7 | 0.3 | family |
+| setMaterial (22.2) | material | 15.2 | 4 (0.39) | 1.2 | 0.3 | same-slot-escaped |
+| Object3D.updateMatrixWorld (52) | this | 13 | 7 (0.91) | 0.3 | 2.8 | 14/15 sites lowering-stamped |
+| painterSortStable (10.5) | a, b | 4.3 each | 1 | 0 | ~1.4 | identity |
+
+- **Leaves in steady state: zero that break a layout.** Every non-append leave
+  and every proto-epoch bump happened in the first second (load). In measured
+  frames, ~1 leave per frame, all appends on the bench harness's own fresh
+  `{q, i}` literals. A layout check that only appends never fail is therefore
+  free of churn on this scene.
+- **Receivers are read many times with calls between.** A material or geometry
+  is re-guarded after every call and every slotless stub (up to ~12 between
+  reads), although the object never leaves its shape: the re-guards are what
+  S2 removes.
+- **Predictions exist** for most sites: the dominant class is
+  "same-slot-escaped" (a slot claim exists, but the receiver escaped and "its
+  shape may grow"), which is exactly what append-safe layout facts answer.
+  "not-in-prefix" (materialProperties, the material's `is*` flags) has no claim;
+  runtime-observed shapes (the census, `--spec-profile`) would give one.
+- Materials and geometries are polymorphic (4-8 shapes); the fact S2 can carry
+  is "the shape checked at the first read still holds", not one global class.
+
+### S1: stable layouts
+
+A shape is WATCHED once compiled code may rely on its layout (shape.h
+`watched`): published static-shape cells (static_shape.cpp) and class-family
+claims (class_family.cpp) watch the shape and its whole transition subtree, and
+a child created under a watched node is born watched. Every runtime path that
+moves an object off a shape calls `noteShapeLeave` (runtime/shape_leave.h);
+when the shape left is watched and the move breaks its layout (generalize,
+dictionary conversion by delete / redefine / integrity / setPrototype /
+threshold, become-prototype), `layoutBroken` bumps the layout epoch.
+
+**The check is a global epoch, and it is the prototype-mutation epoch.**
+`proto_epoch` is one TLS word compiled code already reads; no ABI change.
+IL op `layout.epoch` (`LayoutEpoch`, f64, impure, cannot throw) lowers to a
+pinned TLS load; "still valid?" is `cmp.eq` against the value read at the
+guard. A call between two reads does not let them merge (codegen_brass test).
+
+Why not the alternatives:
+
+- **Per-shape "left" bits.** Testing a bit on the receiver's shape costs a
+  shape load and a test, the same as re-guarding the receiver.
+- **Validity cells** (one cell per shape, dependents lists). One load cheaper
+  than the epoch where several shapes are relied on, but invalidation is
+  permanent and re-arming without ABA needs fresh cells. S0 shows no churn to
+  justify it; revisit if S2 measures epoch churn.
+
+Appends never bump. A child keeps every slot of its parent at the same index,
+attributes and representation, so compiled transitions (il_ic_lowering's
+transition store, il_transition_run, il_define_add) need no hook and
+constructors pay nothing. Measured over object_graph, mesh_churn_2k,
+instanced_mesh_churn, three_math, property_access, proto_dispatch(_churn) and a
+constructor-churn microbench: within 0.01% of instructions of a build without
+the hooks.
+
+**What S2 may assume** after a guard of receiver `o` at shape `S` and an equal
+epoch: `o` still has every slot `S` described, at the same offset, attributes
+and representation. **Not**: that `o` is still exactly at `S` (it may have
+appended), that a key absent from `S` is still absent, that a transition store
+from `S` is still valid, or anything about objects not guarded.
+
+**Hazard.** A program that breaks watched layouts in a loop (deletes on hot
+objects, repeated freezes) bumps the epoch every iteration, which also thrashes
+the proto caches sharing it. The census's `epoch_bumps` names the callers.
+
+Tests: tests/runtime/stable_layout_test.cpp (watch propagation, which moves
+bump and which do not); tests/oracle/cases/stable_layout_leaves.js (every leave
+kind inside a call between two reads, including two calls deep) and
+stable_layout_constructors.js (appending constructors, a prototype setter
+appearing mid-run, deletes and repr changes inside constructors and callees).
+
 ## Measuring
 
 Run from bro:

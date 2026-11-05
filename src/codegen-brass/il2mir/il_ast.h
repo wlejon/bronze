@@ -123,6 +123,8 @@ enum class BronzeOp {
     SuperSet,
     MathUnary,
     MathRandom,
+    // a: f64 = layout.epoch (il_op.h `LayoutEpoch`).
+    LayoutEpoch,
     // a: bool = is.shape recv: the static-slot guard of the site claim it
     // carries (il.h `Op::IsShape`).
     IsShape,

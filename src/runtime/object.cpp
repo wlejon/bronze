@@ -12,6 +12,7 @@
 #include "runtime/rt_property.h"
 #include "runtime/rt_state.h"
 #include "runtime/slot_repr.h"
+#include "runtime/shape_leave.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -48,7 +49,9 @@ void ObjectHeader::setSlotWithRepr(uint32_t index, Value val) {
         rawSetSlot(index, slotReprCanonicalize(val));
         return;
     }
+    Shape* const from = shape;
     shape = Shape::withSlotBoxed(runtime::rtArena(), shape, index);
+    if (shape != from) runtime::noteShapeLeave(from, shape, ShapeLeave::Generalize);
     rawSetSlot(index, val);
 }
 
@@ -92,7 +95,10 @@ uint64_t protoMutationEpoch() noexcept { return runtime::rtTls()->proto_epoch; }
 static_assert(BRONZE_ABI_PROTO_EPOCH_FIRST % 2 == 0 && BRONZE_ABI_PROTO_EPOCH_STEP % 2 == 0 &&
                   BRONZE_ABI_TAG_OBJECT % 2 == 1,
               "an epoch must never read as a heap header");
-void bumpProtoMutationEpoch() noexcept { runtime::rtTls()->proto_epoch += BRONZE_ABI_PROTO_EPOCH_STEP; }
+void bumpProtoMutationEpoch() noexcept {
+    if (BRONZE_UNLIKELY(runtime::g_shapeCensusEnabled)) runtime::censusNoteEpochBump(BRONZE_CENSUS_RET_ADDR());
+    runtime::rtTls()->proto_epoch += BRONZE_ABI_PROTO_EPOCH_STEP;
+}
 
 void tripArrayIndexHazard(const char* why) noexcept {
     bronze_tls_block* tls = runtime::rtTls();
@@ -305,7 +311,10 @@ void ObjectHeader::setPrototype(NonMovingArena& arena, Rooted<Value>& self, Shap
     // crossing this object miss; the bump says so in the mechanism that owns
     // the question rather than leaving it to a side effect.
     bumpProtoMutationEpoch();
-    toDictionary(arena, self);
+    {
+        runtime::ShapeLeaveReason why(ShapeLeave::SetPrototype);
+        toDictionary(arena, self);
+    }
     // Only the root of a transition tree carries a prototype, and a dictionary
     // shape belongs to exactly one object — so repointing its root moves this
     // object's prototype and nobody else's.
@@ -506,6 +515,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
         // Same bump the slow path performs: if this object is somebody's
         // prototype, the add shadows what depth > 0 entries below it point at.
         if (shape->used_as_prototype) bumpProtoMutationEpoch();
+        runtime::noteShapeLeave(shape, next, ShapeLeave::Add);
         Rooted<Value> self{Value::fromObject(this)};
         ObjectHeader* live = ensureSlots(heap, self, slot + 1);
         live->shape = next;
@@ -661,6 +671,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
     // its cache walks a chain as long as the key count. The table it moves to
     // is hashed (dictionary.h), and the move is one-way, exactly as a delete's.
     if (!shape->isDictionary() && shape->nextSlotIndex() >= Shape::kDictionaryThreshold) {
+        runtime::ShapeLeaveReason why(ShapeLeave::Threshold);
         toDictionary(arena, self);
     }
     if (self.get().asObject<ObjectHeader>()->shape->isDictionary()) {
@@ -682,6 +693,7 @@ ObjectHeader* ObjectHeader::setProp(Heap& heap, NonMovingArena& arena, Rooted<Va
             arena, heap, key, new_slot, enumerable, /*is_accessor=*/false, writable, configurable,
             desiredSlotRepr(prop_name, val.get(), enumerable, /*accessor=*/false, writable,
                             configurable));
+        runtime::noteShapeLeave(shape, next_shape, ShapeLeave::Add);
         live = ensureSlots(heap, self, new_slot + 1);
         live->shape = next_shape;
         // A set-site entry is what generated code's inline store paths consume,

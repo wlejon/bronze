@@ -49,6 +49,7 @@
 #include "runtime/realm.h"
 #include "runtime/root_remset.h"
 #include "runtime/rt_module_state.h"
+#include "runtime/shape_census.h"
 #include "runtime/stack_locals.h"
 #include "runtime/string.h"
 #include "runtime/symbol.h"
@@ -713,6 +714,7 @@ void bronze_register_fn_slots(uint64_t* cells, uint64_t count) {
 
 void bronze_register_method_ic_cells(uint64_t* icTable, const uint64_t* siteIndexes,
                                      uint64_t count) {
+    censusNoteIcTable(icTable);
     if (!icTable || !siteIndexes || count == 0) return;
     ThreadModuleState& s = threadModules();
     constexpr uint64_t kSiteWords = BRONZE_ABI_IC_SITE_SIZE / sizeof(uint64_t);

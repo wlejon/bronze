@@ -80,7 +80,11 @@ that flips shape between frames cannot reach 99% over hundreds of frames.
     "4": {...}, "5-8": {...}, ">8": {...}
   },
   "sites": [ { ...site... } ],   // sorted by hits, descending
-  "functions": [ { ...fn... } ]  // per-function aggregation, sorted by observations
+  "functions": [ { ...fn... } ], // per-function aggregation, sorted by observations
+  "t0_ms": 33022683,             // the steady clock (CLOCK_MONOTONIC) at census start, ms
+  "leave_total": 240631,         // shape leaves over the run
+  "leaves": [ { ...leave... } ], // see "Leaves"
+  "epoch_bumps": [ { ...bump... } ]
 }
 ```
 
@@ -101,6 +105,7 @@ that flips shape between frames cannot reach 99% over hundreds of frames.
 | `undefined_vals`, `bool_vals`, `object_vals`, `string_vals`, `other_vals` | remaining value-tag traffic |
 | `transitions` | writes whose key was absent from the receiver's shape (the store transitions or dictionary-adds) |
 | `key_num_index` / `key_num_other` / `key_symbol` | computed sites: key-kind counts |
+| `ic` | the site's index in its module's IC table (`__bronze_ic_table`), or -1 for a site keyed by return address; what `--wpo-stats` prints as `ic N` (see "Joining with the build"). Only meaningful on rows whose `module` is the compiled module: a native's site is resolved against the nearest table below it |
 | `shapes` | up to 16 `{shape, count, desc}` rows, largest first; `desc` is the shape's nearest three own keys (`plain{x,y,z}`) or a receiver-kind name |
 | `computed_keys` | computed sites: up to 16 distinct string keys with counts, overflow under `"(other)"` |
 
@@ -115,6 +120,48 @@ that flips shape between frames cannot reach 99% over hundreds of frames.
 | `coverage` | `mono_observations / observations` — the fraction of this function's dynamic property traffic a shape-monomorphizing compiler could specialize without a polymorphic guard |
 | `number_vals` | summed number-value traffic |
 | `transitions` | summed transitioning writes |
+
+## Leaves
+
+Every move of an object AWAY from a shape it had (runtime/shape_leave.h): an
+append (`add`), a double slot widened (`generalize`), a dictionary conversion
+by `delete`, `redefine` (an attribute change or redefinition the chain cannot
+express), `integrity` (freeze / seal / preventExtensions), `set_prototype` or
+`threshold` (the add past 1024 properties), and `become_prototype` (a move to a
+private marked chain). Appends are counted at the write that finds its key
+absent (named and string-keyed writes; a `defineProperty` add is not seen), the
+rest where the runtime moves the object. Census mode suppresses every compiled
+transition, so no append escapes into generated code.
+
+| field | meaning |
+|---|---|
+| `shape`, `desc` | the shape left, as in a site's `shapes` row |
+| `total` | leaves of it over the run |
+| `read_hits` | named reads and method fetches that observed it (0: no site reads through it, e.g. a constructor's intermediate shape) |
+| `top_reader` | the function of the busiest such site |
+| `kinds` | leaves by kind |
+| `added` | for appends, the keys added (8 named, the rest under `(other)`) |
+| `seconds` | `[second, leaves]` pairs, seconds since `t0_ms` |
+
+Rows of shapes some site reads through come first, by `read_hits`; at most
+2000 unread rows follow. A measured window in CLOCK_MONOTONIC milliseconds (the
+`traceWindow` bro's bench harness reports) selects the steady-state leaves:
+the seconds `s` with `t0_ms + 1000 s` inside it.
+
+`epoch_bumps` counts prototype-epoch bumps (`bumpProtoMutationEpoch`, which is
+also the layout epoch: docs/aot-specialization.md, "S1") as `{caller,
+seconds}`, the caller symbolized.
+
+## Joining with the build
+
+`bronze build --wpo-stats=<fn>[,<fn>...]` prints, for the named functions,
+every keyed site (`wpo-pred-site ... ic N r%V`: the IC index and the receiver's
+SSA value) and one `wpo-pred-seq <fn>` line of the function's keyed sites and
+calls in block order. `bench/tools/census_receivers.py <census.json>
+<wpo.txt> <fn,...>` joins the two on the IC index: per receiver, accesses per
+activation, distinct shapes, the predicting solve's classes, and the calls and
+IC stubs between consecutive accesses. Build the `--wpo-stats` copy with the
+census run's exact command line, so the indices agree.
 
 ## The go/no-go number
 
@@ -136,7 +183,7 @@ by the automated bench runner).
 | var | effect |
 |---|---|
 | `BRONZE_SHAPE_CENSUS=1` | enable census mode (latch suppression + recording + dump at exit) |
-| `BRONZE_SHAPE_CENSUS_OUT=path` | artifact path, default `bronze_shape_census.json` in the CWD |
+| `BRONZE_SHAPE_CENSUS_OUT=path` | artifact path, default `bronze_shape_census.json` in the CWD; also carries the leave log and the epoch bumps |
 | `BRONZE_SLOT_REPR_CENSUS=1` | the sibling mode: per-(shape, slot) representation stability, printed to stderr at exit. It turns the suppression above on for its own reasons — an inline-cache hit is traffic it has to see — so a run with it set is a census run in every other respect. [docs/slot-representation.md](slot-representation.md) has its report and the candidate count it gives for widening a pins manifest. |
 
 A human summary (poly-degree histogram, monomorphic-coverage line, top

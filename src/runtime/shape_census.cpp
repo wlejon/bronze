@@ -2,6 +2,7 @@
 #include "runtime/shape_census.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include "runtime/rt_convert.h"
 #include "runtime/rt_state.h"
 #include "runtime/shape.h"
+#include "runtime/shape_leave.h"
 #include "runtime/slot_repr.h"
 #include "runtime/string.h"
 #include "runtime/symbolize.h"
@@ -113,6 +115,9 @@ std::string identityDesc(const void* id) {
 struct SiteRec {
     CensusKind kind{CensusKind::PropGet};
     uint32_t keyIndex = 0xFFFFFFFFu;
+    // The key's name, resolved when the site is first seen: by the time the
+    // dump runs at exit the runtime's key table may already be gone.
+    std::string keyName;
     const void* siteId = nullptr;
     const void* retaddr = nullptr;
     const void* retaddr2 = nullptr;  // non-null when a second call PC reached this site
@@ -140,6 +145,33 @@ std::unordered_map<const void*, SiteRec>* g_sites = nullptr;  // leaked on purpo
 thread_local int t_nestedDepth = 0;
 bool s_initialized = false;
 
+// --- the leave log ------------------------------------------------------------
+//
+// Per shape an object LEFT (shape_leave.h): how often, why, which keys the adds
+// added, and when, as counts per second since the census started — so a reader
+// can keep only the leaves inside a measured window (`t0_ms` in the artifact is
+// the steady clock's reading at that start).
+struct LeaveRec {
+    uint64_t byKind[kShapeLeaveKinds] = {};
+    std::unordered_map<std::string, uint64_t> added;  // capped; overflow under "(other)"
+    std::vector<std::pair<uint32_t, uint32_t>> perSecond;  // (second, leaves), ascending
+};
+std::unordered_map<const Shape*, LeaveRec>* g_leaves = nullptr;  // leaked on purpose
+std::chrono::steady_clock::time_point g_t0;
+std::vector<uintptr_t>* g_icTables = nullptr;  // leaked on purpose
+// Prototype-epoch bumps by caller, per second like the leaves.
+std::unordered_map<const void*, std::vector<std::pair<uint32_t, uint32_t>>>* g_bumps = nullptr;
+
+uint32_t censusSecond() {
+    return static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - g_t0).count());
+}
+void addSecond(std::vector<std::pair<uint32_t, uint32_t>>& v, uint32_t sec) {
+    if (v.empty() || v.back().first != sec) v.emplace_back(sec, 0);
+    v.back().second++;
+}
+thread_local uint8_t t_dictReason = 0xFF;
+
 void dumpShapeCensus();
 
 void initShapeCensus() {
@@ -150,6 +182,10 @@ void initShapeCensus() {
         g_shapeCensusEnabled = true;
         g_sites = new std::unordered_map<const void*, SiteRec>();
         g_sites->reserve(1 << 14);
+        g_leaves = new std::unordered_map<const Shape*, LeaveRec>();
+        g_icTables = new std::vector<uintptr_t>();
+        g_bumps = new std::unordered_map<const void*, std::vector<std::pair<uint32_t, uint32_t>>>();
+        g_t0 = std::chrono::steady_clock::now();
         std::atexit(dumpShapeCensus);
     }
 }
@@ -190,6 +226,10 @@ void classifyValue(SiteRec& r, uint64_t bits) {
 
 }  // namespace
 
+namespace {
+void recordLeave(const Shape* from, ShapeLeave why, const std::string& key);
+}  // namespace
+
 CensusToken censusRecordAccess(CensusKind kind, uint64_t objBits, uint32_t keyIndex,
                                uint64_t keyBits, const void* siteId, const void* retaddr,
                                bool hasValue, uint64_t valBits) {
@@ -228,7 +268,18 @@ CensusToken censusRecordAccess(CensusKind kind, uint64_t objBits, uint32_t keyIn
             if (StringHeader* keyHdr = rtKeyHeader(keyIndex)) {
                 PropertyInfo info;
                 transitioned = !sh->lookupProperty(PropertyKey::forString(keyHdr), info);
+                // The leave log's appends (shape_leave.h): counted here, at
+                // the write, so the add paths pay nothing with the census off.
+                if (transitioned) recordLeave(sh, ShapeLeave::Add, rtUtf8Chars(keyHdr));
             }
+        }
+    } else if (kind == CensusKind::ElemSet && isPlainShape && Value(keyBits).isString()) {
+        const Shape* sh = static_cast<const Shape*>(identity);
+        StringHeader* keyHdr = Value(keyBits).asString<StringHeader>();
+        PropertyInfo info;
+        if (!sh->isDictionary() && keyHdr != nullptr &&
+            !sh->lookupProperty(PropertyKey::forString(keyHdr), info)) {
+            recordLeave(sh, ShapeLeave::Add, rtUtf8Chars(keyHdr));
         }
     }
 
@@ -240,6 +291,7 @@ CensusToken censusRecordAccess(CensusKind kind, uint64_t objBits, uint32_t keyIn
     if (r.hits == 0) {
         r.kind = kind;
         r.keyIndex = keyIndex;
+        if (keyIndex != 0xFFFFFFFFu) r.keyName = rtKeyString(keyIndex);
         r.siteId = siteId;
         r.retaddr = retaddr;
     } else if (retaddr != r.retaddr && r.retaddr2 == nullptr && retaddr != nullptr) {
@@ -287,6 +339,47 @@ void censusRecordResult(CensusToken tok, uint64_t resultBits) {
     classifyValue(*static_cast<SiteRec*>(tok), resultBits);
 }
 
+void censusNoteIcTable(const void* table) {
+    if (g_icTables == nullptr || table == nullptr) return;
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_icTables->push_back(reinterpret_cast<uintptr_t>(table));
+}
+
+void shapeLeaveSlow(const Shape* from, const Shape* to, ShapeLeave why) {
+    (void)to;
+    recordLeave(from, why, std::string());
+}
+
+void censusNoteEpochBump(const void* caller) {
+    if (g_bumps == nullptr) return;
+    const uint32_t sec = censusSecond();
+    std::lock_guard<std::mutex> lock(g_mu);
+    addSecond((*g_bumps)[caller], sec);
+}
+
+namespace {
+void recordLeave(const Shape* from, ShapeLeave why, const std::string& key) {
+    if (g_leaves == nullptr || from == nullptr) return;
+    const uint32_t sec = censusSecond();
+    std::lock_guard<std::mutex> lock(g_mu);
+    LeaveRec& r = (*g_leaves)[from];
+    r.byKind[static_cast<uint32_t>(why)]++;
+    if (!key.empty()) {
+        if (r.added.size() < 8 || r.added.count(key) != 0) r.added[key]++;
+        else r.added["(other)"]++;
+    }
+    addSecond(r.perSecond, sec);
+}
+}  // namespace
+
+ShapeLeaveReason::ShapeLeaveReason(ShapeLeave why) : saved(t_dictReason) {
+    t_dictReason = static_cast<uint8_t>(why);
+}
+ShapeLeaveReason::~ShapeLeaveReason() { t_dictReason = saved; }
+ShapeLeave currentDictionaryReason() {
+    return t_dictReason == 0xFF ? ShapeLeave::Redefine : static_cast<ShapeLeave>(t_dictReason);
+}
+
 void censusEnterNested() { t_nestedDepth++; }
 void censusLeaveNested() { t_nestedDepth--; }
 bool censusInNested() { return t_nestedDepth > 0; }
@@ -321,6 +414,109 @@ struct FnAgg {
     uint64_t numberVals = 0;
     uint64_t transitions = 0;
 };
+
+// Who reads through a shape: every named read or method fetch that observed it.
+struct ShapeReaders {
+    uint64_t hits = 0;
+    uint64_t topHits = 0;
+    std::string topFn;
+};
+
+template <typename RowT>
+void dumpLeaves(FILE* f, const std::vector<RowT>& rows) {
+    std::unordered_map<const void*, ShapeReaders> readers;
+    for (const RowT& row : rows) {
+        const SiteRec& r = *row.r;
+        if (r.kind != CensusKind::PropGet && r.kind != CensusKind::MethodGet) continue;
+        for (const auto& [sh, c] : r.shapeCounts) {
+            ShapeReaders& rd = readers[sh];
+            rd.hits += c;
+            if (c > rd.topHits) {
+                rd.topHits = c;
+                rd.topFn = row.fn;
+            }
+        }
+    }
+    struct LeaveRow {
+        const Shape* shape;
+        const LeaveRec* rec;
+        uint64_t total;
+        const ShapeReaders* rd;
+    };
+    std::vector<LeaveRow> lrows;
+    uint64_t total = 0;
+    uint64_t readTotal = 0;
+    for (const auto& [sh, rec] : *g_leaves) {
+        uint64_t n = 0;
+        for (uint64_t c : rec.byKind) n += c;
+        auto it = readers.find(sh);
+        const ShapeReaders* rd = it == readers.end() ? nullptr : &it->second;
+        total += n;
+        if (rd) readTotal += n;
+        lrows.push_back({sh, &rec, n, rd});
+    }
+    // Shapes some site reads through first, by their read traffic; then the
+    // rest by leaves. The unread tail is capped: those are construction's
+    // intermediate shapes, which no site relies on.
+    std::sort(lrows.begin(), lrows.end(), [](const LeaveRow& a, const LeaveRow& b) {
+        const uint64_t ra = a.rd ? a.rd->hits : 0, rb = b.rd ? b.rd->hits : 0;
+        if ((ra != 0) != (rb != 0)) return ra != 0;
+        if (ra != rb) return ra > rb;
+        return a.total > b.total;
+    });
+    std::fprintf(stderr, "shape leaves: %llu, of shapes some site reads through: %llu (%zu shapes)\n",
+                 static_cast<unsigned long long>(total), static_cast<unsigned long long>(readTotal),
+                 lrows.size());
+    const long long t0ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(g_t0.time_since_epoch()).count();
+    std::fprintf(f, "\"t0_ms\":%lld,\n\"leave_total\":%llu,\n\"leaves\":[\n", t0ms,
+                 static_cast<unsigned long long>(total));
+    size_t unread = 0;
+    bool first = true;
+    for (const LeaveRow& lr : lrows) {
+        if (!lr.rd && ++unread > 2000) break;
+        std::fprintf(f, "%s{\"shape\":\"%p\",\"desc\":\"%s\",\"total\":%llu,\"read_hits\":%llu,"
+                     "\"top_reader\":\"%s\",\"kinds\":{",
+                     first ? "" : ",\n", static_cast<const void*>(lr.shape),
+                     jsonEscape(identityDesc(lr.shape)).c_str(), static_cast<unsigned long long>(lr.total),
+                     static_cast<unsigned long long>(lr.rd ? lr.rd->hits : 0),
+                     jsonEscape(lr.rd ? lr.rd->topFn : std::string()).c_str());
+        first = false;
+        bool k1 = true;
+        for (uint32_t k = 0; k < kShapeLeaveKinds; ++k) {
+            if (lr.rec->byKind[k] == 0) continue;
+            std::fprintf(f, "%s\"%s\":%llu", k1 ? "" : ",", shapeLeaveName(static_cast<ShapeLeave>(k)),
+                         static_cast<unsigned long long>(lr.rec->byKind[k]));
+            k1 = false;
+        }
+        std::fprintf(f, "},\"added\":{");
+        k1 = true;
+        for (const auto& [key, c] : lr.rec->added) {
+            std::fprintf(f, "%s\"%s\":%llu", k1 ? "" : ",", jsonEscape(key).c_str(),
+                         static_cast<unsigned long long>(c));
+            k1 = false;
+        }
+        std::fprintf(f, "},\"seconds\":[");
+        for (size_t i = 0; i < lr.rec->perSecond.size(); ++i) {
+            std::fprintf(f, "%s[%u,%u]", i ? "," : "", lr.rec->perSecond[i].first, lr.rec->perSecond[i].second);
+        }
+        std::fprintf(f, "]}");
+    }
+    std::fprintf(f, "\n],\n\"epoch_bumps\":[\n");
+    first = true;
+    for (const auto& [caller, secs] : *g_bumps) {
+        SymbolizedPc sp;
+        symbolizePc(reinterpret_cast<uint64_t>(caller), sp);
+        std::fprintf(f, "%s{\"caller\":\"%s\",\"seconds\":[", first ? "" : ",\n",
+                     jsonEscape(sp.resolved ? sp.name : std::string("(unresolved)")).c_str());
+        first = false;
+        for (size_t i = 0; i < secs.size(); ++i) {
+            std::fprintf(f, "%s[%u,%u]", i ? "," : "", secs[i].first, secs[i].second);
+        }
+        std::fprintf(f, "]}");
+    }
+    std::fprintf(f, "\n]");
+}
 
 void dumpShapeCensus() {
     if (!g_shapeCensusEnabled || g_sites == nullptr) return;
@@ -457,11 +653,20 @@ void dumpShapeCensus() {
 
     std::sort(rows.begin(), rows.end(),
               [](const Row& a, const Row& b) { return a.r->hits > b.r->hits; });
+    std::vector<uintptr_t>& tables = *g_icTables;
+    std::sort(tables.begin(), tables.end());
+    auto icIndexOf = [&tables](const void* siteId) -> long long {
+        const uintptr_t at = reinterpret_cast<uintptr_t>(siteId);
+        auto it = std::upper_bound(tables.begin(), tables.end(), at);
+        if (siteId == nullptr || it == tables.begin()) return -1;
+        const uintptr_t off = at - *(it - 1);
+        if (off % BRONZE_ABI_IC_SITE_SIZE != 0 || off / BRONZE_ABI_IC_SITE_SIZE >= (1u << 22)) return -1;
+        return static_cast<long long>(off / BRONZE_ABI_IC_SITE_SIZE);
+    };
     bool first = true;
     for (const Row& row : rows) {
         const SiteRec& r = *row.r;
-        std::string keyName;
-        if (r.keyIndex != 0xFFFFFFFFu) keyName = rtKeyString(r.keyIndex);
+        const std::string& keyName = r.keyName;
         std::fprintf(
             f,
             "%s{\"id\":\"%p\",\"kind\":\"%s\",\"key\":\"%s\",\"fn\":\"%s\",\"module\":\"%s\","
@@ -469,7 +674,7 @@ void dumpShapeCensus() {
             "\"number_vals\":%llu,\"undefined_vals\":%llu,\"bool_vals\":%llu,"
             "\"object_vals\":%llu,\"string_vals\":%llu,\"other_vals\":%llu,"
             "\"transitions\":%llu,\"key_num_index\":%llu,\"key_num_other\":%llu,"
-            "\"key_symbol\":%llu,\"shapes\":[",
+            "\"key_symbol\":%llu,\"ic\":%lld,\"shapes\":[",
             first ? "" : ",\n", row.mapKey, kindName(r.kind), jsonEscape(keyName).c_str(),
             jsonEscape(row.fn).c_str(), jsonEscape(row.module).c_str(),
             static_cast<unsigned long long>(r.hits), row.degree,
@@ -487,7 +692,7 @@ void dumpShapeCensus() {
             static_cast<unsigned long long>(r.transitions),
             static_cast<unsigned long long>(r.keyNumIndex),
             static_cast<unsigned long long>(r.keyNumOther),
-            static_cast<unsigned long long>(r.keySymbol));
+            static_cast<unsigned long long>(r.keySymbol), icIndexOf(r.siteId));
         first = false;
         // Shapes, largest first, capped at 16 in the artifact.
         std::vector<std::pair<const void*, uint64_t>> shapeRows(r.shapeCounts.begin(),
@@ -534,7 +739,9 @@ void dumpShapeCensus() {
                      static_cast<unsigned long long>(a.transitions));
         first = false;
     }
-    std::fprintf(f, "\n]}\n");
+    std::fprintf(f, "\n],\n");
+    dumpLeaves(f, rows);
+    std::fprintf(f, "}\n");
     std::fclose(f);
     std::fprintf(stderr, "shape census: wrote %s\n", outPath);
 }
@@ -542,3 +749,21 @@ void dumpShapeCensus() {
 }  // namespace
 
 }  // namespace bronze::runtime
+
+namespace bronze {
+
+const char* shapeLeaveName(ShapeLeave why) {
+    switch (why) {
+        case ShapeLeave::Add: return "add";
+        case ShapeLeave::Generalize: return "generalize";
+        case ShapeLeave::Delete: return "delete";
+        case ShapeLeave::Redefine: return "redefine";
+        case ShapeLeave::Integrity: return "integrity";
+        case ShapeLeave::SetPrototype: return "set_prototype";
+        case ShapeLeave::Threshold: return "threshold";
+        case ShapeLeave::BecomePrototype: return "become_prototype";
+    }
+    return "?";
+}
+
+}  // namespace bronze

@@ -264,6 +264,49 @@ std::string formatCensus(Solver& solver, const ShapeAnalysis& shapes, const std:
             if (f.direct && f.directTarget < mod.functions.size()) line += " direct " + mod.functions[f.directTarget].name;
             if (!f.cause.empty()) line += " cause: " + f.cause;
             if (!f.escapeWhy.empty()) line += " escaped: " + f.escapeWhy;
+            // The site's IC index (the shape census's `ic`, so the two
+            // artifacts join) and its receiver's SSA value.
+            const il::Instruction& inst = mod.functions[f.fn].blocks[f.block].instructions[f.inst];
+            line += " ic " + std::to_string(inst.icIndex);
+            if (!inst.operands.empty()) line += " r%" + std::to_string(inst.operands[0]);
+            out += line + "\n";
+        }
+        // One line per named function: its keyed sites and its calls in block
+        // order, `G`/`S`/`M` <receiver>@<ic> for a read, a write and a method
+        // call (a trailing `s` on a static-slot site), `C` for any other call.
+        // Enough to count, per receiver, the reads it takes and the calls that
+        // stand between consecutive ones.
+        for (uint32_t fi = 0; fi < mod.functions.size(); ++fi) {
+            const il::Function& fn = mod.functions[fi];
+            const bool named = std::any_of(parts.begin(), parts.end(), [&](const std::string& p) {
+                return fn.name.find(p) != std::string::npos;
+            });
+            if (!named || fn.isExternal) continue;
+            std::string line = opts.prefix + "-seq " + fn.name;
+            for (uint32_t bi = 0; bi < fn.blocks.size(); ++bi) {
+                line += " |" + std::to_string(bi);
+                for (const il::Instruction& inst : fn.blocks[bi].instructions) {
+                    char tag = 0;
+                    switch (inst.op) {
+                        case il::Op::PropGet: tag = 'G'; break;
+                        case il::Op::PropSet: tag = 'S'; break;
+                        case il::Op::MethodCall:
+                        case il::Op::MethodCallSpread: tag = 'M'; break;
+                        case il::Op::Call:
+                        case il::Op::DynamicCall:
+                        case il::Op::DynamicCallSpread:
+                        case il::Op::Construct:
+                        case il::Op::ConstructSpread:
+                        case il::Op::SuperCall:
+                        case il::Op::SuperCallSpread: line += " C"; continue;
+                        default: continue;
+                    }
+                    if (inst.operands.empty()) continue;
+                    line += std::string(" ") + tag + std::to_string(inst.operands[0]) + "@" +
+                            std::to_string(inst.icIndex);
+                    if (inst.staticSlot != il::Instruction::kNoStaticSlot) line += "s";
+                }
+            }
             out += line + "\n";
         }
     }

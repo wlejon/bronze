@@ -131,6 +131,9 @@ bool canThrow(const Instruction& inst) {
         // nothing: an op that answers no to both reads as pure, re-run on a
         // fast copy's bailout, and a second draw is not the same program.)
         case Op::MathRandom:
+        // One load of the thread's epoch word; same reasoning as above: it
+        // must read as impure, so it stays out of canCollect's list.
+        case Op::LayoutEpoch:
         // One aligned load from the module's own template-slot table, at an
         // address the compiler already proved in range.
         case Op::TemplateCached:

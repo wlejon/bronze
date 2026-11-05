@@ -8,6 +8,7 @@
 #include "runtime/fn.h"
 #include "runtime/object.h"
 #include "runtime/rt_state.h"
+#include "runtime/shape_leave.h"
 #include "runtime/slot_repr.h"
 
 namespace bronze {
@@ -95,7 +96,9 @@ void Shape::markObjectAsPrototype(NonMovingArena& arena, ObjectHeader* obj) {
     if (!chain.empty()) {
         // The same root, so the prototype, any brand a root carries (a Date's)
         // and the root's collector registration are all unchanged.
-        obj->shape = privateMarkedChain(arena, protoShape->root, chain, UINT32_MAX);
+        Shape* const marked = privateMarkedChain(arena, protoShape->root, chain, UINT32_MAX);
+        runtime::noteShapeLeave(protoShape, marked, ShapeLeave::BecomePrototype);
+        obj->shape = marked;
         return;
     }
 
@@ -117,6 +120,7 @@ void Shape::markObjectAsPrototype(NonMovingArena& arena, ObjectHeader* obj) {
     fresh->prototype = proto;
     fresh->used_as_prototype = true;
     runtime::rtRegisterRootShape(fresh);
+    runtime::noteShapeLeave(protoShape, fresh, ShapeLeave::BecomePrototype);
     obj->shape = fresh;
 }
 
@@ -212,6 +216,10 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
                                 is_writable, is_configurable, desired);
         transitions.push_back(ShapeTransition{stored, next_shape, is_enumerable, is_accessor,
                                               is_writable, is_configurable, desired});
+        // A stable layout's child is watched (shape.h `watched`). Only a NEW
+        // node needs it: an existing child of a watched node was marked by
+        // `Shape::watch` with the rest of the subtree.
+        next_shape->watched = watched;
         if (desired == SlotRepr::Double) {
             ++runtime::slotReprMutableCounters().double_nodes;
         } else {
@@ -230,6 +238,33 @@ Shape* Shape::addPropertyKey(NonMovingArena& arena, PropertyKey stored, uint32_t
     noteKeyAddedToPrototype(used_as_prototype, stored);
     ++g_shapeTransitions;
     return next_shape;
+}
+
+namespace runtime {
+// A watched layout broke (shape_leave.h): the layout epoch, which is the
+// prototype epoch, moves, so every compiled assumption that compared it —
+// and every prototype-hit entry and transition cell, which is the price of
+// sharing the word — is asked again. Steady-state frames break none
+// (docs/aot-specialization.md, "S0").
+void layoutBroken(const Shape* from, ShapeLeave why) {
+    (void)from;
+    (void)why;
+    bumpProtoMutationEpoch();
+}
+}  // namespace runtime
+
+void Shape::watch(Shape* shape) {
+    if (shape == nullptr || shape->watched || shape->isDictionary()) return;
+    std::vector<Shape*> todo{shape};
+    while (!todo.empty()) {
+        Shape* node = todo.back();
+        todo.pop_back();
+        if (node->watched) continue;
+        node->watched = true;
+        for (const ShapeTransition& t : node->transitions) {
+            if (t.next_shape != nullptr && !t.next_shape->watched) todo.push_back(t.next_shape);
+        }
+    }
 }
 
 Shape* Shape::withSlotBoxed(NonMovingArena& arena, Shape* shape, uint32_t index) {

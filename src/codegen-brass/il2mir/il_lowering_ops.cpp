@@ -393,6 +393,7 @@ bool is_ops_il_op(BronzeOp op) {
         case BronzeOp::ConstNull:
         case BronzeOp::MathUnary:
         case BronzeOp::MathRandom:
+        case BronzeOp::LayoutEpoch:
         case BronzeOp::GetNewTarget:
         case BronzeOp::Add:
         case BronzeOp::Sub:
@@ -513,6 +514,16 @@ bool lower_ops_instruction(
             // The native's own generator (builtin_math.cpp), so the sequence
             // is one whichever form each call site took.
             res_val = b.build_call("bronze_math_random_f64", Type::f64(), {});
+            return true;
+        }
+
+        case BronzeOp::LayoutEpoch: {
+            // The TLS word the proto-hit paths compare (il_ic_lowering.cpp),
+            // converted exactly: it is even, positive and far below 2^53.
+            Module* mod = b.current_block()->parent()->parent();
+            Value* tls = (mod && mod->pinned_tls_register()) ? b.build_pinned_tls_read()
+                                                             : b.build_call("bronze_tls_block_addr", Type::i64(), {});
+            res_val = b.build_sitofp_f64_i64(b.build_load(Type::i64(), tls, BRONZE_TLS_PROTO_EPOCH_OFF));
             return true;
         }
 

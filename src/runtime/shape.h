@@ -149,6 +149,23 @@ public:
     // what FUTURE nodes are chosen — never the layout of a node that exists, on
     // which some object's storage already depends.
     bool repr_generalized{false};
+    // STABLE LAYOUT (docs/aot-specialization.md, "S1"): some compiled
+    // assumption names this shape (a static-slot identity cell holds it, or a
+    // family stamp was written on it), so a LAYOUT-BREAKING move of an object
+    // away from it — a dictionary conversion, a double slot generalizing, a
+    // move to a private prototype chain (shape_leave.h) — bumps the layout
+    // epoch, which compiled code may compare after a call instead of guarding
+    // each receiver again. An append (`addProperty`) breaks nothing: every
+    // slot the shape describes keeps its key, index, attributes and
+    // representation in the child.
+    //
+    // Closed under transition-tree descent: `watch` marks the whole subtree
+    // and `addPropertyKey` marks a child created under a watched parent, so an
+    // object that only appended since it was at a watched shape is at a watched
+    // shape. Compiled transitions follow existing edges only, which is why
+    // they need no check of their own. Monotone, like the words above; no
+    // generated code reads it.
+    bool watched{false};
     // On a ROOT: how many overflow slots a transition run gives an object born
     // here that has no block yet (runtime/transition_run.cpp) — the most any
     // published run on this root's objects needed, so one allocation serves
@@ -205,6 +222,12 @@ public:
     //
     // Arena-only, like `withSlotBoxed`: the object does not move.
     static void markObjectAsPrototype(NonMovingArena& arena, struct ObjectHeader* obj);
+
+    // Mark `shape` and every node below it in its transition tree watched
+    // (`watched` above). Stops at a watched node, whose subtree already is, so
+    // the total work over a run is one visit per shape. Cold: the runtime
+    // calls it when it publishes a static cell or writes a family stamp.
+    static void watch(Shape* shape);
 
     bool isDictionary() const noexcept { return dict != nullptr; }
 

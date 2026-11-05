@@ -37,6 +37,7 @@
 #include "runtime/shape.h"
 #include "runtime/typed_array.h"
 #include "runtime/value.h"
+#include "runtime/shape_leave.h"
 
 namespace bronze::runtime {
 
@@ -123,6 +124,7 @@ void refuseKind(Value v, const char* operation) {
 // demand and moved to dictionary mode, which is where the level is recorded.
 // Only called for the three targets that have one.
 ObjectHeader* integrityTableOwner(Rooted<Value>& self, Target target) {
+    runtime::ShapeLeaveReason why(ShapeLeave::Integrity);
     switch (target) {
         case Target::Plain:
             ObjectHeader::toDictionary(rtArena(), self);

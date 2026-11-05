@@ -471,7 +471,7 @@ bool Solver::transfer(uint32_t f, uint32_t, uint32_t, const il::Instruction& ins
         case Op::ClosureIs: case Op::PrivateHas: case Op::IsShape:
             primResult(kBool);
             break;
-        case Op::MathUnary: case Op::MathRandom: case Op::ElemGetTyped:
+        case Op::MathUnary: case Op::MathRandom: case Op::ElemGetTyped: case Op::LayoutEpoch:
             primResult(kNumber);
             break;
         case Op::CoroMode: primResult(kI32); break;
